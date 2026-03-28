@@ -54,12 +54,6 @@ public:
         recordingEndUs = endUs;
     }
 
-    void SetAnchorOffsetMs(int64_t offsetMs) {
-        if (codecCtx) {
-            anchorPtsOffset_ = (offsetMs * codecCtx->sample_rate) / 1000;
-        }
-    }
-
     // Set callback to get current video elapsed time for clock drift compensation
     using VideoTimeGetter = std::function<int64_t()>;
     void SetVideoTimeGetter(VideoTimeGetter getter) {
@@ -120,9 +114,6 @@ private:
     // FIFO overflow tracking - drop NEWEST samples to maintain timeline continuity
     bool wasDroppingSamples = false;
     int64_t totalDroppedSamples = 0;
-
-    int64_t fifoPtsOffset_ = 0;
-    int64_t anchorPtsOffset_ = 0;
 
     void ApplyPacketDuration(AVPacket* pkt);
     void Flush();

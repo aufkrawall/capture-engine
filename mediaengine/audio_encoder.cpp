@@ -332,15 +332,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         if (resampler)
             resampler->Reset();
 
-        int fifoFrameSize = codecCtx->frame_size;
-        if (fifoFrameSize == 0)
-            fifoFrameSize = 4096;
-        fifoPtsOffset_ = fifoFrameSize;
-
-        DLL_Log(
-            "[AudioEnc] Reset complete - audio will start from PTS=%lld "
-            "(fifo=%lld, anchor=%lld) with fade-in",
-            (long long)(fifoPtsOffset_ + anchorPtsOffset_), (long long)fifoPtsOffset_, (long long)anchorPtsOffset_);
+        DLL_Log("[AudioEnc] Reset complete - audio will start from PTS=0 with fade-in");
     }
 
     // CRITICAL: Discard audio samples that arrive before first video frame
@@ -640,15 +632,15 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         // Video: pts = frame_number (0, 1, 2, 3...)
         // Audio: pts = samples_encoded (0, 4096, 8192...)
         // Both are constant-rate clocks that stay perfectly synchronized
-        frame->pts = samplesCount + fifoPtsOffset_ + anchorPtsOffset_;
+        frame->pts = samplesCount;
 
         // Debug: Log first 10 frames for each encoder to track PTS
         if (frameLogCounter++ < 10) {
             DLL_Log(
                 "[AudioEnc] FRAME PTS DEBUG: pts=%lld (%.3f sec) "
-                "samplesCount=%lld streamIdx=%d ptsOffset=%lld",
-                (long long)frame->pts, (double)frame->pts / codecCtx->sample_rate, (long long)samplesCount, streamIndex,
-                (long long)(fifoPtsOffset_ + anchorPtsOffset_));
+                "samplesCount=%lld streamIdx=%d ptsOffset=0",
+                (long long)frame->pts, (double)frame->pts / codecCtx->sample_rate, (long long)samplesCount,
+                streamIndex);
         }
 
         // Encode frame
@@ -764,9 +756,6 @@ void AudioEncoder::Stop() {
     noPacketCount = 0;
     wasDroppingSamples = false;
     totalDroppedSamples = 0;
-    fifoPtsOffset_ = 0;
-    anchorPtsOffset_ = 0;
-
     // Clear any pending packets
     for (auto* pkt : pendingPackets) {
         av_packet_free(&pkt);
@@ -999,7 +988,7 @@ void AudioEncoder::Flush() {
                 }
             }
 
-            frame->pts = samplesCount + fifoPtsOffset_ + anchorPtsOffset_;
+            frame->pts = samplesCount;
             samplesCount += samplesToSend;
 
             ret = avcodec_send_frame(codecCtx, frame);

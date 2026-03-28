@@ -149,6 +149,23 @@ inline bool IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(uint32_t out
     return recentInputMin250Fps >= outputFps && noFreshTickPermille < kWgcLowSourceEmptyTickPermille;
 }
 
+inline bool IsWgcSourceDegradedForLiveCatchup(uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
+                                              uint32_t recentInputMin250Fps, uint32_t noFreshTickPermille) {
+    if (outputFps == 0) {
+        return false;
+    }
+
+    if (noFreshTickPermille >= kWgcDeepUnderfeedEmptyTickPermille) {
+        return true;
+    }
+
+    // Keep live catchup conservative when the rolling source rate is clearly
+    // behind target, but avoid overreacting to small single-digit deficits.
+    const uint32_t degradedMarginFps = std::max<uint32_t>(1u, outputFps / 10u);
+    const uint32_t degradedFloor = outputFps > degradedMarginFps ? (outputFps - degradedMarginFps) : 0u;
+    return recentDeliveredMin250Fps < degradedFloor || recentInputMin250Fps < degradedFloor;
+}
+
 inline bool IsWgcDeepUnderfeed(uint32_t outputFps, uint32_t recentDeliveredMin250Fps, uint32_t recentInputMin250Fps,
                                uint32_t emptyTickPermille) {
     if (outputFps == 0) {
@@ -185,11 +202,9 @@ inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t buff
         return 1u;
     }
 
-    if (lowSourceMode ||
-        IsWgcDeepUnderfeed(outputFps, recentDeliveredMin250Fps, recentInputMin250Fps, noFreshTickPermille)) {
-        // When fresh WGC supply is degraded, live catch-up bursts drag visible
-        // content farther behind live without improving smoothness. Keep the
-        // debt and let stop-drain close the exact CFR count later.
+    if (outputShortfallTicks < kCfrShortfallForceCatchupThresholdTicks &&
+        IsWgcSourceDegradedForLiveCatchup(outputFps, recentDeliveredMin250Fps, recentInputMin250Fps,
+                                          noFreshTickPermille)) {
         return 1u;
     }
 
@@ -624,6 +639,10 @@ inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFra
     }
 
     if (liveRecoveryMode) {
+        return false;
+    }
+
+    if (reservePressureActive || lowSourceMode) {
         return false;
     }
 

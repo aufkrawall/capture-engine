@@ -80,7 +80,7 @@ inline double ComputeWgcCoverageLossRatio(int64_t videoPipelineLagMs, int64_t bu
     }
 
     const double lossRatio = static_cast<double>(mismatchMs) / static_cast<double>(fullTrimMismatchMs);
-    return std::clamp(lossRatio, 0.0, 0.05);
+    return std::clamp(lossRatio, 0.0, 0.25);
 }
 
 inline int64_t ComputeWgcCoverageBufferedAudioLagMs(int64_t videoPipelineLagMs, int64_t bufferedVideoContentLagMs,
@@ -174,7 +174,6 @@ inline int64_t ComputeWgcCoverageLossTrimSamples(int64_t samplesToEncode, double
     }
 
     trimAccumulator += static_cast<double>(samplesToEncode) * coverageLossRatio;
-    trimAccumulator = std::min(trimAccumulator, static_cast<double>(maxDropPerCall) * 2.0);
     const int64_t desiredDropSamples = static_cast<int64_t>(trimAccumulator);
     if (desiredDropSamples <= 0) {
         return 0;

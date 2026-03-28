@@ -1012,10 +1012,6 @@ public:
         if (this->firstVideoFrameMs == 0) {
             this->firstVideoFrameMs = debugTimestamp;
 
-            // For WGC CFR, we strictly anchor audio to 'now' (when the first frame actually arrives)
-            // instead of the WGC source frame's original desktop capture time. The WGC frame could be
-            // stale by 1.8s if DWM buffered it, making audio insert 1.8s of silence and shifting
-            // the entire track, causing the video to freeze 1-2s BEFORE audio during playback.
             int64_t anchorQPC = timestampQPC;
             if (IsWgcCfrRecording()) {
                 LARGE_INTEGER qpcNow;
@@ -1027,11 +1023,6 @@ public:
                     "MediaEngine: WGC CFR overriding audio anchor from %lld to %lld "
                     "(delta=%lldms)",
                     timestampQPC, anchorQPC, anchorDeltaMs);
-                for (auto& src : audioSources) {
-                    if (src.sharedEncoderPtr) {
-                        src.sharedEncoderPtr->SetAnchorOffsetMs(anchorDeltaMs);
-                    }
-                }
             }
 
             this->recordingStartTime = now;
