@@ -100,6 +100,9 @@ public:
 
         AudioConfig config;
         int track = 0;  // Target track number
+
+        size_t ringBufferPeakSamples = 0;
+        uint32_t ringBufferUnderrunCount = 0;
         AudioConfig::SourceType sourceType = AudioConfig::SystemAudio;
     };
 
@@ -788,6 +791,32 @@ public:
                     expectedVideoSamples);
         }
 
+        DLL_Log("[STOP SUMMARY] Recording finalized");
+        if (videoEnc) {
+            const int64_t finalVideoMs = videoEnc->GetExpectedFinalDurationUs() / 1000;
+            const int64_t wallMs = videoElapsedMs.load();
+            const int64_t encodedMs = videoEnc->GetEncodedDurationUs() / 1000;
+            DLL_Log("[STOP SUMMARY] Video: duration=%lldms wall=%lldms encoded=%lldms pipelineLag=%lldms",
+                    finalVideoMs, wallMs, encodedMs, wallMs - encodedMs);
+        }
+        for (size_t i = 0; i < audioSources.size() && i < encodedSamplesPerSource.size(); i++) {
+            auto& src = audioSources[i];
+            const bool isApp = (src.sourceType == AudioConfig::AppAudio);
+            const bool neverStarted = isApp && !src.hasAlignedStart;
+            if (neverStarted) {
+                DLL_Log("[STOP AUDIO] Source %zu (app-never-started): track=%d", i, src.track);
+            } else {
+                DLL_Log(
+                    "[STOP AUDIO] Source %zu: track=%d encoded=%llu trim=cov:%llu lat:%llu pad:%llu qgap:%llu "
+                    "ringPeak=%zu ringUnderruns=%u",
+                    i, src.track, (unsigned long long)encodedSamplesPerSource[i],
+                    (unsigned long long)src.coverageLossTrimSamples,
+                    (unsigned long long)src.latencyTrimSamples, (unsigned long long)src.underrunPadSamples,
+                    (unsigned long long)src.packetTimelineGapSamples,
+                    src.ringBufferPeakSamples, src.ringBufferUnderrunCount);
+            }
+        }
+
         // Stop all audio sources
         for (auto& src : audioSources) {
             if (src.capture) {
@@ -1360,6 +1389,11 @@ public:
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
 
+                const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
+                if (ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.hasAlignedStart)) {
+                    continue;
+                }
+
                 size_t droppedFloats = src.ringBuffer->GetAndClearDroppedSamples();
                 if (droppedFloats > 0) {
                     size_t droppedSamples = droppedFloats / CHANNELS;
@@ -1694,7 +1728,12 @@ public:
                     while (src.postResampleBuffer.size() < totalFloats) {
                         size_t rbFloats = src.ringBuffer->GetAvailable();
                         if (rbFloats == 0) {
+                            src.ringBufferUnderrunCount++;
                             break;
+                        }
+                        size_t rbSamples = rbFloats / CHANNELS;
+                        if (rbSamples > src.ringBufferPeakSamples) {
+                            src.ringBufferPeakSamples = rbSamples;
                         }
 
                         size_t needFloats = totalFloats - src.postResampleBuffer.size();
@@ -1829,7 +1868,9 @@ public:
                                 src.prevLeadSnapshotMs = 0;
                                 src.lastRateUpdateMs = 0;
                                 src.currentRateDelta = 0;
-                                src.rateCompActive = false;
+            src.rateCompActive = false;
+            src.ringBufferPeakSamples = 0;
+            src.ringBufferUnderrunCount = 0;
                             }
                         }
                     }
@@ -2129,6 +2170,12 @@ public:
                     (unsigned long long)latencyTrimmed, (unsigned long long)postTrimmed,
                     (unsigned long long)underrunPadded, (unsigned long long)packetGapAdjusted,
                     (unsigned long long)packetOverlapTrimmed, sourceSummary.c_str());
+
+                DLL_Log(
+                    "[A/V SYNC SUMMARY] Track %d: Wall=%lldms EncV=%lldms Audio=%lldms Drift=%+lldms "
+                    "PipelineLag=%lldms PullLatency=%lldms EncBot=%d Delivered=%u/%u",
+                    track, wallVideoMs, encodedVideoMs, audioMs, avDrift, pipelineLagMs, trackAudioPullLatencyMs,
+                    wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps);
 
                 if (std::abs(latencyAdjustedAvDrift) > 100) {
                     DLL_Log(

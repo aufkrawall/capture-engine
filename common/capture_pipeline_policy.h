@@ -59,11 +59,11 @@ inline uint32_t GetCfrTimerRebaseDiscardTicks(uint64_t elapsedTicks, uint64_t di
 }
 
 inline bool ShouldDiscardCfrTimerRebaseDebt(bool useScreenGrab) {
-    // Both WGC and Inject must NOT discard timer debt in CFR mode. If timer debt is discarded,
-    // the total output frames will fall short of the CFR target over time, causing the
-    // video track length to be shorter than real time. To maintain exact A/V sync and
-    // track length matching, we must preserve this debt and drain it at the end of capture.
-    return false;
+    // Discard timer rebase debt so the encoder doesn't accumulate an unresolvable
+    // shortfall that would need draining at stop. Since stop-time drain is disabled,
+    // discarding rebase debt during live recording prevents a growing mismatch
+    // between scheduled and actual output that would never be recovered.
+    return true;
 }
 
 inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useScreenGrab, bool frameAvailable,

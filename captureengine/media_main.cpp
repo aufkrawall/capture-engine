@@ -4139,21 +4139,13 @@ void StopRecording() {
 
     LogInfo("[Media] Stopping recording...");
 
-    const bool drainOutstandingWgcTicks = IsActiveScreenGrab() && !g_RecordingUsesVfr.load(std::memory_order_acquire);
-    LARGE_INTEGER stopQpc = {};
-    if (drainOutstandingWgcTicks) {
-        QueryPerformanceCounter(&stopQpc);
-    }
-
+    const bool drainOutstandingWgcTicks = false;
     g_Recording = false;
     SetCaptureRequestedState(false);
     SetRecordingVisibleState(false);
     SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
-    g_WgcDrainStopQpc.store(drainOutstandingWgcTicks ? stopQpc.QuadPart : 0, std::memory_order_release);
-    g_DrainOutstandingWgcTicks.store(drainOutstandingWgcTicks, std::memory_order_release);
-    if (drainOutstandingWgcTicks) {
-        LogInfo("[Media] WGC CFR stop drain armed - encoder will finish outstanding CFR ticks before finalizing");
-    }
+    g_WgcDrainStopQpc.store(0, std::memory_order_release);
+    g_DrainOutstandingWgcTicks.store(false, std::memory_order_release);
 
     StopWgcCapturePipeline();
     StopInjectCapturePipeline();

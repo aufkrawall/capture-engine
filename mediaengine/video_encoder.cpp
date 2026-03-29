@@ -6366,9 +6366,24 @@ void VideoEncoder::AsyncWriteLoop() {
             // 2. Write Trailer and Close File
             if (fmtCtx && fileOpened) {
                 DLL_Log("[VideoEncoder] Async Finalize: Writing Trailer...");
-                // Set container duration so seekers and players see a valid duration
                 int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
                 if (finalDurationUs > 0) {
+                    for (unsigned s = 0; s < fmtCtx->nb_streams; s++) {
+                        AVStream* st = fmtCtx->streams[s];
+                        int64_t firstPts = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
+                        int64_t lastPts = firstPts;
+                        if (st->duration > 0) {
+                            lastPts = firstPts + st->duration;
+                        }
+                        int64_t firstPtsUs = av_rescale_q(firstPts, st->time_base, AVRational{1, 1000000});
+                        int64_t lastPtsUs = av_rescale_q(lastPts, st->time_base, AVRational{1, 1000000});
+                        DLL_Log("[PTS ALIGN] Stream %u (codec=%s): first=%lldus last=%lldus dur=%lldus tb=%d/%lld",
+                                s, st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO
+                                    ? "video"
+                                    : (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ? "audio" : "unknown"),
+                                (long long)firstPtsUs, (long long)lastPtsUs, (long long)lastPtsUs,
+                                st->time_base.num, (long long)st->time_base.den);
+                    }
                     ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
                     LogFinalDurationSummary(fmtCtx, finalDurationUs,
                                             muxBackpressureCount.load(std::memory_order_relaxed),
