@@ -1615,7 +1615,21 @@ public:
                         if (rbLevel >= kMinCompensationBufferSamples) {
                             const int64_t expectedLead = expectedLeadSamplesForCorrection;
                             const int64_t trueDrift = rbLevel - expectedLead;
-                            const int64_t nowVideoMs = (src.syncSamplesOutput * 1000) / SAMPLE_RATE;
+
+                            // Drift sanity check: detect extreme drift that indicates measurement error
+                            if (std::abs(trueDrift) > SAMPLE_RATE * 2) {  // >2 seconds
+                                DLL_Log("[PullAudio] WARNING: Extreme drift detected (%lld samples src=%d) - may indicate sync issue",
+                                        trueDrift, (int)srcIdx);
+                            }
+
+                            const int64_t nowVideoMs = (encodedSamplesPerSource[srcIdx] * 1000) / SAMPLE_RATE;
+
+                            // Debug logging for drift calculation (periodic)
+                            if (driftLogCounter++ % 500 == 0) {
+                                DLL_Log("[PullAudio] Drift debug src=%d: syncOutput=%lld encoded=%lld nowVideo=%lld wallVideo=%lld trueDrift=%lld rbLevel=%lld",
+                                        (int)srcIdx, src.syncSamplesOutput, encodedSamplesPerSource[srcIdx],
+                                        nowVideoMs, wallVideoMs, trueDrift, rbLevel);
+                            }
 
                             if (src.lastRateUpdateMs <= 0) {
                                 src.lastRateUpdateMs = nowVideoMs;
@@ -1765,7 +1779,7 @@ public:
                             if (outSamples > 0 && resampledData && resampledData[0]) {
                                 float* outFloats = (float*)resampledData[0];
                                 if (src.dropFadeSamplesRemaining > 0) {
-                                    const int kDropFadeSamples = SAMPLE_RATE / 200;
+                                    const int kDropFadeSamples = SAMPLE_RATE / 40;  // 25ms - smoother transitions
                                     int blendSamples = std::min(src.dropFadeSamplesRemaining, outSamples);
                                     int blendStart = kDropFadeSamples - src.dropFadeSamplesRemaining;
                                     for (int s = 0; s < blendSamples; s++) {
@@ -1782,11 +1796,11 @@ public:
                                     src.dropFadeSamplesRemaining -= blendSamples;
                                 }
                                 if (src.pendingUnderrunRecoveryFade) {
-                                    src.underrunFadeSamplesRemaining = SAMPLE_RATE / 200;
+                                    src.underrunFadeSamplesRemaining = SAMPLE_RATE / 40;  // 25ms - smoother transitions
                                     src.pendingUnderrunRecoveryFade = false;
                                 }
                                 if (src.underrunFadeSamplesRemaining > 0) {
-                                    const int kUnderrunFadeSamples = SAMPLE_RATE / 200;
+                                    const int kUnderrunFadeSamples = SAMPLE_RATE / 40;  // 25ms - smoother transitions
                                     int blendSamples = std::min(src.underrunFadeSamplesRemaining, outSamples);
                                     int blendStart = kUnderrunFadeSamples - src.underrunFadeSamplesRemaining;
                                     for (int s = 0; s < blendSamples; s++) {
@@ -1800,6 +1814,13 @@ public:
                                 src.postResampleBuffer.insert(src.postResampleBuffer.end(), outFloats,
                                                               outFloats + numFloats);
                                 src.syncSamplesOutput += outSamples;
+
+                                // Log sample trim stats periodically
+                                if (dropLogCounter++ % 500 == 0 && (src.overflowDropSamples > 0 || src.latencyTrimSamples > 0 || src.postResampleTrimSamples > 0)) {
+                                    DLL_Log("[PullAudio] Sample trim stats src=%d: overflowDropped=%llu latencyTrimmed=%llu postResampleTrimmed=%llu",
+                                            (int)srcIdx, (unsigned long long)src.overflowDropSamples,
+                                            (unsigned long long)src.latencyTrimSamples, (unsigned long long)src.postResampleTrimSamples);
+                                }
                             }
                         }
                         AudioResampler::FreeOutputBuffer(resampledData);

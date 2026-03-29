@@ -255,7 +255,7 @@ inline int64_t ClampWgcPositiveDriftCorrection(int64_t targetCorrection, int64_t
 }
 
 inline int32_t ComputeTier1CompensationDelta(int64_t trueDriftSamples, int64_t compensationWindowSamples,
-                                             double maxPitchPercent = 0.05) {
+                                             double maxPitchPercent = 0.5) {  // Match WGC CFR default
     const int32_t maxDelta = static_cast<int32_t>(compensationWindowSamples * maxPitchPercent / 100.0 + 0.5);
     if (maxDelta <= 0) {
         return 0;

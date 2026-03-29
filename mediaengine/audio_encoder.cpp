@@ -423,7 +423,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         return;
     }
     const int MAX_FIFO_SAMPLES = codecCtx->sample_rate * 5;
-    const int CROSSFADE_SAMPLES = 64;
+    const int CROSSFADE_SAMPLES = codecCtx->sample_rate / 50;  // 20ms - smoother overflow handling
     int currentFifoSize = av_audio_fifo_size(audioFifo);
     int samplesToWrite = convertedSamples;
     bool applyingFadeOut = false;
@@ -442,6 +442,9 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
                 "[AudioEnc] FIFO NEAR OVERFLOW: size=%d + new=%d > max=%d. "
                 "Writing %d samples, dropping %d newest (maintains timeline)",
                 currentFifoSize, convertedSamples, MAX_FIFO_SAMPLES, samplesToWrite, convertedSamples - samplesToWrite);
+            // Enhanced FIFO stats logging
+            DLL_Log("[AudioEnc] FIFO stats: droppedTotal=%llu, fifoLogCounter=%d, samplesCount=%lld, streamIdx=%d",
+                    (unsigned long long)totalDroppedSamples, fifoLogCounter, (long long)samplesCount, streamIndex);
         }
 
         wasDroppingSamples = true;
@@ -719,8 +722,9 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         // Log if we didn't get any packets after sending a frame
         if (pktCount == 0) {
             noPacketCount++;
-            if (noPacketCount % 100 == 1) {
-                DLL_Log("[AudioEnc] No packets received after send_frame (count=%d)", noPacketCount);
+            if (noPacketCount == 1 || noPacketCount % 100 == 1) {
+                DLL_Log("[AudioEnc] No packets received after send_frame (count=%d, streamIdx=%d, samplesCount=%lld)",
+                        noPacketCount, streamIndex, (long long)samplesCount);
             }
         }
     }
