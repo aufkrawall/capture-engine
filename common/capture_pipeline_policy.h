@@ -592,6 +592,20 @@ inline bool ShouldExitWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
            telemetry.emptyTickPermille <= kWgcLowSourceExitEmptyTickPermille && telemetry.bufferedWgcFrames <= 4;
 }
 
+inline bool ShouldAllowWgcAdaptiveHeadroom(const WgcAdaptiveTelemetry& telemetry, uint32_t noFreshTickPermille,
+                                           bool lowSourceModeActive, bool liveRecoveryModeActive,
+                                           double maxDuplicateRatio = 0.18) {
+    if (telemetry.outputFps == 0 || lowSourceModeActive || liveRecoveryModeActive) {
+        return false;
+    }
+
+    if (ShouldEnterWgcLowSourceMode(telemetry) || noFreshTickPermille >= kWgcReservePressurePermille) {
+        return false;
+    }
+
+    return telemetry.duplicateRatio <= maxDuplicateRatio;
+}
+
 inline bool ShouldUseWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
     return ShouldEnterWgcLowSourceMode(telemetry);
 }

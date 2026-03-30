@@ -1201,8 +1201,9 @@ public:
         const int64_t timelineShortfallMs = std::max<int64_t>(0, (steadyElapsedUs / 1000) - audioTargetMs);
 
         const int64_t videoPipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
-        uint32_t wgcTargetFps =
-            isWgcCfrRecording ? static_cast<uint32_t>(config.video.fps > 0 ? config.video.fps : 1) : 0u;
+        const uint32_t configuredWgcOutputFps =
+            (isWgcCfrRecording && config.video.fps > 0) ? static_cast<uint32_t>(config.video.fps) : 0u;
+        uint32_t wgcTargetFps = isWgcCfrRecording ? (configuredWgcOutputFps > 0 ? configuredWgcOutputFps : 1u) : 0u;
         uint32_t wgcDeliveredFps = 0u;
         uint32_t wgcDeliveredMin250Fps = 0u;
         uint32_t wgcDeliveredMin500Fps = 0u;
@@ -1227,9 +1228,13 @@ public:
             wgcQueueEmptyTickPermille = runtimeState.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed);
             wgcBufferedAtTickMin = runtimeState.wgcBufferedAtTickMin.load(std::memory_order_relaxed);
             wgcSingleFrameTickCount = runtimeState.wgcSingleFrameTickCount.load(std::memory_order_relaxed);
-            wgcCoverageLossActive = ce::audio::HasWgcUnrecoverableCoverageLoss(wgcTargetFps, videoPipelineLagMs,
-                                                                               wgcBufferedVideoContentLagMs,
-                                                                               wgcEncoderBottlenecked, wgcDeliveredFps);
+        }
+        const uint32_t wgcRecordingCadenceFps =
+            ce::audio::GetWgcRecordingCadenceFps(configuredWgcOutputFps, wgcTargetFps);
+        if (isWgcCfrRecording) {
+            wgcCoverageLossActive = ce::audio::HasWgcUnrecoverableCoverageLoss(
+                wgcRecordingCadenceFps, videoPipelineLagMs, wgcBufferedVideoContentLagMs, wgcEncoderBottlenecked,
+                wgcDeliveredFps);
         }
         const auto wgcAudioLagTargets = ce::audio::ComputeWgcAudioLagTargets(
             videoPipelineLagMs, wgcBufferedVideoContentLagMs, isWgcCfrRecording && wgcCoverageLossActive,
@@ -1251,7 +1256,7 @@ public:
         }
         const bool wgcEncoderOnlyOverload =
             isWgcCfrRecording && ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(
-                                      wgcEncoderBottlenecked, wgcCoverageLossActive, wgcTargetFps,
+                                      wgcEncoderBottlenecked, wgcCoverageLossActive, wgcRecordingCadenceFps,
                                       effectiveDeliveredFpsForAudioContinuity, kWgcEncoderHealthyDeliveryMarginFps);
         int64_t wgcEncoderShortfallBufferedLagMs = 0;
         if (isWgcCfrRecording && wgcEncoderOnlyOverload && !kWgcPreferVideoRepeatsOverAudioCuts) {

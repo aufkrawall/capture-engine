@@ -2487,6 +2487,20 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                     const bool sharedDeviceFallbackActive =
                         g_WgcCap->GetLastCopyTimeUs() > static_cast<int64_t>(frameIntervalMs * 1000.0 * 0.55);
+                    ce::capture_policy::WgcAdaptiveTelemetry adaptiveTelemetry{};
+                    adaptiveTelemetry.outputFps = outputFps;
+                    adaptiveTelemetry.recentDeliveredFps = wgcRecentDeliveredFps;
+                    adaptiveTelemetry.recentDeliveredMin250Fps = wgcRecentDeliveredMin250Fps;
+                    adaptiveTelemetry.recentDeliveredMin500Fps = wgcRecentDeliveredMin500Fps;
+                    adaptiveTelemetry.recentInputMin250Fps = wgcRecentInputMin250Fps;
+                    adaptiveTelemetry.recentInputMin500Fps = wgcRecentInputMin500Fps;
+                    adaptiveTelemetry.averageJitterUs = averageJitterUs;
+                    adaptiveTelemetry.emptyTickPermille = wgcNoFreshTickPermille;
+                    adaptiveTelemetry.bufferedWgcFrames = queueDepth;
+                    adaptiveTelemetry.duplicateRatio = duplicateRatio;
+                    const bool adaptiveHeadroomAllowed = ce::capture_policy::ShouldAllowWgcAdaptiveHeadroom(
+                        adaptiveTelemetry, wgcNoFreshTickPermille, wgcLowSourceModeActive,
+                        wgcLiveRecoveryModeActive);
                     const bool sustainedPressure =
                         g_IsEncoderBottlenecked.load(std::memory_order_relaxed) || queueDepth >= 8u ||
                         poolDropCount > 0 ||
@@ -2497,11 +2511,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                 ce::capture_policy::IsEncoderTooSlowForTargetFps(
                                                     smoothedEncodeMs, frameIntervalMs, outputFps, 2.0);
 
-                    if (severePressure) {
+                    if (adaptiveHeadroomAllowed && severePressure) {
                         desiredTargetFps =
                             std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.08)));
                         desiredThrottleMode = WgcAdaptiveThrottleMode::kHeadroom108;
-                    } else if (sustainedPressure) {
+                    } else if (adaptiveHeadroomAllowed && sustainedPressure) {
                         desiredTargetFps =
                             std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.25)));
                         desiredThrottleMode = WgcAdaptiveThrottleMode::kHeadroom125;

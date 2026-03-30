@@ -177,6 +177,12 @@ TEST(AudioSyncUtilsTest, WgcBufferedVideoContentLagUsesSharedTelemetryAge) {
     EXPECT_EQ(ce::audio::ComputeWgcBufferedVideoContentLagMs(12345), 12);
 }
 
+TEST(AudioSyncUtilsTest, WgcRecordingCadenceFavorsOutputFpsOverAdaptiveCaptureTarget) {
+    EXPECT_EQ(ce::audio::GetWgcRecordingCadenceFps(120, 130), 120u);
+    EXPECT_EQ(ce::audio::GetWgcRecordingCadenceFps(0, 130), 130u);
+    EXPECT_EQ(ce::audio::GetWgcRecordingCadenceFps(0, 0), 0u);
+}
+
 TEST(AudioSyncUtilsTest, TrackStartupSettledUsesBootstrapOrPrimedSources) {
     EXPECT_FALSE(ce::audio::IsTrackAudioStartupSettled(false, false));
     EXPECT_TRUE(ce::audio::IsTrackAudioStartupSettled(true, false));

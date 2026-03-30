@@ -164,6 +164,31 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceModePrefersBufferCushionDuringUnderf
     EXPECT_FALSE(policy::ShouldExitWgcLowSourceMode(telemetry));
 }
 
+TEST(CapturePipelinePolicyTest, WgcAdaptiveHeadroomRequiresHealthySourceReserve) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 120;
+    telemetry.recentDeliveredMin250Fps = 120;
+    telemetry.recentDeliveredMin500Fps = 120;
+    telemetry.recentInputMin250Fps = 123;
+    telemetry.recentInputMin500Fps = 123;
+    telemetry.emptyTickPermille = 20;
+    telemetry.duplicateRatio = 0.05;
+
+    EXPECT_TRUE(policy::ShouldAllowWgcAdaptiveHeadroom(telemetry, 20, false, false));
+    EXPECT_FALSE(
+        policy::ShouldAllowWgcAdaptiveHeadroom(telemetry, policy::kWgcReservePressurePermille, false, false));
+    EXPECT_FALSE(policy::ShouldAllowWgcAdaptiveHeadroom(telemetry, 20, true, false));
+    EXPECT_FALSE(policy::ShouldAllowWgcAdaptiveHeadroom(telemetry, 20, false, true));
+
+    telemetry.duplicateRatio = 0.25;
+    EXPECT_FALSE(policy::ShouldAllowWgcAdaptiveHeadroom(telemetry, 20, false, false));
+
+    telemetry.duplicateRatio = 0.05;
+    telemetry.recentDeliveredMin250Fps = 118;
+    EXPECT_FALSE(policy::ShouldAllowWgcAdaptiveHeadroom(telemetry, 20, false, false));
+}
+
 TEST(CapturePipelinePolicyTest, WgcWarmupCommitRequiresStableBufferedSource) {
     EXPECT_FALSE(policy::ShouldCommitWgcWarmup(false, 3, policy::kRecordingWarmupMaxMs, 120.0, 120));
     EXPECT_FALSE(policy::ShouldCommitWgcWarmup(true, 2, policy::kRecordingWarmupMinMs, 120.0, 120));

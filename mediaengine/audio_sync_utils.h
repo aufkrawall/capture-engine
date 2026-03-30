@@ -43,6 +43,10 @@ inline int64_t ComputeWgcBufferedVideoContentLagMs(uint32_t oldestBufferedFrameA
     return oldestBufferedFrameAgeUs == 0 ? 0 : static_cast<int64_t>(oldestBufferedFrameAgeUs / 1000u);
 }
 
+inline uint32_t GetWgcRecordingCadenceFps(uint32_t outputFps, uint32_t captureTargetFps) {
+    return outputFps > 0 ? outputFps : captureTargetFps;
+}
+
 inline bool HasWgcUnrecoverableCoverageLoss(uint32_t targetFps, int64_t videoPipelineLagMs,
                                             int64_t bufferedVideoContentLagMs, bool encoderBottlenecked = false,
                                             uint32_t wgcDeliveredFps = 0, int64_t minPipelineLagMs = 250,
