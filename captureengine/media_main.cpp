@@ -3229,13 +3229,19 @@ void EncoderThreadFunc(const AppConfig& config) {
                            ce::capture_policy::GetWgcForceCatchupBudgetFrameMultiplier(shortfallDurationMs))
                     : allowWgcCatchupBudget ? (frameIntervalMs * 2.0)
                                             : frameIntervalMs;
-                bool allowFreshCatchup = true;  // Always allow fresh catchup for CFR by default
+                const bool preferDuplicateCatchup =
+                    useScreenGrab && !config.video.useVFR &&
+                    ce::capture_policy::ShouldPreferWgcDuplicateCatchup(
+                        encoderTooSlowForTargetCurrent || g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                        outputShortfallTicks, wgcAudioLeadExcessMsCurrent);
+                bool allowFreshCatchup = !preferDuplicateCatchup;
 
                 // For CFR recording, video smoothness is paramount. We have a 32-frame deep queue
                 // (~266ms at 120fps) to absorb temporary encoder spikes. We only force duplicate frames
                 // if we are severely behind (e.g. > 150ms delay) to prevent runaway latency.
                 // Otherwise, we process the fresh frame to preserve the correct visual pacing.
-                const double cfrSmoothnessToleranceMs = (!config.video.useVFR && useScreenGrab) ? 150.0 : 0.0;
+                const double cfrSmoothnessToleranceMs =
+                    (!config.video.useVFR && useScreenGrab && !preferDuplicateCatchup) ? 150.0 : 0.0;
 
                 if (elapsedFromTickStartMs > catchupBudgetMs + cfrSmoothnessToleranceMs) {
                     static uint64_t s_lastBudgetLog = 0;

@@ -431,6 +431,20 @@ TEST(CapturePipelinePolicyTest, WgcAudioLeadPressureRestoresGentleCatchupUnderEn
               2u);
 }
 
+TEST(CapturePipelinePolicyTest, WgcAudioLeadPressureEscalatesAtForceThreshold) {
+    EXPECT_FALSE(policy::ShouldPreferWgcDuplicateCatchup(
+        true, policy::kCfrShortfallForceCatchupThresholdTicks - 1, policy::kWgcAudioLeadCatchupThresholdMs));
+    EXPECT_FALSE(policy::ShouldPreferWgcDuplicateCatchup(
+        false, policy::kCfrShortfallForceCatchupThresholdTicks, policy::kWgcAudioLeadCatchupThresholdMs));
+    EXPECT_TRUE(policy::ShouldPreferWgcDuplicateCatchup(
+        true, policy::kCfrShortfallForceCatchupThresholdTicks, policy::kWgcAudioLeadCatchupThresholdMs));
+
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks, 120,
+                                                 118, 124, 0, false,
+                                                 policy::kWgcAudioLeadCatchupThresholdMs),
+              4u);
+}
+
 TEST(CapturePipelinePolicyTest, CfrCatchupTicksBurstAtForceThreshold) {
     // At and above force threshold: allow larger bursts, capped at 4
     EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks), 4u);

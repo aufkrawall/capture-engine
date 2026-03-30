@@ -91,6 +91,7 @@ public:
         uint64_t pendingCoverageLossTrimSamples = 0;  // Aggregated coverage-loss trims since the last periodic log
         uint32_t pendingCoverageLossTrimEvents = 0;   // Aggregated coverage-loss trim events since the last log
         uint64_t lastRetainedTrimWarnTick = 0;        // Rate-limit explicit retained-audio warnings
+        uint64_t lastExtremeDriftWarnTick = 0;        // Rate-limit chronic large-drift diagnostics
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
 
@@ -1663,8 +1664,13 @@ public:
 
                             // Drift sanity check: detect extreme drift that indicates measurement error
                             if (std::abs(trueDrift) > SAMPLE_RATE * 2) {  // >2 seconds
-                                DLL_Log("[PullAudio] WARNING: Extreme drift detected (%lld samples src=%d) - may indicate sync issue",
+                                const uint64_t nowWarnTick = GetTickCount64();
+                                if (nowWarnTick - src.lastExtremeDriftWarnTick >= 1000) {
+                                    DLL_Log(
+                                        "[PullAudio] WARNING: Extreme drift detected (%lld samples src=%d) - may indicate sync issue",
                                         trueDrift, (int)srcIdx);
+                                    src.lastExtremeDriftWarnTick = nowWarnTick;
+                                }
                             }
 
                             const int64_t nowVideoMs = (encodedSamplesPerSource[srcIdx] * 1000) / SAMPLE_RATE;

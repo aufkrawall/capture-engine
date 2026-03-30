@@ -186,6 +186,13 @@ inline bool ShouldPrioritizeWgcAudioLeadCatchup(double audioLeadExcessMs,
     return audioLeadExcessMs >= minAudioLeadMs;
 }
 
+inline bool ShouldPreferWgcDuplicateCatchup(bool encoderBottlenecked, uint32_t outputShortfallTicks,
+                                            double audioLeadExcessMs,
+                                            double minAudioLeadMs = kWgcAudioLeadCatchupThresholdMs) {
+    return encoderBottlenecked && outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks &&
+           ShouldPrioritizeWgcAudioLeadCatchup(audioLeadExcessMs, minAudioLeadMs);
+}
+
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t bufferedWgcFrames,
                                            double frameCreditAccumulator, uint32_t outputShortfallTicks,
                                            uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
@@ -196,10 +203,10 @@ inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t buff
     }
 
     if (ShouldPrioritizeWgcAudioLeadCatchup(audioLeadExcessMs)) {
-        // Once audio has built meaningful lead against the delayed video timeline,
-        // spend backlog gently with repeated video frames before the media side is
-        // forced into large trim bursts.
-        return 2u;
+        // Audio lead should restore live catchup immediately, but once wall-clock
+        // debt is already in force-catchup territory we must stop staying gentle
+        // or the delayed video timeline keeps drifting farther behind the audio.
+        return std::max<uint32_t>(2u, GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderBottlenecked));
     }
 
     if (IsWgcSourceHealthyForLiveCatchup(outputFps, recentDeliveredMin250Fps, recentInputMin250Fps, noFreshTickPermille,
