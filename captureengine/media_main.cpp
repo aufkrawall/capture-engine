@@ -3206,7 +3206,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             const bool preferDuplicateCatchup =
                 useScreenGrab && !config.video.useVFR &&
                 ce::capture_policy::ShouldPreferWgcDuplicateCatchup(
-                    encoderTooSlowForTargetCurrent || g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                    encoderTooSlowForTargetCurrent,
                     outputShortfallTicks, wgcAudioLeadExcessMsCurrent);
             uint32_t remainingFreshCatchupBudget =
                 useScreenGrab && !config.video.useVFR
