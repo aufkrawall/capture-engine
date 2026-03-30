@@ -1878,10 +1878,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 catchupTicksThisLoop = 0u;
             } else if (activeScreenGrab) {
                 catchupTicksThisLoop = ce::capture_policy::GetWgcCatchupTicksThisLoop(
-                    encoderCatchupBottleneckedCurrent, bufferedWgcFrames.size(), frameCreditAccumulator,
-                    outputShortfallTicks, targetOutputFpsForPolicy, wgcRecentDeliveredMin250Fps,
-                    wgcRecentInputMin250Fps, wgcNoFreshTickPermille, wgcLowSourceModeActive,
-                    wgcAudioLeadExcessMsCurrent);
+                    encoderCatchupBottleneckedCurrent, encoderTooSlowForTargetCurrent, bufferedWgcFrames.size(),
+                    frameCreditAccumulator, outputShortfallTicks, targetOutputFpsForPolicy,
+                    wgcRecentDeliveredMin250Fps, wgcRecentInputMin250Fps, wgcNoFreshTickPermille,
+                    wgcLowSourceModeActive, wgcAudioLeadExcessMsCurrent);
             } else {
                 catchupTicksThisLoop = ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks,
                                                                                       encoderTooSlowForTargetCurrent);
@@ -2376,7 +2376,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcSourceStarvedCurrent = ce::capture_policy::IsWgcSourceStarved(wgcAdaptiveTelemetry);
                 wgcSchedulerLimitedCurrent = ce::capture_policy::IsWgcSchedulerDeliveryLimited(wgcAdaptiveTelemetry);
                 wgcEncoderRecoveryLimitedCurrent =
-                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed) &&
+                    encoderTooSlowForTargetCurrent &&
                     outputShortfallTicks >= ce::capture_policy::kWgcRecoveryEnterShortfallTicks;
                 wgcReservePressureActive = ce::capture_policy::IsWgcReservePressureActive(
                     wgcNoReserveTickCount, wgcQueueTickSampleCount, outputFps);
@@ -2421,11 +2421,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 const bool shouldEnterWgcLiveRecoveryMode = ce::capture_policy::ShouldEnterWgcLiveRecoveryMode(
-                    wgcAdaptiveTelemetry, outputShortfallTicks,
-                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed));
+                    wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
                 const bool shouldExitWgcLiveRecoveryMode = ce::capture_policy::ShouldExitWgcLiveRecoveryMode(
-                    wgcAdaptiveTelemetry, outputShortfallTicks,
-                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed));
+                    wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
                 if (!wgcLiveRecoveryModeActive) {
                     if (shouldEnterWgcLiveRecoveryMode) {
                         if (wgcLiveRecoveryStateChangeTick == 0) {

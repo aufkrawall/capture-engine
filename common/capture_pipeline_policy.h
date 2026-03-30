@@ -33,7 +33,7 @@ constexpr uint32_t kWgcSelectionDelayTicks = 2;
 constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
-constexpr uint32_t kWgcDuplicatePreferredFreshCatchupBudgetTicks = 1;
+constexpr uint32_t kWgcDuplicatePreferredFreshCatchupBudgetTicks = 2;
 constexpr double kWgcSevereShortfallDurationMs = 500.0;
 constexpr uint32_t kWgcDeepUnderfeedMarginFps = 8;
 constexpr uint32_t kWgcDeepUnderfeedEmptyTickPermille = 350;
@@ -187,6 +187,20 @@ inline bool ShouldPrioritizeWgcAudioLeadCatchup(double audioLeadExcessMs,
     return audioLeadExcessMs >= minAudioLeadMs;
 }
 
+inline bool IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(uint32_t outputFps,
+                                                                uint32_t recentDeliveredMin250Fps,
+                                                                uint32_t recentInputMin250Fps,
+                                                                uint32_t noFreshTickPermille) {
+    if (outputFps == 0) {
+        return false;
+    }
+
+    const uint32_t recoveredFloor =
+        outputFps > kWgcRecoverySourceMarginFps ? (outputFps - kWgcRecoverySourceMarginFps) : 0u;
+    return recentDeliveredMin250Fps >= recoveredFloor && recentInputMin250Fps >= recoveredFloor &&
+           noFreshTickPermille < kWgcRecoveryEmptyTickPermille;
+}
+
 inline bool ShouldPreferWgcDuplicateCatchup(bool encoderBottlenecked, uint32_t outputShortfallTicks,
                                             double audioLeadExcessMs,
                                             double minAudioLeadMs = kWgcAudioLeadCatchupThresholdMs) {
@@ -207,19 +221,26 @@ inline uint32_t GetWgcFreshCatchupBudgetThisLoop(bool preferDuplicateCatchup, ui
     return std::min(extraTicks, kWgcDuplicatePreferredFreshCatchupBudgetTicks);
 }
 
-inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t bufferedWgcFrames,
-                                           double frameCreditAccumulator, uint32_t outputShortfallTicks,
-                                           uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
-                                           uint32_t recentInputMin250Fps, uint32_t noFreshTickPermille,
-                                           bool lowSourceMode, double audioLeadExcessMs = 0.0) {
+inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, bool encoderActivelyTooSlow,
+                                           size_t bufferedWgcFrames, double frameCreditAccumulator,
+                                           uint32_t outputShortfallTicks, uint32_t outputFps,
+                                           uint32_t recentDeliveredMin250Fps, uint32_t recentInputMin250Fps,
+                                           uint32_t noFreshTickPermille, bool lowSourceMode,
+                                           double audioLeadExcessMs = 0.0) {
     if (outputShortfallTicks < kCfrShortfallCatchupThresholdTicks) {
         return 1u;
     }
 
     if (ShouldPrioritizeWgcAudioLeadCatchup(audioLeadExcessMs)) {
-        // Audio lead should restore live catchup immediately, but once wall-clock
-        // debt is already in force-catchup territory we must stop staying gentle
-        // or the delayed video timeline keeps drifting farther behind the audio.
+        // Audio lead should restore live catchup immediately, but once the
+        // encoder/source recover enough to support smooth pacing again, do not
+        // keep escalating historical debt into repeat-heavy force bursts.
+        if (outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks && !encoderActivelyTooSlow &&
+            IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(outputFps, recentDeliveredMin250Fps,
+                                                                recentInputMin250Fps, noFreshTickPermille)) {
+            return 2u;
+        }
+
         return std::max<uint32_t>(2u, GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderBottlenecked));
     }
 
@@ -276,7 +297,7 @@ inline bool ShouldClampWgcCoverageCatchupToSingleTick(bool coverageRepeatActive,
 }
 
 inline double GetWgcForceCatchupBudgetFrameMultiplier(double shortfallDurationMs) {
-    return HasWgcSevereLiveShortfall(shortfallDurationMs) ? 4.0 : 3.0;
+    return HasWgcSevereLiveShortfall(shortfallDurationMs) ? 4.0 : 4.0;
 }
 
 inline bool HasWgcUnrecoverableCoverageLoss(double shortfallDurationMs, double oldestBufferedFrameAgeMs,
