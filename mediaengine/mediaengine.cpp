@@ -1644,7 +1644,7 @@ public:
                             }
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
-                    } else if (isWgcCfrRecording && !wgcEncoderOnlyOverload) {
+                    } else if (isWgcCfrRecording && !wgcEncoderOnlyOverload && !kWgcPreferVideoRepeatsOverAudioCuts) {
                         const int64_t expectedLeadSamplesForCap = expectedLeadSamplesForCorrection;
                         if (static_cast<int64_t>(rbAvailable) > expectedLeadSamplesForCap + kWgcCfrLeadWarningSamples) {
                             // WGC CFR lead is large.  Log diagnostics and do paced trimming
@@ -1819,6 +1819,7 @@ public:
                                     // Activates when drift exceeds what Tier 1 can handle alone
                                     if (isWgcCfrRecording &&
                                         !wgcEncoderOnlyOverload &&
+                                        !kWgcPreferVideoRepeatsOverAudioCuts &&
                                         ce::audio::ShouldActivateTier2Trim(trueDrift, SAMPLE_RATE,
                                                                            kTier2DriftThresholdMs) &&
                                         src.ringBuffer) {
