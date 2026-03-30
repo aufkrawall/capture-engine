@@ -186,8 +186,7 @@ inline bool ShouldPrioritizeWgcAudioLeadCatchup(double audioLeadExcessMs,
     return audioLeadExcessMs >= minAudioLeadMs;
 }
 
-inline bool IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(uint32_t outputFps,
-                                                                uint32_t recentDeliveredMin250Fps,
+inline bool IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
                                                                 uint32_t recentInputMin250Fps,
                                                                 uint32_t noFreshTickPermille) {
     if (outputFps == 0) {
@@ -308,14 +307,12 @@ inline bool HasWgcUnrecoverableCoverageLoss(double shortfallDurationMs, double o
 }
 
 inline bool ShouldSuppressWgcCoverageLossForEncoderBottleneck(bool encoderBottlenecked, uint32_t deliveredFps,
-                                                              uint32_t targetFps,
-                                                              uint32_t deliveryMarginFps = 2) {
+                                                              uint32_t targetFps, uint32_t deliveryMarginFps = 2) {
     if (!encoderBottlenecked || deliveredFps == 0 || targetFps == 0) {
         return false;
     }
 
-    const uint32_t healthyDeliveryFloor =
-        targetFps > deliveryMarginFps ? (targetFps - deliveryMarginFps) : targetFps;
+    const uint32_t healthyDeliveryFloor = targetFps > deliveryMarginFps ? (targetFps - deliveryMarginFps) : targetFps;
     return deliveredFps >= healthyDeliveryFloor;
 }
 

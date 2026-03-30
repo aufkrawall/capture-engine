@@ -718,11 +718,14 @@ LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARA
             if (overloadFlags != 0) {
                 ULONGLONG current = GetTickCount64();
                 // Update if it's newly overloaded, or if our timer is halfway expired, or FPS changed significantly
-                uint32_t currentFps = self->pSharedMem_->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
+                uint32_t currentFps =
+                    self->pSharedMem_->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
                 uint32_t lastFps = self->overloadWarnSustainFpsX100_.load(std::memory_order_relaxed);
-                bool fpsChanged = (currentFps > lastFps ? currentFps - lastFps : lastFps - currentFps) > 100; // 1 fps difference
-                
-                if (self->lastEncoderOverloadFlags_ == 0 || (current > self->overloadWarnUntil_.load() - 2500) || fpsChanged) {
+                bool fpsChanged =
+                    (currentFps > lastFps ? currentFps - lastFps : lastFps - currentFps) > 100;  // 1 fps difference
+
+                if (self->lastEncoderOverloadFlags_ == 0 || (current > self->overloadWarnUntil_.load() - 2500) ||
+                    fpsChanged) {
                     self->TriggerEncoderOverloadWarning(currentFps);
                 }
             }

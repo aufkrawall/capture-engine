@@ -125,8 +125,7 @@ inline WgcAudioLagTargets ComputeWgcAudioLagTargets(int64_t videoPipelineLagMs, 
     return targets;
 }
 
-inline int64_t ComputeWgcCfrDriftLagMs(const WgcAudioLagTargets& lagTargets,
-                                       bool preferVideoRepeatsOverAudioCuts,
+inline int64_t ComputeWgcCfrDriftLagMs(const WgcAudioLagTargets& lagTargets, bool preferVideoRepeatsOverAudioCuts,
                                        int64_t encoderShortfallBufferedLagMs = 0) {
     const int64_t baseDriftLagMs = std::max<int64_t>(0, lagTargets.driftLagMs);
     if (preferVideoRepeatsOverAudioCuts) {
@@ -143,8 +142,7 @@ inline int64_t ComputeWgcCfrTargetBufferLagMs(const WgcAudioLagTargets& lagTarge
     int64_t targetBufferLagMs = std::max<int64_t>(std::max<int64_t>(0, lagTargets.targetBufferLagMs),
                                                   std::max<int64_t>(0, steadyStateBufferedAudioLagMs));
     if (!preferVideoRepeatsOverAudioCuts) {
-        targetBufferLagMs = std::max<int64_t>(targetBufferLagMs,
-                                              std::max<int64_t>(0, encoderShortfallBufferedLagMs));
+        targetBufferLagMs = std::max<int64_t>(targetBufferLagMs, std::max<int64_t>(0, encoderShortfallBufferedLagMs));
     }
 
     return targetBufferLagMs;
@@ -195,16 +193,14 @@ inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint3
     return std::clamp<int64_t>(lagMs, 0, maxLagMs);
 }
 
-inline bool ShouldProtectWgcAudioContinuityDuringEncoderOverload(bool encoderBottlenecked,
-                                                                 bool coverageLossActive, uint32_t targetFps,
-                                                                 uint32_t deliveredFps,
+inline bool ShouldProtectWgcAudioContinuityDuringEncoderOverload(bool encoderBottlenecked, bool coverageLossActive,
+                                                                 uint32_t targetFps, uint32_t deliveredFps,
                                                                  uint32_t deliveryMarginFps = 4) {
     if (!encoderBottlenecked || coverageLossActive || targetFps == 0 || deliveredFps == 0) {
         return false;
     }
 
-    const uint32_t healthyDeliveryFloor =
-        targetFps > deliveryMarginFps ? (targetFps - deliveryMarginFps) : targetFps;
+    const uint32_t healthyDeliveryFloor = targetFps > deliveryMarginFps ? (targetFps - deliveryMarginFps) : targetFps;
     return deliveredFps >= healthyDeliveryFloor;
 }
 
@@ -318,13 +314,35 @@ inline int64_t ComputeTier2TrimBudget(int64_t trueDriftSamples, int sampleRate, 
                                       int64_t largeDriftThresholdMs = 100, int64_t maxTrimMs = 20) {
     if (sampleRate <= 0)
         return baseQuantumSamples;
+    const int64_t absDriftSamples = std::abs(trueDriftSamples);
     const int64_t largeThresholdSamples = (sampleRate * largeDriftThresholdMs) / 1000;
-    if (std::abs(trueDriftSamples) <= largeThresholdSamples) {
+    if (absDriftSamples <= largeThresholdSamples) {
         return baseQuantumSamples;
     }
-    const int64_t proportionalTrim = std::abs(trueDriftSamples) / 10;
-    const int64_t maxTrimSamples = (sampleRate * maxTrimMs) / 1000;
-    return std::clamp<int64_t>(proportionalTrim, baseQuantumSamples, maxTrimSamples);
+
+    // Scale tiered trim budget with drift magnitude for faster recovery:
+    //   >100ms drift: trim = |drift| / 10, capped at maxTrimMs (20ms by default)
+    //   >2s drift:    trim = |drift| / 5, capped at 200ms (4800 samples at 48kHz)
+    //   >10s drift:   trim = |drift| / 2, capped at 500ms (24000 samples at 48kHz)
+    // This prevents spending 500+ pull calls to recover from severe encoder stalls.
+    const int64_t severeThresholdSamples = static_cast<int64_t>(sampleRate) * 2;    // 2 seconds
+    const int64_t extremeThresholdSamples = static_cast<int64_t>(sampleRate) * 10;  // 10 seconds
+
+    int64_t proportionalTrim;
+    int64_t budgetCap;
+
+    if (absDriftSamples > extremeThresholdSamples) {
+        proportionalTrim = absDriftSamples / 2;
+        budgetCap = (sampleRate * 500) / 1000;  // 500ms
+    } else if (absDriftSamples > severeThresholdSamples) {
+        proportionalTrim = absDriftSamples / 5;
+        budgetCap = (sampleRate * 200) / 1000;  // 200ms
+    } else {
+        proportionalTrim = absDriftSamples / 10;
+        budgetCap = (sampleRate * maxTrimMs) / 1000;  // default max
+    }
+
+    return std::clamp<int64_t>(proportionalTrim, baseQuantumSamples, budgetCap);
 }
 
 inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSourcesPrimed) {

@@ -2280,12 +2280,10 @@ void VideoEncoder::PublishRuntimeState() {
     }
 
     pSharedMem->runtimeState.encoderOverloadFlags.store(flags, std::memory_order_relaxed);
-    const double sustainFps =
-        ce::capture_policy::GetEncoderSustainableOutputFps(static_cast<double>(std::max<int64_t>(lastEncodeTimeUs, 0)) /
-                                                           1000.0);
-    const uint32_t sustainFpsX100 = sustainFps > 0.0
-                                        ? static_cast<uint32_t>(std::clamp(sustainFps * 100.0, 0.0, 4294967295.0))
-                                        : 0u;
+    const double sustainFps = ce::capture_policy::GetEncoderSustainableOutputFps(
+        static_cast<double>(std::max<int64_t>(lastEncodeTimeUs, 0)) / 1000.0);
+    const uint32_t sustainFpsX100 =
+        sustainFps > 0.0 ? static_cast<uint32_t>(std::clamp(sustainFps * 100.0, 0.0, 4294967295.0)) : 0u;
     pSharedMem->runtimeState.encoderSustainFpsX100.store(sustainFpsX100, std::memory_order_relaxed);
 
     size_t qBytes = currentQueueBytes.load(std::memory_order_relaxed);
@@ -6383,12 +6381,12 @@ void VideoEncoder::AsyncWriteLoop() {
                         }
                         int64_t firstPtsUs = av_rescale_q(firstPts, st->time_base, AVRational{1, 1000000});
                         int64_t lastPtsUs = av_rescale_q(lastPts, st->time_base, AVRational{1, 1000000});
-                        DLL_Log("[PTS ALIGN] Stream %u (codec=%s): first=%lldus last=%lldus dur=%lldus tb=%d/%lld",
-                                s, st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO
+                        DLL_Log("[PTS ALIGN] Stream %u (codec=%s): first=%lldus last=%lldus dur=%lldus tb=%d/%lld", s,
+                                st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO
                                     ? "video"
                                     : (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ? "audio" : "unknown"),
-                                (long long)firstPtsUs, (long long)lastPtsUs, (long long)lastPtsUs,
-                                st->time_base.num, (long long)st->time_base.den);
+                                (long long)firstPtsUs, (long long)lastPtsUs, (long long)lastPtsUs, st->time_base.num,
+                                (long long)st->time_base.den);
                     }
                     ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
                     LogFinalDurationSummary(fmtCtx, finalDurationUs,

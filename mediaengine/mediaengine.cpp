@@ -100,12 +100,12 @@ public:
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
 
         // Rate-based drift correction state
-        int64_t prevLeadSamples = 0;     // Previous lead measurement for rate calculation
-        int64_t prevLeadSnapshotMs = 0;  // Timestamp of the snapshot for rate window
-        int64_t lastRateUpdateMs = 0;    // Timestamp of last rate correction update
-        int32_t currentRateDelta = 0;    // Current rate correction in samples/10s
-        int32_t targetRateDelta = 0;     // Requested rate correction before slew limiting
-        bool rateCompActive = false;     // Whether rate compensation is currently active
+        int64_t prevLeadSamples = 0;       // Previous lead measurement for rate calculation
+        int64_t prevLeadSnapshotMs = 0;    // Timestamp of the snapshot for rate window
+        int64_t lastRateUpdateMs = 0;      // Timestamp of last rate correction update
+        int32_t currentRateDelta = 0;      // Current rate correction in samples/10s
+        int32_t targetRateDelta = 0;       // Requested rate correction before slew limiting
+        bool rateCompActive = false;       // Whether rate compensation is currently active
         bool targetRateSaturated = false;  // Requested correction exceeded configured positive budget
 
         AudioConfig config;
@@ -868,8 +868,8 @@ public:
             const int64_t finalVideoMs = videoEnc->GetExpectedFinalDurationUs() / 1000;
             const int64_t wallMs = videoElapsedMs.load();
             const int64_t encodedMs = videoEnc->GetEncodedDurationUs() / 1000;
-            DLL_Log("[STOP SUMMARY] Video: duration=%lldms wall=%lldms encoded=%lldms pipelineLag=%lldms",
-                    finalVideoMs, wallMs, encodedMs, wallMs - encodedMs);
+            DLL_Log("[STOP SUMMARY] Video: duration=%lldms wall=%lldms encoded=%lldms pipelineLag=%lldms", finalVideoMs,
+                    wallMs, encodedMs, wallMs - encodedMs);
         }
         for (size_t i = 0; i < audioSources.size() && i < encodedSamplesPerSource.size(); i++) {
             auto& src = audioSources[i];
@@ -882,9 +882,8 @@ public:
                     "[STOP AUDIO] Source %zu: track=%d encoded=%llu trim=cov:%llu lat:%llu pad:%llu qgap:%llu "
                     "ringPeak=%zu ringUnderruns=%u",
                     i, src.track, (unsigned long long)encodedSamplesPerSource[i],
-                    (unsigned long long)src.coverageLossTrimSamples,
-                    (unsigned long long)src.latencyTrimSamples, (unsigned long long)src.underrunPadSamples,
-                    (unsigned long long)src.packetTimelineGapSamples,
+                    (unsigned long long)src.coverageLossTrimSamples, (unsigned long long)src.latencyTrimSamples,
+                    (unsigned long long)src.underrunPadSamples, (unsigned long long)src.packetTimelineGapSamples,
                     src.ringBufferPeakSamples, src.ringBufferUnderrunCount);
             }
         }
@@ -1212,9 +1211,9 @@ public:
         constexpr int64_t kBaseTargetLatencySamples = (kSteadyAudioPullLatencyMs * SAMPLE_RATE) / 1000;
         constexpr int64_t kMaxPipelineLagContributionMs = 10000;
         constexpr int64_t kWgcCoverageLossMaxBufferedLagMs = 300;
-        constexpr int64_t kRuntimeMaxLeadSamples = SAMPLE_RATE / 10;    // 100ms above target
-        constexpr int64_t kRuntimeMaxDropPerCall = SAMPLE_RATE / 200;   // 5ms
-        constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 100;  // 10ms
+        constexpr int64_t kRuntimeMaxLeadSamples = SAMPLE_RATE / 10;            // 100ms above target
+        constexpr int64_t kRuntimeMaxDropPerCall = SAMPLE_RATE / 200;           // 5ms
+        constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 100;          // 10ms
         constexpr int64_t kOverloadAudioPullQuantumSamples = SAMPLE_RATE / 50;  // 20ms
         constexpr int64_t kPacketTimelineFadeSamples = SAMPLE_RATE / 750;       // ~1.33ms
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
@@ -1259,7 +1258,7 @@ public:
             steadyElapsedUs =
                 std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
         }
-        const int64_t timelineShortfallMs = std::max<int64_t>(0, (steadyElapsedUs / 1000) - audioTargetMs);
+        int64_t timelineShortfallMs = std::max<int64_t>(0, (steadyElapsedUs / 1000) - audioTargetMs);
 
         const int64_t videoPipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
         const uint32_t configuredWgcOutputFps =
@@ -1317,8 +1316,8 @@ public:
         }
         const bool wgcEncoderOnlyOverload =
             isWgcCfrRecording && ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(
-                                      wgcEncoderBottlenecked, wgcCoverageLossActive, wgcRecordingCadenceFps,
-                                      effectiveDeliveredFpsForAudioContinuity, kWgcEncoderHealthyDeliveryMarginFps);
+                                     wgcEncoderBottlenecked, wgcCoverageLossActive, wgcRecordingCadenceFps,
+                                     effectiveDeliveredFpsForAudioContinuity, kWgcEncoderHealthyDeliveryMarginFps);
         int64_t wgcEncoderShortfallBufferedLagMs = 0;
         if (isWgcCfrRecording && wgcEncoderOnlyOverload && !kWgcPreferVideoRepeatsOverAudioCuts) {
             wgcEncoderShortfallBufferedLagMs =
@@ -1330,19 +1329,38 @@ public:
         // actual buffered-video lag rather than raw wall-clock encoder lag.
         const int64_t effectiveWgcDriftLagMs =
             isWgcCfrRecording
-                ? ce::audio::ComputeWgcCfrDriftLagMs(
-                      wgcAudioLagTargets, kWgcPreferVideoRepeatsOverAudioCuts, wgcEncoderShortfallBufferedLagMs)
+                ? ce::audio::ComputeWgcCfrDriftLagMs(wgcAudioLagTargets, kWgcPreferVideoRepeatsOverAudioCuts,
+                                                     wgcEncoderShortfallBufferedLagMs)
                 : videoPipelineLagMs + timelineShortfallMs;
         const int64_t effectiveWgcTargetBufferLagMs =
-            isWgcCfrRecording
-                ? ce::audio::ComputeWgcCfrTargetBufferLagMs(wgcAudioLagTargets, wgcSteadyStateBufferedAudioLagMs,
-                                                            kWgcPreferVideoRepeatsOverAudioCuts,
-                                                            wgcEncoderShortfallBufferedLagMs)
-                : videoPipelineLagMs + timelineShortfallMs;
+            isWgcCfrRecording ? ce::audio::ComputeWgcCfrTargetBufferLagMs(
+                                    wgcAudioLagTargets, wgcSteadyStateBufferedAudioLagMs,
+                                    kWgcPreferVideoRepeatsOverAudioCuts, wgcEncoderShortfallBufferedLagMs)
+                              : videoPipelineLagMs + timelineShortfallMs;
         const int64_t targetBufferedLagCapMs =
             isWgcCfrRecording ? std::max<int64_t>(kWgcCoverageLossMaxBufferedLagMs, effectiveWgcTargetBufferLagMs)
                               : kMaxPipelineLagContributionMs;
         uint32_t maxWgcAudioLeadExcessSamples = 0;
+
+        // Wall-clock audio anchor: when the encoder is severely stalled (>500ms pipeline lag),
+        // use wall-clock elapsed time as the audio pull target instead of the stalled video PTS.
+        // This keeps audio encoding progressing at real-time rate while video only advances on
+        // fresh encoder calls. The existing drift correction handles the resulting ring buffer
+        // depth. Without this, the audio pull would stall with the video encoder, causing the
+        // ring buffer to grow unbounded and audio-video desync at recording end.
+        if (!forceDrain && isWgcCfrRecording && videoPipelineLagMs > 500) {
+            const int64_t steadyElapsedMs = steadyElapsedUs / 1000;
+            if (steadyElapsedMs > audioTargetMs && steadyElapsedMs - audioTargetMs > 500) {
+                audioTargetMs = steadyElapsedMs;
+                timelineShortfallMs = 0;
+                if (dropLogCounter++ % 500 == 0) {
+                    DLL_Log(
+                        "[PullAudio] Using wall-clock audio anchor: videoPts=%lldms, wallClock=%lldms, "
+                        "pipelineLag=%lldms",
+                        videoTimelineMs, steadyElapsedMs, videoPipelineLagMs);
+                }
+            }
+        }
 
         if (encodedSamplesPerSource.size() != audioSources.size()) {
             encodedSamplesPerSource.resize(audioSources.size(), 0);
@@ -1654,23 +1672,20 @@ public:
                             const int64_t leadExcess = static_cast<int64_t>(rbAvailable) - expectedLeadSamplesForCap;
 
                             if (dropLogCounter++ % 500 == 0) {
-                                const bool targetCompensationSaturated =
-                                    src.targetRateSaturated;
+                                const bool targetCompensationSaturated = src.targetRateSaturated;
                                 const int32_t currentCompensationDelta = src.currentRateDelta;
                                 const int32_t targetCompensationDelta = src.targetRateDelta;
                                 const int32_t maxCompensationDelta = src.syncResampler->GetMaxCompensationDelta();
-                                const double currentCompensationPercent =
-                                    (double)currentCompensationDelta * 100.0 /
-                                    (static_cast<double>(SAMPLE_RATE) * 10.0);
+                                const double currentCompensationPercent = (double)currentCompensationDelta * 100.0 /
+                                                                          (static_cast<double>(SAMPLE_RATE) * 10.0);
                                 DLL_Log(
                                     "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
                                     "pipelineLag=%lldms, encBottleneck=%d). Tier1 drift correction active "
                                     "(corr=%d/%d per 10s target=%d, %.4f%%, sat=%d, maxBudget=%.2f%%)%s",
                                     (int)srcIdx, leadExcess, expectedLeadSamplesForCap, videoPipelineLagMs,
                                     wgcEncoderBottlenecked ? 1 : 0, currentCompensationDelta, maxCompensationDelta,
-                                    targetCompensationDelta,
-                                    currentCompensationPercent, targetCompensationSaturated ? 1 : 0,
-                                    maxCompensationPercent,
+                                    targetCompensationDelta, currentCompensationPercent,
+                                    targetCompensationSaturated ? 1 : 0, maxCompensationPercent,
                                     targetCompensationSaturated ? " - source clock mismatch exceeds tier1 budget" : "");
                             }
 
@@ -1735,7 +1750,8 @@ public:
                                 const uint64_t nowWarnTick = GetTickCount64();
                                 if (nowWarnTick - src.lastExtremeDriftWarnTick >= 1000) {
                                     DLL_Log(
-                                        "[PullAudio] WARNING: Extreme drift detected (%lld samples src=%d) - may indicate sync issue",
+                                        "[PullAudio] WARNING: Extreme drift detected (%lld samples src=%d) - may "
+                                        "indicate sync issue",
                                         trueDrift, (int)srcIdx);
                                     src.lastExtremeDriftWarnTick = nowWarnTick;
                                 }
@@ -1745,9 +1761,11 @@ public:
 
                             // Debug logging for drift calculation (periodic)
                             if (driftLogCounter++ % 2000 == 0) {
-                                DLL_Log("[PullAudio] Drift debug src=%d: syncOutput=%lld encoded=%lld nowVideo=%lld wallVideo=%lld trueDrift=%lld rbLevel=%lld",
-                                        (int)srcIdx, src.syncSamplesOutput, encodedSamplesPerSource[srcIdx],
-                                        nowVideoMs, wallVideoMs, trueDrift, rbLevel);
+                                DLL_Log(
+                                    "[PullAudio] Drift debug src=%d: syncOutput=%lld encoded=%lld nowVideo=%lld "
+                                    "wallVideo=%lld trueDrift=%lld rbLevel=%lld",
+                                    (int)srcIdx, src.syncSamplesOutput, encodedSamplesPerSource[srcIdx], nowVideoMs,
+                                    wallVideoMs, trueDrift, rbLevel);
                             }
 
                             if (src.lastRateUpdateMs <= 0) {
@@ -1784,8 +1802,8 @@ public:
                                                         positiveCompensationHysteresisSamples)) {
                                                     tier1Delta = 0;
                                                 } else {
-                                                    tier1Delta = static_cast<int32_t>(
-                                                        ce::audio::ClampWgcPositiveDriftCorrection(
+                                                    tier1Delta =
+                                                        static_cast<int32_t>(ce::audio::ClampWgcPositiveDriftCorrection(
                                                             tier1Delta, positiveCompensationHysteresisSamples));
                                                 }
                                             }
@@ -1816,17 +1834,19 @@ public:
                                     }
 
                                     // --- Tier 2: Ring buffer trim with crossfade ---
-                                    // Activates when drift exceeds what Tier 1 can handle alone
-                                    if (isWgcCfrRecording &&
-                                        !wgcEncoderOnlyOverload &&
-                                        !kWgcPreferVideoRepeatsOverAudioCuts &&
+                                    // Activates when drift exceeds what Tier 1 can handle alone.
+                                    // Normally suppressed in WGC CFR mode (prefer video repeats over
+                                    // audio cuts), but enabled when the wall-clock audio anchor is
+                                    // active (encoder severely stalled) to prevent unbounded drift.
+                                    const bool wallClockAnchorActive = isWgcCfrRecording && videoPipelineLagMs > 500;
+                                    if (isWgcCfrRecording && !wgcEncoderOnlyOverload &&
+                                        (!kWgcPreferVideoRepeatsOverAudioCuts || wallClockAnchorActive) &&
                                         ce::audio::ShouldActivateTier2Trim(trueDrift, SAMPLE_RATE,
                                                                            kTier2DriftThresholdMs) &&
                                         src.ringBuffer) {
                                         const int64_t tier2TrimBudget = ce::audio::ComputeTier2TrimBudget(
                                             trueDrift, SAMPLE_RATE, kRuntimeMaxDropPerCall);
-                                        const int64_t absDriftSamples = std::abs(trueDrift);
-                                        const int64_t tier2MaxTrim = std::min(absDriftSamples / 10, tier2TrimBudget);
+                                        const int64_t tier2MaxTrim = std::min(tier2TrimBudget, std::abs(trueDrift));
                                         if (tier2MaxTrim > 0 && static_cast<int64_t>(rbAvailable) >
                                                                     targetLatencySamples + kRuntimeDropFadeSamples) {
                                             if (src.postResampleBuffer.size() >= CHANNELS) {
@@ -1855,9 +1875,8 @@ public:
                                     }
 
                                     if (driftLogCounter++ % 500 == 0) {
-                                        const double compensationPercent =
-                                            (double)src.currentRateDelta * 100.0 /
-                                            (static_cast<double>(SAMPLE_RATE) * 10.0);
+                                        const double compensationPercent = (double)src.currentRateDelta * 100.0 /
+                                                                           (static_cast<double>(SAMPLE_RATE) * 10.0);
                                         DLL_Log(
                                             "[PullAudio] Src %zu drift: "
                                             "trueDrift=%lld "
@@ -1876,6 +1895,46 @@ public:
 
                                     src.lastRateUpdateMs = nowVideoMs;
                                 }
+                            }
+                        }
+                    }
+
+                    // Overflow protection: unconditionally cap ring buffer depth to prevent
+                    // unbounded growth when the encoder is severely stalled.  The existing
+                    // lead-excess and Tier2 trims are gated on encoder-bottleneck/coverage-loss
+                    // conditions and are capped at 5ms/call, so they cannot keep up when the
+                    // ring buffer grows to 10+ seconds.  This overflow cap discards excess
+                    // samples with a crossfade whenever the buffer exceeds
+                    // targetLatency + kMaxOverflowSamples (500ms).
+                    if (src.ringBuffer) {
+                        constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;  // 500ms max overflow
+                        rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
+                        const int64_t overflowExcess =
+                            static_cast<int64_t>(rbAvailable) - targetLatencySamples - kMaxOverflowSamples;
+                        if (overflowExcess > kRuntimeDropFadeSamples) {
+                            if (src.postResampleBuffer.size() >= CHANNELS) {
+                                size_t base = src.postResampleBuffer.size() - CHANNELS;
+                                src.dropFadeStartL = src.postResampleBuffer[base];
+                                src.dropFadeStartR = src.postResampleBuffer[base + 1];
+                            } else {
+                                src.dropFadeStartL = 0.0f;
+                                src.dropFadeStartR = 0.0f;
+                            }
+                            src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
+
+                            size_t trimmedFloats = src.ringBuffer->Skip((size_t)overflowExcess * CHANNELS);
+                            size_t trimmedSamples = trimmedFloats / CHANNELS;
+                            ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples, trimmedSamples);
+                            src.latencyTrimSamples += trimmedSamples;
+                            src.pendingLatencyTrimSamples += trimmedSamples;
+                            src.pendingLatencyTrimEvents++;
+                            rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
+                            if (dropLogCounter++ % 500 == 0) {
+                                DLL_Log(
+                                    "[PullAudio] Ring buffer overflow protection: src %d trimmed %lld samples "
+                                    "(rb was %lld samples, target %lld, overflow cap %lld)",
+                                    (int)srcIdx, (long long)trimmedSamples, (long long)(rbAvailable + trimmedSamples),
+                                    (long long)targetLatencySamples, (long long)kMaxOverflowSamples);
                             }
                         }
                     }
@@ -1940,18 +1999,21 @@ public:
                                     src.dropFadeSamplesRemaining -= blendSamples;
                                 }
                                 if (src.packetBoundaryFadeOutSamplesRemaining > 0) {
-                                    const int blendSamples = std::min(src.packetBoundaryFadeOutSamplesRemaining, outSamples);
+                                    const int blendSamples =
+                                        std::min(src.packetBoundaryFadeOutSamplesRemaining, outSamples);
                                     for (int s = 0; s < blendSamples; ++s) {
-                                        const float alpha = 1.0f - ComputeRaisedCosineFade(
-                                                                       static_cast<size_t>(s),
-                                                                       static_cast<size_t>(src.packetBoundaryFadeOutSamplesRemaining));
+                                        const float alpha =
+                                            1.0f - ComputeRaisedCosineFade(
+                                                       static_cast<size_t>(s),
+                                                       static_cast<size_t>(src.packetBoundaryFadeOutSamplesRemaining));
                                         outFloats[s * CHANNELS] *= alpha;
                                         outFloats[s * CHANNELS + 1] *= alpha;
                                     }
                                     src.packetBoundaryFadeOutSamplesRemaining -= blendSamples;
                                 }
                                 if (src.packetBoundaryFadeInSamplesRemaining > 0) {
-                                    const int blendSamples = std::min(src.packetBoundaryFadeInSamplesRemaining, outSamples);
+                                    const int blendSamples =
+                                        std::min(src.packetBoundaryFadeInSamplesRemaining, outSamples);
                                     for (int s = 0; s < blendSamples; ++s) {
                                         const float alpha = ComputeRaisedCosineFade(
                                             static_cast<size_t>(s),
@@ -1982,10 +2044,15 @@ public:
                                 src.syncSamplesOutput += outSamples;
 
                                 // Log sample trim stats periodically
-                                if (dropLogCounter++ % 500 == 0 && (src.overflowDropSamples > 0 || src.latencyTrimSamples > 0 || src.postResampleTrimSamples > 0)) {
-                                    DLL_Log("[PullAudio] Sample trim stats src=%d: overflowDropped=%llu latencyTrimmed=%llu postResampleTrimmed=%llu",
-                                            (int)srcIdx, (unsigned long long)src.overflowDropSamples,
-                                            (unsigned long long)src.latencyTrimSamples, (unsigned long long)src.postResampleTrimSamples);
+                                if (dropLogCounter++ % 500 == 0 &&
+                                    (src.overflowDropSamples > 0 || src.latencyTrimSamples > 0 ||
+                                     src.postResampleTrimSamples > 0)) {
+                                    DLL_Log(
+                                        "[PullAudio] Sample trim stats src=%d: overflowDropped=%llu "
+                                        "latencyTrimmed=%llu postResampleTrimmed=%llu",
+                                        (int)srcIdx, (unsigned long long)src.overflowDropSamples,
+                                        (unsigned long long)src.latencyTrimSamples,
+                                        (unsigned long long)src.postResampleTrimSamples);
                                 }
                             }
                         }
@@ -2288,18 +2355,18 @@ public:
                     packetOverlapTrimmed += srcPacketOverlapTrimmed;
 
                     char sourceState[352];
-                    std::snprintf(sourceState, sizeof(sourceState),
-                                  "src%zu(rb=%zu sync=%lld start=%lld primed=%d boot=%d synth=%llu/%llu/%llu ovf=%llu "
-                                  "rtrim=%llu lat=%llu t2=%llu cov=%llu boottrim=%llu post=%llu pad=%llu qgap=%llu qov=%llu)",
-                                  srcIdx, rbLevel, syncOutput, alignedStartMs, (int)srcPrimed, (int)srcBootstrapped,
-                                  (unsigned long long)srcSyntheticRing, (unsigned long long)srcSyntheticInflight,
-                                  (unsigned long long)srcSyntheticPost, (unsigned long long)srcOverflowDropped,
-                                  (unsigned long long)srcRetainedTrimmed, (unsigned long long)srcLatencyTrimmed,
-                                  (unsigned long long)srcTier2Trimmed, (unsigned long long)srcCoverageLossTrimmed,
-                                  (unsigned long long)srcBootstrapTrimmed, (unsigned long long)srcPostTrimmed,
-                                  (unsigned long long)srcUnderrunPadded,
-                                  (unsigned long long)srcPacketGapAdjusted,
-                                  (unsigned long long)srcPacketOverlapTrimmed);
+                    std::snprintf(
+                        sourceState, sizeof(sourceState),
+                        "src%zu(rb=%zu sync=%lld start=%lld primed=%d boot=%d synth=%llu/%llu/%llu ovf=%llu "
+                        "rtrim=%llu lat=%llu t2=%llu cov=%llu boottrim=%llu post=%llu pad=%llu qgap=%llu qov=%llu)",
+                        srcIdx, rbLevel, syncOutput, alignedStartMs, (int)srcPrimed, (int)srcBootstrapped,
+                        (unsigned long long)srcSyntheticRing, (unsigned long long)srcSyntheticInflight,
+                        (unsigned long long)srcSyntheticPost, (unsigned long long)srcOverflowDropped,
+                        (unsigned long long)srcRetainedTrimmed, (unsigned long long)srcLatencyTrimmed,
+                        (unsigned long long)srcTier2Trimmed, (unsigned long long)srcCoverageLossTrimmed,
+                        (unsigned long long)srcBootstrapTrimmed, (unsigned long long)srcPostTrimmed,
+                        (unsigned long long)srcUnderrunPadded, (unsigned long long)srcPacketGapAdjusted,
+                        (unsigned long long)srcPacketOverlapTrimmed);
                     if (!sourceSummary.empty()) {
                         sourceSummary += "; ";
                     }
@@ -2813,14 +2880,16 @@ private:
                                         const size_t overlapSamples = static_cast<size_t>(std::min<int64_t>(
                                             timelineAdjustment.overlapSamples, static_cast<int64_t>(writeSamples)));
                                         if (overlapSamples > 0 && writeSamples > overlapSamples) {
-                                            const size_t totalFloats = writeSamples * static_cast<size_t>(targetFmt.channels);
-                                            const size_t overlapFloats = overlapSamples * static_cast<size_t>(targetFmt.channels);
+                                            const size_t totalFloats =
+                                                writeSamples * static_cast<size_t>(targetFmt.channels);
+                                            const size_t overlapFloats =
+                                                overlapSamples * static_cast<size_t>(targetFmt.channels);
                                             const size_t remainingFloats = totalFloats - overlapFloats;
                                             const size_t fadeFloats =
-                                                std::min(remainingFloats,
-                                                         packetTimelineFadeSamples * static_cast<size_t>(targetFmt.channels));
-                                            src.packetBoundaryFadeOutTail.assign(writeFloats + overlapFloats,
-                                                                                 writeFloats + overlapFloats + fadeFloats);
+                                                std::min(remainingFloats, packetTimelineFadeSamples *
+                                                                              static_cast<size_t>(targetFmt.channels));
+                                            src.packetBoundaryFadeOutTail.assign(
+                                                writeFloats + overlapFloats, writeFloats + overlapFloats + fadeFloats);
                                             ApplyPacketBoundaryFadeOut(src.packetBoundaryFadeOutTail,
                                                                        static_cast<size_t>(targetFmt.channels),
                                                                        packetTimelineFadeSamples);
@@ -2868,7 +2937,8 @@ private:
                                         ApplyPacketBoundaryFadeIn(writeFloats, writeSamples,
                                                                   static_cast<size_t>(targetFmt.channels), fadeSamples);
                                         src.packetBoundaryFadeInSamplesRemaining =
-                                            fadeSamples > writeSamples ? static_cast<int>(fadeSamples - writeSamples) : 0;
+                                            fadeSamples > writeSamples ? static_cast<int>(fadeSamples - writeSamples)
+                                                                       : 0;
                                     }
                                     // WriteRetainNew: atomically drops oldest audio to make room,
                                     // then writes new audio. No race between GetFree/Skip/Write.

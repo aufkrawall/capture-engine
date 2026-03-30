@@ -1881,9 +1881,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             } else if (activeScreenGrab) {
                 catchupTicksThisLoop = ce::capture_policy::GetWgcCatchupTicksThisLoop(
                     encoderCatchupBottleneckedCurrent, encoderTooSlowForTargetCurrent, bufferedWgcFrames.size(),
-                    frameCreditAccumulator, outputShortfallTicks, targetOutputFpsForPolicy,
-                    wgcRecentDeliveredMin250Fps, wgcRecentInputMin250Fps, wgcNoFreshTickPermille,
-                    wgcLowSourceModeActive, wgcAudioLeadExcessMsCurrent);
+                    frameCreditAccumulator, outputShortfallTicks, targetOutputFpsForPolicy, wgcRecentDeliveredMin250Fps,
+                    wgcRecentInputMin250Fps, wgcNoFreshTickPermille, wgcLowSourceModeActive,
+                    wgcAudioLeadExcessMsCurrent);
             } else {
                 catchupTicksThisLoop = ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks,
                                                                                       encoderTooSlowForTargetCurrent);
@@ -2212,6 +2212,23 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
             }
 
+            // Frame age limit: when the encoder is severely behind, reject frames that are
+            // too old.  This prevents encoding ancient content (e.g., 17 seconds old) that
+            // doesn't match the intended output position. Instead, we emit a duplicate frame
+            // which "stutters honestly" while the encoder recovers.
+            constexpr int64_t kMaxFrameAgeMs = 1000;  // 1 second maximum frame age
+            if (encoderTooSlowForTargetCurrent && effectiveSelectionTargetQpc > 0 && qpcFreq.QuadPart > 0) {
+                const int64_t frameAgeTicks = effectiveSelectionTargetQpc - candidateSelectionTimestamp;
+                const int64_t frameAgeMs = (frameAgeTicks * 1000) / qpcFreq.QuadPart;
+                if (frameAgeMs > kMaxFrameAgeMs) {
+                    ++wgcFreshSelectionMissCount;
+                    if (repeatedBecauseNoFrameCoverage) {
+                        *repeatedBecauseNoFrameCoverage = true;
+                    }
+                    return false;
+                }
+            }
+
             for (size_t i = 0; i < selectedIndex; ++i) {
                 QueuedFrame obsolete = std::move(bufferedWgcFrames.front());
                 bufferedWgcFrames.pop_front();
@@ -2409,7 +2426,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcLowSourceModeActive = false;
                         wgcLowSourceStateChangeTick = 0;
                         LogInfo(
-                            "[WGC CFR] Low-source mode exited immediately: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                            "[WGC CFR] Low-source mode exited immediately: src=%u/%u/%u input=%u/%u empty=%upm "
+                            "buffered=%zu",
                             wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
                             wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
                             bufferedWgcFrames.size());
@@ -2510,8 +2528,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     adaptiveTelemetry.bufferedWgcFrames = queueDepth;
                     adaptiveTelemetry.duplicateRatio = duplicateRatio;
                     const bool adaptiveHeadroomAllowed = ce::capture_policy::ShouldAllowWgcAdaptiveHeadroom(
-                        adaptiveTelemetry, wgcNoFreshTickPermille, wgcLowSourceModeActive,
-                        wgcLiveRecoveryModeActive);
+                        adaptiveTelemetry, wgcNoFreshTickPermille, wgcLowSourceModeActive, wgcLiveRecoveryModeActive);
                     const bool sustainedPressure =
                         g_IsEncoderBottlenecked.load(std::memory_order_relaxed) || queueDepth >= 8u ||
                         poolDropCount > 0 ||
@@ -2522,8 +2539,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                 ce::capture_policy::IsEncoderTooSlowForTargetFps(
                                                     smoothedEncodeMs, frameIntervalMs, outputFps, 2.0);
 
-                    const bool encoderShortfallPressure =
-                        encoderTooSlowForTargetCurrent && outputShortfallTicks > 0;
+                    const bool encoderShortfallPressure = encoderTooSlowForTargetCurrent && outputShortfallTicks > 0;
                     if (encoderShortfallPressure) {
                         desiredTargetFps =
                             std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.05)));
@@ -2564,13 +2580,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         constexpr uint64_t kWgcAdaptiveThrottleRetuneHoldMs = 180;
                         const uint64_t requiredHoldMs =
                             encoderShortfallPressure ? kWgcAdaptiveThrottleEncoderPressureHoldMs
-                            : currentTargetFps == 0
-                                ? kWgcAdaptiveThrottleEnterHoldMs
-                                : (desiredTargetFps == 0 ? kWgcAdaptiveThrottleExitHoldMs
-                                                         : kWgcAdaptiveThrottleRetuneHoldMs);
-                        const bool holdElapsed = wgcAdaptiveThrottlePendingSinceTick > 0 &&
-                                                 (wgcPolicyNowTick - wgcAdaptiveThrottlePendingSinceTick) >=
-                                                     requiredHoldMs;
+                            : currentTargetFps == 0  ? kWgcAdaptiveThrottleEnterHoldMs
+                                                     : (desiredTargetFps == 0 ? kWgcAdaptiveThrottleExitHoldMs
+                                                                              : kWgcAdaptiveThrottleRetuneHoldMs);
+                        const bool holdElapsed =
+                            wgcAdaptiveThrottlePendingSinceTick > 0 &&
+                            (wgcPolicyNowTick - wgcAdaptiveThrottlePendingSinceTick) >= requiredHoldMs;
                         if (holdElapsed) {
                             g_WgcCap->SetTargetFps(desiredTargetFps);
                             g_WgcAdaptiveTargetFps.store(desiredTargetFps, std::memory_order_relaxed);
