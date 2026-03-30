@@ -121,6 +121,31 @@ inline WgcAudioLagTargets ComputeWgcAudioLagTargets(int64_t videoPipelineLagMs, 
     return targets;
 }
 
+inline int64_t ComputeWgcCfrDriftLagMs(const WgcAudioLagTargets& lagTargets,
+                                       bool preferVideoRepeatsOverAudioCuts,
+                                       int64_t encoderShortfallBufferedLagMs = 0) {
+    const int64_t baseDriftLagMs = std::max<int64_t>(0, lagTargets.driftLagMs);
+    if (preferVideoRepeatsOverAudioCuts) {
+        return baseDriftLagMs;
+    }
+
+    return baseDriftLagMs + std::max<int64_t>(0, encoderShortfallBufferedLagMs);
+}
+
+inline int64_t ComputeWgcCfrTargetBufferLagMs(const WgcAudioLagTargets& lagTargets,
+                                              int64_t steadyStateBufferedAudioLagMs,
+                                              bool preferVideoRepeatsOverAudioCuts,
+                                              int64_t encoderShortfallBufferedLagMs = 0) {
+    int64_t targetBufferLagMs = std::max<int64_t>(std::max<int64_t>(0, lagTargets.targetBufferLagMs),
+                                                  std::max<int64_t>(0, steadyStateBufferedAudioLagMs));
+    if (!preferVideoRepeatsOverAudioCuts) {
+        targetBufferLagMs = std::max<int64_t>(targetBufferLagMs,
+                                              std::max<int64_t>(0, encoderShortfallBufferedLagMs));
+    }
+
+    return targetBufferLagMs;
+}
+
 inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint32_t deliveredFps,
                                                        uint32_t deliveredMin250Fps, uint32_t deliveredMin500Fps,
                                                        bool encoderBottlenecked, uint32_t queueEmptyTickPermille,

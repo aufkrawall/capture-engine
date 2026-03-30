@@ -1126,7 +1126,7 @@ public:
             }
         }
 
-        if (screengrabFrameLogCount++ % 60 == 0) {
+        if (screengrabFrameLogCount++ % 600 == 0) {
             DLL_Log("MediaEngine: ScreenGrab frame ts=%lld %dx%d", debugTimestamp, width, height);
         }
 
@@ -1252,27 +1252,28 @@ public:
             isWgcCfrRecording && ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(
                                       wgcEncoderBottlenecked, wgcCoverageLossActive, wgcTargetFps,
                                       effectiveDeliveredFpsForAudioContinuity, kWgcEncoderHealthyDeliveryMarginFps);
-        const int64_t wgcEncoderShortfallBufferedLagMs =
-            wgcEncoderOnlyOverload
-                ? std::clamp<int64_t>(timelineShortfallMs, 0, kWgcEncoderShortfallBufferedLagMaxMs)
-                : 0;
+        int64_t wgcEncoderShortfallBufferedLagMs = 0;
+        if (isWgcCfrRecording && wgcEncoderOnlyOverload && !kWgcPreferVideoRepeatsOverAudioCuts) {
+            wgcEncoderShortfallBufferedLagMs =
+                std::clamp<int64_t>(timelineShortfallMs, 0, kWgcEncoderShortfallBufferedLagMaxMs);
+        }
+
+        // In WGC CFR mode the scheduled audio timeline is authoritative. When repeated
+        // video frames are the preferred recovery mechanism, keep audio targets tied to
+        // actual buffered-video lag rather than raw wall-clock encoder lag.
         const int64_t effectiveWgcDriftLagMs =
-            (isWgcCfrRecording
-                 ? (kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs : wgcAudioLagTargets.driftLagMs)
-                 : videoPipelineLagMs) +
-            (isWgcCfrRecording ? wgcEncoderShortfallBufferedLagMs : timelineShortfallMs);
+            isWgcCfrRecording
+                ? ce::audio::ComputeWgcCfrDriftLagMs(
+                      wgcAudioLagTargets, kWgcPreferVideoRepeatsOverAudioCuts, wgcEncoderShortfallBufferedLagMs)
+                : videoPipelineLagMs + timelineShortfallMs;
         const int64_t effectiveWgcTargetBufferLagMs =
-            (isWgcCfrRecording
-                 ? std::max<int64_t>(
-                       std::max<int64_t>(
-                           kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs
-                                                               : wgcAudioLagTargets.targetBufferLagMs,
-                           wgcSteadyStateBufferedAudioLagMs),
-                       wgcEncoderShortfallBufferedLagMs)
-                 : videoPipelineLagMs) +
-            (isWgcCfrRecording ? 0 : timelineShortfallMs);
+            isWgcCfrRecording
+                ? ce::audio::ComputeWgcCfrTargetBufferLagMs(wgcAudioLagTargets, wgcSteadyStateBufferedAudioLagMs,
+                                                            kWgcPreferVideoRepeatsOverAudioCuts,
+                                                            wgcEncoderShortfallBufferedLagMs)
+                : videoPipelineLagMs + timelineShortfallMs;
         const int64_t targetBufferedLagCapMs =
-            isWgcCfrRecording ? std::max<int64_t>(kMaxPipelineLagContributionMs, effectiveWgcTargetBufferLagMs)
+            isWgcCfrRecording ? std::max<int64_t>(kWgcCoverageLossMaxBufferedLagMs, effectiveWgcTargetBufferLagMs)
                               : kMaxPipelineLagContributionMs;
         uint32_t maxWgcAudioLeadExcessSamples = 0;
 
@@ -1669,7 +1670,7 @@ public:
                             const int64_t nowVideoMs = (encodedSamplesPerSource[srcIdx] * 1000) / SAMPLE_RATE;
 
                             // Debug logging for drift calculation (periodic)
-                            if (driftLogCounter++ % 500 == 0) {
+                            if (driftLogCounter++ % 2000 == 0) {
                                 DLL_Log("[PullAudio] Drift debug src=%d: syncOutput=%lld encoded=%lld nowVideo=%lld wallVideo=%lld trueDrift=%lld rbLevel=%lld",
                                         (int)srcIdx, src.syncSamplesOutput, encodedSamplesPerSource[srcIdx],
                                         nowVideoMs, wallVideoMs, trueDrift, rbLevel);
@@ -1778,7 +1779,7 @@ public:
                                         }
                                     }
 
-                                    if (driftLogCounter++ % 10 == 0) {
+                                    if (driftLogCounter++ % 500 == 0) {
                                         const double compensationPercent =
                                             (double)src.currentRateDelta * 100.0 /
                                             (static_cast<double>(SAMPLE_RATE) * 10.0);
@@ -2091,7 +2092,7 @@ public:
                                        true,  // float32
                                        audioChunkTimestampMs);
 
-                if (srcIndices.size() > 1 && mixLogCounter++ % 500 == 0) {
+                if (srcIndices.size() > 1 && mixLogCounter++ % 5000 == 0) {
                     DLL_Log("[PullAudio] Mixed %d sources for track %d (%lld samples)", activeSources, track,
                             samplesToEncode);
                 }

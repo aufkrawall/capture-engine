@@ -89,6 +89,21 @@ TEST(AudioSyncUtilsTest, WgcCoverageAudioLagTargetsKeepDriftAndBufferLagSeparate
     EXPECT_EQ(coverage.targetBufferLagMs, 300);
 }
 
+TEST(AudioSyncUtilsTest, WgcCfrLagSelectionPrefersBufferedVideoLagWhenRepeatingVideo) {
+    const ce::audio::WgcAudioLagTargets coverageLagTargets{17, 300};
+    EXPECT_EQ(ce::audio::ComputeWgcCfrDriftLagMs(coverageLagTargets, true, 4000), 17);
+    EXPECT_EQ(ce::audio::ComputeWgcCfrTargetBufferLagMs(coverageLagTargets, 80, true, 4000), 300);
+
+    const ce::audio::WgcAudioLagTargets steadyLagTargets{12, 12};
+    EXPECT_EQ(ce::audio::ComputeWgcCfrTargetBufferLagMs(steadyLagTargets, 80, true, 4000), 80);
+}
+
+TEST(AudioSyncUtilsTest, WgcCfrLagSelectionCanStillUseEncoderShortfallWhenAudioCutsPreferred) {
+    const ce::audio::WgcAudioLagTargets lagTargets{12, 24};
+    EXPECT_EQ(ce::audio::ComputeWgcCfrDriftLagMs(lagTargets, false, 4000), 4012);
+    EXPECT_EQ(ce::audio::ComputeWgcCfrTargetBufferLagMs(lagTargets, 80, false, 4000), 4000);
+}
+
 TEST(AudioSyncUtilsTest, WgcSteadyStateBufferedAudioLagAddsBoundedCushionForDegradedDelivery) {
     EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(0, 0, 0, 0, false, 0, 0, 0), 0);
     EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 120, 120, 120, false, 0, 2, 0), 0);

@@ -3491,7 +3491,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             pkt->stream_index = stream->index;
 
             // Debug: Log output packet PTS
-            if (encodeFrameCounter < 30 || encodeFrameCounter % 100 == 0) {
+            if (encodeFrameCounter < 30 || encodeFrameCounter % 1000 == 0) {
                 DLL_Log(
                     "[Framegrab DEBUG] Received pkt: pts=%lld dts=%lld "
                     "size=%d "
@@ -3542,7 +3542,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     d3d11Frame->pts = targetPts;
 
     // Debug: Log input frame PTS
-    if (encodeFrameCounter < 20 || encodeFrameCounter % 100 == 0) {
+    if (encodeFrameCounter < 20 || encodeFrameCounter % 1000 == 0) {
         DLL_Log("[Framegrab DEBUG] Sending frame %d with input PTS=%lld", encodeFrameCounter, d3d11Frame->pts);
     }
 
@@ -3570,14 +3570,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     av_packet_free(&pkt);
 
-    // Log individual slow frames for debugging.  Flag frames that exceed
-    // the tick budget (>expectedFrameMs) as spikes, and frames that exceed
-    // 2× the budget as SLOW for additional diagnostics.
-    if (totalMs > expectedFrameMs) {
-        // Compute total output bytes for this frame
-        int64_t totalBytes = 0;
-        // packetCount already represents the number of packets produced
-        std::string severity = (totalMs > expectedFrameMs * 2.0) ? "SLOW!" : "SPIKE";
+    // Log only severe slow frames individually. The per-second summary below captures
+    // steady-state encode timing without flooding the log with routine single-frame spikes.
+    if (totalMs > expectedFrameMs * 2.0) {
         std::string features = "";
         if (savedConfig.lookahead)
             features += "Lookahead ";
@@ -3591,7 +3586,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         DLL_Log(
             "[Framegrab PERF] Frame %d: total=%.2fms (%s) convert=%.2f "
             "encode=%.2f packets=%d [Features: %s]",
-            encodeFrameCounter, totalMs, severity.c_str(), convertMs, encodeMs, packetCount, features.c_str());
+            encodeFrameCounter, totalMs, "SLOW!", convertMs, encodeMs, packetCount, features.c_str());
     }
 
     // Log periodic stats (about once per second at the configured FPS)
