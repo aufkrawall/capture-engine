@@ -64,6 +64,7 @@ public:
         uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
         uint64_t retainedNewestTrimSamples = 0;         // Oldest samples discarded by ring headroom retention
         uint64_t latencyTrimSamples = 0;                // Oldest samples trimmed to keep latency bounded
+        uint64_t tier2TrimSamples = 0;                  // Latency trims specifically caused by tier2 drift correction
         uint64_t bootstrapTrimSamples = 0;              // Oldest startup samples trimmed before the track goes live
         uint64_t postResampleTrimSamples = 0;           // Samples discarded from post-resample backlog cap
         uint64_t underrunPadSamples = 0;                // Silence-padded samples due to source underrun
@@ -85,6 +86,8 @@ public:
         uint32_t pendingRetainedTrimEvents = 0;     // Aggregated ring-headroom trim events since the last periodic log
         uint64_t pendingLatencyTrimSamples = 0;     // Aggregated trim samples since the last periodic log
         uint32_t pendingLatencyTrimEvents = 0;      // Aggregated trim events since the last periodic log
+        uint64_t pendingTier2TrimSamples = 0;       // Aggregated tier2 drift trims since the last periodic log
+        uint32_t pendingTier2TrimEvents = 0;        // Aggregated tier2 drift trim events since the last periodic log
         uint64_t pendingCoverageLossTrimSamples = 0;  // Aggregated coverage-loss trims since the last periodic log
         uint32_t pendingCoverageLossTrimEvents = 0;   // Aggregated coverage-loss trim events since the last log
         uint64_t lastRetainedTrimWarnTick = 0;        // Rate-limit explicit retained-audio warnings
@@ -96,7 +99,9 @@ public:
         int64_t prevLeadSnapshotMs = 0;  // Timestamp of the snapshot for rate window
         int64_t lastRateUpdateMs = 0;    // Timestamp of last rate correction update
         int32_t currentRateDelta = 0;    // Current rate correction in samples/10s
+        int32_t targetRateDelta = 0;     // Requested rate correction before slew limiting
         bool rateCompActive = false;     // Whether rate compensation is currently active
+        bool targetRateSaturated = false;  // Requested correction exceeded configured positive budget
 
         AudioConfig config;
         int track = 0;  // Target track number
@@ -255,6 +260,7 @@ public:
             src.overflowDropSamples = 0;
             src.retainedNewestTrimSamples = 0;
             src.latencyTrimSamples = 0;
+            src.tier2TrimSamples = 0;
             src.bootstrapTrimSamples = 0;
             src.postResampleTrimSamples = 0;
             src.underrunPadSamples = 0;
@@ -275,6 +281,8 @@ public:
             src.pendingRetainedTrimEvents = 0;
             src.pendingLatencyTrimSamples = 0;
             src.pendingLatencyTrimEvents = 0;
+            src.pendingTier2TrimSamples = 0;
+            src.pendingTier2TrimEvents = 0;
             src.pendingCoverageLossTrimSamples = 0;
             src.pendingCoverageLossTrimEvents = 0;
             src.lastRetainedTrimWarnTick = 0;
@@ -284,7 +292,9 @@ public:
             src.prevLeadSnapshotMs = 0;
             src.lastRateUpdateMs = 0;
             src.currentRateDelta = 0;
+            src.targetRateDelta = 0;
             src.rateCompActive = false;
+            src.targetRateSaturated = false;
         }
         audioSyncPending.store(false);
     }
@@ -623,6 +633,7 @@ public:
                 src.overflowDropSamples = 0;
                 src.retainedNewestTrimSamples = 0;
                 src.latencyTrimSamples = 0;
+                src.tier2TrimSamples = 0;
                 src.bootstrapTrimSamples = 0;
                 src.postResampleTrimSamples = 0;
                 src.underrunPadSamples = 0;
@@ -643,6 +654,8 @@ public:
                 src.pendingRetainedTrimEvents = 0;
                 src.pendingLatencyTrimSamples = 0;
                 src.pendingLatencyTrimEvents = 0;
+                src.pendingTier2TrimSamples = 0;
+                src.pendingTier2TrimEvents = 0;
                 src.pendingCoverageLossTrimSamples = 0;
                 src.pendingCoverageLossTrimEvents = 0;
                 src.lastRetainedTrimWarnTick = 0;
@@ -652,7 +665,9 @@ public:
                 src.prevLeadSnapshotMs = 0;
                 src.lastRateUpdateMs = 0;
                 src.currentRateDelta = 0;
+                src.targetRateDelta = 0;
                 src.rateCompActive = false;
+                src.targetRateSaturated = false;
             }
 
             // Start all audio sources
@@ -847,6 +862,7 @@ public:
             src.overflowDropSamples = 0;
             src.retainedNewestTrimSamples = 0;
             src.latencyTrimSamples = 0;
+            src.tier2TrimSamples = 0;
             src.bootstrapTrimSamples = 0;
             src.postResampleTrimSamples = 0;
             src.underrunPadSamples = 0;
@@ -867,6 +883,8 @@ public:
             src.pendingRetainedTrimEvents = 0;
             src.pendingLatencyTrimSamples = 0;
             src.pendingLatencyTrimEvents = 0;
+            src.pendingTier2TrimSamples = 0;
+            src.pendingTier2TrimEvents = 0;
             src.pendingCoverageLossTrimSamples = 0;
             src.pendingCoverageLossTrimEvents = 0;
             src.lastRetainedTrimWarnTick = 0;
@@ -876,7 +894,9 @@ public:
             src.prevLeadSnapshotMs = 0;
             src.lastRateUpdateMs = 0;
             src.currentRateDelta = 0;
+            src.targetRateDelta = 0;
             src.rateCompActive = false;
+            src.targetRateSaturated = false;
         }
 
         // Reset video frame tracking for next recording
@@ -1141,6 +1161,8 @@ public:
         constexpr double kDefaultMaxCompensationPercent = 1.0;
         constexpr double kTier1MaxPitchPercent = 0.5;  // 0.5% covers ~2400 samples/10s at 48kHz
         constexpr int64_t kTier2DriftThresholdMs = 20;
+        constexpr int64_t kWgcEncoderShortfallBufferedLagMaxMs = 4000;
+        constexpr uint32_t kWgcEncoderHealthyDeliveryMarginFps = 4;
         constexpr int64_t kWgcCoverageLossLeadSlackSamples = SAMPLE_RATE / 25;  // 40ms above target
         constexpr int64_t kWgcCoverageLossMaxDropPerCall =
             ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
@@ -1217,16 +1239,43 @@ public:
                       wgcTargetFps, wgcDeliveredFps, wgcDeliveredMin250Fps, wgcDeliveredMin500Fps,
                       wgcEncoderBottlenecked, wgcQueueEmptyTickPermille, wgcBufferedAtTickMin, wgcSingleFrameTickCount)
                 : 0;
+        uint32_t effectiveDeliveredFpsForAudioContinuity = wgcDeliveredFps;
+        if (wgcDeliveredMin250Fps > 0) {
+            effectiveDeliveredFpsForAudioContinuity =
+                std::min(effectiveDeliveredFpsForAudioContinuity, wgcDeliveredMin250Fps);
+        }
+        if (wgcDeliveredMin500Fps > 0) {
+            effectiveDeliveredFpsForAudioContinuity =
+                std::min(effectiveDeliveredFpsForAudioContinuity, wgcDeliveredMin500Fps);
+        }
+        const uint32_t wgcHealthyDeliveryFloor =
+            wgcTargetFps > kWgcEncoderHealthyDeliveryMarginFps ? (wgcTargetFps - kWgcEncoderHealthyDeliveryMarginFps)
+                                                               : wgcTargetFps;
+        const bool wgcQueueHealthyEnoughForAudioContinuity =
+            wgcQueueEmptyTickPermille < 250 &&
+            (wgcBufferedAtTickMin > 0 ||
+             wgcSingleFrameTickCount < (wgcTargetFps > 1 ? (wgcTargetFps / 2) : wgcTargetFps));
+        const bool wgcEncoderOnlyOverload =
+            isWgcCfrRecording && wgcEncoderBottlenecked && !wgcCoverageLossActive &&
+            effectiveDeliveredFpsForAudioContinuity >= wgcHealthyDeliveryFloor &&
+            wgcQueueHealthyEnoughForAudioContinuity;
+        const int64_t wgcEncoderShortfallBufferedLagMs =
+            wgcEncoderOnlyOverload
+                ? std::clamp<int64_t>(timelineShortfallMs, 0, kWgcEncoderShortfallBufferedLagMaxMs)
+                : 0;
         const int64_t effectiveWgcDriftLagMs =
             (isWgcCfrRecording
                  ? (kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs : wgcAudioLagTargets.driftLagMs)
                  : videoPipelineLagMs) +
-            (isWgcCfrRecording ? 0 : timelineShortfallMs);
+            (isWgcCfrRecording ? wgcEncoderShortfallBufferedLagMs : timelineShortfallMs);
         const int64_t effectiveWgcTargetBufferLagMs =
             (isWgcCfrRecording
                  ? std::max<int64_t>(
-                       kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs : wgcAudioLagTargets.targetBufferLagMs,
-                       wgcSteadyStateBufferedAudioLagMs)
+                       std::max<int64_t>(
+                           kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs
+                                                               : wgcAudioLagTargets.targetBufferLagMs,
+                           wgcSteadyStateBufferedAudioLagMs),
+                       wgcEncoderShortfallBufferedLagMs)
                  : videoPipelineLagMs) +
             (isWgcCfrRecording ? 0 : timelineShortfallMs);
         const int64_t targetBufferedLagCapMs =
@@ -1543,18 +1592,20 @@ public:
 
                             if (dropLogCounter++ % 500 == 0) {
                                 const bool targetCompensationSaturated =
-                                    src.syncResampler->IsTargetCompensationSaturated();
-                                const int32_t currentCompensationDelta =
-                                    src.syncResampler->GetCurrentCompensationDelta();
+                                    src.targetRateSaturated;
+                                const int32_t currentCompensationDelta = src.currentRateDelta;
+                                const int32_t targetCompensationDelta = src.targetRateDelta;
                                 const int32_t maxCompensationDelta = src.syncResampler->GetMaxCompensationDelta();
                                 const double currentCompensationPercent =
-                                    src.syncResampler->GetCurrentCompensationPercent();
+                                    (double)currentCompensationDelta * 100.0 /
+                                    (static_cast<double>(SAMPLE_RATE) * 10.0);
                                 DLL_Log(
                                     "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
                                     "pipelineLag=%lldms, encBottleneck=%d). Tier1 drift correction active "
-                                    "(corr=%d/%d per 10s, %.4f%%, sat=%d, maxBudget=%.2f%%)%s",
+                                    "(corr=%d/%d per 10s target=%d, %.4f%%, sat=%d, maxBudget=%.2f%%)%s",
                                     (int)srcIdx, leadExcess, expectedLeadSamplesForCap, videoPipelineLagMs,
                                     wgcEncoderBottlenecked ? 1 : 0, currentCompensationDelta, maxCompensationDelta,
+                                    targetCompensationDelta,
                                     currentCompensationPercent, targetCompensationSaturated ? 1 : 0,
                                     maxCompensationPercent,
                                     targetCompensationSaturated ? " - source clock mismatch exceeds tier1 budget" : "");
@@ -1638,18 +1689,42 @@ public:
 
                                 if (updateElapsed >= 500) {
                                     // --- Tier 1: Micro-pitch correction ---
-                                    // Always active, capped at 0.05% pitch change (24 samples / 10s at 48kHz)
+                                    // Keep rate correction for real source drift, but do not spend buffered lead that
+                                    // only exists because the authoritative CFR timeline is slightly behind wall clock.
                                     int32_t tier1Delta = 0;
 
                                     if (isWgcCfrRecording) {
+                                        const int64_t positiveCompensationHysteresisSamples =
+                                            ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
+                                                targetLatencySamples, kWgcCfrLeadWarningSamples);
+                                        const bool allowSteadyStatePositiveCompensation =
+                                            ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
+                                                trackStartupSettled, videoPipelineLagMs, rbLevel, targetLatencySamples,
+                                                kWgcCfrLeadWarningSamples);
                                         tier1Delta = ce::audio::ComputeTier1CompensationDelta(
                                             trueDrift, static_cast<int64_t>(SAMPLE_RATE) * 10, kTier1MaxPitchPercent);
+                                        src.targetRateSaturated =
+                                            std::abs(trueDrift) > src.syncResampler->GetMaxCompensationDelta();
+                                        if (tier1Delta > 0) {
+                                            if (wgcEncoderOnlyOverload ||
+                                                ce::audio::ShouldClearWgcPositiveDriftCompensation(
+                                                    allowSteadyStatePositiveCompensation, rbLevel, expectedLead,
+                                                    positiveCompensationHysteresisSamples)) {
+                                                tier1Delta = 0;
+                                            } else {
+                                                tier1Delta = static_cast<int32_t>(
+                                                    ce::audio::ClampWgcPositiveDriftCorrection(
+                                                        tier1Delta, positiveCompensationHysteresisSamples));
+                                            }
+                                        }
                                     } else {
                                         const int32_t maxDelta = src.syncResampler->GetMaxCompensationDelta();
                                         tier1Delta =
                                             static_cast<int32_t>(std::clamp(trueDrift, static_cast<int64_t>(-maxDelta),
                                                                             static_cast<int64_t>(maxDelta)));
+                                        src.targetRateSaturated = false;
                                     }
+                                    src.targetRateDelta = tier1Delta;
 
                                     constexpr int32_t kMaxRateChange = 1500;
                                     int32_t newDelta = static_cast<int32_t>(
@@ -1670,6 +1745,7 @@ public:
                                     // --- Tier 2: Ring buffer trim with crossfade ---
                                     // Activates when drift exceeds what Tier 1 can handle alone
                                     if (isWgcCfrRecording &&
+                                        !wgcEncoderOnlyOverload &&
                                         ce::audio::ShouldActivateTier2Trim(trueDrift, SAMPLE_RATE,
                                                                            kTier2DriftThresholdMs) &&
                                         src.ringBuffer) {
@@ -1695,25 +1771,19 @@ public:
                                             ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples,
                                                                                        trimmedSamples);
                                             src.latencyTrimSamples += trimmedSamples;
+                                            src.tier2TrimSamples += trimmedSamples;
                                             src.pendingLatencyTrimSamples += trimmedSamples;
                                             src.pendingLatencyTrimEvents++;
+                                            src.pendingTier2TrimSamples += trimmedSamples;
+                                            src.pendingTier2TrimEvents++;
                                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
-
-                                            if (dropLogCounter++ % 20 == 0) {
-                                                DLL_Log(
-                                                    "[PullAudio] Tier2 drift trim: "
-                                                    "src=%zu trueDrift=%lld "
-                                                    "trimmed=%zu "
-                                                    "(driftMs=%.1f)",
-                                                    srcIdx, trueDrift, trimmedSamples,
-                                                    (double)trueDrift * 1000.0 / SAMPLE_RATE);
-                                            }
                                         }
                                     }
 
                                     if (driftLogCounter++ % 10 == 0) {
                                         const double compensationPercent =
-                                            src.syncResampler->GetCurrentCompensationPercent();
+                                            (double)src.currentRateDelta * 100.0 /
+                                            (static_cast<double>(SAMPLE_RATE) * 10.0);
                                         DLL_Log(
                                             "[PullAudio] Src %zu drift: "
                                             "trueDrift=%lld "
@@ -1889,9 +1959,11 @@ public:
                                 src.prevLeadSnapshotMs = 0;
                                 src.lastRateUpdateMs = 0;
                                 src.currentRateDelta = 0;
-            src.rateCompActive = false;
-            src.ringBufferPeakSamples = 0;
-            src.ringBufferUnderrunCount = 0;
+                                src.targetRateDelta = 0;
+                                src.rateCompActive = false;
+                                src.targetRateSaturated = false;
+                                src.ringBufferPeakSamples = 0;
+                                src.ringBufferUnderrunCount = 0;
                             }
                         }
                     }
@@ -2054,7 +2126,7 @@ public:
                 int64_t avDrift = audioMs - videoMs;
                 int64_t latencyAdjustedAvDrift =
                     ce::audio::ComputeLatencyAdjustedAvDriftMs(avDrift, trackAudioPullLatencyMs);
-                int64_t pipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, videoMs);
+                int64_t pipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
 
                 // Summarize all sources contributing to this track so issues on a
                 // secondary app/system source are visible in the periodic sync log.
@@ -2074,6 +2146,7 @@ public:
                     uint64_t srcOverflowDropped = 0;
                     uint64_t srcRetainedTrimmed = 0;
                     uint64_t srcLatencyTrimmed = 0;
+                    uint64_t srcTier2Trimmed = 0;
                     uint64_t srcBootstrapTrimmed = 0;
                     uint64_t srcPostTrimmed = 0;
                     uint64_t srcUnderrunPadded = 0;
@@ -2095,6 +2168,7 @@ public:
                         srcOverflowDropped = src.overflowDropSamples;
                         srcRetainedTrimmed = src.retainedNewestTrimSamples;
                         srcLatencyTrimmed = src.latencyTrimSamples;
+                        srcTier2Trimmed = src.tier2TrimSamples;
                         srcBootstrapTrimmed = src.bootstrapTrimSamples;
                         srcPostTrimmed = src.postResampleTrimSamples;
                         srcUnderrunPadded = src.underrunPadSamples;
@@ -2117,16 +2191,17 @@ public:
                     packetGapAdjusted += srcPacketGapAdjusted;
                     packetOverlapTrimmed += srcPacketOverlapTrimmed;
 
-                    char sourceState[320];
+                    char sourceState[352];
                     std::snprintf(sourceState, sizeof(sourceState),
                                   "src%zu(rb=%zu sync=%lld start=%lld primed=%d boot=%d synth=%llu/%llu/%llu ovf=%llu "
-                                  "rtrim=%llu lat=%llu cov=%llu boottrim=%llu post=%llu pad=%llu qgap=%llu qov=%llu)",
+                                  "rtrim=%llu lat=%llu t2=%llu cov=%llu boottrim=%llu post=%llu pad=%llu qgap=%llu qov=%llu)",
                                   srcIdx, rbLevel, syncOutput, alignedStartMs, (int)srcPrimed, (int)srcBootstrapped,
                                   (unsigned long long)srcSyntheticRing, (unsigned long long)srcSyntheticInflight,
                                   (unsigned long long)srcSyntheticPost, (unsigned long long)srcOverflowDropped,
                                   (unsigned long long)srcRetainedTrimmed, (unsigned long long)srcLatencyTrimmed,
-                                  (unsigned long long)srcCoverageLossTrimmed, (unsigned long long)srcBootstrapTrimmed,
-                                  (unsigned long long)srcPostTrimmed, (unsigned long long)srcUnderrunPadded,
+                                  (unsigned long long)srcTier2Trimmed, (unsigned long long)srcCoverageLossTrimmed,
+                                  (unsigned long long)srcBootstrapTrimmed, (unsigned long long)srcPostTrimmed,
+                                  (unsigned long long)srcUnderrunPadded,
                                   (unsigned long long)srcPacketGapAdjusted,
                                   (unsigned long long)srcPacketOverlapTrimmed);
                     if (!sourceSummary.empty()) {
@@ -2172,6 +2247,18 @@ public:
                             pipelineLagMs);
                         src.pendingLatencyTrimEvents = 0;
                         src.pendingLatencyTrimSamples = 0;
+                    }
+                    if (src.pendingTier2TrimEvents > 0) {
+                        DLL_Log(
+                            "[PullAudio] Tier2 drift trim summary - src=%zu events=%u samples=%llu total=%llu "
+                            "overallLatencyTrim=%llu target=%lld pipelineLag=%lldms",
+                            srcIdx, src.pendingTier2TrimEvents,
+                            static_cast<unsigned long long>(src.pendingTier2TrimSamples),
+                            static_cast<unsigned long long>(src.tier2TrimSamples),
+                            static_cast<unsigned long long>(src.latencyTrimSamples), targetBufferedSamples,
+                            pipelineLagMs);
+                        src.pendingTier2TrimEvents = 0;
+                        src.pendingTier2TrimSamples = 0;
                     }
                 }
 

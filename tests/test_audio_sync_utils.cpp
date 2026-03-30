@@ -119,6 +119,12 @@ TEST(AudioSyncUtilsTest, WgcPositiveDriftCorrectionClampsAwayNearTargetSpendDown
     EXPECT_EQ(ce::audio::ClampWgcPositiveDriftCorrection(-240, 960), -240);
 }
 
+TEST(AudioSyncUtilsTest, Tier2TrimOnlyActivatesForPositiveLead) {
+    EXPECT_TRUE(ce::audio::ShouldActivateTier2Trim(1200, 48000, 20));
+    EXPECT_FALSE(ce::audio::ShouldActivateTier2Trim(-1200, 48000, 20));
+    EXPECT_FALSE(ce::audio::ShouldActivateTier2Trim(959, 48000, 20));
+}
+
 TEST(AudioSyncUtilsTest, WgcCoverageLossTrimSamplesUsesFractionalAccumulatorAndCap) {
     double accumulator = 0.0;
     EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.05, accumulator, 48), 12);

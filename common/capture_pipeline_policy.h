@@ -112,7 +112,10 @@ inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outp
 
 inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t bufferedWgcFrames,
                                             double frameCreditAccumulator, uint32_t outputShortfallTicks) {
-    (void)encoderBottlenecked;
+    if (encoderBottlenecked && outputShortfallTicks < kCfrShortfallForceCatchupThresholdTicks) {
+        return false;
+    }
+
     if (outputShortfallTicks >= kCfrShortfallCatchupThresholdTicks) {
         return true;
     }

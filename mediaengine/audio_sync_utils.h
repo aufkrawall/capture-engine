@@ -269,7 +269,7 @@ inline bool ShouldActivateTier2Trim(int64_t trueDriftSamples, int sampleRate, in
         return false;
     }
     const int64_t thresholdSamples = (static_cast<int64_t>(sampleRate) * thresholdMs) / 1000;
-    return std::abs(trueDriftSamples) > thresholdSamples;
+    return trueDriftSamples > thresholdSamples;
 }
 
 inline int64_t ComputeTier2TrimBudget(int64_t trueDriftSamples, int sampleRate, int64_t baseQuantumSamples,
