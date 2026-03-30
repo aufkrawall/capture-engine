@@ -3203,6 +3203,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return;
             }
 
+            const bool preferDuplicateCatchup =
+                useScreenGrab && !config.video.useVFR &&
+                ce::capture_policy::ShouldPreferWgcDuplicateCatchup(
+                    encoderTooSlowForTargetCurrent || g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                    outputShortfallTicks, wgcAudioLeadExcessMsCurrent);
+            uint32_t remainingFreshCatchupBudget =
+                useScreenGrab && !config.video.useVFR
+                    ? ce::capture_policy::GetWgcFreshCatchupBudgetThisLoop(preferDuplicateCatchup,
+                                                                           catchupTicksThisLoop)
+                    : 0u;
+
             for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 if (useScreenGrab && config.video.useVFR &&
                     !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
@@ -3229,12 +3240,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                            ce::capture_policy::GetWgcForceCatchupBudgetFrameMultiplier(shortfallDurationMs))
                     : allowWgcCatchupBudget ? (frameIntervalMs * 2.0)
                                             : frameIntervalMs;
-                const bool preferDuplicateCatchup =
-                    useScreenGrab && !config.video.useVFR &&
-                    ce::capture_policy::ShouldPreferWgcDuplicateCatchup(
-                        encoderTooSlowForTargetCurrent || g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
-                        outputShortfallTicks, wgcAudioLeadExcessMsCurrent);
-                bool allowFreshCatchup = !preferDuplicateCatchup;
 
                 // For CFR recording, video smoothness is paramount. We have a 32-frame deep queue
                 // (~266ms at 120fps) to absorb temporary encoder spikes. We only force duplicate frames
@@ -3242,6 +3247,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // Otherwise, we process the fresh frame to preserve the correct visual pacing.
                 const double cfrSmoothnessToleranceMs =
                     (!config.video.useVFR && useScreenGrab && !preferDuplicateCatchup) ? 150.0 : 0.0;
+                bool allowFreshCatchup = remainingFreshCatchupBudget > 0u;
 
                 if (elapsedFromTickStartMs > catchupBudgetMs + cfrSmoothnessToleranceMs) {
                     static uint64_t s_lastBudgetLog = 0;
@@ -3409,6 +3415,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                         ++encoderGridTickCount;
                         ++cfrCatchupTicksExecuted;
                         ++wgcFreshCatchupCount;
+                        if (remainingFreshCatchupBudget > 0u) {
+                            --remainingFreshCatchupBudget;
+                        }
                         nextSampleTime.QuadPart += targetIntervalTicks;
                         continue;
                     }

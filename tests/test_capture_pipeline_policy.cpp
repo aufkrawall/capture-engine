@@ -439,6 +439,10 @@ TEST(CapturePipelinePolicyTest, WgcAudioLeadPressureEscalatesAtForceThreshold) {
     EXPECT_TRUE(policy::ShouldPreferWgcDuplicateCatchup(
         true, policy::kCfrShortfallForceCatchupThresholdTicks, policy::kWgcAudioLeadCatchupThresholdMs));
 
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(false, 4), 3u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(true, 4), 1u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(true, 1), 0u);
+
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks, 120,
                                                  118, 124, 0, false,
                                                  policy::kWgcAudioLeadCatchupThresholdMs),

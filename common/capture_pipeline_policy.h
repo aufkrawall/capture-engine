@@ -33,6 +33,7 @@ constexpr uint32_t kWgcSelectionDelayTicks = 2;
 constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
+constexpr uint32_t kWgcDuplicatePreferredFreshCatchupBudgetTicks = 1;
 constexpr double kWgcSevereShortfallDurationMs = 500.0;
 constexpr uint32_t kWgcDeepUnderfeedMarginFps = 8;
 constexpr uint32_t kWgcDeepUnderfeedEmptyTickPermille = 350;
@@ -191,6 +192,19 @@ inline bool ShouldPreferWgcDuplicateCatchup(bool encoderBottlenecked, uint32_t o
                                             double minAudioLeadMs = kWgcAudioLeadCatchupThresholdMs) {
     return encoderBottlenecked && outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks &&
            ShouldPrioritizeWgcAudioLeadCatchup(audioLeadExcessMs, minAudioLeadMs);
+}
+
+inline uint32_t GetWgcFreshCatchupBudgetThisLoop(bool preferDuplicateCatchup, uint32_t catchupTicksThisLoop) {
+    if (catchupTicksThisLoop <= 1u) {
+        return 0u;
+    }
+
+    const uint32_t extraTicks = catchupTicksThisLoop - 1u;
+    if (!preferDuplicateCatchup) {
+        return extraTicks;
+    }
+
+    return std::min(extraTicks, kWgcDuplicatePreferredFreshCatchupBudgetTicks);
 }
 
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t bufferedWgcFrames,
