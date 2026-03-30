@@ -1619,6 +1619,9 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcSelectionDelayTickCount = 0;
     uint32_t wgcAdaptiveThrottleAdjustments = 0;
     WgcAdaptiveThrottleMode wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
+    uint32_t wgcAdaptiveThrottlePendingTargetFps = 0;
+    WgcAdaptiveThrottleMode wgcAdaptiveThrottlePendingMode = WgcAdaptiveThrottleMode::kOff;
+    uint64_t wgcAdaptiveThrottlePendingSinceTick = 0;
     uint32_t wgcRecentDeliveredFps = 0;
     uint32_t wgcRecentDeliveredMin250Fps = 0;
     uint32_t wgcRecentDeliveredMin500Fps = 0;
@@ -1840,6 +1843,18 @@ void EncoderThreadFunc(const AppConfig& config) {
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
             const double oldestBufferedFrameAgeMs = static_cast<double>(wgcOldestBufferedFrameAgeUs) / 1000.0;
+            uint32_t effectiveDeliveredFps = wgcRecentDeliveredFps;
+            if (wgcRecentDeliveredMin250Fps > 0) {
+                effectiveDeliveredFps = std::min(effectiveDeliveredFps, wgcRecentDeliveredMin250Fps);
+            }
+            if (wgcRecentDeliveredMin500Fps > 0) {
+                effectiveDeliveredFps = std::min(effectiveDeliveredFps, wgcRecentDeliveredMin500Fps);
+            }
+            if (ce::capture_policy::ShouldSuppressWgcCoverageLossForEncoderBottleneck(
+                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed), effectiveDeliveredFps,
+                    std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps > 0 ? config.video.fps : 1)))) {
+                return false;
+            }
             return ce::capture_policy::HasWgcUnrecoverableCoverageLoss(shortfallDurationMs, oldestBufferedFrameAgeMs,
                                                                        audioLeadExcessMs);
         };
@@ -2454,6 +2469,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (g_WgcCap && recordingOutputLive && g_Recording && targetIntervalTicks > 0) {
                     const uint32_t currentTargetFps = g_WgcCap->GetTargetFps();
                     uint32_t desiredTargetFps = 0;
+                    WgcAdaptiveThrottleMode desiredThrottleMode = WgcAdaptiveThrottleMode::kOff;
                     const double duplicateRatio = (cadenceCounters.liveTickEmitCount > 0)
                                                       ? static_cast<double>(cadenceCounters.liveTickDuplicateCount) /
                                                             static_cast<double>(cadenceCounters.liveTickEmitCount)
@@ -2483,27 +2499,50 @@ void EncoderThreadFunc(const AppConfig& config) {
                     if (severePressure) {
                         desiredTargetFps =
                             std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.08)));
-                        wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kHeadroom108;
+                        desiredThrottleMode = WgcAdaptiveThrottleMode::kHeadroom108;
                     } else if (sustainedPressure) {
                         desiredTargetFps =
                             std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.25)));
-                        wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kHeadroom125;
+                        desiredThrottleMode = WgcAdaptiveThrottleMode::kHeadroom125;
                     } else {
-                        wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
+                        desiredThrottleMode = WgcAdaptiveThrottleMode::kOff;
                     }
 
                     if (desiredTargetFps > 0 && wgcRecentInputMin250Fps > 0) {
                         desiredTargetFps = std::min(desiredTargetFps, wgcRecentInputMin250Fps);
                         if (desiredTargetFps <= outputFps) {
                             desiredTargetFps = 0;
-                            wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
+                            desiredThrottleMode = WgcAdaptiveThrottleMode::kOff;
                         }
                     }
 
-                    if (desiredTargetFps != currentTargetFps) {
-                        g_WgcCap->SetTargetFps(desiredTargetFps);
-                        g_WgcAdaptiveTargetFps.store(desiredTargetFps, std::memory_order_relaxed);
-                        ++wgcAdaptiveThrottleAdjustments;
+                    if (desiredTargetFps != wgcAdaptiveThrottlePendingTargetFps ||
+                        desiredThrottleMode != wgcAdaptiveThrottlePendingMode) {
+                        wgcAdaptiveThrottlePendingTargetFps = desiredTargetFps;
+                        wgcAdaptiveThrottlePendingMode = desiredThrottleMode;
+                        wgcAdaptiveThrottlePendingSinceTick = wgcPolicyNowTick;
+                    }
+
+                    if (desiredTargetFps == currentTargetFps) {
+                        wgcAdaptiveThrottleMode = desiredThrottleMode;
+                    } else {
+                        constexpr uint64_t kWgcAdaptiveThrottleEnterHoldMs = 120;
+                        constexpr uint64_t kWgcAdaptiveThrottleExitHoldMs = 450;
+                        constexpr uint64_t kWgcAdaptiveThrottleRetuneHoldMs = 180;
+                        const uint64_t requiredHoldMs =
+                            currentTargetFps == 0
+                                ? kWgcAdaptiveThrottleEnterHoldMs
+                                : (desiredTargetFps == 0 ? kWgcAdaptiveThrottleExitHoldMs
+                                                         : kWgcAdaptiveThrottleRetuneHoldMs);
+                        const bool holdElapsed = wgcAdaptiveThrottlePendingSinceTick > 0 &&
+                                                 (wgcPolicyNowTick - wgcAdaptiveThrottlePendingSinceTick) >=
+                                                     requiredHoldMs;
+                        if (holdElapsed) {
+                            g_WgcCap->SetTargetFps(desiredTargetFps);
+                            g_WgcAdaptiveTargetFps.store(desiredTargetFps, std::memory_order_relaxed);
+                            wgcAdaptiveThrottleMode = desiredThrottleMode;
+                            ++wgcAdaptiveThrottleAdjustments;
+                        }
                     }
                 }
 

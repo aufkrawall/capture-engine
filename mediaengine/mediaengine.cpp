@@ -1248,17 +1248,10 @@ public:
             effectiveDeliveredFpsForAudioContinuity =
                 std::min(effectiveDeliveredFpsForAudioContinuity, wgcDeliveredMin500Fps);
         }
-        const uint32_t wgcHealthyDeliveryFloor =
-            wgcTargetFps > kWgcEncoderHealthyDeliveryMarginFps ? (wgcTargetFps - kWgcEncoderHealthyDeliveryMarginFps)
-                                                               : wgcTargetFps;
-        const bool wgcQueueHealthyEnoughForAudioContinuity =
-            wgcQueueEmptyTickPermille < 250 &&
-            (wgcBufferedAtTickMin > 0 ||
-             wgcSingleFrameTickCount < (wgcTargetFps > 1 ? (wgcTargetFps / 2) : wgcTargetFps));
         const bool wgcEncoderOnlyOverload =
-            isWgcCfrRecording && wgcEncoderBottlenecked && !wgcCoverageLossActive &&
-            effectiveDeliveredFpsForAudioContinuity >= wgcHealthyDeliveryFloor &&
-            wgcQueueHealthyEnoughForAudioContinuity;
+            isWgcCfrRecording && ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(
+                                      wgcEncoderBottlenecked, wgcCoverageLossActive, wgcTargetFps,
+                                      effectiveDeliveredFpsForAudioContinuity, kWgcEncoderHealthyDeliveryMarginFps);
         const int64_t wgcEncoderShortfallBufferedLagMs =
             wgcEncoderOnlyOverload
                 ? std::clamp<int64_t>(timelineShortfallMs, 0, kWgcEncoderShortfallBufferedLagMaxMs)
@@ -1581,7 +1574,7 @@ public:
                             }
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
-                    } else if (isWgcCfrRecording) {
+                    } else if (isWgcCfrRecording && !wgcEncoderOnlyOverload) {
                         const int64_t expectedLeadSamplesForCap = expectedLeadSamplesForCorrection;
                         if (static_cast<int64_t>(rbAvailable) > expectedLeadSamplesForCap + kWgcCfrLeadWarningSamples) {
                             // WGC CFR lead is large.  Log diagnostics and do paced trimming
@@ -1694,27 +1687,32 @@ public:
                                     int32_t tier1Delta = 0;
 
                                     if (isWgcCfrRecording) {
-                                        const int64_t positiveCompensationHysteresisSamples =
-                                            ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
-                                                targetLatencySamples, kWgcCfrLeadWarningSamples);
-                                        const bool allowSteadyStatePositiveCompensation =
-                                            ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
-                                                trackStartupSettled, videoPipelineLagMs, rbLevel, targetLatencySamples,
-                                                kWgcCfrLeadWarningSamples);
-                                        tier1Delta = ce::audio::ComputeTier1CompensationDelta(
-                                            trueDrift, static_cast<int64_t>(SAMPLE_RATE) * 10, kTier1MaxPitchPercent);
-                                        src.targetRateSaturated =
-                                            std::abs(trueDrift) > src.syncResampler->GetMaxCompensationDelta();
-                                        if (tier1Delta > 0) {
-                                            if (wgcEncoderOnlyOverload ||
-                                                ce::audio::ShouldClearWgcPositiveDriftCompensation(
-                                                    allowSteadyStatePositiveCompensation, rbLevel, expectedLead,
-                                                    positiveCompensationHysteresisSamples)) {
-                                                tier1Delta = 0;
-                                            } else {
-                                                tier1Delta = static_cast<int32_t>(
-                                                    ce::audio::ClampWgcPositiveDriftCorrection(
-                                                        tier1Delta, positiveCompensationHysteresisSamples));
+                                        if (wgcEncoderOnlyOverload) {
+                                            tier1Delta = 0;
+                                            src.targetRateSaturated = false;
+                                        } else {
+                                            const int64_t positiveCompensationHysteresisSamples =
+                                                ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
+                                                    targetLatencySamples, kWgcCfrLeadWarningSamples);
+                                            const bool allowSteadyStatePositiveCompensation =
+                                                ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
+                                                    trackStartupSettled, videoPipelineLagMs, rbLevel,
+                                                    targetLatencySamples, kWgcCfrLeadWarningSamples);
+                                            tier1Delta = ce::audio::ComputeTier1CompensationDelta(
+                                                trueDrift, static_cast<int64_t>(SAMPLE_RATE) * 10,
+                                                kTier1MaxPitchPercent);
+                                            src.targetRateSaturated =
+                                                std::abs(trueDrift) > src.syncResampler->GetMaxCompensationDelta();
+                                            if (tier1Delta > 0) {
+                                                if (ce::audio::ShouldClearWgcPositiveDriftCompensation(
+                                                        allowSteadyStatePositiveCompensation, rbLevel, expectedLead,
+                                                        positiveCompensationHysteresisSamples)) {
+                                                    tier1Delta = 0;
+                                                } else {
+                                                    tier1Delta = static_cast<int32_t>(
+                                                        ce::audio::ClampWgcPositiveDriftCorrection(
+                                                            tier1Delta, positiveCompensationHysteresisSamples));
+                                                }
                                             }
                                         }
                                     } else {

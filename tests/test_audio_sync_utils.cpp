@@ -100,6 +100,16 @@ TEST(AudioSyncUtilsTest, WgcSteadyStateBufferedAudioLagAddsBoundedCushionForDegr
     EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 135, 116, 130, false, 180, 1, 18), 40);
 }
 
+TEST(AudioSyncUtilsTest, EncoderOverloadProtectionFollowsDeliveredFpsHealth) {
+    EXPECT_TRUE(ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(true, false, 120, 120));
+    EXPECT_TRUE(ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(true, false, 120, 116));
+    EXPECT_FALSE(ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(true, false, 120, 100));
+    EXPECT_FALSE(ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(true, true, 120, 120));
+    EXPECT_FALSE(ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(false, false, 120, 120));
+    EXPECT_FALSE(ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(true, false, 0, 120));
+    EXPECT_FALSE(ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(true, false, 120, 0));
+}
+
 TEST(AudioSyncUtilsTest, WgcPositiveCompensationHysteresisKeepsGuardBandNearTarget) {
     EXPECT_EQ(ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(2880, 9600), 960);
     EXPECT_EQ(ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(960, 9600), 480);

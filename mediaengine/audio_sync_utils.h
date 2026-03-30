@@ -166,6 +166,19 @@ inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint3
     return std::clamp<int64_t>(lagMs, 0, maxLagMs);
 }
 
+inline bool ShouldProtectWgcAudioContinuityDuringEncoderOverload(bool encoderBottlenecked,
+                                                                 bool coverageLossActive, uint32_t targetFps,
+                                                                 uint32_t deliveredFps,
+                                                                 uint32_t deliveryMarginFps = 4) {
+    if (!encoderBottlenecked || coverageLossActive || targetFps == 0 || deliveredFps == 0) {
+        return false;
+    }
+
+    const uint32_t healthyDeliveryFloor =
+        targetFps > deliveryMarginFps ? (targetFps - deliveryMarginFps) : targetFps;
+    return deliveredFps >= healthyDeliveryFloor;
+}
+
 inline int64_t ComputeWgcCoverageLossTrimSamples(int64_t samplesToEncode, double coverageLossRatio,
                                                  double& trimAccumulator, int64_t maxDropPerCall) {
     if (samplesToEncode <= 0 || coverageLossRatio <= 0.0 || maxDropPerCall <= 0) {

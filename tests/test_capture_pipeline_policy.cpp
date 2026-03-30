@@ -65,6 +65,15 @@ TEST(CapturePipelinePolicyTest, WgcCoverageLossRepeatPolicyRequiresLagMismatch) 
     EXPECT_EQ(policy::GetWgcCoverageDelayTicks(31, 100.0, 8.333), 19u);
 }
 
+TEST(CapturePipelinePolicyTest, WgcCoverageLossSuppressionHonorsEncoderOnlyShortfall) {
+    EXPECT_TRUE(policy::ShouldSuppressWgcCoverageLossForEncoderBottleneck(true, 120, 120));
+    EXPECT_TRUE(policy::ShouldSuppressWgcCoverageLossForEncoderBottleneck(true, 118, 120));
+    EXPECT_FALSE(policy::ShouldSuppressWgcCoverageLossForEncoderBottleneck(true, 100, 120));
+    EXPECT_FALSE(policy::ShouldSuppressWgcCoverageLossForEncoderBottleneck(false, 120, 120));
+    EXPECT_FALSE(policy::ShouldSuppressWgcCoverageLossForEncoderBottleneck(true, 0, 120));
+    EXPECT_FALSE(policy::ShouldSuppressWgcCoverageLossForEncoderBottleneck(true, 120, 0));
+}
+
 TEST(CapturePipelinePolicyTest, WarmupKeepCountAndMinimumBufferedFramesFollowReserve) {
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(0.0, 8.333), 3u);
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(19.0, 8.0), 5u);

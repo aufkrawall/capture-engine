@@ -265,6 +265,18 @@ inline bool HasWgcUnrecoverableCoverageLoss(double shortfallDurationMs, double o
     return true;
 }
 
+inline bool ShouldSuppressWgcCoverageLossForEncoderBottleneck(bool encoderBottlenecked, uint32_t deliveredFps,
+                                                              uint32_t targetFps,
+                                                              uint32_t deliveryMarginFps = 2) {
+    if (!encoderBottlenecked || deliveredFps == 0 || targetFps == 0) {
+        return false;
+    }
+
+    const uint32_t healthyDeliveryFloor =
+        targetFps > deliveryMarginFps ? (targetFps - deliveryMarginFps) : targetFps;
+    return deliveredFps >= healthyDeliveryFloor;
+}
+
 inline double ComputeWgcCoverageLossRepeatRatio(double shortfallDurationMs, double oldestBufferedFrameAgeMs,
                                                 double audioLeadExcessMs = -1.0, double fullRepeatMismatchMs = 1500.0,
                                                 double minLagMismatchMs = 120.0) {
