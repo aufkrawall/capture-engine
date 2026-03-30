@@ -1867,6 +1867,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
             wgcAudioLeadExcessMsCurrent = loadWgcAudioLeadExcessMs();
+            const bool wgcAudioLeadCatchupPressure =
+                ce::capture_policy::ShouldPrioritizeWgcAudioLeadCatchup(wgcAudioLeadExcessMsCurrent);
             wgcCoverageRepeatActiveCurrent = computeWgcCoverageRepeatActive(wgcAudioLeadExcessMsCurrent);
             shouldCatchUpToWallClock =
                 !config.video.useVFR && recordingOutputLive &&
@@ -1878,12 +1880,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                 catchupTicksThisLoop = ce::capture_policy::GetWgcCatchupTicksThisLoop(
                     encoderCatchupBottleneckedCurrent, bufferedWgcFrames.size(), frameCreditAccumulator,
                     outputShortfallTicks, targetOutputFpsForPolicy, wgcRecentDeliveredMin250Fps,
-                    wgcRecentInputMin250Fps, wgcNoFreshTickPermille, wgcLowSourceModeActive);
+                    wgcRecentInputMin250Fps, wgcNoFreshTickPermille, wgcLowSourceModeActive,
+                    wgcAudioLeadExcessMsCurrent);
             } else {
                 catchupTicksThisLoop = ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks,
                                                                                       encoderTooSlowForTargetCurrent);
             }
-            if (activeScreenGrab && wgcLiveRecoveryModeActive) {
+            if (activeScreenGrab && wgcLiveRecoveryModeActive && !wgcAudioLeadCatchupPressure) {
                 catchupTicksThisLoop = std::min<uint32_t>(catchupTicksThisLoop, 1u);
             }
             if (activeScreenGrab &&

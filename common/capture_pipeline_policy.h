@@ -42,6 +42,7 @@ constexpr uint32_t kWgcRecoveryEmptyTickPermille = 200;
 constexpr uint32_t kWgcRecoveryEnterShortfallTicks = 3;
 constexpr uint32_t kWgcRecoveryEnterHoldMs = 120;
 constexpr uint32_t kWgcRecoveryExitHoldMs = 450;
+constexpr double kWgcAudioLeadCatchupThresholdMs = 40.0;
 
 inline uint32_t GetCfrOutputShortfallTicks(uint64_t liveTicksScheduled, uint64_t liveTicksOutput) {
     return liveTicksScheduled > liveTicksOutput
@@ -180,13 +181,25 @@ inline bool IsWgcDeepUnderfeed(uint32_t outputFps, uint32_t recentDeliveredMin25
            emptyTickPermille >= kWgcDeepUnderfeedEmptyTickPermille;
 }
 
+inline bool ShouldPrioritizeWgcAudioLeadCatchup(double audioLeadExcessMs,
+                                                double minAudioLeadMs = kWgcAudioLeadCatchupThresholdMs) {
+    return audioLeadExcessMs >= minAudioLeadMs;
+}
+
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t bufferedWgcFrames,
                                            double frameCreditAccumulator, uint32_t outputShortfallTicks,
                                            uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
                                            uint32_t recentInputMin250Fps, uint32_t noFreshTickPermille,
-                                           bool lowSourceMode) {
+                                           bool lowSourceMode, double audioLeadExcessMs = 0.0) {
     if (outputShortfallTicks < kCfrShortfallCatchupThresholdTicks) {
         return 1u;
+    }
+
+    if (ShouldPrioritizeWgcAudioLeadCatchup(audioLeadExcessMs)) {
+        // Once audio has built meaningful lead against the delayed video timeline,
+        // spend backlog gently with repeated video frames before the media side is
+        // forced into large trim bursts.
+        return 2u;
     }
 
     if (IsWgcSourceHealthyForLiveCatchup(outputFps, recentDeliveredMin250Fps, recentInputMin250Fps, noFreshTickPermille,
