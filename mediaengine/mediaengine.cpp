@@ -1342,22 +1342,24 @@ public:
                               : kMaxPipelineLagContributionMs;
         uint32_t maxWgcAudioLeadExcessSamples = 0;
 
-        // Wall-clock audio anchor: when the encoder is severely stalled (>500ms pipeline lag),
-        // use wall-clock elapsed time as the audio pull target instead of the stalled video PTS.
-        // This keeps audio encoding progressing at real-time rate while video only advances on
-        // fresh encoder calls. The existing drift correction handles the resulting ring buffer
-        // depth. Without this, the audio pull would stall with the video encoder, causing the
+        // Wall-clock audio anchor: when the video timeline has fallen behind real time
+        // (shortfall >200ms), use wall-clock elapsed time as the audio pull target instead
+        // of the stalled video PTS. In CFR mode, pipelineLag stays near 0 even when the
+        // encoder is overloaded (the PTS advances at a fixed rate), so the actual overload
+        // is detected via timelineShortfallMs = max(0, wallClock - videoTarget).
+        // Without this, the audio pull would stall with the video encoder, causing the
         // ring buffer to grow unbounded and audio-video desync at recording end.
-        if (!forceDrain && isWgcCfrRecording && videoPipelineLagMs > 500) {
+        const int64_t wallVideoLagMs = timelineShortfallMs;
+        if (!forceDrain && isWgcCfrRecording && wallVideoLagMs > 200) {
             const int64_t steadyElapsedMs = steadyElapsedUs / 1000;
-            if (steadyElapsedMs > audioTargetMs && steadyElapsedMs - audioTargetMs > 500) {
+            if (steadyElapsedMs > audioTargetMs && steadyElapsedMs - audioTargetMs > 200) {
                 audioTargetMs = steadyElapsedMs;
                 timelineShortfallMs = 0;
                 if (dropLogCounter++ % 500 == 0) {
                     DLL_Log(
                         "[PullAudio] Using wall-clock audio anchor: videoPts=%lldms, wallClock=%lldms, "
-                        "pipelineLag=%lldms",
-                        videoTimelineMs, steadyElapsedMs, videoPipelineLagMs);
+                        "pipelineLag=%lldms, shortfall=%lldms",
+                        videoTimelineMs, steadyElapsedMs, videoPipelineLagMs, wallVideoLagMs);
                 }
             }
         }
@@ -1479,11 +1481,17 @@ public:
             }
 
             int64_t samplesToEncode = pendingSamples;
+            const bool initialTrackCatchup = (encodedSamplesPerSource[firstSrcIdx] == 0);
             if (trackStartupSettled && !forceDrain) {
-                const bool overloadPullQuantum = isWgcCfrRecording && (wgcOverloadFlags & 0x1u) != 0;
-                const int64_t quantumSamples =
-                    overloadPullQuantum ? kOverloadAudioPullQuantumSamples : ce::audio::kDefaultAudioPullQuantumSamples;
-                samplesToEncode = (samplesToEncode / quantumSamples) * quantumSamples;
+                // After bootstrap, the pull quantum rounding can leave a residual (up to 960
+                // samples = 20ms) that accumulates into a constant audio-video offset. Skip
+                // quantum rounding on the first pull after bootstrap to achieve exact alignment.
+                if (!initialTrackCatchup) {
+                    const bool overloadPullQuantum = isWgcCfrRecording && (wgcOverloadFlags & 0x1u) != 0;
+                    const int64_t quantumSamples = overloadPullQuantum ? kOverloadAudioPullQuantumSamples
+                                                                       : ce::audio::kDefaultAudioPullQuantumSamples;
+                    samplesToEncode = (samplesToEncode / quantumSamples) * quantumSamples;
+                }
                 if (samplesToEncode <= 0) {
                     continue;
                 }
@@ -1491,7 +1499,6 @@ public:
 
             const int64_t MAX_GAP_SAMPLES = (SAMPLE_RATE * 2);
             const int64_t MAX_SILENCE_CHUNK = SAMPLE_RATE / 2;
-            const bool initialTrackCatchup = (encodedSamplesPerSource[firstSrcIdx] == 0);
             if (samplesToEncode > MAX_GAP_SAMPLES && !initialTrackCatchup) {
                 warpCount++;
                 DLL_Log(
@@ -1838,7 +1845,7 @@ public:
                                     // Normally suppressed in WGC CFR mode (prefer video repeats over
                                     // audio cuts), but enabled when the wall-clock audio anchor is
                                     // active (encoder severely stalled) to prevent unbounded drift.
-                                    const bool wallClockAnchorActive = isWgcCfrRecording && videoPipelineLagMs > 500;
+                                    const bool wallClockAnchorActive = isWgcCfrRecording && wallVideoLagMs > 200;
                                     if (isWgcCfrRecording && !wgcEncoderOnlyOverload &&
                                         (!kWgcPreferVideoRepeatsOverAudioCuts || wallClockAnchorActive) &&
                                         ce::audio::ShouldActivateTier2Trim(trueDrift, SAMPLE_RATE,

@@ -322,8 +322,8 @@ inline int64_t ComputeTier2TrimBudget(int64_t trueDriftSamples, int sampleRate, 
 
     // Scale tiered trim budget with drift magnitude for faster recovery:
     //   >100ms drift: trim = |drift| / 10, capped at maxTrimMs (20ms by default)
-    //   >2s drift:    trim = |drift| / 5, capped at 200ms (4800 samples at 48kHz)
-    //   >10s drift:   trim = |drift| / 2, capped at 500ms (24000 samples at 48kHz)
+    //   >2s drift:    trim = |drift| / 5, capped at 50ms (2400 samples at 48kHz)
+    //   >10s drift:   trim = |drift| / 2, capped at 100ms (4800 samples at 48kHz)
     // This prevents spending 500+ pull calls to recover from severe encoder stalls.
     const int64_t severeThresholdSamples = static_cast<int64_t>(sampleRate) * 2;    // 2 seconds
     const int64_t extremeThresholdSamples = static_cast<int64_t>(sampleRate) * 10;  // 10 seconds
@@ -333,10 +333,10 @@ inline int64_t ComputeTier2TrimBudget(int64_t trueDriftSamples, int sampleRate, 
 
     if (absDriftSamples > extremeThresholdSamples) {
         proportionalTrim = absDriftSamples / 2;
-        budgetCap = (sampleRate * 500) / 1000;  // 500ms
+        budgetCap = (sampleRate * 100) / 1000;  // 100ms
     } else if (absDriftSamples > severeThresholdSamples) {
         proportionalTrim = absDriftSamples / 5;
-        budgetCap = (sampleRate * 200) / 1000;  // 200ms
+        budgetCap = (sampleRate * 50) / 1000;  // 50ms
     } else {
         proportionalTrim = absDriftSamples / 10;
         budgetCap = (sampleRate * maxTrimMs) / 1000;  // default max
