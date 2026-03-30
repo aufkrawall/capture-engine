@@ -1538,11 +1538,11 @@ public:
         // CRITICAL: Must use CreateFreeThreaded (not Create) because we have no
         // message pump! Create() requires a DispatcherQueue pumping messages for
         // callbacks to fire. CreateFreeThreaded() uses an internal worker thread
-        // for callbacks. Using 8 buffers to prevent pool exhaustion at high Hz
-        // monitors (143Hz+ needs headroom for GPU copy latency)
+        // for callbacks. Use 12 buffers to give the CFR selector more headroom
+        // during high-Hz bursts and brief encoder catchup pressure.
         auto tryCreateFramePool = [&](winrt::DirectXPixelFormat format) -> bool {
             try {
-                framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(winrtDevice_, format, 8, size);
+                framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(winrtDevice_, format, 12, size);
                 return framePool_ != nullptr;
             } catch (const winrt::hresult_error& e) {
                 LogWarn("[WGC] Frame pool creation failed for format=%d: 0x%08X", (int)format,

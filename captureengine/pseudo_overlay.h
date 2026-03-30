@@ -5,6 +5,7 @@
 #include <string>
 
 #include "../common/config.h"
+#include "../common/shared_defs.h"
 
 // Pseudo-overlay indicator for WGC capture.
 // Shows a colored circle in a screen corner:
@@ -29,7 +30,7 @@ public:
     void SetRecordingState(bool recording);
 
     // Notify encoder overload (warning shown for 5 seconds).
-    void TriggerEncoderOverloadWarning();
+    void TriggerEncoderOverloadWarning(uint32_t sustainFpsX100 = 0);
 
     // Show brief screenshot notification (2 seconds).
     void ShowScreenshotNotification();
@@ -79,6 +80,7 @@ private:
     // Atomic recording state
     std::atomic<bool> isRecording_{false};
     std::atomic<ULONGLONG> overloadWarnUntil_{0};
+    std::atomic<uint32_t> overloadWarnSustainFpsX100_{0};
     std::atomic<ULONGLONG> screenshotNotifyUntil_{0};
 
     // Warning blink state

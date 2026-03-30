@@ -58,6 +58,24 @@ UINT GetResolvedWindowDpi(HWND hwnd) {
     }
     return dpi == 0 ? 96u : dpi;
 }
+
+std::string FormatEncoderOverloadMessage(uint32_t sustainFpsX100, uint32_t targetFps) {
+    const double sustainFps = static_cast<double>(sustainFpsX100) / 100.0;
+    if (targetFps == 0 || sustainFpsX100 == 0) {
+        return "Encoder overloaded!";
+    }
+
+    const double ratio = sustainFps / static_cast<double>(targetFps);
+    char buffer[96];
+    if (ratio >= 0.95) {
+        std::snprintf(buffer, sizeof(buffer), "Encoder near limit (%.1f/%ufps)", sustainFps, targetFps);
+    } else if (ratio >= 0.80) {
+        std::snprintf(buffer, sizeof(buffer), "Encoder overloaded (%.1f/%ufps)", sustainFps, targetFps);
+    } else {
+        std::snprintf(buffer, sizeof(buffer), "Encoder severely overloaded (%.1f/%ufps)", sustainFps, targetFps);
+    }
+    return buffer;
+}
 }  // namespace
 
 // ---- Static instance pointer for wndproc routing ----
@@ -493,7 +511,13 @@ void PseudoOverlay::UpdateOverlay() {
     BYTE warnAlpha = 0;
     bool doUpdateWarn = false;
 
-    const char* msg = showScreenshot ? "Screenshot saved!" : (showOverload ? "Encoder overloaded!" : "NOT RECORDING");
+    const uint32_t overloadWarnSustainFpsX100 = this->overloadWarnSustainFpsX100_.load();
+    uint32_t overloadTargetFps = 0;
+    if (showOverload && EnsureSharedMemoryMapping() && pSharedMem_) {
+        overloadTargetFps = pSharedMem_->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
+    }
+    const std::string overloadMsg = FormatEncoderOverloadMessage(overloadWarnSustainFpsX100, overloadTargetFps);
+    const char* msg = showScreenshot ? "Screenshot saved!" : (showOverload ? overloadMsg.c_str() : "NOT RECORDING");
     bool isScreenshotMsg = showScreenshot;
 
     if (ghostActive) {
@@ -692,7 +716,8 @@ LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARA
             const uint32_t overloadFlags =
                 self->pSharedMem_->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
             if (overloadFlags != 0 && self->lastEncoderOverloadFlags_ == 0) {
-                self->TriggerEncoderOverloadWarning();
+                self->TriggerEncoderOverloadWarning(
+                    self->pSharedMem_->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed));
             }
             self->lastEncoderOverloadFlags_ = overloadFlags;
         }
@@ -829,6 +854,7 @@ void PseudoOverlay::Shutdown() {
     warnCycleStart_ = 0;
     mappedInjectPid_ = 0;
     lastEncoderOverloadFlags_ = 0;
+    overloadWarnSustainFpsX100_.store(0, std::memory_order_relaxed);
 
     initialized_ = false;
     instance_ = nullptr;
@@ -866,7 +892,8 @@ void PseudoOverlay::SetRecordingState(bool recording) {
     }
 }
 
-void PseudoOverlay::TriggerEncoderOverloadWarning() {
+void PseudoOverlay::TriggerEncoderOverloadWarning(uint32_t sustainFpsX100) {
+    overloadWarnSustainFpsX100_.store(sustainFpsX100, std::memory_order_relaxed);
     overloadWarnUntil_.store(GetTickCount64() + 5000ULL);
     if (initialized_) {
         UpdateOverlay();

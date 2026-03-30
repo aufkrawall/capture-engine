@@ -7,6 +7,7 @@
 
 #include <dxgi1_5.h>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <deque>
 #include <map>
@@ -61,6 +62,8 @@ public:
         float dropFadeStartL = 0.0f;                    // Left sample anchor for drop transition
         float dropFadeStartR = 0.0f;                    // Right sample anchor for drop transition
         int underrunFadeSamplesRemaining = 0;           // Remaining samples for post-underrun fade-in
+        int packetBoundaryFadeInSamplesRemaining = 0;   // Fade-in after silence/overlap packet timeline correction
+        int packetBoundaryFadeOutSamplesRemaining = 0;  // Fade-out preceding silence/overlap packet timeline correction
         uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
         uint64_t retainedNewestTrimSamples = 0;         // Oldest samples discarded by ring headroom retention
         uint64_t latencyTrimSamples = 0;                // Oldest samples trimmed to keep latency bounded
@@ -93,6 +96,7 @@ public:
         uint64_t lastRetainedTrimWarnTick = 0;        // Rate-limit explicit retained-audio warnings
         uint64_t lastExtremeDriftWarnTick = 0;        // Rate-limit chronic large-drift diagnostics
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
+        std::vector<float> packetBoundaryFadeOutTail;
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
 
         // Rate-based drift correction state
@@ -111,6 +115,52 @@ public:
         uint32_t ringBufferUnderrunCount = 0;
         AudioConfig::SourceType sourceType = AudioConfig::SystemAudio;
     };
+
+    static float ComputeRaisedCosineFade(size_t index, size_t totalSamples) {
+        if (totalSamples == 0) {
+            return 1.0f;
+        }
+
+        const float t = static_cast<float>(index + 1) / static_cast<float>(totalSamples);
+        return 0.5f * (1.0f - std::cos(3.14159265358979323846f * t));
+    }
+
+    static void ApplyPacketBoundaryFadeIn(float* interleavedSamples, size_t sampleCount, size_t channels,
+                                          size_t fadeSamples) {
+        if (!interleavedSamples || channels == 0 || sampleCount == 0 || fadeSamples == 0) {
+            return;
+        }
+
+        const size_t blendSamples = std::min(sampleCount, fadeSamples);
+        for (size_t sampleIdx = 0; sampleIdx < blendSamples; ++sampleIdx) {
+            const float fade = ComputeRaisedCosineFade(sampleIdx, fadeSamples);
+            const size_t base = sampleIdx * channels;
+            for (size_t ch = 0; ch < channels; ++ch) {
+                interleavedSamples[base + ch] *= fade;
+            }
+        }
+    }
+
+    static void ApplyPacketBoundaryFadeOut(std::vector<float>& interleavedTail, size_t channels, size_t fadeSamples) {
+        if (channels == 0 || fadeSamples == 0 || interleavedTail.empty()) {
+            return;
+        }
+
+        const size_t sampleCount = interleavedTail.size() / channels;
+        const size_t blendSamples = std::min(sampleCount, fadeSamples);
+        if (blendSamples == 0) {
+            return;
+        }
+
+        const size_t sampleStart = sampleCount - blendSamples;
+        for (size_t sampleIdx = 0; sampleIdx < blendSamples; ++sampleIdx) {
+            const float fade = 1.0f - ComputeRaisedCosineFade(sampleIdx, blendSamples);
+            const size_t base = (sampleStart + sampleIdx) * channels;
+            for (size_t ch = 0; ch < channels; ++ch) {
+                interleavedTail[base + ch] *= fade;
+            }
+        }
+    }
 
     // Per-track encoder with optional mixing (when multiple sources target same
     // track)
@@ -258,6 +308,9 @@ public:
             src.dropFadeStartL = 0.0f;
             src.dropFadeStartR = 0.0f;
             src.underrunFadeSamplesRemaining = 0;
+            src.packetBoundaryFadeInSamplesRemaining = 0;
+            src.packetBoundaryFadeOutSamplesRemaining = 0;
+            src.packetBoundaryFadeOutTail.clear();
             src.overflowDropSamples = 0;
             src.retainedNewestTrimSamples = 0;
             src.latencyTrimSamples = 0;
@@ -631,6 +684,9 @@ public:
                 src.dropFadeStartL = 0.0f;
                 src.dropFadeStartR = 0.0f;
                 src.underrunFadeSamplesRemaining = 0;
+                src.packetBoundaryFadeInSamplesRemaining = 0;
+                src.packetBoundaryFadeOutSamplesRemaining = 0;
+                src.packetBoundaryFadeOutTail.clear();
                 src.overflowDropSamples = 0;
                 src.retainedNewestTrimSamples = 0;
                 src.latencyTrimSamples = 0;
@@ -860,6 +916,9 @@ public:
             src.dropFadeStartL = 0.0f;
             src.dropFadeStartR = 0.0f;
             src.underrunFadeSamplesRemaining = 0;
+            src.packetBoundaryFadeInSamplesRemaining = 0;
+            src.packetBoundaryFadeOutSamplesRemaining = 0;
+            src.packetBoundaryFadeOutTail.clear();
             src.overflowDropSamples = 0;
             src.retainedNewestTrimSamples = 0;
             src.latencyTrimSamples = 0;
@@ -1155,7 +1214,9 @@ public:
         constexpr int64_t kWgcCoverageLossMaxBufferedLagMs = 300;
         constexpr int64_t kRuntimeMaxLeadSamples = SAMPLE_RATE / 10;    // 100ms above target
         constexpr int64_t kRuntimeMaxDropPerCall = SAMPLE_RATE / 200;   // 5ms
-        constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 200;  // 5ms
+        constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 100;  // 10ms
+        constexpr int64_t kOverloadAudioPullQuantumSamples = SAMPLE_RATE / 50;  // 20ms
+        constexpr int64_t kPacketTimelineFadeSamples = SAMPLE_RATE / 750;       // ~1.33ms
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 5;  // 200ms
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
@@ -1401,7 +1462,9 @@ public:
 
             int64_t samplesToEncode = pendingSamples;
             if (trackStartupSettled && !forceDrain) {
-                const int64_t quantumSamples = ce::audio::kDefaultAudioPullQuantumSamples;
+                const bool overloadPullQuantum = isWgcCfrRecording && (wgcOverloadFlags & 0x1u) != 0;
+                const int64_t quantumSamples =
+                    overloadPullQuantum ? kOverloadAudioPullQuantumSamples : ce::audio::kDefaultAudioPullQuantumSamples;
                 samplesToEncode = (samplesToEncode / quantumSamples) * quantumSamples;
                 if (samplesToEncode <= 0) {
                     continue;
@@ -1875,6 +1938,28 @@ public:
                                     }
                                     src.dropFadeSamplesRemaining -= blendSamples;
                                 }
+                                if (src.packetBoundaryFadeOutSamplesRemaining > 0) {
+                                    const int blendSamples = std::min(src.packetBoundaryFadeOutSamplesRemaining, outSamples);
+                                    for (int s = 0; s < blendSamples; ++s) {
+                                        const float alpha = 1.0f - ComputeRaisedCosineFade(
+                                                                       static_cast<size_t>(s),
+                                                                       static_cast<size_t>(src.packetBoundaryFadeOutSamplesRemaining));
+                                        outFloats[s * CHANNELS] *= alpha;
+                                        outFloats[s * CHANNELS + 1] *= alpha;
+                                    }
+                                    src.packetBoundaryFadeOutSamplesRemaining -= blendSamples;
+                                }
+                                if (src.packetBoundaryFadeInSamplesRemaining > 0) {
+                                    const int blendSamples = std::min(src.packetBoundaryFadeInSamplesRemaining, outSamples);
+                                    for (int s = 0; s < blendSamples; ++s) {
+                                        const float alpha = ComputeRaisedCosineFade(
+                                            static_cast<size_t>(s),
+                                            static_cast<size_t>(std::max(src.packetBoundaryFadeInSamplesRemaining, 1)));
+                                        outFloats[s * CHANNELS] *= alpha;
+                                        outFloats[s * CHANNELS + 1] *= alpha;
+                                    }
+                                    src.packetBoundaryFadeInSamplesRemaining -= blendSamples;
+                                }
                                 if (src.pendingUnderrunRecoveryFade) {
                                     src.underrunFadeSamplesRemaining = SAMPLE_RATE / 40;  // 25ms - smoother transitions
                                     src.pendingUnderrunRecoveryFade = false;
@@ -2067,22 +2152,22 @@ public:
                 }
             }
 
-            if (activeSources > 1) {
-                // Soft-knee limiter: linear below 0.9, hyperbolic above.
-                // Avoids the discontinuous gain jump of hard clipping which
-                // causes audible clicks when mixed sources briefly exceed 1.0.
-                // Maximum output is 1.0 (asymptotic), knee is smooth (C¹).
+            {
+                // Always use a smooth soft-knee limiter so any residual discontinuity from
+                // packet stitching, drift correction, or track transitions cannot turn into
+                // a hard clipped click at the encoder input.
                 constexpr float kKnee = 0.9f;
-                constexpr float kRange = 1.0f - kKnee;   // 0.1
-                constexpr float kScale = 1.0f / kRange;  // 10.0
+                constexpr float kRange = 1.0f - kKnee;
+                constexpr float kScale = 1.0f / kRange;
                 for (auto& s : mixBuffer) {
                     if (s > kKnee) {
-                        float excess = (s - kKnee) * kScale;  // 0..∞ mapped from kKnee..∞
+                        float excess = (s - kKnee) * kScale;
                         s = kKnee + kRange * (excess / (1.0f + excess));
                     } else if (s < -kKnee) {
                         float excess = (-s - kKnee) * kScale;
                         s = -(kKnee + kRange * (excess / (1.0f + excess)));
                     }
+                    s = std::tanh(s * 1.2f) / 1.2f;
                 }
             }
 
@@ -2572,6 +2657,9 @@ private:
                         src.bootstrapComplete = false;
                         src.pendingUnderrunRecoveryFade = false;
                         src.underrunFadeSamplesRemaining = 0;
+                        src.packetBoundaryFadeInSamplesRemaining = 0;
+                        src.packetBoundaryFadeOutSamplesRemaining = 0;
+                        src.packetBoundaryFadeOutTail.clear();
                         src.startupSyntheticRingSamples = 0;
                         src.startupSyntheticResamplerSamples = 0;
                         src.startupSyntheticPostSamples = 0;
@@ -2702,6 +2790,8 @@ private:
                                     const auto timelineAdjustment = ce::audio::ComputePacketTimelineAdjustment(
                                         packetStartSamples, static_cast<int64_t>(src.qpcAlignedWrittenSamples),
                                         targetFmt.sampleRate / 1000);
+                                    const size_t packetTimelineFadeSamples =
+                                        static_cast<size_t>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
                                     if (timelineAdjustment.gapSamples > 0) {
                                         const size_t gapSamples = static_cast<size_t>(timelineAdjustment.gapSamples);
                                         std::vector<float> silence(gapSamples * targetFmt.channels, 0.0f);
@@ -2715,15 +2805,34 @@ private:
                                         src.packetTimelineGapSamples += writtenGapSamples;
                                         if (writtenGapSamples > 0 && writeSamples > 0) {
                                             src.pendingUnderrunRecoveryFade = true;
+                                            src.packetBoundaryFadeInSamplesRemaining =
+                                                static_cast<int>(packetTimelineFadeSamples);
                                         }
                                     } else if (timelineAdjustment.overlapSamples > 0) {
                                         const size_t overlapSamples = static_cast<size_t>(std::min<int64_t>(
                                             timelineAdjustment.overlapSamples, static_cast<int64_t>(writeSamples)));
+                                        if (overlapSamples > 0 && writeSamples > overlapSamples) {
+                                            const size_t totalFloats = writeSamples * static_cast<size_t>(targetFmt.channels);
+                                            const size_t overlapFloats = overlapSamples * static_cast<size_t>(targetFmt.channels);
+                                            const size_t remainingFloats = totalFloats - overlapFloats;
+                                            const size_t fadeFloats =
+                                                std::min(remainingFloats,
+                                                         packetTimelineFadeSamples * static_cast<size_t>(targetFmt.channels));
+                                            src.packetBoundaryFadeOutTail.assign(writeFloats + overlapFloats,
+                                                                                 writeFloats + overlapFloats + fadeFloats);
+                                            ApplyPacketBoundaryFadeOut(src.packetBoundaryFadeOutTail,
+                                                                       static_cast<size_t>(targetFmt.channels),
+                                                                       packetTimelineFadeSamples);
+                                        } else {
+                                            src.packetBoundaryFadeOutTail.clear();
+                                        }
                                         writeFloats += overlapSamples * targetFmt.channels;
                                         writeSamples -= overlapSamples;
                                         src.packetTimelineOverlapSamples += overlapSamples;
                                         if (overlapSamples > 0 && writeSamples > 0) {
                                             src.pendingUnderrunRecoveryFade = true;
+                                            src.packetBoundaryFadeInSamplesRemaining =
+                                                static_cast<int>(packetTimelineFadeSamples);
                                         }
                                     }
 
@@ -2744,6 +2853,22 @@ private:
                                 }
 
                                 if (writeSamples > 0) {
+                                    if (!src.packetBoundaryFadeOutTail.empty()) {
+                                        const size_t fadeFloats =
+                                            std::min(src.packetBoundaryFadeOutTail.size(),
+                                                     writeSamples * static_cast<size_t>(targetFmt.channels));
+                                        std::memcpy(writeFloats, src.packetBoundaryFadeOutTail.data(),
+                                                    fadeFloats * sizeof(float));
+                                        src.packetBoundaryFadeOutTail.clear();
+                                    }
+                                    if (src.packetBoundaryFadeInSamplesRemaining > 0) {
+                                        const size_t fadeSamples =
+                                            static_cast<size_t>(src.packetBoundaryFadeInSamplesRemaining);
+                                        ApplyPacketBoundaryFadeIn(writeFloats, writeSamples,
+                                                                  static_cast<size_t>(targetFmt.channels), fadeSamples);
+                                        src.packetBoundaryFadeInSamplesRemaining =
+                                            fadeSamples > writeSamples ? static_cast<int>(fadeSamples - writeSamples) : 0;
+                                    }
                                     // WriteRetainNew: atomically drops oldest audio to make room,
                                     // then writes new audio. No race between GetFree/Skip/Write.
                                     const size_t writtenFloats =

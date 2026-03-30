@@ -1,4 +1,5 @@
 #include "video_encoder.h"
+#include "../common/capture_pipeline_policy.h"
 #include "../common/frame_timing_utils.h"
 #include "../common/raii_helpers.h"
 #include "../common/shared_defs.h"
@@ -2271,11 +2272,21 @@ void VideoEncoder::PublishRuntimeState() {
     if (encTick != 0 && (nowMs - encTick) <= kOverloadHoldMs) {
         flags |= 1u;
     }
+    if (pSharedMem->runtimeState.encoderBottlenecked.load(std::memory_order_relaxed) != 0) {
+        flags |= 1u;
+    }
     if (muxTick != 0 && (nowMs - muxTick) <= kOverloadHoldMs) {
         flags |= 2u;
     }
 
     pSharedMem->runtimeState.encoderOverloadFlags.store(flags, std::memory_order_relaxed);
+    const double sustainFps =
+        ce::capture_policy::GetEncoderSustainableOutputFps(static_cast<double>(std::max<int64_t>(lastEncodeTimeUs, 0)) /
+                                                           1000.0);
+    const uint32_t sustainFpsX100 = sustainFps > 0.0
+                                        ? static_cast<uint32_t>(std::clamp(sustainFps * 100.0, 0.0, 4294967295.0))
+                                        : 0u;
+    pSharedMem->runtimeState.encoderSustainFpsX100.store(sustainFpsX100, std::memory_order_relaxed);
 
     size_t qBytes = currentQueueBytes.load(std::memory_order_relaxed);
     uint32_t qBytes32 = (qBytes > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)qBytes;

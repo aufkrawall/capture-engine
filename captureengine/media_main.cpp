@@ -204,6 +204,7 @@ void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
     state.duplicateFrames.store(0, std::memory_order_relaxed);
     state.lateFrames.store(0, std::memory_order_relaxed);
     state.encoderOverloadFlags.store(0, std::memory_order_relaxed);
+    state.encoderSustainFpsX100.store(0, std::memory_order_relaxed);
     state.muxQueueBytes.store(0, std::memory_order_relaxed);
     state.muxQueuePackets.store(0, std::memory_order_relaxed);
     state.muxQueuePeakBytes.store(0, std::memory_order_relaxed);
@@ -453,8 +454,9 @@ struct CadenceHealthCounters {
 
 enum class WgcAdaptiveThrottleMode : uint32_t {
     kOff = 0,
-    kHeadroom108 = 1,
-    kHeadroom125 = 2,
+    kHeadroom105 = 1,
+    kHeadroom108 = 2,
+    kHeadroom125 = 3,
 };
 
 InjectFrameLineage MakeInjectFrameLineage(const QueuedFrame& frame) {
@@ -2382,8 +2384,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcNoReserveTickCount, wgcQueueTickSampleCount, outputFps);
                 const bool shouldEnterWgcLowSourceMode =
                     ce::capture_policy::ShouldEnterWgcLowSourceMode(wgcAdaptiveTelemetry);
-                const bool shouldExitWgcLowSourceMode =
-                    ce::capture_policy::ShouldExitWgcLowSourceMode(wgcAdaptiveTelemetry);
+                const bool bufferedReserveRecovered = bufferedWgcFrames.size() >= 3;
+                const bool shouldExitWgcLowSourceMode = ce::capture_policy::ShouldExitWgcLowSourceMode(
+                    wgcAdaptiveTelemetry, encoderTooSlowForTargetCurrent, bufferedReserveRecovered);
                 if (!wgcLowSourceModeActive) {
                     if (shouldEnterWgcLowSourceMode) {
                         if (wgcLowSourceStateChangeTick == 0) {
@@ -2402,7 +2405,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcLowSourceStateChangeTick = 0;
                     }
                 } else {
-                    if (shouldExitWgcLowSourceMode) {
+                    if (!encoderTooSlowForTargetCurrent && bufferedReserveRecovered) {
+                        wgcLowSourceModeActive = false;
+                        wgcLowSourceStateChangeTick = 0;
+                        LogInfo(
+                            "[WGC CFR] Low-source mode exited immediately: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                            wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                            wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                            bufferedWgcFrames.size());
+                    } else if (shouldExitWgcLowSourceMode) {
                         if (wgcLowSourceStateChangeTick == 0) {
                             wgcLowSourceStateChangeTick = wgcPolicyNowTick;
                         } else if ((wgcPolicyNowTick - wgcLowSourceStateChangeTick) >=
@@ -2511,7 +2522,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                 ce::capture_policy::IsEncoderTooSlowForTargetFps(
                                                     smoothedEncodeMs, frameIntervalMs, outputFps, 2.0);
 
-                    if (adaptiveHeadroomAllowed && severePressure) {
+                    const bool encoderShortfallPressure =
+                        encoderTooSlowForTargetCurrent && outputShortfallTicks > 0;
+                    if (encoderShortfallPressure) {
+                        desiredTargetFps =
+                            std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.05)));
+                        desiredThrottleMode = WgcAdaptiveThrottleMode::kHeadroom105;
+                    } else if (adaptiveHeadroomAllowed && severePressure) {
                         desiredTargetFps =
                             std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.08)));
                         desiredThrottleMode = WgcAdaptiveThrottleMode::kHeadroom108;
@@ -2542,10 +2559,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcAdaptiveThrottleMode = desiredThrottleMode;
                     } else {
                         constexpr uint64_t kWgcAdaptiveThrottleEnterHoldMs = 120;
+                        constexpr uint64_t kWgcAdaptiveThrottleEncoderPressureHoldMs = 200;
                         constexpr uint64_t kWgcAdaptiveThrottleExitHoldMs = 450;
                         constexpr uint64_t kWgcAdaptiveThrottleRetuneHoldMs = 180;
                         const uint64_t requiredHoldMs =
-                            currentTargetFps == 0
+                            encoderShortfallPressure ? kWgcAdaptiveThrottleEncoderPressureHoldMs
+                            : currentTargetFps == 0
                                 ? kWgcAdaptiveThrottleEnterHoldMs
                                 : (desiredTargetFps == 0 ? kWgcAdaptiveThrottleExitHoldMs
                                                          : kWgcAdaptiveThrottleRetuneHoldMs);
@@ -3215,18 +3234,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return;
             }
 
-            const bool preferDuplicateCatchup =
-                useScreenGrab && !config.video.useVFR &&
-                ce::capture_policy::ShouldPreferWgcDuplicateCatchup(
-                    encoderTooSlowForTargetCurrent,
-                    outputShortfallTicks, wgcAudioLeadExcessMsCurrent);
             uint32_t remainingFreshCatchupBudget =
                 useScreenGrab && !config.video.useVFR
-                    ? ce::capture_policy::GetWgcFreshCatchupBudgetThisLoop(preferDuplicateCatchup,
-                                                                           catchupTicksThisLoop)
+                    ? ce::capture_policy::GetWgcFreshCatchupBudgetThisLoop(catchupTicksThisLoop)
                     : 0u;
 
             for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
+                if (extraTick > 1) {
+                    break;
+                }
+
                 if (useScreenGrab && config.video.useVFR &&
                     !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
                         encoderTooSlowForTargetCurrent, bufferedWgcFrames.size(), frameCreditAccumulator,
@@ -3255,10 +3272,9 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 // For CFR recording, video smoothness is paramount. We have a 32-frame deep queue
                 // (~266ms at 120fps) to absorb temporary encoder spikes. We only force duplicate frames
-                // if we are severely behind (e.g. > 150ms delay) to prevent runaway latency.
+                // if we are meaningfully behind (e.g. > 50ms delay) to prevent runaway latency.
                 // Otherwise, we process the fresh frame to preserve the correct visual pacing.
-                const double cfrSmoothnessToleranceMs =
-                    (!config.video.useVFR && useScreenGrab && !preferDuplicateCatchup) ? 150.0 : 0.0;
+                const double cfrSmoothnessToleranceMs = (!config.video.useVFR && useScreenGrab) ? 50.0 : 0.0;
                 bool allowFreshCatchup = remainingFreshCatchupBudget > 0u;
 
                 if (elapsedFromTickStartMs > catchupBudgetMs + cfrSmoothnessToleranceMs) {
@@ -3936,6 +3952,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
             const double sustainableOutputFps = ce::capture_policy::GetEncoderSustainableOutputFps(smoothedEncodeMs);
+            state.encoderSustainFpsX100.store(
+                static_cast<uint32_t>(std::clamp(sustainableOutputFps * 100.0, 0.0, 4294967295.0)),
+                std::memory_order_relaxed);
             const uint32_t encoderBudgetUtilizationPermille =
                 ce::capture_policy::GetEncoderBudgetUtilizationPermille(smoothedEncodeMs, frameIntervalMs);
             const bool encoderTooSlowForTarget =

@@ -18,7 +18,7 @@ constexpr uint32_t kWgcLowSourceEmptyTickPermille = 80;
 constexpr uint32_t kWgcLowSourceExitEmptyTickPermille = 40;
 constexpr uint32_t kWgcLowSourceEnterHoldMs = 120;
 constexpr uint32_t kWgcLowSourceExitHoldMs = 250;
-constexpr uint32_t kWgcMaxSelectionLagTicks = 2;
+constexpr uint32_t kWgcMaxSelectionLagTicks = 1;
 constexpr uint32_t kWgcLowSourceMaxSelectionLagTicks = 3;
 constexpr uint32_t kWgcWarmupBufferedFrames = 3;
 constexpr uint32_t kWgcWarmupStableSourceFps = 118;
@@ -29,11 +29,10 @@ constexpr uint32_t kWgcReserveFragileBiasPermille = 375;
 constexpr uint32_t kWgcDeepUnderfeedReserveBiasPermille = 750;
 constexpr uint32_t kWgcSingleFreshHoldInputPermille = 995;
 constexpr uint32_t kWgcSteadyReserveBuildInputPermille = 995;
-constexpr uint32_t kWgcSelectionDelayTicks = 2;
+constexpr uint32_t kWgcSelectionDelayTicks = 1;
 constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
-constexpr uint32_t kWgcDuplicatePreferredFreshCatchupBudgetTicks = 2;
 constexpr double kWgcSevereShortfallDurationMs = 500.0;
 constexpr uint32_t kWgcDeepUnderfeedMarginFps = 8;
 constexpr uint32_t kWgcDeepUnderfeedEmptyTickPermille = 350;
@@ -201,24 +200,12 @@ inline bool IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(uint32_t outputF
            noFreshTickPermille < kWgcRecoveryEmptyTickPermille;
 }
 
-inline bool ShouldPreferWgcDuplicateCatchup(bool encoderBottlenecked, uint32_t outputShortfallTicks,
-                                            double audioLeadExcessMs,
-                                            double minAudioLeadMs = kWgcAudioLeadCatchupThresholdMs) {
-    return encoderBottlenecked && outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks &&
-           ShouldPrioritizeWgcAudioLeadCatchup(audioLeadExcessMs, minAudioLeadMs);
-}
-
-inline uint32_t GetWgcFreshCatchupBudgetThisLoop(bool preferDuplicateCatchup, uint32_t catchupTicksThisLoop) {
+inline uint32_t GetWgcFreshCatchupBudgetThisLoop(uint32_t catchupTicksThisLoop) {
     if (catchupTicksThisLoop <= 1u) {
         return 0u;
     }
 
-    const uint32_t extraTicks = catchupTicksThisLoop - 1u;
-    if (!preferDuplicateCatchup) {
-        return extraTicks;
-    }
-
-    return std::min(extraTicks, kWgcDuplicatePreferredFreshCatchupBudgetTicks);
+    return catchupTicksThisLoop - 1u;
 }
 
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, bool encoderActivelyTooSlow,
@@ -578,8 +565,13 @@ inline bool ShouldExitWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry,
     return !ShouldEnterWgcLowSourceMode(telemetry) && telemetry.bufferedWgcFrames <= 4;
 }
 
-inline bool ShouldExitWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
+inline bool ShouldExitWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry, bool encoderTooSlowForTarget = false,
+                                       bool bufferedReserveRecovered = false) {
     if (telemetry.outputFps == 0) {
+        return true;
+    }
+
+    if (!encoderTooSlowForTarget && bufferedReserveRecovered) {
         return true;
     }
 

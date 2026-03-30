@@ -250,6 +250,7 @@ bool IPCManager::GetLatestFrame(SharedMemoryLayout& outState) {
     outState.runtimeState.duplicateFrames = pSharedMem->runtimeState.duplicateFrames.load();
     outState.runtimeState.lateFrames = pSharedMem->runtimeState.lateFrames.load();
     outState.runtimeState.encoderOverloadFlags = pSharedMem->runtimeState.encoderOverloadFlags.load();
+    outState.runtimeState.encoderSustainFpsX100 = pSharedMem->runtimeState.encoderSustainFpsX100.load();
     outState.runtimeState.muxQueueBytes = pSharedMem->runtimeState.muxQueueBytes.load();
     outState.runtimeState.muxQueuePackets = pSharedMem->runtimeState.muxQueuePackets.load();
     outState.runtimeState.muxQueuePeakBytes = pSharedMem->runtimeState.muxQueuePeakBytes.load();

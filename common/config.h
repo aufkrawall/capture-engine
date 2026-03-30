@@ -260,7 +260,7 @@ struct PseudoOverlayConfig {
     int mode = 0;               // 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
     bool alwaysRender = false;  // Ghost mode: keep window present at alpha=1 when idle
     bool alwaysRenderOnlyWhenGame = false;
-    bool showEncoderOverloadWarn = false;
+    bool showEncoderOverloadWarn = true;
     std::string processList;  // Pipe-delimited process names for foreground detection
 };
 

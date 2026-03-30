@@ -48,6 +48,24 @@ bool OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) {
            a.loadColorMed == b.loadColorMed && a.loadColorHigh == b.loadColorHigh &&
            a.textUpdateInterval == b.textUpdateInterval && a.hdrPaperWhite == b.hdrPaperWhite;
 }
+
+std::string FormatEncoderOverloadLabel(uint32_t sustainFpsX100, uint32_t targetFps) {
+    const double sustainFps = static_cast<double>(sustainFpsX100) / 100.0;
+    if (targetFps == 0 || sustainFpsX100 == 0) {
+        return "!ENCODER OVERLOAD!";
+    }
+
+    char buffer[64];
+    const double ratio = sustainFps / static_cast<double>(targetFps);
+    if (ratio >= 0.95) {
+        std::snprintf(buffer, sizeof(buffer), "!ENC LIMIT %.1f/%u!", sustainFps, targetFps);
+    } else if (ratio >= 0.80) {
+        std::snprintf(buffer, sizeof(buffer), "!ENC OVER %.1f/%u!", sustainFps, targetFps);
+    } else {
+        std::snprintf(buffer, sizeof(buffer), "!ENC SEVERE %.1f/%u!", sustainFps, targetFps);
+    }
+    return buffer;
+}
 }  // namespace
 
 // Helper to detect Windows DPI scaling
@@ -1041,7 +1059,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
         if (showOverloadWarning) {
             // Show recording time with overload warning
-            snprintf(buf, 64, "REC %02d:%02d:%02d !ENCODER OVERLOAD!", hours, minutes, seconds);
+            const uint32_t targetFps = mem.runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
+            const uint32_t sustainFpsX100 = mem.runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
+            const std::string overloadLabel = FormatEncoderOverloadLabel(sustainFpsX100, targetFps);
+            std::snprintf(buf, sizeof(buf), "REC %02d:%02d:%02d %s", hours, minutes, seconds, overloadLabel.c_str());
             renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
         } else {
             // Normal recording display

@@ -482,8 +482,8 @@ mode=0
 always_render=false
 ; always_render_only_when_game - Only use always_render when a whitelisted game is focused
 always_render_only_when_game=false
-; show_encoder_overload_warnings - Show "Encoder overloaded!" warning
-show_encoder_overload_warnings=false
+; show_encoder_overload_warnings - Show encoder overload status warning
+show_encoder_overload_warnings=true
 ; process_list - Pipe-delimited list of process names for warning detection (e.g. game1.exe|game2.exe)
 ; These are the processes where "NOT RECORDING" warning shows when focused but not recording
 process_list=
@@ -1141,7 +1141,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.pseudoOverlay.mode = std::clamp(GetInt("pseudo-overlay", "mode", 0), 0, 2);
     config.pseudoOverlay.alwaysRender = GetBool("pseudo-overlay", "always_render", false);
     config.pseudoOverlay.alwaysRenderOnlyWhenGame = GetBool("pseudo-overlay", "always_render_only_when_game", false);
-    config.pseudoOverlay.showEncoderOverloadWarn = GetBool("pseudo-overlay", "show_encoder_overload_warnings", false);
+    config.pseudoOverlay.showEncoderOverloadWarn = GetBool("pseudo-overlay", "show_encoder_overload_warnings", true);
     {
         std::string procList = GetStr("pseudo-overlay", "process_list", "");
         // Process list is pipe-delimited in INI (same as OBSIndicator convention)

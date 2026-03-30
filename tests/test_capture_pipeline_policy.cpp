@@ -215,15 +215,15 @@ TEST(CapturePipelinePolicyTest, WgcFreshnessGuardRequiresRecentTimestamp) {
     const int64_t minFreshNormal = policy::GetWgcMinimumFreshTimestampQpc(1000, 1500, targetIntervalTicks, false);
     const int64_t minFreshLowSource = policy::GetWgcMinimumFreshTimestampQpc(1000, 1500, targetIntervalTicks, true);
 
-    EXPECT_EQ(minFreshNormal, 1300);
+    EXPECT_EQ(minFreshNormal, 1400);
     EXPECT_EQ(minFreshLowSource, 1200);
-    EXPECT_TRUE(policy::IsWgcTimestampFreshEnough(1300, minFreshNormal));
-    EXPECT_FALSE(policy::IsWgcTimestampFreshEnough(1299, minFreshNormal));
+    EXPECT_TRUE(policy::IsWgcTimestampFreshEnough(1400, minFreshNormal));
+    EXPECT_FALSE(policy::IsWgcTimestampFreshEnough(1399, minFreshNormal));
 }
 
 TEST(CapturePipelinePolicyTest, WgcStaleUniqueFallbackAllowsOneExtraTickOfLag) {
     const int64_t targetIntervalTicks = 100;
-    EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, false, false), 1200);
+    EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, false, false), 1300);
     EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, true, false), 1100);
     EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, true, true), 1001);
     EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(100, 1500, targetIntervalTicks, true, true), 700);
@@ -235,10 +235,10 @@ TEST(CapturePipelinePolicyTest, WgcStaleUniqueFallbackStillRequiresNewSourceTime
     EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1500, 1500, targetIntervalTicks, false, false), 1501);
 }
 
-TEST(CapturePipelinePolicyTest, WgcSelectionTargetDelaysLiveSelectionByTwoTicks) {
-    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(1500, 1400, 100, true), 1300);
+TEST(CapturePipelinePolicyTest, WgcSelectionTargetDelaysLiveSelectionByOneTick) {
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(1500, 1400, 100, true), 1400);
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(1500, 1400, 100, false), 1500);
-    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(0, 1400, 100, true), 1200);
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(0, 1400, 100, true), 1300);
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(50, 40, 100, true), 50);
 }
 
@@ -375,7 +375,7 @@ TEST(CapturePipelinePolicyTest, WgcCoverageCatchupClampRelaxesAtSevereShortfall)
 }
 
 TEST(CapturePipelinePolicyTest, WgcLiveRecoveryClampHugsLiveTimeAndDisablesReserveBias) {
-    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, false, 0, false), 1400);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, false, 0, false), 1500);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, true, 20, true), 1500);
     EXPECT_FALSE(
         policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true, true));
@@ -398,11 +398,9 @@ TEST(CapturePipelinePolicyTest, TimerRebaseDiscardDropsOnlyOutstandingShortfall)
     EXPECT_EQ(policy::GetCfrTimerRebaseDiscardTicks(221, 18, 203), 0u);
 }
 
-TEST(CapturePipelinePolicyTest, TimerRebaseDebtDiscardIsEnabledForInjectOnly) {
-    // Both Inject and WGC must NOT discard timer rebase debt in CFR mode
-    // to preserve exact track lengths perfectly.
-    EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(false));
-    EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(true));
+TEST(CapturePipelinePolicyTest, TimerRebaseDebtDiscardIsEnabledForAllCfrModes) {
+    EXPECT_TRUE(policy::ShouldDiscardCfrTimerRebaseDebt(false));
+    EXPECT_TRUE(policy::ShouldDiscardCfrTimerRebaseDebt(true));
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThreshold) {
@@ -460,16 +458,9 @@ TEST(CapturePipelinePolicyTest, WgcAudioLeadPressureRestoresGentleCatchupUnderEn
 }
 
 TEST(CapturePipelinePolicyTest, WgcAudioLeadPressureEscalatesAtForceThreshold) {
-    EXPECT_FALSE(policy::ShouldPreferWgcDuplicateCatchup(
-        true, policy::kCfrShortfallForceCatchupThresholdTicks - 1, policy::kWgcAudioLeadCatchupThresholdMs));
-    EXPECT_FALSE(policy::ShouldPreferWgcDuplicateCatchup(
-        false, policy::kCfrShortfallForceCatchupThresholdTicks, policy::kWgcAudioLeadCatchupThresholdMs));
-    EXPECT_TRUE(policy::ShouldPreferWgcDuplicateCatchup(
-        true, policy::kCfrShortfallForceCatchupThresholdTicks, policy::kWgcAudioLeadCatchupThresholdMs));
-
-    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(false, 4), 3u);
-    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(true, 4), 2u);
-    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(true, 1), 0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4), 3u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(2), 1u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(1), 0u);
 
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, true, 4, 2.0,
                                                  policy::kCfrShortfallForceCatchupThresholdTicks, 120, 118, 124, 0,

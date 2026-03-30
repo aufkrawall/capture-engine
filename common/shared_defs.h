@@ -33,7 +33,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 16: Added capture cadence/telemetry diagnostics fields
 // Version 17: Added WGC-specific source cadence/jitter/throttle telemetry
 // Version 20: Added OverlayConfig::screenshotIncludeOverlay
-static constexpr uint32_t SHARED_MEMORY_VERSION = 21;
+// Version 22: Added encoder sustainable FPS telemetry for overload UI
+static constexpr uint32_t SHARED_MEMORY_VERSION = 22;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -309,6 +310,7 @@ struct alignas(8) CaptureState {
     std::atomic<uint32_t> lateFrames{0};       // Encode time exceeded frame budget
 
     std::atomic<uint32_t> encoderOverloadFlags{0};
+    std::atomic<uint32_t> encoderSustainFpsX100{0};
     std::atomic<uint32_t> muxQueueBytes{0};
     std::atomic<uint32_t> muxQueuePackets{0};
     std::atomic<uint32_t> muxQueuePeakBytes{0};
