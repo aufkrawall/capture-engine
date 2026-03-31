@@ -358,6 +358,7 @@ public:
 
     std::map<int, bool> trackWasSilent;
     std::map<int, bool> trackBootstrapComplete;
+    std::map<int, bool> trackFirstPullAfterBootstrap;
     std::map<int, int> trackBootstrapWaitLogCounters;
 
     // Cached track→source index map, built once in StartRecording to avoid
@@ -640,6 +641,7 @@ public:
 
             trackWasSilent.clear();
             trackBootstrapComplete.clear();
+            trackFirstPullAfterBootstrap.clear();
             trackBootstrapWaitLogCounters.clear();
 
             // Build the track→source index map once (used every PullAndEncodeAudio call)
@@ -1217,10 +1219,10 @@ public:
         constexpr int64_t kOverloadAudioPullQuantumSamples = SAMPLE_RATE / 50;  // 20ms
         constexpr int64_t kPacketTimelineFadeSamples = SAMPLE_RATE / 750;       // ~1.33ms
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
-        constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 5;  // 200ms
+        constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 10;  // 100ms
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
-        constexpr double kTier1MaxPitchPercent = 0.5;  // 0.5% covers ~2400 samples/10s at 48kHz
+        constexpr double kTier1MaxPitchPercent = 1.0;  // 1.0% covers ~4800 samples/10s at 48kHz
         constexpr int64_t kTier2DriftThresholdMs = 20;
         constexpr int64_t kWgcEncoderShortfallBufferedLagMaxMs = 4000;
         constexpr uint32_t kWgcEncoderHealthyDeliveryMarginFps = 4;
@@ -1343,14 +1345,14 @@ public:
         uint32_t maxWgcAudioLeadExcessSamples = 0;
 
         // Wall-clock audio anchor: when the video timeline has fallen behind real time
-        // (shortfall >200ms), use wall-clock elapsed time as the audio pull target instead
-        // of the stalled video PTS. In CFR mode, pipelineLag stays near 0 even when the
-        // encoder is overloaded (the PTS advances at a fixed rate), so the actual overload
-        // is detected via timelineShortfallMs = max(0, wallClock - videoTarget).
-        // Without this, the audio pull would stall with the video encoder, causing the
-        // ring buffer to grow unbounded and audio-video desync at recording end.
+        // (shortfall >500ms), use wall-clock elapsed time as the audio pull target instead
+        // of the stalled video PTS. Only for non-CFR modes. In CFR mode, video PTS advances
+        // at exactly the target framerate regardless of encoder wall-clock speed, so the
+        // "shortfall" between wall clock and PTS is expected and harmless. Activating the
+        // anchor in CFR mode would pull audio to wall clock, making it advance faster than
+        // video PTS and causing unbounded desync.
         const int64_t wallVideoLagMs = timelineShortfallMs;
-        if (!forceDrain && isWgcCfrRecording && wallVideoLagMs > 200) {
+        if (!forceDrain && !isWgcCfrRecording && wallVideoLagMs > 500) {
             const int64_t steadyElapsedMs = steadyElapsedUs / 1000;
             if (steadyElapsedMs > audioTargetMs && steadyElapsedMs - audioTargetMs > 200) {
                 audioTargetMs = steadyElapsedMs;
@@ -1465,6 +1467,7 @@ public:
                 }
 
                 trackBootstrapComplete[track] = true;
+                trackFirstPullAfterBootstrap[track] = true;
                 trackBootstrapWaitLogCounters[track] = 0;
                 DLL_Log("[PullAudio] Track %d bootstrap complete - target=%lldms samples=%lld forced=%d trimmed=%llu",
                         track, trackAudioTargetMs, targetSamples, forcedBootstrap ? 1 : 0,
@@ -1481,7 +1484,7 @@ public:
             }
 
             int64_t samplesToEncode = pendingSamples;
-            const bool initialTrackCatchup = (encodedSamplesPerSource[firstSrcIdx] == 0);
+            const bool initialTrackCatchup = trackFirstPullAfterBootstrap.count(track) && trackFirstPullAfterBootstrap[track];
             if (trackStartupSettled && !forceDrain) {
                 // After bootstrap, the pull quantum rounding can leave a residual (up to 960
                 // samples = 20ms) that accumulates into a constant audio-video offset. Skip
@@ -1495,6 +1498,9 @@ public:
                 if (samplesToEncode <= 0) {
                     continue;
                 }
+            }
+            if (initialTrackCatchup) {
+                trackFirstPullAfterBootstrap[track] = false;
             }
 
             const int64_t MAX_GAP_SAMPLES = (SAMPLE_RATE * 2);
@@ -1843,9 +1849,9 @@ public:
                                     // --- Tier 2: Ring buffer trim with crossfade ---
                                     // Activates when drift exceeds what Tier 1 can handle alone.
                                     // Normally suppressed in WGC CFR mode (prefer video repeats over
-                                    // audio cuts), but enabled when the wall-clock audio anchor is
-                                    // active (encoder severely stalled) to prevent unbounded drift.
-                                    const bool wallClockAnchorActive = isWgcCfrRecording && wallVideoLagMs > 200;
+                                    // audio cuts), and enabled for non-CFR modes when the wall-clock
+                                    // audio anchor is active (encoder severely stalled).
+                                    const bool wallClockAnchorActive = !isWgcCfrRecording && wallVideoLagMs > 500;
                                     if (isWgcCfrRecording && !wgcEncoderOnlyOverload &&
                                         (!kWgcPreferVideoRepeatsOverAudioCuts || wallClockAnchorActive) &&
                                         ce::audio::ShouldActivateTier2Trim(trueDrift, SAMPLE_RATE,
@@ -2135,6 +2141,22 @@ public:
                                 src.ringBufferPeakSamples = 0;
                                 src.ringBufferUnderrunCount = 0;
                             }
+                        }
+                        constexpr size_t kMaxSinglePadSamples = SAMPLE_RATE / 50;  // 20ms
+                        if (padSamples > kMaxSinglePadSamples && dropLogCounter++ % 20 == 0) {
+                            DLL_Log(
+                                "[PullAudio] WARNING: Large single padding event - src %d padding %zu samples "
+                                "(cap=%zu) - indicates timing problem, not transient underrun",
+                                (int)srcIdx, padSamples, kMaxSinglePadSamples);
+                        }
+                        constexpr size_t kTotalPadWarningSamples = SAMPLE_RATE / 10;  // 100ms
+                        if (src.underrunPadSamples > kTotalPadWarningSamples &&
+                            (src.underrunPadSamples - padSamples) <= kTotalPadWarningSamples) {
+                            DLL_Log(
+                                "[PullAudio] WARNING: Total silence padding exceeded %zu samples (%.1fms) for src %d - "
+                                "ring buffer is being drained too fast",
+                                kTotalPadWarningSamples, (double)src.underrunPadSamples * 1000.0 / SAMPLE_RATE,
+                                (int)srcIdx);
                         }
                     }
                     src.pendingUnderrunRecoveryFade = true;

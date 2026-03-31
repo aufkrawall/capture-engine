@@ -58,6 +58,24 @@ bool MediaEngine_Load(const char* exeDir) {
     }
     LogInfo("[MediaEngine] Set DLL search path to: %s", ffmpegDir);
 
+    // Pre-load libc++.dll from the FFmpeg directory. libvpl-2.dll has a static
+    // link-time dependency on libc++.dll. SetDllDirectoryA only affects
+    // LoadLibrary/delay-load search, not transitive static import resolution
+    // by the OS loader. Pre-loading makes the module available before
+    // mediaengine.dll triggers the FFmpeg import chain.
+    char libcxxPath[MAX_PATH];
+    snprintf(libcxxPath, sizeof(libcxxPath), "%s\\libc++.dll", ffmpegDir);
+    if (GetFileAttributesA(libcxxPath) != INVALID_FILE_ATTRIBUTES) {
+        HMODULE hLibcxx = LoadLibraryA(libcxxPath);
+        if (hLibcxx) {
+            LogInfo("[MediaEngine] Pre-loaded libc++.dll from FFmpeg dir");
+        } else {
+            LogError("[MediaEngine] Failed to pre-load libc++.dll: error %lu", GetLastError());
+        }
+    } else {
+        LogInfo("[MediaEngine] libc++.dll not found in FFmpeg dir (non-sanitizer build)");
+    }
+
     char dllPath[MAX_PATH];
     snprintf(dllPath, sizeof(dllPath), "%s\\mediaengine.dll", exeDir);
 
