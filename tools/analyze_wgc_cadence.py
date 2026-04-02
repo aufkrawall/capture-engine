@@ -49,6 +49,51 @@ def safe_mean(values):
     return statistics.mean(values) if values else 0.0
 
 
+def format_metric(value):
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
+
+def make_upper_bound_check(name, actual, limit, unit=""):
+    suffix = f" {unit}" if unit else ""
+    return {
+        "name": name,
+        "passed": actual <= limit,
+        "actual": f"{format_metric(actual)}{suffix}",
+        "expected": f"<= {format_metric(limit)}{suffix}",
+    }
+
+
+def make_lower_bound_check(name, actual, limit, unit=""):
+    suffix = f" {unit}" if unit else ""
+    return {
+        "name": name,
+        "passed": actual >= limit,
+        "actual": f"{format_metric(actual)}{suffix}",
+        "expected": f">= {format_metric(limit)}{suffix}",
+    }
+
+
+def print_checks(checks):
+    print("checks:")
+    if not checks:
+        print("  none")
+        return
+    for check in checks:
+        status = "PASS" if check["passed"] else "FAIL"
+        print(
+            "  {status} {name}: actual={actual} expected={expected}".format(
+                status=status,
+                name=check["name"],
+                actual=check["actual"],
+                expected=check["expected"],
+            )
+        )
+
+
 def summarize_group(name, items):
     print(f"{name}:")
     print(f"  samples: {len(items)}")
@@ -118,6 +163,46 @@ def main():
         description="Analyze WGC cadence/perf correlations from media.log"
     )
     parser.add_argument("log", type=Path)
+    parser.add_argument(
+        "--min-avg-delivered-fps",
+        type=float,
+        help="Fail if average delivered FPS across matched cadence/perf windows drops below this value",
+    )
+    parser.add_argument(
+        "--min-avg-min-delivered-250-fps",
+        type=float,
+        help="Fail if the average 250ms minimum delivered FPS drops below this value",
+    )
+    parser.add_argument(
+        "--max-avg-tick-dup",
+        type=float,
+        help="Fail if average cadence TickDup exceeds this value",
+    )
+    parser.add_argument(
+        "--max-avg-shortfall",
+        type=float,
+        help="Fail if average cadence shortfall exceeds this value",
+    )
+    parser.add_argument(
+        "--max-shortfall",
+        type=float,
+        help="Fail if any cadence shortfall exceeds this value",
+    )
+    parser.add_argument(
+        "--max-avg-empty-permille",
+        type=float,
+        help="Fail if average queue-empty/fresh-miss permille exceeds this value",
+    )
+    parser.add_argument(
+        "--max-avg-stale-drops",
+        type=float,
+        help="Fail if average stale-drop count exceeds this value",
+    )
+    parser.add_argument(
+        "--max-consistency-issues",
+        type=int,
+        help="Fail if more than this many perf/cadence windows violate internal consistency checks",
+    )
     args = parser.parse_args()
 
     lines = args.log.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -171,6 +256,14 @@ def main():
     print(f"samples: {len(samples)}")
     if not samples:
         return
+
+    avg_tick_dup = safe_mean([item["tick_dup"] for item in samples])
+    avg_shortfall = safe_mean([item["shortfall"] for item in samples])
+    max_shortfall = max(item["shortfall"] for item in samples)
+    avg_delivered_fps = safe_mean([item["deliv"] for item in samples])
+    avg_min_delivered_250_fps = safe_mean([item["min_del_250"] for item in samples])
+    avg_empty_permille = safe_mean([item["empty_pm"] for item in samples])
+    avg_stale_drops = safe_mean([item["drop_stale"] for item in samples])
 
     throttle_on = [
         sample
@@ -244,6 +337,47 @@ def main():
                 shortfall=item["shortfall"],
             )
         )
+
+    print("summary:")
+    print(f"  avg_tick_dup={avg_tick_dup:.3f}")
+    print(f"  avg_shortfall={avg_shortfall:.3f}")
+    print(f"  max_shortfall={max_shortfall}")
+    print(f"  avg_delivered_fps={avg_delivered_fps:.3f}")
+    print(f"  avg_min_delivered_250_fps={avg_min_delivered_250_fps:.3f}")
+    print(f"  avg_empty_permille={avg_empty_permille:.3f}")
+    print(f"  avg_stale_drops={avg_stale_drops:.3f}")
+    print(f"  consistency_issues={len(inconsistent)}")
+
+    checks = []
+    if args.min_avg_delivered_fps is not None:
+        checks.append(make_lower_bound_check("avg_delivered_fps", avg_delivered_fps, args.min_avg_delivered_fps, "fps"))
+    if args.min_avg_min_delivered_250_fps is not None:
+        checks.append(
+            make_lower_bound_check(
+                "avg_min_delivered_250_fps", avg_min_delivered_250_fps, args.min_avg_min_delivered_250_fps, "fps"
+            )
+        )
+    if args.max_avg_tick_dup is not None:
+        checks.append(make_upper_bound_check("avg_tick_dup", avg_tick_dup, args.max_avg_tick_dup, "ticks"))
+    if args.max_avg_shortfall is not None:
+        checks.append(make_upper_bound_check("avg_shortfall", avg_shortfall, args.max_avg_shortfall, "ticks"))
+    if args.max_shortfall is not None:
+        checks.append(make_upper_bound_check("max_shortfall", max_shortfall, args.max_shortfall, "ticks"))
+    if args.max_avg_empty_permille is not None:
+        checks.append(
+            make_upper_bound_check("avg_empty_permille", avg_empty_permille, args.max_avg_empty_permille, "pm")
+        )
+    if args.max_avg_stale_drops is not None:
+        checks.append(make_upper_bound_check("avg_stale_drops", avg_stale_drops, args.max_avg_stale_drops, "count"))
+    if args.max_consistency_issues is not None:
+        checks.append(
+            make_upper_bound_check("consistency_issues", len(inconsistent), args.max_consistency_issues, "windows")
+        )
+
+    print_checks(checks)
+
+    if any(not check["passed"] for check in checks):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

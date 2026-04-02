@@ -50,6 +50,15 @@ TEST(AudioSyncUtilsTest, LatencyAdjustedDriftRemovesIntentionalPullOffset) {
     EXPECT_EQ(ce::audio::ComputeLatencyAdjustedAvDriftMs(15, 20), 35);
 }
 
+TEST(AudioSyncUtilsTest, DurationUsToSamplesRoundsToNearestSample) {
+    EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(8333, 48000), 400);
+    EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(16667, 48000), 800);
+    EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(20833, 48000), 1000);
+    EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(0, 48000), 0);
+    EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(-1, 48000), 0);
+    EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(1000, 0), 0);
+}
+
 TEST(AudioSyncUtilsTest, WgcSteadyStateDriftCompensationRequiresHealthyLargeLead) {
     EXPECT_TRUE(ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(true, 0, 12000, 960, 9600));
     EXPECT_FALSE(ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(false, 0, 12000, 960, 9600));

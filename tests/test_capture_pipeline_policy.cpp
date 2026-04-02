@@ -273,6 +273,43 @@ TEST(CapturePipelinePolicyTest, WgcLiveRecoveryModeTracksSourceSchedulerAndEncod
     EXPECT_TRUE(policy::ShouldExitWgcLiveRecoveryMode(telemetry, 1, false));
 }
 
+TEST(CapturePipelinePolicyTest, WgcLiveRecoveryStateClassificationIsExplicit) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 120;
+    telemetry.recentDeliveredMin250Fps = 120;
+    telemetry.recentDeliveredMin500Fps = 120;
+    telemetry.recentInputMin250Fps = 120;
+    telemetry.recentInputMin500Fps = 120;
+    telemetry.emptyTickPermille = 0;
+
+    EXPECT_EQ(policy::ClassifyWgcLiveRecoveryState(telemetry, 0, false), policy::WgcLiveRecoveryState::kHealthy);
+    EXPECT_STREQ(policy::WgcLiveRecoveryStateToString(policy::WgcLiveRecoveryState::kHealthy), "healthy");
+
+    telemetry.recentInputMin250Fps = 100;
+    telemetry.recentInputMin500Fps = 100;
+    EXPECT_EQ(
+        policy::ClassifyWgcLiveRecoveryState(telemetry, 4, false), policy::WgcLiveRecoveryState::kSourceStarved);
+    EXPECT_STREQ(policy::WgcLiveRecoveryStateToString(policy::WgcLiveRecoveryState::kSourceStarved),
+                 "source-starved");
+
+    telemetry.recentInputMin250Fps = 120;
+    telemetry.recentInputMin500Fps = 120;
+    telemetry.recentDeliveredMin250Fps = 100;
+    telemetry.recentDeliveredMin500Fps = 100;
+    EXPECT_EQ(policy::ClassifyWgcLiveRecoveryState(telemetry, 4, false),
+              policy::WgcLiveRecoveryState::kSchedulerLimited);
+    EXPECT_STREQ(policy::WgcLiveRecoveryStateToString(policy::WgcLiveRecoveryState::kSchedulerLimited),
+                 "scheduler-limited");
+
+    telemetry.recentDeliveredMin250Fps = 120;
+    telemetry.recentDeliveredMin500Fps = 120;
+    EXPECT_EQ(policy::ClassifyWgcLiveRecoveryState(telemetry, policy::kWgcRecoveryEnterShortfallTicks, true),
+              policy::WgcLiveRecoveryState::kEncoderLimited);
+    EXPECT_STREQ(policy::WgcLiveRecoveryStateToString(policy::WgcLiveRecoveryState::kEncoderLimited),
+                 "encoder-limited");
+}
+
 TEST(CapturePipelinePolicyTest, WgcSelectionDelayIsUnconditional) {
     EXPECT_TRUE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, true));
     EXPECT_TRUE(policy::ShouldApplyWgcSelectionDelay(true, 1, false, true));

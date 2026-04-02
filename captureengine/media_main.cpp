@@ -2392,11 +2392,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                     0u,
                     0.0,
                 };
-                wgcSourceStarvedCurrent = ce::capture_policy::IsWgcSourceStarved(wgcAdaptiveTelemetry);
-                wgcSchedulerLimitedCurrent = ce::capture_policy::IsWgcSchedulerDeliveryLimited(wgcAdaptiveTelemetry);
+                const ce::capture_policy::WgcLiveRecoveryState wgcLiveRecoveryStateCurrent =
+                    ce::capture_policy::ClassifyWgcLiveRecoveryState(
+                        wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
+                wgcSourceStarvedCurrent =
+                    wgcLiveRecoveryStateCurrent == ce::capture_policy::WgcLiveRecoveryState::kSourceStarved;
+                wgcSchedulerLimitedCurrent =
+                    wgcLiveRecoveryStateCurrent == ce::capture_policy::WgcLiveRecoveryState::kSchedulerLimited;
                 wgcEncoderRecoveryLimitedCurrent =
-                    encoderTooSlowForTargetCurrent &&
-                    outputShortfallTicks >= ce::capture_policy::kWgcRecoveryEnterShortfallTicks;
+                    wgcLiveRecoveryStateCurrent == ce::capture_policy::WgcLiveRecoveryState::kEncoderLimited;
                 wgcReservePressureActive = ce::capture_policy::IsWgcReservePressureActive(
                     wgcNoReserveTickCount, wgcQueueTickSampleCount, outputFps);
                 const bool shouldEnterWgcLowSourceMode =
@@ -2462,8 +2466,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                             wgcLiveRecoveryModeActive = true;
                             wgcLiveRecoveryStateChangeTick = 0;
                             LogInfo(
-                                "[WGC CFR] Live-recovery entered: srcStarved=%d schedLimited=%d encLimited=%d "
+                                "[WGC CFR] Live-recovery entered: state=%s srcStarved=%d schedLimited=%d encLimited=%d "
                                 "shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                                ce::capture_policy::WgcLiveRecoveryStateToString(wgcLiveRecoveryStateCurrent),
                                 wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                                 wgcEncoderRecoveryLimitedCurrent ? 1 : 0, outputShortfallTicks,
                                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),

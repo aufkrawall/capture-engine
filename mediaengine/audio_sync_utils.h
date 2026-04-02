@@ -253,6 +253,16 @@ inline int64_t ComputeLatencyAdjustedAvDriftMs(int64_t rawAvDriftMs, int64_t int
     return rawAvDriftMs + std::max<int64_t>(intentionalPullLatencyMs, 0);
 }
 
+inline int64_t ComputeDurationUsToSamples(int64_t durationUs, int sampleRate) {
+    if (sampleRate <= 0 || durationUs <= 0) {
+        return 0;
+    }
+
+    constexpr int64_t kMicrosecondsPerSecond = 1000000;
+    return ((durationUs * static_cast<int64_t>(sampleRate)) + (kMicrosecondsPerSecond / 2)) /
+           kMicrosecondsPerSecond;
+}
+
 inline bool ShouldAllowWgcSteadyStateDriftCompensation(bool trackStartupSettled, int64_t videoPipelineLagMs,
                                                        int64_t bufferedSamples, int64_t targetLatencySamples,
                                                        int64_t leadWarningSamples) {

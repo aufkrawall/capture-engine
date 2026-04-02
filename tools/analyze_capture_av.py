@@ -114,6 +114,144 @@ def format_seconds(value):
     return f"{value:.6f}s"
 
 
+def format_metric(value):
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
+
+def parse_named_int_thresholds(entries, valid_names, option_name):
+    thresholds = {}
+    for entry in entries:
+        if "=" not in entry:
+            fail(f"{option_name} expects NAME=VALUE entries, got: {entry}")
+        name, value_text = entry.split("=", 1)
+        name = name.strip()
+        value_text = value_text.strip()
+        if name not in valid_names:
+            fail(
+                f"unknown {option_name} name '{name}'. Valid names: {', '.join(sorted(valid_names))}"
+            )
+        try:
+            value = int(value_text)
+        except ValueError:
+            fail(f"invalid integer value for {option_name} {name}: {value_text}")
+        thresholds[name] = value
+    return thresholds
+
+
+def make_upper_bound_check(name, actual, limit, unit=""):
+    suffix = f" {unit}" if unit else ""
+    return {
+        "name": name,
+        "passed": actual <= limit,
+        "actual": f"{format_metric(actual)}{suffix}",
+        "expected": f"<= {format_metric(limit)}{suffix}",
+    }
+
+
+def make_lower_bound_check(name, actual, limit, unit=""):
+    suffix = f" {unit}" if unit else ""
+    return {
+        "name": name,
+        "passed": actual >= limit,
+        "actual": f"{format_metric(actual)}{suffix}",
+        "expected": f">= {format_metric(limit)}{suffix}",
+    }
+
+
+def print_checks(checks):
+    print("checks:")
+    if not checks:
+        print("  none")
+        return
+    for check in checks:
+        status = "PASS" if check["passed"] else "FAIL"
+        print(
+            "  {status} {name}: actual={actual} expected={expected}".format(
+                status=status,
+                name=check["name"],
+                actual=check["actual"],
+                expected=check["expected"],
+            )
+        )
+
+
+def evaluate_thresholds(args, nominal_fps, video_timing, duplicate_runs, audio_duration_spread, video_audio_max_delta,
+                        log_summary):
+    checks = []
+
+    mean_frame_delta_error_us = None
+    if video_timing["frame_count"] > 1 and nominal_fps > 0.0:
+        expected_delta = 1.0 / nominal_fps
+        mean_frame_delta_error_us = abs(video_timing["delta_mean"] - expected_delta) * 1_000_000.0
+
+    if args.max_mean_frame_delta_error_us is not None:
+        if mean_frame_delta_error_us is None:
+            fail("--max-mean-frame-delta-error-us requires valid video timing with at least 2 frames and nominal FPS")
+        checks.append(
+            make_upper_bound_check(
+                "mean_frame_delta_error", mean_frame_delta_error_us, args.max_mean_frame_delta_error_us, "us"
+            )
+        )
+
+    if args.max_audio_spread_ms is not None:
+        checks.append(
+            make_upper_bound_check("audio_duration_spread", audio_duration_spread * 1000.0, args.max_audio_spread_ms,
+                                   "ms")
+        )
+
+    if args.max_video_audio_delta_ms is not None:
+        checks.append(
+            make_upper_bound_check(
+                "max_video_audio_duration_delta", video_audio_max_delta * 1000.0, args.max_video_audio_delta_ms,
+                "ms"
+            )
+        )
+
+    if args.max_longest_duplicate_run is not None:
+        if duplicate_runs is None:
+            fail("--max-longest-duplicate-run requires --framehash")
+        checks.append(
+            make_upper_bound_check(
+                "longest_duplicate_run", duplicate_runs["longest_run"], args.max_longest_duplicate_run, "frames"
+            )
+        )
+
+    if args.max_repeated_frames is not None:
+        if duplicate_runs is None:
+            fail("--max-repeated-frames requires --framehash")
+        checks.append(
+            make_upper_bound_check(
+                "repeated_frame_count", duplicate_runs["repeated_frame_count"], args.max_repeated_frames, "frames"
+            )
+        )
+
+    log_event_thresholds = parse_named_int_thresholds(args.max_log_event, LOG_PATTERNS.keys(), "--max-log-event")
+    if log_event_thresholds and log_summary is None:
+        fail("--max-log-event requires --log")
+    for name, limit in sorted(log_event_thresholds.items()):
+        checks.append(make_upper_bound_check(f"log.{name}", log_summary["counts"].get(name, 0), limit, "count"))
+
+    cadence_metric_values = {
+        "sel_miss": 0 if log_summary is None else log_summary["max_sel_miss"],
+        "stale_unique": 0 if log_summary is None else log_summary["max_stale_unique"],
+        "ancient": 0 if log_summary is None else log_summary["max_ancient"],
+        "rep_no_fresh": 0 if log_summary is None else log_summary["max_rep_no_fresh"],
+    }
+    cadence_metric_thresholds = parse_named_int_thresholds(
+        args.max_cadence_metric, cadence_metric_values.keys(), "--max-cadence-metric"
+    )
+    if cadence_metric_thresholds and log_summary is None:
+        fail("--max-cadence-metric requires --log")
+    for name, limit in sorted(cadence_metric_thresholds.items()):
+        checks.append(make_upper_bound_check(f"cadence.{name}", cadence_metric_values[name], limit, "count"))
+
+    return checks, mean_frame_delta_error_us
+
+
 def analyze_streams(ffprobe, capture_path):
     data = run_ffprobe_json(
         ffprobe,
@@ -567,6 +705,45 @@ def main():
         default=10.0,
         help="Analyze first/middle/last windows of this many seconds using ffprobe frame scans (default: 10)",
     )
+    parser.add_argument(
+        "--max-audio-spread-ms",
+        type=float,
+        help="Fail if decoded audio track durations differ by more than this many milliseconds",
+    )
+    parser.add_argument(
+        "--max-video-audio-delta-ms",
+        type=float,
+        help="Fail if any decoded audio track differs from decoded video duration by more than this many milliseconds",
+    )
+    parser.add_argument(
+        "--max-mean-frame-delta-error-us",
+        type=float,
+        help="Fail if mean video frame spacing differs from nominal CFR spacing by more than this many microseconds",
+    )
+    parser.add_argument(
+        "--max-longest-duplicate-run",
+        type=int,
+        help="Fail if the longest visual duplicate run exceeds this many frames (requires --framehash)",
+    )
+    parser.add_argument(
+        "--max-repeated-frames",
+        type=int,
+        help="Fail if the total repeated visual frames exceed this count (requires --framehash)",
+    )
+    parser.add_argument(
+        "--max-log-event",
+        action="append",
+        default=[],
+        metavar="NAME=COUNT",
+        help="Fail if the named log event count exceeds COUNT. Valid names match LOG_PATTERNS.",
+    )
+    parser.add_argument(
+        "--max-cadence-metric",
+        action="append",
+        default=[],
+        metavar="NAME=COUNT",
+        help="Fail if the named cadence summary metric exceeds COUNT. Valid names: sel_miss, stale_unique, ancient, rep_no_fresh.",
+    )
     args = parser.parse_args()
 
     if not args.capture.exists():
@@ -738,17 +915,33 @@ def main():
             print_window_summary(name, windows[name])
         print()
 
+    checks, mean_frame_delta_error_us = evaluate_thresholds(
+        args,
+        nominal_fps,
+        video_timing,
+        duplicate_runs,
+        audio_duration_spread,
+        video_audio_max_delta,
+        log_summary,
+    )
+
     print("summary:")
-    if video_timing["frame_count"] > 1 and nominal_fps > 0.0:
+    if mean_frame_delta_error_us is None and video_timing["frame_count"] > 1 and nominal_fps > 0.0:
         expected_delta = 1.0 / nominal_fps
-        delta_error_us = abs(video_timing["delta_mean"] - expected_delta) * 1_000_000.0
-        print(f"  mean_frame_delta_error_us={delta_error_us:.3f}")
+        mean_frame_delta_error_us = abs(video_timing["delta_mean"] - expected_delta) * 1_000_000.0
+    if mean_frame_delta_error_us is not None:
+        print(f"  mean_frame_delta_error_us={mean_frame_delta_error_us:.3f}")
     print(f"  exact_audio_length_match={'yes' if math.isclose(audio_duration_spread, 0.0, abs_tol=1e-6) else 'no'}")
     print(
         "  all_audio_tracks_match_video_length={value}".format(
             value="yes" if math.isclose(video_audio_max_delta, 0.0, abs_tol=1e-3) else "no"
         )
     )
+    print()
+    print_checks(checks)
+
+    if any(not check["passed"] for check in checks):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

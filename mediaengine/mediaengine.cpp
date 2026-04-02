@@ -201,18 +201,6 @@ public:
         return encodedDurationUs > 0 ? encodedDurationUs : fallbackElapsedUs;
     }
 
-    // WGC CFR: compute the PTS-based audio timeline in milliseconds.
-    // The encoder grid has a 1-tick offset (encoderGridStartQpc = liveStartQpc -
-    // targetIntervalTicks), so computeLiveTimelineElapsedUs for frame N returns
-    // (N-1)*intervalUs instead of N*intervalUs.  Using GetExpectedFinalDurationUs()
-    // (which is PTS-based) gives the exact N*intervalUs that the video encoder
-    // produces, keeping audio and video timelines aligned through drain and stop.
-    int64_t ComputeWgcCfrAudioTimelineMs() const {
-        if (!videoEnc)
-            return 0;
-        return videoEnc->GetExpectedFinalDurationUs() / 1000;
-    }
-
     void CommitVideoElapsedUs(SourceTimelineState& timelineState, int64_t elapsedUs) {
         if (elapsedUs < 0) {
             return;
@@ -819,21 +807,22 @@ public:
                     // WGC CFR: use PTS-based target so audio matches video exactly.
                     // The encoder thread's drain already covers most audio; this final
                     // pull fills any remaining gap without racing (drain is done by now).
-                    const int64_t wgcAudioTargetMs =
-                        IsWgcCfrRecording() ? ComputeWgcCfrAudioTimelineMs() : (endUs / 1000);
+                    const int64_t wgcAudioTargetUs = IsWgcCfrRecording()
+                                                         ? videoEnc->GetExpectedFinalDurationUs()
+                                                         : endUs;
                     const int64_t minEncodedBefore =
                         encodedSamplesPerSource.empty()
                             ? 0
                             : *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
-                    PullAndEncodeAudio(wgcAudioTargetMs, true);
+                    PullAndEncodeAudio(wgcAudioTargetUs, true);
                     const int64_t minEncodedAfter =
                         encodedSamplesPerSource.empty()
                             ? 0
                             : *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
                     DLL_Log(
-                        "[StopAudio] forceDrain: targetMs=%lld minEncodedBefore=%lld minEncodedAfter=%lld "
+                        "[StopAudio] forceDrain: targetUs=%lld minEncodedBefore=%lld minEncodedAfter=%lld "
                         "pulled=%lld samples (%.1f ms)",
-                        wgcAudioTargetMs, minEncodedBefore, minEncodedAfter, minEncodedAfter - minEncodedBefore,
+                        wgcAudioTargetUs, minEncodedBefore, minEncodedAfter, minEncodedAfter - minEncodedBefore,
                         (double)(minEncodedAfter - minEncodedBefore) / 48.0);
                 }
             }
@@ -850,8 +839,9 @@ public:
         // Final A/V sync diagnostic before stopping sources
         {
             constexpr int SAMPLE_RATE = 48000;
-            const int64_t expectedVideoMs = videoEnc ? (videoEnc->GetExpectedFinalDurationUs() / 1000) : 0;
-            const int64_t expectedVideoSamples = (expectedVideoMs * SAMPLE_RATE) / 1000;
+            const int64_t expectedVideoUs = videoEnc ? videoEnc->GetExpectedFinalDurationUs() : 0;
+            const int64_t expectedVideoMs = expectedVideoUs / 1000;
+            const int64_t expectedVideoSamples = ce::audio::ComputeDurationUsToSamples(expectedVideoUs, SAMPLE_RATE);
             for (size_t i = 0; i < audioSources.size() && i < encodedSamplesPerSource.size(); i++) {
                 const int64_t encSamples = encodedSamplesPerSource[i];
                 const int64_t diffSamples = encSamples - expectedVideoSamples;
@@ -1049,7 +1039,7 @@ public:
         }
 
         // PULL MODEL: Encode audio for this video frame (same as screengrab mode)
-        PullAndEncodeAudio(committedElapsedUs / 1000);
+        PullAndEncodeAudio(committedElapsedUs);
         return res;
     }
 
@@ -1099,8 +1089,9 @@ public:
             }
         }
 
-        const int64_t audioTimelineMs = wgcCfrRecording ? ComputeWgcCfrAudioTimelineMs() : (committedElapsedUs / 1000);
-        PullAndEncodeAudio(audioTimelineMs);
+        const int64_t audioTimelineUs =
+            wgcCfrRecording ? videoEnc->GetExpectedFinalDurationUs() : committedElapsedUs;
+        PullAndEncodeAudio(audioTimelineUs);
         return true;
     }
 
@@ -1194,14 +1185,14 @@ public:
         // PULL MODEL: WGC CFR audio follows the PTS-based scheduled timeline
         // (GetExpectedFinalDurationUs) rather than the encoder grid time, which has
         // a 1-tick offset that would leave audio 8ms short by the end of recording.
-        const int64_t audioTargetMs = IsWgcCfrRecording() ? ComputeWgcCfrAudioTimelineMs() : (realElapsedUs / 1000);
-        PullAndEncodeAudio(audioTargetMs);
+        const int64_t audioTargetUs = IsWgcCfrRecording() ? videoEnc->GetExpectedFinalDurationUs() : realElapsedUs;
+        PullAndEncodeAudio(audioTargetUs);
         return true;
     }
 
     // PULL MODEL: Pull audio from RingBuffers and encode against the relative
     // recording timeline that also drives CFR video emission.
-    void PullAndEncodeAudio(int64_t videoTimelineMs, bool forceDrain = false) {
+    void PullAndEncodeAudio(int64_t videoTimelineUs, bool forceDrain = false) {
         if (!recording || audioSources.empty())
             return;
 
@@ -1233,12 +1224,12 @@ public:
         const bool isWgcCfrRecording = IsWgcCfrRecording();
         const int64_t wallVideoMs = this->videoElapsedMs.load();
         int64_t encodedVideoMs = 0;
-        int64_t audioTargetMs = videoTimelineMs;
+        int64_t audioTargetUs = videoTimelineUs;
         if (videoEnc && !isWgcCfrRecording) {
             int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
             if (encodedVideoUs > 0) {
                 encodedVideoMs = encodedVideoUs / 1000;
-                audioTargetMs = encodedVideoMs;
+                audioTargetUs = encodedVideoUs;
             }
         }
         if (isWgcCfrRecording && videoEnc) {
@@ -1247,12 +1238,13 @@ public:
                 encodedVideoMs = encodedVideoUs / 1000;
             }
         }
-        if (audioTargetMs <= 0) {
-            audioTargetMs = wallVideoMs;
+        if (audioTargetUs <= 0) {
+            audioTargetUs = wallVideoMs * 1000;
         }
-        if (audioTargetMs <= 0) {
+        if (audioTargetUs <= 0) {
             return;
         }
+        int64_t audioTargetMs = audioTargetUs / 1000;
 
         auto now = std::chrono::steady_clock::now();
         int64_t steadyElapsedUs = 0;
@@ -1260,7 +1252,7 @@ public:
             steadyElapsedUs =
                 std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
         }
-        int64_t timelineShortfallMs = std::max<int64_t>(0, (steadyElapsedUs / 1000) - audioTargetMs);
+        int64_t timelineShortfallMs = std::max<int64_t>(0, steadyElapsedUs - audioTargetUs) / 1000;
 
         const int64_t videoPipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
         const uint32_t configuredWgcOutputFps =
@@ -1355,13 +1347,14 @@ public:
         if (!forceDrain && !isWgcCfrRecording && wallVideoLagMs > 500) {
             const int64_t steadyElapsedMs = steadyElapsedUs / 1000;
             if (steadyElapsedMs > audioTargetMs && steadyElapsedMs - audioTargetMs > 200) {
+                audioTargetUs = steadyElapsedUs;
                 audioTargetMs = steadyElapsedMs;
                 timelineShortfallMs = 0;
                 if (dropLogCounter++ % 500 == 0) {
                     DLL_Log(
                         "[PullAudio] Using wall-clock audio anchor: videoPts=%lldms, wallClock=%lldms, "
                         "pipelineLag=%lldms, shortfall=%lldms",
-                        videoTimelineMs, steadyElapsedMs, videoPipelineLagMs, wallVideoLagMs);
+                        videoTimelineUs / 1000, steadyElapsedMs, videoPipelineLagMs, wallVideoLagMs);
                 }
             }
         }
@@ -1414,12 +1407,14 @@ public:
             if (isWgcCfrRecording && trackStartupSettled && trackAllPrimed) {
                 trackAudioPullLatencyMs = std::min<int64_t>(trackAudioPullLatencyMs, 30);
             }
-            const int64_t trackAudioTargetMs = audioTargetMs - trackAudioPullLatencyMs;
-            if (trackAudioTargetMs <= 0) {
+            const int64_t trackAudioTargetUs =
+                audioTargetUs - (std::max<int64_t>(trackAudioPullLatencyMs, 0) * 1000);
+            const int64_t trackAudioTargetMs = trackAudioTargetUs > 0 ? (trackAudioTargetUs / 1000) : 0;
+            if (trackAudioTargetUs <= 0) {
                 continue;
             }
 
-            const int64_t targetSamples = (trackAudioTargetMs * SAMPLE_RATE) / 1000;
+            const int64_t targetSamples = ce::audio::ComputeDurationUsToSamples(trackAudioTargetUs, SAMPLE_RATE);
             const int64_t targetBufferedSamples = ce::audio::ComputeBufferedAudioTargetSamples(
                 SAMPLE_RATE, kBaseTargetLatencySamples,
                 isWgcCfrRecording ? effectiveWgcTargetBufferLagMs : videoPipelineLagMs, targetBufferedLagCapMs);

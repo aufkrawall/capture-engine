@@ -41,11 +41,15 @@ public:
     void DiscardPendingPackets();
 
 private:
+    static constexpr size_t kMaxQueuedPackets = 64;
+
     IMMDeviceEnumerator* pEnumerator;
     IMMDevice* pDevice;
     IAudioClient* pAudioClient;
     IAudioCaptureClient* pCaptureClient;
     WAVEFORMATEX* pwfx;
+    HANDLE captureEvent_ = nullptr;
+    DWORD activeStreamFlags = 0;
 
     std::atomic<bool> isCapturing;
     std::thread captureThread;

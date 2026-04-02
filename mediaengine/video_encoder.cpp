@@ -1,4 +1,5 @@
 #include "video_encoder.h"
+#include "mux_invariants.h"
 #include "../common/capture_pipeline_policy.h"
 #include "../common/frame_timing_utils.h"
 #include "../common/raii_helpers.h"
@@ -45,6 +46,32 @@ namespace {
 
 bool HasValidStreamTimeBase(const AVStream* stream) {
     return stream && stream->time_base.num > 0 && stream->time_base.den > 0;
+}
+
+bool ValidateFormatContextForHeader(const AVFormatContext* fmtCtx) {
+    if (!fmtCtx) {
+        DLL_Log("[VideoEncoder] ERROR: Refusing to write header with null format context");
+        return false;
+    }
+
+    if (fmtCtx->nb_streams == 0) {
+        DLL_Log("[VideoEncoder] ERROR: Refusing to write header with no streams");
+        return false;
+    }
+
+    for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
+        const AVStream* stream = fmtCtx->streams[i];
+        const ce::mux::HeaderValidationIssue issue = ce::mux::ValidateStreamForHeader(
+            stream != nullptr, stream && stream->codecpar != nullptr, stream ? stream->time_base.num : 0,
+            stream ? stream->time_base.den : 0);
+        if (issue != ce::mux::HeaderValidationIssue::kNone) {
+            DLL_Log("[VideoEncoder] ERROR: Refusing to write header: stream %u invalid (%s)", i,
+                    ce::mux::HeaderValidationIssueToString(issue));
+            return false;
+        }
+    }
+
+    return true;
 }
 
 int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int64_t startPts, int64_t lastAssignedVideoPts) {
@@ -105,8 +132,7 @@ void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, u
         }
 
         const int64_t streamDurationUs = av_rescale_q(stream->duration, stream->time_base, AVRational{1, 1000000});
-        const int64_t durationDeltaUs = streamDurationUs >= finalDurationUs ? (streamDurationUs - finalDurationUs)
-                                                                            : (finalDurationUs - streamDurationUs);
+        const int64_t durationDeltaUs = ce::mux::ComputeDurationDeltaUs(streamDurationUs, finalDurationUs);
         maxStreamDeltaUs = std::max(maxStreamDeltaUs, durationDeltaUs);
 
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -128,6 +154,18 @@ void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, u
         finalDurationUs, maxVideoDurationUs, minAudioDurationUs, maxAudioDurationUs, maxStreamDeltaUs, videoStreamCount,
         audioStreamCount, encoderOverloaded ? 1 : 0, muxOverloaded ? 1 : 0, muxBackpressureEvents,
         peakQueueBytes / 1024u, peakQueuePackets);
+
+    constexpr int64_t kDurationWarningToleranceUs = 1000;
+    if (!ce::mux::IsDurationWithinToleranceUs(maxVideoDurationUs, finalDurationUs, kDurationWarningToleranceUs) ||
+        (audioStreamCount > 0 &&
+         !ce::mux::IsDurationWithinToleranceUs(minAudioDurationUs, maxAudioDurationUs, kDurationWarningToleranceUs)) ||
+        maxStreamDeltaUs > kDurationWarningToleranceUs) {
+        DLL_Log(
+            "[VideoEncoder] WARNING: Final stream durations exceeded %lld us tolerance (target=%lld video=%lld "
+            "audioMin=%lld audioMax=%lld maxDelta=%lld)",
+            kDurationWarningToleranceUs, finalDurationUs, maxVideoDurationUs, minAudioDurationUs, maxAudioDurationUs,
+            maxStreamDeltaUs);
+    }
 }
 
 }  // namespace
@@ -2456,6 +2494,13 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             }
         }
 
+        if (!ValidateFormatContextForHeader(fmtCtx)) {
+            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+                avio_closep(&fmtCtx->pb);
+            }
+            return false;
+        }
+
         int ret = avformat_write_header(fmtCtx, nullptr);
         if (ret < 0) {
             char errbuf[256];
@@ -3382,6 +3427,13 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
                     tsRet);
             }
         }
+        if (!ValidateFormatContextForHeader(fmtCtx)) {
+            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+                avio_closep(&fmtCtx->pb);
+            }
+            return false;
+        }
+
         if (avformat_write_header(fmtCtx, nullptr) < 0) {
             DLL_Log("Failed to write header");
             return false;

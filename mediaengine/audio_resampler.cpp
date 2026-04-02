@@ -278,6 +278,9 @@ void AudioResampler::ResetClockTracking() {
     targetSaturated_ = false;
 }
 
+// Legacy PI controller kept for targeted experiments and tests only.
+// The live recording path applies drift correction from mediaengine.cpp so the
+// runtime telemetry and the active swr_set_compensation() state stay unified.
 void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSamplesOutput) {
     if (!swrCtx || videoElapsedMs <= 0 || outFmt.sampleRate <= 0) {
         return;

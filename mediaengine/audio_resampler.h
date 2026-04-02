@@ -108,9 +108,12 @@ public:
     static void FreeOutputBuffer(uint8_t** data);
 
     /**
-     * Adjust resampler ratio for clock drift compensation.
-     * Call this periodically with current video time and audio sample count.
-     * Uses swr_set_compensation() to gradually adjust output rate.
+     * Legacy PI-based drift controller retained for experiments/tests.
+     *
+     * The live MediaEngine path no longer calls this function. Runtime drift
+     * correction is now driven directly from mediaengine.cpp via
+     * currentRateDelta/targetRateDelta and swr_set_compensation() so there is a
+     * single active compensation authority.
      *
      * @param videoElapsedMs  Current video elapsed time in milliseconds
      * @param audioSamplesOutput  Total audio samples output so far

@@ -395,6 +395,27 @@ struct WgcAdaptiveTelemetry {
     double duplicateRatio = 0.0;
 };
 
+enum class WgcLiveRecoveryState : uint8_t {
+    kHealthy = 0,
+    kSourceStarved,
+    kSchedulerLimited,
+    kEncoderLimited,
+};
+
+inline const char* WgcLiveRecoveryStateToString(WgcLiveRecoveryState state) {
+    switch (state) {
+        case WgcLiveRecoveryState::kHealthy:
+            return "healthy";
+        case WgcLiveRecoveryState::kSourceStarved:
+            return "source-starved";
+        case WgcLiveRecoveryState::kSchedulerLimited:
+            return "scheduler-limited";
+        case WgcLiveRecoveryState::kEncoderLimited:
+            return "encoder-limited";
+    }
+    return "unknown";
+}
+
 struct WarmupTransitionState {
     bool warmupWasScreenGrab = false;
     uint64_t startupWarmupStartTick = 0;
@@ -537,16 +558,31 @@ inline bool IsWgcSchedulerDeliveryLimited(const WgcAdaptiveTelemetry& telemetry,
            telemetry.emptyTickPermille >= emptyTickThresholdPermille;
 }
 
-inline bool ShouldEnterWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry, uint32_t outputShortfallTicks,
-                                           bool encoderBottlenecked) {
+inline WgcLiveRecoveryState ClassifyWgcLiveRecoveryState(const WgcAdaptiveTelemetry& telemetry,
+                                                         uint32_t outputShortfallTicks, bool encoderBottlenecked) {
     if (telemetry.outputFps == 0 || outputShortfallTicks == 0) {
-        return false;
+        return WgcLiveRecoveryState::kHealthy;
     }
 
-    const bool sourceStarved = IsWgcSourceStarved(telemetry);
-    const bool schedulerLimited = IsWgcSchedulerDeliveryLimited(telemetry);
-    const bool encoderLimited = encoderBottlenecked && outputShortfallTicks >= kWgcRecoveryEnterShortfallTicks;
-    return sourceStarved || schedulerLimited || encoderLimited;
+    if (IsWgcSourceStarved(telemetry)) {
+        return WgcLiveRecoveryState::kSourceStarved;
+    }
+
+    if (IsWgcSchedulerDeliveryLimited(telemetry)) {
+        return WgcLiveRecoveryState::kSchedulerLimited;
+    }
+
+    if (encoderBottlenecked && outputShortfallTicks >= kWgcRecoveryEnterShortfallTicks) {
+        return WgcLiveRecoveryState::kEncoderLimited;
+    }
+
+    return WgcLiveRecoveryState::kHealthy;
+}
+
+inline bool ShouldEnterWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry, uint32_t outputShortfallTicks,
+                                           bool encoderBottlenecked) {
+    return ClassifyWgcLiveRecoveryState(telemetry, outputShortfallTicks, encoderBottlenecked) !=
+           WgcLiveRecoveryState::kHealthy;
 }
 
 inline bool ShouldExitWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry, uint32_t outputShortfallTicks,

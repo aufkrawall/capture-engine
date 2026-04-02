@@ -28,6 +28,11 @@ AudioCapture::AudioCapture()
 
 AudioCapture::~AudioCapture() {
     Stop();
+
+    if (captureEvent_) {
+        CloseHandle(captureEvent_);
+        captureEvent_ = nullptr;
+    }
 }
 
 bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
@@ -74,30 +79,76 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
         return false;
     }
 
-    hr = pDevice->Activate(IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&pAudioClient);
-    if (FAILED(hr)) {
-        DLL_Log("[AudioCapture] Activate IAudioClient failed: 0x%x", hr);
-        return false;
+    if (!captureEvent_) {
+        captureEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!captureEvent_) {
+            DLL_Log("[AudioCapture] CreateEventW failed: 0x%lx, falling back to polling mode", GetLastError());
+        }
     }
 
-    hr = pAudioClient->GetMixFormat(&pwfx);
-    if (FAILED(hr)) {
-        DLL_Log("[AudioCapture] GetMixFormat failed: 0x%x", hr);
-        return false;
-    }
+    auto activateAndInitializeClient = [&](DWORD streamFlags) -> HRESULT {
+        if (pCaptureClient) {
+            pCaptureClient->Release();
+            pCaptureClient = NULL;
+        }
+        if (pAudioClient) {
+            pAudioClient->Release();
+            pAudioClient = NULL;
+        }
+        if (pwfx) {
+            CoTaskMemFree(pwfx);
+            pwfx = NULL;
+        }
 
-    // Adjust format if needed? Usually we take what we get and resample later.
+        HRESULT initHr = pDevice->Activate(IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&pAudioClient);
+        if (FAILED(initHr)) {
+            DLL_Log("[AudioCapture] Activate IAudioClient failed: 0x%x", initHr);
+            return initHr;
+        }
+
+        initHr = pAudioClient->GetMixFormat(&pwfx);
+        if (FAILED(initHr)) {
+            DLL_Log("[AudioCapture] GetMixFormat failed: 0x%x", initHr);
+            return initHr;
+        }
+
+        return pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, streamFlags, 10000000, 0, pwfx, NULL);
+    };
 
     // LOOPBACK flag only applies to render devices (system audio capture)
-    // For capture devices (microphone), we don't use LOOPBACK
-    DWORD flags = 0;
-    if (isLoopback)
-        flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
+    // For capture devices (microphone), we don't use LOOPBACK.
+    const DWORD baseFlags = isLoopback ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0;
+    DWORD flags = baseFlags;
+    if (captureEvent_) {
+        flags |= AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+    }
 
-    hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 10000000, 0, pwfx, NULL);  // 1 sec buffer
+    hr = activateAndInitializeClient(flags);  // 1 sec buffer
     if (FAILED(hr)) {
-        DLL_Log("[AudioCapture] Initialize failed: 0x%x (flags=0x%x)", hr, flags);
-        return false;
+        DLL_Log("[AudioCapture] Initialize with event callback failed: 0x%x (flags=0x%x), retrying polling mode", hr,
+                flags);
+        flags = baseFlags;
+        hr = activateAndInitializeClient(flags);
+        if (FAILED(hr)) {
+            DLL_Log("[AudioCapture] Initialize failed: 0x%x (flags=0x%x)", hr, flags);
+            return false;
+        }
+    }
+    activeStreamFlags = flags;
+
+    if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
+        ResetEvent(captureEvent_);
+        hr = pAudioClient->SetEventHandle(captureEvent_);
+        if (FAILED(hr)) {
+            DLL_Log("[AudioCapture] SetEventHandle failed: 0x%x, reverting to polling", hr);
+            flags = baseFlags;
+            hr = activateAndInitializeClient(flags);
+            if (FAILED(hr)) {
+                DLL_Log("[AudioCapture] Polling reinitialize failed after SetEventHandle error: 0x%x", hr);
+                return false;
+            }
+            activeStreamFlags = flags;
+        }
     }
 
     hr = pAudioClient->GetService(IID_IAudioCaptureClient, (void**)&pCaptureClient);
@@ -112,6 +163,8 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
 
     DLL_Log("[AudioCapture] Started: channels=%d rate=%d bits=%d", pwfx->nChannels, pwfx->nSamplesPerSec,
             pwfx->wBitsPerSample);
+    DLL_Log("[AudioCapture] Capture mode: %s",
+            (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
 
     isCapturing = true;
     captureThread = std::thread(&AudioCapture::CaptureLoop, this);
@@ -121,10 +174,17 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
 
 void AudioCapture::Stop() {
     isCapturing = false;
+    if (captureEvent_) {
+        SetEvent(captureEvent_);
+    }
     if (captureThread.joinable())
         captureThread.join();
 
     DiscardPendingPackets();
+    activeStreamFlags = 0;
+    if (captureEvent_) {
+        ResetEvent(captureEvent_);
+    }
 
     // NOTE: Do NOT call pAudioClient->Stop() here. On Windows 11, calling Stop() on
     // a loopback audio stream triggers a bug in AudioSes.dll where CLoopbackMixer::Cleanup()
@@ -181,9 +241,15 @@ void AudioCapture::CaptureLoop() {
     int loopCount = 0;  // Count packets seen (reset each session)
 
     while (isCapturing) {
-        // Sleep for half buffer duration roughly?
-        // Or just poll. Sleep 10ms is usually fine for audio.
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
+            const DWORD waitResult = WaitForSingleObject(captureEvent_, 200);
+            if (waitResult == WAIT_FAILED) {
+                DLL_Log("[AudioCapture] WaitForSingleObject failed: 0x%lx", GetLastError());
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
 
         hr = pCaptureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr)) {
@@ -264,6 +330,9 @@ void AudioCapture::CaptureLoop() {
 
             {
                 std::lock_guard<std::mutex> lock(queueMutex);
+                if (packetQueue.size() >= kMaxQueuedPackets) {
+                    packetQueue.pop_front();
+                }
                 packetQueue.push_back(packet);
             }
 
