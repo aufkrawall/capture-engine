@@ -1087,6 +1087,25 @@ bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
     return true;
 }
 
+void VideoEncoder::CacheRepeatPacket(const AVPacket* pkt) {
+    // Only cache video packets with valid encoded data
+    if (!pkt || !stream || pkt->stream_index != stream->index || pkt->size <= 0 || pkt->data == nullptr) {
+        return;
+    }
+    InvalidateRepeatPacketCache();
+    cachedRepeatPacket_ = av_packet_alloc();
+    if (cachedRepeatPacket_) {
+        av_packet_ref(cachedRepeatPacket_, pkt);
+    }
+}
+
+void VideoEncoder::InvalidateRepeatPacketCache() {
+    if (cachedRepeatPacket_) {
+        av_packet_free(&cachedRepeatPacket_);
+        cachedRepeatPacket_ = nullptr;
+    }
+}
+
 bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t fmt, SharedMemoryLayout* sharedMem) {
     if (sharedCaptureTexturesCreated) {
         if (sharedCaptureTextureFormat == fmt) {
@@ -3143,6 +3162,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 pkt->duration = 1;
             }
 
+            CacheRepeatPacket(pkt);
             if (onPacket)
                 onPacket(pkt);
             av_packet_unref(pkt);
@@ -3517,6 +3537,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
                 pkt->duration = 1;
             }
 
+            CacheRepeatPacket(pkt);
             if (onPacket)
                 onPacket(pkt);
             av_packet_unref(pkt);
@@ -3672,6 +3693,39 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
     }
     g_lastFramePts = timestamp;
 
+    // FAST PATH: Resubmit cached encoded packet with new PTS instead of
+    // re-encoding via NVENC. Eliminates duplicate encode overhead entirely
+    // (e.g., 60fps source → 120fps target means ~50% of frames are repeats,
+    // each of which now costs ~0ms instead of a full NVENC encode cycle).
+    // Only applicable to CFR mode; VFR timing requires fresh encoding per frame.
+    if (cachedRepeatPacket_ && !savedConfig.useVFR) {
+        const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, startPts, lastAssignedVideoPts);
+
+        AVPacket* repeatPkt = av_packet_alloc();
+        if (repeatPkt) {
+            av_packet_ref(repeatPkt, cachedRepeatPacket_);
+            repeatPkt->pts = targetPts;
+            repeatPkt->dts = targetPts;
+            repeatPkt->stream_index = stream->index;
+            repeatPkt->duration = 1;
+
+            lastAssignedVideoPts = targetPts;
+            outputFrameCount++;
+            g_framesEncoded++;
+
+            if (onPacket) {
+                onPacket(repeatPkt);
+            }
+            av_packet_free(&repeatPkt);
+
+            lastEncodeTimeUs = 0;
+            lastFenceWaitUs = 0;
+            return true;
+        }
+        // Packet allocation failed — fall through to slow path
+    }
+
+    // SLOW PATH: Full NVENC re-encode of cached texture
     auto frameStart = PerfTimer::now();
 
     AVFrame* d3d11Frame = av_frame_alloc();
@@ -3725,6 +3779,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
             packetCount++;
             pkt->stream_index = stream->index;
             pkt->duration = savedConfig.useVFR ? (1000000 / std::max(savedConfig.fps, 1)) : 1;
+            // Cache packet for fast-path repeats in CFR mode only (VFR timing is variable)
+            if (!savedConfig.useVFR) {
+                CacheRepeatPacket(pkt);
+            }
             if (onPacket) {
                 onPacket(pkt);
             }
@@ -3812,6 +3870,9 @@ void VideoEncoder::CleanupResources() {
     }
 
     currentQueueBytes = 0;
+
+    // Invalidate cached repeat packet before codec/format contexts are freed
+    InvalidateRepeatPacketCache();
 
     if (stream)
         stream = nullptr;

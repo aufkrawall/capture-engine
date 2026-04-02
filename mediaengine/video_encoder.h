@@ -240,6 +240,16 @@ private:
     // even when source shared-handle slots have already been reused.
     ID3D11Texture2D* repeatFrameTexture = nullptr;
 
+    // Cached last encoded video packet for zero-cost frame repeats.
+    // When RepeatLastFrame has a valid cache, it resubmits the cached encoded
+    // data with a new PTS instead of re-encoding via NVENC, eliminating
+    // duplicate encode overhead (e.g. 60fps source → 120fps target means
+    // every other frame is a repeat, saving ~50% NVENC workload).
+    AVPacket* cachedRepeatPacket_ = nullptr;
+
+    void CacheRepeatPacket(const AVPacket* pkt);
+    void InvalidateRepeatPacketCache();
+
     int64_t lastLogFrameCount = 0;  // Last frame count when we logged FPS
     bool needsCounterReset = true;  // Signals start of new recording
     int64_t qpcFrequency = 0;       // Cached QPC frequency
