@@ -2403,102 +2403,67 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcLiveRecoveryStateCurrent == ce::capture_policy::WgcLiveRecoveryState::kEncoderLimited;
                 wgcReservePressureActive = ce::capture_policy::IsWgcReservePressureActive(
                     wgcNoReserveTickCount, wgcQueueTickSampleCount, outputFps);
+                const ce::capture_policy::WgcLowSourceState wgcLowSourceStateCurrent =
+                    ce::capture_policy::ClassifyWgcLowSourceState(wgcAdaptiveTelemetry);
                 const bool shouldEnterWgcLowSourceMode =
-                    ce::capture_policy::ShouldEnterWgcLowSourceMode(wgcAdaptiveTelemetry);
+                    wgcLowSourceStateCurrent != ce::capture_policy::WgcLowSourceState::kHealthy;
                 const bool bufferedReserveRecovered = bufferedWgcFrames.size() >= 3;
                 const bool shouldExitWgcLowSourceMode = ce::capture_policy::ShouldExitWgcLowSourceMode(
                     wgcAdaptiveTelemetry, encoderTooSlowForTargetCurrent, bufferedReserveRecovered);
-                if (!wgcLowSourceModeActive) {
-                    if (shouldEnterWgcLowSourceMode) {
-                        if (wgcLowSourceStateChangeTick == 0) {
-                            wgcLowSourceStateChangeTick = wgcPolicyNowTick;
-                        } else if ((wgcPolicyNowTick - wgcLowSourceStateChangeTick) >=
-                                   ce::capture_policy::kWgcLowSourceEnterHoldMs) {
-                            wgcLowSourceModeActive = true;
-                            wgcLowSourceStateChangeTick = 0;
-                            LogInfo(
-                                "[WGC CFR] Low-source mode entered: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
-                                wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                                wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                                bufferedWgcFrames.size());
-                        }
-                    } else {
-                        wgcLowSourceStateChangeTick = 0;
-                    }
-                } else {
-                    if (!encoderTooSlowForTargetCurrent && bufferedReserveRecovered) {
-                        wgcLowSourceModeActive = false;
-                        wgcLowSourceStateChangeTick = 0;
-                        LogInfo(
-                            "[WGC CFR] Low-source mode exited immediately: src=%u/%u/%u input=%u/%u empty=%upm "
-                            "buffered=%zu",
-                            wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                            wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                            bufferedWgcFrames.size());
-                    } else if (shouldExitWgcLowSourceMode) {
-                        if (wgcLowSourceStateChangeTick == 0) {
-                            wgcLowSourceStateChangeTick = wgcPolicyNowTick;
-                        } else if ((wgcPolicyNowTick - wgcLowSourceStateChangeTick) >=
-                                   ce::capture_policy::kWgcLowSourceExitHoldMs) {
-                            wgcLowSourceModeActive = false;
-                            wgcLowSourceStateChangeTick = 0;
-                            LogInfo(
-                                "[WGC CFR] Low-source mode exited: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
-                                wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                                wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                                bufferedWgcFrames.size());
-                        }
-                    } else {
-                        wgcLowSourceStateChangeTick = 0;
-                    }
+                const auto wgcLowSourceModeUpdate = ce::capture_policy::UpdateHeldMode(
+                    wgcLowSourceModeActive, wgcLowSourceStateChangeTick, wgcPolicyNowTick, shouldEnterWgcLowSourceMode,
+                    shouldExitWgcLowSourceMode, !encoderTooSlowForTargetCurrent && bufferedReserveRecovered,
+                    ce::capture_policy::kWgcLowSourceEnterHoldMs, ce::capture_policy::kWgcLowSourceExitHoldMs);
+                wgcLowSourceModeActive = wgcLowSourceModeUpdate.active;
+                wgcLowSourceStateChangeTick = wgcLowSourceModeUpdate.stateChangeTick;
+                if (wgcLowSourceModeUpdate.transition == ce::capture_policy::HeldModeTransition::kEntered) {
+                    LogInfo(
+                        "[WGC CFR] Low-source mode entered: state=%s src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                        ce::capture_policy::WgcLowSourceStateToString(wgcLowSourceStateCurrent),
+                        wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                        wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                        bufferedWgcFrames.size());
+                } else if (wgcLowSourceModeUpdate.transition == ce::capture_policy::HeldModeTransition::kExited) {
+                    LogInfo(
+                        wgcLowSourceModeUpdate.immediate
+                            ? "[WGC CFR] Low-source mode exited immediately: src=%u/%u/%u input=%u/%u empty=%upm "
+                              "buffered=%zu"
+                            : "[WGC CFR] Low-source mode exited: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                        wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                        wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                        bufferedWgcFrames.size());
                 }
 
                 const bool shouldEnterWgcLiveRecoveryMode = ce::capture_policy::ShouldEnterWgcLiveRecoveryMode(
                     wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
                 const bool shouldExitWgcLiveRecoveryMode = ce::capture_policy::ShouldExitWgcLiveRecoveryMode(
                     wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
-                if (!wgcLiveRecoveryModeActive) {
-                    if (shouldEnterWgcLiveRecoveryMode) {
-                        if (wgcLiveRecoveryStateChangeTick == 0) {
-                            wgcLiveRecoveryStateChangeTick = wgcPolicyNowTick;
-                        } else if ((wgcPolicyNowTick - wgcLiveRecoveryStateChangeTick) >=
-                                   ce::capture_policy::kWgcRecoveryEnterHoldMs) {
-                            wgcLiveRecoveryModeActive = true;
-                            wgcLiveRecoveryStateChangeTick = 0;
-                            LogInfo(
-                                "[WGC CFR] Live-recovery entered: state=%s srcStarved=%d schedLimited=%d encLimited=%d "
-                                "shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
-                                ce::capture_policy::WgcLiveRecoveryStateToString(wgcLiveRecoveryStateCurrent),
-                                wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
-                                wgcEncoderRecoveryLimitedCurrent ? 1 : 0, outputShortfallTicks,
-                                ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
-                                wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                                wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                                bufferedWgcFrames.size());
-                        }
-                    } else {
-                        wgcLiveRecoveryStateChangeTick = 0;
-                    }
-                } else {
-                    if (shouldExitWgcLiveRecoveryMode) {
-                        if (wgcLiveRecoveryStateChangeTick == 0) {
-                            wgcLiveRecoveryStateChangeTick = wgcPolicyNowTick;
-                        } else if ((wgcPolicyNowTick - wgcLiveRecoveryStateChangeTick) >=
-                                   ce::capture_policy::kWgcRecoveryExitHoldMs) {
-                            wgcLiveRecoveryModeActive = false;
-                            wgcLiveRecoveryStateChangeTick = 0;
-                            LogInfo(
-                                "[WGC CFR] Live-recovery exited: shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u "
-                                "empty=%upm buffered=%zu",
-                                outputShortfallTicks,
-                                ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
-                                wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                                wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                                bufferedWgcFrames.size());
-                        }
-                    } else {
-                        wgcLiveRecoveryStateChangeTick = 0;
-                    }
+                const auto wgcLiveRecoveryModeUpdate = ce::capture_policy::UpdateHeldMode(
+                    wgcLiveRecoveryModeActive, wgcLiveRecoveryStateChangeTick, wgcPolicyNowTick,
+                    shouldEnterWgcLiveRecoveryMode, shouldExitWgcLiveRecoveryMode, false,
+                    ce::capture_policy::kWgcRecoveryEnterHoldMs, ce::capture_policy::kWgcRecoveryExitHoldMs);
+                wgcLiveRecoveryModeActive = wgcLiveRecoveryModeUpdate.active;
+                wgcLiveRecoveryStateChangeTick = wgcLiveRecoveryModeUpdate.stateChangeTick;
+                if (wgcLiveRecoveryModeUpdate.transition == ce::capture_policy::HeldModeTransition::kEntered) {
+                    LogInfo(
+                        "[WGC CFR] Live-recovery entered: state=%s srcStarved=%d schedLimited=%d encLimited=%d "
+                        "shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                        ce::capture_policy::WgcLiveRecoveryStateToString(wgcLiveRecoveryStateCurrent),
+                        wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
+                        wgcEncoderRecoveryLimitedCurrent ? 1 : 0, outputShortfallTicks,
+                        ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                        wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                        wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                        bufferedWgcFrames.size());
+                } else if (wgcLiveRecoveryModeUpdate.transition == ce::capture_policy::HeldModeTransition::kExited) {
+                    LogInfo(
+                        "[WGC CFR] Live-recovery exited: shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm "
+                        "buffered=%zu",
+                        outputShortfallTicks,
+                        ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                        wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                        wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                        bufferedWgcFrames.size());
                 }
 
                 if (g_WgcCap && recordingOutputLive && g_Recording && targetIntervalTicks > 0) {

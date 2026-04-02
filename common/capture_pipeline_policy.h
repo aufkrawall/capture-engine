@@ -395,6 +395,104 @@ struct WgcAdaptiveTelemetry {
     double duplicateRatio = 0.0;
 };
 
+enum class HeldModeTransition : uint8_t {
+    kNone = 0,
+    kEntered,
+    kExited,
+};
+
+struct HeldModeUpdate {
+    bool active = false;
+    uint64_t stateChangeTick = 0;
+    HeldModeTransition transition = HeldModeTransition::kNone;
+    bool immediate = false;
+};
+
+inline HeldModeUpdate UpdateHeldMode(bool active, uint64_t stateChangeTick, uint64_t nowTick, bool shouldEnter,
+                                     bool shouldExit, bool shouldExitImmediately, uint32_t enterHoldMs,
+                                     uint32_t exitHoldMs) {
+    HeldModeUpdate update;
+    update.active = active;
+
+    if (!active) {
+        if (!shouldEnter) {
+            return update;
+        }
+
+        if (stateChangeTick == 0 || nowTick < stateChangeTick) {
+            if (enterHoldMs == 0) {
+                update.active = true;
+                update.transition = HeldModeTransition::kEntered;
+                return update;
+            }
+
+            update.stateChangeTick = nowTick;
+            return update;
+        }
+
+        if ((nowTick - stateChangeTick) >= enterHoldMs) {
+            update.active = true;
+            update.transition = HeldModeTransition::kEntered;
+            return update;
+        }
+
+        update.stateChangeTick = stateChangeTick;
+        return update;
+    }
+
+    if (shouldExitImmediately) {
+        update.active = false;
+        update.transition = HeldModeTransition::kExited;
+        update.immediate = true;
+        return update;
+    }
+
+    if (!shouldExit) {
+        return update;
+    }
+
+    if (stateChangeTick == 0 || nowTick < stateChangeTick) {
+        if (exitHoldMs == 0) {
+            update.active = false;
+            update.transition = HeldModeTransition::kExited;
+            return update;
+        }
+
+        update.stateChangeTick = nowTick;
+        return update;
+    }
+
+    if ((nowTick - stateChangeTick) >= exitHoldMs) {
+        update.active = false;
+        update.transition = HeldModeTransition::kExited;
+        return update;
+    }
+
+    update.stateChangeTick = stateChangeTick;
+    return update;
+}
+
+enum class WgcLowSourceState : uint8_t {
+    kHealthy = 0,
+    kInputBelowTarget,
+    kDeliveryBelowTarget,
+    kQueueEmptyPressure,
+};
+
+inline const char* WgcLowSourceStateToString(WgcLowSourceState state) {
+    switch (state) {
+        case WgcLowSourceState::kHealthy:
+            return "healthy";
+        case WgcLowSourceState::kInputBelowTarget:
+            return "input-below-target";
+        case WgcLowSourceState::kDeliveryBelowTarget:
+            return "delivery-below-target";
+        case WgcLowSourceState::kQueueEmptyPressure:
+            return "queue-empty-pressure";
+    }
+    return "unknown";
+}
+
 enum class WgcLiveRecoveryState : uint8_t {
     kHealthy = 0,
     kSourceStarved,
@@ -523,17 +621,30 @@ inline bool ShouldTriggerAutoWgcFallback(bool receivedFirstFrame, bool autoCaptu
     return elapsedMs > GetAutoWgcFallbackDelayMs(activeSourcePid);
 }
 
-inline bool ShouldEnterWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
+inline WgcLowSourceState ClassifyWgcLowSourceState(const WgcAdaptiveTelemetry& telemetry) {
     if (telemetry.outputFps == 0) {
-        return false;
+        return WgcLowSourceState::kHealthy;
     }
 
-    return telemetry.recentDeliveredFps < telemetry.outputFps ||
-           telemetry.recentDeliveredMin250Fps < telemetry.outputFps ||
-           telemetry.recentDeliveredMin500Fps < telemetry.outputFps ||
-           telemetry.recentInputMin250Fps < telemetry.outputFps ||
-           telemetry.recentInputMin500Fps < telemetry.outputFps ||
-           telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille;
+    if (telemetry.recentInputMin250Fps < telemetry.outputFps || telemetry.recentInputMin500Fps < telemetry.outputFps) {
+        return WgcLowSourceState::kInputBelowTarget;
+    }
+
+    if (telemetry.recentDeliveredFps < telemetry.outputFps ||
+        telemetry.recentDeliveredMin250Fps < telemetry.outputFps ||
+        telemetry.recentDeliveredMin500Fps < telemetry.outputFps) {
+        return WgcLowSourceState::kDeliveryBelowTarget;
+    }
+
+    if (telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille) {
+        return WgcLowSourceState::kQueueEmptyPressure;
+    }
+
+    return WgcLowSourceState::kHealthy;
+}
+
+inline bool ShouldEnterWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
+    return ClassifyWgcLowSourceState(telemetry) != WgcLowSourceState::kHealthy;
 }
 
 inline bool IsWgcSourceStarved(const WgcAdaptiveTelemetry& telemetry,
@@ -632,7 +743,7 @@ inline bool ShouldAllowWgcAdaptiveHeadroom(const WgcAdaptiveTelemetry& telemetry
 }
 
 inline bool ShouldUseWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
-    return ShouldEnterWgcLowSourceMode(telemetry);
+    return ClassifyWgcLowSourceState(telemetry) != WgcLowSourceState::kHealthy;
 }
 
 inline bool IsWgcReservePressureActive(uint32_t noReserveTickCount, uint32_t queueTickSampleCount, uint32_t outputFps) {

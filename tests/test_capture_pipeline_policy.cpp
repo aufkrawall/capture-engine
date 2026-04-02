@@ -164,6 +164,78 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceModePrefersBufferCushionDuringUnderf
     EXPECT_FALSE(policy::ShouldExitWgcLowSourceMode(telemetry));
 }
 
+TEST(CapturePipelinePolicyTest, WgcLowSourceStateClassificationIsExplicit) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 120;
+    telemetry.recentDeliveredMin250Fps = 120;
+    telemetry.recentDeliveredMin500Fps = 120;
+    telemetry.recentInputMin250Fps = 120;
+    telemetry.recentInputMin500Fps = 120;
+    telemetry.emptyTickPermille = 0;
+
+    EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kHealthy);
+    EXPECT_STREQ(policy::WgcLowSourceStateToString(policy::WgcLowSourceState::kHealthy), "healthy");
+
+    telemetry.recentInputMin250Fps = 118;
+    telemetry.recentInputMin500Fps = 118;
+    EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kInputBelowTarget);
+    EXPECT_STREQ(policy::WgcLowSourceStateToString(policy::WgcLowSourceState::kInputBelowTarget),
+                 "input-below-target");
+
+    telemetry.recentInputMin250Fps = 120;
+    telemetry.recentInputMin500Fps = 120;
+    telemetry.recentDeliveredFps = 119;
+    EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kDeliveryBelowTarget);
+    EXPECT_STREQ(policy::WgcLowSourceStateToString(policy::WgcLowSourceState::kDeliveryBelowTarget),
+                 "delivery-below-target");
+
+    telemetry.recentDeliveredFps = 120;
+    telemetry.emptyTickPermille = policy::kWgcLowSourceEmptyTickPermille;
+    EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kQueueEmptyPressure);
+    EXPECT_STREQ(policy::WgcLowSourceStateToString(policy::WgcLowSourceState::kQueueEmptyPressure),
+                 "queue-empty-pressure");
+}
+
+TEST(CapturePipelinePolicyTest, HeldModeUpdateAppliesEnterExitHoldsAndImmediateExit) {
+    auto inactivePending = policy::UpdateHeldMode(false, 0, 100, true, false, false, 120, 250);
+    EXPECT_FALSE(inactivePending.active);
+    EXPECT_EQ(inactivePending.stateChangeTick, 100u);
+    EXPECT_EQ(inactivePending.transition, policy::HeldModeTransition::kNone);
+
+    auto inactiveStillPending = policy::UpdateHeldMode(false, 100, 219, true, false, false, 120, 250);
+    EXPECT_FALSE(inactiveStillPending.active);
+    EXPECT_EQ(inactiveStillPending.stateChangeTick, 100u);
+    EXPECT_EQ(inactiveStillPending.transition, policy::HeldModeTransition::kNone);
+
+    auto entered = policy::UpdateHeldMode(false, 100, 220, true, false, false, 120, 250);
+    EXPECT_TRUE(entered.active);
+    EXPECT_EQ(entered.stateChangeTick, 0u);
+    EXPECT_EQ(entered.transition, policy::HeldModeTransition::kEntered);
+
+    auto activePendingExit = policy::UpdateHeldMode(true, 0, 300, false, true, false, 120, 250);
+    EXPECT_TRUE(activePendingExit.active);
+    EXPECT_EQ(activePendingExit.stateChangeTick, 300u);
+    EXPECT_EQ(activePendingExit.transition, policy::HeldModeTransition::kNone);
+
+    auto activeStillPendingExit = policy::UpdateHeldMode(true, 300, 549, false, true, false, 120, 250);
+    EXPECT_TRUE(activeStillPendingExit.active);
+    EXPECT_EQ(activeStillPendingExit.stateChangeTick, 300u);
+    EXPECT_EQ(activeStillPendingExit.transition, policy::HeldModeTransition::kNone);
+
+    auto exited = policy::UpdateHeldMode(true, 300, 550, false, true, false, 120, 250);
+    EXPECT_FALSE(exited.active);
+    EXPECT_EQ(exited.stateChangeTick, 0u);
+    EXPECT_EQ(exited.transition, policy::HeldModeTransition::kExited);
+    EXPECT_FALSE(exited.immediate);
+
+    auto immediateExit = policy::UpdateHeldMode(true, 400, 401, false, false, true, 120, 250);
+    EXPECT_FALSE(immediateExit.active);
+    EXPECT_EQ(immediateExit.stateChangeTick, 0u);
+    EXPECT_EQ(immediateExit.transition, policy::HeldModeTransition::kExited);
+    EXPECT_TRUE(immediateExit.immediate);
+}
+
 TEST(CapturePipelinePolicyTest, WgcAdaptiveHeadroomRequiresHealthySourceReserve) {
     policy::WgcAdaptiveTelemetry telemetry{};
     telemetry.outputFps = 120;
