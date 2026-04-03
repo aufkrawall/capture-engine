@@ -25,6 +25,11 @@ static bool g_Running = true;
 static bool g_UseGdiFallback = false;
 static auto g_StartTime = std::chrono::high_resolution_clock::now();
 static HWND g_MainWindow = nullptr;
+static HDC g_GdiBackbufferDc = nullptr;
+static HBITMAP g_GdiBackbufferBitmap = nullptr;
+static HGDIOBJ g_GdiBackbufferOldBitmap = nullptr;
+static int g_GdiBackbufferWidth = 0;
+static int g_GdiBackbufferHeight = 0;
 
 static HMODULE g_D3D8Module = nullptr;
 static IDirect3D8* g_D3D = nullptr;
@@ -61,6 +66,68 @@ static bool EnableGdiFallback(const char* reason, HRESULT hr) {
     return true;
 }
 
+static void CleanupGdiBackbuffer() {
+    if (g_GdiBackbufferDc) {
+        if (g_GdiBackbufferOldBitmap) {
+            SelectObject(g_GdiBackbufferDc, g_GdiBackbufferOldBitmap);
+            g_GdiBackbufferOldBitmap = nullptr;
+        }
+        if (g_GdiBackbufferBitmap) {
+            DeleteObject(g_GdiBackbufferBitmap);
+            g_GdiBackbufferBitmap = nullptr;
+        }
+        DeleteDC(g_GdiBackbufferDc);
+        g_GdiBackbufferDc = nullptr;
+    }
+
+    g_GdiBackbufferWidth = 0;
+    g_GdiBackbufferHeight = 0;
+}
+
+static bool EnsureGdiBackbuffer(HWND hwnd, int width, int height) {
+    if (!hwnd || width <= 0 || height <= 0) {
+        return false;
+    }
+
+    if (g_GdiBackbufferDc && g_GdiBackbufferWidth == width && g_GdiBackbufferHeight == height) {
+        return true;
+    }
+
+    CleanupGdiBackbuffer();
+
+    HDC windowDc = GetDC(hwnd);
+    if (!windowDc) {
+        return false;
+    }
+
+    HDC memoryDc = CreateCompatibleDC(windowDc);
+    if (!memoryDc) {
+        ReleaseDC(hwnd, windowDc);
+        return false;
+    }
+
+    HBITMAP bitmap = CreateCompatibleBitmap(windowDc, width, height);
+    ReleaseDC(hwnd, windowDc);
+    if (!bitmap) {
+        DeleteDC(memoryDc);
+        return false;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
+    if (!oldBitmap || oldBitmap == HGDI_ERROR) {
+        DeleteObject(bitmap);
+        DeleteDC(memoryDc);
+        return false;
+    }
+
+    g_GdiBackbufferDc = memoryDc;
+    g_GdiBackbufferBitmap = bitmap;
+    g_GdiBackbufferOldBitmap = oldBitmap;
+    g_GdiBackbufferWidth = width;
+    g_GdiBackbufferHeight = height;
+    return true;
+}
+
 static void LoadConfig() {
     char path[MAX_PATH] = {};
     GetModuleFileNameA(nullptr, path, MAX_PATH);
@@ -83,6 +150,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_Running = false;
             PostQuitMessage(0);
             return 0;
+        case WM_ERASEBKGND:
+            if (g_UseGdiFallback) {
+                return 1;
+            }
+            break;
         case WM_KEYDOWN:
             if (wParam == VK_ESCAPE) {
                 g_Running = false;
@@ -186,26 +258,32 @@ static void RenderFrame() {
 
         RECT clientRect = {};
         GetClientRect(g_MainWindow, &clientRect);
+        if (!EnsureGdiBackbuffer(g_MainWindow, clientRect.right, clientRect.bottom)) {
+            return;
+        }
+
         HDC dc = GetDC(g_MainWindow);
         if (!dc) {
             return;
         }
 
+        HDC drawDc = g_GdiBackbufferDc;
+
         HBRUSH background = CreateSolidBrush(RGB(28, 32, 60));
-        FillRect(dc, &clientRect, background);
+        FillRect(drawDc, &clientRect, background);
         DeleteObject(background);
 
         RECT panel = {clientRect.right / 2 - 110, clientRect.bottom / 2 - 72, clientRect.right / 2 + 110,
                       clientRect.bottom / 2 + 72};
         HBRUSH panelBrush = CreateSolidBrush(RGB(52, 86, 140));
-        FillRect(dc, &panel, panelBrush);
+        FillRect(drawDc, &panel, panelBrush);
         DeleteObject(panelBrush);
 
         const int maxBarX = std::max<int>(1, clientRect.right - 120);
         RECT movingBar = {(LONG)(barPosition * maxBarX), clientRect.bottom / 2 - 48,
                   (LONG)(barPosition * maxBarX + 120), clientRect.bottom / 2 + 48};
         HBRUSH barBrush = CreateSolidBrush(RGB(248, 242, 220));
-        FillRect(dc, &movingBar, barBrush);
+        FillRect(drawDc, &movingBar, barBrush);
         DeleteObject(barBrush);
 
         for (int pass = 0; pass < std::max(1, g_WorkloadPasses); ++pass) {
@@ -216,9 +294,11 @@ static void RenderFrame() {
             stripe.right = std::min(clientRect.right, stripe.left + 48);
             stripe.bottom = std::min(clientRect.bottom, stripe.top + 18);
             HBRUSH stripeBrush = CreateSolidBrush((pass % 2) == 0 ? RGB(106, 238, 170) : RGB(255, 120, 104));
-            FillRect(dc, &stripe, stripeBrush);
+            FillRect(drawDc, &stripe, stripeBrush);
             DeleteObject(stripeBrush);
         }
+
+        BitBlt(dc, 0, 0, clientRect.right, clientRect.bottom, drawDc, 0, 0, SRCCOPY);
 
         ReleaseDC(g_MainWindow, dc);
         return;
@@ -349,6 +429,7 @@ int main(int argc, char* argv[]) {
 
     SafeRelease(g_Device);
     SafeRelease(g_D3D);
+    CleanupGdiBackbuffer();
     if (g_D3D8Module) {
         FreeLibrary(g_D3D8Module);
         g_D3D8Module = nullptr;
