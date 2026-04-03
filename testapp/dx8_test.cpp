@@ -32,10 +32,16 @@ static int g_GdiBackbufferWidth = 0;
 static int g_GdiBackbufferHeight = 0;
 
 static HMODULE g_D3D8Module = nullptr;
+static HMODULE g_DwmApiModule = nullptr;
 static IDirect3D8* g_D3D = nullptr;
 static IDirect3DDevice8* g_Device = nullptr;
+static D3DPRESENT_PARAMETERS g_PresentParameters = {};
+static bool g_WindowActive = true;
 
 using Direct3DCreate8Fn = IDirect3D8*(WINAPI*)(UINT sdkVersion);
+using DwmFlushFn = HRESULT(WINAPI*)();
+
+static DwmFlushFn g_DwmFlush = nullptr;
 
 template <typename T>
 static void SafeRelease(T*& ptr) {
@@ -128,6 +134,29 @@ static bool EnsureGdiBackbuffer(HWND hwnd, int width, int height) {
     return true;
 }
 
+static void InitializeFramePacingSupport() {
+    if (g_DwmFlush) {
+        return;
+    }
+
+    if (!g_DwmApiModule) {
+        g_DwmApiModule = LoadLibraryA("dwmapi.dll");
+    }
+    if (g_DwmApiModule) {
+        g_DwmFlush = reinterpret_cast<DwmFlushFn>(GetProcAddress(g_DwmApiModule, "DwmFlush"));
+    }
+}
+
+static D3DFORMAT ResolveBackBufferFormat() {
+    D3DDISPLAYMODE displayMode = {};
+    if (g_D3D && SUCCEEDED(g_D3D->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &displayMode)) &&
+        displayMode.Format != D3DFMT_UNKNOWN) {
+        return displayMode.Format;
+    }
+
+    return D3DFMT_X8R8G8B8;
+}
+
 static void LoadConfig() {
     char path[MAX_PATH] = {};
     GetModuleFileNameA(nullptr, path, MAX_PATH);
@@ -144,11 +173,111 @@ static void LoadConfig() {
     g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
 }
 
+static void UpdatePresentParameters(HWND hwnd) {
+    g_PresentParameters = {};
+    g_PresentParameters.BackBufferWidth = 0;
+    g_PresentParameters.BackBufferHeight = 0;
+    g_PresentParameters.BackBufferFormat = ResolveBackBufferFormat();
+    g_PresentParameters.BackBufferCount = 1;
+    g_PresentParameters.MultiSampleType = D3DMULTISAMPLE_NONE;
+    g_PresentParameters.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    g_PresentParameters.hDeviceWindow = hwnd;
+    g_PresentParameters.Windowed = TRUE;
+    g_PresentParameters.EnableAutoDepthStencil = FALSE;
+    g_PresentParameters.Flags = 0;
+    g_PresentParameters.FullScreen_RefreshRateInHz = 0;
+    g_PresentParameters.FullScreen_PresentationInterval =
+        g_VSync ? D3DPRESENT_INTERVAL_DEFAULT : D3DPRESENT_INTERVAL_IMMEDIATE;
+}
+
+static bool ApplyDeviceRenderState() {
+    if (!g_Device) {
+        return false;
+    }
+
+    HRESULT hr = g_Device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    if (FAILED(hr)) {
+        return EnableGdiFallback("SetRenderState(LIGHTING)", hr);
+    }
+    hr = g_Device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    if (FAILED(hr)) {
+        return EnableGdiFallback("SetRenderState(ZENABLE)", hr);
+    }
+    hr = g_Device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    if (FAILED(hr)) {
+        return EnableGdiFallback("SetRenderState(CULLMODE)", hr);
+    }
+    return true;
+}
+
+static bool ResetDX8Device(HWND hwnd) {
+    if (!g_Device || !hwnd) {
+        return false;
+    }
+
+    if (g_Fullscreen) {
+        const RECT monitorRect = testapp::GetPrimaryMonitorRect();
+        g_PresentWidth = monitorRect.right - monitorRect.left;
+        g_PresentHeight = monitorRect.bottom - monitorRect.top;
+        g_WindowWidth = g_PresentWidth;
+        g_WindowHeight = g_PresentHeight;
+    } else {
+        RECT clientRect = {};
+        if (GetClientRect(hwnd, &clientRect)) {
+            const int clientWidth = clientRect.right - clientRect.left;
+            const int clientHeight = clientRect.bottom - clientRect.top;
+            if (clientWidth > 0 && clientHeight > 0) {
+                g_PresentWidth = clientWidth;
+                g_PresentHeight = clientHeight;
+                g_WindowWidth = clientWidth;
+                g_WindowHeight = clientHeight;
+            }
+        }
+    }
+
+    UpdatePresentParameters(hwnd);
+
+    HRESULT hr = g_Device->Reset(&g_PresentParameters);
+    if (FAILED(hr)) {
+        if (hr != D3DERR_DEVICELOST && hr != D3DERR_DEVICENOTRESET) {
+            return EnableGdiFallback("IDirect3DDevice8::Reset", hr);
+        }
+        return false;
+    }
+
+    return ApplyDeviceRenderState();
+}
+
+static bool EnsureDeviceReady(HWND hwnd) {
+    if (g_UseGdiFallback) {
+        return true;
+    }
+    if (!g_Device) {
+        return false;
+    }
+
+    const HRESULT hr = g_Device->TestCooperativeLevel();
+    if (hr == D3D_OK) {
+        return true;
+    }
+    if (hr == D3DERR_DEVICENOTRESET) {
+        return ResetDX8Device(hwnd);
+    }
+    if (hr == D3DERR_DEVICELOST) {
+        return false;
+    }
+
+    return EnableGdiFallback("IDirect3DDevice8::TestCooperativeLevel", hr);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_DESTROY:
             g_Running = false;
             PostQuitMessage(0);
+            return 0;
+        case WM_ACTIVATEAPP:
+            g_WindowActive = wParam != FALSE;
             return 0;
         case WM_ERASEBKGND:
             if (g_UseGdiFallback) {
@@ -203,47 +332,23 @@ static bool InitDX8(HWND hwnd) {
         return EnableGdiFallback("CreateDirect3D8Instance", HRESULT_FROM_WIN32(GetLastError()));
     }
 
-    D3DPRESENT_PARAMETERS pp = {};
-    pp.BackBufferWidth = static_cast<UINT>(g_PresentWidth);
-    pp.BackBufferHeight = static_cast<UINT>(g_PresentHeight);
-    pp.BackBufferFormat = g_Fullscreen ? D3DFMT_X8R8G8B8 : D3DFMT_UNKNOWN;
-    pp.BackBufferCount = 1;
-    pp.MultiSampleType = D3DMULTISAMPLE_NONE;
-    pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    pp.hDeviceWindow = hwnd;
-    pp.Windowed = g_Fullscreen ? FALSE : TRUE;
-    pp.EnableAutoDepthStencil = FALSE;
-    pp.Flags = 0;
-    pp.FullScreen_RefreshRateInHz = 0;
-    pp.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT;
+    UpdatePresentParameters(hwnd);
 
     HRESULT hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-                                     D3DCREATE_HARDWARE_VERTEXPROCESSING, &pp, &g_Device);
+                                     D3DCREATE_HARDWARE_VERTEXPROCESSING, &g_PresentParameters, &g_Device);
     if (FAILED(hr)) {
         hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-                                 D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &g_Device);
+                                 D3DCREATE_SOFTWARE_VERTEXPROCESSING, &g_PresentParameters, &g_Device);
     }
     if (FAILED(hr)) {
         hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_REF, hwnd,
-                                 D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &g_Device);
+                                 D3DCREATE_SOFTWARE_VERTEXPROCESSING, &g_PresentParameters, &g_Device);
     }
     if (FAILED(hr)) {
         return EnableGdiFallback("IDirect3D8::CreateDevice", hr);
     }
 
-    hr = g_Device->SetRenderState(D3DRS_LIGHTING, FALSE);
-    if (FAILED(hr)) {
-        return EnableGdiFallback("SetRenderState(LIGHTING)", hr);
-    }
-    hr = g_Device->SetRenderState(D3DRS_ZENABLE, FALSE);
-    if (FAILED(hr)) {
-        return EnableGdiFallback("SetRenderState(ZENABLE)", hr);
-    }
-    hr = g_Device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    if (FAILED(hr)) {
-        return EnableGdiFallback("SetRenderState(CULLMODE)", hr);
-    }
-    return true;
+    return ApplyDeviceRenderState();
 }
 
 static void RenderFrame() {
@@ -349,7 +454,18 @@ static void RenderFrame() {
         g_Device->EndScene();
     }
 
-    g_Device->Present(nullptr, nullptr, nullptr, nullptr);
+    HRESULT hr = g_Device->Present(nullptr, nullptr, nullptr, nullptr);
+    if (hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET) {
+        return;
+    }
+    if (FAILED(hr)) {
+        EnableGdiFallback("IDirect3DDevice8::Present", hr);
+        return;
+    }
+
+    if (g_VSync && g_DwmFlush) {
+        g_DwmFlush();
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -358,6 +474,7 @@ int main(int argc, char* argv[]) {
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
     LoadConfig();
+    InitializeFramePacingSupport();
 
     if (testapp::LaunchX86SiblingProcess(argc, argv)) {
         return 0;
@@ -382,6 +499,10 @@ int main(int argc, char* argv[]) {
     const RECT monitorRect = testapp::GetPrimaryMonitorRect();
     g_PresentWidth = g_Fullscreen ? (monitorRect.right - monitorRect.left) : g_WindowWidth;
     g_PresentHeight = g_Fullscreen ? (monitorRect.bottom - monitorRect.top) : g_WindowHeight;
+    if (g_Fullscreen) {
+        g_WindowWidth = g_PresentWidth;
+        g_WindowHeight = g_PresentHeight;
+    }
 
     const DWORD winStyle = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     const int posX = g_Fullscreen ? monitorRect.left : CW_USEDEFAULT;
@@ -424,12 +545,21 @@ int main(int argc, char* argv[]) {
         }
         if (!g_Running)
             break;
+        if (!g_UseGdiFallback && !EnsureDeviceReady(hwnd)) {
+            Sleep(g_Fullscreen && !g_WindowActive ? 50 : 10);
+            continue;
+        }
         RenderFrame();
     }
 
     SafeRelease(g_Device);
     SafeRelease(g_D3D);
     CleanupGdiBackbuffer();
+    if (g_DwmApiModule) {
+        FreeLibrary(g_DwmApiModule);
+        g_DwmApiModule = nullptr;
+        g_DwmFlush = nullptr;
+    }
     if (g_D3D8Module) {
         FreeLibrary(g_D3D8Module);
         g_D3D8Module = nullptr;

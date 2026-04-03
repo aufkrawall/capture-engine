@@ -17,6 +17,7 @@
 // VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
 #ifndef VK_LAYER_CE_OVERLAY
 // Full backends for hook DLL
+#include "custom_overlay_dx8.h"
 #include "custom_overlay_dx10.h"
 #include "custom_overlay_dx11.h"
 #include "custom_overlay_dx12.h"
@@ -250,6 +251,24 @@ bool OverlayAdapter::InitDX9(void* device) {
     float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
     return InitializeBackendLocked(new CustomOverlay::DX9Backend((IDirect3DDevice9*)device), OverlayBackendType::DX9,
                                    "DX9", dpiScale);
+#endif
+    return true;
+}
+
+bool OverlayAdapter::InitDX8(void* device) {
+#ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+    if (!device) {
+        HookLogImportant("[Overlay] InitDX8 failed: null device pointer");
+        return false;
+    }
+
+    HookLogImportant("[Overlay] Initializing DX8 backend (device=%p)", device);
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(new CustomOverlay::DX8Backend((IDirect3DDevice8*)device), OverlayBackendType::DX8,
+                                   "DX8", dpiScale);
 #endif
     return true;
 }

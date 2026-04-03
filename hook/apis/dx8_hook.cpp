@@ -1,4 +1,5 @@
 #include "dx8_hook.h"
+#include "dx9_hook.h"
 
 #include <d3d11_4.h>
 #include <d3d9.h>
@@ -29,6 +30,7 @@
 #define D3D8_VTABLE_CREATEDEVICE 15
 #define D3D8_VTABLE_PRESENT 15
 #define D3D8_VTABLE_RESET 14
+#define D3D8_VTABLE_GETCREATIONPARAMETERS 9
 #define D3D8_VTABLE_GETBACKBUFFER 16
 #define D3D8_VTABLE_CREATEIMAGESURFACE 27
 #define D3D8_VTABLE_COPYRECTS 28
@@ -51,6 +53,9 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D8Present_t)(IDirect3DDevice8* device, cons
                                                   const RGNDATA* pDirtyRegion);
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D8Reset_t)(IDirect3DDevice8* device, void* pPresentationParameters);
+
+typedef HRESULT(STDMETHODCALLTYPE* D3D8GetCreationParameters_t)(IDirect3DDevice8* device,
+                                                                D3DDEVICE_CREATION_PARAMETERS* pParameters);
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D8GetBackBuffer_t)(IDirect3DDevice8* device, UINT BackBuffer, UINT Type,
                                                         IDirect3DSurface8** ppBackBuffer);
@@ -265,8 +270,27 @@ static HWND g_CachedHwnd = NULL;
 static std::vector<IDirect3DQuery9*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
 static int64_t g_LastSleepUs = 0;
+static thread_local uint32_t g_DX8StateHookBypassDepth = 0;
+
+class DX8StateHookBypassScope {
+public:
+    DX8StateHookBypassScope() {
+        ++g_DX8StateHookBypassDepth;
+    }
+
+    ~DX8StateHookBypassScope() {
+        if (g_DX8StateHookBypassDepth > 0) {
+            --g_DX8StateHookBypassDepth;
+        }
+    }
+};
 
 static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit);
+
+static D3D8GetCreationParameters_t GetD3D8GetCreationParameters(IDirect3DDevice8* device) {
+    return reinterpret_cast<D3D8GetCreationParameters_t>(
+        (*reinterpret_cast<void***>(device))[D3D8_VTABLE_GETCREATIONPARAMETERS]);
+}
 
 static D3D8GetBackBuffer_t GetD3D8GetBackBuffer(IDirect3DDevice8* device) {
     return reinterpret_cast<D3D8GetBackBuffer_t>((*reinterpret_cast<void***>(device))[D3D8_VTABLE_GETBACKBUFFER]);
@@ -283,6 +307,80 @@ static D3D8CopyRects_t GetD3D8CopyRects(IDirect3DDevice8* device) {
 
 static D3D8GetFrontBuffer_t GetD3D8GetFrontBuffer(IDirect3DDevice8* device) {
     return reinterpret_cast<D3D8GetFrontBuffer_t>((*reinterpret_cast<void***>(device))[D3D8_VTABLE_GETFRONTBUFFER]);
+}
+
+static HRESULT D3D8SurfaceGetDesc(IDirect3DSurface8* surface, D3D8_SURFACE_DESC_LOCAL* desc);
+static void ReleaseD3D8Surface(IDirect3DSurface8*& surface);
+
+static HWND ResolveD3D8TargetWindow(IDirect3DDevice8* device, HWND hDestWindowOverride) {
+    if (hDestWindowOverride && IsWindow(hDestWindowOverride)) {
+        return hDestWindowOverride;
+    }
+
+    if (device) {
+        D3DDEVICE_CREATION_PARAMETERS params = {};
+        D3D8GetCreationParameters_t getCreationParameters = GetD3D8GetCreationParameters(device);
+        if (getCreationParameters && SUCCEEDED(getCreationParameters(device, &params)) && params.hFocusWindow &&
+            IsWindow(params.hFocusWindow)) {
+            return params.hFocusWindow;
+        }
+    }
+
+    if (g_CachedHwnd && IsWindow(g_CachedHwnd)) {
+        return g_CachedHwnd;
+    }
+
+    HWND foreground = GetForegroundWindow();
+    if (!foreground || !IsWindow(foreground)) {
+        return nullptr;
+    }
+
+    DWORD windowPid = 0;
+    GetWindowThreadProcessId(foreground, &windowPid);
+    return windowPid == GetCurrentProcessId() ? foreground : nullptr;
+}
+
+static bool ResolveD3D8RenderSize(IDirect3DDevice8* device, HWND hwnd, uint32_t* outWidth, uint32_t* outHeight) {
+    if (!outWidth || !outHeight) {
+        return false;
+    }
+
+    *outWidth = 0;
+    *outHeight = 0;
+
+    if (device) {
+        IDirect3DSurface8* backBuffer = nullptr;
+        HRESULT hr = GetD3D8GetBackBuffer(device)(device, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (SUCCEEDED(hr) && backBuffer) {
+            D3D8_SURFACE_DESC_LOCAL desc = {};
+            if (SUCCEEDED(D3D8SurfaceGetDesc(backBuffer, &desc)) && desc.Width > 0 && desc.Height > 0) {
+                *outWidth = desc.Width;
+                *outHeight = desc.Height;
+                ReleaseD3D8Surface(backBuffer);
+                return true;
+            }
+            ReleaseD3D8Surface(backBuffer);
+        }
+    }
+
+    if (hwnd) {
+        RECT rect = {};
+        if (GetClientRect(hwnd, &rect)) {
+            const LONG width = rect.right - rect.left;
+            const LONG height = rect.bottom - rect.top;
+            if (width > 0 && height > 0) {
+                *outWidth = static_cast<uint32_t>(width);
+                *outHeight = static_cast<uint32_t>(height);
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+static bool DX8HelperRequired(SharedMemoryLayout* shm, bool isRecording) {
+    return isRecording || (shm && shm->graphicsConfig.prerenderLimit >= 0.0f);
 }
 
 static HRESULT D3D8SurfaceGetDesc(IDirect3DSurface8* surface, D3D8_SURFACE_DESC_LOCAL* desc) {
@@ -409,6 +507,7 @@ public:
             d3d9SharedSurface = nullptr;
         }
         if (d3d9DeviceEx) {
+            DX9_UnregisterInternalHelperDevice(d3d9DeviceEx);
             d3d9DeviceEx->Release();
             d3d9DeviceEx = nullptr;
         }
@@ -476,9 +575,12 @@ public:
         d3dpp.BackBufferCount = 1;
         d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
 
-        hr = d3d9Ex->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-                                    D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &d3dpp, NULL,
-                                    &d3d9DeviceEx);
+        {
+            DX9InternalBypassScope dx9Bypass;
+            hr = d3d9Ex->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+                                        D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &d3dpp, NULL,
+                                        &d3d9DeviceEx);
+        }
 
         if (FAILED(hr)) {
             HookLog("DX8: Failed to create D3D9Ex device (hr=0x%08x)", hr);
@@ -487,6 +589,7 @@ public:
             return false;
         }
 
+        DX9_RegisterInternalHelperDevice(d3d9DeviceEx);
         d3d9DeviceEx->SetMaximumFrameLatency(1);
 
         hr = d3d9DeviceEx->CreateOffscreenPlainSurface(width, height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
@@ -719,8 +822,9 @@ public:
         return copied;
     }
 
-    bool CopySurfaceToOverlayBackbuffer(IDirect3DSurface8* sourceSurface, D3DFORMAT sourceFormat) {
-        if (!sourceSurface) {
+    bool CopySurfaceToSurface9(IDirect3DSurface8* sourceSurface, D3DFORMAT sourceFormat,
+                               IDirect3DSurface9* destinationSurface) {
+        if (!sourceSurface || !destinationSurface) {
             return false;
         }
 
@@ -735,13 +839,13 @@ public:
             return false;
         }
 
-        const bool copied = CopyLockedPixelsToOverlayBackbuffer(lockedRect, sourceFormat);
+        const bool copied = CopyLockedPixelsToSurface9(lockedRect, sourceFormat, destinationSurface);
         D3D8SurfaceUnlockRect(sourceSurface);
         return copied;
     }
 
-    bool CopyBackBufferToOverlayBackbuffer(IDirect3DDevice8* device) {
-        if (!device || !EnsureSnapshotSurface(device)) {
+    bool CopyBackBufferToSurface9(IDirect3DDevice8* device, IDirect3DSurface9* destinationSurface) {
+        if (!device || !destinationSurface || !EnsureSnapshotSurface(device)) {
             return false;
         }
 
@@ -767,7 +871,7 @@ public:
             return false;
         }
 
-        return CopySurfaceToOverlayBackbuffer(d3d8SnapshotSurface, d3d8SnapshotFormat);
+        return CopySurfaceToSurface9(d3d8SnapshotSurface, d3d8SnapshotFormat, destinationSurface);
     }
 
     bool CopyFrontBufferToSurface9(IDirect3DDevice8* device, IDirect3DSurface9* destinationSurface) {
@@ -823,7 +927,11 @@ public:
             return false;
         }
 
-        HRESULT hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, overlayHwnd, nullptr, 0);
+        HRESULT hr = E_FAIL;
+        {
+            DX9InternalBypassScope dx9Bypass;
+            hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, overlayHwnd, nullptr, 0);
+        }
         static uint32_t overlayPresentCount = 0;
         static uint64_t lastOverlayPresentLogTick = 0;
         overlayPresentCount++;
@@ -1044,7 +1152,7 @@ public:
         HookLog("DX8 Capture Initialized: %dx%d", width, height);
     }
 
-    void CaptureFrame(IDirect3DDevice8* device) {
+    void CaptureFrame(IDirect3DDevice8* device, bool useFrontBuffer = true) {
         if (!initialized || !d3d9DeviceEx || !d3d9SharedSurface)
             return;
 
@@ -1068,7 +1176,10 @@ public:
         QueryPerformanceCounter(&qpc);
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
-        if (!CopyFrontBufferToSurface9(device, d3d9SharedSurface)) {
+        const bool copied =
+            useFrontBuffer ? CopyFrontBufferToSurface9(device, d3d9SharedSurface)
+                           : CopyBackBufferToSurface9(device, d3d9SharedSurface);
+        if (!copied) {
             return;
         }
 
@@ -1098,10 +1209,7 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
 
     // We need D3D9Ex device for queries
     if (!g_DX8Capture.d3d9DeviceEx) {
-        // Find window from device
-        HWND hwnd = g_CachedHwnd;
-        if (!hwnd)
-            hwnd = GetForegroundWindow();
+        HWND hwnd = ResolveD3D8TargetWindow(device, g_CachedHwnd);
         if (hwnd) {
             if (!g_DX8Capture.EnsureOverlayDevice(device, hwnd))
                 return;
@@ -1173,11 +1281,13 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
     }
 }
 
-static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd, bool overlayFrameReady) {
-    if (!g_DX8Capture.d3d9DeviceEx)
+static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd) {
+    if (!device || !hwnd)
         return;
 
-    if (!overlayFrameReady && !g_DX8Capture.CopyFrontBufferToOverlayBackbuffer(device)) {
+    uint32_t renderWidth = 0;
+    uint32_t renderHeight = 0;
+    if (!ResolveD3D8RenderSize(device, hwnd, &renderWidth, &renderHeight)) {
         return;
     }
 
@@ -1186,17 +1296,13 @@ static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd, bool overlayFram
         InputManager::Get().HookWindow(hwnd);  // Hook input for menu
         g_OverlayAdapter.SetHwnd(hwnd);
 
-        if (g_OverlayAdapter.InitDX9(g_DX8Capture.d3d9DeviceEx)) {
+        if (g_OverlayAdapter.InitDX8(device)) {
             g_OverlayAdapter.SetHwnd(hwnd);
-            EarlyLog("DX8: OverlayAdapter initialized (via DX9)");
+            EarlyLog("DX8: OverlayAdapter initialized (direct DX8)");
         }
 
-        // Re-apply hook if needed? D3D8SetTextureStageState hook logic was in ImGui
-        // init block We should probably keep that hook if it's important for state
-        // preservation? The original logic hooked SetTextureStageState inside
-        // initial ImGui init only.
-        if (!g_DX8HooksInitialized && g_DX8Capture.d3d8Device) {
-            void** vTable = *(void***)g_DX8Capture.d3d8Device;
+        if (!g_DX8HooksInitialized && device) {
+            void** vTable = *(void***)device;
             VTableHook::Create(&vTable[D3D8_VTABLE_SETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8SetTextureStageState,
                                (LPVOID*)&oD3D8SetTextureStageState);
             g_DX8HooksInitialized = true;
@@ -1209,18 +1315,19 @@ static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd, bool overlayFram
     g_OverlayAdapter.SetDroppedFrames(g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
     g_OverlayAdapter.SetGraphicsAPI("DX8");
 
-    g_OverlayAdapter.RenderOverlay(g_DX8Capture.width, g_DX8Capture.height);
+    {
+        DX8StateHookBypassScope bypassScope;
+        g_OverlayAdapter.RenderOverlay(static_cast<int>(renderWidth), static_cast<int>(renderHeight));
+    }
     static uint32_t overlayRenderSubmitCount = 0;
     static uint64_t lastOverlayRenderSubmitLogTick = 0;
     overlayRenderSubmitCount++;
     uint64_t nowTick = GetTickCount64();
     if (overlayRenderSubmitCount <= 8 || (nowTick - lastOverlayRenderSubmitLogTick) >= 1000) {
-        HookLogImportant("DX8: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)", g_DX8Capture.overlayHwnd,
-                         g_DX8Capture.width, g_DX8Capture.height, overlayRenderSubmitCount);
+        HookLogImportant("DX8: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)", hwnd, renderWidth, renderHeight,
+                         overlayRenderSubmitCount);
         lastOverlayRenderSubmitLogTick = nowTick;
     }
-
-    g_DX8Capture.PresentOverlay();
 }
 
 static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect,
@@ -1244,35 +1351,19 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, con
     bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
     bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
     bool isRecording = g_IPC && g_IPC->IsRecording();
-    HWND targetHwnd = hDestWindowOverride ? hDestWindowOverride : GetForegroundWindow();
-    bool overlayFrameReady = false;
-
-    if (shouldDrawOverlay && g_DX8Capture.EnsureOverlayDevice(device, targetHwnd)) {
-        overlayFrameReady = g_DX8Capture.CopyBackBufferToOverlayBackbuffer(device);
+    bool helperRequired = DX8HelperRequired(shm, isRecording);
+    HWND targetHwnd = ResolveD3D8TargetWindow(device, hDestWindowOverride);
+    if (targetHwnd) {
+        g_CachedHwnd = targetHwnd;
     }
-
-    // Lambda for capture operation
-    auto doCapture = [&]() {
-        if (isRecording) {
-            if (!g_DX8Capture.initialized) {
-                g_DX8Capture.Init(device, targetHwnd);
-            }
-
-            if (g_DX8Capture.initialized) {
-                g_DX8Capture.CaptureFrame(device);
-            }
-        } else if (!shouldDrawOverlay && (g_DX8Capture.initialized || g_DX8Capture.d3d9DeviceEx)) {
-            g_DX8Capture.Cleanup();
+    auto ensureCapture = [&]() {
+        if (!targetHwnd) {
+            return false;
         }
-    };
-
-    // Lambda for overlay drawing
-    auto doOverlay = [&]() {
-        if (shouldDrawOverlay) {
-            if (g_DX8Capture.EnsureOverlayDevice(device, targetHwnd)) {
-                DrawDX8Overlay(device, targetHwnd, overlayFrameReady);
-            }
+        if (!g_DX8Capture.initialized) {
+            g_DX8Capture.Init(device, targetHwnd);
         }
+        return g_DX8Capture.initialized;
     };
 
     // CPU Prerender Limit
@@ -1280,14 +1371,20 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, con
         ApplyPrerenderLimitDX8(device, g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
     }
 
+    if (isRecording && shouldDrawOverlay && !captureIncludeOverlay && ensureCapture()) {
+        g_DX8Capture.CaptureFrame(device, false);
+    }
+
+    if (shouldDrawOverlay) {
+        DrawDX8Overlay(device, targetHwnd);
+    }
+
     HRESULT hr = oD3D8Present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 
-    if (captureIncludeOverlay) {
-        doOverlay();
-        doCapture();
-    } else {
-        doCapture();
-        doOverlay();
+    if (isRecording && (!shouldDrawOverlay || captureIncludeOverlay) && ensureCapture()) {
+        g_DX8Capture.CaptureFrame(device, true);
+    } else if (!helperRequired && (g_DX8Capture.initialized || g_DX8Capture.d3d9DeviceEx)) {
+        g_DX8Capture.Cleanup();
     }
 
     // Apply FPS limiter
@@ -1358,6 +1455,10 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device, void*
 // Hook: D3D8 SetTextureStageState
 static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
                                                                 DWORD Value) {
+    if (g_DX8StateHookBypassDepth > 0) {
+        return oD3D8SetTextureStageState(device, Stage, Type, Value);
+    }
+
     if (g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
         // Anisotropy

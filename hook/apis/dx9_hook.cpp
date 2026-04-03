@@ -93,6 +93,9 @@ static int64_t g_LastSleepUs = 0;
 static bool g_WindowedPresent = true;
 static std::atomic<UINT> g_LivePresentInterval{0};
 static std::atomic<bool> g_DX9StagingCaptureActive{false};
+static std::mutex g_InternalHelperDeviceMutex;
+static std::unordered_set<IDirect3DDevice9*> g_InternalHelperDevices;
+static thread_local uint32_t g_InternalHelperBypassDepth = 0;
 
 typedef HRESULT(WINAPI* DwmFlush_t)();
 static DwmFlush_t g_DwmFlush = nullptr;
@@ -103,6 +106,86 @@ static thread_local int64_t g_LastPacedQpc = 0;
 static thread_local HANDLE g_PaceTimer = nullptr;
 static std::atomic<int> g_MipBiasDiagLogCount{0};
 static std::atomic<int> g_AnisoDiagLogCount{0};
+
+static bool IsDX9InternalHelperBypassActive() {
+    return g_InternalHelperBypassDepth != 0;
+}
+
+static bool IsDX9InternalHelperDevice(IDirect3DDevice9* device) {
+    if (!device) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_InternalHelperDeviceMutex);
+    return g_InternalHelperDevices.find(device) != g_InternalHelperDevices.end();
+}
+
+static bool ShouldBypassDX9HooksForDevice(IDirect3DDevice9* device) {
+    return IsDX9InternalHelperBypassActive() || IsDX9InternalHelperDevice(device);
+}
+
+static bool ShouldBypassDX9HooksForSwapChain(IDirect3DSwapChain9* swapChain) {
+    if (IsDX9InternalHelperBypassActive()) {
+        return true;
+    }
+    if (!swapChain) {
+        return false;
+    }
+
+    IDirect3DDevice9* device = nullptr;
+    const HRESULT hr = swapChain->GetDevice(&device);
+    if (FAILED(hr) || !device) {
+        return false;
+    }
+
+    const bool bypass = IsDX9InternalHelperDevice(device);
+    device->Release();
+    return bypass;
+}
+
+DX9InternalBypassScope::DX9InternalBypassScope() {
+    ++g_InternalHelperBypassDepth;
+}
+
+DX9InternalBypassScope::~DX9InternalBypassScope() {
+    if (g_InternalHelperBypassDepth > 0) {
+        --g_InternalHelperBypassDepth;
+    }
+}
+
+void DX9_RegisterInternalHelperDevice(IDirect3DDevice9* device) {
+    if (!device) {
+        return;
+    }
+
+    bool inserted = false;
+    {
+        std::lock_guard<std::mutex> lock(g_InternalHelperDeviceMutex);
+        inserted = g_InternalHelperDevices.insert(device).second;
+    }
+
+    static std::atomic<int> s_registerLogCount{0};
+    if (inserted && s_registerLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+        HookLogImportant("DX9: Registered internal helper device %p", device);
+    }
+}
+
+void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device) {
+    if (!device) {
+        return;
+    }
+
+    bool erased = false;
+    {
+        std::lock_guard<std::mutex> lock(g_InternalHelperDeviceMutex);
+        erased = g_InternalHelperDevices.erase(device) > 0;
+    }
+
+    static std::atomic<int> s_unregisterLogCount{0};
+    if (erased && s_unregisterLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+        HookLogImportant("DX9: Unregistered internal helper device %p", device);
+    }
+}
 
 // ============================================================================
 // D3D9Ex MANAGED Pool Compatibility Layer
@@ -1608,6 +1691,12 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* devic
             return oD3D9PresentTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
         return D3D_OK;
     }
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        if (oD3D9PresentTrampoline) {
+            return oD3D9PresentTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+        }
+        return D3D_OK;
+    }
 
     const bool topLevelPresent = (g_PresentRecurse == 0);
     IDirect3DSurface9* backBuffer = nullptr;
@@ -1647,6 +1736,13 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* d
     if (ShouldSkipDX9PresentForVulkan()) {
         if (oD3D9PresentExTrampoline)
             return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+        return D3D_OK;
+    }
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        if (oD3D9PresentExTrampoline) {
+            return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion,
+                                            dwFlags);
+        }
         return D3D_OK;
     }
 
@@ -4225,6 +4321,8 @@ static bool IsD3D9On12Loaded() {
 void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) {
     if (HookIsShuttingDown())
         return;
+    if (ShouldBypassDX9HooksForDevice(device))
+        return;
 
     // Heartbeat for freeze watchdog (d3d12.dll may be loaded in DX9 games)
     g_RenderWatchdog.Heartbeat();
@@ -4556,6 +4654,10 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 }
 
 void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
+    if (g_PresentRecurse <= 0 || ShouldBypassDX9HooksForDevice(device)) {
+        return;
+    }
+
     // Complete deferred readback AFTER Present returned (GPU->CPU DMA no longer
     // blocks the Present call, reducing present_call_us from ~3.5ms to ~0.2ms)
     // Only run at the outermost Present level to avoid double-processing when
@@ -4730,6 +4832,9 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
 // one there. That lets our overlay land after their popup/tint pass instead of
 // underneath it.
 static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        return oEndScene(device);
+    }
     if (ShouldSkipDX9OverlayForVulkan()) {
         static int endSceneSkipLogCount = 0;
         if (endSceneSkipLogCount < 6) {
@@ -4800,6 +4905,9 @@ static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
 
 static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler,
                                                        D3DSAMPLERSTATETYPE Type, DWORD Value) {
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        return oSetSamplerState(device, Sampler, Type, Value);
+    }
     if (g_InOverlayRender) {
         return oSetSamplerState(device, Sampler, Type, Value);
     }
@@ -4934,6 +5042,9 @@ static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device,
 
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
                                                             D3DTEXTURESTAGESTATETYPE Type, DWORD Value) {
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        return oSetTextureStageState(device, Stage, Type, Value);
+    }
     // D3D9 does not use SetTextureStageState for filtering/mipbias overrides.
     // Those have moved to SetSamplerState.
     return oSetTextureStageState(device, Stage, Type, Value);
@@ -4942,6 +5053,9 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* de
 // Hook: IDirect3DDevice9::Present
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, CONST RECT* pSourceRect, CONST RECT* pDestRect,
                                                HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        return oPresent(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    }
     if (ShouldSkipDX9PresentForVulkan()) {
         return oPresent(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
     }
@@ -4977,6 +5091,9 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, CONST R
 static HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device, CONST RECT* pSourceRect,
                                                  CONST RECT* pDestRect, HWND hDestWindowOverride,
                                                  CONST RGNDATA* pDirtyRegion, DWORD dwFlags) {
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        return oPresentEx(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+    }
     if (ShouldSkipDX9PresentForVulkan()) {
         return oPresentEx(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     }
@@ -5019,6 +5136,9 @@ static HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device, CON
 static HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap, CONST RECT* pSourceRect,
                                                    CONST RECT* pDestRect, HWND hDestWindowOverride,
                                                    CONST RGNDATA* pDirtyRegion, DWORD dwFlags) {
+    if (ShouldBypassDX9HooksForSwapChain(swap)) {
+        return oPresentSwap(swap, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+    }
     if (ShouldSkipDX9PresentForVulkan()) {
         return oPresentSwap(swap, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     }
@@ -5075,6 +5195,9 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap, CO
 
 // Hook: IDirect3DDevice9::Reset
 static HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* pPresentationParameters) {
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        return oReset(device, pPresentationParameters);
+    }
     HookLog("DX9: Reset called");
 
     // Cleanup OverlayAdapter before reset
@@ -5158,6 +5281,9 @@ static HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device, D3DPRESEN
 static HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
                                                D3DPRESENT_PARAMETERS* pPresentationParameters,
                                                D3DDISPLAYMODEEX* pFullscreenDisplayMode) {
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        return oResetEx(device, pPresentationParameters, pFullscreenDisplayMode);
+    }
     HookLog("DX9: ResetEx called");
 
     // Cleanup OverlayAdapter before reset
@@ -5268,6 +5394,13 @@ static HRESULT STDMETHODCALLTYPE DetourGetDirect3D(IDirect3DDevice9* device, IDi
 static void InstallDeviceHooks(IDirect3DDevice9* device) {
     if (!device)
         return;
+    if (ShouldBypassDX9HooksForDevice(device)) {
+        static std::atomic<int> s_skipLogCount{0};
+        if (s_skipLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+            HookLogImportant("DX9: Skipping hook install for internal helper device %p", device);
+        }
+        return;
+    }
 
     uintptr_t* vtable = *(uintptr_t**)device;
 
@@ -5548,6 +5681,16 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
                                                     IDirect3DDevice9** ppReturnedDeviceInterface) {
     EarlyLog("DX9: IDirect3D9::CreateDevice called (hFocusWindow=%p)", hFocusWindow);
 
+    if (IsDX9InternalHelperBypassActive()) {
+        const HRESULT hr =
+            oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters,
+                          ppReturnedDeviceInterface);
+        if (SUCCEEDED(hr) && ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
+            DX9_RegisterInternalHelperDevice(*ppReturnedDeviceInterface);
+        }
+        return hr;
+    }
+
     // VSync Override for CreateDevice
     if (pPresentationParameters) {
         const auto& gfx = GetActiveGraphicsConfig();
@@ -5774,6 +5917,15 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
                                                       D3DDISPLAYMODEEX* pFullscreenDisplayMode,
                                                       IDirect3DDevice9Ex** ppReturnedDeviceInterface) {
     EarlyLog("DX9: CreateDeviceEx called (hFocusWindow=%p)", hFocusWindow);
+
+    if (IsDX9InternalHelperBypassActive()) {
+        const HRESULT hr = oCreateDeviceEx(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
+                                           pPresentationParameters, pFullscreenDisplayMode, ppReturnedDeviceInterface);
+        if (SUCCEEDED(hr) && ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
+            DX9_RegisterInternalHelperDevice(*ppReturnedDeviceInterface);
+        }
+        return hr;
+    }
 
     if (pPresentationParameters) {
         const auto& gfx = GetActiveGraphicsConfig();

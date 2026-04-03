@@ -23,7 +23,7 @@
 #include "system_metrics.h"
 
 // Backend type enum
-enum class OverlayBackendType { None, DX9, DX10, DX11, DX12, OpenGL, Vulkan };
+enum class OverlayBackendType { None, DX8, DX9, DX10, DX11, DX12, OpenGL, Vulkan };
 
 class OverlayAdapter {
 public:
@@ -31,6 +31,7 @@ public:
     ~OverlayAdapter();
 
     // Initialize with graphics API-specific parameters
+    bool InitDX8(void* device);   // IDirect3DDevice8*
     bool InitDX9(void* device);   // IDirect3DDevice9*
     bool InitDX10(void* device);  // ID3D10Device*
     bool InitDX11(void* device,

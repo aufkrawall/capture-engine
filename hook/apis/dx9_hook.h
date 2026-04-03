@@ -9,6 +9,17 @@
 
 void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer);
 void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer);
+void DX9_RegisterInternalHelperDevice(IDirect3DDevice9* device);
+void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device);
+
+class DX9InternalBypassScope {
+public:
+    DX9InternalBypassScope();
+    ~DX9InternalBypassScope();
+
+    DX9InternalBypassScope(const DX9InternalBypassScope&) = delete;
+    DX9InternalBypassScope& operator=(const DX9InternalBypassScope&) = delete;
+};
 
 class DX9Hook : public GraphicsHook {
 public:
