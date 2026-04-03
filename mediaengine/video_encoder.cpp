@@ -1126,6 +1126,11 @@ bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
 }
 
 void VideoEncoder::CacheRepeatPacket(const AVPacket* pkt) {
+    if (!ce::video::SupportsEncodedPacketRepeat(savedConfig.encoder)) {
+        InvalidateRepeatPacketCache();
+        return;
+    }
+
     // Only cache video packets with valid encoded data
     if (!pkt || !stream || pkt->stream_index != stream->index || pkt->size <= 0 || pkt->data == nullptr) {
         return;
@@ -1489,6 +1494,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
             "produce undecodeable bitstreams. If video artifacts occur, update GPU driver.");
         av_dict_set_int(&opts, "repeat_pps", 1, 0);
         DLL_Log("[VideoEncoder] Applied av1_nvenc mitigation: repeat_pps=1");
+        DLL_Log("[VideoEncoder] AV1 duplicate frames will be re-encoded from the cached texture (packet replay disabled)");
     }
 
     stream = avformat_new_stream(fmtCtx, codec);
@@ -3749,8 +3755,11 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
     // re-encoding via NVENC. Eliminates duplicate encode overhead entirely
     // (e.g., 60fps source → 120fps target means ~50% of frames are repeats,
     // each of which now costs ~0ms instead of a full NVENC encode cycle).
-    // Only applicable to CFR mode; VFR timing requires fresh encoding per frame.
-    if (cachedRepeatPacket_ && !savedConfig.useVFR) {
+    //
+    // AV1 is intentionally excluded: replaying cached AV1 packets can produce
+    // invalid repeated-frame header OBUs in the output stream, so AV1 repeats
+    // must go through the cached-texture re-encode path below.
+    if (cachedRepeatPacket_ && !savedConfig.useVFR && ce::video::SupportsEncodedPacketRepeat(savedConfig.encoder)) {
         const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, startPts, lastAssignedVideoPts);
 
         AVPacket* repeatPkt = av_packet_alloc();

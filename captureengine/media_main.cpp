@@ -108,12 +108,15 @@ constexpr double kBottleneckEnterRatio = 0.95;  // smoothedEncodeMs > 95% of fra
 constexpr double kBottleneckExitRatio = 0.75;   // smoothedEncodeMs < 75% of frame interval → exit
 
 // Update g_IsEncoderBottlenecked with hysteresis to prevent rapid toggling.
-// Also publishes the state to shared memory so the MediaEngine audio sync
-// logic can distinguish encoder lag from WGC frame loss.
-inline void UpdateEncoderBottleneckFlag(double smoothedEncodeMs, double frameIntervalMs) {
+// During startup we still learn the encode-time EMA, but we keep the
+// bottleneck flag cleared so one-time encoder priming doesn't raise false
+// overload warnings or skew WGC recovery logic.
+inline void UpdateEncoderBottleneckFlag(double smoothedEncodeMs, double frameIntervalMs, bool startupWindowActive) {
     const bool currentlyBottlenecked = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
     bool newState = currentlyBottlenecked;
-    if (currentlyBottlenecked) {
+    if (startupWindowActive) {
+        newState = false;
+    } else if (currentlyBottlenecked) {
         // Exit bottleneck only when encode time drops well below the frame budget
         if (smoothedEncodeMs < frameIntervalMs * kBottleneckExitRatio) {
             newState = false;
@@ -3369,7 +3372,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                             }
                         }
-                        UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs);
+                        UpdateEncoderBottleneckFlag(
+                            smoothedEncodeMs, frameIntervalMs,
+                            ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick,
+                                                                       GetTickCount64()));
 
                         if (g_pSharedMem) {
                             if (currentEncodeMs > frameIntervalMs * 1.10) {
@@ -3477,7 +3483,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                         smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                     }
                 }
-                UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs);
+                UpdateEncoderBottleneckFlag(
+                    smoothedEncodeMs, frameIntervalMs,
+                    ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64()));
 
                 if (g_pSharedMem) {
                     if (currentEncodeMs > frameIntervalMs * 1.10) {
@@ -3520,7 +3528,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 } else {
                     smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                 }
-                UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs);
+                UpdateEncoderBottleneckFlag(
+                    smoothedEncodeMs, frameIntervalMs,
+                    ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64()));
                 if (g_pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
                     g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                     g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
@@ -3642,7 +3652,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                     smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                 }
             }
-            UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs);
+            UpdateEncoderBottleneckFlag(
+                smoothedEncodeMs, frameIntervalMs,
+                ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64()));
 
             if (popped && frameToProcess->isInjectMode) {
                 if (encodeDeferred) {

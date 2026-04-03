@@ -83,6 +83,10 @@ TEST(CapturePipelinePolicyTest, WarmupKeepCountAndMinimumBufferedFramesFollowRes
 }
 
 TEST(CapturePipelinePolicyTest, StartupHeadroomUsesStartupWindow) {
+    EXPECT_TRUE(policy::IsEncoderStartupWindow(false, 1000, 5000));
+    EXPECT_TRUE(policy::IsEncoderStartupWindow(true, 1000, 2000));
+    EXPECT_FALSE(policy::IsEncoderStartupWindow(true, 1000, 3000));
+
     EXPECT_TRUE(policy::IsInjectEncoderStartup(false, 1000, 5000));
     EXPECT_TRUE(policy::IsInjectEncoderStartup(true, 1000, 2000));
     EXPECT_FALSE(policy::IsInjectEncoderStartup(true, 1000, 3000));

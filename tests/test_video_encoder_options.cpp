@@ -11,6 +11,7 @@ using ce::video::BuildEncoderOptionPlan;
 using ce::video::EncoderOption;
 using ce::video::EncoderOptionPlan;
 using ce::video::ParseBitrateString;
+using ce::video::SupportsEncodedPacketRepeat;
 
 std::optional<std::string> FindOptionValue(const std::vector<EncoderOption>& options, const char* key) {
     for (const auto& option : options) {
@@ -214,6 +215,15 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredSkippedForAV1) {
     // multipass auto-upgraded from disabled to qres
     ASSERT_TRUE(multipass.has_value());
     EXPECT_EQ(*multipass, "qres");
+}
+
+TEST(VideoEncoderOptionsTest, EncodedPacketRepeatDisabledForAV1) {
+    EXPECT_TRUE(SupportsEncodedPacketRepeat("h264_nvenc"));
+    EXPECT_TRUE(SupportsEncodedPacketRepeat("hevc_qsv"));
+    EXPECT_FALSE(SupportsEncodedPacketRepeat("av1_nvenc"));
+    EXPECT_FALSE(SupportsEncodedPacketRepeat("AV1_MF"));
+    EXPECT_FALSE(SupportsEncodedPacketRepeat("libsvtav1"));
+    EXPECT_FALSE(SupportsEncodedPacketRepeat("unknown_encoder"));
 }
 
 TEST(VideoEncoderOptionsTest, NvencWeightedPredNotSetWhenBFramesZero) {

@@ -702,4 +702,16 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
     return plan;
 }
 
+bool SupportsEncodedPacketRepeat(std::string_view encoderName) {
+    switch (ClassifyEncoder(encoderName).family) {
+        case CodecFamily::kH264:
+        case CodecFamily::kHEVC:
+            return true;
+        case CodecFamily::kAV1:
+        case CodecFamily::kUnknown:
+        default:
+            return false;
+    }
+}
+
 }  // namespace ce::video

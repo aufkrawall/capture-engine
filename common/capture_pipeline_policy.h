@@ -578,15 +578,19 @@ inline size_t GetMinBufferedInjectFrames(size_t injectReserveFrames, bool record
     return injectReserveFrames;
 }
 
-inline bool IsInjectEncoderStartup(bool recordingOutputLive, uint64_t recordingLiveTick, uint64_t nowTick) {
+inline bool IsEncoderStartupWindow(bool recordingOutputLive, uint64_t recordingLiveTick, uint64_t nowTick) {
     if (!recordingOutputLive || nowTick < recordingLiveTick) {
         return true;
     }
     return (nowTick - recordingLiveTick) < kEncoderStartupWindowMs;
 }
 
+inline bool IsInjectEncoderStartup(bool recordingOutputLive, uint64_t recordingLiveTick, uint64_t nowTick) {
+    return IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, nowTick);
+}
+
 inline size_t GetInjectBufferedHeadroom(bool recordingOutputLive, uint64_t recordingLiveTick, uint64_t nowTick) {
-    return IsInjectEncoderStartup(recordingOutputLive, recordingLiveTick, nowTick)
+    return IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, nowTick)
                ? kStartupInjectBufferedHeadroomFrames
                : kMaxInjectBufferedHeadroomFrames;
 }
