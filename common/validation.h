@@ -9,7 +9,13 @@
 #include <cstdio>
 
 // Forward declaration for logging (defined in logging.h or hook_common.h)
-void CE_LogImpl(const char* level, const char* module, int line, const char* fmt, ...);
+#if defined(__GNUC__) || defined(__clang__)
+#define CE_PRINTF_FORMAT(fmt_index, first_arg) __attribute__((format(printf, fmt_index, first_arg)))
+#else
+#define CE_PRINTF_FORMAT(fmt_index, first_arg)
+#endif
+
+void CE_LogImpl(const char* level, const char* module, int line, const char* fmt, ...) CE_PRINTF_FORMAT(4, 5);
 
 // Global debug logging flag (set from config.ini)
 extern std::atomic<bool> g_DebugLoggingEnabled;
@@ -228,11 +234,7 @@ inline Result Err(ErrorCode c, const char* msg = nullptr) {
 #include <cstdio>
 
 inline std::atomic<bool> g_DebugLoggingEnabled{false};
-inline void CE_LogImpl(const char* level, const char* module, int line, const char* fmt, ...)
-#if defined(__GNUC__) || defined(__clang__)
-    __attribute__((format(printf, 4, 5)))
-#endif
-{
+inline void CE_LogImpl(const char* level, const char* module, int line, const char* fmt, ...) {
     if (!g_DebugLoggingEnabled)
         return;
     char buffer[512];
