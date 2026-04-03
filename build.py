@@ -164,7 +164,11 @@ def append_linux_msys2_include(flags: List[str]) -> None:
     msys2_dir = get_linux_msys2_dir()
     msys2_include = os.path.join(msys2_dir, "clang64", "include")
     if os.path.exists(msys2_include):
-        flags.append("-I" + msys2_include)
+        # Treat MSYS2's fallback headers as "after" includes on Linux so the
+        # host MinGW toolchain keeps using its own CRT/Windows SDK headers.
+        # This avoids mixing Debian MinGW's CRT with MSYS2 clang64's UCRT headers
+        # while still allowing missing packages like cppwinrt/vulkan to resolve.
+        flags.extend(["-idirafter", msys2_include])
 
 
 def make_cpp_cflags(
@@ -1124,6 +1128,7 @@ def get_linux_ffmpeg_build_flags(
     ffmpeg_root = get_linux_ffmpeg_root()
     ffmpeg_include = find_ffmpeg_include_dir(ffmpeg_root)
     ffmpeg_lib = os.path.join(ffmpeg_root, "lib")
+    msys2_include_root = os.path.join(get_linux_msys2_dir(), "clang64", "include")
     env_ffmpeg = env.copy()
     env_ffmpeg["PKG_CONFIG_PATH"] = os.pathsep.join(
         [os.path.join(ffmpeg_lib, "pkgconfig"), env_ffmpeg.get("PKG_CONFIG_PATH", "")]
@@ -1150,7 +1155,10 @@ def get_linux_ffmpeg_build_flags(
                     abs_path = os.path.join(msys2_dir, flag[2:].lstrip("/"))
                     if os.path.exists(abs_path):
                         flag = "-L" + abs_path
-                ffmpeg_flags.append(flag)
+                if flag == "-I" + msys2_include_root:
+                    ffmpeg_flags.extend(["-idirafter", msys2_include_root])
+                else:
+                    ffmpeg_flags.append(flag)
         except Exception as e:
             log(f"pkg-config failed, using manual FFmpeg paths: {e}")
             ffmpeg_flags = ["-I" + ffmpeg_include, "-L" + ffmpeg_lib]
@@ -3342,8 +3350,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     if IS_LINUX:
         vulkan_include = os.path.join(get_linux_msys2_dir(), "clang64", "include")
         if os.path.exists(vulkan_include):
-            hook_cflags.append("-I" + vulkan_include)
-            layer_cflags.append("-I" + vulkan_include)
+            hook_cflags.extend(["-idirafter", vulkan_include])
+            layer_cflags.extend(["-idirafter", vulkan_include])
 
     layer_objs = []
 
@@ -3700,6 +3708,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-shared",
             "-static",
         ]
+        if IS_LINUX:
+            ldflags_hook.extend(["-static-libgcc", "-static-libstdc++"])
 
         # Add lib path for non-Linux
         if not IS_LINUX:
@@ -3717,6 +3727,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 "-ldxguid",
                 "-lws2_32",
                 "-lole32",
+                "-luuid",
                 "-lwinmm",
                 "-luser32",
                 "-lgdi32",
@@ -3790,7 +3801,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         if IS_LINUX:
             vulkan_include = os.path.join(get_linux_msys2_dir(), "clang64", "include")
             if os.path.exists(vulkan_include):
-                hk_cflags.append("-I" + vulkan_include)
+                hk_cflags.extend(["-idirafter", vulkan_include])
 
         hk_objs = []
         src_obj_pairs = []
