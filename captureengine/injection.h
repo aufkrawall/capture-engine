@@ -4,7 +4,7 @@
 #include <windows.h>
 
 #include "../common/config.h"
-#include <Wbemidl.h>
+#include <wbemidl.h>
 #include <atomic>
 #include <comdef.h>
 #include <functional>

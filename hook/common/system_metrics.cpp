@@ -1,5 +1,5 @@
 #include "system_metrics.h"
-#include <PdhMsg.h>
+#include <pdhmsg.h>
 #include <dxgi1_4.h>
 #include <pdh.h>
 #include <algorithm>
