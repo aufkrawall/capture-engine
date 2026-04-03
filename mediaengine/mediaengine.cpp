@@ -63,7 +63,6 @@ public:
         float dropFadeStartR = 0.0f;                    // Right sample anchor for drop transition
         int underrunFadeSamplesRemaining = 0;           // Remaining samples for post-underrun fade-in
         int packetBoundaryFadeInSamplesRemaining = 0;   // Fade-in after silence/overlap packet timeline correction
-        int packetBoundaryFadeOutSamplesRemaining = 0;  // Fade-out preceding silence/overlap packet timeline correction
         uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
         uint64_t retainedNewestTrimSamples = 0;         // Oldest samples discarded by ring headroom retention
         uint64_t latencyTrimSamples = 0;                // Oldest samples trimmed to keep latency bounded
@@ -96,7 +95,6 @@ public:
         uint64_t lastRetainedTrimWarnTick = 0;        // Rate-limit explicit retained-audio warnings
         uint64_t lastExtremeDriftWarnTick = 0;        // Rate-limit chronic large-drift diagnostics
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
-        std::vector<float> packetBoundaryFadeOutTail;
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
 
         // Rate-based drift correction state
@@ -137,27 +135,6 @@ public:
             const size_t base = sampleIdx * channels;
             for (size_t ch = 0; ch < channels; ++ch) {
                 interleavedSamples[base + ch] *= fade;
-            }
-        }
-    }
-
-    static void ApplyPacketBoundaryFadeOut(std::vector<float>& interleavedTail, size_t channels, size_t fadeSamples) {
-        if (channels == 0 || fadeSamples == 0 || interleavedTail.empty()) {
-            return;
-        }
-
-        const size_t sampleCount = interleavedTail.size() / channels;
-        const size_t blendSamples = std::min(sampleCount, fadeSamples);
-        if (blendSamples == 0) {
-            return;
-        }
-
-        const size_t sampleStart = sampleCount - blendSamples;
-        for (size_t sampleIdx = 0; sampleIdx < blendSamples; ++sampleIdx) {
-            const float fade = 1.0f - ComputeRaisedCosineFade(sampleIdx, blendSamples);
-            const size_t base = (sampleStart + sampleIdx) * channels;
-            for (size_t ch = 0; ch < channels; ++ch) {
-                interleavedTail[base + ch] *= fade;
             }
         }
     }
@@ -297,8 +274,6 @@ public:
             src.dropFadeStartR = 0.0f;
             src.underrunFadeSamplesRemaining = 0;
             src.packetBoundaryFadeInSamplesRemaining = 0;
-            src.packetBoundaryFadeOutSamplesRemaining = 0;
-            src.packetBoundaryFadeOutTail.clear();
             src.overflowDropSamples = 0;
             src.retainedNewestTrimSamples = 0;
             src.latencyTrimSamples = 0;
@@ -675,8 +650,6 @@ public:
                 src.dropFadeStartR = 0.0f;
                 src.underrunFadeSamplesRemaining = 0;
                 src.packetBoundaryFadeInSamplesRemaining = 0;
-                src.packetBoundaryFadeOutSamplesRemaining = 0;
-                src.packetBoundaryFadeOutTail.clear();
                 src.overflowDropSamples = 0;
                 src.retainedNewestTrimSamples = 0;
                 src.latencyTrimSamples = 0;
@@ -908,8 +881,6 @@ public:
             src.dropFadeStartR = 0.0f;
             src.underrunFadeSamplesRemaining = 0;
             src.packetBoundaryFadeInSamplesRemaining = 0;
-            src.packetBoundaryFadeOutSamplesRemaining = 0;
-            src.packetBoundaryFadeOutTail.clear();
             src.overflowDropSamples = 0;
             src.retainedNewestTrimSamples = 0;
             src.latencyTrimSamples = 0;
@@ -2006,19 +1977,6 @@ public:
                                     }
                                     src.dropFadeSamplesRemaining -= blendSamples;
                                 }
-                                if (src.packetBoundaryFadeOutSamplesRemaining > 0) {
-                                    const int blendSamples =
-                                        std::min(src.packetBoundaryFadeOutSamplesRemaining, outSamples);
-                                    for (int s = 0; s < blendSamples; ++s) {
-                                        const float alpha =
-                                            1.0f - ComputeRaisedCosineFade(
-                                                       static_cast<size_t>(s),
-                                                       static_cast<size_t>(src.packetBoundaryFadeOutSamplesRemaining));
-                                        outFloats[s * CHANNELS] *= alpha;
-                                        outFloats[s * CHANNELS + 1] *= alpha;
-                                    }
-                                    src.packetBoundaryFadeOutSamplesRemaining -= blendSamples;
-                                }
                                 if (src.packetBoundaryFadeInSamplesRemaining > 0) {
                                     const int blendSamples =
                                         std::min(src.packetBoundaryFadeInSamplesRemaining, outSamples);
@@ -2750,8 +2708,6 @@ private:
                         src.pendingUnderrunRecoveryFade = false;
                         src.underrunFadeSamplesRemaining = 0;
                         src.packetBoundaryFadeInSamplesRemaining = 0;
-                        src.packetBoundaryFadeOutSamplesRemaining = 0;
-                        src.packetBoundaryFadeOutTail.clear();
                         src.startupSyntheticRingSamples = 0;
                         src.startupSyntheticResamplerSamples = 0;
                         src.startupSyntheticPostSamples = 0;
@@ -2896,35 +2852,16 @@ private:
                                         src.qpcAlignedWrittenSamples += writtenGapSamples;
                                         src.packetTimelineGapSamples += writtenGapSamples;
                                         if (writtenGapSamples > 0 && writeSamples > 0) {
-                                            src.pendingUnderrunRecoveryFade = true;
                                             src.packetBoundaryFadeInSamplesRemaining =
                                                 static_cast<int>(packetTimelineFadeSamples);
                                         }
                                     } else if (timelineAdjustment.overlapSamples > 0) {
                                         const size_t overlapSamples = static_cast<size_t>(std::min<int64_t>(
                                             timelineAdjustment.overlapSamples, static_cast<int64_t>(writeSamples)));
-                                        if (overlapSamples > 0 && writeSamples > overlapSamples) {
-                                            const size_t totalFloats =
-                                                writeSamples * static_cast<size_t>(targetFmt.channels);
-                                            const size_t overlapFloats =
-                                                overlapSamples * static_cast<size_t>(targetFmt.channels);
-                                            const size_t remainingFloats = totalFloats - overlapFloats;
-                                            const size_t fadeFloats =
-                                                std::min(remainingFloats, packetTimelineFadeSamples *
-                                                                              static_cast<size_t>(targetFmt.channels));
-                                            src.packetBoundaryFadeOutTail.assign(
-                                                writeFloats + overlapFloats, writeFloats + overlapFloats + fadeFloats);
-                                            ApplyPacketBoundaryFadeOut(src.packetBoundaryFadeOutTail,
-                                                                       static_cast<size_t>(targetFmt.channels),
-                                                                       packetTimelineFadeSamples);
-                                        } else {
-                                            src.packetBoundaryFadeOutTail.clear();
-                                        }
                                         writeFloats += overlapSamples * targetFmt.channels;
                                         writeSamples -= overlapSamples;
                                         src.packetTimelineOverlapSamples += overlapSamples;
                                         if (overlapSamples > 0 && writeSamples > 0) {
-                                            src.pendingUnderrunRecoveryFade = true;
                                             src.packetBoundaryFadeInSamplesRemaining =
                                                 static_cast<int>(packetTimelineFadeSamples);
                                         }
@@ -2947,14 +2884,6 @@ private:
                                 }
 
                                 if (writeSamples > 0) {
-                                    if (!src.packetBoundaryFadeOutTail.empty()) {
-                                        const size_t fadeFloats =
-                                            std::min(src.packetBoundaryFadeOutTail.size(),
-                                                     writeSamples * static_cast<size_t>(targetFmt.channels));
-                                        std::memcpy(writeFloats, src.packetBoundaryFadeOutTail.data(),
-                                                    fadeFloats * sizeof(float));
-                                        src.packetBoundaryFadeOutTail.clear();
-                                    }
                                     if (src.packetBoundaryFadeInSamplesRemaining > 0) {
                                         const size_t fadeSamples =
                                             static_cast<size_t>(src.packetBoundaryFadeInSamplesRemaining);
