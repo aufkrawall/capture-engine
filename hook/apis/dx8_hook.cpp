@@ -29,8 +29,16 @@
 #define D3D8_VTABLE_CREATEDEVICE 15
 #define D3D8_VTABLE_PRESENT 15
 #define D3D8_VTABLE_RESET 14
-#define D3D8_VTABLE_GETBACKBUFFER 17
+#define D3D8_VTABLE_GETBACKBUFFER 16
+#define D3D8_VTABLE_CREATEIMAGESURFACE 27
+#define D3D8_VTABLE_COPYRECTS 28
+#define D3D8_VTABLE_GETFRONTBUFFER 30
 #define D3D8_VTABLE_SETTEXTURESTAGESTATE 63
+
+#define D3D8_SURFACE_VTABLE_RELEASE 2
+#define D3D8_SURFACE_VTABLE_GETDESC 8
+#define D3D8_SURFACE_VTABLE_LOCKRECT 9
+#define D3D8_SURFACE_VTABLE_UNLOCKRECT 10
 
 // D3D8 types
 typedef interface IDirect3D8 IDirect3D8;
@@ -47,8 +55,27 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D8Reset_t)(IDirect3DDevice8* device, void* 
 typedef HRESULT(STDMETHODCALLTYPE* D3D8GetBackBuffer_t)(IDirect3DDevice8* device, UINT BackBuffer, UINT Type,
                                                         IDirect3DSurface8** ppBackBuffer);
 
+typedef HRESULT(STDMETHODCALLTYPE* D3D8CreateImageSurface_t)(IDirect3DDevice8* device, UINT Width, UINT Height,
+                                                             D3DFORMAT Format, IDirect3DSurface8** ppSurface);
+
+typedef HRESULT(STDMETHODCALLTYPE* D3D8CopyRects_t)(IDirect3DDevice8* device, IDirect3DSurface8* pSourceSurface,
+                                                    const RECT* pSourceRectsArray, UINT cRects,
+                                                    IDirect3DSurface8* pDestinationSurface,
+                                                    const POINT* pDestPointsArray);
+
+typedef HRESULT(STDMETHODCALLTYPE* D3D8GetFrontBuffer_t)(IDirect3DDevice8* device, IDirect3DSurface8* pDestSurface);
+
 typedef HRESULT(STDMETHODCALLTYPE* D3D8SetTextureStageState_t)(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
                                                                DWORD Value);
+
+typedef HRESULT(STDMETHODCALLTYPE* D3D8SurfaceGetDesc_t)(IDirect3DSurface8* surface, void* pDesc);
+
+typedef HRESULT(STDMETHODCALLTYPE* D3D8SurfaceLockRect_t)(IDirect3DSurface8* surface, D3DLOCKED_RECT* pLockedRect,
+                                                          const RECT* pRect, DWORD Flags);
+
+typedef HRESULT(STDMETHODCALLTYPE* D3D8SurfaceUnlockRect_t)(IDirect3DSurface8* surface);
+
+typedef ULONG(STDMETHODCALLTYPE* D3D8SurfaceRelease_t)(IDirect3DSurface8* surface);
 
 typedef IDirect3D8*(WINAPI* Direct3DCreate8_t)(UINT sdkVersion);
 
@@ -67,6 +94,17 @@ struct D3D8_PRESENT_PARAMETERS {
     DWORD Flags;
     UINT FullScreen_RefreshRateInHz;
     UINT FullScreen_PresentationInterval;
+};
+
+struct D3D8_SURFACE_DESC_LOCAL {
+    D3DFORMAT Format;
+    D3DRESOURCETYPE Type;
+    DWORD Usage;
+    D3DPOOL Pool;
+    UINT Size;
+    D3DMULTISAMPLE_TYPE MultiSampleType;
+    UINT Width;
+    UINT Height;
 };
 
 // CreateDevice typedef
@@ -230,6 +268,70 @@ static int64_t g_LastSleepUs = 0;
 
 static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit);
 
+static D3D8GetBackBuffer_t GetD3D8GetBackBuffer(IDirect3DDevice8* device) {
+    return reinterpret_cast<D3D8GetBackBuffer_t>((*reinterpret_cast<void***>(device))[D3D8_VTABLE_GETBACKBUFFER]);
+}
+
+static D3D8CreateImageSurface_t GetD3D8CreateImageSurface(IDirect3DDevice8* device) {
+    return reinterpret_cast<D3D8CreateImageSurface_t>(
+        (*reinterpret_cast<void***>(device))[D3D8_VTABLE_CREATEIMAGESURFACE]);
+}
+
+static D3D8CopyRects_t GetD3D8CopyRects(IDirect3DDevice8* device) {
+    return reinterpret_cast<D3D8CopyRects_t>((*reinterpret_cast<void***>(device))[D3D8_VTABLE_COPYRECTS]);
+}
+
+static D3D8GetFrontBuffer_t GetD3D8GetFrontBuffer(IDirect3DDevice8* device) {
+    return reinterpret_cast<D3D8GetFrontBuffer_t>((*reinterpret_cast<void***>(device))[D3D8_VTABLE_GETFRONTBUFFER]);
+}
+
+static HRESULT D3D8SurfaceGetDesc(IDirect3DSurface8* surface, D3D8_SURFACE_DESC_LOCAL* desc) {
+    D3D8SurfaceGetDesc_t fn =
+        reinterpret_cast<D3D8SurfaceGetDesc_t>((*reinterpret_cast<void***>(surface))[D3D8_SURFACE_VTABLE_GETDESC]);
+    return fn(surface, desc);
+}
+
+static HRESULT D3D8SurfaceLockRect(IDirect3DSurface8* surface, D3DLOCKED_RECT* lockedRect, const RECT* rect,
+                                   DWORD flags) {
+    D3D8SurfaceLockRect_t fn = reinterpret_cast<D3D8SurfaceLockRect_t>(
+        (*reinterpret_cast<void***>(surface))[D3D8_SURFACE_VTABLE_LOCKRECT]);
+    return fn(surface, lockedRect, rect, flags);
+}
+
+static HRESULT D3D8SurfaceUnlockRect(IDirect3DSurface8* surface) {
+    D3D8SurfaceUnlockRect_t fn = reinterpret_cast<D3D8SurfaceUnlockRect_t>(
+        (*reinterpret_cast<void***>(surface))[D3D8_SURFACE_VTABLE_UNLOCKRECT]);
+    return fn(surface);
+}
+
+static void ReleaseD3D8Surface(IDirect3DSurface8*& surface) {
+    if (!surface) {
+        return;
+    }
+
+    D3D8SurfaceRelease_t fn =
+        reinterpret_cast<D3D8SurfaceRelease_t>((*reinterpret_cast<void***>(surface))[D3D8_SURFACE_VTABLE_RELEASE]);
+    fn(surface);
+    surface = nullptr;
+}
+
+static uint8_t Expand4To8(uint32_t value) {
+    return static_cast<uint8_t>((value << 4) | value);
+}
+
+static uint8_t Expand5To8(uint32_t value) {
+    return static_cast<uint8_t>((value << 3) | (value >> 2));
+}
+
+static uint8_t Expand6To8(uint32_t value) {
+    return static_cast<uint8_t>((value << 2) | (value >> 4));
+}
+
+static uint32_t PackBgra8(uint8_t blue, uint8_t green, uint8_t red, uint8_t alpha) {
+    return static_cast<uint32_t>(blue) | (static_cast<uint32_t>(green) << 8) | (static_cast<uint32_t>(red) << 16) |
+           (static_cast<uint32_t>(alpha) << 24);
+}
+
 // DX8 Capture class using D3D9Ex shared surface wrapper
 class DX8Capture : public HookCaptureBase {
 public:
@@ -237,6 +339,11 @@ public:
     IDirect3D9Ex* d3d9Ex = nullptr;
     IDirect3DDevice9Ex* d3d9DeviceEx = nullptr;
     IDirect3DSurface9* d3d9SharedSurface = nullptr;
+    IDirect3DSurface9* d3d9UploadSurface = nullptr;
+
+    IDirect3DSurface8* d3d8SnapshotSurface = nullptr;
+    IDirect3DSurface8* d3d8FrontBufferSurface = nullptr;
+    D3DFORMAT d3d8SnapshotFormat = D3DFMT_UNKNOWN;
 
     // D3D11 for shared texture
     ID3D11Device* d3d11Device = nullptr;
@@ -293,6 +400,10 @@ public:
         }
 
         // Release D3D9Ex wrapper
+        if (d3d9UploadSurface) {
+            d3d9UploadSurface->Release();
+            d3d9UploadSurface = nullptr;
+        }
         if (d3d9SharedSurface) {
             d3d9SharedSurface->Release();
             d3d9SharedSurface = nullptr;
@@ -312,6 +423,10 @@ public:
         }
         g_PrerenderQueries.clear();
         g_PrerenderFrameIndex = 0;
+
+        ReleaseD3D8Surface(d3d8SnapshotSurface);
+        ReleaseD3D8Surface(d3d8FrontBufferSurface);
+        d3d8SnapshotFormat = D3DFMT_UNKNOWN;
 
         d3d8Device = nullptr;
         overlayHwnd = NULL;
@@ -367,11 +482,363 @@ public:
 
         if (FAILED(hr)) {
             HookLog("DX8: Failed to create D3D9Ex device (hr=0x%08x)", hr);
+            d3d9Ex->Release();
+            d3d9Ex = nullptr;
+            return false;
+        }
+
+        d3d9DeviceEx->SetMaximumFrameLatency(1);
+
+        hr = d3d9DeviceEx->CreateOffscreenPlainSurface(width, height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
+                                                       &d3d9UploadSurface, nullptr);
+        if (FAILED(hr)) {
+            HookLog("DX8: Failed to create D3D9 upload surface (hr=0x%08x)", hr);
+            d3d9DeviceEx->Release();
+            d3d9DeviceEx = nullptr;
+            d3d9Ex->Release();
+            d3d9Ex = nullptr;
             return false;
         }
 
         HookLog("DX8: D3D9Ex wrapper created");
         return true;
+    }
+
+    bool EnsureSnapshotSurface(IDirect3DDevice8* device) {
+        if (!device || width == 0 || height == 0) {
+            return false;
+        }
+
+        if (d3d8SnapshotSurface) {
+            return true;
+        }
+
+        IDirect3DSurface8* backBuffer = nullptr;
+        HRESULT hr = GetD3D8GetBackBuffer(device)(device, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (FAILED(hr) || !backBuffer) {
+            static int getBackBufferFailLogCount = 0;
+            if (getBackBufferFailLogCount < 4) {
+                HookLog("DX8: Failed to get backbuffer for overlay composite (hr=0x%08x)", hr);
+                getBackBufferFailLogCount++;
+            }
+            return false;
+        }
+
+        D3D8_SURFACE_DESC_LOCAL desc = {};
+        hr = D3D8SurfaceGetDesc(backBuffer, &desc);
+        ReleaseD3D8Surface(backBuffer);
+        if (FAILED(hr)) {
+            static int getDescFailLogCount = 0;
+            if (getDescFailLogCount < 4) {
+                HookLog("DX8: Failed to query backbuffer desc for overlay composite (hr=0x%08x)", hr);
+                getDescFailLogCount++;
+            }
+            return false;
+        }
+
+        if (desc.Width != width || desc.Height != height) {
+            static int sizeMismatchLogCount = 0;
+            if (sizeMismatchLogCount < 4) {
+                HookLog("DX8: Backbuffer/helper size mismatch for overlay composite (%ux%u vs %ux%u)", desc.Width,
+                        desc.Height, width, height);
+                sizeMismatchLogCount++;
+            }
+            return false;
+        }
+
+        hr = GetD3D8CreateImageSurface(device)(device, width, height, desc.Format, &d3d8SnapshotSurface);
+        if (FAILED(hr) || !d3d8SnapshotSurface) {
+            static int createSnapshotFailLogCount = 0;
+            if (createSnapshotFailLogCount < 4) {
+                HookLog("DX8: Failed to create snapshot surface for overlay composite (hr=0x%08x)", hr);
+                createSnapshotFailLogCount++;
+            }
+            return false;
+        }
+
+        d3d8SnapshotFormat = desc.Format;
+        return true;
+    }
+
+    bool EnsureFrontBufferSurface(IDirect3DDevice8* device) {
+        if (!device || width == 0 || height == 0) {
+            return false;
+        }
+
+        if (d3d8FrontBufferSurface) {
+            return true;
+        }
+
+        HRESULT hr =
+            GetD3D8CreateImageSurface(device)(device, width, height, D3DFMT_A8R8G8B8, &d3d8FrontBufferSurface);
+        if (FAILED(hr) || !d3d8FrontBufferSurface) {
+            static int createFrontBufferFailLogCount = 0;
+            if (createFrontBufferFailLogCount < 4) {
+                HookLog("DX8: Failed to create front-buffer surface for overlay composite (hr=0x%08x)", hr);
+                createFrontBufferFailLogCount++;
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    bool CopyLockedPixelsToSurface9(const D3DLOCKED_RECT& sourceLockedRect, D3DFORMAT sourceFormat,
+                                    IDirect3DSurface9* destinationSurface) {
+        if (!d3d9DeviceEx || !d3d9UploadSurface || !destinationSurface || width == 0 || height == 0) {
+            return false;
+        }
+
+        D3DLOCKED_RECT uploadLockedRect = {};
+        HRESULT hr = d3d9UploadSurface->LockRect(&uploadLockedRect, nullptr, 0);
+        if (FAILED(hr)) {
+            static int uploadLockFailLogCount = 0;
+            if (uploadLockFailLogCount < 4) {
+                HookLog("DX8: Failed to lock helper upload surface (hr=0x%08x)", hr);
+                uploadLockFailLogCount++;
+            }
+            return false;
+        }
+
+        const uint8_t* srcBase = static_cast<const uint8_t*>(sourceLockedRect.pBits);
+        uint8_t* dstBase = static_cast<uint8_t*>(uploadLockedRect.pBits);
+        bool copied = true;
+
+        for (uint32_t y = 0; y < height && copied; ++y) {
+            const uint8_t* srcRow = srcBase + static_cast<size_t>(y) * static_cast<size_t>(sourceLockedRect.Pitch);
+            uint32_t* dstRow = reinterpret_cast<uint32_t*>(dstBase + static_cast<size_t>(y) * uploadLockedRect.Pitch);
+
+            switch (sourceFormat) {
+                case D3DFMT_A8R8G8B8: {
+                    memcpy(dstRow, srcRow, static_cast<size_t>(width) * sizeof(uint32_t));
+                    break;
+                }
+                case D3DFMT_X8R8G8B8: {
+                    const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(srcRow);
+                    for (uint32_t x = 0; x < width; ++x) {
+                        dstRow[x] = srcPixels[x] | 0xFF000000u;
+                    }
+                    break;
+                }
+                case D3DFMT_A8B8G8R8: {
+                    const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(srcRow);
+                    for (uint32_t x = 0; x < width; ++x) {
+                        const uint32_t pixel = srcPixels[x];
+                        const uint8_t red = static_cast<uint8_t>(pixel & 0xFFu);
+                        const uint8_t green = static_cast<uint8_t>((pixel >> 8) & 0xFFu);
+                        const uint8_t blue = static_cast<uint8_t>((pixel >> 16) & 0xFFu);
+                        const uint8_t alpha = static_cast<uint8_t>((pixel >> 24) & 0xFFu);
+                        dstRow[x] = PackBgra8(blue, green, red, alpha);
+                    }
+                    break;
+                }
+                case D3DFMT_R5G6B5: {
+                    const uint16_t* srcPixels = reinterpret_cast<const uint16_t*>(srcRow);
+                    for (uint32_t x = 0; x < width; ++x) {
+                        const uint16_t pixel = srcPixels[x];
+                        const uint8_t blue = Expand5To8(pixel & 0x1Fu);
+                        const uint8_t green = Expand6To8((pixel >> 5) & 0x3Fu);
+                        const uint8_t red = Expand5To8((pixel >> 11) & 0x1Fu);
+                        dstRow[x] = PackBgra8(blue, green, red, 0xFF);
+                    }
+                    break;
+                }
+                case D3DFMT_X1R5G5B5:
+                case D3DFMT_A1R5G5B5: {
+                    const uint16_t* srcPixels = reinterpret_cast<const uint16_t*>(srcRow);
+                    const bool preserveAlpha = sourceFormat == D3DFMT_A1R5G5B5;
+                    for (uint32_t x = 0; x < width; ++x) {
+                        const uint16_t pixel = srcPixels[x];
+                        const uint8_t blue = Expand5To8(pixel & 0x1Fu);
+                        const uint8_t green = Expand5To8((pixel >> 5) & 0x1Fu);
+                        const uint8_t red = Expand5To8((pixel >> 10) & 0x1Fu);
+                        const uint8_t alpha = preserveAlpha ? ((pixel & 0x8000u) ? 0xFF : 0x00) : 0xFF;
+                        dstRow[x] = PackBgra8(blue, green, red, alpha);
+                    }
+                    break;
+                }
+                case D3DFMT_X4R4G4B4:
+                case D3DFMT_A4R4G4B4: {
+                    const uint16_t* srcPixels = reinterpret_cast<const uint16_t*>(srcRow);
+                    const bool preserveAlpha = sourceFormat == D3DFMT_A4R4G4B4;
+                    for (uint32_t x = 0; x < width; ++x) {
+                        const uint16_t pixel = srcPixels[x];
+                        const uint8_t blue = Expand4To8(pixel & 0xFu);
+                        const uint8_t green = Expand4To8((pixel >> 4) & 0xFu);
+                        const uint8_t red = Expand4To8((pixel >> 8) & 0xFu);
+                        const uint8_t alpha = preserveAlpha ? Expand4To8((pixel >> 12) & 0xFu) : 0xFF;
+                        dstRow[x] = PackBgra8(blue, green, red, alpha);
+                    }
+                    break;
+                }
+                default: {
+                    static int unsupportedFormatLogCount = 0;
+                    if (unsupportedFormatLogCount < 4) {
+                        HookLog("DX8: Unsupported surface format for helper composite (fmt=%u)",
+                                static_cast<unsigned>(sourceFormat));
+                        unsupportedFormatLogCount++;
+                    }
+                    copied = false;
+                    break;
+                }
+            }
+        }
+
+        d3d9UploadSurface->UnlockRect();
+        if (!copied) {
+            return false;
+        }
+
+        hr = d3d9DeviceEx->UpdateSurface(d3d9UploadSurface, nullptr, destinationSurface, nullptr);
+        if (FAILED(hr)) {
+            static int updateSurfaceFailLogCount = 0;
+            if (updateSurfaceFailLogCount < 4) {
+                HookLog("DX8: Failed to update helper surface from DX8 snapshot (hr=0x%08x)", hr);
+                updateSurfaceFailLogCount++;
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    bool CopyLockedPixelsToOverlayBackbuffer(const D3DLOCKED_RECT& sourceLockedRect, D3DFORMAT sourceFormat) {
+        IDirect3DSurface9* backBuffer = nullptr;
+        HRESULT hr = d3d9DeviceEx->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (FAILED(hr) || !backBuffer) {
+            static int getBackBufferFailLogCount = 0;
+            if (getBackBufferFailLogCount < 4) {
+                HookLog("DX8: Failed to get helper backbuffer for overlay composite (hr=0x%08x)", hr);
+                getBackBufferFailLogCount++;
+            }
+            return false;
+        }
+
+        const bool copied = CopyLockedPixelsToSurface9(sourceLockedRect, sourceFormat, backBuffer);
+        backBuffer->Release();
+        return copied;
+    }
+
+    bool CopySurfaceToOverlayBackbuffer(IDirect3DSurface8* sourceSurface, D3DFORMAT sourceFormat) {
+        if (!sourceSurface) {
+            return false;
+        }
+
+        D3DLOCKED_RECT lockedRect = {};
+        HRESULT hr = D3D8SurfaceLockRect(sourceSurface, &lockedRect, nullptr, D3DLOCK_READONLY);
+        if (FAILED(hr)) {
+            static int lockFailLogCount = 0;
+            if (lockFailLogCount < 4) {
+                HookLog("DX8: Failed to lock DX8 snapshot surface for overlay composite (hr=0x%08x)", hr);
+                lockFailLogCount++;
+            }
+            return false;
+        }
+
+        const bool copied = CopyLockedPixelsToOverlayBackbuffer(lockedRect, sourceFormat);
+        D3D8SurfaceUnlockRect(sourceSurface);
+        return copied;
+    }
+
+    bool CopyBackBufferToOverlayBackbuffer(IDirect3DDevice8* device) {
+        if (!device || !EnsureSnapshotSurface(device)) {
+            return false;
+        }
+
+        IDirect3DSurface8* backBuffer = nullptr;
+        HRESULT hr = GetD3D8GetBackBuffer(device)(device, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (FAILED(hr) || !backBuffer) {
+            static int getBackBufferFailLogCount = 0;
+            if (getBackBufferFailLogCount < 4) {
+                HookLog("DX8: Failed to reacquire backbuffer for overlay composite (hr=0x%08x)", hr);
+                getBackBufferFailLogCount++;
+            }
+            return false;
+        }
+
+        hr = GetD3D8CopyRects(device)(device, backBuffer, nullptr, 0, d3d8SnapshotSurface, nullptr);
+        ReleaseD3D8Surface(backBuffer);
+        if (FAILED(hr)) {
+            static int copyRectsFailLogCount = 0;
+            if (copyRectsFailLogCount < 4) {
+                HookLog("DX8: CopyRects snapshot for overlay composite failed (hr=0x%08x)", hr);
+                copyRectsFailLogCount++;
+            }
+            return false;
+        }
+
+        return CopySurfaceToOverlayBackbuffer(d3d8SnapshotSurface, d3d8SnapshotFormat);
+    }
+
+    bool CopyFrontBufferToSurface9(IDirect3DDevice8* device, IDirect3DSurface9* destinationSurface) {
+        if (!device || !destinationSurface || !EnsureFrontBufferSurface(device)) {
+            return false;
+        }
+
+        HRESULT hr = GetD3D8GetFrontBuffer(device)(device, d3d8FrontBufferSurface);
+        if (FAILED(hr)) {
+            static int getFrontBufferFailLogCount = 0;
+            if (getFrontBufferFailLogCount < 4) {
+                HookLog("DX8: GetFrontBuffer fallback for helper composite failed (hr=0x%08x)", hr);
+                getFrontBufferFailLogCount++;
+            }
+            return false;
+        }
+
+        D3DLOCKED_RECT lockedRect = {};
+        hr = D3D8SurfaceLockRect(d3d8FrontBufferSurface, &lockedRect, nullptr, D3DLOCK_READONLY);
+        if (FAILED(hr)) {
+            static int frontLockFailLogCount = 0;
+            if (frontLockFailLogCount < 4) {
+                HookLog("DX8: Failed to lock front-buffer fallback surface (hr=0x%08x)", hr);
+                frontLockFailLogCount++;
+            }
+            return false;
+        }
+
+        const bool copied = CopyLockedPixelsToSurface9(lockedRect, D3DFMT_A8R8G8B8, destinationSurface);
+        D3D8SurfaceUnlockRect(d3d8FrontBufferSurface);
+        return copied;
+    }
+
+    bool CopyFrontBufferToOverlayBackbuffer(IDirect3DDevice8* device) {
+        IDirect3DSurface9* backBuffer = nullptr;
+        HRESULT hr = d3d9DeviceEx->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (FAILED(hr) || !backBuffer) {
+            static int getBackBufferFailLogCount = 0;
+            if (getBackBufferFailLogCount < 4) {
+                HookLog("DX8: Failed to get helper backbuffer for front-buffer fallback (hr=0x%08x)", hr);
+                getBackBufferFailLogCount++;
+            }
+            return false;
+        }
+
+        const bool copied = CopyFrontBufferToSurface9(device, backBuffer);
+        backBuffer->Release();
+        return copied;
+    }
+
+    bool PresentOverlay() {
+        if (!d3d9DeviceEx) {
+            return false;
+        }
+
+        HRESULT hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, overlayHwnd, nullptr, 0);
+        static uint32_t overlayPresentCount = 0;
+        static uint64_t lastOverlayPresentLogTick = 0;
+        overlayPresentCount++;
+        uint64_t nowTick = GetTickCount64();
+        if (overlayPresentCount <= 8 || (nowTick - lastOverlayPresentLogTick) >= 1000) {
+            HookLogImportant("DX8: Overlay helper PresentEx hr=0x%08X hwnd=%p size=%ux%u count=%u", (unsigned)hr,
+                             overlayHwnd, width, height, overlayPresentCount);
+            lastOverlayPresentLogTick = nowTick;
+        }
+
+        if (FAILED(hr) && hr != D3DERR_WASSTILLDRAWING) {
+            HookLog("DX8: Overlay helper present failed (hr=0x%08x)", hr);
+        }
+
+        return SUCCEEDED(hr);
     }
 
     bool CreateD3D11Device() {
@@ -578,7 +1045,7 @@ public:
     }
 
     void CaptureFrame(IDirect3DDevice8* device) {
-        if (!initialized || !d3d9DeviceEx)
+        if (!initialized || !d3d9DeviceEx || !d3d9SharedSurface)
             return;
 
         // Check if we should throttle capture (encoder is falling behind)
@@ -601,15 +1068,10 @@ public:
         QueryPerformanceCounter(&qpc);
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
-        // For DX8, we need to copy the backbuffer to the D3D9Ex surface
-        // then share that to D3D11. Since D3D8 is translated to D3D9 internally,
-        // we can do a GPU copy via StretchRect to our D3D9Ex surface.
+        if (!CopyFrontBufferToSurface9(device, d3d9SharedSurface)) {
+            return;
+        }
 
-        // Get D3D8 backbuffer as a D3D9 surface (Windows translates internally)
-        // This requires getting the front buffer or using staging
-        // For simplicity, use staging approach with D3D9Ex
-
-        // Lock D3D9Ex surface and copy via UpdateSubresource
         D3DLOCKED_RECT lockedRect;
         if (SUCCEEDED(d3d9SharedSurface->LockRect(&lockedRect, NULL, D3DLOCK_READONLY))) {
             d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, lockedRect.pBits, lockedRect.Pitch, 0);
@@ -711,11 +1173,13 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
     }
 }
 
-// Draw overlay using ImGui DX9 backend (on our D3D9Ex wrapper device)
-// Draw overlay using CustomOverlay (via D3D9Ex wrapper)
-static void DrawDX8Overlay(HWND hwnd) {
+static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd, bool overlayFrameReady) {
     if (!g_DX8Capture.d3d9DeviceEx)
         return;
+
+    if (!overlayFrameReady && !g_DX8Capture.CopyFrontBufferToOverlayBackbuffer(device)) {
+        return;
+    }
 
     if (!g_OverlayAdapter.IsInitialized()) {
         g_CachedHwnd = hwnd;
@@ -745,26 +1209,18 @@ static void DrawDX8Overlay(HWND hwnd) {
     g_OverlayAdapter.SetDroppedFrames(g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
     g_OverlayAdapter.SetGraphicsAPI("DX8");
 
-    // DX9Ex wrapper handles BeginScene/EndScene?
-    // Original code called BeginScene/EndScene around
-    // ImGui_ImplDX9_RenderDrawData. OverlayAdapter.RenderOverlay handles its own
-    // render passes but assumes state is ready? DX9 backend of CustomOverlay
-    // calls BeginScene/EndScene internally? Let's check
-    // OverlayAdapter.RenderOverlay -> Backend->Render(). DX9Backend::Render calls
-    // BeginScene/EndScene if not already? Usually OverlayAdapter expects to be
-    // called inside a frame. BUT here we are wrapping. Original:
-    //   g_DX8Capture.d3d9DeviceEx->BeginScene();
-    //   ImGui...
-    //   g_DX8Capture.d3d9DeviceEx->EndScene();
-
-    // DX9Backend usually does BeginStateBlock... Draw... EndStateBlock.
-    // It does NOT call BeginScene.
-    // So we should wrap it.
-
-    if (SUCCEEDED(g_DX8Capture.d3d9DeviceEx->BeginScene())) {
-        g_OverlayAdapter.RenderOverlay(g_DX8Capture.width, g_DX8Capture.height);
-        g_DX8Capture.d3d9DeviceEx->EndScene();
+    g_OverlayAdapter.RenderOverlay(g_DX8Capture.width, g_DX8Capture.height);
+    static uint32_t overlayRenderSubmitCount = 0;
+    static uint64_t lastOverlayRenderSubmitLogTick = 0;
+    overlayRenderSubmitCount++;
+    uint64_t nowTick = GetTickCount64();
+    if (overlayRenderSubmitCount <= 8 || (nowTick - lastOverlayRenderSubmitLogTick) >= 1000) {
+        HookLogImportant("DX8: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)", g_DX8Capture.overlayHwnd,
+                         g_DX8Capture.width, g_DX8Capture.height, overlayRenderSubmitCount);
+        lastOverlayRenderSubmitLogTick = nowTick;
     }
+
+    g_DX8Capture.PresentOverlay();
 }
 
 static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect,
@@ -788,22 +1244,24 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, con
     bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
     bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
     bool isRecording = g_IPC && g_IPC->IsRecording();
+    HWND targetHwnd = hDestWindowOverride ? hDestWindowOverride : GetForegroundWindow();
+    bool overlayFrameReady = false;
+
+    if (shouldDrawOverlay && g_DX8Capture.EnsureOverlayDevice(device, targetHwnd)) {
+        overlayFrameReady = g_DX8Capture.CopyBackBufferToOverlayBackbuffer(device);
+    }
 
     // Lambda for capture operation
     auto doCapture = [&]() {
         if (isRecording) {
             if (!g_DX8Capture.initialized) {
-                HWND hwnd = hDestWindowOverride;
-                if (!hwnd) {
-                    hwnd = GetForegroundWindow();
-                }
-                g_DX8Capture.Init(device, hwnd);
+                g_DX8Capture.Init(device, targetHwnd);
             }
 
             if (g_DX8Capture.initialized) {
                 g_DX8Capture.CaptureFrame(device);
             }
-        } else if (g_DX8Capture.initialized && !shouldDrawOverlay) {
+        } else if (!shouldDrawOverlay && (g_DX8Capture.initialized || g_DX8Capture.d3d9DeviceEx)) {
             g_DX8Capture.Cleanup();
         }
     };
@@ -811,9 +1269,8 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, con
     // Lambda for overlay drawing
     auto doOverlay = [&]() {
         if (shouldDrawOverlay) {
-            HWND hwnd = hDestWindowOverride ? hDestWindowOverride : GetForegroundWindow();
-            if (g_DX8Capture.EnsureOverlayDevice(device, hwnd)) {
-                DrawDX8Overlay(hwnd);
+            if (g_DX8Capture.EnsureOverlayDevice(device, targetHwnd)) {
+                DrawDX8Overlay(device, targetHwnd, overlayFrameReady);
             }
         }
     };
@@ -823,17 +1280,15 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, con
         ApplyPrerenderLimitDX8(device, g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
     }
 
-    // Order capture/overlay based on config
-    if (captureIncludeOverlay) {
-        doOverlay();  // Draw overlay first
-        doCapture();  // Then capture (includes overlay)
-    } else {
-        doCapture();  // Capture first (clean frame)
-        doOverlay();  // Then draw overlay (visible but not recorded)
-    }
-
-    // Call original
     HRESULT hr = oD3D8Present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+
+    if (captureIncludeOverlay) {
+        doOverlay();
+        doCapture();
+    } else {
+        doCapture();
+        doOverlay();
+    }
 
     // Apply FPS limiter
     g_SharedFpsLimiter.SetIPCClient(g_IPC);
