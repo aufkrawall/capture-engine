@@ -7,6 +7,7 @@
 #include "d3d11_device_wrap.h"
 #include "../apis/lod_helper.h"
 #include "d3d11_devicecontext_wrap.h"
+#include "dxgi_device_wrap.h"
 #include "hook_common.h"
 
 // ============================================================================
@@ -151,6 +152,22 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::QueryInterface(REFIID riid, void** p
     CHECK_DEVICE_VERSION(5, ID3D11Device5)
 
 #undef CHECK_DEVICE_VERSION
+
+    if (riid == IID_IDXGIDevice || riid == IID_IDXGIDevice1 || riid == IID_IDXGIDevice2 || riid == IID_IDXGIDevice3 ||
+        riid == IID_IDXGIDevice4 || riid == IID_IDXGIObject) {
+        IDXGIDevice* pRealDxgiDevice = nullptr;
+        HRESULT hr = m_pReal->QueryInterface(IID_PPV_ARGS(&pRealDxgiDevice));
+        if (FAILED(hr) || !pRealDxgiDevice) {
+            return hr;
+        }
+
+        auto* pWrappedDxgiDevice = new CWrapDXGIDevice(pRealDxgiDevice);
+        pRealDxgiDevice->Release();
+
+        hr = pWrappedDxgiDevice->QueryInterface(riid, ppvObj);
+        pWrappedDxgiDevice->Release();
+        return hr;
+    }
 
     return m_pReal->QueryInterface(riid, ppvObj);
 }

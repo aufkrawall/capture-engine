@@ -5,6 +5,7 @@
 #include "d3d10_device_wrap.h"
 #include <cstdlib>
 #include "../apis/lod_helper.h"
+#include "dxgi_device_wrap.h"
 #include "hook_common.h"
 
 // ============================================================================
@@ -88,6 +89,12 @@ HRESULT STDMETHODCALLTYPE CWrapD3D10Device::QueryInterface(REFIID riid, void** p
         return E_POINTER;
     *ppvObj = nullptr;
 
+    if (riid == IID_CWrapD3D10Device) {
+        m_pReal->AddRef();
+        *ppvObj = m_pReal;
+        return S_OK;
+    }
+
     if (riid == IID_IUnknown || riid == IID_ID3D10Device) {
         AddRef();
         *ppvObj = static_cast<ID3D10Device*>(this);
@@ -98,6 +105,22 @@ HRESULT STDMETHODCALLTYPE CWrapD3D10Device::QueryInterface(REFIID riid, void** p
         AddRef();
         *ppvObj = static_cast<ID3D10Device1*>(this);
         return S_OK;
+    }
+
+    if (riid == IID_IDXGIDevice || riid == IID_IDXGIDevice1 || riid == IID_IDXGIDevice2 || riid == IID_IDXGIDevice3 ||
+        riid == IID_IDXGIDevice4 || riid == IID_IDXGIObject) {
+        IDXGIDevice* pRealDxgiDevice = nullptr;
+        HRESULT hr = m_pReal->QueryInterface(IID_PPV_ARGS(&pRealDxgiDevice));
+        if (FAILED(hr) || !pRealDxgiDevice) {
+            return hr;
+        }
+
+        auto* pWrappedDxgiDevice = new CWrapDXGIDevice(pRealDxgiDevice);
+        pRealDxgiDevice->Release();
+
+        hr = pWrappedDxgiDevice->QueryInterface(riid, ppvObj);
+        pWrappedDxgiDevice->Release();
+        return hr;
     }
 
     return m_pReal->QueryInterface(riid, ppvObj);

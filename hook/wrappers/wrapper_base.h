@@ -44,6 +44,9 @@ static const GUID IID_CWrapDXGIAdapter = {0xa0b1c2d3, 0xe4f5, 0x6789, {0x01, 0x2
 // {E5F67890-ABCD-EF12-3456-789012345678}
 static const GUID IID_CWrapD3D11Device = {0xe5f67890, 0xabcd, 0xef12, {0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56, 0x78}};
 
+// {F6789012-BCDE-F123-4567-890123456789}
+static const GUID IID_CWrapD3D10Device = {0xf6789012, 0xbcde, 0xf123, {0x45, 0x67, 0x89, 0x01, 0x23, 0x45, 0x67, 0x89}};
+
 // Interface for unwrapping
 struct ICWrapDXGIAdapter : public IUnknown {
     virtual IDXGIAdapter* GetReal() = 0;
@@ -56,6 +59,7 @@ inline T* DeWrap(T* p) {
         return nullptr;
 
     // Unwrap contract matrix:
+    // - IID_CWrapD3D10Device      -> returns real ID3D10Device*
     // - IID_CWrapD3D11Device      -> returns real ID3D11Device*
     // - IID_CWrapD3D12CommandQueue-> returns real ID3D12CommandQueue*
     // - IID_CWrapDXGIAdapter      -> returns ICWrapDXGIAdapter wrapper interface;
@@ -64,6 +68,11 @@ inline T* DeWrap(T* p) {
     //
     // The returned pointer is borrowed (no additional ownership transfer).
     T* pReal = nullptr;
+
+    if (SUCCEEDED(p->QueryInterface(IID_CWrapD3D10Device, (void**)&pReal))) {
+        pReal->Release();
+        return pReal;
+    }
 
     if (SUCCEEDED(p->QueryInterface(IID_CWrapD3D11Device, (void**)&pReal))) {
         pReal->Release();
