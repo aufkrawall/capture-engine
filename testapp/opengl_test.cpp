@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <string>
 
+#include "testapp_common.h"
+
 #pragma comment(lib, "opengl32.lib")
 #pragma comment(lib, "glu32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -158,22 +160,10 @@ void Render() {
 }
 
 int main(int argc, char* argv[]) {
-    // Enable Per-Monitor DPI awareness for true physical pixel sizes
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    testapp::EnableGameDpiAwareness();
     LoadConfig();
 
-    // Win11 scheduling: opt out of EcoQoS, prefer P-cores, register as Games workload
-    PROCESS_POWER_THROTTLING_STATE pts = {};
-    pts.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    pts.StateMask = 0;
-    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
-    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
-    DWORD mmcssTaskIndex = 0;
-    HANDLE mmcssHandle = AvSetMmThreadCharacteristics(TEXT("Games"), &mmcssTaskIndex);
-    if (mmcssHandle)
-        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    testapp::ApplyGameScheduling();
 
     bool forceLegacy = false;
     if (argc >= 3) {
@@ -196,18 +186,20 @@ int main(int argc, char* argv[]) {
     wc.lpszClassName = "OpenGLTestApp";
     RegisterClass(&wc);
 
+    RECT monitorRect = testapp::GetPrimaryMonitorRect();
+
     if (g_Fullscreen) {
-        g_WindowWidth = GetSystemMetrics(SM_CXSCREEN);
-        g_WindowHeight = GetSystemMetrics(SM_CYSCREEN);
+        g_WindowWidth = monitorRect.right - monitorRect.left;
+        g_WindowHeight = monitorRect.bottom - monitorRect.top;
     }
     DWORD winStyle = g_Fullscreen ? (WS_POPUP | WS_VISIBLE) : (WS_OVERLAPPEDWINDOW | WS_VISIBLE);
-    int posX = g_Fullscreen ? 0 : CW_USEDEFAULT;
-    int posY = g_Fullscreen ? 0 : CW_USEDEFAULT;
+    int posX = g_Fullscreen ? monitorRect.left : CW_USEDEFAULT;
+    int posY = g_Fullscreen ? monitorRect.top : CW_USEDEFAULT;
     int winW = g_WindowWidth;
     int winH = g_WindowHeight;
     if (!g_Fullscreen) {
-        RECT wr = {0, 0, g_WindowWidth, g_WindowHeight};
-        AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
+        RECT wr = testapp::AdjustWindowRectForClientSize(WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, g_WindowWidth,
+                                                         g_WindowHeight);
         winW = wr.right - wr.left;
         winH = wr.bottom - wr.top;
     }

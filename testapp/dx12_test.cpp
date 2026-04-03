@@ -27,6 +27,8 @@
 #include <mutex>
 #include <string>
 
+#include "testapp_common.h"
+
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -278,21 +280,8 @@ int main(int argc, char* argv[]) {
         g_GpuLoadPasses = atoi(argv[3]);
     }
 
-    // Enable Per-Monitor DPI awareness for true pixel sizes
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-
-    // Win11 scheduling: opt out of EcoQoS, prefer P-cores, register as Games workload
-    PROCESS_POWER_THROTTLING_STATE pts = {};
-    pts.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    pts.StateMask = 0;
-    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
-    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
-    DWORD mmcssTaskIndex = 0;
-    HANDLE mmcssHandle = AvSetMmThreadCharacteristics(TEXT("Games"), &mmcssTaskIndex);
-    if (mmcssHandle)
-        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    testapp::EnableGameDpiAwareness();
+    testapp::ApplyGameScheduling();
 
     printf("DX12 Capture Test App\n");
     printf("=====================\n");
@@ -311,20 +300,21 @@ int main(int argc, char* argv[]) {
     RegisterClassExW(&wc);
 
     // Use borderless fullscreen window when configured
+    RECT monitorRect = testapp::GetPrimaryMonitorRect();
     if (g_Fullscreen) {
-        g_WindowWidth = GetSystemMetrics(SM_CXSCREEN);
-        g_WindowHeight = GetSystemMetrics(SM_CYSCREEN);
+        g_WindowWidth = monitorRect.right - monitorRect.left;
+        g_WindowHeight = monitorRect.bottom - monitorRect.top;
     }
     DWORD style = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
 
     // Create window with exact pixel dimensions
-    RECT rc = {0, 0, g_WindowWidth, g_WindowHeight};
-    AdjustWindowRect(&rc, style, FALSE);
+    RECT rc = testapp::AdjustWindowRectForClientSize(style, 0, g_WindowWidth, g_WindowHeight);
 
     wchar_t title[256];
     swprintf(title, 256, L"DX12 Test - %dx%d - GPU Load: %d", g_WindowWidth, g_WindowHeight, g_GpuLoadPasses);
 
-    HWND hwnd = CreateWindowW(WINDOW_CLASS, title, style, 0, 0, rc.right - rc.left, rc.bottom - rc.top, nullptr,
+    HWND hwnd = CreateWindowW(WINDOW_CLASS, title, style, g_Fullscreen ? monitorRect.left : 0,
+                              g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top, nullptr,
                               nullptr, wc.hInstance, nullptr);
 
     if (!InitDX12(hwnd)) {

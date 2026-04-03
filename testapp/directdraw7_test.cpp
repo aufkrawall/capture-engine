@@ -17,6 +17,8 @@
 #include <cstdlib>
 #include <string>
 
+#include "testapp_common.h"
+
 static int g_WindowWidth = 1024;
 static int g_WindowHeight = 768;
 static int g_PresentWidth = 1024;
@@ -189,6 +191,32 @@ static void StorePixel(uint8_t* dest, int bytesPerPixel, uint32_t packedColor) {
     }
 }
 
+static bool ColorFillSurfaceRect(IDirectDrawSurface7* surface, const DDSURFACEDESC2& desc, const RECT& rect,
+                                 uint32_t packedColor) {
+    if (!surface) {
+        return false;
+    }
+
+    RECT clipped = {
+        std::clamp(rect.left, 0L, static_cast<LONG>(desc.dwWidth)),
+        std::clamp(rect.top, 0L, static_cast<LONG>(desc.dwHeight)),
+        std::clamp(rect.right, 0L, static_cast<LONG>(desc.dwWidth)),
+        std::clamp(rect.bottom, 0L, static_cast<LONG>(desc.dwHeight)),
+    };
+    if (clipped.left >= clipped.right || clipped.top >= clipped.bottom) {
+        return true;
+    }
+
+    DDBLTFX bltFx = {};
+    bltFx.dwSize = sizeof(bltFx);
+    bltFx.dwFillColor = packedColor;
+    HRESULT hr = surface->Blt(&clipped, nullptr, nullptr, DDBLT_COLORFILL | DDBLT_WAIT, &bltFx);
+    if (FAILED(hr) && !IsDirectDrawBusy(hr) && NeedsDirectDrawReset(hr)) {
+        g_ResetPending = true;
+    }
+    return SUCCEEDED(hr);
+}
+
 static void FillSurfaceRect(DDSURFACEDESC2& desc, const RECT& rect, uint32_t packedColor) {
     const int bytesPerPixel = std::max(1, static_cast<int>(desc.ddpfPixelFormat.dwRGBBitCount / 8U));
     const int width = static_cast<int>(desc.dwWidth);
@@ -225,11 +253,9 @@ static void DrawFrameToSurface(IDirectDrawSurface7* surface) {
 
     DDSURFACEDESC2 desc = {};
     desc.dwSize = sizeof(desc);
-    HRESULT lockHr = surface->Lock(nullptr, &desc, DDLOCK_SURFACEMEMORYPTR, nullptr);
-    if (FAILED(lockHr)) {
-        if (IsDirectDrawBusy(lockHr))
-            return;
-        if (NeedsDirectDrawReset(lockHr))
+    HRESULT descHr = surface->GetSurfaceDesc(&desc);
+    if (FAILED(descHr)) {
+        if (NeedsDirectDrawReset(descHr))
             g_ResetPending = true;
         return;
     }
@@ -246,7 +272,7 @@ static void DrawFrameToSurface(IDirectDrawSurface7* surface) {
     const uint32_t accentC = PackColor(desc.ddpfPixelFormat, 255, 110, 110);
 
     RECT fullRect = {0, 0, static_cast<LONG>(desc.dwWidth), static_cast<LONG>(desc.dwHeight)};
-    FillSurfaceRect(desc, fullRect, background);
+    ColorFillSurfaceRect(surface, desc, fullRect, background);
 
     RECT borderTop = {16, 16, static_cast<LONG>(desc.dwWidth) - 16, 20};
     RECT borderBottom = {16, static_cast<LONG>(desc.dwHeight) - 20, static_cast<LONG>(desc.dwWidth) - 16,
@@ -254,20 +280,20 @@ static void DrawFrameToSurface(IDirectDrawSurface7* surface) {
     RECT borderLeft = {16, 16, 20, static_cast<LONG>(desc.dwHeight) - 16};
     RECT borderRight = {static_cast<LONG>(desc.dwWidth) - 20, 16, static_cast<LONG>(desc.dwWidth) - 16,
                         static_cast<LONG>(desc.dwHeight) - 16};
-    FillSurfaceRect(desc, borderTop, border);
-    FillSurfaceRect(desc, borderBottom, border);
-    FillSurfaceRect(desc, borderLeft, border);
-    FillSurfaceRect(desc, borderRight, border);
+    ColorFillSurfaceRect(surface, desc, borderTop, border);
+    ColorFillSurfaceRect(surface, desc, borderBottom, border);
+    ColorFillSurfaceRect(surface, desc, borderLeft, border);
+    ColorFillSurfaceRect(surface, desc, borderRight, border);
 
     const LONG barWidth = 180;
     const LONG barX = static_cast<LONG>(g_BarPosition * static_cast<float>(std::max<int>(1, desc.dwWidth - barWidth)));
     const LONG barY = static_cast<LONG>(desc.dwHeight / 2) - 44;
     RECT movingBar = {barX, barY, barX + barWidth, barY + 88};
-    FillSurfaceRect(desc, movingBar, highlight);
+    ColorFillSurfaceRect(surface, desc, movingBar, highlight);
 
     RECT centerBox = {static_cast<LONG>(desc.dwWidth / 2) - 96, static_cast<LONG>(desc.dwHeight / 3) - 64,
                       static_cast<LONG>(desc.dwWidth / 2) + 96, static_cast<LONG>(desc.dwHeight / 3) + 64};
-    FillSurfaceRect(desc, centerBox, accentA);
+    ColorFillSurfaceRect(surface, desc, centerBox, accentA);
 
     for (int pass = 0; pass < g_WorkloadPasses; ++pass) {
         int x = (pass * 97 + static_cast<int>(elapsed * 120.0f)) % std::max<int>(1, desc.dwWidth);
@@ -278,10 +304,8 @@ static void DrawFrameToSurface(IDirectDrawSurface7* surface) {
             std::clamp(x + 36, 0, static_cast<int>(desc.dwWidth)),
             std::clamp(y + 10, 0, static_cast<int>(desc.dwHeight)),
         };
-        FillSurfaceRect(desc, stripe, (pass % 2) == 0 ? accentB : accentC);
+        ColorFillSurfaceRect(surface, desc, stripe, (pass % 2) == 0 ? accentB : accentC);
     }
-
-    surface->Unlock(nullptr);
 
     static auto lastLog = now;
     static int frames = 0;
@@ -360,9 +384,11 @@ static bool InitDesktopFullscreenPrimary(HWND hwnd) {
 
     g_ExclusiveFullscreen = false;
     g_DesktopBlitFullscreen = true;
-    g_PresentWidth = GetSystemMetrics(SM_CXSCREEN);
-    g_PresentHeight = GetSystemMetrics(SM_CYSCREEN);
-    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, g_PresentWidth, g_PresentHeight, SWP_SHOWWINDOW);
+    const RECT monitorRect = testapp::GetPrimaryMonitorRect();
+    g_PresentWidth = monitorRect.right - monitorRect.left;
+    g_PresentHeight = monitorRect.bottom - monitorRect.top;
+    SetWindowPos(hwnd, HWND_TOPMOST, monitorRect.left, monitorRect.top, g_PresentWidth, g_PresentHeight,
+                 SWP_SHOWWINDOW);
     return InitWindowedPrimary(hwnd);
 }
 
@@ -513,18 +539,8 @@ static void PresentFrame(HWND hwnd) {
 
 int main(int argc, char* argv[]) {
     LoadConfig();
-
-    PROCESS_POWER_THROTTLING_STATE pts = {};
-    pts.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    pts.StateMask = 0;
-    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
-    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
-    DWORD mmcssTaskIndex = 0;
-    HANDLE mmcssHandle = AvSetMmThreadCharacteristics(TEXT("Games"), &mmcssTaskIndex);
-    if (mmcssHandle)
-        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    testapp::EnableGameDpiAwareness();
+    testapp::ApplyGameScheduling();
 
     if (argc >= 3) {
         g_WindowWidth = atoi(argv[1]);
@@ -548,17 +564,19 @@ int main(int argc, char* argv[]) {
                       nullptr};
     RegisterClassExW(&wc);
 
-    g_PresentWidth = g_Fullscreen ? GetSystemMetrics(SM_CXSCREEN) : g_WindowWidth;
-    g_PresentHeight = g_Fullscreen ? GetSystemMetrics(SM_CYSCREEN) : g_WindowHeight;
+    const RECT monitorRect = testapp::GetPrimaryMonitorRect();
+
+    g_PresentWidth = g_Fullscreen ? (monitorRect.right - monitorRect.left) : g_WindowWidth;
+    g_PresentHeight = g_Fullscreen ? (monitorRect.bottom - monitorRect.top) : g_WindowHeight;
 
     DWORD winStyle = g_Fullscreen ? (WS_POPUP | WS_VISIBLE) : (WS_OVERLAPPEDWINDOW | WS_VISIBLE);
-    int posX = g_Fullscreen ? 0 : CW_USEDEFAULT;
-    int posY = g_Fullscreen ? 0 : CW_USEDEFAULT;
+    int posX = g_Fullscreen ? monitorRect.left : CW_USEDEFAULT;
+    int posY = g_Fullscreen ? monitorRect.top : CW_USEDEFAULT;
     int winW = g_PresentWidth;
     int winH = g_PresentHeight;
     if (!g_Fullscreen) {
-        RECT wr = {0, 0, g_WindowWidth, g_WindowHeight};
-        AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
+        RECT wr = testapp::AdjustWindowRectForClientSize(WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, g_WindowWidth,
+                                                         g_WindowHeight);
         winW = wr.right - wr.left;
         winH = wr.bottom - wr.top;
     }

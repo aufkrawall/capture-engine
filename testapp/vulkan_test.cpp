@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 
+#include "testapp_common.h"
+
 #pragma comment(lib, "shcore.lib")
 
 // Configurable settings (set from config file or command line)
@@ -578,8 +580,8 @@ int main(int argc, char* argv[]) {
     // Set swapchain extent to configured size
     g_SwapchainExtent = {(uint32_t)g_WindowWidth, (uint32_t)g_WindowHeight};
 
-    // Enable Per-Monitor DPI awareness for true pixel sizes
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    testapp::EnableGameDpiAwareness();
+    testapp::ApplyGameScheduling();
 
     printf("Vulkan Capture Test App\n");
     printf("=======================\n");
@@ -604,8 +606,7 @@ int main(int argc, char* argv[]) {
     DWORD style = (g_WindowWidth >= 2560 || g_WindowHeight >= 1440) ? WS_POPUP : WS_OVERLAPPEDWINDOW;
 
     // Create window with exact pixel dimensions
-    RECT rc = {0, 0, g_WindowWidth, g_WindowHeight};
-    AdjustWindowRect(&rc, style, FALSE);
+    RECT rc = testapp::AdjustWindowRectForClientSize(style, 0, g_WindowWidth, g_WindowHeight);
 
     wchar_t title[256];
     swprintf(title, 256, L"Vulkan Test - %dx%d - GPU Load: %d", g_WindowWidth, g_WindowHeight, g_GpuLoadPasses);

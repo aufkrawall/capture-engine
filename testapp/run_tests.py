@@ -40,11 +40,25 @@ MEDIA_LOG = CAPTURE_BIN / "logs" / "media.log"
 DEFAULT_RESULTS_JSON = CAPTURE_BIN / "logs" / "integration_results.json"
 RUN_LOG_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
 
-SUPPORTED_APIS = ["dx12", "dx11", "dx9", "vulkan", "opengl", "opengl_legacy", "directdraw7"]
+SUPPORTED_APIS = [
+    "dx12",
+    "dx11",
+    "dx9",
+    "dx8",
+    "dx7",
+    "dx6",
+    "vulkan",
+    "opengl",
+    "opengl_legacy",
+    "directdraw7",
+]
 API_EXECUTABLES = {
     "dx12": "dx12_test.exe",
     "dx11": "dx11_test.exe",
     "dx9": "dx9_test.exe",
+    "dx8": "dx8_test.exe",
+    "dx7": "dx7_test.exe",
+    "dx6": "dx6_test.exe",
     "vulkan": "vulkan_test.exe",
     "opengl": "opengl_test.exe",
     "opengl_legacy": "opengl_legacy_test.exe",
@@ -54,6 +68,9 @@ API_LOG_NAMES = {
     "dx12": {"dx12"},
     "dx11": {"dx11"},
     "dx9": {"dx9"},
+    "dx8": {"dx8"},
+    "dx7": {"dx7", "d3d7", "direct3d7", "ddraw", "directdraw"},
+    "dx6": {"dx6", "d3d6", "direct3d6", "ddraw", "directdraw"},
     "vulkan": {"vulkan"},
     "opengl": {"opengl"},
     "opengl_legacy": {"opengl_legacy", "opengl"},
@@ -68,6 +85,9 @@ def kill_processes() -> None:
         "dx12_test.exe",
         "dx11_test.exe",
         "dx9_test.exe",
+        "dx8_test.exe",
+        "dx7_test.exe",
+        "dx6_test.exe",
         "vulkan_test.exe",
         "opengl_test.exe",
         "opengl_legacy_test.exe",
@@ -373,7 +393,7 @@ def run_single_test(
     app_init_s = 3
     delay_ms = int((captureengine_lead_s + app_init_s) * 1000)
     duration_ms = int(total_record_s * 1000)
-    launch_via_captureengine = api == "directdraw7"
+    launch_via_captureengine = api in {"directdraw7", "dx7", "dx6"}
 
     launch_command: Optional[List[str]] = None
     if launch_via_captureengine:
@@ -531,7 +551,20 @@ def main() -> None:
     )
     parser.add_argument(
         "--api",
-        choices=["dx12", "dx11", "dx9", "vulkan", "opengl", "opengl_legacy", "directdraw7", "both", "all"],
+        choices=[
+            "dx12",
+            "dx11",
+            "dx9",
+            "dx8",
+            "dx7",
+            "dx6",
+            "vulkan",
+            "opengl",
+            "opengl_legacy",
+            "directdraw7",
+            "both",
+            "all",
+        ],
         default="all",
         help="API selection (default: all)",
     )

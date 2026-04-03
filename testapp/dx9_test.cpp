@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <string>
 
+#include "testapp_common.h"
+
 #pragma comment(lib, "d3d9.lib")
 
 static int g_WindowWidth = 1280;
@@ -68,6 +70,7 @@ bool InitDX9(HWND hwnd) {
     if (FAILED(g_pD3D->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
                                       &d3dpp, nullptr, &g_pd3dDevice)))
         return false;
+    g_pd3dDevice->SetMaximumFrameLatency(1);
     return true;
 }
 
@@ -99,20 +102,8 @@ int main(int argc, char* argv[]) {
     // Give time for hook thread to initialize export hooks
     Sleep(500);
 
-    SetProcessDPIAware();
-
-    // Win11 scheduling: opt out of EcoQoS, prefer P-cores, register as Games workload
-    PROCESS_POWER_THROTTLING_STATE pts = {};
-    pts.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    pts.StateMask = 0;
-    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
-    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
-    DWORD mmcssTaskIndex = 0;
-    HANDLE mmcssHandle = AvSetMmThreadCharacteristics(TEXT("Games"), &mmcssTaskIndex);
-    if (mmcssHandle)
-        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    testapp::EnableGameDpiAwareness();
+    testapp::ApplyGameScheduling();
     LoadConfig();
     if (argc >= 3) {
         g_WindowWidth = atoi(argv[1]);
@@ -135,15 +126,19 @@ int main(int argc, char* argv[]) {
                       L"DX9Test",
                       nullptr};
     RegisterClassExW(&wc);
+    RECT monitorRect = testapp::GetPrimaryMonitorRect();
     if (g_Fullscreen) {
-        g_WindowWidth = GetSystemMetrics(SM_CXSCREEN);
-        g_WindowHeight = GetSystemMetrics(SM_CYSCREEN);
+        g_WindowWidth = monitorRect.right - monitorRect.left;
+        g_WindowHeight = monitorRect.bottom - monitorRect.top;
     }
     DWORD winStyle = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
-    int posX = g_Fullscreen ? 0 : CW_USEDEFAULT;
-    int posY = g_Fullscreen ? 0 : CW_USEDEFAULT;
-    HWND hwnd = CreateWindowW(L"DX9Test", L"DX9 Test", winStyle, posX, posY, g_WindowWidth, g_WindowHeight, nullptr,
-                              nullptr, wc.hInstance, nullptr);
+    int posX = g_Fullscreen ? monitorRect.left : CW_USEDEFAULT;
+    int posY = g_Fullscreen ? monitorRect.top : CW_USEDEFAULT;
+    RECT windowRect = testapp::AdjustWindowRectForClientSize(winStyle, 0, g_WindowWidth, g_WindowHeight);
+    int winW = g_Fullscreen ? g_WindowWidth : (windowRect.right - windowRect.left);
+    int winH = g_Fullscreen ? g_WindowHeight : (windowRect.bottom - windowRect.top);
+    HWND hwnd = CreateWindowW(L"DX9Test", L"DX9 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
+                              wc.hInstance, nullptr);
     if (!InitDX9(hwnd))
         return 1;
     ShowWindow(hwnd, SW_SHOW);

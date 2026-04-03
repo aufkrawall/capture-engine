@@ -19,6 +19,8 @@
 #include <fstream>
 #include <string>
 
+#include "testapp_common.h"
+
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "shcore.lib")
@@ -152,20 +154,8 @@ void Render() {
 }
 
 int main(int argc, char* argv[]) {
-    SetProcessDPIAware();
-
-    // Win11 scheduling: opt out of EcoQoS, prefer P-cores, register as Games workload
-    PROCESS_POWER_THROTTLING_STATE pts = {};
-    pts.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    pts.StateMask = 0;
-    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
-    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
-    DWORD mmcssTaskIndex = 0;
-    HANDLE mmcssHandle = AvSetMmThreadCharacteristics(TEXT("Games"), &mmcssTaskIndex);
-    if (mmcssHandle)
-        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    testapp::EnableGameDpiAwareness();
+    testapp::ApplyGameScheduling();
 
     LoadConfig();
     if (argc >= 3) {
@@ -189,15 +179,19 @@ int main(int argc, char* argv[]) {
                       WINDOW_CLASS,
                       nullptr};
     RegisterClassExW(&wc);
+    RECT monitorRect = testapp::GetPrimaryMonitorRect();
     if (g_Fullscreen) {
-        g_WindowWidth = GetSystemMetrics(SM_CXSCREEN);
-        g_WindowHeight = GetSystemMetrics(SM_CYSCREEN);
+        g_WindowWidth = monitorRect.right - monitorRect.left;
+        g_WindowHeight = monitorRect.bottom - monitorRect.top;
     }
     DWORD winStyle = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
-    int posX = g_Fullscreen ? 0 : CW_USEDEFAULT;
-    int posY = g_Fullscreen ? 0 : CW_USEDEFAULT;
-    HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX11 Test", winStyle, posX, posY, g_WindowWidth, g_WindowHeight, nullptr,
-                              nullptr, wc.hInstance, nullptr);
+    int posX = g_Fullscreen ? monitorRect.left : CW_USEDEFAULT;
+    int posY = g_Fullscreen ? monitorRect.top : CW_USEDEFAULT;
+    RECT windowRect = testapp::AdjustWindowRectForClientSize(winStyle, 0, g_WindowWidth, g_WindowHeight);
+    int winW = g_Fullscreen ? g_WindowWidth : (windowRect.right - windowRect.left);
+    int winH = g_Fullscreen ? g_WindowHeight : (windowRect.bottom - windowRect.top);
+    HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX11 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
+                              wc.hInstance, nullptr);
     if (!InitDX11(hwnd))
         return 1;
     ShowWindow(hwnd, SW_SHOW);

@@ -2782,6 +2782,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             "-lgdi32",
             "-luser32",
             "-lshcore",
+            "-lavrt",
         ]
         add_task(
             "vulkan_test.exe",
@@ -2797,6 +2798,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                 "-lgdi32",
                 "-luser32",
                 "-lshcore",
+                "-lavrt",
             ]
             add_task(
                 "vulkan_test.exe (x86)",
@@ -2909,6 +2911,100 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                     directdraw7_src,
                     directdraw7_ldflags,
                     directdraw7_exe_x86,
+                ),
+            )
+
+    # DX6 Test App
+    dx6_src = os.path.join(testapp_src_dir, "dx6_test.cpp")
+    dx6_exe = os.path.join(testapp_bin_dir, "dx6_test.exe")
+    if os.path.exists(dx6_src):
+        dx6_ldflags = [
+            "-static",
+            "-Wl,--subsystem,windows",
+            "-lddraw",
+            "-ldxguid",
+            "-lgdi32",
+            "-luser32",
+            "-lavrt",
+        ]
+
+        add_task(
+            "dx6_test.exe",
+            make_cmd(clang_exe, cflags, dx6_src, dx6_ldflags, dx6_exe),
+        )
+
+        if have_x86:
+            dx6_exe_x86 = os.path.join(x86_bin_dir, "dx6_test.exe")
+            add_task(
+                "dx6_test.exe (x86)",
+                make_cmd(
+                    clang_exe_x86,
+                    cflags_x86,
+                    dx6_src,
+                    dx6_ldflags,
+                    dx6_exe_x86,
+                ),
+            )
+
+    # DX7 Test App
+    dx7_src = os.path.join(testapp_src_dir, "dx7_test.cpp")
+    dx7_exe = os.path.join(testapp_bin_dir, "dx7_test.exe")
+    if os.path.exists(dx7_src):
+        dx7_ldflags = [
+            "-static",
+            "-Wl,--subsystem,windows",
+            "-lddraw",
+            "-ldxguid",
+            "-lgdi32",
+            "-luser32",
+            "-lavrt",
+        ]
+
+        add_task(
+            "dx7_test.exe",
+            make_cmd(clang_exe, cflags, dx7_src, dx7_ldflags, dx7_exe),
+        )
+
+        if have_x86:
+            dx7_exe_x86 = os.path.join(x86_bin_dir, "dx7_test.exe")
+            add_task(
+                "dx7_test.exe (x86)",
+                make_cmd(
+                    clang_exe_x86,
+                    cflags_x86,
+                    dx7_src,
+                    dx7_ldflags,
+                    dx7_exe_x86,
+                ),
+            )
+
+    # DX8 Test App
+    dx8_src = os.path.join(testapp_src_dir, "dx8_test.cpp")
+    dx8_exe = os.path.join(testapp_bin_dir, "dx8_test.exe")
+    if os.path.exists(dx8_src):
+        dx8_ldflags = [
+            "-static",
+            "-Wl,--subsystem,windows",
+            "-lgdi32",
+            "-luser32",
+            "-lavrt",
+        ]
+
+        add_task(
+            "dx8_test.exe",
+            make_cmd(clang_exe, cflags, dx8_src, dx8_ldflags, dx8_exe),
+        )
+
+        if have_x86:
+            dx8_exe_x86 = os.path.join(x86_bin_dir, "dx8_test.exe")
+            add_task(
+                "dx8_test.exe (x86)",
+                make_cmd(
+                    clang_exe_x86,
+                    cflags_x86,
+                    dx8_src,
+                    dx8_ldflags,
+                    dx8_exe_x86,
                 ),
             )
 

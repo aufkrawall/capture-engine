@@ -105,6 +105,8 @@ static std::vector<void**> g_HookedSurfaceVTables;
 static uint32_t g_PrerenderIdx = 0;
 static int64_t g_LastSleepUs = 0;
 static IDirect3DDevice7* g_D3D7Device = nullptr;
+static IDirectDrawSurface7* g_LastPresentedSourceSurface = nullptr;
+static DWORD g_LastPresentedSourceTick = 0;
 static bool g_DirectDrawCreateExInlineInstalled = false;
 static HHOOK g_DDrawBootstrapHook = nullptr;
 static HWND g_DDrawBootstrapWindow = NULL;
@@ -118,6 +120,53 @@ static bool HasHookedVTable(const std::vector<void**>& hookedVTables, void** vta
 
 static bool IsPrimarySurfaceDesc(const DDSURFACEDESC2* surfaceDesc) {
     return surfaceDesc && (surfaceDesc->dwFlags & DDSD_CAPS) && (surfaceDesc->ddsCaps.dwCaps & DDSCAPS_PRIMARYSURFACE);
+}
+
+static bool SurfaceHasCaps(IDirectDrawSurface7* surface, DWORD capsMask) {
+    if (!surface)
+        return false;
+
+    DDSURFACEDESC2 desc = {};
+    desc.dwSize = sizeof(desc);
+    return SUCCEEDED(surface->GetSurfaceDesc(&desc)) && (desc.ddsCaps.dwCaps & capsMask) != 0;
+}
+
+static void RememberPresentedSourceSurface(IDirectDrawSurface7* surface) {
+    if (!surface)
+        return;
+
+    g_LastPresentedSourceSurface = surface;
+    g_LastPresentedSourceTick = GetTickCount();
+}
+
+static IDirectDrawSurface7* ResolvePreferredPresentationSurface(IDirectDrawSurface7* primarySurface,
+                                                                IDirectDrawSurface7* explicitSourceSurface) {
+    uint32_t primaryWidth = 0;
+    uint32_t primaryHeight = 0;
+    const bool havePrimarySize = GetSurfaceSize(primarySurface, primaryWidth, primaryHeight);
+
+    auto surfaceMatchesPrimary = [&](IDirectDrawSurface7* surface) {
+        if (!surface)
+            return false;
+        if (!havePrimarySize)
+            return true;
+        uint32_t surfaceWidth = 0;
+        uint32_t surfaceHeight = 0;
+        return GetSurfaceSize(surface, surfaceWidth, surfaceHeight) && surfaceWidth == primaryWidth &&
+               surfaceHeight == primaryHeight;
+    };
+
+    if (explicitSourceSurface && surfaceMatchesPrimary(explicitSourceSurface)) {
+        return explicitSourceSurface;
+    }
+
+    const DWORD now = GetTickCount();
+    if (g_LastPresentedSourceSurface && (now - g_LastPresentedSourceTick) <= 100 &&
+        surfaceMatchesPrimary(g_LastPresentedSourceSurface)) {
+        return g_LastPresentedSourceSurface;
+    }
+
+    return primarySurface;
 }
 
 static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
@@ -140,6 +189,7 @@ static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* 
 static void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t directDrawCreateEx);
 static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason);
 static bool QueueDirectDrawBootstrapOnWindowThread();
+static bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& h);
 
 static HWND ResolveDirectDrawTargetWindow() {
     if (g_CachedHwnd && IsWindow(g_CachedHwnd)) {
@@ -437,7 +487,7 @@ public:
     // D3D9Ex wrapper for GPU sharing
     IDirect3D9Ex* d3d9Ex = nullptr;
     IDirect3DDevice9Ex* d3d9DeviceEx = nullptr;
-    IDirect3DSurface9* d3d9SharedSurface = nullptr;
+    IDirect3DSurface9* d3d9UploadSurface = nullptr;
 
     // D3D11 for shared texture
     ID3D11Device* d3d11Device = nullptr;
@@ -456,9 +506,9 @@ public:
     HWND targetHwnd = NULL;
 
     void ReleaseOverlayResources() {
-        if (d3d9SharedSurface) {
-            d3d9SharedSurface->Release();
-            d3d9SharedSurface = nullptr;
+        if (d3d9UploadSurface) {
+            d3d9UploadSurface->Release();
+            d3d9UploadSurface = nullptr;
         }
         if (d3d9DeviceEx) {
             d3d9DeviceEx->Release();
@@ -685,8 +735,136 @@ public:
             return false;
         }
 
+        d3d9DeviceEx->SetMaximumFrameLatency(1);
+
+        hr = d3d9DeviceEx->CreateOffscreenPlainSurface(width, height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
+                                                       &d3d9UploadSurface, nullptr);
+        if (FAILED(hr)) {
+            HookLog("DDraw: Failed to create D3D9Ex upload surface (hr=0x%08x)", hr);
+            return false;
+        }
+
         HookLog("DDraw: D3D9Ex wrapper created for overlay");
         return true;
+    }
+
+    bool UploadOverlaySurfaceToBackbuffer() {
+        IDirect3DSurface9* backBuffer = nullptr;
+        HRESULT hr = d3d9DeviceEx->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (FAILED(hr) || !backBuffer) {
+            static int backBufferFailLogCount = 0;
+            if (backBufferFailLogCount < 4) {
+                HookLog("DDraw: Failed to get helper backbuffer for overlay composite (hr=0x%08x)", hr);
+                backBufferFailLogCount++;
+            }
+            return false;
+        }
+
+        hr = d3d9DeviceEx->UpdateSurface(d3d9UploadSurface, nullptr, backBuffer, nullptr);
+        backBuffer->Release();
+
+        if (FAILED(hr)) {
+            static int updateSurfaceFailLogCount = 0;
+            if (updateSurfaceFailLogCount < 4) {
+                HookLog("DDraw: Failed to upload DD surface into helper backbuffer (hr=0x%08x)", hr);
+                updateSurfaceFailLogCount++;
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    bool CopyLockedSurfaceToUploadSurface(const DDSURFACEDESC2& desc) {
+        if (!desc.lpSurface || desc.dwWidth != width || desc.dwHeight != height || desc.ddpfPixelFormat.dwRGBBitCount != 32) {
+            return false;
+        }
+
+        D3DLOCKED_RECT lockedRect = {};
+        HRESULT hr = d3d9UploadSurface->LockRect(&lockedRect, nullptr, 0);
+        if (FAILED(hr)) {
+            static int uploadLockFailLogCount = 0;
+            if (uploadLockFailLogCount < 4) {
+                HookLog("DDraw: Failed to lock D3D9 upload surface for overlay composite (hr=0x%08x)", hr);
+                uploadLockFailLogCount++;
+            }
+            return false;
+        }
+
+        const uint8_t* src = static_cast<const uint8_t*>(desc.lpSurface);
+        uint8_t* dst = static_cast<uint8_t*>(lockedRect.pBits);
+        const size_t rowBytes = static_cast<size_t>(width) * 4u;
+        for (uint32_t y = 0; y < height; ++y) {
+            memcpy(dst, src, rowBytes);
+            src += desc.lPitch;
+            dst += lockedRect.Pitch;
+        }
+
+        d3d9UploadSurface->UnlockRect();
+        return UploadOverlaySurfaceToBackbuffer();
+    }
+
+    bool CopySurfaceToOverlayBackbufferViaLock(IDirectDrawSurface7* surface) {
+        DDSURFACEDESC2 desc = {};
+        desc.dwSize = sizeof(desc);
+        HRESULT hr = surface->Lock(nullptr, &desc, DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR, nullptr);
+        if (FAILED(hr) || !desc.lpSurface) {
+            return false;
+        }
+
+        const bool copied = CopyLockedSurfaceToUploadSurface(desc);
+        surface->Unlock(nullptr);
+        return copied;
+    }
+
+    bool CopyPrimarySurfaceToOverlayBackbuffer(IDirectDrawSurface7* surface) {
+        if (!surface || !d3d9DeviceEx || !d3d9UploadSurface || width == 0 || height == 0) {
+            return false;
+        }
+
+        if (CopySurfaceToOverlayBackbufferViaLock(surface)) {
+            return true;
+        }
+
+        HDC sourceDC = nullptr;
+        HRESULT hr = surface->GetDC(&sourceDC);
+        if (FAILED(hr) || !sourceDC) {
+            static int sourceDcFailLogCount = 0;
+            if (sourceDcFailLogCount < 4) {
+                HookLog("DDraw: Failed to get source surface DC for overlay composite (hr=0x%08x)", hr);
+                sourceDcFailLogCount++;
+            }
+            return false;
+        }
+
+        HDC uploadDC = nullptr;
+        hr = d3d9UploadSurface->GetDC(&uploadDC);
+        if (FAILED(hr) || !uploadDC) {
+            surface->ReleaseDC(sourceDC);
+            static int uploadDcFailLogCount = 0;
+            if (uploadDcFailLogCount < 4) {
+                HookLog("DDraw: Failed to get D3D9 upload DC for overlay composite (hr=0x%08x)", hr);
+                uploadDcFailLogCount++;
+            }
+            return false;
+        }
+
+        BOOL bitBltOk = BitBlt(uploadDC, 0, 0, static_cast<int>(width), static_cast<int>(height), sourceDC, 0, 0,
+                               SRCCOPY);
+
+        d3d9UploadSurface->ReleaseDC(uploadDC);
+        surface->ReleaseDC(sourceDC);
+
+        if (!bitBltOk) {
+            static int bitBltFailLogCount = 0;
+            if (bitBltFailLogCount < 4) {
+                HookLog("DDraw: BitBlt into overlay upload surface failed (err=%lu)", GetLastError());
+                bitBltFailLogCount++;
+            }
+            return false;
+        }
+
+        return UploadOverlaySurfaceToBackbuffer();
     }
 
     bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t h) {
@@ -781,7 +959,7 @@ public:
             return false;
         }
 
-        HRESULT hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, targetHwnd, nullptr, D3DPRESENT_DONOTWAIT);
+        HRESULT hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, targetHwnd, nullptr, 0);
         static uint32_t overlayPresentCount = 0;
         static uint64_t lastOverlayPresentLogTick = 0;
         overlayPresentCount++;
@@ -797,6 +975,29 @@ public:
         }
 
         return SUCCEEDED(hr);
+    }
+
+    bool CaptureFrameFromSurface(IDirectDrawSurface7* surface) {
+        if (!surface) {
+            return false;
+        }
+
+        DDSURFACEDESC2 desc = {};
+        desc.dwSize = sizeof(desc);
+        HRESULT hr = surface->Lock(nullptr, &desc, DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR, nullptr);
+        if (SUCCEEDED(hr) && desc.lpSurface && desc.ddpfPixelFormat.dwRGBBitCount == 32 && desc.dwWidth == width &&
+            desc.dwHeight == height) {
+            CaptureFrame(desc.lpSurface, desc.lPitch);
+            surface->Unlock(nullptr);
+            return true;
+        }
+
+        if (SUCCEEDED(hr)) {
+            surface->Unlock(nullptr);
+        }
+
+        CaptureFrameViaGDI(surface);
+        return true;
     }
 
     void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t h) {
@@ -900,7 +1101,7 @@ public:
 static DDrawCapture g_DDrawCapture;
 
 // Draw overlay using D3D9Ex
-static void DrawDDrawOverlay() {
+static void DrawDDrawOverlay(IDirectDrawSurface7* overlaySourceSurface) {
     if (!g_DDrawCapture.d3d9DeviceEx)
         return;
 
@@ -933,6 +1134,7 @@ static void DrawDDrawOverlay() {
     g_OverlayAdapter.SetGraphicsAPI("DDraw");
 
     if (g_OverlayAdapter.IsInitialized() && g_DDrawCapture.width > 0 && g_DDrawCapture.height > 0) {
+        g_DDrawCapture.CopyPrimarySurfaceToOverlayBackbuffer(overlaySourceSurface);
         g_OverlayAdapter.RenderOverlay(g_DDrawCapture.width, g_DDrawCapture.height);
         static uint32_t overlayRenderSubmitCount = 0;
         static uint64_t lastOverlayRenderSubmitLogTick = 0;
@@ -945,6 +1147,20 @@ static void DrawDDrawOverlay() {
             lastOverlayRenderSubmitLogTick = nowTick;
         }
         g_DDrawCapture.PresentOverlay();
+    }
+}
+
+static void InstallAttachedBackBufferHooks(IDirectDrawSurface7* primarySurface, const char* reason) {
+    if (!primarySurface) {
+        return;
+    }
+
+    DDSCAPS2 backBufferCaps = {};
+    backBufferCaps.dwCaps = DDSCAPS_BACKBUFFER;
+    IDirectDrawSurface7* backBuffer = nullptr;
+    if (SUCCEEDED(primarySurface->GetAttachedSurface(&backBufferCaps, &backBuffer)) && backBuffer) {
+        InstallSurfaceHooksForSurface(backBuffer, reason);
+        backBuffer->Release();
     }
 }
 
@@ -1066,7 +1282,7 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
 }
 
 // Common capture logic called after Flip/Blt
-static void HandleCapture(IDirectDrawSurface7* primarySurface) {
+static void HandleCapture(IDirectDrawSurface7* primarySurface, IDirectDrawSurface7* explicitSourceSurface = nullptr) {
     g_CaptureRecurse++;
     if (g_CaptureRecurse > 1) {
         g_CaptureRecurse--;
@@ -1096,6 +1312,8 @@ static void HandleCapture(IDirectDrawSurface7* primarySurface) {
     uint32_t surfaceHeight = 0;
     const bool haveSurfaceSize = GetSurfaceSize(primarySurface, surfaceWidth, surfaceHeight) && surfaceWidth > 0 &&
                                  surfaceHeight > 0;
+    IDirectDrawSurface7* presentationSurface =
+        ResolvePreferredPresentationSurface(primarySurface, explicitSourceSurface);
 
     static bool loggedFirstHandleCapture = false;
     if (!loggedFirstHandleCapture) {
@@ -1118,7 +1336,7 @@ static void HandleCapture(IDirectDrawSurface7* primarySurface) {
             }
 
             if (g_DDrawCapture.initialized) {
-                g_DDrawCapture.CaptureFrameViaGDI(primarySurface);
+                g_DDrawCapture.CaptureFrameFromSurface(presentationSurface ? presentationSurface : primarySurface);
             }
         }
     };
@@ -1126,7 +1344,7 @@ static void HandleCapture(IDirectDrawSurface7* primarySurface) {
     // Lambda for overlay drawing
     auto doOverlay = [&]() {
         if (shouldDrawOverlay) {
-            DrawDDrawOverlay();
+            DrawDDrawOverlay(presentationSurface ? presentationSurface : primarySurface);
         }
     };
 
@@ -1171,6 +1389,9 @@ static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pT
         if (IsPrimarySurfaceDesc(pDesc)) {
             g_PrimarySurface = *ppSurface;
             HookLog("DDraw: Tracking primary surface from CreateSurface (%p)", *ppSurface);
+            if (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX) {
+                InstallAttachedBackBufferHooks(*ppSurface, "CreateSurface attached backbuffer");
+            }
         }
     }
 
@@ -1222,13 +1443,17 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surfac
                                                      void* bltFx) {
     HRESULT hr = oDDSurface7Blt(surface, destRect, srcSurface, srcRect, flags, bltFx);
 
+    if (SUCCEEDED(hr) && srcSurface && SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
+        RememberPresentedSourceSurface(srcSurface);
+    }
+
     if (surface != g_HookSurfacePrototype && !g_PrimarySurface) {
         MaybeTrackPrimarySurface(surface, "Blt");
     }
 
     // Only capture if this is a blit to the tracked primary surface
     if (surface && surface != g_HookSurfacePrototype && (!g_PrimarySurface || surface == g_PrimarySurface)) {
-        HandleCapture(surface);
+        HandleCapture(surface, srcSurface);
     }
 
     return hr;

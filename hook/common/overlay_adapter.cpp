@@ -49,6 +49,34 @@ bool OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) {
            a.textUpdateInterval == b.textUpdateInterval && a.hdrPaperWhite == b.hdrPaperWhite;
 }
 
+class ScopedThreadDpiAwareness {
+public:
+    ScopedThreadDpiAwareness() {
+        HMODULE user32 = GetModuleHandleA("user32.dll");
+        if (!user32) {
+            user32 = LoadLibraryA("user32.dll");
+        }
+
+        setThreadDpiAwarenessContext_ = reinterpret_cast<SetThreadDpiAwarenessContextFn>(
+            GetProcAddress(user32, "SetThreadDpiAwarenessContext"));
+        if (setThreadDpiAwarenessContext_) {
+            oldContext_ = setThreadDpiAwarenessContext_(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+    }
+
+    ~ScopedThreadDpiAwareness() {
+        if (setThreadDpiAwarenessContext_ && oldContext_) {
+            setThreadDpiAwarenessContext_(oldContext_);
+        }
+    }
+
+private:
+    using SetThreadDpiAwarenessContextFn = DPI_AWARENESS_CONTEXT(WINAPI*)(DPI_AWARENESS_CONTEXT value);
+
+    SetThreadDpiAwarenessContextFn setThreadDpiAwarenessContext_ = nullptr;
+    DPI_AWARENESS_CONTEXT oldContext_ = nullptr;
+};
+
 std::string FormatEncoderOverloadLabel(uint32_t sustainFpsX100, uint32_t targetFps) {
     const double sustainFps = static_cast<double>(sustainFpsX100) / 100.0;
     if (targetFps == 0 || sustainFpsX100 == 0) {
@@ -78,6 +106,8 @@ static float GetWindowsDpiScale(HWND targetHwnd) {
     if (!IsWindow(hwnd)) {
         hwnd = GetDesktopWindow();
     }
+
+    ScopedThreadDpiAwareness dpiAwarenessScope;
 
     // Try GetDpiForWindow first (Windows 10 1607+)
     typedef UINT(WINAPI * GetDpiForWindowFn)(HWND);
