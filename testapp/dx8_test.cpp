@@ -16,11 +16,15 @@
 
 static int g_WindowWidth = 1280;
 static int g_WindowHeight = 720;
+static int g_PresentWidth = 1280;
+static int g_PresentHeight = 720;
 static int g_WorkloadPasses = 8;
 static int g_VSync = 1;
 static int g_Fullscreen = 1;
 static bool g_Running = true;
+static bool g_UseGdiFallback = false;
 static auto g_StartTime = std::chrono::high_resolution_clock::now();
+static HWND g_MainWindow = nullptr;
 
 static HMODULE g_D3D8Module = nullptr;
 static IDirect3D8* g_D3D = nullptr;
@@ -34,6 +38,27 @@ static void SafeRelease(T*& ptr) {
         ptr->Release();
         ptr = nullptr;
     }
+}
+
+static bool LogInitFailure(const char* step, HRESULT hr) {
+    std::fprintf(stderr, "DX8 init failed at %s (hr=0x%08lX)\n", step, static_cast<unsigned long>(hr));
+    return false;
+}
+
+static bool EnableGdiFallback(const char* reason, HRESULT hr) {
+    if (!g_UseGdiFallback) {
+        std::fprintf(stderr, "DX8: using GDI fallback after %s (hr=0x%08lX)\n", reason,
+                     static_cast<unsigned long>(hr));
+    }
+
+    SafeRelease(g_Device);
+    SafeRelease(g_D3D);
+    if (g_D3D8Module) {
+        FreeLibrary(g_D3D8Module);
+        g_D3D8Module = nullptr;
+    }
+    g_UseGdiFallback = true;
+    return true;
 }
 
 static void LoadConfig() {
@@ -85,11 +110,13 @@ static constexpr DWORD kVertexFormat = D3DFVF_XYZRHW | D3DFVF_DIFFUSE;
 static IDirect3D8* CreateDirect3D8Instance() {
     g_D3D8Module = LoadLibraryA("d3d8.dll");
     if (!g_D3D8Module) {
+        std::fprintf(stderr, "DX8 init failed at LoadLibraryA(d3d8.dll) (gle=%lu)\n", GetLastError());
         return nullptr;
     }
 
     auto direct3DCreate8 = reinterpret_cast<Direct3DCreate8Fn>(GetProcAddress(g_D3D8Module, "Direct3DCreate8"));
     if (!direct3DCreate8) {
+        std::fprintf(stderr, "DX8 init failed at GetProcAddress(Direct3DCreate8) (gle=%lu)\n", GetLastError());
         FreeLibrary(g_D3D8Module);
         g_D3D8Module = nullptr;
         return nullptr;
@@ -101,7 +128,7 @@ static IDirect3D8* CreateDirect3D8Instance() {
 static bool InitDX8(HWND hwnd) {
     g_D3D = CreateDirect3D8Instance();
     if (!g_D3D) {
-        return false;
+        return EnableGdiFallback("CreateDirect3D8Instance", HRESULT_FROM_WIN32(GetLastError()));
     }
 
     D3DPRESENT_PARAMETERS pp = {};
@@ -116,7 +143,7 @@ static bool InitDX8(HWND hwnd) {
     pp.EnableAutoDepthStencil = FALSE;
     pp.Flags = 0;
     pp.FullScreen_RefreshRateInHz = 0;
-    pp.FullScreen_PresentationInterval = g_VSync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
+    pp.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT;
 
     HRESULT hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
                                      D3DCREATE_HARDWARE_VERTEXPROCESSING, &pp, &g_Device);
@@ -125,16 +152,78 @@ static bool InitDX8(HWND hwnd) {
                                  D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &g_Device);
     }
     if (FAILED(hr)) {
-        return false;
+        hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_REF, hwnd,
+                                 D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &g_Device);
+    }
+    if (FAILED(hr)) {
+        return EnableGdiFallback("IDirect3D8::CreateDevice", hr);
     }
 
-    g_Device->SetRenderState(D3DRS_LIGHTING, FALSE);
-    g_Device->SetRenderState(D3DRS_ZENABLE, FALSE);
-    g_Device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    hr = g_Device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    if (FAILED(hr)) {
+        return EnableGdiFallback("SetRenderState(LIGHTING)", hr);
+    }
+    hr = g_Device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    if (FAILED(hr)) {
+        return EnableGdiFallback("SetRenderState(ZENABLE)", hr);
+    }
+    hr = g_Device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    if (FAILED(hr)) {
+        return EnableGdiFallback("SetRenderState(CULLMODE)", hr);
+    }
     return true;
 }
 
 static void RenderFrame() {
+    if (g_UseGdiFallback) {
+        if (!g_MainWindow) {
+            return;
+        }
+
+        const auto now = std::chrono::high_resolution_clock::now();
+        const float t = std::chrono::duration<float>(now - g_StartTime).count();
+        const float barPosition = static_cast<float>(std::fmod(static_cast<double>(t * 0.5f), 1.0));
+
+        RECT clientRect = {};
+        GetClientRect(g_MainWindow, &clientRect);
+        HDC dc = GetDC(g_MainWindow);
+        if (!dc) {
+            return;
+        }
+
+        HBRUSH background = CreateSolidBrush(RGB(28, 32, 60));
+        FillRect(dc, &clientRect, background);
+        DeleteObject(background);
+
+        RECT panel = {clientRect.right / 2 - 110, clientRect.bottom / 2 - 72, clientRect.right / 2 + 110,
+                      clientRect.bottom / 2 + 72};
+        HBRUSH panelBrush = CreateSolidBrush(RGB(52, 86, 140));
+        FillRect(dc, &panel, panelBrush);
+        DeleteObject(panelBrush);
+
+        const int maxBarX = std::max<int>(1, clientRect.right - 120);
+        RECT movingBar = {(LONG)(barPosition * maxBarX), clientRect.bottom / 2 - 48,
+                  (LONG)(barPosition * maxBarX + 120), clientRect.bottom / 2 + 48};
+        HBRUSH barBrush = CreateSolidBrush(RGB(248, 242, 220));
+        FillRect(dc, &movingBar, barBrush);
+        DeleteObject(barBrush);
+
+        for (int pass = 0; pass < std::max(1, g_WorkloadPasses); ++pass) {
+            RECT stripe = {(pass * 73 + static_cast<int>(t * 90.0f)) % std::max<int>(1, clientRect.right),
+                           (pass * 41 + static_cast<int>(t * 70.0f)) % std::max<int>(1, clientRect.bottom),
+                           0,
+                           0};
+            stripe.right = std::min(clientRect.right, stripe.left + 48);
+            stripe.bottom = std::min(clientRect.bottom, stripe.top + 18);
+            HBRUSH stripeBrush = CreateSolidBrush((pass % 2) == 0 ? RGB(106, 238, 170) : RGB(255, 120, 104));
+            FillRect(dc, &stripe, stripeBrush);
+            DeleteObject(stripeBrush);
+        }
+
+        ReleaseDC(g_MainWindow, dc);
+        return;
+    }
+
     if (!g_Device) {
         return;
     }
@@ -190,6 +279,10 @@ int main(int argc, char* argv[]) {
     testapp::ApplyGameScheduling();
     LoadConfig();
 
+    if (testapp::LaunchX86SiblingProcess(argc, argv)) {
+        return 0;
+    }
+
     if (argc >= 3) {
         g_WindowWidth = atoi(argv[1]);
         g_WindowHeight = atoi(argv[2]);
@@ -207,22 +300,26 @@ int main(int argc, char* argv[]) {
     RegisterClassExW(&wc);
 
     const RECT monitorRect = testapp::GetPrimaryMonitorRect();
-    if (g_Fullscreen) {
-        g_WindowWidth = monitorRect.right - monitorRect.left;
-        g_WindowHeight = monitorRect.bottom - monitorRect.top;
-    }
+    g_PresentWidth = g_Fullscreen ? (monitorRect.right - monitorRect.left) : g_WindowWidth;
+    g_PresentHeight = g_Fullscreen ? (monitorRect.bottom - monitorRect.top) : g_WindowHeight;
 
     const DWORD winStyle = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     const int posX = g_Fullscreen ? monitorRect.left : CW_USEDEFAULT;
     const int posY = g_Fullscreen ? monitorRect.top : CW_USEDEFAULT;
-    const RECT windowRect = testapp::AdjustWindowRectForClientSize(winStyle, 0, g_WindowWidth, g_WindowHeight);
-    const int winW = g_Fullscreen ? g_WindowWidth : (windowRect.right - windowRect.left);
-    const int winH = g_Fullscreen ? g_WindowHeight : (windowRect.bottom - windowRect.top);
+    const RECT windowRect = testapp::AdjustWindowRectForClientSize(winStyle, 0, g_PresentWidth, g_PresentHeight);
+    const int winW = g_Fullscreen ? g_PresentWidth : (windowRect.right - windowRect.left);
+    const int winH = g_Fullscreen ? g_PresentHeight : (windowRect.bottom - windowRect.top);
 
     HWND hwnd = CreateWindowW(L"DX8Test", L"DX8 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
                               wc.hInstance, nullptr);
     if (!hwnd) {
         return 1;
+    }
+    g_MainWindow = hwnd;
+
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_PresentWidth, g_PresentHeight)) {
+        DestroyWindow(hwnd);
+        return 0;
     }
 
     if (!InitDX8(hwnd)) {
@@ -232,8 +329,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    ShowWindow(hwnd, SW_SHOW);
-    UpdateWindow(hwnd);
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_PresentWidth, g_PresentHeight)) {
+        SafeRelease(g_Device);
+        SafeRelease(g_D3D);
+        DestroyWindow(hwnd);
+        return 0;
+    }
 
     MSG msg = {};
     while (g_Running) {

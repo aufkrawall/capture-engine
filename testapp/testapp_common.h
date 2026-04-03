@@ -4,7 +4,112 @@
 #include <windows.h>
 #include <avrt.h>
 
+#include <string>
+
 namespace testapp {
+
+inline std::wstring NarrowToWide(const char* value) {
+    if (!value || !*value) {
+        return std::wstring();
+    }
+
+    const int requiredChars = MultiByteToWideChar(CP_ACP, 0, value, -1, nullptr, 0);
+    if (requiredChars <= 1) {
+        return std::wstring();
+    }
+
+    std::wstring wideValue(static_cast<size_t>(requiredChars - 1), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, value, -1, wideValue.data(), requiredChars);
+    return wideValue;
+}
+
+inline std::wstring QuoteCommandLineArg(const std::wstring& value) {
+    if (value.empty()) {
+        return L"\"\"";
+    }
+
+    bool needsQuotes = false;
+    for (wchar_t ch : value) {
+        if (ch == L' ' || ch == L'\t' || ch == L'\"') {
+            needsQuotes = true;
+            break;
+        }
+    }
+    if (!needsQuotes) {
+        return value;
+    }
+
+    std::wstring quoted;
+    quoted.push_back(L'\"');
+    size_t backslashCount = 0;
+    for (wchar_t ch : value) {
+        if (ch == L'\\') {
+            ++backslashCount;
+            continue;
+        }
+        if (ch == L'\"') {
+            quoted.append(backslashCount * 2 + 1, L'\\');
+            quoted.push_back(L'\"');
+            backslashCount = 0;
+            continue;
+        }
+        if (backslashCount != 0) {
+            quoted.append(backslashCount, L'\\');
+            backslashCount = 0;
+        }
+        quoted.push_back(ch);
+    }
+    if (backslashCount != 0) {
+        quoted.append(backslashCount * 2, L'\\');
+    }
+    quoted.push_back(L'\"');
+    return quoted;
+}
+
+inline bool LaunchX86SiblingProcess(int argc, char* argv[]) {
+#if defined(_WIN64)
+    wchar_t modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH) == 0) {
+        return false;
+    }
+
+    std::wstring exePath = modulePath;
+    const size_t slashPos = exePath.find_last_of(L"\\/");
+    if (slashPos == std::wstring::npos) {
+        return false;
+    }
+
+    const std::wstring directory = exePath.substr(0, slashPos);
+    const std::wstring exeName = exePath.substr(slashPos + 1);
+    const std::wstring siblingPath = directory + L"\\x86\\" + exeName;
+    if (GetFileAttributesW(siblingPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+
+    std::wstring commandLine = QuoteCommandLineArg(siblingPath);
+    for (int i = 1; i < argc; ++i) {
+        commandLine.push_back(L' ');
+        commandLine += QuoteCommandLineArg(NarrowToWide(argv[i]));
+    }
+
+    STARTUPINFOW startupInfo = {};
+    startupInfo.cb = sizeof(startupInfo);
+    PROCESS_INFORMATION processInfo = {};
+    std::wstring mutableCommandLine = commandLine;
+    if (!CreateProcessW(siblingPath.c_str(), mutableCommandLine.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
+                        &startupInfo, &processInfo)) {
+        return false;
+    }
+
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    return true;
+#else
+    (void)argc;
+    (void)argv;
+    return false;
+#endif
+}
 
 inline void EnableGameDpiAwareness() {
     HMODULE user32 = GetModuleHandleA("user32.dll");
