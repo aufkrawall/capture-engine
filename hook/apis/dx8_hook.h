@@ -15,3 +15,5 @@ public:
     void Shutdown() override;
     void OnHostDisconnect() override;
 };
+
+void DX8Hook_OnModuleLoaded();

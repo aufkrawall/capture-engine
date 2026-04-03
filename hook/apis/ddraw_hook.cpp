@@ -65,13 +65,25 @@ typedef HRESULT(STDMETHODCALLTYPE* SetRenderState7_t)(IDirect3DDevice7* device, 
 typedef HRESULT(STDMETHODCALLTYPE* DDSurface7Flip_t)(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
                                                      DWORD flags);
 
+typedef HRESULT(STDMETHODCALLTYPE* DDSurface4Flip_t)(IDirectDrawSurface4* surface, IDirectDrawSurface4* destOverride,
+                                                     DWORD flags);
+
 typedef HRESULT(STDMETHODCALLTYPE* DDSurface7Blt_t)(IDirectDrawSurface7* surface, LPRECT destRect,
                                                     IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD flags,
                                                     void* bltFx);
 
+typedef HRESULT(STDMETHODCALLTYPE* DDSurface4Blt_t)(IDirectDrawSurface4* surface, LPRECT destRect,
+                                                    IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD flags,
+                                                    void* bltFx);
+
 typedef HRESULT(STDMETHODCALLTYPE* DDSurface7Unlock_t)(IDirectDrawSurface7* surface, LPRECT rect);
 
+typedef HRESULT(STDMETHODCALLTYPE* DDSurface4Unlock_t)(IDirectDrawSurface4* surface, LPRECT rect);
+
 typedef HRESULT(STDMETHODCALLTYPE* DDSurface7Lock_t)(IDirectDrawSurface7* surface, LPRECT destRect, void* surfaceDesc,
+                                                     DWORD flags, HANDLE event);
+
+typedef HRESULT(STDMETHODCALLTYPE* DDSurface4Lock_t)(IDirectDrawSurface4* surface, LPRECT destRect, void* surfaceDesc,
                                                      DWORD flags, HANDLE event);
 
 typedef HRESULT(STDMETHODCALLTYPE* DDSurface7GetDC_t)(IDirectDrawSurface7* surface, HDC* hdc);
@@ -80,14 +92,22 @@ typedef HRESULT(STDMETHODCALLTYPE* DDSurface7ReleaseDC_t)(IDirectDrawSurface7* s
 typedef HRESULT(STDMETHODCALLTYPE* DDraw7CreateSurface_t)(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
                                                           IDirectDrawSurface7** ppSurface, IUnknown* pUnkOuter);
 
+typedef HRESULT(STDMETHODCALLTYPE* DDraw4CreateSurface_t)(IDirectDraw4* pThis, DDSURFACEDESC2* pDesc,
+                                                          IDirectDrawSurface4** ppSurface, IUnknown* pUnkOuter);
+
 typedef HRESULT(WINAPI* DirectDrawCreateEx_t)(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
 
 // Original function pointers
 static DDSurface7Flip_t oDDSurface7Flip = nullptr;
+static DDSurface4Flip_t oDDSurface4Flip = nullptr;
 static DDSurface7Blt_t oDDSurface7Blt = nullptr;
+static DDSurface4Blt_t oDDSurface4Blt = nullptr;
 static DDSurface7Lock_t oDDSurface7Lock = nullptr;
+static DDSurface4Lock_t oDDSurface4Lock = nullptr;
 static DDSurface7Unlock_t oDDSurface7Unlock = nullptr;
+static DDSurface4Unlock_t oDDSurface4Unlock = nullptr;
 static DDraw7CreateSurface_t oDDraw7CreateSurface = nullptr;
+static DDraw4CreateSurface_t oDDraw4CreateSurface = nullptr;
 static SetTextureStageState7_t oSetTextureStageState7 = nullptr;
 static SetRenderState7_t oSetRenderState7 = nullptr;
 static DirectDrawCreateEx_t oDirectDrawCreateEx = nullptr;
@@ -97,7 +117,9 @@ static PerformanceMetrics g_PerfMetrics;
 static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
 static IDirectDrawSurface7* g_PrimarySurface = nullptr;
+static IDirectDrawSurface4* g_PrimarySurface4 = nullptr;
 static IDirectDrawSurface7* g_HookSurfacePrototype = nullptr;
+static IDirectDrawSurface4* g_HookSurfacePrototype4 = nullptr;
 static int g_CaptureRecurse = 0;
 static std::vector<IDirectDrawSurface7*> g_PrerenderSurfaces;
 static std::vector<void**> g_HookedDDrawVTables;
@@ -131,6 +153,27 @@ static bool SurfaceHasCaps(IDirectDrawSurface7* surface, DWORD capsMask) {
     DDSURFACEDESC2 desc = {};
     desc.dwSize = sizeof(desc);
     return SUCCEEDED(surface->GetSurfaceDesc(&desc)) && (desc.ddsCaps.dwCaps & capsMask) != 0;
+}
+
+static bool SurfaceHasCaps(IDirectDrawSurface4* surface, DWORD capsMask) {
+    if (!surface)
+        return false;
+
+    DDSURFACEDESC2 desc = {};
+    desc.dwSize = sizeof(desc);
+    return SUCCEEDED(surface->GetSurfaceDesc(&desc)) && (desc.ddsCaps.dwCaps & capsMask) != 0;
+}
+
+static IDirectDrawSurface7* QuerySurface7(IUnknown* surfaceLike) {
+    if (!surfaceLike)
+        return nullptr;
+
+    IDirectDrawSurface7* surface7 = nullptr;
+    if (FAILED(surfaceLike->QueryInterface(IID_IDirectDrawSurface7, reinterpret_cast<void**>(&surface7)))) {
+        return nullptr;
+    }
+
+    return surface7;
 }
 
 static void RememberPresentedSourceSurface(IDirectDrawSurface7* surface) {
@@ -173,21 +216,34 @@ static IDirectDrawSurface7* ResolvePreferredPresentationSurface(IDirectDrawSurfa
 
 static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
                                                                 IDirectDrawSurface7** ppSurface, IUnknown* pUnkOuter);
+static HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis, DDSURFACEDESC2* pDesc,
+                                                                IDirectDrawSurface4** ppSurface, IUnknown* pUnkOuter);
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
+                                                      DWORD flags);
+static HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface, IDirectDrawSurface4* destOverride,
                                                       DWORD flags);
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface, LPRECT destRect,
                                                      IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD flags,
                                                      void* bltFx);
+static HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface, LPRECT destRect,
+                                                     IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD flags,
+                                                     void* bltFx);
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Lock(IDirectDrawSurface7* surface, LPRECT destRect, void* surfaceDesc,
                                                       DWORD flags, HANDLE event);
+static HRESULT STDMETHODCALLTYPE DetourDDSurface4Lock(IDirectDrawSurface4* surface, LPRECT destRect, void* surfaceDesc,
+                                                      DWORD flags, HANDLE event);
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, LPRECT rect);
+static HRESULT STDMETHODCALLTYPE DetourDDSurface4Unlock(IDirectDrawSurface4* surface, LPRECT rect);
 static HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* device, DWORD Type, DWORD Value);
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* device, DWORD Stage, DWORD Type,
                                                              DWORD Value);
 static HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
 
 static void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const char* reason, bool markPrototype = false);
+static void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface, const char* reason,
+                                           bool markPrototype = false);
 static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* reason);
+static void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char* reason);
 static void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t directDrawCreateEx);
 static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason);
 static bool QueueDirectDrawBootstrapOnWindowThread();
@@ -222,6 +278,14 @@ static void MaybeTrackPrimarySurface(IDirectDrawSurface7* surface, const char* r
 
     g_PrimarySurface = surface;
     HookLog("DDraw: Tracking runtime primary surface from %s (%p)", reason, surface);
+}
+
+static void MaybeTrackPrimarySurface4(IDirectDrawSurface4* surface, const char* reason) {
+    if (!surface || surface == g_HookSurfacePrototype4 || g_PrimarySurface4)
+        return;
+
+    g_PrimarySurface4 = surface;
+    HookLog("DDraw: Tracking runtime primary surface4 from %s (%p)", reason, surface);
 }
 
 static void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface, float limit) {
@@ -1212,7 +1276,7 @@ static void DrawDDrawOverlay(IDirectDrawSurface7* overlaySourceSurface) {
     g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DDrawCapture.droppedFrames.load(std::memory_order_relaxed));
-    g_OverlayAdapter.SetGraphicsAPI("DDraw");
+    g_OverlayAdapter.SetGraphicsAPI(g_D3D7Device ? "D3D7" : "DDraw");
 
     if (g_OverlayAdapter.IsInitialized() && g_DDrawCapture.width > 0 && g_DDrawCapture.height > 0) {
         g_DDrawCapture.CopyPrimarySurfaceToOverlayBackbuffer(overlaySourceSurface);
@@ -1256,6 +1320,67 @@ static bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& 
         return true;
     }
     return false;
+}
+
+static void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface, const char* reason, bool markPrototype) {
+    if (!surface)
+        return;
+
+    void** surfaceVTable = *(void***)surface;
+    if (!surfaceVTable) {
+        HookLog("DDraw: InstallSurfaceHooksForSurface4 skipped for %s - null vtable (surface=%p)", reason, surface);
+        return;
+    }
+
+    if (HasHookedVTable(g_HookedSurfaceVTables, surfaceVTable)) {
+        HookLog("DDraw: InstallSurfaceHooksForSurface4 skipped for %s - vtable already hooked (surface=%p, vtable=%p)",
+                reason, surface, surfaceVTable);
+        return;
+    }
+
+    g_HookedSurfaceVTables.push_back(surfaceVTable);
+    if (markPrototype && !g_HookSurfacePrototype4)
+        g_HookSurfacePrototype4 = surface;
+
+    HookLog("DDraw: Installing surface4 hooks via %s (surface=%p, vtable=%p, prototype=%d)", reason, surface,
+            surfaceVTable, markPrototype ? 1 : 0);
+
+    VTableHook::Status flipStatus = VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_FLIP],
+                                                       (LPVOID)&DetourDDSurface4Flip,
+                                                       oDDSurface4Flip ? nullptr : (LPVOID*)&oDDSurface4Flip);
+    if (flipStatus == VTableHook::Success) {
+        HookLog("DDraw: Flip4 hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: Flip4 hook install via %s returned %s", reason, VTableHook::StatusToString(flipStatus));
+    }
+
+    VTableHook::Status bltStatus = VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_BLT],
+                                                      (LPVOID)&DetourDDSurface4Blt,
+                                                      oDDSurface4Blt ? nullptr : (LPVOID*)&oDDSurface4Blt);
+    if (bltStatus == VTableHook::Success) {
+        HookLog("DDraw: Blt4 hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: Blt4 hook install via %s returned %s", reason, VTableHook::StatusToString(bltStatus));
+    }
+
+    VTableHook::Status lockStatus = VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_LOCK],
+                                                       (LPVOID)&DetourDDSurface4Lock,
+                                                       oDDSurface4Lock ? nullptr : (LPVOID*)&oDDSurface4Lock);
+    if (lockStatus == VTableHook::Success) {
+        HookLog("DDraw: Lock4 hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: Lock4 hook install via %s returned %s", reason, VTableHook::StatusToString(lockStatus));
+    }
+
+    VTableHook::Status unlockStatus = VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_UNLOCK],
+                                                         (LPVOID)&DetourDDSurface4Unlock,
+                                                         oDDSurface4Unlock ? nullptr : (LPVOID*)&oDDSurface4Unlock);
+    if (unlockStatus == VTableHook::Success) {
+        HookLog("DDraw: Unlock4 hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: Unlock4 hook install via %s returned %s", reason,
+                VTableHook::StatusToString(unlockStatus));
+    }
 }
 
 static void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const char* reason, bool markPrototype) {
@@ -1317,6 +1442,45 @@ static void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const ch
         HookLog("DDraw: Unlock hook install via %s returned %s", reason,
                 VTableHook::StatusToString(unlockStatus));
     }
+
+    IDirectDrawSurface4* surface4 = nullptr;
+    if (SUCCEEDED(surface->QueryInterface(IID_IDirectDrawSurface4, reinterpret_cast<void**>(&surface4))) && surface4) {
+        InstallSurfaceHooksForSurface4(surface4, reason, markPrototype);
+        surface4->Release();
+    }
+}
+
+static void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char* reason) {
+    if (!ddraw4) {
+        HookLog("DDraw: InstallDirectDraw4HooksForInstance skipped for %s - null object", reason);
+        return;
+    }
+
+    void** ddraw4VTable = *(void***)ddraw4;
+    if (!ddraw4VTable) {
+        HookLog("DDraw: InstallDirectDraw4HooksForInstance skipped for %s - null vtable (object=%p)", reason,
+                ddraw4);
+        return;
+    }
+
+    if (HasHookedVTable(g_HookedDDrawVTables, ddraw4VTable)) {
+        HookLog("DDraw: InstallDirectDraw4HooksForInstance skipped for %s - vtable already hooked (object=%p, vtable=%p)",
+                reason, ddraw4, ddraw4VTable);
+        return;
+    }
+
+    g_HookedDDrawVTables.push_back(ddraw4VTable);
+    HookLog("DDraw: Installing DirectDraw4 hooks via %s (object=%p, vtable=%p)", reason, ddraw4, ddraw4VTable);
+
+    VTableHook::Status createSurfaceStatus =
+        VTableHook::Create(&ddraw4VTable[6], (LPVOID)&DetourDirectDraw4CreateSurface,
+                           oDDraw4CreateSurface ? nullptr : (LPVOID*)&oDDraw4CreateSurface);
+    if (createSurfaceStatus == VTableHook::Success) {
+        HookLog("DDraw: CreateSurface4 hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: CreateSurface4 hook install via %s returned %s", reason,
+                VTableHook::StatusToString(createSurfaceStatus));
+    }
 }
 
 static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* reason) {
@@ -1341,6 +1505,12 @@ static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* 
     g_HookedDDrawVTables.push_back(ddraw7VTable);
     HookLog("DDraw: Installing DirectDraw hooks via %s (object=%p, vtable=%p)", reason, ddraw7, ddraw7VTable);
 
+    IDirectDraw4* ddraw4 = nullptr;
+    if (SUCCEEDED(ddraw7->QueryInterface(IID_IDirectDraw4, reinterpret_cast<void**>(&ddraw4))) && ddraw4) {
+        InstallDirectDraw4HooksForInstance(ddraw4, reason);
+        ddraw4->Release();
+    }
+
     VTableHook::Status createSurfaceStatus = VTableHook::Create(&ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface,
                                                                 oDDraw7CreateSurface ? nullptr : (LPVOID*)&oDDraw7CreateSurface);
     if (createSurfaceStatus == VTableHook::Success) {
@@ -1352,14 +1522,30 @@ static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* 
 }
 
 bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
-    HookLog("DDraw: HookDirectDrawObject called (object=%p, iidIsDDraw7=%d)", directDrawObject,
-            IsEqualIID(iid, IID_IDirectDraw7) ? 1 : 0);
+    HookLog("DDraw: HookDirectDrawObject called (object=%p, iidIsDDraw7=%d, iidIsDDraw4=%d)", directDrawObject,
+            IsEqualIID(iid, IID_IDirectDraw7) ? 1 : 0, IsEqualIID(iid, IID_IDirectDraw4) ? 1 : 0);
 
-    if (!directDrawObject || !IsEqualIID(iid, IID_IDirectDraw7))
+    if (!directDrawObject)
         return false;
 
-    InstallDirectDrawHooksForInstance(reinterpret_cast<IDirectDraw7*>(directDrawObject), "wrapper CreateEx");
-    return true;
+    if (IsEqualIID(iid, IID_IDirectDraw7)) {
+        InstallDirectDrawHooksForInstance(reinterpret_cast<IDirectDraw7*>(directDrawObject), "wrapper CreateEx");
+        return true;
+    }
+
+    if (IsEqualIID(iid, IID_IDirectDraw4)) {
+        auto* ddraw4 = reinterpret_cast<IDirectDraw4*>(directDrawObject);
+        InstallDirectDraw4HooksForInstance(ddraw4, "wrapper CreateEx");
+
+        IDirectDraw7* ddraw7 = nullptr;
+        if (SUCCEEDED(ddraw4->QueryInterface(IID_IDirectDraw7, reinterpret_cast<void**>(&ddraw7))) && ddraw7) {
+            InstallDirectDrawHooksForInstance(ddraw7, "wrapper CreateEx upgrade");
+            ddraw7->Release();
+        }
+        return true;
+    }
+
+    return false;
 }
 
 // Common capture logic called after Flip/Blt
@@ -1445,6 +1631,26 @@ static void HandleCapture(IDirectDrawSurface7* primarySurface, IDirectDrawSurfac
     g_CaptureRecurse--;
 }
 
+static void HandleCaptureSurface4(IDirectDrawSurface4* primarySurface, IDirectDrawSurface4* explicitSourceSurface = nullptr) {
+    IDirectDrawSurface7* primarySurface7 = QuerySurface7(primarySurface);
+    if (!primarySurface7) {
+        static int primaryUpgradeFailLogCount = 0;
+        if (primaryUpgradeFailLogCount < 4) {
+            HookLog("DDraw: Failed to upgrade DirectDraw4 primary surface to DirectDraw7 for capture/overlay");
+            primaryUpgradeFailLogCount++;
+        }
+        return;
+    }
+
+    IDirectDrawSurface7* explicitSourceSurface7 = QuerySurface7(explicitSourceSurface);
+    HandleCapture(primarySurface7, explicitSourceSurface7);
+
+    if (explicitSourceSurface7) {
+        explicitSourceSurface7->Release();
+    }
+    primarySurface7->Release();
+}
+
 // Hook: IDirectDraw7::CreateSurface
 static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
                                                                 IDirectDrawSurface7** ppSurface, IUnknown* pUnkOuter) {
@@ -1473,6 +1679,36 @@ static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pT
             if (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX) {
                 InstallAttachedBackBufferHooks(*ppSurface, "CreateSurface attached backbuffer");
             }
+        }
+    }
+
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis, DDSURFACEDESC2* pDesc,
+                                                                IDirectDrawSurface4** ppSurface, IUnknown* pUnkOuter) {
+    HookLog("DDraw: DetourDirectDraw4CreateSurface called (ddraw=%p, flags=0x%08x, caps=0x%08x)", pThis,
+            pDesc ? pDesc->dwFlags : 0, pDesc ? pDesc->ddsCaps.dwCaps : 0);
+
+    if (pDesc && g_IPC) {
+        int count = g_IPC->GetSharedMem()->graphicsConfig.backbufferCount;
+        if (count >= 2 && count <= 6 && IsPrimarySurfaceDesc(pDesc)) {
+            if (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX) {
+                pDesc->dwFlags |= DDSD_BACKBUFFERCOUNT;
+                pDesc->dwBackBufferCount = (DWORD)count - 1;
+                HookLog("DDraw: CreateSurface4: Overriding BackBufferCount to %d", count);
+            }
+        }
+    }
+
+    HRESULT hr = oDDraw4CreateSurface ? oDDraw4CreateSurface(pThis, pDesc, ppSurface, pUnkOuter) : DDERR_GENERIC;
+    HookLog("DDraw: DetourDirectDraw4CreateSurface returned hr=0x%08x, surface=%p", hr,
+            (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr);
+    if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        InstallSurfaceHooksForSurface4(*ppSurface, "CreateSurface4");
+        if (IsPrimarySurfaceDesc(pDesc)) {
+            g_PrimarySurface4 = *ppSurface;
+            HookLog("DDraw: Tracking primary surface4 from CreateSurface (%p)", *ppSurface);
         }
     }
 
@@ -1518,6 +1754,15 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surfa
     return hr;
 }
 
+static HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface, IDirectDrawSurface4* destOverride,
+                                                      DWORD flags) {
+    MaybeTrackPrimarySurface4(surface, "Flip4");
+
+    HRESULT hr = oDDSurface4Flip(surface, destOverride, flags);
+    HandleCaptureSurface4(surface);
+    return hr;
+}
+
 // Hook: IDirectDrawSurface7::Blt
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface, LPRECT destRect,
                                                      IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD flags,
@@ -1540,6 +1785,23 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surfac
     return hr;
 }
 
+static HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface, LPRECT destRect,
+                                                     IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD flags,
+                                                     void* bltFx) {
+    HRESULT hr = oDDSurface4Blt(surface, destRect, srcSurface, srcRect, flags, bltFx);
+
+    if (surface != g_HookSurfacePrototype4 && !g_PrimarySurface4) {
+        MaybeTrackPrimarySurface4(surface, "Blt4");
+    }
+
+    if (SUCCEEDED(hr) && surface && surface != g_HookSurfacePrototype4 &&
+        (!g_PrimarySurface4 || surface == g_PrimarySurface4)) {
+        HandleCaptureSurface4(surface, srcSurface);
+    }
+
+    return hr;
+}
+
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Lock(IDirectDrawSurface7* surface, LPRECT destRect, void* surfaceDesc,
                                                       DWORD flags, HANDLE event) {
     HRESULT hr = oDDSurface7Lock(surface, destRect, surfaceDesc, flags, event);
@@ -1549,10 +1811,27 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface7Lock(IDirectDrawSurface7* surfa
     return hr;
 }
 
+static HRESULT STDMETHODCALLTYPE DetourDDSurface4Lock(IDirectDrawSurface4* surface, LPRECT destRect, void* surfaceDesc,
+                                                      DWORD flags, HANDLE event) {
+    HRESULT hr = oDDSurface4Lock(surface, destRect, surfaceDesc, flags, event);
+    if (SUCCEEDED(hr) && surface != g_HookSurfacePrototype4 && !g_PrimarySurface4) {
+        MaybeTrackPrimarySurface4(surface, "Lock4");
+    }
+    return hr;
+}
+
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, LPRECT rect) {
     HRESULT hr = oDDSurface7Unlock(surface, rect);
     if (SUCCEEDED(hr) && surface && surface == g_PrimarySurface) {
         HandleCapture(surface);
+    }
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDDSurface4Unlock(IDirectDrawSurface4* surface, LPRECT rect) {
+    HRESULT hr = oDDSurface4Unlock(surface, rect);
+    if (SUCCEEDED(hr) && surface && surface == g_PrimarySurface4) {
+        HandleCaptureSurface4(surface);
     }
     return hr;
 }
@@ -1629,13 +1908,13 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* d
 }
 
 static HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter) {
-    HookLog("DDraw: DetourDirectDrawCreateEx called (iidIsDDraw7=%d, out=%p)", IsEqualIID(iid, IID_IDirectDraw7) ? 1 : 0,
-            lplpDD);
+    HookLog("DDraw: DetourDirectDrawCreateEx called (iidIsDDraw7=%d, iidIsDDraw4=%d, out=%p)",
+        IsEqualIID(iid, IID_IDirectDraw7) ? 1 : 0, IsEqualIID(iid, IID_IDirectDraw4) ? 1 : 0, lplpDD);
     HRESULT hr = oDirectDrawCreateEx ? oDirectDrawCreateEx(lpGuid, lplpDD, iid, pUnkOuter) : DDERR_GENERIC;
     HookLog("DDraw: DetourDirectDrawCreateEx returned hr=0x%08x, object=%p", hr,
             (lplpDD && SUCCEEDED(hr)) ? *lplpDD : nullptr);
-    if (SUCCEEDED(hr) && lplpDD && *lplpDD && IsEqualIID(iid, IID_IDirectDraw7)) {
-        InstallDirectDrawHooksForInstance(reinterpret_cast<IDirectDraw7*>(*lplpDD), "DirectDrawCreateEx");
+    if (SUCCEEDED(hr) && lplpDD && *lplpDD) {
+    HookDirectDrawObject(*lplpDD, iid);
     }
     return hr;
 }

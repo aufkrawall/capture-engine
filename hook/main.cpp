@@ -561,6 +561,16 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
   return "";
 }
 
+static bool NeedsLoaderRedirectionHook() {
+  if (!g_pLocalConfig) {
+    return false;
+  }
+
+  const auto &gfx = g_pLocalConfig->graphics;
+  return !gfx.dlssSrDllPath.empty() || !gfx.dlssFgDllPath.empty() ||
+         !gfx.dlssRrDllPath.empty() || !gfx.streamlineDllPath.empty();
+}
+
 // Hooked RegQueryValueExW - For DLSS Debug Overlay
 LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName,
                                       LPDWORD lpReserved, LPDWORD lpType,
@@ -605,6 +615,10 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
     baseName = baseName ? baseName + 1 : moduleNameOrPath;
     const char *slash = strrchr(baseName, '/');
     baseName = slash ? slash + 1 : baseName;
+    if (_stricmp(baseName, "d3d8.dll") == 0) {
+      HookLog("NotifyHookModuleLoaded: d3d8.dll detected - preparing DX8 hooks");
+      DX8Hook_OnModuleLoaded();
+    }
     if (_stricmp(baseName, "nvapi64.dll") == 0 || _stricmp(baseName, "nvapi.dll") == 0) {
       HookLog("NotifyHookModuleLoaded: %s detected — initializing Reflex limiter", baseName);
       g_ReflexLimiter.Init();
@@ -1153,8 +1167,8 @@ void CheckAndInstallHooks() {
   // prevent DXGI interference
   {
     HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
-    if (!s_vulkanActive && !g_DX12Hook && hD3D12) {
-      HookLogImportant("Detected d3d12.dll. Initializing DX12 hook instance...");
+    if (!s_vulkanActive && !g_DX12Hook && hD3D12 && WasD3D12DeviceCreated()) {
+      HookLogImportant("Detected active D3D12 device usage. Initializing DX12 hook instance...");
 
       // STATIC DESTRUCTOR FIX: Dynamically allocate the hook instance
       if (!g_dx12HookInstance) {
@@ -1508,21 +1522,25 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     HookLog("advapi32.dll not loaded yet - skipping RegQueryValueExW hook");
   }
 
-  // Install low-level loader hook so redirected DLL names also work for implicit
-  // dependency loads resolved by ntdll loader internals.
-  if (!OriginalLdrLoadDll.load(std::memory_order_acquire)) {
-    if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
-      if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
-        void *trampoline = nullptr;
-        if (InlineHook::Install(pLdrLoadDll, (void *)&HookedLdrLoadDll,
-                                &trampoline)) {
-          OriginalLdrLoadDll.store((LdrLoadDll_t)trampoline, std::memory_order_release);
-          HookLog("Installed LdrLoadDll hook");
-        } else {
-          HookLog("Failed to install LdrLoadDll hook");
+  // Only install the low-level loader hook when DLL redirection is actually
+  // configured. Without redirection overrides it adds risk but no value.
+  if (NeedsLoaderRedirectionHook()) {
+    if (!OriginalLdrLoadDll.load(std::memory_order_acquire)) {
+      if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
+        if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
+          void *trampoline = nullptr;
+          if (InlineHook::Install(pLdrLoadDll, (void *)&HookedLdrLoadDll,
+                                  &trampoline)) {
+            OriginalLdrLoadDll.store((LdrLoadDll_t)trampoline, std::memory_order_release);
+            HookLog("Installed LdrLoadDll hook");
+          } else {
+            HookLog("Failed to install LdrLoadDll hook");
+          }
         }
       }
     }
+  } else {
+    HookLog("Skipping LdrLoadDll hook (no DLL redirection overrides configured)");
   }
 
   HookLogImportant("HookThread: IAT hooks installed");

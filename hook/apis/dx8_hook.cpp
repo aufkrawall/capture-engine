@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "../common/frame_timing.h"
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
+#include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -24,9 +26,11 @@
 // D3D8 doesn't have official headers in modern SDKs
 
 // D3D8 device vtable indices
+#define D3D8_VTABLE_CREATEDEVICE 15
 #define D3D8_VTABLE_PRESENT 15
 #define D3D8_VTABLE_RESET 14
 #define D3D8_VTABLE_GETBACKBUFFER 17
+#define D3D8_VTABLE_SETTEXTURESTAGESTATE 63
 
 // D3D8 types
 typedef interface IDirect3D8 IDirect3D8;
@@ -45,6 +49,8 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D8GetBackBuffer_t)(IDirect3DDevice8* device
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D8SetTextureStageState_t)(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
                                                                DWORD Value);
+
+typedef IDirect3D8*(WINAPI* Direct3DCreate8_t)(UINT sdkVersion);
 
 // D3D8 present parameters structure
 struct D3D8_PRESENT_PARAMETERS {
@@ -72,14 +78,26 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D8CreateDevice_t)(IDirect3D8* d3d, UINT Ada
 
 static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
                                                                 DWORD Value);
+static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect,
+                                                   const RECT* pDestRect, HWND hDestWindowOverride,
+                                                   const RGNDATA* pDirtyRegion);
+static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device, void* pPresentationParameters);
+static HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(IDirect3D8* d3d, UINT Adapter, UINT DeviceType,
+                                                        HWND hFocusWindow, DWORD BehaviorFlags,
+                                                        D3D8_PRESENT_PARAMETERS* pPresentationParameters,
+                                                        IDirect3DDevice8** ppDevice);
+static IDirect3D8* WINAPI DetourDirect3DCreate8(UINT sdkVersion);
 
 // Original function pointers
+static Direct3DCreate8_t oDirect3DCreate8 = nullptr;
 static D3D8Present_t oD3D8Present = nullptr;
 static D3D8Reset_t oD3D8Reset = nullptr;
 static D3D8SetTextureStageState_t oD3D8SetTextureStageState = nullptr;
 static D3D8CreateDevice_t oD3D8CreateDevice = nullptr;
 
 static bool g_DX8HooksInitialized = false;
+static std::mutex g_DX8InitMutex;
+static bool g_HooksInitialized = false;
 
 static DWORD ParseD3D8MSAA(const char* msaa) {
     if (strcmp(msaa, "2x") == 0)
@@ -121,10 +139,89 @@ static void ApplyDX8MSAAOverride(IDirect3D8* d3d, UINT adapter, UINT deviceType,
     }
 }
 
+static void InstallD3D8DeviceHooks(IDirect3DDevice8* device) {
+    if (!device) {
+        return;
+    }
+
+    void** deviceVTable = *(void***)device;
+
+    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_PRESENT], (LPVOID)&DetourD3D8Present,
+                           (LPVOID*)&oD3D8Present) == VTableHook::Success) {
+        HookLog("DX8: Present hook installed");
+    }
+
+    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_RESET], (LPVOID)&DetourD3D8Reset,
+                           (LPVOID*)&oD3D8Reset) == VTableHook::Success) {
+        HookLog("DX8: Reset hook installed");
+    }
+
+    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_SETTEXTURESTAGESTATE],
+                           (LPVOID)&DetourD3D8SetTextureStageState,
+                           (LPVOID*)&oD3D8SetTextureStageState) == VTableHook::Success) {
+        g_DX8HooksInitialized = true;
+        HookLog("DX8: SetTextureStageState hook installed");
+    }
+}
+
+static void InstallD3D8CreateDeviceHook(IDirect3D8* d3d8) {
+    if (!d3d8) {
+        return;
+    }
+
+    void** d3d8VTable = *(void***)d3d8;
+    if (VTableHook::Create(&d3d8VTable[D3D8_VTABLE_CREATEDEVICE], (LPVOID)&DetourD3D8CreateDevice,
+                           (LPVOID*)&oD3D8CreateDevice) == VTableHook::Success) {
+        HookLog("DX8: CreateDevice hook installed");
+    }
+}
+
+static void TryInstallDirect3DCreate8Hook(HMODULE d3d8Module) {
+    if (!d3d8Module) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_DX8InitMutex);
+    if (oDirect3DCreate8) {
+        g_HooksInitialized = true;
+        return;
+    }
+
+    Direct3DCreate8_t direct3DCreate8 = reinterpret_cast<Direct3DCreate8_t>(GetProcAddress(d3d8Module, "Direct3DCreate8"));
+    if (!direct3DCreate8) {
+        HookLog("DX8: Failed to get Direct3DCreate8");
+        return;
+    }
+
+    void* trampoline = nullptr;
+    if (!InlineHook::Install(reinterpret_cast<void*>(direct3DCreate8), reinterpret_cast<void*>(DetourDirect3DCreate8),
+                             &trampoline)) {
+        HookLog("DX8: Failed to install Direct3DCreate8 hook");
+        return;
+    }
+
+    oDirect3DCreate8 = reinterpret_cast<Direct3DCreate8_t>(trampoline);
+    g_HooksInitialized = true;
+    HookLog("DX8: Direct3DCreate8 hook installed");
+}
+
+void DX8Hook_OnModuleLoaded() {
+    TryInstallDirect3DCreate8Hook(GetModuleHandleA("d3d8.dll"));
+}
+
+static IDirect3D8* WINAPI DetourDirect3DCreate8(UINT sdkVersion) {
+    if (!oDirect3DCreate8) {
+        return nullptr;
+    }
+
+    IDirect3D8* d3d8 = oDirect3DCreate8(sdkVersion);
+    InstallD3D8CreateDeviceHook(d3d8);
+    return d3d8;
+}
+
 // Globals
 static PerformanceMetrics g_PerfMetrics;
 static HWND g_CachedHwnd = NULL;
-static bool g_HooksInitialized = false;
 
 // Prerender Limit State
 static std::vector<IDirect3DQuery9*> g_PrerenderQueries;
@@ -154,6 +251,7 @@ public:
 
     // Cached D3D8 device
     IDirect3DDevice8* d3d8Device = nullptr;
+    HWND overlayHwnd = NULL;
 
     void Cleanup() override {
         CleanupDX8();
@@ -216,6 +314,7 @@ public:
         g_PrerenderFrameIndex = 0;
 
         d3d8Device = nullptr;
+        overlayHwnd = NULL;
         initialized = false;
         useFences = false;
         fenceValue = 0;
@@ -386,6 +485,47 @@ public:
         return true;
     }
 
+    bool EnsureOverlayDevice(IDirect3DDevice8* device, HWND hwnd) {
+        if (!hwnd) {
+            return false;
+        }
+
+        RECT rect = {};
+        GetClientRect(hwnd, &rect);
+        uint32_t newWidth = rect.right - rect.left;
+        uint32_t newHeight = rect.bottom - rect.top;
+        if (newWidth == 0 || newHeight == 0) {
+            return false;
+        }
+
+        const bool hwndChanged = overlayHwnd && overlayHwnd != hwnd;
+        const bool sizeChanged = width != newWidth || height != newHeight;
+        if ((hwndChanged || sizeChanged) && (d3d9DeviceEx || initialized)) {
+            if (g_OverlayAdapter.IsInitialized()) {
+                g_OverlayAdapter.Shutdown();
+            }
+            CleanupDX8();
+        }
+
+        d3d8Device = device;
+        overlayHwnd = hwnd;
+        width = newWidth;
+        height = newHeight;
+        format = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+        if (d3d9DeviceEx) {
+            return true;
+        }
+
+        if (!CreateD3D9ExWrapper(hwnd)) {
+            HookLog("DX8: Overlay helper creation failed");
+            return false;
+        }
+
+        HookLog("DX8: Overlay helper ready (hwnd=%p, size=%ux%u)", hwnd, width, height);
+        return true;
+    }
+
     void Init(IDirect3DDevice8* device, HWND hwnd) {
         if (initialized)
             return;
@@ -501,7 +641,7 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
         if (!hwnd)
             hwnd = GetForegroundWindow();
         if (hwnd) {
-            if (!g_DX8Capture.CreateD3D9ExWrapper(hwnd))
+            if (!g_DX8Capture.EnsureOverlayDevice(device, hwnd))
                 return;
         } else
             return;
@@ -593,7 +733,7 @@ static void DrawDX8Overlay(HWND hwnd) {
         // initial ImGui init only.
         if (!g_DX8HooksInitialized && g_DX8Capture.d3d8Device) {
             void** vTable = *(void***)g_DX8Capture.d3d8Device;
-            VTableHook::Create(&vTable[61], (LPVOID)&DetourD3D8SetTextureStageState,
+            VTableHook::Create(&vTable[D3D8_VTABLE_SETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8SetTextureStageState,
                                (LPVOID*)&oD3D8SetTextureStageState);
             g_DX8HooksInitialized = true;
             HookLog("DX8: State hooks initialized");
@@ -663,7 +803,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, con
             if (g_DX8Capture.initialized) {
                 g_DX8Capture.CaptureFrame(device);
             }
-        } else if (g_DX8Capture.initialized) {
+        } else if (g_DX8Capture.initialized && !shouldDrawOverlay) {
             g_DX8Capture.Cleanup();
         }
     };
@@ -672,7 +812,9 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, con
     auto doOverlay = [&]() {
         if (shouldDrawOverlay) {
             HWND hwnd = hDestWindowOverride ? hDestWindowOverride : GetForegroundWindow();
-            DrawDX8Overlay(hwnd);
+            if (g_DX8Capture.EnsureOverlayDevice(device, hwnd)) {
+                DrawDX8Overlay(hwnd);
+            }
         }
     };
 
@@ -847,13 +989,8 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(IDirect3D8* d3d, UINT Ad
     HRESULT hr =
         oD3D8CreateDevice(d3d, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppDevice);
 
-    // Install hooks on the new device if needed (mostly SetTextureStageState, as
-    // Present/Reset are shared vtable hooks) We don't need to re-hook per device
-    // instance for global functions. BUT we need to make sure we hooked
-    // SetTextureStageState at least once.
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
-        // We might want to ensure hooks are installed if not already?
-        // But Init installs them on the globally shared vtable code.
+        InstallD3D8DeviceHooks(*ppDevice);
     }
 
     return hr;
@@ -868,102 +1005,7 @@ void DX8Hook::Init() {
         return;
     }
 
-    // Create dummy D3D8 device to get vtable
-    typedef IDirect3D8*(WINAPI * Direct3DCreate8_t)(UINT);
-    Direct3DCreate8_t pDirect3DCreate8 = (Direct3DCreate8_t)GetProcAddress(d3d8Module, "Direct3DCreate8");
-    if (!pDirect3DCreate8) {
-        HookLog("DX8: Failed to get Direct3DCreate8");
-        return;
-    }
-
-    IDirect3D8* d3d8 = pDirect3DCreate8(220);  // D3D_SDK_VERSION for DX8
-    if (!d3d8) {
-        HookLog("DX8: Failed to create D3D8");
-        return;
-    }
-
-    // Create dummy window
-    WNDCLASSEXA wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = DefWindowProcA;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = "DX8DummyClass";
-    RegisterClassExA(&wc);
-
-    HWND dummyHwnd = CreateWindowExA(0, wc.lpszClassName, "DX8Dummy", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL,
-                                     wc.hInstance, NULL);
-
-    D3D8_PRESENT_PARAMETERS d3d8pp = {};
-    d3d8pp.Windowed = TRUE;
-    d3d8pp.SwapEffect = 1;  // D3DSWAPEFFECT_DISCARD
-    d3d8pp.hDeviceWindow = dummyHwnd;
-    d3d8pp.BackBufferFormat = 22;  // D3DFMT_X8R8G8B8
-    d3d8pp.BackBufferWidth = 4;
-    d3d8pp.BackBufferHeight = 4;
-
-    d3d8pp.BackBufferHeight = 4;
-
-    // CreateDevice is at vtable index 15 for IDirect3D8
-    // Structure defined globally now
-    // typedef HRESULT (STDMETHODCALLTYPE *D3D8CreateDevice_t)(... defined above
-    // ...)
-
-    void** d3d8VTable = *(void***)d3d8;
-    // D3D8CreateDevice_t pCreateDevice = (D3D8CreateDevice_t)d3d8VTable[15]; //
-    // Now using global typedef
-    D3D8CreateDevice_t pCreateDevice = (D3D8CreateDevice_t)d3d8VTable[15];
-
-    IDirect3DDevice8* dummyDevice = nullptr;
-    HRESULT hr = pCreateDevice(d3d8, 0, 1, dummyHwnd, 0x20, &d3d8pp, &dummyDevice);
-
-    if (SUCCEEDED(hr) && dummyDevice) {
-        // Get device vtable
-        void** deviceVTable = *(void***)dummyDevice;
-
-        // Hook Present (index 15)
-        if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_PRESENT], (LPVOID)&DetourD3D8Present,
-                               (LPVOID*)&oD3D8Present) == VTableHook::Success) {
-            HookLog("DX8: Present hook installed");
-        }
-
-        // Hook Reset (index 14)
-        if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_RESET], (LPVOID)&DetourD3D8Reset, (LPVOID*)&oD3D8Reset) ==
-            VTableHook::Success) {
-            HookLog("DX8: Reset hook installed");
-        }
-
-        // Hook SetTextureStageState (index 63 in IDirect3DDevice8)
-        // Verify index:
-        // 0(QI)..14(Reset)..15(Present)..23(CreateTex)..61(SetTex)..63(SetTSS) Ref:
-        // https://github.com/crosire/d3d8to9/blob/master/source/d3d8to9.hpp
-        // SetTextureStageState is indeed 63.
-        if (VTableHook::Create(&deviceVTable[63], (LPVOID)&DetourD3D8SetTextureStageState,
-                               (LPVOID*)&oD3D8SetTextureStageState) == VTableHook::Success) {
-            HookLog("DX8: SetTextureStageState hook installed");
-        }
-
-        // Hook CreateDevice (index 15 in IDirect3D8)
-        // We need to hook the vtable of the d3d8 object we created
-        if (VTableHook::Create(&d3d8VTable[15], (LPVOID)&DetourD3D8CreateDevice, (LPVOID*)&oD3D8CreateDevice) ==
-            VTableHook::Success) {
-            HookLog("DX8: CreateDevice hook installed");
-        }
-
-        // Release dummy device
-        ((void(STDMETHODCALLTYPE*)(void*))deviceVTable[2])(dummyDevice);  // Release
-    } else {
-        HookLog("DX8: Failed to create dummy device (hr=0x%08x)", hr);
-    }
-
-    // Release D3D8
-    ((void(STDMETHODCALLTYPE*)(void*))d3d8VTable[2])(d3d8);  // Release
-
-    // Cleanup dummy window
-    DestroyWindow(dummyHwnd);
-    UnregisterClassA(wc.lpszClassName, wc.hInstance);
-
-    g_HooksInitialized = true;
-    HookLog("DX8Hook: Hooks installed");
+    TryInstallDirect3DCreate8Hook(d3d8Module);
 }
 
 void DX8Hook::Shutdown() {

@@ -204,14 +204,14 @@ static bool InitDX8(HWND hwnd) {
     }
 
     D3DPRESENT_PARAMETERS pp = {};
-    pp.BackBufferWidth = static_cast<UINT>(g_WindowWidth);
-    pp.BackBufferHeight = static_cast<UINT>(g_WindowHeight);
-    pp.BackBufferFormat = D3DFMT_UNKNOWN;
+    pp.BackBufferWidth = static_cast<UINT>(g_PresentWidth);
+    pp.BackBufferHeight = static_cast<UINT>(g_PresentHeight);
+    pp.BackBufferFormat = g_Fullscreen ? D3DFMT_X8R8G8B8 : D3DFMT_UNKNOWN;
     pp.BackBufferCount = 1;
     pp.MultiSampleType = D3DMULTISAMPLE_NONE;
     pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
     pp.hDeviceWindow = hwnd;
-    pp.Windowed = TRUE;
+    pp.Windowed = g_Fullscreen ? FALSE : TRUE;
     pp.EnableAutoDepthStencil = FALSE;
     pp.Flags = 0;
     pp.FullScreen_RefreshRateInHz = 0;
