@@ -1,4 +1,5 @@
 #pragma once
+#include <guiddef.h>
 #include "graphics_hook.h"
 
 // DirectDraw/DX6/DX7 Hook - captures games using DirectDraw surfaces
@@ -11,3 +12,5 @@ public:
     void Shutdown() override;
     void OnHostDisconnect() override;
 };
+
+bool HookDirectDrawObject(void* directDrawObject, REFIID iid);

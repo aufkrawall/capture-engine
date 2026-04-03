@@ -123,6 +123,12 @@ extern PFN_Direct3DCreate9Ex oDirect3DCreate9Ex;
 IDirect3D9* WINAPI Wrapped_Direct3DCreate9(UINT SDKVersion);
 HRESULT WINAPI Wrapped_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D);
 
+typedef HRESULT(WINAPI* PFN_DirectDrawCreateEx)(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
+
+extern PFN_DirectDrawCreateEx oDirectDrawCreateEx;
+
+HRESULT WINAPI Wrapped_DirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
+
 // ============================================================================
 // Wrapper System Initialization
 // ============================================================================

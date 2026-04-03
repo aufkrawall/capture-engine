@@ -69,6 +69,49 @@ static bool IsDirectDrawBusy(HRESULT hr) {
     return hr == DDERR_WASSTILLDRAWING || hr == DDERR_SURFACEBUSY;
 }
 
+static void PumpStartupMessagesForMs(DWORD durationMs) {
+    const uint64_t deadline = GetTickCount64() + durationMs;
+    MSG msg = {};
+    while (g_Running && GetTickCount64() < deadline) {
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+            if (!g_Running)
+                return;
+        }
+        Sleep(10);
+    }
+}
+
+static void QueueDirectDrawReset(const char* reason) {
+    if (!g_ResetPending) {
+        printf("DirectDraw7: queued presentation reset (%s) [active=%d exclusive=%d desktopBlit=%d fullscreen=%d]\n",
+               reason ? reason : "unknown", g_WindowActive ? 1 : 0, g_ExclusiveFullscreen ? 1 : 0,
+               g_DesktopBlitFullscreen ? 1 : 0, g_Fullscreen ? 1 : 0);
+    }
+    g_ResetPending = true;
+}
+
+static void UpdateWindowActiveState(bool active, const char* reason) {
+    const bool wasActive = g_WindowActive;
+    g_WindowActive = active;
+
+    if (!g_Fullscreen || wasActive == active) {
+        return;
+    }
+
+    if (!active) {
+        if (g_ExclusiveFullscreen) {
+            QueueDirectDrawReset(reason);
+        }
+        return;
+    }
+
+    if (!g_ExclusiveFullscreen) {
+        QueueDirectDrawReset(reason);
+    }
+}
+
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_DESTROY) {
         g_Running = false;
@@ -81,41 +124,32 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
     if (msg == WM_ACTIVATEAPP) {
-        g_WindowActive = (wParam != FALSE);
-        if (g_Fullscreen)
-            g_ResetPending = true;
+        UpdateWindowActiveState(wParam != FALSE, (wParam != FALSE) ? "activateapp gain" : "activateapp loss");
         return 0;
     }
     if (msg == WM_ACTIVATE) {
-        g_WindowActive = (LOWORD(wParam) != WA_INACTIVE);
-        if (g_Fullscreen)
-            g_ResetPending = true;
+        UpdateWindowActiveState(LOWORD(wParam) != WA_INACTIVE,
+                                (LOWORD(wParam) != WA_INACTIVE) ? "activate gain" : "activate loss");
         return 0;
     }
     if (msg == WM_KILLFOCUS) {
-        g_WindowActive = false;
-        if (g_Fullscreen)
-            g_ResetPending = true;
+        UpdateWindowActiveState(false, "kill focus");
         return 0;
     }
     if (msg == WM_SETFOCUS) {
-        g_WindowActive = true;
-        if (g_Fullscreen)
-            g_ResetPending = true;
+        UpdateWindowActiveState(true, "set focus");
         return 0;
     }
     if (msg == WM_SIZE) {
         if (wParam == SIZE_MINIMIZED) {
-            g_WindowActive = false;
-            if (g_Fullscreen)
-                g_ResetPending = true;
+            UpdateWindowActiveState(false, "minimized");
         } else {
             g_WindowActive = true;
         }
         return 0;
     }
     if (msg == WM_DISPLAYCHANGE && g_Fullscreen) {
-        g_ResetPending = true;
+        QueueDirectDrawReset("display change");
         return 0;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -403,25 +437,36 @@ static bool ResetDirectDraw(HWND hwnd) {
 }
 
 static void RefreshWindowActivity(HWND hwnd) {
+    const bool wasActive = g_WindowActive;
     if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
         g_WindowActive = false;
+    } else {
+        HWND foreground = GetForegroundWindow();
+        if (!foreground) {
+            g_WindowActive = false;
+        } else if (foreground == hwnd) {
+            g_WindowActive = true;
+        } else {
+            DWORD foregroundPid = 0;
+            GetWindowThreadProcessId(foreground, &foregroundPid);
+            g_WindowActive = (foregroundPid == GetCurrentProcessId());
+        }
+    }
+
+    if (!g_Fullscreen || wasActive == g_WindowActive) {
         return;
     }
 
-    HWND foreground = GetForegroundWindow();
-    if (!foreground) {
-        g_WindowActive = false;
+    if (!g_WindowActive) {
+        if (g_ExclusiveFullscreen) {
+            QueueDirectDrawReset("foreground change loss");
+        }
         return;
     }
 
-    if (foreground == hwnd) {
-        g_WindowActive = true;
-        return;
+    if (!g_ExclusiveFullscreen) {
+        QueueDirectDrawReset("foreground change gain");
     }
-
-    DWORD foregroundPid = 0;
-    GetWindowThreadProcessId(foreground, &foregroundPid);
-    g_WindowActive = (foregroundPid == GetCurrentProcessId());
 }
 
 static void PresentFrame(HWND hwnd) {
@@ -525,6 +570,13 @@ int main(int argc, char* argv[]) {
 
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
+
+    printf("DirectDraw7: startup warmup before DirectDraw init (750 ms)\n");
+    PumpStartupMessagesForMs(750);
+    if (!g_Running) {
+        DestroyWindow(hwnd);
+        return 0;
+    }
 
     if (!InitDirectDraw(hwnd)) {
         CleanupDirectDraw(hwnd);

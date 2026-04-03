@@ -363,6 +363,62 @@ static void CleanupOldSessionDirs(const std::string& logsDir, size_t maxKeep = 2
     }
 }
 
+namespace {
+struct DeferredLaunchCommand {
+    std::string rawCommandLine;
+    std::string executablePath;
+    std::string workingDirectory;
+    std::string fileName;
+};
+
+std::string TrimCommandWhitespace(const std::string& value) {
+    const size_t start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return "";
+    }
+
+    const size_t end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+bool ParseDeferredLaunchCommand(const std::string& command, DeferredLaunchCommand* outCommand) {
+    if (!outCommand) {
+        return false;
+    }
+
+    *outCommand = {};
+    outCommand->rawCommandLine = TrimCommandWhitespace(command);
+    if (outCommand->rawCommandLine.empty()) {
+        return false;
+    }
+
+    const std::string& raw = outCommand->rawCommandLine;
+    if (raw.front() == '"') {
+        const size_t closingQuote = raw.find('"', 1);
+        if (closingQuote == std::string::npos || closingQuote == 1) {
+            return false;
+        }
+        outCommand->executablePath = raw.substr(1, closingQuote - 1);
+    } else {
+        const size_t separator = raw.find_first_of(" \t\r\n");
+        outCommand->executablePath = raw.substr(0, separator);
+    }
+
+    if (outCommand->executablePath.empty()) {
+        return false;
+    }
+
+    const size_t lastSlash = outCommand->executablePath.find_last_of("\\/");
+    outCommand->fileName =
+        (lastSlash != std::string::npos) ? outCommand->executablePath.substr(lastSlash + 1) : outCommand->executablePath;
+    if (lastSlash != std::string::npos) {
+        outCommand->workingDirectory = outCommand->executablePath.substr(0, lastSlash);
+    }
+
+    return true;
+}
+}  // namespace
+
 // Launch game suspended and inject immediately (The only way to guarantee API
 // overrides) If the target looks like a launcher (not the actual game exe), we
 // just start it normally and let WMI + CreateProcess hooks in already-injected
@@ -371,15 +427,21 @@ void LaunchGameSuspended(const std::string& path) {
     STARTUPINFOA si = {sizeof(si)};
     PROCESS_INFORMATION pi = {0};
 
-    // Strip surrounding quotes if present
-    std::string cleanPath = path;
-    if (cleanPath.length() >= 2 && cleanPath.front() == '"' && cleanPath.back() == '"') {
-        cleanPath = cleanPath.substr(1, cleanPath.length() - 2);
+    DeferredLaunchCommand launchCommand = {};
+    if (!ParseDeferredLaunchCommand(path, &launchCommand)) {
+        LogError("[Launcher] Failed to parse launch command: %s", path.c_str());
+        return;
     }
 
+    std::vector<char> commandLineBuffer(launchCommand.rawCommandLine.begin(), launchCommand.rawCommandLine.end());
+    commandLineBuffer.push_back('\0');
+    LPSTR mutableCommandLine = commandLineBuffer.data();
+    LPCSTR workingDir = launchCommand.workingDirectory.empty() ? NULL : launchCommand.workingDirectory.c_str();
+
+    const std::string& cleanPath = launchCommand.executablePath;
+
     // Extract filename
-    size_t lastSlash = cleanPath.find_last_of("\\/");
-    std::string filename = (lastSlash != std::string::npos) ? cleanPath.substr(lastSlash + 1) : cleanPath;
+    std::string filename = launchCommand.fileName;
 
     // Convert to lowercase
     std::string lowerName;
@@ -397,15 +459,12 @@ void LaunchGameSuspended(const std::string& path) {
          lowerName.find("_test") != std::string::npos || lowerName.find("test.exe") != std::string::npos);
     bool looksLikeLauncher = !looksLikeGame;
 
-    // Extract directory
-    std::string dir = cleanPath.substr(0, cleanPath.find_last_of("\\/"));
-
     if (looksLikeLauncher) {
         // This looks like a launcher - start it NORMALLY, no injection
         // We'll rely on WMI to catch the actual game
-        LogInfo("[Launcher] Detected launcher (not game): %s - Starting normally", cleanPath.c_str());
+        LogInfo("[Launcher] Detected launcher (not game): %s - Starting normally", launchCommand.rawCommandLine.c_str());
 
-        if (CreateProcessA(cleanPath.c_str(), NULL, NULL, NULL, FALSE, 0, NULL, dir.c_str(), &si, &pi)) {
+        if (CreateProcessA(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, 0, NULL, workingDir, &si, &pi)) {
             LogInfo("[Launcher] Launcher started (PID: %d). WMI will catch the game.", pi.dwProcessId);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
@@ -414,9 +473,10 @@ void LaunchGameSuspended(const std::string& path) {
         }
     } else {
         // This looks like the actual game - use suspended injection
-        LogInfo("[Launcher] Detected game: %s - Launching Suspended", cleanPath.c_str());
+        LogInfo("[Launcher] Detected game: %s - Launching Suspended", launchCommand.rawCommandLine.c_str());
 
-        if (CreateProcessA(cleanPath.c_str(), NULL, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, dir.c_str(), &si, &pi)) {
+        if (CreateProcessA(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL,
+                           workingDir, &si, &pi)) {
             LogInfo(
                 "[Launcher] Process Created (PID: %d). Attempting early APC "
                 "injection...",
@@ -452,7 +512,7 @@ void LaunchGameSuspended(const std::string& path) {
 
                 // Fallback to traditional injection
                 Sleep(100);  // Give process a moment to initialize
-                if (injector->Inject(pi.dwProcessId, cleanPath)) {
+                if (injector->Inject(pi.dwProcessId, launchCommand.fileName)) {
                     LogInfo("[Launcher] Fallback injection successful.");
                 } else {
                     LogError(

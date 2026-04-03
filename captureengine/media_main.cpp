@@ -3046,16 +3046,24 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
 
         if (pendingLiveActivation) {
-            const bool liveReady = useScreenGrab || bufferedInjectFrames.size() >= pendingLiveInjectReadyFrames;
+            const size_t bufferedInjectReadyFrames =
+                bufferedInjectFrames.size() + ((!useScreenGrab && popped && frame.isInjectMode) ? 1u : 0u);
+            const bool liveReady = useScreenGrab || bufferedInjectReadyFrames >= pendingLiveInjectReadyFrames;
             if (!liveReady) {
                 SetCapturePipelinePhase(CapturePipelinePhase::kWarmup);
                 if (popped) {
                     if (useScreenGrab) {
                         TrackWarmupWgcFreshFrame(frame);
+                        ++hiddenStartupFrames;
+                        warmupState.hiddenStartupFrames = hiddenStartupFrames;
+                        DiscardQueuedFrame(frame);
+                    } else if (frame.isInjectMode) {
+                        bufferedInjectFrames.push_front(std::move(frame));
+                    } else {
+                        ++hiddenStartupFrames;
+                        warmupState.hiddenStartupFrames = hiddenStartupFrames;
+                        DiscardQueuedFrame(frame);
                     }
-                    ++hiddenStartupFrames;
-                    warmupState.hiddenStartupFrames = hiddenStartupFrames;
-                    DiscardQueuedFrame(frame);
                 }
                 continue;
             }

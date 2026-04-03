@@ -38,6 +38,7 @@ if not CAPTURE_BIN.exists():
 FRAME_TIMES_CSV = CAPTURE_BIN / "logs" / "frame_times.csv"
 MEDIA_LOG = CAPTURE_BIN / "logs" / "media.log"
 DEFAULT_RESULTS_JSON = CAPTURE_BIN / "logs" / "integration_results.json"
+RUN_LOG_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
 
 SUPPORTED_APIS = ["dx12", "dx11", "dx9", "vulkan", "opengl", "opengl_legacy", "directdraw7"]
 API_EXECUTABLES = {
@@ -99,15 +100,24 @@ def start_test_app(api: str, arch: str, width: int, height: int, gpu_load: int) 
     )
 
 
-def start_auto_record(delay_ms: int, duration_ms: int) -> Optional[subprocess.Popen]:
+def start_auto_record(
+    delay_ms: int,
+    duration_ms: int,
+    launch_command: Optional[List[str]] = None,
+) -> Optional[subprocess.Popen]:
     """Start captureengine with --auto-record."""
     exe = CAPTURE_BIN / "captureengine.exe"
     if not exe.exists():
         print(f"ERROR: {exe} not found")
         return None
 
+    args = [str(exe), f"--auto-record={delay_ms},{duration_ms}"]
+    if launch_command:
+        args.append("--launch")
+        args.extend(launch_command)
+
     return subprocess.Popen(
-        [str(exe), f"--auto-record={delay_ms},{duration_ms}"],
+        args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -142,7 +152,11 @@ def parse_frame_times(csv_path: Path) -> List[float]:
 
 def parse_perf_metrics_frame_times(api: str, since_unix_ts: float) -> List[float]:
     """Parse per-process perf_metrics CSV files and return frame times in ms."""
-    logs_dir = CAPTURE_BIN / "logs"
+    return parse_perf_metrics_frame_times_from_dir(api, CAPTURE_BIN / "logs", since_unix_ts)
+
+
+def parse_perf_metrics_frame_times_from_dir(api: str, logs_dir: Path, since_unix_ts: float) -> List[float]:
+    """Parse per-process perf_metrics CSV files from a specific log directory."""
     if not logs_dir.exists():
         return []
 
@@ -187,8 +201,30 @@ def parse_perf_metrics_frame_times(api: str, since_unix_ts: float) -> List[float
     return frame_times
 
 
+def find_latest_run_log_dir(since_unix_ts: float) -> Optional[Path]:
+    logs_root = CAPTURE_BIN / "logs"
+    if not logs_root.exists():
+        return None
+
+    candidates: List[Path] = []
+    for path in logs_root.iterdir():
+        if not path.is_dir() or not RUN_LOG_DIR_RE.match(path.name):
+            continue
+        try:
+            if path.stat().st_mtime + 1.0 >= since_unix_ts:
+                candidates.append(path)
+        except OSError:
+            continue
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
 def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> Tuple[List[float], int]:
-    """Parse media.log PERF lines written since since_unix_ts."""
+    """Parse media.log timing lines written since since_unix_ts."""
     if not media_log_path.exists():
         return [], 0
 
@@ -196,6 +232,11 @@ def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> T
     max_frame_num = 0
     time_pattern = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
     perf_pattern = re.compile(r"\[PERF\]\s+Frame\s+(\d+):\s+TOTAL=([0-9]*\.?[0-9]+)ms")
+    packet_pattern = re.compile(
+        r"Queuing video pkt #(\d+): pts=(\d+) dts=\d+ dur=(\d+) .* codec_tb=(\d+)/(\d+)"
+    )
+    recording_stats_pattern = re.compile(r"Recording stats: input=(\d+) output=(\d+)")
+    previous_packet_pts_ms: Optional[float] = None
     try:
         with open(media_log_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -216,6 +257,40 @@ def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> T
                         frame_times.append(total_ms)
                         if frame_num > max_frame_num:
                             max_frame_num = frame_num
+                    except ValueError:
+                        continue
+
+                packet_match = packet_pattern.search(line)
+                if packet_match:
+                    try:
+                        packet_num = int(packet_match.group(1))
+                        pts = int(packet_match.group(2))
+                        duration = int(packet_match.group(3))
+                        time_base_num = int(packet_match.group(4))
+                        time_base_den = int(packet_match.group(5))
+                    except ValueError:
+                        continue
+
+                    max_frame_num = max(max_frame_num, packet_num)
+                    if time_base_den <= 0:
+                        continue
+
+                    pts_ms = pts * 1000.0 * time_base_num / time_base_den
+                    duration_ms = duration * 1000.0 * time_base_num / time_base_den
+                    if previous_packet_pts_ms is not None:
+                        delta_ms = pts_ms - previous_packet_pts_ms
+                        if delta_ms >= 0:
+                            frame_times.append(delta_ms)
+                    elif duration_ms > 0:
+                        frame_times.append(duration_ms)
+                    previous_packet_pts_ms = pts_ms
+                    continue
+
+                recording_stats_match = recording_stats_pattern.search(line)
+                if recording_stats_match:
+                    try:
+                        output_frames = int(recording_stats_match.group(2))
+                        max_frame_num = max(max_frame_num, output_frames)
                     except ValueError:
                         continue
     except Exception:
@@ -298,23 +373,33 @@ def run_single_test(
     app_init_s = 3
     delay_ms = int((captureengine_lead_s + app_init_s) * 1000)
     duration_ms = int(total_record_s * 1000)
+    launch_via_captureengine = api == "directdraw7"
+
+    launch_command: Optional[List[str]] = None
+    if launch_via_captureengine:
+        launch_command = [str(resolve_test_exe(api, arch)), str(width), str(height), str(gpu_load)]
 
     print(f"Starting capture (delay={delay_ms}ms, record={duration_ms}ms)...")
-    capture_proc = start_auto_record(delay_ms, duration_ms)
+    capture_proc = start_auto_record(delay_ms, duration_ms, launch_command)
     if not capture_proc:
         return None, "Failed to start captureengine"
     capture_start_ts = time.monotonic()
 
-    print(f"Waiting {captureengine_lead_s}s before launching test app...")
-    time.sleep(captureengine_lead_s)
+    app_proc: Optional[subprocess.Popen] = None
+    if launch_via_captureengine:
+        print("Starting test app via captureengine --launch...")
+        time.sleep(captureengine_lead_s + app_init_s)
+    else:
+        print(f"Waiting {captureengine_lead_s}s before launching test app...")
+        time.sleep(captureengine_lead_s)
 
-    print("Starting test app...")
-    app_proc = start_test_app(api, arch, width, height, gpu_load)
-    if not app_proc:
-        capture_proc.terminate()
-        return None, "Failed to start test app"
+        print("Starting test app...")
+        app_proc = start_test_app(api, arch, width, height, gpu_load)
+        if not app_proc:
+            capture_proc.terminate()
+            return None, "Failed to start test app"
 
-    time.sleep(app_init_s)
+        time.sleep(app_init_s)
 
     total_wait = (delay_ms + duration_ms) / 1000.0 + 3.0
     elapsed = time.monotonic() - capture_start_ts
@@ -322,26 +407,32 @@ def run_single_test(
     print(f"  Waiting {remaining_wait:.0f}s for recording to complete...")
     time.sleep(remaining_wait)
 
-    print("Stopping test app...")
-    app_proc.terminate()
-    try:
-        app_proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        app_proc.kill()
+    if app_proc:
+        print("Stopping test app...")
+        app_proc.terminate()
+        try:
+            app_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            app_proc.kill()
 
     time.sleep(2)
     kill_processes()
     time.sleep(1)
 
-    frame_times = parse_frame_times(FRAME_TIMES_CSV)
+    run_log_dir = find_latest_run_log_dir(test_start_unix_ts)
+    frame_times_csv = (run_log_dir / "frame_times.csv") if run_log_dir else FRAME_TIMES_CSV
+    media_log_path = (run_log_dir / "media.log") if run_log_dir else MEDIA_LOG
+
+    frame_times = parse_frame_times(frame_times_csv)
     frame_source = "frame_times.csv"
     if not frame_times:
-        frame_times = parse_perf_metrics_frame_times(api, test_start_unix_ts)
+        perf_logs_dir = run_log_dir if run_log_dir else CAPTURE_BIN / "logs"
+        frame_times = parse_perf_metrics_frame_times_from_dir(api, perf_logs_dir, test_start_unix_ts)
         frame_source = "perf_metrics_*.csv"
     estimated_frame_count = 0
     if not frame_times:
-        frame_times, estimated_frame_count = parse_media_log_frame_times(MEDIA_LOG, test_start_unix_ts)
-        frame_source = "media.log [PERF]"
+        frame_times, estimated_frame_count = parse_media_log_frame_times(media_log_path, test_start_unix_ts)
+        frame_source = f"{media_log_path.parent.name}/media.log"
 
     stats = analyze_frame_times(frame_times, test_name)
     if "error" not in stats:

@@ -121,6 +121,60 @@ std::atomic<LoadLibraryExA_t> OriginalLoadLibraryExA{nullptr};
 std::atomic<LoadLibraryExW_t> OriginalLoadLibraryExW{nullptr};
 std::atomic<LdrLoadDll_t> OriginalLdrLoadDll{nullptr};
 
+namespace {
+template <typename T>
+T ResolveOriginalProc(std::atomic<T> &slot, const char *moduleName,
+                      const char *procName) {
+  T original = slot.load(std::memory_order_acquire);
+  if (original) {
+    return original;
+  }
+
+  HMODULE module = GetModuleHandleA(moduleName);
+  if (!module) {
+    return nullptr;
+  }
+
+  T resolved = reinterpret_cast<T>(GetProcAddress(module, procName));
+  if (!resolved) {
+    return nullptr;
+  }
+
+  T expected = nullptr;
+  if (slot.compare_exchange_strong(expected, resolved,
+                                   std::memory_order_release,
+                                   std::memory_order_acquire)) {
+    return resolved;
+  }
+
+  return slot.load(std::memory_order_acquire);
+}
+
+LoadLibraryA_t GetOriginalLoadLibraryA() {
+  return ResolveOriginalProc(OriginalLoadLibraryA, "kernel32.dll",
+                             "LoadLibraryA");
+}
+
+LoadLibraryW_t GetOriginalLoadLibraryW() {
+  return ResolveOriginalProc(OriginalLoadLibraryW, "kernel32.dll",
+                             "LoadLibraryW");
+}
+
+LoadLibraryExA_t GetOriginalLoadLibraryExA() {
+  return ResolveOriginalProc(OriginalLoadLibraryExA, "kernel32.dll",
+                             "LoadLibraryExA");
+}
+
+LoadLibraryExW_t GetOriginalLoadLibraryExW() {
+  return ResolveOriginalProc(OriginalLoadLibraryExW, "kernel32.dll",
+                             "LoadLibraryExW");
+}
+
+LdrLoadDll_t GetOriginalLdrLoadDll() {
+  return ResolveOriginalProc(OriginalLdrLoadDll, "ntdll.dll", "LdrLoadDll");
+}
+} // namespace
+
 typedef LPSTR(WINAPI *GetCommandLineA_t)();
 typedef LPWSTR(WINAPI *GetCommandLineW_t)();
 std::atomic<GetCommandLineA_t> OriginalGetCommandLineA{nullptr};
@@ -139,6 +193,18 @@ typedef BOOL(WINAPI *CreateProcessW_t)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES,
                                        LPPROCESS_INFORMATION);
 std::atomic<CreateProcessA_t> OriginalCreateProcessA{nullptr};
 std::atomic<CreateProcessW_t> OriginalCreateProcessW{nullptr};
+
+namespace {
+CreateProcessA_t GetOriginalCreateProcessA() {
+  return ResolveOriginalProc(OriginalCreateProcessA, "kernel32.dll",
+                             "CreateProcessA");
+}
+
+CreateProcessW_t GetOriginalCreateProcessW() {
+  return ResolveOriginalProc(OriginalCreateProcessW, "kernel32.dll",
+                             "CreateProcessW");
+}
+} // namespace
 
 // Registry Hook Typedefs (for DLSS Debug Overlay)
 typedef LSTATUS(WINAPI *RegQueryValueExW_t)(HKEY hKey, LPCWSTR lpValueName,
@@ -332,12 +398,17 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd,
                                  DWORD dwFlags, LPVOID lpEnv, LPCSTR lpDir,
                                  LPSTARTUPINFOA lpSI,
                                  LPPROCESS_INFORMATION lpPI) {
+  CreateProcessA_t original = GetOriginalCreateProcessA();
+  if (!original) {
+    return FALSE;
+  }
+
   const char *exePath = lpApp ? lpApp : lpCmd;
   bool shouldInject = ShouldInjectChild(exePath);
 
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
-  BOOL result = OriginalCreateProcessA.load(std::memory_order_acquire)(lpApp, lpCmd, lpPA, lpTA, bInherit,
-                                       modifiedFlags, lpEnv, lpDir, lpSI, lpPI);
+  BOOL result = original(lpApp, lpCmd, lpPA, lpTA, bInherit, modifiedFlags,
+                         lpEnv, lpDir, lpSI, lpPI);
 
   if (result && lpPI && shouldInject) {
     HookLog("[ChildInject] CreateProcessA: Whitelisted child: %s", exePath);
@@ -353,6 +424,11 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
                                  DWORD dwFlags, LPVOID lpEnv, LPCWSTR lpDir,
                                  LPSTARTUPINFOW lpSI,
                                  LPPROCESS_INFORMATION lpPI) {
+  CreateProcessW_t original = GetOriginalCreateProcessW();
+  if (!original) {
+    return FALSE;
+  }
+
   // Convert wide to narrow for whitelist check
   char exePath[MAX_PATH] = {0};
   if (lpApp)
@@ -363,8 +439,8 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
   bool shouldInject = ShouldInjectChild(exePath);
 
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
-  BOOL result = OriginalCreateProcessW.load(std::memory_order_acquire)(lpApp, lpCmd, lpPA, lpTA, bInherit,
-                                       modifiedFlags, lpEnv, lpDir, lpSI, lpPI);
+  BOOL result = original(lpApp, lpCmd, lpPA, lpTA, bInherit, modifiedFlags,
+                         lpEnv, lpDir, lpSI, lpPI);
 
   if (result && lpPI && shouldInject) {
     HookLog("[ChildInject] CreateProcessW: Whitelisted child: %s", exePath);
@@ -602,20 +678,30 @@ LPWSTR WINAPI HookedGetCommandLineW() {
 
 // Hooked Functions - Signal Event & Redirect
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
+  LoadLibraryA_t original = GetOriginalLoadLibraryA();
+  if (!original) {
+    return nullptr;
+  }
+
   if (lpLibFileName) {
     std::string redirect = GetRedirectedPath(lpLibFileName);
     if (!redirect.empty()) {
-      HMODULE hMod = OriginalLoadLibraryA.load(std::memory_order_acquire)(redirect.c_str());
+      HMODULE hMod = original(redirect.c_str());
       NotifyHookModuleLoaded(hMod, redirect.c_str());
       return hMod;
     }
   }
-  HMODULE hMod = OriginalLoadLibraryA.load(std::memory_order_acquire)(lpLibFileName);
+  HMODULE hMod = original(lpLibFileName);
   NotifyHookModuleLoaded(hMod, lpLibFileName);
   return hMod;
 }
 
 HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName) {
+  LoadLibraryW_t original = GetOriginalLoadLibraryW();
+  if (!original) {
+    return nullptr;
+  }
+
   char pathUtf8[MAX_PATH] = {};
   if (lpLibFileName) {
     // Convert to UTF-8 for check
@@ -637,19 +723,24 @@ HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName) {
         if (redirectW.back() == L'\0')
           redirectW.pop_back();
 
-        HMODULE hMod = OriginalLoadLibraryW.load(std::memory_order_acquire)(redirectW.c_str());
+        HMODULE hMod = original(redirectW.c_str());
         NotifyHookModuleLoaded(hMod, redirect.c_str());
         return hMod;
       }
     }
   }
-  HMODULE hMod = OriginalLoadLibraryW.load(std::memory_order_acquire)(lpLibFileName);
+  HMODULE hMod = original(lpLibFileName);
   NotifyHookModuleLoaded(hMod, pathUtf8);
   return hMod;
 }
 
 HMODULE WINAPI HookedLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile,
                                     DWORD dwFlags) {
+  LoadLibraryExA_t original = GetOriginalLoadLibraryExA();
+  if (!original) {
+    return nullptr;
+  }
+
   if (lpLibFileName) {
     std::string redirect = GetRedirectedPath(lpLibFileName);
     if (!redirect.empty()) {
@@ -659,18 +750,23 @@ HMODULE WINAPI HookedLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile,
       // absolute path? Actually, usually users just want to load the DLL.
       // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR might be an issue. Let's try to trust
       // the user path is absolute.
-      HMODULE hMod = OriginalLoadLibraryExA.load(std::memory_order_acquire)(redirect.c_str(), hFile, dwFlags);
+      HMODULE hMod = original(redirect.c_str(), hFile, dwFlags);
       NotifyHookModuleLoaded(hMod, redirect.c_str());
       return hMod;
     }
   }
-  HMODULE hMod = OriginalLoadLibraryExA.load(std::memory_order_acquire)(lpLibFileName, hFile, dwFlags);
+  HMODULE hMod = original(lpLibFileName, hFile, dwFlags);
   NotifyHookModuleLoaded(hMod, lpLibFileName);
   return hMod;
 }
 
 HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
                                     DWORD dwFlags) {
+  LoadLibraryExW_t original = GetOriginalLoadLibraryExW();
+  if (!original) {
+    return nullptr;
+  }
+
   char pathUtf8[MAX_PATH] = {};
   if (lpLibFileName) {
     WideCharToMultiByte(CP_UTF8, 0, lpLibFileName, -1, pathUtf8, MAX_PATH, NULL,
@@ -686,22 +782,22 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
         if (redirectW.back() == L'\0')
           redirectW.pop_back();
 
-        HMODULE hMod =
-            OriginalLoadLibraryExW.load(std::memory_order_acquire)(redirectW.c_str(), hFile, dwFlags);
+        HMODULE hMod = original(redirectW.c_str(), hFile, dwFlags);
         NotifyHookModuleLoaded(hMod, redirect.c_str());
         return hMod;
       }
     }
   }
-  HMODULE hMod = OriginalLoadLibraryExW.load(std::memory_order_acquire)(lpLibFileName, hFile, dwFlags);
+  HMODULE hMod = original(lpLibFileName, hFile, dwFlags);
   NotifyHookModuleLoaded(hMod, pathUtf8);
   return hMod;
 }
 
 NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
                                 PUNICODE_STRING DllName, PVOID *BaseAddress) {
+  LdrLoadDll_t original = GetOriginalLdrLoadDll();
   std::string requestedPath;
-  if (DllName && DllName->Buffer && DllName->Length > 0 && OriginalLdrLoadDll) {
+  if (DllName && DllName->Buffer && DllName->Length > 0 && original) {
     std::wstring requestedW(DllName->Buffer, DllName->Length / sizeof(wchar_t));
 
     if (!requestedW.empty()) {
@@ -730,8 +826,8 @@ NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
             redirectName.Length = static_cast<USHORT>(redirectW.size() * sizeof(wchar_t));
             redirectName.MaximumLength = redirectName.Length + sizeof(wchar_t);
 
-            NTSTATUS status = OriginalLdrLoadDll.load(std::memory_order_acquire)(SearchPath, DllCharacteristics,
-                                                 &redirectName, BaseAddress);
+            NTSTATUS status = original(SearchPath, DllCharacteristics,
+                                       &redirectName, BaseAddress);
             if (NT_SUCCESS(status)) {
               NotifyHookModuleLoaded(BaseAddress ? (HMODULE)*BaseAddress : nullptr,
                                      redirect.c_str());
@@ -743,11 +839,11 @@ NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
     }
   }
 
-  if (!OriginalLdrLoadDll)
+  if (!original)
     return STATUS_DLL_NOT_FOUND;
 
-  NTSTATUS status = OriginalLdrLoadDll.load(std::memory_order_acquire)(SearchPath, DllCharacteristics, DllName,
-                                       BaseAddress);
+  NTSTATUS status = original(SearchPath, DllCharacteristics, DllName,
+                             BaseAddress);
   if (NT_SUCCESS(status))
     NotifyHookModuleLoaded(BaseAddress ? (HMODULE)*BaseAddress : nullptr,
                            requestedPath.c_str());

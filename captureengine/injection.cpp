@@ -1461,7 +1461,7 @@ void InjectionManager::ScanExistingProcesses() {
             std::lock_guard<std::mutex> injectLock(injectMutex);
             if (IsWhitelisted(name)) {
                 ++whitelistedProcesses;
-                if (!IsAlreadyInjected(pe32.th32ProcessID) && !IsRecentlyFailed(pe32.th32ProcessID)) {
+                if (!IsAlreadyInjectedLocked(pe32.th32ProcessID) && !IsRecentlyFailedLocked(pe32.th32ProcessID)) {
                     ++injectAttempts;
                     LogInfo("[Scan] Found existing whitelisted process: %s (PID: %lu)", name.c_str(),
                             (unsigned long)pe32.th32ProcessID);

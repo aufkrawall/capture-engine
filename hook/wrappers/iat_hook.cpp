@@ -714,6 +714,29 @@ bool InitializeD3D9Hooks() {
     return false;
 }
 
+bool InitializeDDrawHooks() {
+    WrapperLog("IAT: Initializing DirectDraw hooks...");
+
+    HMODULE hDDraw = GetModuleHandleA("ddraw.dll");
+    if (!hDDraw) {
+        WrapperLog("IAT: ddraw.dll not loaded");
+        return false;
+    }
+
+    oDirectDrawCreateEx = reinterpret_cast<PFN_DirectDrawCreateEx>(GetProcAddress(hDDraw, "DirectDrawCreateEx"));
+
+    void* dummy = nullptr;
+    if (PatchIATAllModules("ddraw.dll", "DirectDrawCreateEx", (void*)Wrapped_DirectDrawCreateEx, &dummy)) {
+        WrapperLog("IAT: Patched DirectDrawCreateEx");
+    } else {
+        WrapperLog("IAT: DirectDrawCreateEx not found in IAT");
+    }
+
+    RegisterDynamicHook("DirectDrawCreateEx", (void*)Wrapped_DirectDrawCreateEx, (void**)&oDirectDrawCreateEx);
+    WrapperLog("IAT: DirectDraw hooks initialized");
+    return true;
+}
+
 // Note: InitializeVulkanHooks removed - Vulkan is now handled by
 // VK_LAYER_CE_overlay The Vulkan layer approach provides better compatibility
 // and doesn't require IAT patching

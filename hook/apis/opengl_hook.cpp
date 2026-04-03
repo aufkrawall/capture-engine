@@ -186,6 +186,9 @@ static int g_SwapRecurse = 0;
 static bool g_LegacyContext = false;
 static bool g_VersionChecked = false;
 static bool g_LuidReported = false;
+static HGLRC g_CurrentTrackedContext = NULL;
+static HGLRC g_OverlayContext = NULL;
+static HGLRC g_CaptureContext = NULL;
 
 // Prerender Limit State
 static std::vector<GLsync> g_PrerenderSyncs;
@@ -365,6 +368,8 @@ public:
         pboTimestampQpc[0] = 0;
         pboTimestampQpc[1] = 0;
         fenceValue = 0;
+        g_CaptureHDC = NULL;
+        g_CaptureContext = NULL;
     }
 
     void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override {
@@ -553,6 +558,7 @@ public:
         }
 
         g_CaptureHDC = hDC;
+        g_CaptureContext = wglGetCurrentContext();
 
         // Get window size
         HWND hwnd = WindowFromDC(hDC);
@@ -773,6 +779,59 @@ static void WINAPI DetourGlTexImage2DMultisample(GLenum target, GLsizei samples,
 
 static OpenGLCapture g_OpenGLCapture;
 
+static void ResetTrackedOpenGLState(HGLRC contextToReset) {
+    const bool resetAll = (contextToReset == NULL);
+    const bool resetCapture = resetAll || contextToReset == g_CaptureContext;
+    const bool resetOverlay = resetAll || contextToReset == g_OverlayContext;
+    const bool resetVersionState = resetAll || contextToReset == g_CurrentTrackedContext;
+
+    bool captureCleanupHandledOverlay = false;
+    if (resetCapture && g_OpenGLCapture.initialized) {
+        g_OpenGLCapture.Cleanup();
+        captureCleanupHandledOverlay = true;
+    }
+
+    if (resetOverlay && !captureCleanupHandledOverlay && g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
+    }
+
+    if (resetCapture) {
+        g_CaptureContext = NULL;
+        g_CaptureHDC = NULL;
+    }
+    if (resetOverlay) {
+        g_OverlayContext = NULL;
+    }
+    if (resetVersionState) {
+        g_CurrentTrackedContext = NULL;
+        g_VersionChecked = false;
+        g_LegacyContext = false;
+    }
+}
+
+static bool TrackOpenGLContext(HDC hdc) {
+    HGLRC currentCtx = wglGetCurrentContext();
+    if (!currentCtx)
+        return false;
+
+    if (currentCtx != g_CurrentTrackedContext) {
+        if (g_CurrentTrackedContext) {
+            HookLog("OpenGL: Switching tracked context from %p to %p", g_CurrentTrackedContext, currentCtx);
+            ResetTrackedOpenGLState(g_CurrentTrackedContext);
+        }
+        g_CurrentTrackedContext = currentCtx;
+    }
+
+    HWND hwnd = WindowFromDC(hdc);
+    if (hwnd && hwnd != g_CachedHwnd) {
+        g_CachedHwnd = hwnd;
+        InputManager::Get().HookWindow(hwnd);
+        g_OverlayAdapter.SetHwnd(hwnd);
+    }
+
+    return true;
+}
+
 // Load OpenGL functions
 static bool LoadGLFunctions() {
     if (g_FunctionsLoaded)
@@ -937,6 +996,8 @@ static void DrawOpenGLOverlay(HDC hdc) {
     HGLRC currentCtx = wglGetCurrentContext();
     if (!currentCtx)
         return;
+    if (!TrackOpenGLContext(hdc))
+        return;
 
     static bool initLogged = false;
     if (!g_OverlayAdapter.IsInitialized()) {
@@ -949,16 +1010,20 @@ static void DrawOpenGLOverlay(HDC hdc) {
 
         DetectGPU(hdc);
         HWND hwnd = WindowFromDC(hdc);
-        g_CachedHwnd = hwnd;
-
-        InputManager::Get().HookWindow(hwnd);
-        g_OverlayAdapter.SetHwnd(hwnd);
+        if (hwnd) {
+            g_CachedHwnd = hwnd;
+            InputManager::Get().HookWindow(hwnd);
+            g_OverlayAdapter.SetHwnd(hwnd);
+        }
 
         bool initResult = g_OverlayAdapter.InitOpenGL();
         HookLog("OpenGL: InitOpenGL returned %d", initResult ? 1 : 0);
 
         if (initResult) {
-            g_OverlayAdapter.SetHwnd(hwnd);
+            g_OverlayContext = currentCtx;
+            if (hwnd) {
+                g_OverlayAdapter.SetHwnd(hwnd);
+            }
         } else {
             HookLog("OpenGL: InitOpenGL failed - GL context = %p", currentCtx);
             return;
@@ -974,8 +1039,12 @@ static void DrawOpenGLOverlay(HDC hdc) {
     g_OverlayAdapter.SetDroppedFrames(g_OpenGLCapture.droppedFrames.load(std::memory_order_relaxed));
     g_OverlayAdapter.SetGraphicsAPI("OpenGL");
 
+    HWND targetHwnd = WindowFromDC(hdc);
+    if (!targetHwnd)
+        targetHwnd = g_CachedHwnd;
+
     RECT rect;
-    if (GetClientRect(g_CachedHwnd, &rect)) {
+    if (targetHwnd && GetClientRect(targetHwnd, &rect)) {
         int width = rect.right - rect.left;
         int height = rect.bottom - rect.top;
         if (width > 0 && height > 0) {
@@ -991,6 +1060,8 @@ static void DrawOpenGLOverlay(HDC hdc) {
 // Swap hook logic
 static void SwapBegin(HDC hdc) {
     if (g_SwapRecurse == 0) {
+        TrackOpenGLContext(hdc);
+
         if (!g_FunctionsLoaded) {
             HookLog("OpenGL: First SwapBegin - Loading functions...");
             LoadGLFunctions();
@@ -1054,6 +1125,9 @@ static void SwapBegin(HDC hdc) {
                 if (isRecording) {
                     if (!g_OpenGLCapture.initialized && !g_LegacyContext) {
                         g_OpenGLCapture.Init(hdc);
+                        if (g_OpenGLCapture.initialized) {
+                            g_CaptureContext = wglGetCurrentContext();
+                        }
                     }
                     if (g_OpenGLCapture.initialized) {
                         g_OpenGLCapture.CaptureFrame();
@@ -1199,16 +1273,8 @@ static BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes) {
 
 // Hook: wglDeleteContext - cleanup when context is destroyed
 static BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
-    HookLog("OpenGL: wglDeleteContext called");
-
-    // Cleanup if this was the capture context
-    // Cleanup if this was the capture context
-    if (g_OverlayAdapter.IsInitialized()) {
-        g_OverlayAdapter.Shutdown();
-    }
-
-    g_OpenGLCapture.Cleanup();
-    g_FunctionsLoaded = false;
+    HookLog("OpenGL: wglDeleteContext called (ctx=0x%p)", hglrc);
+    ResetTrackedOpenGLState(hglrc);
 
     return oWglDeleteContext(hglrc);
 }
@@ -1423,10 +1489,7 @@ void OpenGLHook::Init() {
 
 void OpenGLHook::Shutdown() {
     HookLog("OpenGLHook::Shutdown()");
-
-    if (g_OverlayAdapter.IsInitialized()) {
-        g_OverlayAdapter.Shutdown();
-    }
+    ResetTrackedOpenGLState(NULL);
 
     // Clean up prerender sync objects
     if (pglDeleteSync) {
@@ -1436,12 +1499,10 @@ void OpenGLHook::Shutdown() {
         }
     }
     g_PrerenderSyncs.clear();
-
-    g_OpenGLCapture.Cleanup();
     // IAT hooks remain until process exit
 }
 
 void OpenGLHook::OnHostDisconnect() {
     HookLog("OpenGLHook::OnHostDisconnect()");
-    g_OpenGLCapture.Cleanup();
+    ResetTrackedOpenGLState(NULL);
 }

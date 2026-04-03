@@ -52,6 +52,7 @@ bool InitializeD3D10Hooks();
 bool InitializeD3D11Hooks();
 bool InitializeD3D12Hooks();
 bool InitializeD3D9Hooks();
+bool InitializeDDrawHooks();
 // Note: InitializeVulkanHooks removed - Vulkan is now handled by
 // VK_LAYER_CE_overlay
 

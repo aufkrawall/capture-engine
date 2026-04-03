@@ -2070,6 +2070,14 @@ public:
     IDirect3D9Ex* directSharedFactoryEx = nullptr;
     IDirect3DDevice9Ex* directSharedProducerDeviceEx = nullptr;
     HWND directSharedHelperWindow = nullptr;
+    struct DirectSharedHelperConfig {
+        UINT adapterOrdinal = UINT_MAX;
+        D3DDEVTYPE deviceType = D3DDEVTYPE_HAL;
+        DWORD behaviorFlags = 0;
+        bool valid = false;
+    };
+    DirectSharedHelperConfig directSharedLegacyConfig = {};
+    DirectSharedHelperConfig directSharedExConfig = {};
 
     // Per-frame staging metrics (set by CaptureFrame, read by PresentEnd)
     int32_t stagingStretchRectUs = 0;
@@ -2321,6 +2329,7 @@ public:
             directSharedProducerDevice->Release();
             directSharedProducerDevice = nullptr;
         }
+        directSharedLegacyConfig = {};
         if (directSharedFactory) {
             directSharedFactory->Release();
             directSharedFactory = nullptr;
@@ -2329,6 +2338,7 @@ public:
             directSharedProducerDeviceEx->Release();
             directSharedProducerDeviceEx = nullptr;
         }
+        directSharedExConfig = {};
         if (directSharedFactoryEx) {
             directSharedFactoryEx->Release();
             directSharedFactoryEx = nullptr;
@@ -2457,8 +2467,23 @@ public:
     }
 
     bool EnsureDirectD3D9ExProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params) {
-        if (directSharedProducerDeviceEx)
-            return true;
+        const DWORD helperFlags = BuildDirectD3D9HelperBehaviorFlags(params.BehaviorFlags);
+        if (directSharedProducerDeviceEx) {
+            const bool sameConfig = directSharedExConfig.valid && directSharedExConfig.adapterOrdinal == params.AdapterOrdinal &&
+                                    directSharedExConfig.deviceType == params.DeviceType &&
+                                    directSharedExConfig.behaviorFlags == helperFlags;
+            if (sameConfig)
+                return true;
+
+            HookLogImportant(
+                "DX9: Recreating helper D3D9Ex producer for adapter/type change (oldAdapter=%u oldType=%u oldFlags=0x%08x newAdapter=%u newType=%u newFlags=0x%08x)",
+                directSharedExConfig.adapterOrdinal, (unsigned)directSharedExConfig.deviceType,
+                (unsigned)directSharedExConfig.behaviorFlags, params.AdapterOrdinal, (unsigned)params.DeviceType,
+                (unsigned)helperFlags);
+            directSharedProducerDeviceEx->Release();
+            directSharedProducerDeviceEx = nullptr;
+            directSharedExConfig = {};
+        }
 
         HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
         if (!d3d9Module) {
@@ -2490,7 +2515,6 @@ public:
         pp.Windowed = TRUE;
         pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
         pp.hDeviceWindow = directSharedHelperWindow;
-        const DWORD helperFlags = BuildDirectD3D9HelperBehaviorFlags(params.BehaviorFlags);
         HookLogImportant("DX9: Trying helper D3D9Ex producer (adapter=%u type=%u flags=0x%08x)", params.AdapterOrdinal,
                          (unsigned)params.DeviceType, (unsigned)helperFlags);
 
@@ -2504,16 +2528,38 @@ public:
                 directSharedProducerDeviceEx->Release();
                 directSharedProducerDeviceEx = nullptr;
             }
+            directSharedExConfig = {};
             return false;
         }
+
+        directSharedExConfig.adapterOrdinal = params.AdapterOrdinal;
+        directSharedExConfig.deviceType = params.DeviceType;
+        directSharedExConfig.behaviorFlags = helperFlags;
+        directSharedExConfig.valid = true;
 
         ProbeDirectD3D9SharedTexture(directSharedProducerDeviceEx, "helper D3D9Ex producer");
         return true;
     }
 
     bool EnsureDirectD3D9LegacyProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params) {
-        if (directSharedProducerDevice)
-            return true;
+        const DWORD helperFlags = BuildDirectD3D9HelperBehaviorFlags(params.BehaviorFlags);
+        if (directSharedProducerDevice) {
+            const bool sameConfig = directSharedLegacyConfig.valid &&
+                                    directSharedLegacyConfig.adapterOrdinal == params.AdapterOrdinal &&
+                                    directSharedLegacyConfig.deviceType == params.DeviceType &&
+                                    directSharedLegacyConfig.behaviorFlags == helperFlags;
+            if (sameConfig)
+                return true;
+
+            HookLogImportant(
+                "DX9: Recreating helper legacy D3D9 producer for adapter/type change (oldAdapter=%u oldType=%u oldFlags=0x%08x newAdapter=%u newType=%u newFlags=0x%08x)",
+                directSharedLegacyConfig.adapterOrdinal, (unsigned)directSharedLegacyConfig.deviceType,
+                (unsigned)directSharedLegacyConfig.behaviorFlags, params.AdapterOrdinal, (unsigned)params.DeviceType,
+                (unsigned)helperFlags);
+            directSharedProducerDevice->Release();
+            directSharedProducerDevice = nullptr;
+            directSharedLegacyConfig = {};
+        }
 
         HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
         if (!d3d9Module) {
@@ -2543,7 +2589,6 @@ public:
         pp.Windowed = TRUE;
         pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
         pp.hDeviceWindow = directSharedHelperWindow;
-        const DWORD helperFlags = BuildDirectD3D9HelperBehaviorFlags(params.BehaviorFlags);
         HookLogImportant("DX9: Trying helper legacy D3D9 producer (adapter=%u type=%u flags=0x%08x)",
                          params.AdapterOrdinal, (unsigned)params.DeviceType, (unsigned)helperFlags);
 
@@ -2556,8 +2601,14 @@ public:
                 directSharedProducerDevice->Release();
                 directSharedProducerDevice = nullptr;
             }
+            directSharedLegacyConfig = {};
             return false;
         }
+
+        directSharedLegacyConfig.adapterOrdinal = params.AdapterOrdinal;
+        directSharedLegacyConfig.deviceType = params.DeviceType;
+        directSharedLegacyConfig.behaviorFlags = helperFlags;
+        directSharedLegacyConfig.valid = true;
 
         ProbeDirectD3D9SharedTexture(directSharedProducerDevice, "helper legacy D3D9 producer");
         return true;

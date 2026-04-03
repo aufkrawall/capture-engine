@@ -17,6 +17,7 @@ extern void EnsureDX12Hook();
 struct IDXGISwapChain;
 // Forward declaration from dx11_hook.cpp
 extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
+#include "../apis/ddraw_hook.h"
 #include "../apis/dx12_hook.h"  // Access to g_DX12Hook implementation
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
@@ -72,6 +73,7 @@ typedef HRESULT(WINAPI* PFN_Direct3DCreate9Ex)(UINT SDKVersion, IDirect3D9Ex** p
 
 PFN_Direct3DCreate9 oDirect3DCreate9 = nullptr;
 PFN_Direct3DCreate9Ex oDirect3DCreate9Ex = nullptr;
+PFN_DirectDrawCreateEx oDirectDrawCreateEx = nullptr;
 
 static bool g_WrappersActive = false;
 
@@ -609,6 +611,23 @@ HRESULT WINAPI Wrapped_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D) 
     return hr;
 }
 
+HRESULT WINAPI Wrapped_DirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter) {
+    WrapperLog("Wrapper: DirectDrawCreateEx called (out=%p)", lplpDD);
+
+    if (!oDirectDrawCreateEx)
+        return E_FAIL;
+
+    HRESULT hr = oDirectDrawCreateEx(lpGuid, lplpDD, iid, pUnkOuter);
+    WrapperLog("Wrapper: DirectDrawCreateEx returned hr=0x%08X, object=%p", hr,
+               (lplpDD && SUCCEEDED(hr)) ? *lplpDD : nullptr);
+    if (SUCCEEDED(hr) && lplpDD && *lplpDD) {
+        bool hooked = HookDirectDrawObject(*lplpDD, iid);
+        WrapperLog("Wrapper: HookDirectDrawObject returned %d for object=%p", hooked ? 1 : 0, *lplpDD);
+    }
+
+    return hr;
+}
+
 // ============================================================================
 // Wrapper System Initialization
 // ============================================================================
@@ -618,6 +637,7 @@ static bool s_D3D10Initialized = false;
 static bool s_D3D11Initialized = false;
 static bool s_D3D12Initialized = false;
 static bool s_D3D9Initialized = false;
+static bool s_DDrawInitialized = false;
 
 bool InitializeWrapperHooks() {
     if (g_WrappersActive)
@@ -666,6 +686,13 @@ bool InitializeWrapperHooks() {
             anySuccess = true;
     }
 
+    if (!s_DDrawInitialized) {
+        EarlyLog("Wrapper: Initializing DirectDraw hooks...");
+        s_DDrawInitialized = IATHook::InitializeDDrawHooks();
+        if (s_DDrawInitialized)
+            anySuccess = true;
+    }
+
     // Mark as active if ANY hooks were installed (allows partial initialization)
     // This enables retry for categories whose DLLs weren't loaded yet
     if (anySuccess) {
@@ -674,8 +701,9 @@ bool InitializeWrapperHooks() {
 
     EarlyLog(
         "Wrapper: IAT initialization complete (DXGI=%d, D3D10=%d, D3D11=%d, "
-        "D3D12=%d, D3D9=%d)",
-        s_DXGIInitialized, s_D3D10Initialized, s_D3D11Initialized, s_D3D12Initialized, s_D3D9Initialized);
+        "D3D12=%d, D3D9=%d, DDraw=%d)",
+        s_DXGIInitialized, s_D3D10Initialized, s_D3D11Initialized, s_D3D12Initialized, s_D3D9Initialized,
+        s_DDrawInitialized);
     return anySuccess;
 }
 

@@ -1,4 +1,12 @@
 #include "ddraw_hook.h"
+#include <algorithm>
+#ifndef DIRECTDRAW_VERSION
+#define DIRECTDRAW_VERSION 0x0700
+#endif
+#ifndef DIRECT3D_VERSION
+#define DIRECT3D_VERSION 0x0700
+#endif
+#include <ddraw.h>
 #include <d3d11.h>
 #include <d3d11_4.h>
 #include <d3d9.h>
@@ -12,39 +20,32 @@
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
 #include "../common/frame_timing.h"
+#include "../common/freeze_watchdog.h"
+#include "../common/input_manager.h"
+#include "../common/overlay_compat.h"
 #include "../common/overlay_adapter.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
 #include "performance_metrics.h"
+#include "../wrappers/inline_hook.h"
 
-// DirectDraw interface definitions
-// DirectDraw interface definitions
-struct IDirectDraw7;
-struct IDirectDrawSurface7;
-struct IDirectDrawPalette;
-struct IDirect3D7;
+extern HMODULE g_hModule;
+
 struct IDirect3DDevice7;
-
-// Minimal interface definitions for method calls
-struct IDirectDraw7 : public IUnknown {
-    // We access SetCooperativeLevel via vtable index 20 manually,
-    // but we use QI from IUnknown.
-};
 
 struct IDirect3D7 : public IUnknown {
     virtual HRESULT STDMETHODCALLTYPE EnumDevices(void*, void*) = 0;
     virtual HRESULT STDMETHODCALLTYPE CreateDevice(REFCLSID, IDirectDrawSurface7*, IDirect3DDevice7**) = 0;
 };
 
-struct IDirect3DDevice7 : public IUnknown {
-    // We only access SetTextureStageState via vtable index 35 manually.
-};
+struct IDirect3DDevice7 : public IUnknown {};
 
-// Forward declaration for surface which we use as opaque pointer mostly,
-// but passed to CreateDevice.
-// We can leave it as strictly forward declared or empty struct.
-struct IDirectDrawSurface7 : public IUnknown {};
+static const GUID kIID_IDirect3D7 = {0xf5049e77, 0x4861, 0x11d2, {0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8}};
+static const GUID kIID_IDirect3DHALDevice = {0x84E63dE0,
+                                             0x46AA,
+                                             0x11CF,
+                                             {0x81, 0x6F, 0x00, 0x00, 0xC0, 0x20, 0x15, 0x6E}};
 
 // D3D7 function typedef
 typedef HRESULT(STDMETHODCALLTYPE* SetTextureStageState7_t)(IDirect3DDevice7* device, DWORD Stage, DWORD Type,
@@ -76,24 +77,101 @@ typedef HRESULT(STDMETHODCALLTYPE* DDSurface7Lock_t)(IDirectDrawSurface7* surfac
 typedef HRESULT(STDMETHODCALLTYPE* DDSurface7GetDC_t)(IDirectDrawSurface7* surface, HDC* hdc);
 
 typedef HRESULT(STDMETHODCALLTYPE* DDSurface7ReleaseDC_t)(IDirectDrawSurface7* surface, HDC hdc);
+typedef HRESULT(STDMETHODCALLTYPE* DDraw7CreateSurface_t)(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
+                                                          IDirectDrawSurface7** ppSurface, IUnknown* pUnkOuter);
+
+typedef HRESULT(WINAPI* DirectDrawCreateEx_t)(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
 
 // Original function pointers
 static DDSurface7Flip_t oDDSurface7Flip = nullptr;
 static DDSurface7Blt_t oDDSurface7Blt = nullptr;
+static DDSurface7Lock_t oDDSurface7Lock = nullptr;
 static DDSurface7Unlock_t oDDSurface7Unlock = nullptr;
+static DDraw7CreateSurface_t oDDraw7CreateSurface = nullptr;
 static SetTextureStageState7_t oSetTextureStageState7 = nullptr;
 static SetRenderState7_t oSetRenderState7 = nullptr;
+static DirectDrawCreateEx_t oDirectDrawCreateEx = nullptr;
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
 static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
 static IDirectDrawSurface7* g_PrimarySurface = nullptr;
+static IDirectDrawSurface7* g_HookSurfacePrototype = nullptr;
 static int g_CaptureRecurse = 0;
 static std::vector<IDirectDrawSurface7*> g_PrerenderSurfaces;
+static std::vector<void**> g_HookedDDrawVTables;
+static std::vector<void**> g_HookedSurfaceVTables;
 static uint32_t g_PrerenderIdx = 0;
 static int64_t g_LastSleepUs = 0;
 static IDirect3DDevice7* g_D3D7Device = nullptr;
+static bool g_DirectDrawCreateExInlineInstalled = false;
+static HHOOK g_DDrawBootstrapHook = nullptr;
+static HWND g_DDrawBootstrapWindow = NULL;
+static DWORD g_DDrawBootstrapThreadId = 0;
+static std::atomic<bool> g_DDrawBootstrapQueued{false};
+static std::atomic<bool> g_DDrawBootstrapRunning{false};
+
+static bool HasHookedVTable(const std::vector<void**>& hookedVTables, void** vtable) {
+    return std::find(hookedVTables.begin(), hookedVTables.end(), vtable) != hookedVTables.end();
+}
+
+static bool IsPrimarySurfaceDesc(const DDSURFACEDESC2* surfaceDesc) {
+    return surfaceDesc && (surfaceDesc->dwFlags & DDSD_CAPS) && (surfaceDesc->ddsCaps.dwCaps & DDSCAPS_PRIMARYSURFACE);
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
+                                                                IDirectDrawSurface7** ppSurface, IUnknown* pUnkOuter);
+static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
+                                                      DWORD flags);
+static HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface, LPRECT destRect,
+                                                     IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD flags,
+                                                     void* bltFx);
+static HRESULT STDMETHODCALLTYPE DetourDDSurface7Lock(IDirectDrawSurface7* surface, LPRECT destRect, void* surfaceDesc,
+                                                      DWORD flags, HANDLE event);
+static HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, LPRECT rect);
+static HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* device, DWORD Type, DWORD Value);
+static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* device, DWORD Stage, DWORD Type,
+                                                             DWORD Value);
+static HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
+
+static void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const char* reason, bool markPrototype = false);
+static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* reason);
+static void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t directDrawCreateEx);
+static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason);
+static bool QueueDirectDrawBootstrapOnWindowThread();
+
+static HWND ResolveDirectDrawTargetWindow() {
+    if (g_CachedHwnd && IsWindow(g_CachedHwnd)) {
+        return g_CachedHwnd;
+    }
+
+    if (g_DDrawBootstrapWindow && IsWindow(g_DDrawBootstrapWindow)) {
+        return g_DDrawBootstrapWindow;
+    }
+
+    HWND foregroundWindow = GetForegroundWindow();
+    DWORD foregroundPid = 0;
+    if (foregroundWindow && GetWindowThreadProcessId(foregroundWindow, &foregroundPid) != 0 &&
+        foregroundPid == GetCurrentProcessId()) {
+        return foregroundWindow;
+    }
+
+    ce::overlay_compat::AuxiliaryProcessWindowInfo info = {};
+    if (ce::overlay_compat::FindAuxiliaryProcessWindow(GetCurrentProcessId(), nullptr, &info) && info.hwnd) {
+        return info.hwnd;
+    }
+
+    return NULL;
+}
+
+static void MaybeTrackPrimarySurface(IDirectDrawSurface7* surface, const char* reason) {
+    if (!surface || surface == g_HookSurfacePrototype || g_PrimarySurface)
+        return;
+
+    g_PrimarySurface = surface;
+    HookLog("DDraw: Tracking runtime primary surface from %s (%p)", reason, surface);
+}
 
 static void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface, float limit) {
     if (limit < 0.0f)
@@ -156,6 +234,203 @@ static void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface, float limit) 
     }
 }
 
+static void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t directDrawCreateEx) {
+    if (!directDrawCreateEx || g_DirectDrawCreateExInlineInstalled)
+        return;
+
+    void* trampoline = nullptr;
+    if (InlineHook::Install((void*)directDrawCreateEx, (void*)DetourDirectDrawCreateEx, &trampoline)) {
+        oDirectDrawCreateEx = reinterpret_cast<DirectDrawCreateEx_t>(trampoline);
+        g_DirectDrawCreateExInlineInstalled = true;
+        HookLog("DDraw: DirectDrawCreateEx inline hook installed");
+    } else {
+        HookLog("DDraw: DirectDrawCreateEx inline hook failed");
+    }
+}
+
+static bool FindDirectDrawBootstrapWindow(HWND* outWindow, DWORD* outThreadId) {
+    if (!outWindow || !outThreadId)
+        return false;
+
+    *outWindow = NULL;
+    *outThreadId = 0;
+
+    HWND foregroundWindow = GetForegroundWindow();
+    DWORD foregroundPid = 0;
+    DWORD foregroundThreadId = 0;
+    if (foregroundWindow) {
+        foregroundThreadId = GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
+        if (foregroundPid == GetCurrentProcessId()) {
+            *outWindow = foregroundWindow;
+            *outThreadId = foregroundThreadId;
+            return true;
+        }
+    }
+
+    ce::overlay_compat::AuxiliaryProcessWindowInfo info = {};
+    if (ce::overlay_compat::FindAuxiliaryProcessWindow(GetCurrentProcessId(), nullptr, &info) && info.hwnd &&
+        info.threadId != 0) {
+        *outWindow = info.hwnd;
+        *outThreadId = info.threadId;
+        return true;
+    }
+
+    return false;
+}
+
+static LRESULT CALLBACK DirectDrawBootstrapHookProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code >= 0 && g_DDrawBootstrapQueued.load(std::memory_order_acquire) &&
+        !g_DDrawBootstrapRunning.exchange(true, std::memory_order_acq_rel)) {
+        HHOOK hook = g_DDrawBootstrapHook;
+        g_DDrawBootstrapHook = nullptr;
+        g_DDrawBootstrapQueued.store(false, std::memory_order_release);
+        if (hook) {
+            UnhookWindowsHookEx(hook);
+        }
+
+        BootstrapDirectDrawHooksOnCurrentThread("window-thread bootstrap");
+        g_DDrawBootstrapRunning.store(false, std::memory_order_release);
+    }
+
+    return CallNextHookEx(g_DDrawBootstrapHook, code, wParam, lParam);
+}
+
+static bool QueueDirectDrawBootstrapOnWindowThread() {
+    if (g_HooksInitialized)
+        return true;
+
+    HWND bootstrapWindow = NULL;
+    DWORD bootstrapThreadId = 0;
+    if (!FindDirectDrawBootstrapWindow(&bootstrapWindow, &bootstrapThreadId) || !bootstrapWindow ||
+        bootstrapThreadId == 0) {
+        HookLog("DDraw: Failed to find bootstrap window thread");
+        return false;
+    }
+
+    if (g_DDrawBootstrapHook) {
+        HookLog("DDraw: Bootstrap window hook already queued (hwnd=%p, tid=%lu)", bootstrapWindow,
+                (unsigned long)bootstrapThreadId);
+        return true;
+    }
+
+    g_DDrawBootstrapWindow = bootstrapWindow;
+    g_DDrawBootstrapThreadId = bootstrapThreadId;
+    g_DDrawBootstrapHook = SetWindowsHookExA(WH_CALLWNDPROC, DirectDrawBootstrapHookProc, NULL, bootstrapThreadId);
+    if (!g_DDrawBootstrapHook) {
+        HookLog("DDraw: Failed to install bootstrap window hook (hwnd=%p, tid=%lu, err=%lu)", bootstrapWindow,
+                (unsigned long)bootstrapThreadId, GetLastError());
+        return false;
+    }
+
+    g_DDrawBootstrapQueued.store(true, std::memory_order_release);
+    HookLog("DDraw: Queued bootstrap window hook (hwnd=%p, tid=%lu)", bootstrapWindow,
+            (unsigned long)bootstrapThreadId);
+
+    DWORD_PTR sendResult = 0;
+    if (!SendMessageTimeoutA(bootstrapWindow, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 1000, &sendResult)) {
+        HookLog("DDraw: Failed to send bootstrap wake message (hwnd=%p, tid=%lu, err=%lu)", bootstrapWindow,
+                (unsigned long)bootstrapThreadId, GetLastError());
+    }
+
+    return true;
+}
+
+static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason) {
+    if (g_HooksInitialized)
+        return;
+
+    HookLog("DDraw: BootstrapDirectDrawHooksOnCurrentThread starting via %s", reason);
+
+    HMODULE ddrawModule = GetModuleHandleA("ddraw.dll");
+    if (!ddrawModule) {
+        HookLog("DDraw: ddraw.dll not loaded during bootstrap");
+        return;
+    }
+
+    DirectDrawCreateEx_t pDirectDrawCreateEx = (DirectDrawCreateEx_t)GetProcAddress(ddrawModule, "DirectDrawCreateEx");
+    if (!pDirectDrawCreateEx) {
+        HookLog("DDraw: DirectDrawCreateEx not found during bootstrap");
+        return;
+    }
+
+        DirectDrawCreateEx_t createFunction = oDirectDrawCreateEx ? oDirectDrawCreateEx : pDirectDrawCreateEx;
+        HookLog("DDraw: Bootstrap create function=%p (export=%p, trampoline=%p)", createFunction, pDirectDrawCreateEx,
+            oDirectDrawCreateEx);
+
+    IDirectDraw7* ddraw7 = nullptr;
+        HRESULT hr = createFunction(NULL, (LPVOID*)&ddraw7, IID_IDirectDraw7, NULL);
+    if (FAILED(hr) || !ddraw7) {
+        HookLog("DDraw: Failed to create DirectDraw7 (hr=0x%08x)", hr);
+        InstallDirectDrawCreateExInlineHook(pDirectDrawCreateEx);
+        return;
+    }
+    HookLog("DDraw: Bootstrap DirectDraw7 created (object=%p)", ddraw7);
+
+    WNDCLASSEXA wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = "DDrawDummyClass";
+    RegisterClassExA(&wc);
+
+    HWND dummyHwnd = CreateWindowExA(0, wc.lpszClassName, "DDrawDummy", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL,
+                                     NULL, wc.hInstance, NULL);
+
+    hr = ddraw7->SetCooperativeLevel(dummyHwnd, DDSCL_NORMAL);
+    if (FAILED(hr)) {
+        HookLog("DDraw: SetCooperativeLevel failed during bootstrap (hr=0x%08x)", hr);
+    }
+
+    InstallDirectDrawHooksForInstance(ddraw7, reason);
+
+    DDSURFACEDESC2 ddsd = {};
+    ddsd.dwSize = sizeof(ddsd);
+    ddsd.dwFlags = DDSD_CAPS;
+    ddsd.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE;
+
+    IDirectDrawSurface7* dummySurface = nullptr;
+    hr = ddraw7->CreateSurface(&ddsd, &dummySurface, NULL);
+    HookLog("DDraw: Bootstrap CreateSurface returned hr=0x%08x, surface=%p", hr, dummySurface);
+
+    if (SUCCEEDED(hr) && dummySurface) {
+        InstallSurfaceHooksForSurface(dummySurface, reason, true);
+
+        IDirect3D7* d3d7 = nullptr;
+        if (SUCCEEDED(ddraw7->QueryInterface(kIID_IDirect3D7, (void**)&d3d7))) {
+            IDirect3DDevice7* d3d7Device = nullptr;
+            if (SUCCEEDED(d3d7->CreateDevice(kIID_IDirect3DHALDevice, dummySurface, &d3d7Device))) {
+                void** d3d7DeviceVTable = *(void***)d3d7Device;
+
+                if (VTableHook::Create(&d3d7DeviceVTable[35], (LPVOID)&DetourSetTextureStageState7,
+                                       (LPVOID*)&oSetTextureStageState7) == VTableHook::Success) {
+                    HookLog("DDraw: SetTextureStageState hook installed");
+                }
+
+                if (VTableHook::Create(&d3d7DeviceVTable[13], (LPVOID)&DetourSetRenderState7,
+                                       (LPVOID*)&oSetRenderState7) == VTableHook::Success) {
+                    HookLog("DDraw: SetRenderState hook installed");
+                }
+
+                d3d7Device->Release();
+            } else {
+                HookLog("DDraw: Failed to create D3D7 device for hooking");
+            }
+            d3d7->Release();
+        }
+    } else {
+        HookLog("DDraw: Failed to create primary surface (hr=0x%08x)", hr);
+    }
+
+    ddraw7->Release();
+    InstallDirectDrawCreateExInlineHook(pDirectDrawCreateEx);
+
+    DestroyWindow(dummyHwnd);
+    UnregisterClassA(wc.lpszClassName, wc.hInstance);
+
+    g_HooksInitialized = true;
+    HookLog("DDrawHook: Hooks installed");
+}
+
 // DirectDraw Capture class
 class DDrawCapture : public HookCaptureBase {
 public:
@@ -179,6 +454,21 @@ public:
     // Surface info
     IDirectDrawSurface7* ddrawSurface = nullptr;
     HWND targetHwnd = NULL;
+
+    void ReleaseOverlayResources() {
+        if (d3d9SharedSurface) {
+            d3d9SharedSurface->Release();
+            d3d9SharedSurface = nullptr;
+        }
+        if (d3d9DeviceEx) {
+            d3d9DeviceEx->Release();
+            d3d9DeviceEx = nullptr;
+        }
+        if (d3d9Ex) {
+            d3d9Ex->Release();
+            d3d9Ex = nullptr;
+        }
+    }
 
     void Cleanup() override {
         CleanupDDraw();
@@ -223,19 +513,7 @@ public:
             d3d11Device = nullptr;
         }
 
-        // Release D3D9Ex wrapper
-        if (d3d9SharedSurface) {
-            d3d9SharedSurface->Release();
-            d3d9SharedSurface = nullptr;
-        }
-        if (d3d9DeviceEx) {
-            d3d9DeviceEx->Release();
-            d3d9DeviceEx = nullptr;
-        }
-        if (d3d9Ex) {
-            d3d9Ex->Release();
-            d3d9Ex = nullptr;
-        }
+        ReleaseOverlayResources();
 
         ddrawSurface = nullptr;
         targetHwnd = NULL;
@@ -411,9 +689,60 @@ public:
         return true;
     }
 
-    void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t h) {
-        if (initialized)
-            return;
+    bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t h) {
+        if (!hwnd || w == 0 || h == 0) {
+            static int invalidOverlayStateLogCount = 0;
+            if (invalidOverlayStateLogCount < 3) {
+                HookLog("DDraw: EnsureOverlayDevice skipped (hwnd=%p, size=%ux%u)", hwnd, w, h);
+                invalidOverlayStateLogCount++;
+            }
+            return false;
+        }
+
+        const bool hwndChanged = targetHwnd && hwnd != targetHwnd;
+        const bool sizeChanged = width != w || height != h;
+        if ((hwndChanged || sizeChanged) && d3d9DeviceEx) {
+            HookLog("DDraw: Recreating overlay helper (oldHwnd=%p newHwnd=%p old=%ux%u new=%ux%u)", targetHwnd, hwnd,
+                    width, height, w, h);
+            ReleaseOverlayResources();
+        }
+
+        targetHwnd = hwnd;
+        width = w;
+        height = h;
+        format = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+        if (d3d9DeviceEx) {
+            return true;
+        }
+
+        if (!CreateD3D9ExWrapper(hwnd)) {
+            HookLog("DDraw: Overlay disabled (D3D9Ex wrapper failed)");
+            return false;
+        }
+
+        HookLog("DDraw: Overlay helper ready (hwnd=%p, size=%ux%u)", hwnd, width, height);
+        return true;
+    }
+
+    bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t h) {
+        if (!surface || w == 0 || h == 0) {
+            HookLog("DDraw: EnsureCaptureResources skipped (surface=%p, size=%ux%u)", surface, w, h);
+            return false;
+        }
+
+        if (initialized && ddrawSurface == surface && width == w && height == h) {
+            if (hwnd) {
+                targetHwnd = hwnd;
+            }
+            return true;
+        }
+
+        if (initialized) {
+            HookLog("DDraw: Reinitializing capture resources for new surface/size (oldSurface=%p newSurface=%p old=%ux%u new=%ux%u)",
+                    ddrawSurface, surface, width, height, w, h);
+            CleanupDDraw();
+        }
 
         ddrawSurface = surface;
         targetHwnd = hwnd;
@@ -421,42 +750,57 @@ public:
         height = h;
         format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-        if (width == 0 || height == 0) {
-            HookLog("DDraw: Invalid dimensions");
-            return;
-        }
-
-        // Create D3D11 device
         if (!CreateD3D11Device()) {
             CleanupDDraw();
-            return;
+            return false;
         }
 
-        // Create staging texture for CPU copy
         if (!CreateStagingTexture()) {
             CleanupDDraw();
-            return;
+            return false;
         }
 
-        // Create shared textures
         if (!CreateSharedTextures()) {
             CleanupDDraw();
-            return;
+            return false;
         }
 
-        // Create D3D9Ex wrapper for overlay
-        if (!CreateD3D9ExWrapper(hwnd)) {
-            // Non-fatal, overlay just won't work
-            HookLog("DDraw: Overlay disabled (D3D9Ex wrapper failed)");
-        }
+        EnsureOverlayDevice(hwnd, w, h);
 
-        // Publish to shared memory
         if (g_IPC) {
             PublishToSharedMemory(g_IPC);
         }
 
         initialized = true;
         HookLog("DDraw Capture Initialized: %dx%d", width, height);
+        return true;
+    }
+
+    bool PresentOverlay() {
+        if (!d3d9DeviceEx) {
+            return false;
+        }
+
+        HRESULT hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, targetHwnd, nullptr, D3DPRESENT_DONOTWAIT);
+        static uint32_t overlayPresentCount = 0;
+        static uint64_t lastOverlayPresentLogTick = 0;
+        overlayPresentCount++;
+        uint64_t nowTick = GetTickCount64();
+        if (overlayPresentCount <= 8 || (nowTick - lastOverlayPresentLogTick) >= 1000) {
+            HookLogImportant("DDraw: Overlay helper PresentEx hr=0x%08X hwnd=%p size=%ux%u count=%u", (unsigned)hr,
+                             targetHwnd, width, height, overlayPresentCount);
+            lastOverlayPresentLogTick = nowTick;
+        }
+
+        if (FAILED(hr) && hr != D3DERR_WASSTILLDRAWING) {
+            HookLog("DDraw: Overlay helper present failed (hr=0x%08x)", hr);
+        }
+
+        return SUCCEEDED(hr);
+    }
+
+    void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t h) {
+        EnsureCaptureResources(surface, hwnd, w, h);
     }
 
     void CaptureFrame(void* bits, int pitch) {
@@ -521,12 +865,7 @@ public:
             return;
 
         HDC hdc = NULL;
-        // Get DC from surface
-        typedef HRESULT(STDMETHODCALLTYPE * GetDC_t)(IDirectDrawSurface7*, HDC*);
-        void** vtable = *(void***)surface;
-        GetDC_t pGetDC = (GetDC_t)vtable[DDSURFACE7_VTABLE_GETDC];
-
-        if (FAILED(pGetDC(surface, &hdc)) || !hdc)
+        if (FAILED(surface->GetDC(&hdc)) || !hdc)
             return;
 
         // Create compatible DC and bitmap
@@ -554,10 +893,7 @@ public:
         DeleteObject(hbm);
         DeleteDC(memDC);
 
-        // Release surface DC
-        typedef HRESULT(STDMETHODCALLTYPE * ReleaseDC_t)(IDirectDrawSurface7*, HDC);
-        ReleaseDC_t pReleaseDC = (ReleaseDC_t)vtable[DDSURFACE7_VTABLE_RELEASEDC];
-        pReleaseDC(surface, hdc);
+        surface->ReleaseDC(hdc);
     }
 };
 
@@ -568,11 +904,25 @@ static void DrawDDrawOverlay() {
     if (!g_DDrawCapture.d3d9DeviceEx)
         return;
 
+    if (g_DDrawCapture.targetHwnd && g_DDrawCapture.targetHwnd != g_CachedHwnd) {
+        g_CachedHwnd = g_DDrawCapture.targetHwnd;
+        InputManager::Get().HookWindow(g_CachedHwnd);
+    }
+
+    if (g_CachedHwnd) {
+        g_OverlayAdapter.SetHwnd(g_CachedHwnd);
+    }
+
     if (!g_OverlayAdapter.IsInitialized()) {
         g_CachedHwnd = g_DDrawCapture.targetHwnd;
-        g_OverlayAdapter.SetHwnd(g_CachedHwnd);
-        if (g_OverlayAdapter.InitDX9(g_DDrawCapture.d3d9DeviceEx)) {
+        if (g_CachedHwnd) {
+            InputManager::Get().HookWindow(g_CachedHwnd);
             g_OverlayAdapter.SetHwnd(g_CachedHwnd);
+        }
+        if (g_OverlayAdapter.InitDX9(g_DDrawCapture.d3d9DeviceEx)) {
+            if (g_CachedHwnd) {
+                g_OverlayAdapter.SetHwnd(g_CachedHwnd);
+            }
             HookLog("DDraw: OverlayAdapter initialized");
         }
     }
@@ -584,25 +934,135 @@ static void DrawDDrawOverlay() {
 
     if (g_OverlayAdapter.IsInitialized() && g_DDrawCapture.width > 0 && g_DDrawCapture.height > 0) {
         g_OverlayAdapter.RenderOverlay(g_DDrawCapture.width, g_DDrawCapture.height);
+        static uint32_t overlayRenderSubmitCount = 0;
+        static uint64_t lastOverlayRenderSubmitLogTick = 0;
+        overlayRenderSubmitCount++;
+        uint64_t nowTick = GetTickCount64();
+        if (overlayRenderSubmitCount <= 8 || (nowTick - lastOverlayRenderSubmitLogTick) >= 1000) {
+            HookLogImportant("DDraw: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)",
+                             g_DDrawCapture.targetHwnd, g_DDrawCapture.width, g_DDrawCapture.height,
+                             overlayRenderSubmitCount);
+            lastOverlayRenderSubmitLogTick = nowTick;
+        }
+        g_DDrawCapture.PresentOverlay();
     }
 }
 
 // Get surface dimensions from DDSURFACEDESC2
 static bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& h) {
-    // DDSURFACEDESC2 is 124 bytes
-    uint8_t desc[128] = {};
-    *(DWORD*)desc = 124;  // dwSize
+    DDSURFACEDESC2 desc = {};
+    desc.dwSize = sizeof(desc);
 
-    typedef HRESULT(STDMETHODCALLTYPE * GetSurfaceDesc_t)(IDirectDrawSurface7*, void*);
-    void** vtable = *(void***)surface;
-    GetSurfaceDesc_t pGetSurfaceDesc = (GetSurfaceDesc_t)vtable[18];  // GetSurfaceDesc
-
-    if (SUCCEEDED(pGetSurfaceDesc(surface, desc))) {
-        w = *(DWORD*)(desc + 8);   // dwWidth at offset 8
-        h = *(DWORD*)(desc + 12);  // dwHeight at offset 12
+    if (surface && SUCCEEDED(surface->GetSurfaceDesc(&desc))) {
+        w = desc.dwWidth;
+        h = desc.dwHeight;
         return true;
     }
     return false;
+}
+
+static void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const char* reason, bool markPrototype) {
+    if (!surface)
+        return;
+
+    void** surfaceVTable = *(void***)surface;
+    if (!surfaceVTable) {
+        HookLog("DDraw: InstallSurfaceHooksForSurface skipped for %s - null vtable (surface=%p)", reason, surface);
+        return;
+    }
+
+    if (HasHookedVTable(g_HookedSurfaceVTables, surfaceVTable)) {
+        HookLog("DDraw: InstallSurfaceHooksForSurface skipped for %s - vtable already hooked (surface=%p, vtable=%p)",
+                reason, surface, surfaceVTable);
+        return;
+    }
+
+    g_HookedSurfaceVTables.push_back(surfaceVTable);
+    if (markPrototype && !g_HookSurfacePrototype)
+        g_HookSurfacePrototype = surface;
+
+    HookLog("DDraw: Installing surface hooks via %s (surface=%p, vtable=%p, prototype=%d)", reason, surface,
+            surfaceVTable, markPrototype ? 1 : 0);
+
+    VTableHook::Status flipStatus = VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_FLIP],
+                                                       (LPVOID)&DetourDDSurface7Flip,
+                                                       oDDSurface7Flip ? nullptr : (LPVOID*)&oDDSurface7Flip);
+    if (flipStatus == VTableHook::Success) {
+        HookLog("DDraw: Flip hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: Flip hook install via %s returned %s", reason, VTableHook::StatusToString(flipStatus));
+    }
+
+    VTableHook::Status bltStatus = VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_BLT],
+                                                      (LPVOID)&DetourDDSurface7Blt,
+                                                      oDDSurface7Blt ? nullptr : (LPVOID*)&oDDSurface7Blt);
+    if (bltStatus == VTableHook::Success) {
+        HookLog("DDraw: Blt hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: Blt hook install via %s returned %s", reason, VTableHook::StatusToString(bltStatus));
+    }
+
+    VTableHook::Status lockStatus = VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_LOCK],
+                                                       (LPVOID)&DetourDDSurface7Lock,
+                                                       oDDSurface7Lock ? nullptr : (LPVOID*)&oDDSurface7Lock);
+    if (lockStatus == VTableHook::Success) {
+        HookLog("DDraw: Lock hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: Lock hook install via %s returned %s", reason, VTableHook::StatusToString(lockStatus));
+    }
+
+    VTableHook::Status unlockStatus = VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_UNLOCK],
+                                                         (LPVOID)&DetourDDSurface7Unlock,
+                                                         oDDSurface7Unlock ? nullptr : (LPVOID*)&oDDSurface7Unlock);
+    if (unlockStatus == VTableHook::Success) {
+        HookLog("DDraw: Unlock hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: Unlock hook install via %s returned %s", reason,
+                VTableHook::StatusToString(unlockStatus));
+    }
+}
+
+static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* reason) {
+    if (!ddraw7) {
+        HookLog("DDraw: InstallDirectDrawHooksForInstance skipped for %s - null object", reason);
+        return;
+    }
+
+    void** ddraw7VTable = *(void***)ddraw7;
+    if (!ddraw7VTable) {
+        HookLog("DDraw: InstallDirectDrawHooksForInstance skipped for %s - null vtable (object=%p)", reason,
+                ddraw7);
+        return;
+    }
+
+    if (HasHookedVTable(g_HookedDDrawVTables, ddraw7VTable)) {
+        HookLog("DDraw: InstallDirectDrawHooksForInstance skipped for %s - vtable already hooked (object=%p, vtable=%p)",
+                reason, ddraw7, ddraw7VTable);
+        return;
+    }
+
+    g_HookedDDrawVTables.push_back(ddraw7VTable);
+    HookLog("DDraw: Installing DirectDraw hooks via %s (object=%p, vtable=%p)", reason, ddraw7, ddraw7VTable);
+
+    VTableHook::Status createSurfaceStatus = VTableHook::Create(&ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface,
+                                                                oDDraw7CreateSurface ? nullptr : (LPVOID*)&oDDraw7CreateSurface);
+    if (createSurfaceStatus == VTableHook::Success) {
+        HookLog("DDraw: CreateSurface hook installed via %s", reason);
+    } else {
+        HookLog("DDraw: CreateSurface hook install via %s returned %s", reason,
+                VTableHook::StatusToString(createSurfaceStatus));
+    }
+}
+
+bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
+    HookLog("DDraw: HookDirectDrawObject called (object=%p, iidIsDDraw7=%d)", directDrawObject,
+            IsEqualIID(iid, IID_IDirectDraw7) ? 1 : 0);
+
+    if (!directDrawObject || !IsEqualIID(iid, IID_IDirectDraw7))
+        return false;
+
+    InstallDirectDrawHooksForInstance(reinterpret_cast<IDirectDraw7*>(directDrawObject), "wrapper CreateEx");
+    return true;
 }
 
 // Common capture logic called after Flip/Blt
@@ -612,6 +1072,8 @@ static void HandleCapture(IDirectDrawSurface7* primarySurface) {
         g_CaptureRecurse--;
         return;
     }
+
+    g_RenderWatchdog.Heartbeat();
 
     // Update performance metrics
     static int64_t qpcFreq = 0;
@@ -629,23 +1091,35 @@ static void HandleCapture(IDirectDrawSurface7* primarySurface) {
     bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
     bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
     bool isRecording = g_IPC && g_IPC->IsRecording();
+    HWND targetHwnd = ResolveDirectDrawTargetWindow();
+    uint32_t surfaceWidth = 0;
+    uint32_t surfaceHeight = 0;
+    const bool haveSurfaceSize = GetSurfaceSize(primarySurface, surfaceWidth, surfaceHeight) && surfaceWidth > 0 &&
+                                 surfaceHeight > 0;
+
+    static bool loggedFirstHandleCapture = false;
+    if (!loggedFirstHandleCapture) {
+        HookLogImportant(
+            "DDraw: First HandleCapture surface=%p hwnd=%p recording=%d showOverlay=%d captureIncludeOverlay=%d size=%ux%u",
+            primarySurface, targetHwnd, isRecording ? 1 : 0, shouldDrawOverlay ? 1 : 0,
+            captureIncludeOverlay ? 1 : 0, surfaceWidth, surfaceHeight);
+        loggedFirstHandleCapture = true;
+    }
+
+    if (shouldDrawOverlay && haveSurfaceSize) {
+        g_DDrawCapture.EnsureOverlayDevice(targetHwnd, surfaceWidth, surfaceHeight);
+    }
 
     // Lambda for capture operation
     auto doCapture = [&]() {
         if (isRecording) {
-            if (!g_DDrawCapture.initialized) {
-                uint32_t w = 0, h = 0;
-                if (GetSurfaceSize(primarySurface, w, h) && w > 0 && h > 0) {
-                    HWND hwnd = GetForegroundWindow();
-                    g_DDrawCapture.Init(primarySurface, hwnd, w, h);
-                }
+            if (!g_DDrawCapture.initialized && haveSurfaceSize) {
+                g_DDrawCapture.EnsureCaptureResources(primarySurface, targetHwnd, surfaceWidth, surfaceHeight);
             }
 
             if (g_DDrawCapture.initialized) {
                 g_DDrawCapture.CaptureFrameViaGDI(primarySurface);
             }
-        } else if (g_DDrawCapture.initialized) {
-            g_DDrawCapture.Cleanup();
         }
     };
 
@@ -673,44 +1147,42 @@ static void HandleCapture(IDirectDrawSurface7* primarySurface) {
 }
 
 // Hook: IDirectDraw7::CreateSurface
-typedef HRESULT(STDMETHODCALLTYPE* DDraw7CreateSurface_t)(IDirectDraw7* pThis, void* pDesc,
-                                                          IDirectDrawSurface7** ppSurface, IUnknown* pUnkOuter);
-static DDraw7CreateSurface_t oDDraw7CreateSurface = nullptr;
-
-static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, void* pDesc,
+static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
                                                                 IDirectDrawSurface7** ppSurface, IUnknown* pUnkOuter) {
-    if (pDesc && g_IPC) {
-        // We use a local struct to access dwBackBufferCount safely
-        struct {
-            DWORD dwSize;
-            DWORD dwFlags;
-            DWORD dwHeight;
-            DWORD dwWidth;
-            LONG lPitch;
-            DWORD dwBackBufferCount;
-        }* ddsd = (decltype(ddsd))pDesc;
+    HookLog("DDraw: DetourDirectDraw7CreateSurface called (ddraw=%p, flags=0x%08x, caps=0x%08x)", pThis,
+            pDesc ? pDesc->dwFlags : 0, pDesc ? pDesc->ddsCaps.dwCaps : 0);
 
+    if (pDesc && g_IPC) {
         int count = g_IPC->GetSharedMem()->graphicsConfig.backbufferCount;
-        if (count >= 2 && count <= 6) {
-            // Check for DDSD_BACKBUFFERCOUNT (0x00000020) and DDSCAPS_COMPLEX
-            // (0x00000008 in Caps) For simplicity, if it's a primary chain, we just
-            // force it.
-            if (ddsd->dwFlags & 0x00000001) {  // DDSD_CAPS
-                // We'd need to check caps too, but overriding backbuffer count
-                // is usually what the user wants for primary chain.
-                ddsd->dwFlags |= 0x00000020;  // DDSD_BACKBUFFERCOUNT
-                ddsd->dwBackBufferCount = (DWORD)count - 1;
+        if (count >= 2 && count <= 6 && IsPrimarySurfaceDesc(pDesc)) {
+            if (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX) {
+                pDesc->dwFlags |= DDSD_BACKBUFFERCOUNT;
+                pDesc->dwBackBufferCount = (DWORD)count - 1;
                 HookLog("DDraw: CreateSurface: Overriding BackBufferCount to %d", count);
             }
         }
     }
-    return oDDraw7CreateSurface(pThis, pDesc, ppSurface, pUnkOuter);
+
+    HRESULT hr = oDDraw7CreateSurface ? oDDraw7CreateSurface(pThis, pDesc, ppSurface, pUnkOuter) : DDERR_GENERIC;
+    HookLog("DDraw: DetourDirectDraw7CreateSurface returned hr=0x%08x, surface=%p", hr,
+            (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr);
+    if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        InstallSurfaceHooksForSurface(*ppSurface, "CreateSurface");
+        if (IsPrimarySurfaceDesc(pDesc)) {
+            g_PrimarySurface = *ppSurface;
+            HookLog("DDraw: Tracking primary surface from CreateSurface (%p)", *ppSurface);
+        }
+    }
+
+    return hr;
 }
 
 // Hook: IDirectDrawSurface7::Flip
 
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
                                                       DWORD flags) {
+    MaybeTrackPrimarySurface(surface, "Flip");
+
     if (g_IPC) {
         std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
         if (mode != "default") {
@@ -750,11 +1222,32 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surfac
                                                      void* bltFx) {
     HRESULT hr = oDDSurface7Blt(surface, destRect, srcSurface, srcRect, flags, bltFx);
 
-    // Only capture if this is a blit to the primary surface
-    if (g_PrimarySurface && surface == g_PrimarySurface) {
+    if (surface != g_HookSurfacePrototype && !g_PrimarySurface) {
+        MaybeTrackPrimarySurface(surface, "Blt");
+    }
+
+    // Only capture if this is a blit to the tracked primary surface
+    if (surface && surface != g_HookSurfacePrototype && (!g_PrimarySurface || surface == g_PrimarySurface)) {
         HandleCapture(surface);
     }
 
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDDSurface7Lock(IDirectDrawSurface7* surface, LPRECT destRect, void* surfaceDesc,
+                                                      DWORD flags, HANDLE event) {
+    HRESULT hr = oDDSurface7Lock(surface, destRect, surfaceDesc, flags, event);
+    if (SUCCEEDED(hr) && surface != g_HookSurfacePrototype && !g_PrimarySurface) {
+        MaybeTrackPrimarySurface(surface, "Lock");
+    }
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, LPRECT rect) {
+    HRESULT hr = oDDSurface7Unlock(surface, rect);
+    if (SUCCEEDED(hr) && surface && surface == g_PrimarySurface) {
+        HandleCapture(surface);
+    }
     return hr;
 }
 
@@ -829,6 +1322,18 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* d
     return oSetTextureStageState7(device, Stage, Type, Value);
 }
 
+static HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter) {
+    HookLog("DDraw: DetourDirectDrawCreateEx called (iidIsDDraw7=%d, out=%p)", IsEqualIID(iid, IID_IDirectDraw7) ? 1 : 0,
+            lplpDD);
+    HRESULT hr = oDirectDrawCreateEx ? oDirectDrawCreateEx(lpGuid, lplpDD, iid, pUnkOuter) : DDERR_GENERIC;
+    HookLog("DDraw: DetourDirectDrawCreateEx returned hr=0x%08x, object=%p", hr,
+            (lplpDD && SUCCEEDED(hr)) ? *lplpDD : nullptr);
+    if (SUCCEEDED(hr) && lplpDD && *lplpDD && IsEqualIID(iid, IID_IDirectDraw7)) {
+        InstallDirectDrawHooksForInstance(reinterpret_cast<IDirectDraw7*>(*lplpDD), "DirectDrawCreateEx");
+    }
+    return hr;
+}
+
 void DDrawHook::Init() {
     HookLog("DDrawHook::Init()");
 
@@ -838,150 +1343,22 @@ void DDrawHook::Init() {
         return;
     }
 
-    // Create dummy DirectDraw7 device to get vtable
-    typedef HRESULT(WINAPI * DirectDrawCreateEx_t)(GUID*, LPVOID*, const IID*, IUnknown*);
     DirectDrawCreateEx_t pDirectDrawCreateEx = (DirectDrawCreateEx_t)GetProcAddress(ddrawModule, "DirectDrawCreateEx");
     if (!pDirectDrawCreateEx) {
         HookLog("DDraw: DirectDrawCreateEx not found");
         return;
     }
 
-    // IID_IDirectDraw7 = {15e65ec0-3b9c-11d2-b92f-00609797ea5b}
-    static const GUID IID_IDirectDraw7 = {0x15e65ec0, 0x3b9c, 0x11d2, {0xb9, 0x2f, 0x00, 0x60, 0x97, 0x97, 0xea, 0x5b}};
+    InstallDirectDrawCreateExInlineHook(pDirectDrawCreateEx);
 
-    IDirectDraw7* ddraw7 = nullptr;
-    HRESULT hr = pDirectDrawCreateEx(NULL, (LPVOID*)&ddraw7, &IID_IDirectDraw7, NULL);
-    if (FAILED(hr) || !ddraw7) {
-        HookLog("DDraw: Failed to create DirectDraw7 (hr=0x%08x)", hr);
-        return;
-    }
-
-    // Create dummy window
-    WNDCLASSEXA wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = DefWindowProcA;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = "DDrawDummyClass";
-    RegisterClassExA(&wc);
-
-    HWND dummyHwnd = CreateWindowExA(0, wc.lpszClassName, "DDrawDummy", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL,
-                                     wc.hInstance, NULL);
-
-    // Set cooperative level
-    typedef HRESULT(STDMETHODCALLTYPE * SetCooperativeLevel_t)(IDirectDraw7*, HWND, DWORD);
-    void** ddraw7VTable = *(void***)ddraw7;
-    SetCooperativeLevel_t pSetCooperativeLevel = (SetCooperativeLevel_t)ddraw7VTable[20];
-    pSetCooperativeLevel(ddraw7, dummyHwnd, 0x11);  // DDSCL_NORMAL
-
-    // Create primary surface to get vtable
-    struct {
-        DWORD dwSize;
-        DWORD dwFlags;
-        DWORD dwHeight;
-        DWORD dwWidth;
-        LONG lPitch;
-        DWORD dwBackBufferCount;
-        DWORD padding[50];
-    } ddsd = {};
-    ddsd.dwSize = 124;
-    ddsd.dwFlags = 1;                   // DDSD_CAPS
-    *(DWORD*)&ddsd.padding[0] = 0x200;  // DDSCAPS_PRIMARYSURFACE
-
-    typedef HRESULT(STDMETHODCALLTYPE * CreateSurface_t)(IDirectDraw7*, void*, IDirectDrawSurface7**, void*);
-
-    // Hook CreateSurface on IDirectDraw7 (index 6)
-    if (VTableHook::Create(&ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface, (LPVOID*)&oDDraw7CreateSurface) ==
-        VTableHook::Success) {
-        HookLog("DDraw: CreateSurface hook installed");
-    }
-
-    CreateSurface_t pCreateSurface = (CreateSurface_t)ddraw7VTable[6];
-
-    IDirectDrawSurface7* dummySurface = nullptr;
-    hr = pCreateSurface(ddraw7, &ddsd, &dummySurface, NULL);
-
-    if (SUCCEEDED(hr) && dummySurface) {
-        g_PrimarySurface = dummySurface;
-        void** surfaceVTable = *(void***)dummySurface;
-
-        // Hook Flip
-        if (VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_FLIP], (LPVOID)&DetourDDSurface7Flip,
-                               (LPVOID*)&oDDSurface7Flip) == VTableHook::Success) {
-            HookLog("DDraw: Flip hook installed");
+    if (!QueueDirectDrawBootstrapOnWindowThread()) {
+        HookLog("DDraw: Falling back to hook-thread bootstrap");
+        if (!g_HooksInitialized) {
+            BootstrapDirectDrawHooksOnCurrentThread("hook-thread bootstrap");
         }
-
-        // Hook Blt
-        if (VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_BLT], (LPVOID)&DetourDDSurface7Blt,
-                               (LPVOID*)&oDDSurface7Blt) == VTableHook::Success) {
-            HookLog("DDraw: Blt hook installed");
-        }
-
-        // Try to hook IDirect3DDevice7::SetTextureStageState
-        // Get IDirect3D7 from IDirectDraw7
-        static const GUID IID_IDirect3D7 = {
-            0xf5049e77, 0x4861, 0x11d2, {0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8}};
-        IDirect3D7* d3d7 = nullptr;
-
-        typedef HRESULT(STDMETHODCALLTYPE * QueryInterface_t)(IUnknown*, REFIID, void**);
-        typedef HRESULT(STDMETHODCALLTYPE * Release_t)(IUnknown*);
-
-        QueryInterface_t pQueryInterface = (QueryInterface_t)ddraw7VTable[0];
-        Release_t pReleaseDDraw7 = (Release_t)ddraw7VTable[2];
-
-        if (SUCCEEDED(pQueryInterface((IUnknown*)ddraw7, IID_IDirect3D7, (void**)&d3d7))) {
-            void** d3d7VTable = *(void***)d3d7;
-            Release_t pReleaseD3D7 = (Release_t)d3d7VTable[2];
-
-            // Create dummy device
-            // Note: Creating a HAL device might fail if one already exists or window
-            // is owned Try Reference Rasterizer or just HAL
-            static const GUID IID_IDirect3DHALDevice = {
-                0x84E63dE0, 0x46AA, 0x11CF, {0x81, 0x6F, 0x00, 0x00, 0xC0, 0x20, 0x15, 0x6E}};
-
-            IDirect3DDevice7* d3d7Device = nullptr;
-
-            typedef HRESULT(STDMETHODCALLTYPE * D3D7CreateDevice_t)(IDirect3D7*, REFCLSID, IDirectDrawSurface7*,
-                                                                    IDirect3DDevice7**);
-            D3D7CreateDevice_t pD3D7CreateDevice = (D3D7CreateDevice_t)d3d7VTable[4];
-
-            if (SUCCEEDED(pD3D7CreateDevice(d3d7, IID_IDirect3DHALDevice, dummySurface, &d3d7Device))) {
-                void** d3d7DeviceVTable = *(void***)d3d7Device;
-                Release_t pReleaseD3D7Device = (Release_t)d3d7DeviceVTable[2];
-
-                // SetTextureStageState is index 35
-                // SetTextureStageState is index 35
-                if (VTableHook::Create(&d3d7DeviceVTable[35], (LPVOID)&DetourSetTextureStageState7,
-                                       (LPVOID*)&oSetTextureStageState7) == VTableHook::Success) {
-                    HookLog("DDraw: SetTextureStageState hook installed");
-                }
-
-                // SetRenderState is index 13
-                if (VTableHook::Create(&d3d7DeviceVTable[13], (LPVOID)&DetourSetRenderState7,
-                                       (LPVOID*)&oSetRenderState7) == VTableHook::Success) {
-                    HookLog("DDraw: SetRenderState hook installed");
-                }
-
-                pReleaseD3D7Device((IUnknown*)d3d7Device);
-            } else {
-                HookLog("DDraw: Failed to create D3D7 device for hooking");
-            }
-            pReleaseD3D7((IUnknown*)d3d7);
-        }
-
-        // Don't release dummySurface - we keep reference to detect primary surface
-    } else {
-        HookLog("DDraw: Failed to create primary surface (hr=0x%08x)", hr);
+    } else if (!g_HooksInitialized) {
+        HookLog("DDraw: Awaiting queued window-thread bootstrap callback");
     }
-
-    // Release DirectDraw7 (keep surface)
-    ((void(STDMETHODCALLTYPE*)(void*))ddraw7VTable[2])(ddraw7);
-
-    // Cleanup window
-    DestroyWindow(dummyHwnd);
-    UnregisterClassA(wc.lpszClassName, wc.hInstance);
-
-    g_HooksInitialized = true;
-    HookLog("DDrawHook: Hooks installed");
 }
 
 void DDrawHook::Shutdown() {
