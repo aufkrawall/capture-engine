@@ -127,4 +127,42 @@ inline RECT AdjustWindowRectForClientSize(DWORD style, DWORD exStyle, int client
     return rect;
 }
 
+inline bool PrimeWindowForBenchmark(HWND hwnd, bool fullscreen, int clientWidth, int clientHeight,
+                                    DWORD warmupMs = 750) {
+    if (!hwnd) {
+        return false;
+    }
+
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+
+    if (fullscreen) {
+        const RECT monitorRect = GetPrimaryMonitorRect();
+        SetWindowPos(hwnd, HWND_TOPMOST, monitorRect.left, monitorRect.top, clientWidth, clientHeight,
+                     SWP_SHOWWINDOW);
+    } else {
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    }
+
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
+
+    const uint64_t deadline = GetTickCount64() + warmupMs;
+    MSG msg = {};
+    while (GetTickCount64() < deadline) {
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+            if (msg.message == WM_QUIT) {
+                return false;
+            }
+        }
+        Sleep(10);
+    }
+
+    return IsWindow(hwnd) != FALSE;
+}
+
 }  // namespace testapp

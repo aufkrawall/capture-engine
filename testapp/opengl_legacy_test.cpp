@@ -304,6 +304,8 @@ int main(int argc, char* argv[]) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
+        if (!g_Running)
+            break;
         RenderFrame();
         SwapBuffers(hDC);
     }

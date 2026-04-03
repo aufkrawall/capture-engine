@@ -54,7 +54,6 @@ ComPtr<ID3D11DeviceContext> g_Context;
 ComPtr<ID3D11DeviceContext1> g_Context1;
 ComPtr<IDXGISwapChain> g_SwapChain;
 ComPtr<ID3D11RenderTargetView> g_Rtv;
-HANDLE g_FrameWaitHandle = nullptr;
 
 float g_BarPosition = 0.0f;
 auto g_StartTime = std::chrono::high_resolution_clock::now();
@@ -81,7 +80,7 @@ bool InitDX11(HWND hwnd) {
                                  &g_Device, nullptr, &g_Context)))
         return false;
 
-    // Get IDXGIFactory2 from the device for waitable swap chain support
+    // Get IDXGIFactory2 from the device for flip-model swap chain creation
     ComPtr<IDXGIDevice> dxgiDevice;
     g_Device.As(&dxgiDevice);
     ComPtr<IDXGIAdapter> adapter;
@@ -97,7 +96,6 @@ bool InitDX11(HWND hwnd) {
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.SampleDesc.Count = 1;
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    sd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     ComPtr<IDXGISwapChain1> swapChain1;
     if (FAILED(factory2->CreateSwapChainForHwnd(g_Device.Get(), hwnd, &sd, nullptr, nullptr, &swapChain1)))
@@ -108,7 +106,6 @@ bool InitDX11(HWND hwnd) {
     ComPtr<IDXGISwapChain2> swapChain2;
     swapChain1.As(&swapChain2);
     swapChain2->SetMaximumFrameLatency(1);
-    g_FrameWaitHandle = swapChain2->GetFrameLatencyWaitableObject();
 
     // Optional: Use D3D11.1 ClearView to clear a sub-rect (needed for moving bar)
     g_Context.As(&g_Context1);
@@ -192,9 +189,12 @@ int main(int argc, char* argv[]) {
     int winH = g_Fullscreen ? g_WindowHeight : (windowRect.bottom - windowRect.top);
     HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX11 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
                               wc.hInstance, nullptr);
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight))
+        return 0;
     if (!InitDX11(hwnd))
         return 1;
-    ShowWindow(hwnd, SW_SHOW);
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight))
+        return 0;
 
     MSG msg = {};
     while (g_Running) {
@@ -202,7 +202,8 @@ int main(int argc, char* argv[]) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
-        WaitForSingleObjectEx(g_FrameWaitHandle, 1000, FALSE);
+        if (!g_Running)
+            break;
         Render();
     }
     return 0;

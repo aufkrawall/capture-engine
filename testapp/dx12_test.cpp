@@ -72,7 +72,6 @@ ComPtr<ID3D12CommandAllocator> g_CommandAllocators[FRAME_COUNT];
 ComPtr<ID3D12GraphicsCommandList> g_CommandList;
 ComPtr<ID3D12Fence> g_Fence;
 HANDLE g_FenceEvent;
-HANDLE g_FrameWaitHandle = nullptr;
 UINT64 g_FenceValues[FRAME_COUNT] = {};
 UINT g_FrameIndex = 0;
 UINT g_RtvDescriptorSize = 0;
@@ -176,11 +175,9 @@ bool InitDX12(HWND hwnd) {
     swapChain1.As(&g_SwapChain);
     g_FrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
 
-    // Get waitable object for smooth background frame pacing
     ComPtr<IDXGISwapChain2> swapChain2;
     swapChain1.As(&swapChain2);
     swapChain2->SetMaximumFrameLatency(1);
-    g_FrameWaitHandle = swapChain2->GetFrameLatencyWaitableObject();
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
     rtvHeapDesc.NumDescriptors = FRAME_COUNT;
@@ -317,13 +314,17 @@ int main(int argc, char* argv[]) {
                               g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top, nullptr,
                               nullptr, wc.hInstance, nullptr);
 
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) {
+        return 0;
+    }
+
     if (!InitDX12(hwnd)) {
         printf("Failed to initialize DX12\n");
         return 1;
     }
-
-    ShowWindow(hwnd, SW_SHOW);
-    UpdateWindow(hwnd);
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) {
+        return 0;
+    }
 
     MSG msg = {};
     while (g_Running) {
@@ -332,7 +333,6 @@ int main(int argc, char* argv[]) {
             DispatchMessage(&msg);
         }
         if (g_Running) {
-            WaitForSingleObjectEx(g_FrameWaitHandle, 1000, FALSE);
             Render();
         }
     }

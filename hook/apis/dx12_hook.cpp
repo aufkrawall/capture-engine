@@ -2214,6 +2214,46 @@ static void DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
     }
 }
 
+static bool IsDX12Swapchain(IDXGISwapChain1* pSwapChain) {
+    if (!pSwapChain)
+        return false;
+
+    ID3D12Device* pDX12Device = nullptr;
+    HRESULT hr = pSwapChain->GetDevice(IID_PPV_ARGS(&pDX12Device));
+    if (FAILED(hr) || !pDX12Device)
+        return false;
+
+    pDX12Device->Release();
+    return true;
+}
+
+static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain1* pSwapChain,
+                                                  const char* context) {
+    if (!pDevice || !pSwapChain)
+        return;
+
+    ID3D12CommandQueue* pQueue = nullptr;
+    HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
+    if (SUCCEEDED(qiHr) && pQueue) {
+        HookLogImportant("%s: QI for queue succeeded (queue=%p)", context, pQueue);
+        DX12_SetSwapchainQueue(pQueue);
+        pQueue->Release();
+        return;
+    }
+
+    // CreateSwapChainForHwnd is shared by DX10/11/12. Avoid treating arbitrary
+    // DXGI callers as ID3D12CommandQueue objects when QI already proved they are not.
+    if (IsDX12Swapchain(pSwapChain)) {
+        HookLogImportant(
+            "%s: DX12 swapchain created with device=%p but ID3D12CommandQueue QI failed (hr=0x%08X) — "
+            "leaving swapchain queue unchanged",
+            context, pDevice, qiHr);
+    } else {
+        HookLogImportant("%s: Non-DX12 swapchain for device=%p (queue QI hr=0x%08X) — skipping queue capture",
+                         context, pDevice, qiHr);
+    }
+}
+
 void DX12_AdjustWrapperResizeDepth_C(int delta) {
     DX12_AdjustWrapperResizeDepth(delta);
 }
@@ -2559,28 +2599,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         DXGIShared::InstallHooks(newSC, /*presentOnly=*/true);
         DXGIShared::RepairVTableHooksIfNeeded();
 
-        // Capture the swapchain queue so overlay submissions use the
-        // correct queue.  Per DXGI spec pDevice for DX12 is an
-        // ID3D12CommandQueue.  Same logic as the inline hook path.
-        if (pDevice) {
-            ID3D12CommandQueue* pQueue = nullptr;
-            HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
-            if (SUCCEEDED(qiHr) && pQueue) {
-                HookLogImportant("DeepHook: QI for queue succeeded (queue=%p)", pQueue);
-                DX12_SetSwapchainQueue(pQueue);
-                pQueue->Release();
-            } else {
-                // QI may fail if wrapped by Streamline or similar middleware.
-                auto* pDirectQueue = static_cast<ID3D12CommandQueue*>((IUnknown*)pDevice);
-                D3D12_COMMAND_QUEUE_DESC testDesc = pDirectQueue->GetDesc();
-                if (testDesc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-                    HookLogImportant("DeepHook: Direct cast queue succeeded (queue=%p)", pDirectQueue);
-                    DX12_SetSwapchainQueue(pDirectQueue);
-                } else {
-                    HookLogImportant("DeepHook: pDevice queue type=%d, not DIRECT — skipping", (int)testDesc.Type);
-                }
-            }
-        }
+        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "DeepHook");
     } else if (FAILED(hr)) {
         HookLogImportant("DeepHook: CreateSwapChainForHwnd FAILED hr=0x%08X hwnd=%p", hr, hWnd);
     }
@@ -2676,40 +2695,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         TrackSwapchainHwnd(*ppSC, hWnd);
         HookLogImportant("CreateSwapChainForHwnd INLINE: Created swapchain %p for HWND=%p", *ppSC, hWnd);
 
-        // Capture the swapchain queue so overlay submissions use the correct queue.
-        // Per DXGI spec, pDevice for DX12 is an ID3D12CommandQueue.
-        // QI may fail if Streamline or other middleware wraps the queue object.
-        ID3D12CommandQueue* pQueue = nullptr;
-        if (pDevice) {
-            HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
-            if (SUCCEEDED(qiHr) && pQueue) {
-                HookLogImportant("CreateSwapChainForHwnd INLINE: QI for queue succeeded (queue=%p)", pQueue);
-                DX12_SetSwapchainQueue(pQueue);
-                pQueue->Release();
-            } else {
-                // QI failed — pDevice may be wrapped by Streamline or similar.
-                // Per DXGI spec pDevice MUST be a command queue for DX12, so try
-                // a direct cast as a last resort.
-                HookLogImportant(
-                    "CreateSwapChainForHwnd INLINE: QI for ID3D12CommandQueue failed "
-                    "(hr=0x%08X) on device=%p — trying direct cast",
-                    qiHr, pDevice);
-                auto* pDirectQueue = static_cast<ID3D12CommandQueue*>((IUnknown*)pDevice);
-                D3D12_COMMAND_QUEUE_DESC testDesc = pDirectQueue->GetDesc();
-                if (testDesc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-                    HookLogImportant(
-                        "CreateSwapChainForHwnd INLINE: Direct cast succeeded — "
-                        "DIRECT queue at %p",
-                        pDirectQueue);
-                    DX12_SetSwapchainQueue(pDirectQueue);
-                } else {
-                    HookLogImportant(
-                        "CreateSwapChainForHwnd INLINE: Direct cast queue type=%d, "
-                        "not DIRECT — skipping",
-                        (int)testDesc.Type);
-                }
-            }
-        }
+        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd INLINE");
     }
 
     return hr;

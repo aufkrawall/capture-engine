@@ -37,7 +37,6 @@ static ComPtr<ID3D10VertexShader> g_VS;
 static ComPtr<ID3D10PixelShader> g_PS;
 static ComPtr<ID3D10InputLayout> g_InputLayout;
 static ComPtr<ID3D10Buffer> g_VB;
-static HANDLE g_FrameWaitHandle = nullptr;
 
 static float g_BarPosition = 0.0f;
 static auto g_StartTime = std::chrono::high_resolution_clock::now();
@@ -83,7 +82,7 @@ static bool InitDX10(HWND hwnd) {
     if (FAILED(D3D10CreateDevice(nullptr, D3D10_DRIVER_TYPE_HARDWARE, nullptr, flags, D3D10_SDK_VERSION, &g_Device)))
         return false;
 
-    // Get IDXGIFactory2 from device to support waitable swap chain
+    // Get IDXGIFactory2 from device for flip-model swap chain creation
     ComPtr<IDXGIDevice> dxgiDevice;
     g_Device.As(&dxgiDevice);
     ComPtr<IDXGIAdapter> adapter;
@@ -99,7 +98,6 @@ static bool InitDX10(HWND hwnd) {
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.SampleDesc.Count = 1;
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    sd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     ComPtr<IDXGISwapChain1> swapChain1;
     HRESULT hr = factory2->CreateSwapChainForHwnd(g_Device.Get(), hwnd, &sd, nullptr, nullptr, &swapChain1);
@@ -111,7 +109,6 @@ static bool InitDX10(HWND hwnd) {
     ComPtr<IDXGISwapChain2> swapChain2;
     swapChain1.As(&swapChain2);
     swapChain2->SetMaximumFrameLatency(1);
-    g_FrameWaitHandle = swapChain2->GetFrameLatencyWaitableObject();
 
     ComPtr<ID3D10Texture2D> backBuffer;
     hr = g_SwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
@@ -279,10 +276,12 @@ int main(int argc, char* argv[]) {
     int winH = g_Fullscreen ? g_WindowHeight : (windowRect.bottom - windowRect.top);
     HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX10 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
                               wc.hInstance, nullptr);
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight))
+        return 0;
     if (!InitDX10(hwnd))
         return 1;
-
-    ShowWindow(hwnd, SW_SHOW);
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight))
+        return 0;
 
     MSG msg = {};
     while (g_Running) {
@@ -290,7 +289,8 @@ int main(int argc, char* argv[]) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
-        WaitForSingleObjectEx(g_FrameWaitHandle, 1000, FALSE);
+        if (!g_Running)
+            break;
         Render();
     }
 
