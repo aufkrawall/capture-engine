@@ -114,6 +114,8 @@ static DWORD g_DDrawBootstrapThreadId = 0;
 static std::atomic<bool> g_DDrawBootstrapQueued{false};
 static std::atomic<bool> g_DDrawBootstrapRunning{false};
 
+static bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& h);
+
 static bool HasHookedVTable(const std::vector<void**>& hookedVTables, void** vtable) {
     return std::find(hookedVTables.begin(), hookedVTables.end(), vtable) != hookedVTables.end();
 }
@@ -189,7 +191,6 @@ static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* 
 static void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t directDrawCreateEx);
 static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason);
 static bool QueueDirectDrawBootstrapOnWindowThread();
-static bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& h);
 
 static HWND ResolveDirectDrawTargetWindow() {
     if (g_CachedHwnd && IsWindow(g_CachedHwnd)) {
@@ -487,7 +488,9 @@ public:
     // D3D9Ex wrapper for GPU sharing
     IDirect3D9Ex* d3d9Ex = nullptr;
     IDirect3DDevice9Ex* d3d9DeviceEx = nullptr;
+    IDirect3DSurface9* d3d9FastUploadSurface = nullptr;
     IDirect3DSurface9* d3d9UploadSurface = nullptr;
+    bool d3d9UsesFlipEx = false;
 
     // D3D11 for shared texture
     ID3D11Device* d3d11Device = nullptr;
@@ -506,6 +509,10 @@ public:
     HWND targetHwnd = NULL;
 
     void ReleaseOverlayResources() {
+        if (d3d9FastUploadSurface) {
+            d3d9FastUploadSurface->Release();
+            d3d9FastUploadSurface = nullptr;
+        }
         if (d3d9UploadSurface) {
             d3d9UploadSurface->Release();
             d3d9UploadSurface = nullptr;
@@ -518,6 +525,7 @@ public:
             d3d9Ex->Release();
             d3d9Ex = nullptr;
         }
+        d3d9UsesFlipEx = false;
     }
 
     void Cleanup() override {
@@ -716,26 +724,47 @@ public:
             return false;
         }
 
-        D3DPRESENT_PARAMETERS d3dpp = {};
-        d3dpp.Windowed = TRUE;
-        d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        d3dpp.hDeviceWindow = hwnd;
-        d3dpp.BackBufferFormat = D3DFMT_A8R8G8B8;
-        d3dpp.BackBufferWidth = width;
-        d3dpp.BackBufferHeight = height;
-        d3dpp.BackBufferCount = 1;
-        d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+        // The DirectDraw app already controls frame pacing on its own presentation path.
+        // The helper swap chain should avoid introducing a second vsync throttle.
+        UINT presentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
 
-        hr = d3d9Ex->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-                                    D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &d3dpp, NULL,
-                                    &d3d9DeviceEx);
+        auto tryCreateDevice = [&](D3DSWAPEFFECT swapEffect, UINT backBufferCount) {
+            D3DPRESENT_PARAMETERS d3dpp = {};
+            d3dpp.Windowed = TRUE;
+            d3dpp.SwapEffect = swapEffect;
+            d3dpp.hDeviceWindow = hwnd;
+            d3dpp.BackBufferFormat = D3DFMT_A8R8G8B8;
+            d3dpp.BackBufferWidth = width;
+            d3dpp.BackBufferHeight = height;
+            d3dpp.BackBufferCount = backBufferCount;
+            d3dpp.PresentationInterval = presentationInterval;
+            return d3d9Ex->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+                                          D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &d3dpp,
+                                          NULL, &d3d9DeviceEx);
+        };
+
+        hr = tryCreateDevice(D3DSWAPEFFECT_FLIPEX, 2);
+        if (SUCCEEDED(hr)) {
+            d3d9UsesFlipEx = true;
+        } else {
+            hr = tryCreateDevice(D3DSWAPEFFECT_DISCARD, 1);
+            d3d9UsesFlipEx = false;
+        }
 
         if (FAILED(hr)) {
             HookLog("DDraw: Failed to create D3D9Ex device (hr=0x%08x)", hr);
             return false;
         }
 
+        HookLog("DDraw: Created D3D9Ex helper device with %s swap effect", d3d9UsesFlipEx ? "FLIPEX" : "DISCARD");
+
         d3d9DeviceEx->SetMaximumFrameLatency(1);
+
+        hr = d3d9DeviceEx->CreateOffscreenPlainSurface(width, height, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+                                                       &d3d9FastUploadSurface, nullptr);
+        if (FAILED(hr)) {
+            HookLog("DDraw: Failed to create fast D3D9Ex upload surface (hr=0x%08x)", hr);
+        }
 
         hr = d3d9DeviceEx->CreateOffscreenPlainSurface(width, height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
                                                        &d3d9UploadSurface, nullptr);
@@ -775,9 +804,60 @@ public:
         return true;
     }
 
+    bool StretchOverlaySurfaceToBackbuffer(IDirect3DSurface9* surface) {
+        if (!surface) {
+            return false;
+        }
+
+        IDirect3DSurface9* backBuffer = nullptr;
+        HRESULT hr = d3d9DeviceEx->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (FAILED(hr) || !backBuffer) {
+            static int backBufferFailLogCount = 0;
+            if (backBufferFailLogCount < 4) {
+                HookLog("DDraw: Failed to get helper backbuffer for fast overlay composite (hr=0x%08x)", hr);
+                backBufferFailLogCount++;
+            }
+            return false;
+        }
+
+        hr = d3d9DeviceEx->StretchRect(surface, nullptr, backBuffer, nullptr, D3DTEXF_NONE);
+        backBuffer->Release();
+
+        if (FAILED(hr)) {
+            static int stretchRectFailLogCount = 0;
+            if (stretchRectFailLogCount < 4) {
+                HookLog("DDraw: Failed to stretch DD surface into helper backbuffer (hr=0x%08x)", hr);
+                stretchRectFailLogCount++;
+            }
+            return false;
+        }
+
+        return true;
+    }
+
     bool CopyLockedSurfaceToUploadSurface(const DDSURFACEDESC2& desc) {
         if (!desc.lpSurface || desc.dwWidth != width || desc.dwHeight != height || desc.ddpfPixelFormat.dwRGBBitCount != 32) {
             return false;
+        }
+
+        if (d3d9FastUploadSurface) {
+            D3DLOCKED_RECT fastLockedRect = {};
+            HRESULT fastHr = d3d9FastUploadSurface->LockRect(&fastLockedRect, nullptr, 0);
+            if (SUCCEEDED(fastHr)) {
+                const uint8_t* src = static_cast<const uint8_t*>(desc.lpSurface);
+                uint8_t* dst = static_cast<uint8_t*>(fastLockedRect.pBits);
+                const size_t rowBytes = static_cast<size_t>(width) * 4u;
+                for (uint32_t y = 0; y < height; ++y) {
+                    memcpy(dst, src, rowBytes);
+                    src += desc.lPitch;
+                    dst += fastLockedRect.Pitch;
+                }
+
+                d3d9FastUploadSurface->UnlockRect();
+                if (StretchOverlaySurfaceToBackbuffer(d3d9FastUploadSurface)) {
+                    return true;
+                }
+            }
         }
 
         D3DLOCKED_RECT lockedRect = {};
@@ -959,7 +1039,8 @@ public:
             return false;
         }
 
-        HRESULT hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, targetHwnd, nullptr, 0);
+        HWND presentWindowOverride = d3d9UsesFlipEx ? nullptr : targetHwnd;
+        HRESULT hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, presentWindowOverride, nullptr, 0);
         static uint32_t overlayPresentCount = 0;
         static uint64_t lastOverlayPresentLogTick = 0;
         overlayPresentCount++;

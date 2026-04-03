@@ -68,18 +68,9 @@ AGENTS.md
 telemetry-id
 compile_commands.json
 common/build_version.h
-ffprobe_err.txt
-CUsersTestUsertemp_ffprobe.json
-CUsersTestUsertemp_ffprobe2.json
-.gitignore
-analysis/streams.txt
 
-analysis_logs/capture_9581187_av.txt
+.gitignore
+
+
+
 CLAUDE.md
-av-sync-fixplan1.md
-av-sync-fixplan2.md
-av-sync-fixplan3.md
-av-sync-fixplan4.md
-capture-optimize1.md
-analysis/dd7_overlay_top_left_crop.png
-analysis/dd7_overlay_validation.png
