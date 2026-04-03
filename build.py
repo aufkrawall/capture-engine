@@ -212,6 +212,7 @@ PACKAGES = [
     "mingw-w64-clang-x86_64-nasm",
     "mingw-w64-clang-x86_64-vulkan-headers",
     "mingw-w64-clang-x86_64-vulkan-loader",
+    "mingw-w64-clang-x86_64-spirv-headers",
     "mingw-w64-i686-toolchain",
     "mingw-w64-i686-vulkan-headers",
     "mingw-w64-i686-vulkan-loader",
@@ -311,27 +312,42 @@ def resolve_msys2_url() -> str:
     return resolved_url
 
 
-def verify_windows_ffmpeg_pkg_config_deps() -> None:
-    if IS_LINUX:
-        return
+def verify_msys2_ffmpeg_build_deps(msys2_dir: str) -> None:
+    pkg_config_exe = (
+        shutil.which("pkg-config")
+        if IS_LINUX
+        else os.path.join(msys2_dir, "clang64", "bin", "pkg-config.exe")
+    )
+    if not pkg_config_exe or (not IS_LINUX and not os.path.exists(pkg_config_exe)):
+        raise RuntimeError(
+            "Missing pkg-config executable required for FFmpeg dependency probing"
+        )
 
-    pkg_config_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "pkg-config.exe")
-    if not os.path.exists(pkg_config_exe):
-        raise RuntimeError(f"Missing pkg-config executable: {pkg_config_exe}")
-
-    clang_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
-    usr_bin = os.path.join(MSYS2_DIR, "usr", "bin")
-    clang_pkgconfig = to_unix(os.path.join(MSYS2_DIR, "clang64", "lib", "pkgconfig"))
+    clang_bin = os.path.join(msys2_dir, "clang64", "bin")
+    usr_bin = os.path.join(msys2_dir, "usr", "bin")
+    clang_pkgconfig = os.path.join(msys2_dir, "clang64", "lib", "pkgconfig")
     probe_env = os.environ.copy()
-    probe_env["PATH"] = os.pathsep.join([clang_bin, usr_bin, probe_env.get("PATH", "")])
-    probe_env["PKG_CONFIG_PATH"] = clang_pkgconfig
 
-    required = [
+    path_entries = []
+    for candidate in (clang_bin, usr_bin):
+        if os.path.isdir(candidate):
+            path_entries.append(candidate)
+    if path_entries:
+        probe_env["PATH"] = os.pathsep.join(path_entries + [probe_env.get("PATH", "")])
+    probe_env["PKG_CONFIG_PATH"] = os.pathsep.join(
+        [clang_pkgconfig, probe_env.get("PKG_CONFIG_PATH", "")]
+    ).rstrip(os.pathsep)
+
+    required_pkg_configs = [
         ("vpl", "mingw-w64-clang-x86_64-onevpl"),
         ("SvtAv1Enc", "mingw-w64-clang-x86_64-svt-av1"),
     ]
+    required_headers = [
+        (os.path.join("spirv", "unified1", "spirv.h"), "mingw-w64-clang-x86_64-spirv-headers"),
+    ]
+
     missing = []
-    for pkg_name, package_name in required:
+    for pkg_name, package_name in required_pkg_configs:
         result = subprocess.run(
             [pkg_config_exe, "--exists", pkg_name],
             env=probe_env,
@@ -341,13 +357,16 @@ def verify_windows_ffmpeg_pkg_config_deps() -> None:
         if result.returncode != 0:
             missing.append((pkg_name, package_name))
 
+    for header_rel_path, package_name in required_headers:
+        header_path = os.path.join(msys2_dir, "clang64", "include", header_rel_path)
+        if not os.path.exists(header_path):
+            missing.append((header_rel_path, package_name))
+
     if missing:
         missing_summary = ", ".join(
-            f"{pkg_name} ({package_name})" for pkg_name, package_name in missing
+            f"{label} ({package_name})" for label, package_name in missing
         )
-        raise RuntimeError(
-            f"Missing MSYS2 FFmpeg dependency pkg-config entries: {missing_summary}"
-        )
+        raise RuntimeError(f"Missing MSYS2 FFmpeg build dependencies: {missing_summary}")
 
 
 def patch_amf_header():
@@ -814,7 +833,7 @@ def get_mingw_compilers():
             sys.exit(1)
 
         x64_bin = os.path.dirname(x64_compiler)
-        x86_bin = os.path.dirname(x86_compiler) if x86_compiler else x64_bin
+        x86_bin = os.path.dirname(x86_compiler) if x86_compiler else ""
 
         x64_cc = x64_compiler.replace("clang++", "clang").replace("g++", "gcc")
         x86_cc = (
@@ -825,10 +844,77 @@ def get_mingw_compilers():
 
         return {
             "x64": {"bin": x64_bin, "cxx": x64_compiler, "cc": x64_cc},
-            "x86": {"bin": x86_bin, "cxx": x86_compiler or x64_compiler, "cc": x86_cc},
+            "x86": {"bin": x86_bin, "cxx": x86_compiler, "cc": x86_cc},
         }
     else:
         return None
+
+
+def has_linux_x86_compiler() -> bool:
+    if not IS_LINUX:
+        return True
+    compilers = get_mingw_compilers()
+    return bool(compilers and compilers["x86"]["cxx"])
+
+
+def is_clang_compiler(compiler_exe: Optional[str]) -> bool:
+    return bool(compiler_exe and "clang" in os.path.basename(compiler_exe).lower())
+
+
+def get_linux_mingw_runtime_dirs(arch: str) -> List[str]:
+    if not IS_LINUX:
+        return []
+
+    compiler = get_compiler_exe(arch)
+    if not compiler:
+        return []
+
+    candidates: List[str] = [os.path.dirname(compiler)]
+    runtime_names = ("libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll")
+    for runtime_name in runtime_names:
+        try:
+            resolved = subprocess.check_output(
+                [compiler, f"-print-file-name={runtime_name}"],
+                encoding="utf-8",
+                errors="ignore",
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            resolved = ""
+        if resolved and resolved != runtime_name:
+            candidates.append(os.path.dirname(resolved))
+
+    try:
+        sysroot = subprocess.check_output(
+            [compiler, "-print-sysroot"],
+            encoding="utf-8",
+            errors="ignore",
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        sysroot = ""
+
+    if sysroot:
+        candidates.extend(
+            [
+                os.path.join(sysroot, "bin"),
+                os.path.join(sysroot, "lib"),
+                os.path.join(sysroot, "mingw", "bin"),
+                os.path.join(sysroot, "mingw", "lib"),
+            ]
+        )
+
+    unique_candidates: List[str] = []
+    seen = set()
+    for candidate in candidates:
+        if not candidate or not os.path.isdir(candidate):
+            continue
+        normalized = os.path.normcase(os.path.abspath(candidate))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_candidates.append(candidate)
+    return unique_candidates
 
 
 def get_compiler_exe(arch="x64"):
@@ -838,7 +924,13 @@ def get_compiler_exe(arch="x64"):
         if compilers is None:
             log("ERROR: MinGW compiler discovery failed on Linux host")
             sys.exit(1)
-        return compilers[arch]["cxx"]
+        compiler = compilers[arch]["cxx"]
+        if compiler:
+            return compiler
+        if arch == "x86":
+            return None
+        log(f"ERROR: MinGW compiler for {arch} not found on Linux host")
+        sys.exit(1)
     else:
         if arch == "x64":
             return os.path.join(MSYS2_DIR, "clang64", "bin", "clang++.exe")
@@ -912,7 +1004,7 @@ def setup_msys2():
     clear_stale_msys2_pacman_lock()
     run_command([msys_bash, "-lc", pkg_cmd], input_str="\n")
     patch_amf_header()
-    verify_windows_ffmpeg_pkg_config_deps()
+    verify_msys2_ffmpeg_build_deps(MSYS2_DIR)
 
 
 def check_mingw_packages():
@@ -937,6 +1029,8 @@ def check_mingw_packages():
             sys.exit(1)
     else:
         log(f"Found mingw-w64 compiler: {x64_compiler}")
+        if not (shutil.which("i686-w64-mingw32-g++") or shutil.which("i686-w64-mingw32-clang++")):
+            log("Linux host missing mingw-w64 x86 compiler - x86 targets will be skipped")
 
 
 def check_python_lsp_tools():
@@ -1001,16 +1095,99 @@ def check_python_lsp_tools():
                 log(f"  Install manually: python -m pip install{suffix} {tool}")
 
 
-def get_system_ffmpeg_flags():
-    """Get FFmpeg compiler flags - now uses MSYS2 FFmpeg on Linux."""
-    # FFmpeg is downloaded from MSYS2 repo, not system
-    return [], []
+def get_linux_ffmpeg_root() -> str:
+    local_import_lib = os.path.join(FFMPEG_DIR, "lib", "libavcodec.dll.a")
+    if os.path.exists(local_import_lib):
+        return FFMPEG_DIR
+    return os.path.join(get_linux_msys2_dir(), "clang64")
+
+
+def find_ffmpeg_include_dir(ffmpeg_root: str) -> str:
+    include_dir = os.path.join(ffmpeg_root, "include")
+    if not os.path.isdir(include_dir):
+        return include_dir
+
+    if os.path.exists(os.path.join(include_dir, "libavcodec", "avcodec.h")):
+        return include_dir
+
+    for entry in sorted(os.listdir(include_dir)):
+        candidate = os.path.join(include_dir, entry)
+        if entry.startswith("ffmpeg") and os.path.isdir(candidate):
+            return candidate
+
+    return include_dir
+
+
+def get_linux_ffmpeg_build_flags(
+    env: Dict[str, str], pkg_config: Optional[str]
+) -> tuple[List[str], List[str]]:
+    ffmpeg_root = get_linux_ffmpeg_root()
+    ffmpeg_include = find_ffmpeg_include_dir(ffmpeg_root)
+    ffmpeg_lib = os.path.join(ffmpeg_root, "lib")
+    env_ffmpeg = env.copy()
+    env_ffmpeg["PKG_CONFIG_PATH"] = os.pathsep.join(
+        [os.path.join(ffmpeg_lib, "pkgconfig"), env_ffmpeg.get("PKG_CONFIG_PATH", "")]
+    ).rstrip(os.pathsep)
+
+    pkgs = ["libavcodec", "libavformat", "libavutil", "libswresample", "libswscale"]
+    ffmpeg_flags: List[str]
+    if pkg_config:
+        try:
+            ffmpeg_flags_raw = run_command(
+                [pkg_config, "--cflags", "--libs"] + pkgs, env=env_ffmpeg
+            ).strip().split()
+
+            ffmpeg_flags = []
+            msys2_dir = get_linux_msys2_dir()
+            for flag in ffmpeg_flags_raw:
+                if flag in ["-ldl", "-lshaderc_shared"]:
+                    continue
+                if flag.startswith("-I/") and not os.path.exists(flag[2:]):
+                    abs_path = os.path.join(msys2_dir, flag[2:].lstrip("/"))
+                    if os.path.exists(abs_path):
+                        flag = "-I" + abs_path
+                elif flag.startswith("-L/") and not os.path.exists(flag[2:]):
+                    abs_path = os.path.join(msys2_dir, flag[2:].lstrip("/"))
+                    if os.path.exists(abs_path):
+                        flag = "-L" + abs_path
+                ffmpeg_flags.append(flag)
+        except Exception as e:
+            log(f"pkg-config failed, using manual FFmpeg paths: {e}")
+            ffmpeg_flags = ["-I" + ffmpeg_include, "-L" + ffmpeg_lib]
+    else:
+        ffmpeg_flags = ["-I" + ffmpeg_include, "-L" + ffmpeg_lib]
+
+    ffmpeg_import_lib_names = [
+        "libavformat.dll.a",
+        "libavcodec.dll.a",
+        "libswresample.dll.a",
+        "libswscale.dll.a",
+        "libavutil.dll.a",
+    ]
+    ffmpeg_import_libs = []
+    for import_lib_name in ffmpeg_import_lib_names:
+        import_lib_path = os.path.join(ffmpeg_lib, import_lib_name)
+        if os.path.exists(import_lib_path):
+            ffmpeg_import_libs.append(import_lib_path)
+
+    if len(ffmpeg_import_libs) != len(ffmpeg_import_lib_names):
+        ffmpeg_import_libs = [
+            "-L" + ffmpeg_lib,
+            "-lavformat",
+            "-lavcodec",
+            "-lswresample",
+            "-lswscale",
+            "-lavutil",
+        ]
+
+    return ffmpeg_flags, ffmpeg_import_libs
 
 
 # MSYS2 packages to download for Linux builds (Windows-specific libs not in Arch repos)
 LINUX_MSYS2_PACKAGES = [
     "mingw-w64-clang-x86_64-vulkan-headers",
     "mingw-w64-clang-x86_64-vulkan-loader",
+    "mingw-w64-clang-x86_64-spirv-headers",
     "mingw-w64-clang-x86_64-gtest",
     "mingw-w64-clang-x86_64-ffmpeg",
     "mingw-w64-clang-x86_64-cppwinrt",
@@ -1027,6 +1204,27 @@ LINUX_MSYS2_PACKAGES = [
 ]
 
 MSYS2_REPO_URL = "https://repo.msys2.org/mingw/clang64"
+
+
+def extract_linux_msys2_package(pkg_path: str, destination: str) -> None:
+    tar_exe = shutil.which("tar")
+    if not tar_exe:
+        raise RuntimeError("Linux MSYS2 package extraction requires a 'tar' executable")
+
+    extract_cmds = [
+        [tar_exe, "-xf", pkg_path, "-C", destination],
+        [tar_exe, "--zstd", "-xf", pkg_path, "-C", destination],
+    ]
+    errors = []
+    for cmd in extract_cmds:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return
+        errors.append(result.stderr.strip() or result.stdout.strip() or "unknown tar error")
+
+    raise RuntimeError(
+        f"Failed to extract {os.path.basename(pkg_path)}: {' | '.join(errors)}"
+    )
 
 
 def download_msys2_packages_for_linux():
@@ -1056,24 +1254,18 @@ def download_msys2_packages_for_linux():
     os.makedirs(os.path.join(clang64_dir, "include"), exist_ok=True)
     os.makedirs(os.path.join(clang64_dir, "lib"), exist_ok=True)
 
+    req = urllib.request.Request(MSYS2_REPO_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        repo_html = response.read().decode("utf-8", errors="replace")
+
     for pkg in LINUX_MSYS2_PACKAGES:
         try:
             # Find package file in repo (with version)
             log(f"Checking for {pkg} in MSYS2 repo...")
-            req = urllib.request.Request(
-                MSYS2_REPO_URL, headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(req, timeout=30) as response:
-                html = response.read().decode()
-
-            # Find the actual package filename (with version)
-            import re
-
-            pattern = rf'href="({pkg}[^"]*-any\.pkg\.tar\.zst)"'
-            match = re.search(pattern, html)
+            pattern = rf'href="({re.escape(pkg)}[^"]*\.pkg\.tar\.zst)"'
+            match = re.search(pattern, repo_html)
             if not match:
-                log(f"Warning: Could not find package {pkg}")
-                continue
+                raise RuntimeError(f"Could not find package {pkg} in {MSYS2_REPO_URL}")
 
             pkg_file = match.group(1)
             pkg_url = f"{MSYS2_REPO_URL}/{pkg_file}"
@@ -1086,16 +1278,14 @@ def download_msys2_packages_for_linux():
 
             # Extract package
             log(f"Extracting {pkg_file}...")
-            import tarfile
-
-            with tarfile.open(pkg_path, "r") as tar:
-                safe_extract_tar(tar, msys_linux_dir)
+            extract_linux_msys2_package(pkg_path, msys_linux_dir)
 
             log(f"Package {pkg} ready")
 
         except Exception as e:
-            log(f"Warning: Failed to download {pkg}: {e}")
-            log("Build may fail - consider installing pre-built MSYS2 from Windows")
+            raise RuntimeError(f"Failed to prepare Linux MSYS2 package {pkg}: {e}") from e
+
+    verify_msys2_ffmpeg_build_deps(msys_linux_dir)
 
     # Create marker file to skip on future builds
     with open(marker_file, "w") as f:
@@ -1128,6 +1318,10 @@ def get_linux_msys2_dir():
 
     # Otherwise use downloaded minimal setup
     return os.path.join(BUILD_DIR, "msys64_linux")
+
+
+def get_host_msys2_dir():
+    return get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
 
 
 # ============================================================================
@@ -1884,10 +2078,12 @@ def get_env_x86():
         if compilers is None:
             log("ERROR: MinGW compiler discovery failed on Linux host")
             sys.exit(1)
+        if not compilers["x86"]["cxx"]:
+            raise RuntimeError("No mingw-w64 x86 compiler found on Linux host")
         env = os.environ.copy()
         x86_bin = compilers["x86"]["bin"]
         env["PATH"] = x86_bin + os.pathsep + env.get("PATH", "")
-        env["CC"] = compilers["x86"]["cc"] or compilers["x64"]["cc"]
+        env["CC"] = compilers["x86"]["cc"]
         env["CXX"] = compilers["x86"]["cxx"]
         env["PKG_CONFIG_PATH"] = ""
         env["DISABLE_CCACHE"] = "1"
@@ -2179,9 +2375,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
 
     # 1. Get FFmpeg flags
     if IS_LINUX:
-        # Use system FFmpeg on Linux
-        ffmpeg_cflags, ffmpeg_libs = get_system_ffmpeg_flags()
-        ffmpeg_link_flags = ffmpeg_libs
+        ffmpeg_cflags, ffmpeg_link_flags = get_linux_ffmpeg_build_flags(env, pkg_config)
     else:
         # Use local FFmpeg on Windows
         env_ffmpeg = env.copy()
@@ -2325,7 +2519,7 @@ def copy_test_runtime_dlls(tests_dir):
     """Copy libgtest.dll and FFmpeg DLLs next to unit_tests.exe so it can be run directly."""
     import shutil
 
-    msys_bin = os.path.join(PROJECT_ROOT, "build", "msys64", "clang64", "bin")
+    msys_bin = os.path.join(get_host_msys2_dir(), "clang64", "bin")
     ffmpeg_bin = os.path.join(PROJECT_ROOT, "installed", "captureengine", "ffmpeg")
     copied = []
     for dll_dir in [msys_bin, ffmpeg_bin]:
@@ -2350,14 +2544,21 @@ def run_tests(env, test_exe):
         return False
 
     # Ensure required DLLs are on PATH (libgtest.dll, FFmpeg DLLs)
-    msys_bin = os.path.join(PROJECT_ROOT, "build", "msys64", "clang64", "bin")
+    msys_bin = os.path.join(get_host_msys2_dir(), "clang64", "bin")
     ffmpeg_dir = os.path.join(PROJECT_ROOT, "installed", "captureengine", "ffmpeg")
     test_env = dict(env)
     test_env["PATH"] = (
         msys_bin + os.pathsep + ffmpeg_dir + os.pathsep + test_env.get("PATH", "")
     )
 
-    cmd = [test_exe]
+    if IS_LINUX:
+        wine_exe = shutil.which("wine64") or shutil.which("wine")
+        if not wine_exe:
+            log("Error: Running unit_tests.exe on Linux requires Wine in PATH.")
+            return False
+        cmd = [wine_exe, test_exe]
+    else:
+        cmd = [test_exe]
     result = subprocess.run(cmd, env=test_env)
     if result.returncode != 0:
         log(f"=== Unit Tests FAILED (exit code {result.returncode}) ===")
@@ -3124,8 +3325,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     # x86 cross-compilation from clang64: need --target, --sysroot, and
     # -stdlib=libstdc++ because mingw32 only has libstdc++, not libc++.
     if arch == "x86":
-        is_clang = "clang" in os.path.basename(clang_exe).lower()
-        if is_clang:
+        if not IS_LINUX and is_clang_compiler(clang_exe):
             log(
                 "[INFO] x86 Vulkan layer: adding cross-compilation flags (Clang on mingw32)"
             )
@@ -3364,12 +3564,15 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     )
 
     # --- Architecture Loop ---
-    arch_targets = ["x64", "x86"]
+    arch_targets = ["x64"]
     if env.get("CE_SANITIZE") == "1":
         # MSYS2 currently ships ASan runtime only for x64 clang target.
         # Building x86 sanitizer binaries fails at link time.
         log("Sanitizer mode: skipping x86 targets (ASan runtime unavailable)")
-        arch_targets = ["x64"]
+    elif IS_LINUX and not has_linux_x86_compiler():
+        log("Linux host: mingw-w64 x86 compiler not found, skipping x86 targets")
+    else:
+        arch_targets.append("x86")
 
     for arch in arch_targets:
         curr_env = env
@@ -3400,15 +3603,18 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 OPT_FLAGS_X64, suppress_microsoft_exception_spec=True
             )
         else:  # x86
-            curr_cflags = make_cpp_cflags(
-                OPT_FLAGS_X86,
-                arch_flags=[
+            x86_arch_flags = []
+            if not IS_LINUX:
+                x86_arch_flags = [
                     "--target=i686-w64-mingw32",
                     "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
                     "-mstackrealign",
                     "-stdlib=libstdc++",
                     "-femulated-tls",
-                ],
+                ]
+            curr_cflags = make_cpp_cflags(
+                OPT_FLAGS_X86,
+                arch_flags=x86_arch_flags,
                 suppress_microsoft_exception_spec=True,
             )
 
@@ -3553,16 +3759,19 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 HOOK_OPT_FLAGS_X64, suppress_microsoft_exception_spec=True
             )
         else:
-            x86_sysroot = os.path.join(MSYS2_DIR, "mingw32")
             hook_base_cflags = make_cpp_cflags(
                 HOOK_OPT_FLAGS_X86,
-                arch_flags=[
-                    "--target=i686-w64-mingw32",
-                    "--sysroot=" + x86_sysroot,
-                    "-mstackrealign",
-                    "-stdlib=libstdc++",
-                    "-femulated-tls",
-                ],
+                arch_flags=(
+                    [
+                        "--target=i686-w64-mingw32",
+                        "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                        "-mstackrealign",
+                        "-stdlib=libstdc++",
+                        "-femulated-tls",
+                    ]
+                    if not IS_LINUX
+                    else []
+                ),
                 suppress_microsoft_exception_spec=True,
             )
 
@@ -3653,76 +3862,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             if me_src:
                 # Get FFmpeg flags
                 if IS_LINUX:
-                    # Use downloaded MSYS2 FFmpeg on Linux
-                    msys2_dir = get_linux_msys2_dir()
-                    # MSYS2 FFmpeg headers are in a versioned subdirectory
-                    ffmpeg_include = os.path.join(
-                        msys2_dir, "clang64", "include", "ffmpeg7.1"
+                    ffmpeg_flags, ffmpeg_import_libs = get_linux_ffmpeg_build_flags(
+                        curr_env, curr_pkg_config
                     )
-                    if not os.path.exists(ffmpeg_include):
-                        # Try to find the actual FFmpeg include directory
-                        include_dir = os.path.join(msys2_dir, "clang64", "include")
-                        for d in os.listdir(include_dir):
-                            if d.startswith("ffmpeg") and os.path.isdir(
-                                os.path.join(include_dir, d)
-                            ):
-                                ffmpeg_include = os.path.join(include_dir, d)
-                                break
-                    ffmpeg_lib = os.path.join(msys2_dir, "clang64", "lib")
-
-                    # Use pkg-config from the MSYS2 FFmpeg if available, otherwise use include/lib paths directly
-                    pkg_config_path = os.path.join(ffmpeg_lib, "pkgconfig")
-                    env_ffmpeg = curr_env.copy()
-                    env_ffmpeg["PKG_CONFIG_PATH"] = (
-                        pkg_config_path
-                        + os.pathsep
-                        + env_ffmpeg.get("PKG_CONFIG_PATH", "")
-                    )
-
-                    try:
-                        pkgs = [
-                            "libavcodec",
-                            "libavformat",
-                            "libavutil",
-                            "libswresample",
-                            "libswscale",
-                        ]
-                        pkg_cmd = [curr_pkg_config, "--cflags", "--libs"] + pkgs
-                        ffmpeg_flags_raw = (
-                            run_command(pkg_cmd, env=env_ffmpeg).strip().split()
-                        )
-
-                        # Convert MSYS2-relative paths to absolute paths
-                        # pkg-config returns paths like "-I/clang64/include" which are relative to MSYS2 root
-                        ffmpeg_flags = []
-                        for f in ffmpeg_flags_raw:
-                            if f in ["-ldl", "-lshaderc_shared"]:
-                                continue
-                            if f.startswith("-I/") and not os.path.exists(f[2:]):
-                                # Convert -I/clang64/include to -I/msys2_dir/clang64/include
-                                rel_path = f[2:]  # Remove "-I"
-                                abs_path = os.path.join(msys2_dir, rel_path.lstrip("/"))
-                                if os.path.exists(abs_path):
-                                    f = "-I" + abs_path
-                            elif f.startswith("-L/") and not os.path.exists(f[2:]):
-                                # Convert -L/clang64/lib to -L/msys2_dir/clang64/lib
-                                rel_path = f[2:]  # Remove "-L"
-                                abs_path = os.path.join(msys2_dir, rel_path.lstrip("/"))
-                                if os.path.exists(abs_path):
-                                    f = "-L" + abs_path
-                            ffmpeg_flags.append(f)
-                    except Exception as e:
-                        log(f"pkg-config failed, using manual FFmpeg paths: {e}")
-                        # Fallback to manual paths
-                        ffmpeg_flags = [
-                            "-I" + ffmpeg_include,
-                            "-L" + ffmpeg_lib,
-                            "-lavcodec",
-                            "-lavformat",
-                            "-lavutil",
-                            "-lswresample",
-                            "-lswscale",
-                        ]
                 else:
                     # Use local FFmpeg on Windows
                     env_ffmpeg = curr_env.copy()
@@ -3749,6 +3891,14 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         f
                         for f in ffmpeg_flags_raw
                         if f not in ["-ldl", "-lshaderc_shared"]
+                    ]
+                    ffmpeg_lib_dir = os.path.join(FFMPEG_DIR, "lib")
+                    ffmpeg_import_libs = [
+                        os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
+                        os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
+                        os.path.join(ffmpeg_lib_dir, "libswresample.dll.a"),
+                        os.path.join(ffmpeg_lib_dir, "libswscale.dll.a"),
+                        os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
                     ]
 
                 # For shared build, linking usually requires -Lpath -lavcodec.
@@ -3815,15 +3965,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 parallel_compile(curr_env, curr_clang_exe, me_cflags, src_obj_pairs)
 
                 log("Linking MediaEngine x64...")
-                # Use absolute paths to our custom FFmpeg import libs to avoid system FFmpeg
-                ffmpeg_lib_dir = os.path.join(FFMPEG_DIR, "lib")
-                ffmpeg_import_libs = [
-                    os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
-                    os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
-                    os.path.join(ffmpeg_lib_dir, "libswresample.dll.a"),
-                    os.path.join(ffmpeg_lib_dir, "libswscale.dll.a"),
-                    os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
-                ]
                 temp_me_dll = os.path.join(curr_obj_dir, "mediaengine.tmp.dll")
                 safe_delete_file(temp_me_dll)
                 cmd = (
@@ -3848,26 +3989,14 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 # Copy FFmpeg DLLs to bin/ffmpeg/ for runtime (Linux)
                 if IS_LINUX:
                     log("Copying FFmpeg DLLs to bin/ffmpeg/...")
-                    # Use external/ffmpeg/bin if it exists (from Windows build), otherwise MSYS2
-                    if os.path.exists(os.path.join(FFMPEG_DIR, "bin")):
-                        ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
-                    else:
-                        msys2_dir = get_linux_msys2_dir()
-                        ffmpeg_bin_src = os.path.join(msys2_dir, "clang64", "bin")
-
+                    ffmpeg_bin_src = os.path.join(get_linux_ffmpeg_root(), "bin")
                     ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-                    msys2_dir = get_linux_msys2_dir()
-                    msys_bin = os.path.join(msys2_dir, "clang64", "bin")
-                    mingw_bin = (
-                        os.path.join("/usr", "x86_64-w64-mingw32", "bin")
-                        if arch == "x64"
-                        else os.path.join("/usr", "i686-w64-mingw32", "bin")
-                    )
                     sync_ffmpeg_runtime_dlls(
                         ffmpeg_bin_src,
                         ffmpeg_bin_dst,
                         LINUX_FFMPEG_RUNTIME_DEPS,
-                        [msys_bin, mingw_bin],
+                        [os.path.join(get_linux_msys2_dir(), "clang64", "bin")]
+                        + get_linux_mingw_runtime_dirs(arch),
                     )
 
     # Compile and run tests (using x64 objects) if requested
@@ -3924,7 +4053,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             ce_objs.append(rc_obj)
 
         log("Linking CaptureEngine x64...")
-        ffmpeg_lib_dir = os.path.join(FFMPEG_DIR, "lib")
+        ffmpeg_lib_dir = os.path.join(
+            get_linux_ffmpeg_root(), "lib"
+        ) if IS_LINUX else os.path.join(FFMPEG_DIR, "lib")
         ce_ldflags = [
             "-mwindows",
             "-static",
@@ -3956,10 +4087,15 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
             os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
             os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
-            "-Wl,--delayload=avformat-62.dll",
-            "-Wl,--delayload=avcodec-62.dll",
-            "-Wl,--delayload=avutil-60.dll",
         ]
+        if not IS_LINUX:
+            ce_ldflags.extend(
+                [
+                    "-Wl,--delayload=avformat-62.dll",
+                    "-Wl,--delayload=avcodec-62.dll",
+                    "-Wl,--delayload=avutil-60.dll",
+                ]
+            )
         if env.get("CE_DISABLE_LTO") != "1":
             ce_ldflags.append("-flto")
         if any(flag.startswith("-fsanitize=") for flag in cflags):
@@ -4013,7 +4149,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
     # 6. Compile Test Applications (DX9/10/11/12, Vulkan, OpenGL; x64/x86)
     x86_env_for_tests = None
-    if get_env_x86:
+    if not IS_LINUX or has_linux_x86_compiler():
         x86_env_for_tests, _ = get_env_x86()
     compile_testapps(env, x86_env_for_tests, get_compiler_exe("x64"), cflags)
 
@@ -4021,18 +4157,25 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     compile_vulkan_layer(env, get_compiler_exe("x64"), cflags, "x64")
     # x86 layer using mingw32 toolchain (disabled for sanitizer builds)
     if get_env_x86 and env.get("CE_SANITIZE") != "1":
-        x86_env, x86_clang_bin = get_env_x86()
-        x86_clang = get_compiler_exe("x86")
-        # Check if x86 compiler exists (on Linux it might not)
-        if IS_LINUX or os.path.exists(x86_clang):
-            x86_cflags = make_cpp_cflags(
-                ["-O3"],
-                arch_flags=[
-                    "--target=i686-w64-mingw32",
-                    "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
-                ],
-            )
-            compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
+        if IS_LINUX and not has_linux_x86_compiler():
+            log("Linux host: skipping x86 Vulkan layer (x86 compiler unavailable)")
+        else:
+            x86_env, x86_clang_bin = get_env_x86()
+            x86_clang = get_compiler_exe("x86")
+            # Check if x86 compiler exists (on Linux it might not)
+            if x86_clang and (IS_LINUX or os.path.exists(x86_clang)):
+                x86_cflags = make_cpp_cflags(
+                    ["-O3"],
+                    arch_flags=(
+                        []
+                        if IS_LINUX
+                        else [
+                            "--target=i686-w64-mingw32",
+                            "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                        ]
+                    ),
+                )
+                compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
     elif env.get("CE_SANITIZE") == "1":
         log("Sanitizer mode: skipping x86 Vulkan layer (ASan runtime unavailable)")
 
