@@ -1256,6 +1256,13 @@ LINUX_MSYS2_PACKAGES = [
     "mingw-w64-clang-x86_64-libvpl",
     "mingw-w64-clang-x86_64-svt-av1",
     "mingw-w64-clang-x86_64-libwinpthread",
+    "mingw-w64-clang-x86_64-crt",
+]
+
+LINUX_MSYS2_REQUIRED_SENTINELS = [
+    os.path.join(
+        "clang64", "share", "licenses", "crt", "COPYING.MinGW-w64-runtime.txt"
+    ),
 ]
 
 MSYS2_REPO_URL = "https://repo.msys2.org/mingw/clang64"
@@ -1284,6 +1291,19 @@ def extract_linux_msys2_package(pkg_path: str, destination: str) -> None:
     )
 
 
+def linux_msys2_packages_complete(msys_linux_dir: str) -> bool:
+    clang64_dir = os.path.join(msys_linux_dir, "clang64")
+    include_dir = os.path.join(clang64_dir, "include")
+    if not (os.path.isdir(include_dir) and os.listdir(include_dir)):
+        return False
+
+    for rel_path in LINUX_MSYS2_REQUIRED_SENTINELS:
+        if not os.path.exists(os.path.join(msys_linux_dir, rel_path)):
+            return False
+
+    return True
+
+
 def download_msys2_packages_for_linux():
     """Download minimal MSYS2 packages for Linux cross-compilation.
 
@@ -1299,12 +1319,13 @@ def download_msys2_packages_for_linux():
     clang64_dir = os.path.join(msys_linux_dir, "clang64")
     marker_file = os.path.join(msys_linux_dir, ".packages_installed")
 
-    # Check if packages already extracted (marker file + clang64 exists with content)
-    if os.path.exists(marker_file) and os.path.isdir(clang64_dir):
-        include_dir = os.path.join(clang64_dir, "include")
-        if os.path.isdir(include_dir) and os.listdir(include_dir):
-            log("MSYS2 packages already installed - skipping setup")
-            return msys_linux_dir
+    # Check if packages already extracted (marker file + required sentinels present).
+    if os.path.exists(marker_file) and linux_msys2_packages_complete(msys_linux_dir):
+        log("MSYS2 packages already installed - skipping setup")
+        return msys_linux_dir
+
+    if os.path.exists(marker_file):
+        log("MSYS2 package tree incomplete - refreshing setup")
 
     log("Setting up MSYS2 packages for Linux cross-compilation...")
     os.makedirs(msys_linux_dir, exist_ok=True)
