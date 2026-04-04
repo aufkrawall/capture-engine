@@ -168,6 +168,31 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceModePrefersBufferCushionDuringUnderf
     EXPECT_FALSE(policy::ShouldExitWgcLowSourceMode(telemetry));
 }
 
+TEST(CapturePipelinePolicyTest, WgcLowSourceModeIgnoresBorderlineInstantaneousDeficits) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 119;
+    telemetry.recentDeliveredMin250Fps = 119;
+    telemetry.recentDeliveredMin500Fps = 120;
+    telemetry.recentInputMin250Fps = 119;
+    telemetry.recentInputMin500Fps = 120;
+    telemetry.emptyTickPermille = 20;
+
+    EXPECT_FALSE(policy::ShouldUseWgcLowSourceMode(telemetry));
+
+    telemetry.recentDeliveredFps = 117;
+    EXPECT_TRUE(policy::ShouldUseWgcLowSourceMode(telemetry));
+
+    telemetry.recentDeliveredFps = 120;
+    telemetry.recentDeliveredMin250Fps = 120;
+    telemetry.recentInputMin250Fps = 117;
+    EXPECT_TRUE(policy::ShouldUseWgcLowSourceMode(telemetry));
+
+    telemetry.recentInputMin250Fps = 119;
+    telemetry.recentInputMin500Fps = 119;
+    EXPECT_TRUE(policy::ShouldUseWgcLowSourceMode(telemetry));
+}
+
 TEST(CapturePipelinePolicyTest, WgcLowSourceStateClassificationIsExplicit) {
     policy::WgcAdaptiveTelemetry telemetry{};
     telemetry.outputFps = 120;
@@ -181,7 +206,7 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceStateClassificationIsExplicit) {
     EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kHealthy);
     EXPECT_STREQ(policy::WgcLowSourceStateToString(policy::WgcLowSourceState::kHealthy), "healthy");
 
-    telemetry.recentInputMin250Fps = 118;
+    telemetry.recentInputMin250Fps = 119;
     telemetry.recentInputMin500Fps = 118;
     EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kInputBelowTarget);
     EXPECT_STREQ(policy::WgcLowSourceStateToString(policy::WgcLowSourceState::kInputBelowTarget), "input-below-target");
@@ -189,6 +214,9 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceStateClassificationIsExplicit) {
     telemetry.recentInputMin250Fps = 120;
     telemetry.recentInputMin500Fps = 120;
     telemetry.recentDeliveredFps = 119;
+    EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kHealthy);
+
+    telemetry.recentDeliveredFps = 117;
     EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kDeliveryBelowTarget);
     EXPECT_STREQ(policy::WgcLowSourceStateToString(policy::WgcLowSourceState::kDeliveryBelowTarget),
                  "delivery-below-target");
@@ -259,7 +287,7 @@ TEST(CapturePipelinePolicyTest, WgcAdaptiveHeadroomRequiresHealthySourceReserve)
     EXPECT_FALSE(policy::ShouldAllowWgcAdaptiveHeadroom(telemetry, 20, false, false));
 
     telemetry.duplicateRatio = 0.05;
-    telemetry.recentDeliveredMin250Fps = 118;
+    telemetry.recentDeliveredMin250Fps = 117;
     EXPECT_FALSE(policy::ShouldAllowWgcAdaptiveHeadroom(telemetry, 20, false, false));
 }
 

@@ -16,6 +16,7 @@ constexpr uint32_t kAutoWgcFallbackDelayNoPidMs = 100;
 constexpr uint32_t kAutoWgcFallbackDelayWithPidMs = 200;
 constexpr uint32_t kWgcLowSourceEmptyTickPermille = 80;
 constexpr uint32_t kWgcLowSourceExitEmptyTickPermille = 40;
+constexpr uint32_t kWgcLowSourceEnterMarginFps = 2;
 constexpr uint32_t kWgcLowSourceEnterHoldMs = 120;
 constexpr uint32_t kWgcLowSourceExitHoldMs = 250;
 constexpr uint32_t kWgcMaxSelectionLagTicks = 1;
@@ -630,12 +631,14 @@ inline WgcLowSourceState ClassifyWgcLowSourceState(const WgcAdaptiveTelemetry& t
         return WgcLowSourceState::kHealthy;
     }
 
-    if (telemetry.recentInputMin250Fps < telemetry.outputFps || telemetry.recentInputMin500Fps < telemetry.outputFps) {
+    const uint32_t enterMarginFps = kWgcLowSourceEnterMarginFps;
+    const uint32_t inputEnterFloor = telemetry.outputFps > enterMarginFps ? (telemetry.outputFps - enterMarginFps) : 0u;
+
+    if (telemetry.recentInputMin500Fps < telemetry.outputFps || telemetry.recentInputMin250Fps < inputEnterFloor) {
         return WgcLowSourceState::kInputBelowTarget;
     }
 
-    if (telemetry.recentDeliveredFps < telemetry.outputFps ||
-        telemetry.recentDeliveredMin250Fps < telemetry.outputFps ||
+    if (telemetry.recentDeliveredFps < inputEnterFloor || telemetry.recentDeliveredMin250Fps < inputEnterFloor ||
         telemetry.recentDeliveredMin500Fps < telemetry.outputFps) {
         return WgcLowSourceState::kDeliveryBelowTarget;
     }

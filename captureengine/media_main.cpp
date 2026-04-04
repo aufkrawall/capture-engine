@@ -1731,6 +1731,40 @@ void EncoderThreadFunc(const AppConfig& config) {
     wgcStarvedEpisode.Reset();
     WgcSessionSummary wgcSessionSummary;
     wgcSessionSummary.Reset();
+    const uint64_t minLoggedWgcStarvedEpisodeMs =
+        std::max<uint64_t>(100ull, static_cast<uint64_t>(frameIntervalMs * 8.0 + 0.5));
+    const auto shouldLogWgcStarvedEpisode = [&](uint64_t durationMs, uint64_t duplicateTicks,
+                                                uint32_t peakFreshMissPermille) {
+        return duplicateTicks > 0 ||
+               peakFreshMissPermille >= ce::capture_policy::kWgcDeepUnderfeedEmptyTickPermille ||
+               durationMs >= minLoggedWgcStarvedEpisodeMs;
+    };
+    const auto finishWgcStarvedEpisode = [&](uint64_t durationMs, uint64_t outputTicks, uint64_t duplicateTicks) {
+        ++wgcSessionSummary.starvedEpisodes;
+        const uint32_t minInputFps =
+            wgcStarvedEpisode.minInputFps == std::numeric_limits<uint32_t>::max() ? 0u : wgcStarvedEpisode.minInputFps;
+        const uint32_t minDeliveredFps =
+            wgcStarvedEpisode.minDeliveredFps == std::numeric_limits<uint32_t>::max() ? 0u
+                                                                                       : wgcStarvedEpisode.minDeliveredFps;
+        const uint32_t minBufferedFrames =
+            wgcStarvedEpisode.minBufferedFrames == std::numeric_limits<uint32_t>::max() ? 0u
+                                                                                         : wgcStarvedEpisode.minBufferedFrames;
+        if (durationMs >= wgcSessionSummary.longestStarvedEpisodeMs) {
+            wgcSessionSummary.longestStarvedEpisodeMs = durationMs;
+            wgcSessionSummary.longestStarvedEpisodeOutputTicks = outputTicks;
+            wgcSessionSummary.longestStarvedEpisodeDuplicateTicks = duplicateTicks;
+            wgcSessionSummary.longestStarvedEpisodeMinInputFps = minInputFps;
+            wgcSessionSummary.longestStarvedEpisodeMinDeliveredFps = minDeliveredFps;
+        }
+        if (shouldLogWgcStarvedEpisode(durationMs, duplicateTicks, wgcStarvedEpisode.peakFreshMissPermille)) {
+            LogInfo("[WGC CFR] Source-starved episode: duration=%llums out=%llu dup=%llu minIn=%u minDel=%u "
+                    "freshMiss=%upm minBuf=%u",
+                    static_cast<unsigned long long>(durationMs), static_cast<unsigned long long>(outputTicks),
+                    static_cast<unsigned long long>(duplicateTicks), minInputFps, minDeliveredFps,
+                    wgcStarvedEpisode.peakFreshMissPermille, minBufferedFrames);
+        }
+        wgcStarvedEpisode.Reset();
+    };
     auto ClearBufferedInjectFrames = [&]() {
         while (!bufferedInjectFrames.empty()) {
             QueuedFrame queuedFrame = std::move(bufferedInjectFrames.front());
@@ -2456,14 +2490,19 @@ void EncoderThreadFunc(const AppConfig& config) {
                     0u,
                     0.0,
                 };
+                const bool allowWgcLiveRecoveryMode = recordingOutputLive && g_Recording.load(std::memory_order_acquire);
                 const ce::capture_policy::WgcLiveRecoveryState wgcLiveRecoveryStateCurrent =
-                    ce::capture_policy::ClassifyWgcLiveRecoveryState(wgcAdaptiveTelemetry, outputShortfallTicks,
-                                                                     encoderTooSlowForTargetCurrent);
-                wgcSourceStarvedCurrent =
-                    wgcLiveRecoveryStateCurrent == ce::capture_policy::WgcLiveRecoveryState::kSourceStarved;
+                    allowWgcLiveRecoveryMode
+                        ? ce::capture_policy::ClassifyWgcLiveRecoveryState(wgcAdaptiveTelemetry, outputShortfallTicks,
+                                                                          encoderTooSlowForTargetCurrent)
+                        : ce::capture_policy::WgcLiveRecoveryState::kHealthy;
+                wgcSourceStarvedCurrent = allowWgcLiveRecoveryMode &&
+                                          wgcLiveRecoveryStateCurrent == ce::capture_policy::WgcLiveRecoveryState::kSourceStarved;
                 wgcSchedulerLimitedCurrent =
+                    allowWgcLiveRecoveryMode &&
                     wgcLiveRecoveryStateCurrent == ce::capture_policy::WgcLiveRecoveryState::kSchedulerLimited;
                 wgcEncoderRecoveryLimitedCurrent =
+                    allowWgcLiveRecoveryMode &&
                     wgcLiveRecoveryStateCurrent == ce::capture_policy::WgcLiveRecoveryState::kEncoderLimited;
                 wgcReservePressureActive = ce::capture_policy::IsWgcReservePressureActive(
                     wgcNoReserveTickCount, wgcQueueTickSampleCount, outputFps);
@@ -2497,36 +2536,41 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
 
-                const bool shouldEnterWgcLiveRecoveryMode = ce::capture_policy::ShouldEnterWgcLiveRecoveryMode(
-                    wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
-                const bool shouldExitWgcLiveRecoveryMode = ce::capture_policy::ShouldExitWgcLiveRecoveryMode(
-                    wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
-                const auto wgcLiveRecoveryModeUpdate = ce::capture_policy::UpdateHeldMode(
-                    wgcLiveRecoveryModeActive, wgcLiveRecoveryStateChangeTick, wgcPolicyNowTick,
-                    shouldEnterWgcLiveRecoveryMode, shouldExitWgcLiveRecoveryMode, false,
-                    ce::capture_policy::kWgcRecoveryEnterHoldMs, ce::capture_policy::kWgcRecoveryExitHoldMs);
-                wgcLiveRecoveryModeActive = wgcLiveRecoveryModeUpdate.active;
-                wgcLiveRecoveryStateChangeTick = wgcLiveRecoveryModeUpdate.stateChangeTick;
-                if (wgcLiveRecoveryModeUpdate.transition == ce::capture_policy::HeldModeTransition::kEntered) {
-                    LogInfo(
-                        "[WGC CFR] Live-recovery entered: state=%s srcStarved=%d schedLimited=%d encLimited=%d "
-                        "shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
-                        ce::capture_policy::WgcLiveRecoveryStateToString(wgcLiveRecoveryStateCurrent),
-                        wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
-                        wgcEncoderRecoveryLimitedCurrent ? 1 : 0, outputShortfallTicks,
-                        ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
-                        wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                        wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                        bufferedWgcFrames.size());
-                } else if (wgcLiveRecoveryModeUpdate.transition == ce::capture_policy::HeldModeTransition::kExited) {
-                    LogInfo(
-                        "[WGC CFR] Live-recovery exited: shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm "
-                        "buffered=%zu",
-                        outputShortfallTicks,
-                        ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
-                        wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                        wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                        bufferedWgcFrames.size());
+                if (allowWgcLiveRecoveryMode) {
+                    const bool shouldEnterWgcLiveRecoveryMode = ce::capture_policy::ShouldEnterWgcLiveRecoveryMode(
+                        wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
+                    const bool shouldExitWgcLiveRecoveryMode = ce::capture_policy::ShouldExitWgcLiveRecoveryMode(
+                        wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
+                    const auto wgcLiveRecoveryModeUpdate = ce::capture_policy::UpdateHeldMode(
+                        wgcLiveRecoveryModeActive, wgcLiveRecoveryStateChangeTick, wgcPolicyNowTick,
+                        shouldEnterWgcLiveRecoveryMode, shouldExitWgcLiveRecoveryMode, false,
+                        ce::capture_policy::kWgcRecoveryEnterHoldMs, ce::capture_policy::kWgcRecoveryExitHoldMs);
+                    wgcLiveRecoveryModeActive = wgcLiveRecoveryModeUpdate.active;
+                    wgcLiveRecoveryStateChangeTick = wgcLiveRecoveryModeUpdate.stateChangeTick;
+                    if (wgcLiveRecoveryModeUpdate.transition == ce::capture_policy::HeldModeTransition::kEntered) {
+                        LogInfo(
+                            "[WGC CFR] Live-recovery entered: state=%s srcStarved=%d schedLimited=%d encLimited=%d "
+                            "shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                            ce::capture_policy::WgcLiveRecoveryStateToString(wgcLiveRecoveryStateCurrent),
+                            wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
+                            wgcEncoderRecoveryLimitedCurrent ? 1 : 0, outputShortfallTicks,
+                            ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                            wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                            wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                            bufferedWgcFrames.size());
+                    } else if (wgcLiveRecoveryModeUpdate.transition == ce::capture_policy::HeldModeTransition::kExited) {
+                        LogInfo(
+                            "[WGC CFR] Live-recovery exited: shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm "
+                            "buffered=%zu",
+                            outputShortfallTicks,
+                            ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                            wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                            wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                            bufferedWgcFrames.size());
+                    }
+                } else {
+                    wgcLiveRecoveryModeActive = false;
+                    wgcLiveRecoveryStateChangeTick = 0;
                 }
 
                 const bool starvedEpisodeShouldBeActive =
@@ -2554,35 +2598,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const uint64_t durationMs = nowTickMs - wgcStarvedEpisode.startTickMs;
                     const uint64_t outputTicks = liveTicksOutput - wgcStarvedEpisode.startLiveTicks;
                     const uint64_t duplicateTicks = wgcSessionSummary.duplicateTicks - wgcStarvedEpisode.startDuplicateTicks;
-                    ++wgcSessionSummary.starvedEpisodes;
-                    if (durationMs >= wgcSessionSummary.longestStarvedEpisodeMs) {
-                        wgcSessionSummary.longestStarvedEpisodeMs = durationMs;
-                        wgcSessionSummary.longestStarvedEpisodeOutputTicks = outputTicks;
-                        wgcSessionSummary.longestStarvedEpisodeDuplicateTicks = duplicateTicks;
-                        wgcSessionSummary.longestStarvedEpisodeMinInputFps =
-                            wgcStarvedEpisode.minInputFps == std::numeric_limits<uint32_t>::max()
-                                ? 0u
-                                : wgcStarvedEpisode.minInputFps;
-                        wgcSessionSummary.longestStarvedEpisodeMinDeliveredFps =
-                            wgcStarvedEpisode.minDeliveredFps == std::numeric_limits<uint32_t>::max()
-                                ? 0u
-                                : wgcStarvedEpisode.minDeliveredFps;
-                    }
-                    LogInfo(
-                        "[WGC CFR] Source-starved episode: duration=%llums out=%llu dup=%llu minIn=%u minDel=%u "
-                        "freshMiss=%upm minBuf=%u",
-                        static_cast<unsigned long long>(durationMs), static_cast<unsigned long long>(outputTicks),
-                        static_cast<unsigned long long>(duplicateTicks),
-                        wgcStarvedEpisode.minInputFps == std::numeric_limits<uint32_t>::max() ? 0u
-                                                                                               : wgcStarvedEpisode.minInputFps,
-                        wgcStarvedEpisode.minDeliveredFps == std::numeric_limits<uint32_t>::max()
-                            ? 0u
-                            : wgcStarvedEpisode.minDeliveredFps,
-                        wgcStarvedEpisode.peakFreshMissPermille,
-                        wgcStarvedEpisode.minBufferedFrames == std::numeric_limits<uint32_t>::max()
-                            ? 0u
-                            : wgcStarvedEpisode.minBufferedFrames);
-                    wgcStarvedEpisode.Reset();
+                    finishWgcStarvedEpisode(durationMs, outputTicks, duplicateTicks);
                 }
 
                 if (g_WgcCap && recordingOutputLive && g_Recording && targetIntervalTicks > 0) {
@@ -4292,28 +4308,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         const uint64_t durationMs = GetTickCount64() - wgcStarvedEpisode.startTickMs;
         const uint64_t outputTicks = liveTicksOutput - wgcStarvedEpisode.startLiveTicks;
         const uint64_t duplicateTicks = wgcSessionSummary.duplicateTicks - wgcStarvedEpisode.startDuplicateTicks;
-        ++wgcSessionSummary.starvedEpisodes;
-        if (durationMs >= wgcSessionSummary.longestStarvedEpisodeMs) {
-            wgcSessionSummary.longestStarvedEpisodeMs = durationMs;
-            wgcSessionSummary.longestStarvedEpisodeOutputTicks = outputTicks;
-            wgcSessionSummary.longestStarvedEpisodeDuplicateTicks = duplicateTicks;
-            wgcSessionSummary.longestStarvedEpisodeMinInputFps =
-                wgcStarvedEpisode.minInputFps == std::numeric_limits<uint32_t>::max() ? 0u : wgcStarvedEpisode.minInputFps;
-            wgcSessionSummary.longestStarvedEpisodeMinDeliveredFps =
-                wgcStarvedEpisode.minDeliveredFps == std::numeric_limits<uint32_t>::max() ? 0u
-                                                                                          : wgcStarvedEpisode.minDeliveredFps;
-        }
-        LogInfo("[WGC CFR] Source-starved episode: duration=%llums out=%llu dup=%llu minIn=%u minDel=%u freshMiss=%upm "
-                "minBuf=%u",
-                static_cast<unsigned long long>(durationMs), static_cast<unsigned long long>(outputTicks),
-                static_cast<unsigned long long>(duplicateTicks),
-                wgcStarvedEpisode.minInputFps == std::numeric_limits<uint32_t>::max() ? 0u : wgcStarvedEpisode.minInputFps,
-                wgcStarvedEpisode.minDeliveredFps == std::numeric_limits<uint32_t>::max() ? 0u
-                                                                                           : wgcStarvedEpisode.minDeliveredFps,
-                wgcStarvedEpisode.peakFreshMissPermille,
-                wgcStarvedEpisode.minBufferedFrames == std::numeric_limits<uint32_t>::max() ? 0u
-                                                                                             : wgcStarvedEpisode.minBufferedFrames);
-        wgcStarvedEpisode.Reset();
+        finishWgcStarvedEpisode(durationMs, outputTicks, duplicateTicks);
     }
 
     if (liveTicksOutput > 0) {
