@@ -30,9 +30,6 @@ static std::atomic<int32_t> g_WgcInflightCallbacks{0};
 // Check if actual WGC headers are available
 #if __has_include(<winrt/Windows.Graphics.Capture.h>)
 #define HAS_WGC 1
-#include <windows.graphics.directx.h>
-#include <windows.graphics.capture.h>
-#include <windows.graphics.capture.interop.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Capture.h>
@@ -49,6 +46,17 @@ struct IDirect3DDxgiInterfaceAccess : public IUnknown {
 // Explicit IID for IDirect3DDxgiInterfaceAccess
 static const GUID IID_IDirect3DDxgiInterfaceAccess = {
     0xA9B3D012, 0x3DF2, 0x4EE3, {0xB8, 0xD1, 0x86, 0x95, 0xF4, 0x57, 0xD3, 0xC1}};
+
+// Minimal interop interface declaration used to create GraphicsCaptureItem.
+// We avoid the generated raw header here because the MinGW WIDL headers are
+// not always compatible with the C++/WinRT headers in the same translation unit.
+static const GUID IID_IGraphicsCaptureItemInterop = {
+    0x3628e81b, 0x3cac, 0x4c60, {0xb7, 0xf4, 0x23, 0xce, 0x0e, 0x0c, 0x33, 0x56}};
+
+struct IGraphicsCaptureItemInterop : IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE CreateForWindow(HWND window, REFIID riid, void** result) = 0;
+    virtual HRESULT STDMETHODCALLTYPE CreateForMonitor(HMONITOR monitor, REFIID riid, void** result) = 0;
+};
 
 // CreateDirect3D11DeviceFromDXGIDevice declaration
 extern "C" {
@@ -696,10 +704,6 @@ public:
             return;
         }
 
-#if defined(__MINGW32__) || defined(__MINGW64__)
-        // The current MinGW WinRT projection does not expose this session API.
-        return;
-#else
         try {
             if (targetFps_ > 0) {
                 int64_t interval100ns = 10000000ll / targetFps_;
@@ -716,7 +720,6 @@ public:
         } catch (...) {
             LogInfo("[WGC] MinUpdateInterval not available (older Windows)");
         }
-#endif
     }
 
     int64_t GetFrameSourceQpc(const winrt::Direct3D11CaptureFrame& frame) const {
@@ -859,12 +862,6 @@ public:
             return false;
         }
 
-#if defined(__MINGW32__) || defined(__MINGW64__)
-        (void)frame;
-        (void)frameWidth;
-        (void)frameHeight;
-        return false;
-#else
         auto frame2 = frame.try_as<winrt::Windows::Graphics::Capture::IDirect3D11CaptureFrame2>();
         if (!frame2) {
             return false;
@@ -934,7 +931,6 @@ public:
         lastCursorScreenPos_ = cursorInfo.ptScreenPos;
         lastCursorScreenPosValid_ = true;
         return cursorOnly;
-#endif
     }
 
     HMONITOR ResolveTargetMonitor() const {
@@ -1467,7 +1463,7 @@ public:
         winrt::com_ptr<IGraphicsCaptureItemInterop> interopFactory;
         winrt::hstring className = L"Windows.Graphics.Capture.GraphicsCaptureItem";
         HRESULT factoryHr = RoGetActivationFactory(reinterpret_cast<HSTRING>(winrt::get_abi(className)),
-                                                   __uuidof(IGraphicsCaptureItemInterop), interopFactory.put_void());
+                                                   IID_IGraphicsCaptureItemInterop, interopFactory.put_void());
         if (FAILED(factoryHr) || !interopFactory) {
             LogError("[WGC] RoGetActivationFactory(CreateForMonitor) failed: 0x%lx", factoryHr);
             return false;
@@ -1496,7 +1492,7 @@ public:
         winrt::com_ptr<IGraphicsCaptureItemInterop> interopFactory;
         winrt::hstring className = L"Windows.Graphics.Capture.GraphicsCaptureItem";
         HRESULT factoryHr = RoGetActivationFactory(reinterpret_cast<HSTRING>(winrt::get_abi(className)),
-                                                   __uuidof(IGraphicsCaptureItemInterop), interopFactory.put_void());
+                                                   IID_IGraphicsCaptureItemInterop, interopFactory.put_void());
         if (FAILED(factoryHr) || !interopFactory) {
             LogError("[WGC] RoGetActivationFactory(CreateForWindow) failed: 0x%lx", factoryHr);
             return false;
