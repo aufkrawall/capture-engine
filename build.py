@@ -347,7 +347,10 @@ def verify_msys2_ffmpeg_build_deps(msys2_dir: str) -> None:
         ("SvtAv1Enc", "mingw-w64-clang-x86_64-svt-av1"),
     ]
     required_headers = [
-        (os.path.join("spirv", "unified1", "spirv.h"), "mingw-w64-clang-x86_64-spirv-headers"),
+        (
+            os.path.join("spirv", "unified1", "spirv.h"),
+            "mingw-w64-clang-x86_64-spirv-headers",
+        ),
     ]
 
     missing = []
@@ -370,7 +373,9 @@ def verify_msys2_ffmpeg_build_deps(msys2_dir: str) -> None:
         missing_summary = ", ".join(
             f"{label} ({package_name})" for label, package_name in missing
         )
-        raise RuntimeError(f"Missing MSYS2 FFmpeg build dependencies: {missing_summary}")
+        raise RuntimeError(
+            f"Missing MSYS2 FFmpeg build dependencies: {missing_summary}"
+        )
 
 
 def patch_amf_header():
@@ -1033,8 +1038,13 @@ def check_mingw_packages():
             sys.exit(1)
     else:
         log(f"Found mingw-w64 compiler: {x64_compiler}")
-        if not (shutil.which("i686-w64-mingw32-g++") or shutil.which("i686-w64-mingw32-clang++")):
-            log("Linux host missing mingw-w64 x86 compiler - x86 targets will be skipped")
+        if not (
+            shutil.which("i686-w64-mingw32-g++")
+            or shutil.which("i686-w64-mingw32-clang++")
+        ):
+            log(
+                "Linux host missing mingw-w64 x86 compiler - x86 targets will be skipped"
+            )
 
 
 def check_python_lsp_tools():
@@ -1138,9 +1148,11 @@ def get_linux_ffmpeg_build_flags(
     ffmpeg_flags: List[str]
     if pkg_config:
         try:
-            ffmpeg_flags_raw = run_command(
-                [pkg_config, "--cflags", "--libs"] + pkgs, env=env_ffmpeg
-            ).strip().split()
+            ffmpeg_flags_raw = (
+                run_command([pkg_config, "--cflags", "--libs"] + pkgs, env=env_ffmpeg)
+                .strip()
+                .split()
+            )
 
             ffmpeg_flags = []
             msys2_dir = get_linux_msys2_dir()
@@ -1228,7 +1240,9 @@ def extract_linux_msys2_package(pkg_path: str, destination: str) -> None:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
             return
-        errors.append(result.stderr.strip() or result.stdout.strip() or "unknown tar error")
+        errors.append(
+            result.stderr.strip() or result.stdout.strip() or "unknown tar error"
+        )
 
     raise RuntimeError(
         f"Failed to extract {os.path.basename(pkg_path)}: {' | '.join(errors)}"
@@ -1291,7 +1305,9 @@ def download_msys2_packages_for_linux():
             log(f"Package {pkg} ready")
 
         except Exception as e:
-            raise RuntimeError(f"Failed to prepare Linux MSYS2 package {pkg}: {e}") from e
+            raise RuntimeError(
+                f"Failed to prepare Linux MSYS2 package {pkg}: {e}"
+            ) from e
 
     verify_msys2_ffmpeg_build_deps(msys_linux_dir)
 
@@ -2961,7 +2977,9 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             )
             add_task(
                 "dx9ex_test.exe (x86)",
-                make_cmd(clang_exe_x86, dx9ex_cflags_x86, dx9_src, dx9_ldflags, dx9ex_exe_x86),
+                make_cmd(
+                    clang_exe_x86, dx9ex_cflags_x86, dx9_src, dx9_ldflags, dx9ex_exe_x86
+                ),
             )
 
     # DX10 Test App
@@ -4051,6 +4069,28 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         ce_exe = os.path.join(BIN_DIR, "captureengine.exe")
         me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
         ce_obj_dir = os.path.join(OBJ_DIR, "x64")
+        if IS_LINUX:
+            ce_ffmpeg_cflags, _ = get_linux_ffmpeg_build_flags(env, pkg_config)
+        else:
+            env_ffmpeg = env.copy()
+            env_ffmpeg["PKG_CONFIG_PATH"] = (
+                os.path.join(FFMPEG_DIR, "lib", "pkgconfig")
+                + os.pathsep
+                + env_ffmpeg.get("PKG_CONFIG_PATH", "")
+            )
+            pkgs = [
+                "libavcodec",
+                "libavformat",
+                "libavutil",
+                "libswresample",
+                "libswscale",
+            ]
+            ce_ffmpeg_cflags = (
+                run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg)
+                .strip()
+                .split()
+            )
+
         ce_objs = []
         src_obj_pairs = []
         for src in ce_src:
@@ -4062,7 +4102,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             ).replace("\\", "/")
             src_obj_pairs.append((src, obj))
             ce_objs.append(obj)
-        parallel_compile(env, get_compiler_exe("x64"), cflags, src_obj_pairs)
+        parallel_compile(
+            env, get_compiler_exe("x64"), cflags + ce_ffmpeg_cflags, src_obj_pairs
+        )
 
         # Resource file
         rc_file = os.path.join(PROJECT_ROOT, "captureengine", "captureengine.rc")
@@ -4077,9 +4119,11 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             ce_objs.append(rc_obj)
 
         log("Linking CaptureEngine x64...")
-        ffmpeg_lib_dir = os.path.join(
-            get_linux_ffmpeg_root(), "lib"
-        ) if IS_LINUX else os.path.join(FFMPEG_DIR, "lib")
+        ffmpeg_lib_dir = (
+            os.path.join(get_linux_ffmpeg_root(), "lib")
+            if IS_LINUX
+            else os.path.join(FFMPEG_DIR, "lib")
+        )
         ce_ldflags = [
             "-mwindows",
             "-static",

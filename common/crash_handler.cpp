@@ -2,7 +2,6 @@
 #include <dbghelp.h>
 #include <direct.h>
 #include <errno.h>
-#include <werapi.h>
 #include <windows.h>
 #include <atomic>
 #include <cstdio>
