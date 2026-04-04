@@ -8,7 +8,7 @@
 #include "host_metrics.h"  // Reuse existing logic for native sensors
 #include "sensor_plugin.h"
 
-struct Session {
+struct SensorSession {
     HANDLE hMap;
     SharedMemoryLayout* shm;
     int64_t cachedLuid = 0;  // Cache valid LUID once discovered
@@ -45,7 +45,7 @@ int SensorProcessMain(const AppConfig& config) {
         hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
     }
 
-    std::map<uint32_t, Session> sessions;
+    std::map<uint32_t, SensorSession> sessions;
     static bool loggedDiscoveryAttempt = false;
 
     // In a real plugin-based system, we'd load DLLs here.
@@ -96,7 +96,7 @@ int SensorProcessMain(const AppConfig& config) {
 
         // 2. Poll metrics for all active sessions
         for (auto it = sessions.begin(); it != sessions.end();) {
-            Session& s = it->second;
+            SensorSession& s = it->second;
             uint32_t sourcePid = s.shm->GetSourcePid();
 
             // No hooked source yet: skip expensive PDH/DXGI work while idle, but

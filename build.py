@@ -1571,6 +1571,33 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
             ],
         ),
         (
+            "libbz2-1.dll",
+            [
+                (
+                    os.path.join(license_root, "bzip2", "LICENSE"),
+                    "BSL-1.0_bzip2.txt",
+                ),
+            ],
+        ),
+        (
+            "libgme.dll",
+            [
+                (
+                    os.path.join(license_root, "libgme", "license.txt"),
+                    "Expat_libgme.txt",
+                ),
+            ],
+        ),
+        (
+            "libmodplug-1.dll",
+            [
+                (
+                    os.path.join(license_root, "libmodplug", "LICENSE"),
+                    "LGPLv2.1_libmodplug.txt",
+                ),
+            ],
+        ),
+        (
             "libvpl-2.dll",
             [
                 (
@@ -1625,6 +1652,33 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
                 (
                     os.path.join(license_root, "svt-av1", "PATENTS.md"),
                     "AOM-Patent-License-1.0_svt-av1.txt",
+                ),
+            ],
+        ),
+        (
+            "libwinpthread-1.dll",
+            [
+                (
+                    os.path.join(license_root, "crt", "COPYING.MinGW-w64-runtime.txt"),
+                    "Mingw-w64-runtime_libwinpthread.txt",
+                ),
+            ],
+        ),
+        (
+            "libgcc_s_seh-1.dll",
+            [
+                (
+                    os.path.join(license_root, "crt", "COPYING.MinGW-w64-runtime.txt"),
+                    "Mingw-w64-runtime_libgcc.txt",
+                ),
+            ],
+        ),
+        (
+            "libstdc++-6.dll",
+            [
+                (
+                    os.path.join(license_root, "crt", "COPYING.MinGW-w64-runtime.txt"),
+                    "Mingw-w64-runtime_libstdcxx.txt",
                 ),
             ],
         ),
@@ -2309,7 +2363,7 @@ def write_json_atomic(path: str, payload: Any) -> None:
 
 def detect_clang_resource_dir(env: Dict[str, str], clang_exe: str) -> Optional[str]:
     """Detect clang resource-dir via compiler query, then fallback to local scan."""
-    if clang_exe:
+    if clang_exe and is_clang_compiler(clang_exe):
         detected = run_command(
             [os.path.normpath(clang_exe), "--print-resource-dir"],
             env=env,

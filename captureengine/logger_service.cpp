@@ -9,7 +9,7 @@
 #include "../common/logging.h"
 #include "../common/shared_defs.h"
 
-struct Session {
+struct LoggerSession {
     HANDLE hMap;
     SharedMemoryLayout* shm;
     uint32_t lastReadIndex;
@@ -46,7 +46,7 @@ int LoggerProcessMain(const AppConfig& config) {
         hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
     }
 
-    std::map<uint32_t, Session> sessions;
+    std::map<uint32_t, LoggerSession> sessions;
     std::map<std::string, HANDLE> openFiles;
     char logsDir[MAX_PATH];
 
@@ -120,7 +120,7 @@ int LoggerProcessMain(const AppConfig& config) {
         bool hasPendingLogs = false;
         bool hasActiveSource = false;
         for (auto it = sessions.begin(); it != sessions.end();) {
-            Session& s = it->second;
+            LoggerSession& s = it->second;
             if (s.shm->GetSourcePid() != 0) {
                 hasActiveSource = true;
             }
