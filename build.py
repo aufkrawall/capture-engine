@@ -3919,20 +3919,25 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 result = sp.run(
                     [strings_exe, hk_dll], capture_output=True, text=True, timeout=10
                 )
-                version_match = re.search(r"1\.1\.0-dev\+build\.(\d+)", result.stdout)
-                if version_match:
-                    embedded_build = int(version_match.group(1))
-                    if embedded_build != CURRENT_BUILD_NUMBER:
-                        log(
-                            f"[WARNING] Version mismatch! Header: build.{CURRENT_BUILD_NUMBER},"
-                            f" DLL: build.{embedded_build}"
-                        )
-                    else:
-                        log(f"[OK] Hook DLL verified: build.{embedded_build}")
+                expected_version = f"0.1.{CURRENT_BUILD_NUMBER}"
+                if expected_version in result.stdout:
+                    log(f"[OK] Hook DLL verified: {expected_version}")
                 else:
-                    log(
-                        f"[WARNING] Could not find version string in {os.path.basename(hk_dll)}"
-                    )
+                    version_match = re.search(r"0\.1\.(\d+)", result.stdout)
+                    if version_match:
+                        embedded_build = int(version_match.group(1))
+                        if embedded_build != CURRENT_BUILD_NUMBER:
+                            log(
+                                f"[WARNING] Version mismatch! Header: build.{CURRENT_BUILD_NUMBER},"
+                                f" DLL: build.{embedded_build}"
+                            )
+                        else:
+                            log(f"[OK] Hook DLL verified: build.{embedded_build}")
+                    else:
+                        log(
+                            f"[WARNING] Could not find version string {expected_version} in "
+                            f"{os.path.basename(hk_dll)}"
+                        )
             except Exception as e:
                 log(f"[Warning] Could not verify DLL version: {e}")
 
