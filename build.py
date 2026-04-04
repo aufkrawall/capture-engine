@@ -959,7 +959,7 @@ def get_linux_vulkan_import_lib_path(arch: str) -> Optional[str]:
     return None
 
 
-def get_compiler_exe(arch="x64"):
+def get_compiler_exe(arch: str = "x64") -> Optional[str]:
     """Get the compiler executable for the given architecture."""
     if IS_LINUX:
         compilers = get_mingw_compilers()
@@ -981,7 +981,7 @@ def get_compiler_exe(arch="x64"):
             return os.path.join(MSYS2_DIR, "clang64", "bin", "clang++.exe")
 
 
-def get_windres_exe(arch="x64"):
+def get_windres_exe(arch: str = "x64") -> str:
     """Get the windres executable for the given architecture."""
     if IS_LINUX:
         if arch == "x64":
@@ -3145,23 +3145,24 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     vulkan_src = os.path.join(testapp_src_dir, "vulkan_test.cpp")
     vulkan_exe = os.path.join(testapp_bin_dir, "vulkan_test.exe")
     if os.path.exists(vulkan_src):
-        vulkan_ldflags = [
-            "-static",
-            "-Wl,--subsystem,windows",
-        ]
-        vulkan_ldflags.extend(
-            [
+        if vulkan_lib is not None:
+            vulkan_ldflags = [
+                "-static",
+                "-Wl,--subsystem,windows",
                 vulkan_lib,
                 "-lgdi32",
                 "-luser32",
                 "-lshcore",
                 "-lavrt",
             ]
-        )
-        add_task(
-            "vulkan_test.exe",
-            make_cmd(clang_exe, cflags, vulkan_src, vulkan_ldflags, vulkan_exe),
-        )
+            add_task(
+                "vulkan_test.exe",
+                make_cmd(clang_exe, cflags, vulkan_src, vulkan_ldflags, vulkan_exe),
+            )
+        elif IS_LINUX:
+            log(
+                "Linux host: skipping vulkan_test.exe - Vulkan import library unavailable"
+            )
 
         if have_x86:
             vulkan_exe_x86 = os.path.join(x86_bin_dir, "vulkan_test.exe")
@@ -3730,6 +3731,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
     compile_custom_ffmpeg(skip_updates=skip_updates)
     clang_exe = get_compiler_exe("x64")
+    if clang_exe is None:
+        log("ERROR: Compiler for x64 not found")
+        sys.exit(1)
     pkg_config = (
         shutil.which("pkg-config")
         if IS_LINUX
@@ -3769,6 +3773,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     curr_env[_flag] = env[_flag]
 
         curr_clang_exe = get_compiler_exe(arch)
+        if curr_clang_exe is None:
+            log(f"ERROR: Compiler for {arch} not found")
+            continue
         curr_pkg_config = (
             shutil.which("pkg-config")
             if IS_LINUX
@@ -3824,8 +3831,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         common_src = glob.glob(
             os.path.join(PROJECT_ROOT, "common", "*.cpp")
         ) + glob.glob(os.path.join(PROJECT_ROOT, "common", "utils", "*.cpp"))
-        common_objs = []
-        src_obj_pairs = []
+        common_objs: List[str] = []
+        src_obj_pairs: List[tuple[str, str]] = []
         for src in common_src:
             rel_path = os.path.relpath(src, PROJECT_ROOT)
             obj = os.path.join(
@@ -3865,15 +3872,17 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
         # Get vulkan lib path (use compiler-resolved import library on Linux)
         vulkan_lib = get_linux_vulkan_import_lib_path(arch)
-        if IS_LINUX and not vulkan_lib:
-            log(
-                f"Linux host: skipping Hook DLL {arch} - Vulkan import library unavailable"
-            )
-            continue
+        if vulkan_lib is None:
+            if IS_LINUX:
+                log(
+                    f"Linux host: skipping Hook DLL {arch} - Vulkan import library unavailable"
+                )
+                continue
+            raise RuntimeError(f"Vulkan import library unavailable for {arch}")
 
         # Use delay-load for graphics DLLs so the hook can load even in games that don't have them
         # This prevents crash during DLL load when injecting into games that don't use D3D12/D3D11/etc
-        ldflags_hook = [
+        ldflags_hook: List[str] = [
             "-shared",
             "-static",
         ]
@@ -3901,7 +3910,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 "-luser32",
                 "-lgdi32",
                 "-lopengl32",
-                vulkan_lib,
                 "-lversion",
                 "-ldxgi",
                 "-ld3d12",
@@ -3911,6 +3919,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 "-ldbghelp",
             ]
         )
+        ldflags_hook.append(vulkan_lib)
 
         ldflags_hook.extend(LD_OPT_FLAGS)
         if arch == "x86" and IS_LINUX:
@@ -3974,8 +3983,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             if os.path.exists(vulkan_include):
                 hk_cflags.extend(["-idirafter", vulkan_include])
 
-        hk_objs = []
-        src_obj_pairs = []
+        hk_objs: List[str] = []
+        src_obj_pairs: List[tuple[str, str]] = []
         for src in hk_src:
             rel_path = os.path.relpath(src, PROJECT_ROOT)
             obj = os.path.join(
@@ -4002,7 +4011,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         if locking:
                             log(f"[Info] Locking process: {locking}")
 
-        cmd = [curr_clang_exe] + hk_objs + common_objs + ldflags_hook + ["-o", hk_dll]
+        cmd: List[str] = (
+            [curr_clang_exe] + hk_objs + common_objs + ldflags_hook + ["-o", hk_dll]
+        )
         # cmd = [curr_clang_exe] + hk_objs + ldflags_hook + ["-o", hk_dll]
         run_command(cmd, env=curr_env)
 
@@ -4074,13 +4085,13 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     ffmpeg_flags_raw = (
                         run_command(pkg_cmd, env=env_ffmpeg).strip().split()
                     )
-                    ffmpeg_flags = [
+                    ffmpeg_flags: List[str] = [
                         f
                         for f in ffmpeg_flags_raw
                         if f not in ["-ldl", "-lshaderc_shared"]
                     ]
                     ffmpeg_lib_dir = os.path.join(FFMPEG_DIR, "lib")
-                    ffmpeg_import_libs = [
+                    ffmpeg_import_libs: List[str] = [
                         os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
                         os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
                         os.path.join(ffmpeg_lib_dir, "libswresample.dll.a"),
@@ -4097,7 +4108,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 me_dll = os.path.join(BIN_DIR, "mediaengine.dll")
                 me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
 
-                me_ldflags = [
+                me_ldflags: List[str] = [
                     "-shared",
                     "-static",
                     "-static-libgcc",
@@ -4140,8 +4151,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 # tables needed to catch D3D11's SEH exceptions (0xE06D7363) from OpenSharedFence
                 # and other D3D11 APIs. These functions throw instead of returning HRESULT errors.
                 me_cflags = [f for f in me_cflags if not f.startswith("-flto")]
-                me_objs = []
-                src_obj_pairs = []
+                me_objs: List[str] = []
+                src_obj_pairs: List[tuple[str, str]] = []
                 for src in me_src:
                     rel_path = os.path.relpath(src, PROJECT_ROOT)
                     obj = os.path.join(
@@ -4154,7 +4165,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 log("Linking MediaEngine x64...")
                 temp_me_dll = os.path.join(curr_obj_dir, "mediaengine.tmp.dll")
                 safe_delete_file(temp_me_dll)
-                cmd = (
+                cmd: List[str] = (
                     [curr_clang_exe]
                     + me_objs
                     + common_objs
@@ -4230,14 +4241,12 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 "libswresample",
                 "libswscale",
             ]
-            ce_ffmpeg_cflags = (
-                run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg)
-                .strip()
-                .split()
-            )
+        ce_ffmpeg_cflags: List[str] = (
+            run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg).strip().split()
+        )
 
-        ce_objs = []
-        src_obj_pairs = []
+        ce_objs: List[str] = []
+        src_obj_pairs: List[tuple[str, str]] = []
         for src in ce_src:
             if "screen_capture.cpp" in src:
                 continue
@@ -4247,9 +4256,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             ).replace("\\", "/")
             src_obj_pairs.append((src, obj))
             ce_objs.append(obj)
-        parallel_compile(
-            env, get_compiler_exe("x64"), cflags + ce_ffmpeg_cflags, src_obj_pairs
-        )
+        parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags, src_obj_pairs)
 
         # Resource file
         rc_file = os.path.join(PROJECT_ROOT, "captureengine", "captureengine.rc")
@@ -4269,7 +4276,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             if IS_LINUX
             else os.path.join(FFMPEG_DIR, "lib")
         )
-        ce_ldflags = [
+        ce_ldflags: List[str] = [
             "-mwindows",
             "-static",
             "-static-libgcc",
@@ -4334,12 +4341,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         ]
         temp_ce_exe = os.path.join(ce_obj_dir, "captureengine.tmp.exe")
         safe_delete_file(temp_ce_exe)
-        cmd = (
-            [get_compiler_exe("x64")]
-            + ce_objs
-            + x64_common_objs
-            + ce_ldflags
-            + ["-o", temp_ce_exe]
+        cmd: List[str] = (
+            [clang_exe] + ce_objs + x64_common_objs + ce_ldflags + ["-o", temp_ce_exe]
         )
         run_command(cmd, env=env)
         if not safe_copy_file(temp_ce_exe, ce_exe):
@@ -4368,10 +4371,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     x86_env_for_tests = None
     if not IS_LINUX or has_linux_x86_compiler():
         x86_env_for_tests, _ = get_env_x86()
-    compile_testapps(env, x86_env_for_tests, get_compiler_exe("x64"), cflags)
+    compile_testapps(env, x86_env_for_tests, clang_exe, cflags)
 
     # 7. Compile Vulkan Layer (VK_LAYER_CE_overlay)
-    compile_vulkan_layer(env, get_compiler_exe("x64"), cflags, "x64")
+    compile_vulkan_layer(env, clang_exe, cflags, "x64")
     # x86 layer using mingw32 toolchain (disabled for sanitizer builds)
     if get_env_x86 and env.get("CE_SANITIZE") != "1":
         if IS_LINUX and not has_linux_x86_compiler():
