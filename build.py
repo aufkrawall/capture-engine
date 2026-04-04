@@ -1344,6 +1344,13 @@ def get_linux_msys2_dir():
     return os.path.join(BUILD_DIR, "msys64_linux")
 
 
+def get_linux_msys2_lib_dir(arch: str = "x64") -> str:
+    msys2_dir = get_linux_msys2_dir()
+    if arch == "x86":
+        return os.path.join(msys2_dir, "mingw32", "lib")
+    return os.path.join(msys2_dir, "clang64", "lib")
+
+
 def get_host_msys2_dir():
     return get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
 
@@ -2886,6 +2893,8 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     msys2_dir = get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
     vulkan_lib = os.path.join(msys2_dir, "clang64", "lib", "libvulkan-1.dll.a")
     vulkan_lib_x86 = os.path.join(msys2_dir, "mingw32", "lib", "libvulkan-1.dll.a")
+    linux_msys2_lib_dir = get_linux_msys2_lib_dir("x64") if IS_LINUX else ""
+    linux_msys2_lib_dir_x86 = get_linux_msys2_lib_dir("x86") if IS_LINUX else ""
 
     # DX12 Test App
     dx12_src = os.path.join(testapp_src_dir, "dx12_test.cpp")
@@ -2894,14 +2903,20 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         dx12_ldflags = [
             "-static",
             "-Wl,--subsystem,windows",
-            "-ld3d12",
-            "-ldxgi",
-            "-ld3dcompiler",
-            "-lgdi32",
-            "-luser32",
-            "-lshcore",
-            "-lavrt",
         ]
+        if IS_LINUX:
+            dx12_ldflags.append("-L" + linux_msys2_lib_dir)
+        dx12_ldflags.extend(
+            [
+                "-ld3d12",
+                "-ldxgi",
+                "-ld3dcompiler",
+                "-lgdi32",
+                "-luser32",
+                "-lshcore",
+                "-lavrt",
+            ]
+        )
         add_task(
             "dx12_test.exe",
             make_cmd(clang_exe, cflags, dx12_src, dx12_ldflags, dx12_exe),
@@ -2923,13 +2938,19 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         dx11_ldflags = [
             "-static",
             "-Wl,--subsystem,windows",
-            "-ld3d11",
-            "-ldxgi",
-            "-lgdi32",
-            "-luser32",
-            "-lshcore",
-            "-lavrt",
         ]
+        if IS_LINUX:
+            dx11_ldflags.append("-L" + linux_msys2_lib_dir)
+        dx11_ldflags.extend(
+            [
+                "-ld3d11",
+                "-ldxgi",
+                "-lgdi32",
+                "-luser32",
+                "-lshcore",
+                "-lavrt",
+            ]
+        )
         add_task(
             "dx11_test.exe",
             make_cmd(clang_exe, cflags, dx11_src, dx11_ldflags, dx11_exe),
@@ -2951,11 +2972,17 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         dx9_ldflags = [
             "-static",
             "-Wl,--subsystem,windows",
-            "-ld3d9",
-            "-lgdi32",
-            "-luser32",
-            "-lavrt",
         ]
+        if IS_LINUX:
+            dx9_ldflags.append("-L" + linux_msys2_lib_dir)
+        dx9_ldflags.extend(
+            [
+                "-ld3d9",
+                "-lgdi32",
+                "-luser32",
+                "-lavrt",
+            ]
+        )
         dx9ex_exe = os.path.join(testapp_bin_dir, "dx9ex_test.exe")
         dx9ex_cflags = list(cflags) + ["-DCE_TESTAPP_D3D9EX=1"]
 
@@ -3018,12 +3045,18 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         vulkan_ldflags = [
             "-static",
             "-Wl,--subsystem,windows",
-            vulkan_lib,
-            "-lgdi32",
-            "-luser32",
-            "-lshcore",
-            "-lavrt",
         ]
+        if IS_LINUX:
+            vulkan_ldflags.append("-L" + linux_msys2_lib_dir)
+        vulkan_ldflags.extend(
+            [
+                vulkan_lib,
+                "-lgdi32",
+                "-luser32",
+                "-lshcore",
+                "-lavrt",
+            ]
+        )
         add_task(
             "vulkan_test.exe",
             make_cmd(clang_exe, cflags, vulkan_src, vulkan_ldflags, vulkan_exe),
@@ -3034,12 +3067,18 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             vulkan_ldflags_x86 = [
                 "-static",
                 "-Wl,--subsystem,windows",
-                vulkan_lib_x86,
-                "-lgdi32",
-                "-luser32",
-                "-lshcore",
-                "-lavrt",
             ]
+            if IS_LINUX:
+                vulkan_ldflags_x86.append("-L" + linux_msys2_lib_dir_x86)
+            vulkan_ldflags_x86.extend(
+                [
+                    vulkan_lib_x86,
+                    "-lgdi32",
+                    "-luser32",
+                    "-lshcore",
+                    "-lavrt",
+                ]
+            )
             add_task(
                 "vulkan_test.exe (x86)",
                 make_cmd(
@@ -3732,6 +3771,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "lib",
             "libvulkan-1.dll.a",
         )
+        msys2_link_lib_dir = get_linux_msys2_lib_dir(arch) if IS_LINUX else ""
 
         # Use delay-load for graphics DLLs so the hook can load even in games that don't have them
         # This prevents crash during DLL load when injecting into games that don't use D3D12/D3D11/etc
@@ -3741,6 +3781,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         ]
         if IS_LINUX:
             ldflags_hook.extend(["-static-libgcc", "-static-libstdc++"])
+            ldflags_hook.append("-L" + msys2_link_lib_dir)
 
         # Add lib path for non-Linux
         if not IS_LINUX:
@@ -4129,33 +4170,39 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-static",
             "-static-libgcc",
             "-static-libstdc++",
-            "-Wl,--gc-sections",
-            "-Wl,--dynamicbase",  # ASLR
-            "-Wl,--high-entropy-va",  # High-entropy 64-bit ASLR
-            "-Wl,--nxcompat",  # DEP/NX
-            "-ld3d11",
-            "-ldxgi",
-            "-luser32",
-            "-lshell32",
-            "-lshlwapi",
-            "-lpsapi",
-            "-lwinmm",
-            "-lavrt",
-            "-lruntimeobject",
-            "-lole32",
-            "-loleaut32",
-            "-lwindowscodecs",
-            "-ldbghelp",
-            "-lwbemuuid",
-            "-lbcrypt",
-            "-lwintrust",
-            "-lpdh",
-            "-lntdll",
-            # FFmpeg for HDR screenshot encoding (AVIF via SVT-AV1) — delay-loaded so SetDllDirectory works
-            os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
-            os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
-            os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
         ]
+        if IS_LINUX:
+            ce_ldflags.append("-L" + get_linux_msys2_lib_dir("x64"))
+        ce_ldflags.extend(
+            [
+                "-Wl,--gc-sections",
+                "-Wl,--dynamicbase",  # ASLR
+                "-Wl,--high-entropy-va",  # High-entropy 64-bit ASLR
+                "-Wl,--nxcompat",  # DEP/NX
+                "-ld3d11",
+                "-ldxgi",
+                "-luser32",
+                "-lshell32",
+                "-lshlwapi",
+                "-lpsapi",
+                "-lwinmm",
+                "-lavrt",
+                "-lruntimeobject",
+                "-lole32",
+                "-loleaut32",
+                "-lwindowscodecs",
+                "-ldbghelp",
+                "-lwbemuuid",
+                "-lbcrypt",
+                "-lwintrust",
+                "-lpdh",
+                "-lntdll",
+                # FFmpeg for HDR screenshot encoding (AVIF via SVT-AV1) — delay-loaded so SetDllDirectory works
+                os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
+                os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
+                os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
+            ]
+        )
         if not IS_LINUX:
             ce_ldflags.extend(
                 [
