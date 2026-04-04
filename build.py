@@ -1036,13 +1036,15 @@ def setup_msys2():
         clear_stale_msys2_pacman_lock()
         run_command([msys_bash, "-lc", "pacman-key --populate msys2"])
         clear_stale_msys2_pacman_lock()
-        run_command([msys_bash, "-lc", "pacman -Sy --noconfirm"])
+        run_command(
+            [msys_bash, "-lc", "pacman -Sy --noconfirm --disable-download-timeout"]
+        )
     else:
         log("MSYS2 found.")
 
     log("Installing Packages...")
     msys_bash = os.path.join(MSYS2_DIR, "usr", "bin", "bash.exe")
-    pkg_cmd = f"pacman -S --needed --noconfirm {' '.join(PACKAGES)}"
+    pkg_cmd = f"pacman -S --needed --noconfirm --disable-download-timeout {' '.join(PACKAGES)}"
     clear_stale_msys2_pacman_lock()
     run_command([msys_bash, "-lc", pkg_cmd], input_str="\n")
     patch_amf_header()
