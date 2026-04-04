@@ -59,6 +59,13 @@ TEST(AudioSyncUtilsTest, DurationUsToSamplesRoundsToNearestSample) {
     EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(1000, 0), 0);
 }
 
+TEST(AudioSyncUtilsTest, LeadTrimExcessUsesHysteresisBand) {
+    EXPECT_EQ(ce::audio::ComputeLeadTrimExcessSamples(6000, 3000, 2400, 240), 360);
+    EXPECT_EQ(ce::audio::ComputeLeadTrimExcessSamples(5640, 3000, 2400, 240), 0);
+    EXPECT_EQ(ce::audio::ComputeLeadTrimExcessSamples(5200, 3000, 2400, 240), 0);
+    EXPECT_EQ(ce::audio::ComputeLeadTrimExcessSamples(-1, 3000, 2400, 240), 0);
+}
+
 TEST(AudioSyncUtilsTest, WgcSteadyStateDriftCompensationRequiresHealthyLargeLead) {
     EXPECT_TRUE(ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(true, 0, 12000, 960, 9600));
     EXPECT_FALSE(ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(false, 0, 12000, 960, 9600));

@@ -41,7 +41,9 @@ public:
     void DiscardPendingPackets();
 
 private:
-    static constexpr size_t kMaxQueuedPackets = 64;
+    // Allow a couple of seconds of capture jitter before we have to drop the
+    // oldest queued audio packet.
+    static constexpr size_t kMaxQueuedPackets = 256;
 
     IMMDeviceEnumerator* pEnumerator;
     IMMDevice* pDevice;

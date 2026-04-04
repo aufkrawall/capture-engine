@@ -567,6 +567,9 @@ void AppAudioCapture::CaptureLoop() {
     int logCounter = 0;
     uint64_t logicalFrameCursor = 0;
     uint64_t lastProcessCheckTick = 0;
+    uint64_t queueDropPackets = 0;
+    uint64_t queueDropFrames = 0;
+    uint64_t lastQueueDropLogTick = 0;
 
     while (isCapturing.load() && !shouldStop.load()) {
         const uint64_t nowTick = GetTickCount64();
@@ -668,7 +671,24 @@ void AppAudioCapture::CaptureLoop() {
             {
                 std::lock_guard<std::mutex> lock(queueMutex);
                 if (packetQueue.size() >= kMaxQueuedPackets) {
+                    const AudioPacket& droppedPacket = packetQueue.front();
+                    if (droppedPacket.blockAlign > 0) {
+                        queueDropFrames += droppedPacket.data.size() / static_cast<size_t>(droppedPacket.blockAlign);
+                    }
+                    queueDropPackets++;
                     packetQueue.pop_front();
+
+                    const uint64_t nowTick = GetTickCount64();
+                    if (nowTick - lastQueueDropLogTick >= 1000) {
+                        DLL_Log(
+                            "[AppAudioCapture] WARNING: capture queue overrun - dropped %llu packet(s) / %llu frame(s) "
+                            "for PID %lu while keeping newest audio (depth=%zu)",
+                            static_cast<unsigned long long>(queueDropPackets),
+                            static_cast<unsigned long long>(queueDropFrames), targetPID.load(), kMaxQueuedPackets);
+                        queueDropPackets = 0;
+                        queueDropFrames = 0;
+                        lastQueueDropLogTick = nowTick;
+                    }
                 }
                 packetQueue.push_back(packet);
             }
@@ -687,6 +707,11 @@ void AppAudioCapture::CaptureLoop() {
     }
 
     DLL_Log("[AppAudioCapture] Capture loop exited");
+    if (queueDropPackets > 0 || queueDropFrames > 0) {
+        DLL_Log("[AppAudioCapture] Final queue overrun summary for PID %lu: dropped %llu packet(s) / %llu frame(s)",
+                targetPID.load(), static_cast<unsigned long long>(queueDropPackets),
+                static_cast<unsigned long long>(queueDropFrames));
+    }
     isCapturing.store(false);
     startPendingValid.store(false, std::memory_order_release);
     if (SUCCEEDED(coInitHr) && coInitHr != S_FALSE) {

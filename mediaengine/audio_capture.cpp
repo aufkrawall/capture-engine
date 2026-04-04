@@ -239,6 +239,9 @@ void AudioCapture::CaptureLoop() {
     int logCounter = 0;
     int errCount = 0;   // Count GetNextPacketSize errors (reset each session)
     int loopCount = 0;  // Count packets seen (reset each session)
+    uint64_t queueDropPackets = 0;
+    uint64_t queueDropFrames = 0;
+    uint64_t lastQueueDropLogTick = 0;
 
     while (isCapturing) {
         if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
@@ -331,7 +334,24 @@ void AudioCapture::CaptureLoop() {
             {
                 std::lock_guard<std::mutex> lock(queueMutex);
                 if (packetQueue.size() >= kMaxQueuedPackets) {
+                    const AudioPacket& droppedPacket = packetQueue.front();
+                    if (droppedPacket.blockAlign > 0) {
+                        queueDropFrames += droppedPacket.data.size() / static_cast<size_t>(droppedPacket.blockAlign);
+                    }
+                    queueDropPackets++;
                     packetQueue.pop_front();
+
+                    const uint64_t nowTick = GetTickCount64();
+                    if (nowTick - lastQueueDropLogTick >= 1000) {
+                        DLL_Log(
+                            "[AudioCapture] WARNING: capture queue overrun - dropped %llu packet(s) / %llu frame(s) "
+                            "while keeping newest audio (depth=%zu)",
+                            static_cast<unsigned long long>(queueDropPackets),
+                            static_cast<unsigned long long>(queueDropFrames), kMaxQueuedPackets);
+                        queueDropPackets = 0;
+                        queueDropFrames = 0;
+                        lastQueueDropLogTick = nowTick;
+                    }
                 }
                 packetQueue.push_back(packet);
             }
@@ -342,6 +362,11 @@ void AudioCapture::CaptureLoop() {
     }
 
     DLL_Log("[AudioCapture] CaptureLoop exited");
+    if (queueDropPackets > 0 || queueDropFrames > 0) {
+        DLL_Log("[AudioCapture] Final queue overrun summary: dropped %llu packet(s) / %llu frame(s)",
+                static_cast<unsigned long long>(queueDropPackets),
+                static_cast<unsigned long long>(queueDropFrames));
+    }
     // Only uninitialize COM if we successfully initialized it on this thread.
     // S_FALSE means COM was already initialized (we don't own the reference).
     if (SUCCEEDED(coInitHr) && coInitHr != S_FALSE) {

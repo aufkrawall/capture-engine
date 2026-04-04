@@ -262,6 +262,15 @@ inline int64_t ComputeDurationUsToSamples(int64_t durationUs, int sampleRate) {
     return ((durationUs * static_cast<int64_t>(sampleRate)) + (kMicrosecondsPerSecond / 2)) / kMicrosecondsPerSecond;
 }
 
+inline int64_t ComputeLeadTrimExcessSamples(int64_t bufferedSamples, int64_t targetLatencySamples,
+                                            int64_t allowedLeadSamples,
+                                            int64_t hysteresisSamples = kDefaultAudioPullQuantumSamples) {
+    const int64_t thresholdSamples = std::max<int64_t>(0, targetLatencySamples) +
+                                     std::max<int64_t>(0, allowedLeadSamples) +
+                                     std::max<int64_t>(0, hysteresisSamples);
+    return std::max<int64_t>(0, bufferedSamples - thresholdSamples);
+}
+
 inline double ComputeSamplesPerMinute(uint64_t sampleCount, int64_t durationUs) {
     if (durationUs <= 0) {
         return 0.0;
