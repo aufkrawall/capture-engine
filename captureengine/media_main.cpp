@@ -24,6 +24,7 @@
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/rate_window_utils.h"
+#include "../common/thread_power_throttling_compat.h"
 #include "../common/shared_defs.h"
 #include "mediaengine_loader.h"
 #include "wgc_capture.h"

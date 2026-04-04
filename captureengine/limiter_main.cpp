@@ -10,6 +10,7 @@
 #include "../common/config.h"
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
+#include "../common/thread_power_throttling_compat.h"
 #include "../common/shared_defs.h"
 
 /*

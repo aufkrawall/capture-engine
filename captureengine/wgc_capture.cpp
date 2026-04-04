@@ -30,6 +30,7 @@ static std::atomic<int32_t> g_WgcInflightCallbacks{0};
 // Check if actual WGC headers are available
 #if __has_include(<winrt/Windows.Graphics.Capture.h>)
 #define HAS_WGC 1
+#include <windows.graphics.directx.h>
 #include <windows.graphics.capture.h>
 #include <windows.graphics.capture.interop.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -695,6 +696,10 @@ public:
             return;
         }
 
+#if defined(__MINGW32__) || defined(__MINGW64__)
+        // The current MinGW WinRT projection does not expose this session API.
+        return;
+#else
         try {
             if (targetFps_ > 0) {
                 int64_t interval100ns = 10000000ll / targetFps_;
@@ -711,6 +716,7 @@ public:
         } catch (...) {
             LogInfo("[WGC] MinUpdateInterval not available (older Windows)");
         }
+#endif
     }
 
     int64_t GetFrameSourceQpc(const winrt::Direct3D11CaptureFrame& frame) const {
@@ -853,6 +859,12 @@ public:
             return false;
         }
 
+#if defined(__MINGW32__) || defined(__MINGW64__)
+        (void)frame;
+        (void)frameWidth;
+        (void)frameHeight;
+        return false;
+#else
         auto frame2 = frame.try_as<winrt::Windows::Graphics::Capture::IDirect3D11CaptureFrame2>();
         if (!frame2) {
             return false;
@@ -922,6 +934,7 @@ public:
         lastCursorScreenPos_ = cursorInfo.ptScreenPos;
         lastCursorScreenPosValid_ = true;
         return cursorOnly;
+#endif
     }
 
     HMONITOR ResolveTargetMonitor() const {
