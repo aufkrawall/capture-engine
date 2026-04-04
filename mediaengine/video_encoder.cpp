@@ -344,6 +344,7 @@ bool SupportsCodecPixelFormat(const AVCodec* codec, AVPixelFormat pixFmt) {
         return false;
     }
 
+#if LIBAVCODEC_VERSION_MAJOR >= 61
     const void* configs = nullptr;
     int numConfigs = 0;
     const int ret = avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, &configs, &numConfigs);
@@ -361,6 +362,18 @@ bool SupportsCodecPixelFormat(const AVCodec* codec, AVPixelFormat pixFmt) {
         }
     }
     return false;
+#else
+    if (!codec->pix_fmts) {
+        return true;
+    }
+
+    for (const AVPixelFormat* fmt = codec->pix_fmts; *fmt != AV_PIX_FMT_NONE; ++fmt) {
+        if (*fmt == pixFmt) {
+            return true;
+        }
+    }
+    return false;
+#endif
 }
 
 bool SupportsD3D11HwInputFormat(const AVCodec* codec, AVPixelFormat swFormat) {

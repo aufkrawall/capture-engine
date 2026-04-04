@@ -26,8 +26,6 @@ extern ID3D11Device* g_SharedD3D11Device;
 extern ID3D11DeviceContext* g_SharedD3D11Context;
 }
 
-static void ReleaseSharedD3D11DeviceGlobals();
-
 // Global or Singleton state preferred for DLL functions
 // Or we map config to instance.
 // For simplicity, SINGLETON pattern (one active engine).
@@ -2939,6 +2937,7 @@ extern "C" {
 
 // Global Logger
 static std::atomic<LogCallback> g_LogCallback{nullptr};
+static void ReleaseSharedD3D11DeviceGlobals();
 
 MEDIAENGINE_API void DLL_Log(const char* fmt, ...) {
     LogCallback callback = g_LogCallback.load(std::memory_order_acquire);
