@@ -926,6 +926,39 @@ def get_linux_mingw_runtime_dirs(arch: str) -> List[str]:
     return unique_candidates
 
 
+def get_linux_vulkan_import_lib_path(arch: str) -> Optional[str]:
+    if not IS_LINUX:
+        return os.path.join(
+            MSYS2_DIR,
+            "clang64" if arch == "x64" else "mingw32",
+            "lib",
+            "libvulkan-1.dll.a",
+        )
+
+    compiler = get_compiler_exe(arch)
+    if compiler:
+        try:
+            resolved = subprocess.check_output(
+                [compiler, "-print-file-name=libvulkan-1.dll.a"],
+                encoding="utf-8",
+                errors="ignore",
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            resolved = ""
+        if resolved and resolved != "libvulkan-1.dll.a" and os.path.exists(resolved):
+            return resolved
+
+    if arch == "x64":
+        fallback = os.path.join(
+            get_linux_msys2_dir(), "clang64", "lib", "libvulkan-1.dll.a"
+        )
+        if os.path.exists(fallback):
+            return fallback
+
+    return None
+
+
 def get_compiler_exe(arch="x64"):
     """Get the compiler executable for the given architecture."""
     if IS_LINUX:
@@ -1654,6 +1687,9 @@ class FFmpegBuilder:
         self.prefix = to_unix(install_dir)
         self.win_prefix = install_dir
         self.license_mode = "lgpl"  # Changed to LGPL per user request
+
+    def _vulkan_import_lib(self, arch: str) -> Optional[str]:
+        return get_linux_vulkan_import_lib_path(arch)
 
     def setup_dirs(self):
         for d in [self.build_root, self.repos_dir, self.working_dir, self.install_dir]:
@@ -2889,10 +2925,8 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             )
         return cmd_base
 
-    # Get vulkan lib path
-    msys2_dir = get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
-    vulkan_lib = os.path.join(msys2_dir, "clang64", "lib", "libvulkan-1.dll.a")
-    vulkan_lib_x86 = os.path.join(msys2_dir, "mingw32", "lib", "libvulkan-1.dll.a")
+    vulkan_lib = get_linux_vulkan_import_lib_path("x64")
+    vulkan_lib_x86 = get_linux_vulkan_import_lib_path("x86")
     linux_msys2_lib_dir = get_linux_msys2_lib_dir("x64") if IS_LINUX else ""
     linux_msys2_lib_dir_x86 = get_linux_msys2_lib_dir("x86") if IS_LINUX else ""
 
@@ -3064,31 +3098,36 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
         if have_x86:
             vulkan_exe_x86 = os.path.join(x86_bin_dir, "vulkan_test.exe")
-            vulkan_ldflags_x86 = [
-                "-static",
-                "-Wl,--subsystem,windows",
-            ]
-            if IS_LINUX:
-                vulkan_ldflags_x86.append("-L" + linux_msys2_lib_dir_x86)
-            vulkan_ldflags_x86.extend(
-                [
-                    vulkan_lib_x86,
-                    "-lgdi32",
-                    "-luser32",
-                    "-lshcore",
-                    "-lavrt",
+            if vulkan_lib_x86:
+                vulkan_ldflags_x86 = [
+                    "-static",
+                    "-Wl,--subsystem,windows",
                 ]
-            )
-            add_task(
-                "vulkan_test.exe (x86)",
-                make_cmd(
-                    clang_exe_x86,
-                    cflags_x86,
-                    vulkan_src,
-                    vulkan_ldflags_x86,
-                    vulkan_exe_x86,
-                ),
-            )
+                if IS_LINUX:
+                    vulkan_ldflags_x86.append("-L" + linux_msys2_lib_dir_x86)
+                vulkan_ldflags_x86.extend(
+                    [
+                        vulkan_lib_x86,
+                        "-lgdi32",
+                        "-luser32",
+                        "-lshcore",
+                        "-lavrt",
+                    ]
+                )
+                add_task(
+                    "vulkan_test.exe (x86)",
+                    make_cmd(
+                        clang_exe_x86,
+                        cflags_x86,
+                        vulkan_src,
+                        vulkan_ldflags_x86,
+                        vulkan_exe_x86,
+                    ),
+                )
+            else:
+                log(
+                    "Linux host: skipping vulkan_test.exe (x86) - Vulkan import library unavailable"
+                )
 
     # OpenGL Test App
     opengl_src = os.path.join(testapp_src_dir, "opengl_test.cpp")
@@ -3469,15 +3508,12 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     else:
         layer_dll_name = "VK_LAYER_CE_overlay_x86.dll"
 
-    # Use MSYS2 Vulkan import library
-    if arch == "x64":
-        vulkan_lib = os.path.join(
-            get_linux_msys2_dir(), "clang64", "lib", "libvulkan-1.dll.a"
+    vulkan_lib = get_linux_vulkan_import_lib_path(arch)
+    if not vulkan_lib:
+        log(
+            f"Linux host: skipping Vulkan Layer ({arch}) - Vulkan import library unavailable"
         )
-    else:
-        vulkan_lib = os.path.join(
-            get_linux_msys2_dir(), "mingw32", "lib", "libvulkan-1.dll.a"
-        )
+        return
 
     layer_dll = os.path.join(bin_dir, layer_dll_name)
 
@@ -3499,6 +3535,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     ldflags.extend(
         LD_OPT_FLAGS
     )  # Keep hardening and minimal symbol info for crash dumps
+    if arch == "x86" and IS_LINUX:
+        ldflags.append("-Wl,--allow-multiple-definition")
     if arch == "x64":
         ldflags.extend(LD_OPT_FLAGS_X64)  # High-entropy ASLR (x64 only)
     if arch == "x86":
@@ -3764,13 +3802,13 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
         hk_dll = os.path.join(BIN_DIR, f"capture_hook_{arch}.dll")
 
-        # Get vulkan lib path (use MSYS2 import library for cross-compilation)
-        vulkan_lib = os.path.join(
-            get_linux_msys2_dir(),
-            "clang64" if arch == "x64" else "mingw32",
-            "lib",
-            "libvulkan-1.dll.a",
-        )
+        # Get vulkan lib path (use compiler-resolved import library on Linux)
+        vulkan_lib = get_linux_vulkan_import_lib_path(arch)
+        if IS_LINUX and not vulkan_lib:
+            log(
+                f"Linux host: skipping Hook DLL {arch} - Vulkan import library unavailable"
+            )
+            continue
         msys2_link_lib_dir = get_linux_msys2_lib_dir(arch) if IS_LINUX else ""
 
         # Use delay-load for graphics DLLs so the hook can load even in games that don't have them
@@ -3816,6 +3854,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         )
 
         ldflags_hook.extend(LD_OPT_FLAGS)
+        if arch == "x86" and IS_LINUX:
+            ldflags_hook.append("-Wl,--allow-multiple-definition")
         if arch == "x64":
             ldflags_hook.extend(LD_OPT_FLAGS_X64)  # High-entropy ASLR (x64 only)
 
