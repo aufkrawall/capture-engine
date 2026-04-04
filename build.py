@@ -4241,9 +4241,11 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 "libswresample",
                 "libswscale",
             ]
-        ce_ffmpeg_cflags: List[str] = (
-            run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg).strip().split()
-        )
+            ce_ffmpeg_cflags: List[str] = (
+                run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg)
+                .strip()
+                .split()
+            )
 
         ce_objs: List[str] = []
         src_obj_pairs: List[tuple[str, str]] = []
