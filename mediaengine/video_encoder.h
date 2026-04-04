@@ -20,7 +20,6 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_d3d11va.h>
-#include <libavutil/hwcontext_d3d12va.h>
 #include <libswscale/swscale.h>
 }
 
