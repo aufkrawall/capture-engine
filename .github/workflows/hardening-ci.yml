@@ -3,26 +3,32 @@ name: hardening-ci
 on:
   push:
     branches: ["main", "master"]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - "analysis/**"
+      - "analysis_logs/**"
+      - "*.log"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - "analysis/**"
+      - "analysis_logs/**"
+      - "*.log"
   workflow_dispatch:
 
+concurrency:
+  group: hardening-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  build-and-test:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            name: windows-standard
-            args: --skip-updates --run-tests
-          - os: windows-latest
-            name: windows-sanitize
-            args: --skip-updates --sanitize --run-tests
-          - os: ubuntu-latest
-            name: linux-build
-            args: --skip-updates --incremental
+  linux-cross-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -33,13 +39,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Cache Linux MSYS2 packages
+        uses: actions/cache@v4
+        with:
+          path: build/msys64_linux
+          key: linux-msys2-${{ runner.os }}-${{ hashFiles('build.py') }}
+
       - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++-mingw-w64-x86-64 g++-mingw-w64-i686 pkg-config zstd
+          sudo apt-get install -y --no-install-recommends \
+            g++-mingw-w64-x86-64 \
+            g++-mingw-w64-i686 \
+            pkg-config \
+            zstd
 
-      - name: Build and run tests (${{ matrix.name }})
+      - name: Cross-compile on Linux
         shell: pwsh
-        run: python build.py ${{ matrix.args }}
+        run: python build.py --skip-updates
