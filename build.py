@@ -3004,8 +3004,6 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
     vulkan_lib = get_linux_vulkan_import_lib_path("x64")
     vulkan_lib_x86 = get_linux_vulkan_import_lib_path("x86")
-    linux_msys2_lib_dir = get_linux_msys2_lib_dir("x64") if IS_LINUX else ""
-    linux_msys2_lib_dir_x86 = get_linux_msys2_lib_dir("x86") if IS_LINUX else ""
 
     # DX12 Test App
     dx12_src = os.path.join(testapp_src_dir, "dx12_test.cpp")
@@ -3015,8 +3013,6 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             "-static",
             "-Wl,--subsystem,windows",
         ]
-        if IS_LINUX:
-            dx12_ldflags.append("-L" + linux_msys2_lib_dir)
         dx12_ldflags.extend(
             [
                 "-ld3d12",
@@ -3050,8 +3046,6 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             "-static",
             "-Wl,--subsystem,windows",
         ]
-        if IS_LINUX:
-            dx11_ldflags.append("-L" + linux_msys2_lib_dir)
         dx11_ldflags.extend(
             [
                 "-ld3d11",
@@ -3084,8 +3078,6 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             "-static",
             "-Wl,--subsystem,windows",
         ]
-        if IS_LINUX:
-            dx9_ldflags.append("-L" + linux_msys2_lib_dir)
         dx9_ldflags.extend(
             [
                 "-ld3d9",
@@ -3157,8 +3149,6 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             "-static",
             "-Wl,--subsystem,windows",
         ]
-        if IS_LINUX:
-            vulkan_ldflags.append("-L" + linux_msys2_lib_dir)
         vulkan_ldflags.extend(
             [
                 vulkan_lib,
@@ -3179,18 +3169,12 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                 vulkan_ldflags_x86 = [
                     "-static",
                     "-Wl,--subsystem,windows",
+                    vulkan_lib_x86,
+                    "-lgdi32",
+                    "-luser32",
+                    "-lshcore",
+                    "-lavrt",
                 ]
-                if IS_LINUX:
-                    vulkan_ldflags_x86.append("-L" + linux_msys2_lib_dir_x86)
-                vulkan_ldflags_x86.extend(
-                    [
-                        vulkan_lib_x86,
-                        "-lgdi32",
-                        "-luser32",
-                        "-lshcore",
-                        "-lavrt",
-                    ]
-                )
                 add_task(
                     "vulkan_test.exe (x86)",
                     make_cmd(
@@ -3886,7 +3870,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 f"Linux host: skipping Hook DLL {arch} - Vulkan import library unavailable"
             )
             continue
-        msys2_link_lib_dir = get_linux_msys2_lib_dir(arch) if IS_LINUX else ""
 
         # Use delay-load for graphics DLLs so the hook can load even in games that don't have them
         # This prevents crash during DLL load when injecting into games that don't use D3D12/D3D11/etc
@@ -3896,7 +3879,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         ]
         if IS_LINUX:
             ldflags_hook.extend(["-static-libgcc", "-static-libstdc++"])
-            ldflags_hook.append("-L" + msys2_link_lib_dir)
 
         # Add lib path for non-Linux
         if not IS_LINUX:
@@ -4293,8 +4275,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-static-libgcc",
             "-static-libstdc++",
         ]
-        if IS_LINUX:
-            ce_ldflags.append("-L" + get_linux_msys2_lib_dir("x64"))
         ce_ldflags.extend(
             [
                 "-Wl,--gc-sections",
