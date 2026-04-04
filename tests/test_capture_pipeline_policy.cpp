@@ -184,8 +184,7 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceStateClassificationIsExplicit) {
     telemetry.recentInputMin250Fps = 118;
     telemetry.recentInputMin500Fps = 118;
     EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kInputBelowTarget);
-    EXPECT_STREQ(policy::WgcLowSourceStateToString(policy::WgcLowSourceState::kInputBelowTarget),
-                 "input-below-target");
+    EXPECT_STREQ(policy::WgcLowSourceStateToString(policy::WgcLowSourceState::kInputBelowTarget), "input-below-target");
 
     telemetry.recentInputMin250Fps = 120;
     telemetry.recentInputMin500Fps = 120;
@@ -364,10 +363,8 @@ TEST(CapturePipelinePolicyTest, WgcLiveRecoveryStateClassificationIsExplicit) {
 
     telemetry.recentInputMin250Fps = 100;
     telemetry.recentInputMin500Fps = 100;
-    EXPECT_EQ(
-        policy::ClassifyWgcLiveRecoveryState(telemetry, 4, false), policy::WgcLiveRecoveryState::kSourceStarved);
-    EXPECT_STREQ(policy::WgcLiveRecoveryStateToString(policy::WgcLiveRecoveryState::kSourceStarved),
-                 "source-starved");
+    EXPECT_EQ(policy::ClassifyWgcLiveRecoveryState(telemetry, 4, false), policy::WgcLiveRecoveryState::kSourceStarved);
+    EXPECT_STREQ(policy::WgcLiveRecoveryStateToString(policy::WgcLiveRecoveryState::kSourceStarved), "source-starved");
 
     telemetry.recentInputMin250Fps = 120;
     telemetry.recentInputMin500Fps = 120;

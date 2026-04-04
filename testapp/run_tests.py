@@ -366,9 +366,7 @@ def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> T
     max_frame_num = 0
     time_pattern = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
     perf_pattern = re.compile(r"\[PERF\]\s+Frame\s+(\d+):\s+TOTAL=([0-9]*\.?[0-9]+)ms")
-    packet_pattern = re.compile(
-        r"Queuing video pkt #(\d+): pts=(\d+) dts=\d+ dur=(\d+) .* codec_tb=(\d+)/(\d+)"
-    )
+    packet_pattern = re.compile(r"Queuing video pkt #(\d+): pts=(\d+) dts=\d+ dur=(\d+) .* codec_tb=(\d+)/(\d+)")
     recording_stats_pattern = re.compile(r"Recording stats: input=(\d+) output=(\d+)")
     previous_packet_pts_ms: Optional[float] = None
     try:
@@ -778,7 +776,9 @@ def main() -> None:
 
                 print(f"\n{api.upper()}-{arch.upper()} " f"(passed {len(combo_passed)}/{len(combo)} tests):")
 
-                stats_for_combo: List[Dict[str, Any]] = [r["stats"] for r in combo_passed if isinstance(r["stats"], dict)]
+                stats_for_combo: List[Dict[str, Any]] = [
+                    r["stats"] for r in combo_passed if isinstance(r["stats"], dict)
+                ]
                 if stats_for_combo:
                     avg_min = statistics.mean(float(s["min"]) for s in stats_for_combo)
                     avg_max = statistics.mean(float(s["max"]) for s in stats_for_combo)

@@ -4,9 +4,9 @@
 #define DIRECTDRAW_VERSION 0x0600
 #define DIRECT3D_VERSION 0x0600
 
-#include <windows.h>
-#include <ddraw.h>
 #include <d3d.h>
+#include <ddraw.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <chrono>
@@ -231,7 +231,8 @@ static void RenderDirectDrawFallbackFrame() {
 static bool CreateRenderSurface() {
     DDSURFACEDESC2 primaryDesc = {};
     primaryDesc.dwSize = sizeof(primaryDesc);
-    const HRESULT primaryDescHr = g_PrimarySurface ? g_PrimarySurface->GetSurfaceDesc(&primaryDesc) : DDERR_INVALIDOBJECT;
+    const HRESULT primaryDescHr =
+        g_PrimarySurface ? g_PrimarySurface->GetSurfaceDesc(&primaryDesc) : DDERR_INVALIDOBJECT;
 
     DDSURFACEDESC2 desc = {};
     desc.dwSize = sizeof(desc);
@@ -412,10 +413,10 @@ static void RenderFrame(HWND hwnd) {
         background[0] = {0.0f, 0.0f, 0.5f, 1.0f, MakeColor(24, 40, 92)};
         background[1] = {static_cast<float>(g_WindowWidth), 0.0f, 0.5f, 1.0f, MakeColor(12, 28, 72)};
         background[2] = {static_cast<float>(g_WindowWidth), static_cast<float>(g_WindowHeight), 0.5f, 1.0f,
-                 MakeColor(10, 18, 46)};
+                         MakeColor(10, 18, 46)};
         background[3] = {0.0f, 0.0f, 0.5f, 1.0f, MakeColor(24, 40, 92)};
         background[4] = {static_cast<float>(g_WindowWidth), static_cast<float>(g_WindowHeight), 0.5f, 1.0f,
-                 MakeColor(10, 18, 46)};
+                         MakeColor(10, 18, 46)};
         background[5] = {0.0f, static_cast<float>(g_WindowHeight), 0.5f, 1.0f, MakeColor(20, 26, 58)};
         g_Device->DrawPrimitive(D3DPT_TRIANGLELIST, kVertexFormat, background, 6, 0);
 
@@ -487,8 +488,8 @@ int main(int argc, char* argv[]) {
     const int winW = g_Fullscreen ? g_PresentWidth : (windowRect.right - windowRect.left);
     const int winH = g_Fullscreen ? g_PresentHeight : (windowRect.bottom - windowRect.top);
 
-    HWND hwnd = CreateWindowW(L"DX6Test", L"DX6 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
-                              wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(L"DX6Test", L"DX6 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr, wc.hInstance,
+                              nullptr);
     if (!hwnd) {
         return 1;
     }

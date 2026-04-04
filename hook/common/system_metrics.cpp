@@ -1,7 +1,7 @@
 #include "system_metrics.h"
-#include <pdhmsg.h>
 #include <dxgi1_4.h>
 #include <pdh.h>
+#include <pdhmsg.h>
 #include <algorithm>
 #include <cstdio>
 #include <map>

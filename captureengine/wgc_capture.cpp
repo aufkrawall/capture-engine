@@ -736,9 +736,8 @@ public:
         }
 
         try {
-            const int64_t interval100ns = targetFps_ > 0
-                                              ? std::max<int64_t>(1, 10000000ll / static_cast<int64_t>(targetFps_))
-                                              : 0;
+            const int64_t interval100ns =
+                targetFps_ > 0 ? std::max<int64_t>(1, 10000000ll / static_cast<int64_t>(targetFps_)) : 0;
 
             IGraphicsCaptureSession5Abi* session5 = nullptr;
             if (!TryQueryComInterface(session_, IID_IGraphicsCaptureSession5Abi, reinterpret_cast<void**>(&session5)) ||

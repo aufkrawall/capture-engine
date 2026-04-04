@@ -4,9 +4,9 @@
 #define DIRECTDRAW_VERSION 0x0700
 #define DIRECT3D_VERSION 0x0700
 
-#include <windows.h>
-#include <ddraw.h>
 #include <d3d.h>
+#include <ddraw.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <chrono>
@@ -229,7 +229,8 @@ static void RenderDirectDrawFallbackFrame() {
 static bool CreateRenderSurface() {
     DDSURFACEDESC2 primaryDesc = {};
     primaryDesc.dwSize = sizeof(primaryDesc);
-    const HRESULT primaryDescHr = g_PrimarySurface ? g_PrimarySurface->GetSurfaceDesc(&primaryDesc) : DDERR_INVALIDOBJECT;
+    const HRESULT primaryDescHr =
+        g_PrimarySurface ? g_PrimarySurface->GetSurfaceDesc(&primaryDesc) : DDERR_INVALIDOBJECT;
 
     DDSURFACEDESC2 desc = {};
     desc.dwSize = sizeof(desc);
@@ -454,8 +455,8 @@ int main(int argc, char* argv[]) {
     const int winW = g_Fullscreen ? g_PresentWidth : (windowRect.right - windowRect.left);
     const int winH = g_Fullscreen ? g_PresentHeight : (windowRect.bottom - windowRect.top);
 
-    HWND hwnd = CreateWindowW(L"DX7Test", L"DX7 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
-                              wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(L"DX7Test", L"DX7 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr, wc.hInstance,
+                              nullptr);
     if (!hwnd) {
         return 1;
     }

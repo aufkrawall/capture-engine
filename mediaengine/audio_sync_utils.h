@@ -259,8 +259,7 @@ inline int64_t ComputeDurationUsToSamples(int64_t durationUs, int sampleRate) {
     }
 
     constexpr int64_t kMicrosecondsPerSecond = 1000000;
-    return ((durationUs * static_cast<int64_t>(sampleRate)) + (kMicrosecondsPerSecond / 2)) /
-           kMicrosecondsPerSecond;
+    return ((durationUs * static_cast<int64_t>(sampleRate)) + (kMicrosecondsPerSecond / 2)) / kMicrosecondsPerSecond;
 }
 
 inline bool ShouldAllowWgcSteadyStateDriftCompensation(bool trackStartupSettled, int64_t videoPipelineLagMs,

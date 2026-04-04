@@ -24,8 +24,8 @@
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/rate_window_utils.h"
-#include "../common/thread_power_throttling_compat.h"
 #include "../common/shared_defs.h"
+#include "../common/thread_power_throttling_compat.h"
 #include "mediaengine_loader.h"
 #include "wgc_capture.h"
 
@@ -2397,8 +2397,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     0.0,
                 };
                 const ce::capture_policy::WgcLiveRecoveryState wgcLiveRecoveryStateCurrent =
-                    ce::capture_policy::ClassifyWgcLiveRecoveryState(
-                        wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
+                    ce::capture_policy::ClassifyWgcLiveRecoveryState(wgcAdaptiveTelemetry, outputShortfallTicks,
+                                                                     encoderTooSlowForTargetCurrent);
                 wgcSourceStarvedCurrent =
                     wgcLiveRecoveryStateCurrent == ce::capture_policy::WgcLiveRecoveryState::kSourceStarved;
                 wgcSchedulerLimitedCurrent =
@@ -2423,19 +2423,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (wgcLowSourceModeUpdate.transition == ce::capture_policy::HeldModeTransition::kEntered) {
                     LogInfo(
                         "[WGC CFR] Low-source mode entered: state=%s src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
-                        ce::capture_policy::WgcLowSourceStateToString(wgcLowSourceStateCurrent),
-                        wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                        wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                        bufferedWgcFrames.size());
+                        ce::capture_policy::WgcLowSourceStateToString(wgcLowSourceStateCurrent), wgcRecentDeliveredFps,
+                        wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps, wgcRecentInputMin250Fps,
+                        wgcRecentInputMin500Fps, wgcNoFreshTickPermille, bufferedWgcFrames.size());
                 } else if (wgcLowSourceModeUpdate.transition == ce::capture_policy::HeldModeTransition::kExited) {
-                    LogInfo(
-                        wgcLowSourceModeUpdate.immediate
-                            ? "[WGC CFR] Low-source mode exited immediately: src=%u/%u/%u input=%u/%u empty=%upm "
-                              "buffered=%zu"
-                            : "[WGC CFR] Low-source mode exited: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
-                        wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                        wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                        bufferedWgcFrames.size());
+                    LogInfo(wgcLowSourceModeUpdate.immediate
+                                ? "[WGC CFR] Low-source mode exited immediately: src=%u/%u/%u input=%u/%u empty=%upm "
+                                  "buffered=%zu"
+                                : "[WGC CFR] Low-source mode exited: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                            wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                            wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                            bufferedWgcFrames.size());
                 }
 
                 const bool shouldEnterWgcLiveRecoveryMode = ce::capture_policy::ShouldEnterWgcLiveRecoveryMode(
@@ -3373,10 +3371,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                             }
                         }
-                        UpdateEncoderBottleneckFlag(
-                            smoothedEncodeMs, frameIntervalMs,
-                            ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick,
-                                                                       GetTickCount64()));
+                        UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
+                                                    ce::capture_policy::IsEncoderStartupWindow(
+                                                        recordingOutputLive, recordingLiveTick, GetTickCount64()));
 
                         if (g_pSharedMem) {
                             if (currentEncodeMs > frameIntervalMs * 1.10) {
@@ -3484,9 +3481,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                         smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                     }
                 }
-                UpdateEncoderBottleneckFlag(
-                    smoothedEncodeMs, frameIntervalMs,
-                    ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64()));
+                UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
+                                            ce::capture_policy::IsEncoderStartupWindow(
+                                                recordingOutputLive, recordingLiveTick, GetTickCount64()));
 
                 if (g_pSharedMem) {
                     if (currentEncodeMs > frameIntervalMs * 1.10) {
@@ -3529,9 +3526,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 } else {
                     smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                 }
-                UpdateEncoderBottleneckFlag(
-                    smoothedEncodeMs, frameIntervalMs,
-                    ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64()));
+                UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
+                                            ce::capture_policy::IsEncoderStartupWindow(
+                                                recordingOutputLive, recordingLiveTick, GetTickCount64()));
                 if (g_pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
                     g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                     g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);

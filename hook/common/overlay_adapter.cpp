@@ -17,10 +17,10 @@
 // VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
 #ifndef VK_LAYER_CE_OVERLAY
 // Full backends for hook DLL
-#include "custom_overlay_dx8.h"
 #include "custom_overlay_dx10.h"
 #include "custom_overlay_dx11.h"
 #include "custom_overlay_dx12.h"
+#include "custom_overlay_dx8.h"
 #include "custom_overlay_dx9.h"
 #include "custom_overlay_gl.h"
 #endif
@@ -58,8 +58,8 @@ public:
             user32 = LoadLibraryA("user32.dll");
         }
 
-        setThreadDpiAwarenessContext_ = reinterpret_cast<SetThreadDpiAwarenessContextFn>(
-            GetProcAddress(user32, "SetThreadDpiAwarenessContext"));
+        setThreadDpiAwarenessContext_ =
+            reinterpret_cast<SetThreadDpiAwarenessContextFn>(GetProcAddress(user32, "SetThreadDpiAwarenessContext"));
         if (setThreadDpiAwarenessContext_) {
             oldContext_ = setThreadDpiAwarenessContext_(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }

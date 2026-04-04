@@ -2,8 +2,8 @@
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
 
-#include <windows.h>
 #include <d3d8.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <chrono>
@@ -58,8 +58,7 @@ static bool LogInitFailure(const char* step, HRESULT hr) {
 
 static bool EnableGdiFallback(const char* reason, HRESULT hr) {
     if (!g_UseGdiFallback) {
-        std::fprintf(stderr, "DX8: using GDI fallback after %s (hr=0x%08lX)\n", reason,
-                     static_cast<unsigned long>(hr));
+        std::fprintf(stderr, "DX8: using GDI fallback after %s (hr=0x%08lX)\n", reason, static_cast<unsigned long>(hr));
     }
 
     SafeRelease(g_Device);
@@ -334,15 +333,15 @@ static bool InitDX8(HWND hwnd) {
 
     UpdatePresentParameters(hwnd);
 
-    HRESULT hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-                                     D3DCREATE_HARDWARE_VERTEXPROCESSING, &g_PresentParameters, &g_Device);
+    HRESULT hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
+                                     &g_PresentParameters, &g_Device);
     if (FAILED(hr)) {
-        hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-                                 D3DCREATE_SOFTWARE_VERTEXPROCESSING, &g_PresentParameters, &g_Device);
+        hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+                                 &g_PresentParameters, &g_Device);
     }
     if (FAILED(hr)) {
-        hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_REF, hwnd,
-                                 D3DCREATE_SOFTWARE_VERTEXPROCESSING, &g_PresentParameters, &g_Device);
+        hr = g_D3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_REF, hwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+                                 &g_PresentParameters, &g_Device);
     }
     if (FAILED(hr)) {
         return EnableGdiFallback("IDirect3D8::CreateDevice", hr);
@@ -386,16 +385,14 @@ static void RenderFrame() {
 
         const int maxBarX = std::max<int>(1, clientRect.right - 120);
         RECT movingBar = {(LONG)(barPosition * maxBarX), clientRect.bottom / 2 - 48,
-                  (LONG)(barPosition * maxBarX + 120), clientRect.bottom / 2 + 48};
+                          (LONG)(barPosition * maxBarX + 120), clientRect.bottom / 2 + 48};
         HBRUSH barBrush = CreateSolidBrush(RGB(248, 242, 220));
         FillRect(drawDc, &movingBar, barBrush);
         DeleteObject(barBrush);
 
         for (int pass = 0; pass < std::max(1, g_WorkloadPasses); ++pass) {
             RECT stripe = {(pass * 73 + static_cast<int>(t * 90.0f)) % std::max<int>(1, clientRect.right),
-                           (pass * 41 + static_cast<int>(t * 70.0f)) % std::max<int>(1, clientRect.bottom),
-                           0,
-                           0};
+                           (pass * 41 + static_cast<int>(t * 70.0f)) % std::max<int>(1, clientRect.bottom), 0, 0};
             stripe.right = std::min(clientRect.right, stripe.left + 48);
             stripe.bottom = std::min(clientRect.bottom, stripe.top + 18);
             HBRUSH stripeBrush = CreateSolidBrush((pass % 2) == 0 ? RGB(106, 238, 170) : RGB(255, 120, 104));
@@ -511,8 +508,8 @@ int main(int argc, char* argv[]) {
     const int winW = g_Fullscreen ? g_PresentWidth : (windowRect.right - windowRect.left);
     const int winH = g_Fullscreen ? g_PresentHeight : (windowRect.bottom - windowRect.top);
 
-    HWND hwnd = CreateWindowW(L"DX8Test", L"DX8 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
-                              wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(L"DX8Test", L"DX8 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr, wc.hInstance,
+                              nullptr);
     if (!hwnd) {
         return 1;
     }

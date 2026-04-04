@@ -189,18 +189,17 @@ static void InstallD3D8DeviceHooks(IDirect3DDevice8* device) {
 
     void** deviceVTable = *(void***)device;
 
-    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_PRESENT], (LPVOID)&DetourD3D8Present,
-                           (LPVOID*)&oD3D8Present) == VTableHook::Success) {
+    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_PRESENT], (LPVOID)&DetourD3D8Present, (LPVOID*)&oD3D8Present) ==
+        VTableHook::Success) {
         HookLog("DX8: Present hook installed");
     }
 
-    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_RESET], (LPVOID)&DetourD3D8Reset,
-                           (LPVOID*)&oD3D8Reset) == VTableHook::Success) {
+    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_RESET], (LPVOID)&DetourD3D8Reset, (LPVOID*)&oD3D8Reset) ==
+        VTableHook::Success) {
         HookLog("DX8: Reset hook installed");
     }
 
-    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_SETTEXTURESTAGESTATE],
-                           (LPVOID)&DetourD3D8SetTextureStageState,
+    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_SETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8SetTextureStageState,
                            (LPVOID*)&oD3D8SetTextureStageState) == VTableHook::Success) {
         g_DX8HooksInitialized = true;
         HookLog("DX8: SetTextureStageState hook installed");
@@ -230,7 +229,8 @@ static void TryInstallDirect3DCreate8Hook(HMODULE d3d8Module) {
         return;
     }
 
-    Direct3DCreate8_t direct3DCreate8 = reinterpret_cast<Direct3DCreate8_t>(GetProcAddress(d3d8Module, "Direct3DCreate8"));
+    Direct3DCreate8_t direct3DCreate8 =
+        reinterpret_cast<Direct3DCreate8_t>(GetProcAddress(d3d8Module, "Direct3DCreate8"));
     if (!direct3DCreate8) {
         HookLog("DX8: Failed to get Direct3DCreate8");
         return;
@@ -391,8 +391,8 @@ static HRESULT D3D8SurfaceGetDesc(IDirect3DSurface8* surface, D3D8_SURFACE_DESC_
 
 static HRESULT D3D8SurfaceLockRect(IDirect3DSurface8* surface, D3DLOCKED_RECT* lockedRect, const RECT* rect,
                                    DWORD flags) {
-    D3D8SurfaceLockRect_t fn = reinterpret_cast<D3D8SurfaceLockRect_t>(
-        (*reinterpret_cast<void***>(surface))[D3D8_SURFACE_VTABLE_LOCKRECT]);
+    D3D8SurfaceLockRect_t fn =
+        reinterpret_cast<D3D8SurfaceLockRect_t>((*reinterpret_cast<void***>(surface))[D3D8_SURFACE_VTABLE_LOCKRECT]);
     return fn(surface, lockedRect, rect, flags);
 }
 
@@ -672,8 +672,7 @@ public:
             return true;
         }
 
-        HRESULT hr =
-            GetD3D8CreateImageSurface(device)(device, width, height, D3DFMT_A8R8G8B8, &d3d8FrontBufferSurface);
+        HRESULT hr = GetD3D8CreateImageSurface(device)(device, width, height, D3DFMT_A8R8G8B8, &d3d8FrontBufferSurface);
         if (FAILED(hr) || !d3d8FrontBufferSurface) {
             static int createFrontBufferFailLogCount = 0;
             if (createFrontBufferFailLogCount < 4) {
@@ -1176,9 +1175,8 @@ public:
         QueryPerformanceCounter(&qpc);
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
-        const bool copied =
-            useFrontBuffer ? CopyFrontBufferToSurface9(device, d3d9SharedSurface)
-                           : CopyBackBufferToSurface9(device, d3d9SharedSurface);
+        const bool copied = useFrontBuffer ? CopyFrontBufferToSurface9(device, d3d9SharedSurface)
+                                           : CopyBackBufferToSurface9(device, d3d9SharedSurface);
         if (!copied) {
             return;
         }
@@ -1324,8 +1322,8 @@ static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd) {
     overlayRenderSubmitCount++;
     uint64_t nowTick = GetTickCount64();
     if (overlayRenderSubmitCount <= 8 || (nowTick - lastOverlayRenderSubmitLogTick) >= 1000) {
-        HookLogImportant("DX8: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)", hwnd, renderWidth, renderHeight,
-                         overlayRenderSubmitCount);
+        HookLogImportant("DX8: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)", hwnd, renderWidth,
+                         renderHeight, overlayRenderSubmitCount);
         lastOverlayRenderSubmitLogTick = nowTick;
     }
 }

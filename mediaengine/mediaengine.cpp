@@ -778,9 +778,8 @@ public:
                     // WGC CFR: use PTS-based target so audio matches video exactly.
                     // The encoder thread's drain already covers most audio; this final
                     // pull fills any remaining gap without racing (drain is done by now).
-                    const int64_t wgcAudioTargetUs = IsWgcCfrRecording()
-                                                         ? videoEnc->GetExpectedFinalDurationUs()
-                                                         : endUs;
+                    const int64_t wgcAudioTargetUs =
+                        IsWgcCfrRecording() ? videoEnc->GetExpectedFinalDurationUs() : endUs;
                     const int64_t minEncodedBefore =
                         encodedSamplesPerSource.empty()
                             ? 0
@@ -1058,8 +1057,7 @@ public:
             }
         }
 
-        const int64_t audioTimelineUs =
-            wgcCfrRecording ? videoEnc->GetExpectedFinalDurationUs() : committedElapsedUs;
+        const int64_t audioTimelineUs = wgcCfrRecording ? videoEnc->GetExpectedFinalDurationUs() : committedElapsedUs;
         PullAndEncodeAudio(audioTimelineUs);
         return true;
     }
@@ -1376,8 +1374,7 @@ public:
             if (isWgcCfrRecording && trackStartupSettled && trackAllPrimed) {
                 trackAudioPullLatencyMs = std::min<int64_t>(trackAudioPullLatencyMs, 30);
             }
-            const int64_t trackAudioTargetUs =
-                audioTargetUs - (std::max<int64_t>(trackAudioPullLatencyMs, 0) * 1000);
+            const int64_t trackAudioTargetUs = audioTargetUs - (std::max<int64_t>(trackAudioPullLatencyMs, 0) * 1000);
             const int64_t trackAudioTargetMs = trackAudioTargetUs > 0 ? (trackAudioTargetUs / 1000) : 0;
             if (trackAudioTargetUs <= 0) {
                 continue;
@@ -1448,7 +1445,8 @@ public:
             }
 
             int64_t samplesToEncode = pendingSamples;
-            const bool initialTrackCatchup = trackFirstPullAfterBootstrap.count(track) && trackFirstPullAfterBootstrap[track];
+            const bool initialTrackCatchup =
+                trackFirstPullAfterBootstrap.count(track) && trackFirstPullAfterBootstrap[track];
             if (trackStartupSettled && !forceDrain) {
                 // After bootstrap, the pull quantum rounding can leave a residual (up to 960
                 // samples = 20ms) that accumulates into a constant audio-video offset. Skip

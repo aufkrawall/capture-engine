@@ -25,8 +25,8 @@ public:
 
     HRESULT STDMETHODCALLTYPE GetAdapter(IDXGIAdapter** pAdapter) override;
     HRESULT STDMETHODCALLTYPE CreateSurface(const DXGI_SURFACE_DESC* pDesc, UINT NumSurfaces, DXGI_USAGE Usage,
-                                           const DXGI_SHARED_RESOURCE* pSharedResource,
-                                           IDXGISurface** ppSurface) override;
+                                            const DXGI_SHARED_RESOURCE* pSharedResource,
+                                            IDXGISurface** ppSurface) override;
     HRESULT STDMETHODCALLTYPE QueryResourceResidency(IUnknown* const* ppResources, DXGI_RESIDENCY* pResidencyStatus,
                                                      UINT NumResources) override;
     HRESULT STDMETHODCALLTYPE SetGPUThreadPriority(INT Priority) override;

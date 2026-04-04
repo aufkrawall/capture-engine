@@ -142,15 +142,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIDevice::GetAdapter(IDXGIAdapter** pAdapter) {
     return WrapAdapter(IID_IDXGIAdapter, reinterpret_cast<void**>(pAdapter));
 }
 
-HRESULT STDMETHODCALLTYPE CWrapDXGIDevice::CreateSurface(const DXGI_SURFACE_DESC* pDesc, UINT NumSurfaces, DXGI_USAGE Usage,
-                                                         const DXGI_SHARED_RESOURCE* pSharedResource,
+HRESULT STDMETHODCALLTYPE CWrapDXGIDevice::CreateSurface(const DXGI_SURFACE_DESC* pDesc, UINT NumSurfaces,
+                                                         DXGI_USAGE Usage, const DXGI_SHARED_RESOURCE* pSharedResource,
                                                          IDXGISurface** ppSurface) {
     return m_pReal->CreateSurface(pDesc, NumSurfaces, Usage, pSharedResource, ppSurface);
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGIDevice::QueryResourceResidency(IUnknown* const* ppResources,
-                                                                  DXGI_RESIDENCY* pResidencyStatus,
-                                                                  UINT NumResources) {
+                                                                  DXGI_RESIDENCY* pResidencyStatus, UINT NumResources) {
     return m_pReal->QueryResourceResidency(ppResources, pResidencyStatus, NumResources);
 }
 

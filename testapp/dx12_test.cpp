@@ -13,9 +13,9 @@
 #include <windows.h>
 #include <avrt.h>
 // clang-format on
-#include <directxmath.h>
 #include <d3d12.h>
 #include <d3dcompiler.h>
+#include <directxmath.h>
 #include <dxgi1_4.h>
 #include <shellscalingapi.h>
 #include <wrl/client.h>

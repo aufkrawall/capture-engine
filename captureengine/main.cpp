@@ -409,8 +409,8 @@ bool ParseDeferredLaunchCommand(const std::string& command, DeferredLaunchComman
     }
 
     const size_t lastSlash = outCommand->executablePath.find_last_of("\\/");
-    outCommand->fileName =
-        (lastSlash != std::string::npos) ? outCommand->executablePath.substr(lastSlash + 1) : outCommand->executablePath;
+    outCommand->fileName = (lastSlash != std::string::npos) ? outCommand->executablePath.substr(lastSlash + 1)
+                                                            : outCommand->executablePath;
     if (lastSlash != std::string::npos) {
         outCommand->workingDirectory = outCommand->executablePath.substr(0, lastSlash);
     }
@@ -462,7 +462,8 @@ void LaunchGameSuspended(const std::string& path) {
     if (looksLikeLauncher) {
         // This looks like a launcher - start it NORMALLY, no injection
         // We'll rely on WMI to catch the actual game
-        LogInfo("[Launcher] Detected launcher (not game): %s - Starting normally", launchCommand.rawCommandLine.c_str());
+        LogInfo("[Launcher] Detected launcher (not game): %s - Starting normally",
+                launchCommand.rawCommandLine.c_str());
 
         if (CreateProcessA(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, 0, NULL, workingDir, &si, &pi)) {
             LogInfo("[Launcher] Launcher started (PID: %d). WMI will catch the game.", pi.dwProcessId);
@@ -475,8 +476,8 @@ void LaunchGameSuspended(const std::string& path) {
         // This looks like the actual game - use suspended injection
         LogInfo("[Launcher] Detected game: %s - Launching Suspended", launchCommand.rawCommandLine.c_str());
 
-        if (CreateProcessA(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL,
-                           workingDir, &si, &pi)) {
+        if (CreateProcessA(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, workingDir,
+                           &si, &pi)) {
             LogInfo(
                 "[Launcher] Process Created (PID: %d). Attempting early APC "
                 "injection...",

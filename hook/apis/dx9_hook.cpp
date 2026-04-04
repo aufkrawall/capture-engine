@@ -1740,8 +1740,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* d
     }
     if (ShouldBypassDX9HooksForDevice(device)) {
         if (oD3D9PresentExTrampoline) {
-            return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion,
-                                            dwFlags);
+            return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
         }
         return D3D_OK;
     }
@@ -2631,8 +2630,7 @@ public:
                 droppedFrames.fetch_add(1, std::memory_order_relaxed);
                 static int queryFailLogCount = 0;
                 if (queryFailLogCount < 4) {
-                    HookLogImportant("DX9: Direct shared-ring query failed idx=%d hr=0x%08x", idx,
-                                     (unsigned)queryHr);
+                    HookLogImportant("DX9: Direct shared-ring query failed idx=%d hr=0x%08x", idx, (unsigned)queryHr);
                     queryFailLogCount++;
                 }
             }
@@ -2713,14 +2711,16 @@ public:
     bool EnsureDirectD3D9ExProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params) {
         const DWORD helperFlags = BuildDirectD3D9HelperBehaviorFlags(params.BehaviorFlags);
         if (directSharedProducerDeviceEx) {
-            const bool sameConfig = directSharedExConfig.valid && directSharedExConfig.adapterOrdinal == params.AdapterOrdinal &&
+            const bool sameConfig = directSharedExConfig.valid &&
+                                    directSharedExConfig.adapterOrdinal == params.AdapterOrdinal &&
                                     directSharedExConfig.deviceType == params.DeviceType &&
                                     directSharedExConfig.behaviorFlags == helperFlags;
             if (sameConfig)
                 return true;
 
             HookLogImportant(
-                "DX9: Recreating helper D3D9Ex producer for adapter/type change (oldAdapter=%u oldType=%u oldFlags=0x%08x newAdapter=%u newType=%u newFlags=0x%08x)",
+                "DX9: Recreating helper D3D9Ex producer for adapter/type change (oldAdapter=%u oldType=%u "
+                "oldFlags=0x%08x newAdapter=%u newType=%u newFlags=0x%08x)",
                 directSharedExConfig.adapterOrdinal, (unsigned)directSharedExConfig.deviceType,
                 (unsigned)directSharedExConfig.behaviorFlags, params.AdapterOrdinal, (unsigned)params.DeviceType,
                 (unsigned)helperFlags);
@@ -2761,9 +2761,9 @@ public:
                          (unsigned)params.DeviceType, (unsigned)helperFlags);
 
         const DX9InternalBypassScope helperBypass;
-        const HRESULT deviceHr = directSharedFactoryEx->CreateDeviceEx(params.AdapterOrdinal, params.DeviceType,
-                                                                       directSharedHelperWindow, helperFlags, &pp,
-                                                                       nullptr, &directSharedProducerDeviceEx);
+        const HRESULT deviceHr =
+            directSharedFactoryEx->CreateDeviceEx(params.AdapterOrdinal, params.DeviceType, directSharedHelperWindow,
+                                                  helperFlags, &pp, nullptr, &directSharedProducerDeviceEx);
         if (FAILED(deviceHr) || !directSharedProducerDeviceEx) {
             HookLogImportant("DX9: Direct D3D9Ex helper unavailable - CreateDeviceEx failed (0x%08x)",
                              (unsigned)deviceHr);
@@ -2797,7 +2797,8 @@ public:
                 return true;
 
             HookLogImportant(
-                "DX9: Recreating helper legacy D3D9 producer for adapter/type change (oldAdapter=%u oldType=%u oldFlags=0x%08x newAdapter=%u newType=%u newFlags=0x%08x)",
+                "DX9: Recreating helper legacy D3D9 producer for adapter/type change (oldAdapter=%u oldType=%u "
+                "oldFlags=0x%08x newAdapter=%u newType=%u newFlags=0x%08x)",
                 directSharedLegacyConfig.adapterOrdinal, (unsigned)directSharedLegacyConfig.deviceType,
                 (unsigned)directSharedLegacyConfig.behaviorFlags, params.AdapterOrdinal, (unsigned)params.DeviceType,
                 (unsigned)helperFlags);
@@ -2836,8 +2837,7 @@ public:
             HookLogImportant(
                 "DX9: Trying helper legacy D3D9 producer (%s adapter=%u type=%u flags=0x%08x bbFmt=%s/%d bb=%ux%u)",
                 attemptLabel, params.AdapterOrdinal, (unsigned)params.DeviceType, (unsigned)attemptFlags,
-                D3D9FormatName(pp.BackBufferFormat), (int)pp.BackBufferFormat, pp.BackBufferWidth,
-                pp.BackBufferHeight);
+                D3D9FormatName(pp.BackBufferFormat), (int)pp.BackBufferFormat, pp.BackBufferWidth, pp.BackBufferHeight);
 
             const DX9InternalBypassScope helperBypass;
             return directSharedFactory->CreateDevice(params.AdapterOrdinal, params.DeviceType, directSharedHelperWindow,
@@ -2873,7 +2873,7 @@ public:
 
         directSharedLegacyConfig.adapterOrdinal = params.AdapterOrdinal;
         directSharedLegacyConfig.deviceType = params.DeviceType;
-    directSharedLegacyConfig.behaviorFlags = selectedFlags;
+        directSharedLegacyConfig.behaviorFlags = selectedFlags;
         directSharedLegacyConfig.valid = true;
 
         DX9_RegisterInternalHelperDevice(directSharedProducerDevice);
@@ -2992,8 +2992,7 @@ public:
 
         const D3DFORMAT preferredSharedFormat = d3d9SharedFormat;
         D3DFORMAT sharedFormatCandidates[2] = {preferredSharedFormat, d3d9Format};
-        const int candidateCount =
-            (d3d9Format != D3DFMT_UNKNOWN && d3d9Format != preferredSharedFormat) ? 2 : 1;
+        const int candidateCount = (d3d9Format != D3DFMT_UNKNOWN && d3d9Format != preferredSharedFormat) ? 2 : 1;
 
         for (int candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex) {
             d3d9SharedFormat = sharedFormatCandidates[candidateIndex];
@@ -3533,8 +3532,9 @@ public:
             HookLogImportant("DX9: Device creation flags=0x%08x (multithreaded=%d)",
                              (unsigned)creationParams.BehaviorFlags, allowAsyncD3D9WorkerCapture ? 1 : 0);
         } else {
-            HookLogImportant("DX9: GetCreationParameters failed during init (hr=0x%08x); async D3D9 worker capture disabled",
-                             (unsigned)creationParamsHr);
+            HookLogImportant(
+                "DX9: GetCreationParameters failed during init (hr=0x%08x); async D3D9 worker capture disabled",
+                (unsigned)creationParamsHr);
         }
 
         HookLogImportant("DX9: Init Step 7: Create DX9 Shared Resource");
@@ -5941,9 +5941,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
     EarlyLog("DX9: IDirect3D9::CreateDevice called (hFocusWindow=%p)", hFocusWindow);
 
     if (IsDX9InternalHelperBypassActive()) {
-        const HRESULT hr =
-            oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters,
-                          ppReturnedDeviceInterface);
+        const HRESULT hr = oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
+                                         pPresentationParameters, ppReturnedDeviceInterface);
         if (SUCCEEDED(hr) && ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
             DX9_RegisterInternalHelperDevice(*ppReturnedDeviceInterface);
         }

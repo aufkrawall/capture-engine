@@ -1,8 +1,8 @@
 #pragma once
 
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 #include <avrt.h>
+#include <windows.h>
 
 #include <string>
 
@@ -120,8 +120,7 @@ inline void EnableGameDpiAwareness() {
     using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT value);
     auto setProcessDpiAwarenessContext =
         reinterpret_cast<SetProcessDpiAwarenessContextFn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
-    if (setProcessDpiAwarenessContext &&
-        setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+    if (setProcessDpiAwarenessContext && setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
         return;
     }
 
@@ -196,8 +195,7 @@ inline UINT GetMonitorDpiForRect(const RECT& monitorRect) {
         HMODULE shcore = LoadLibraryA("shcore.dll");
         if (shcore) {
             using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR monitor, int dpiType, UINT* dpiX, UINT* dpiY);
-            auto getDpiForMonitor =
-                reinterpret_cast<GetDpiForMonitorFn>(GetProcAddress(shcore, "GetDpiForMonitor"));
+            auto getDpiForMonitor = reinterpret_cast<GetDpiForMonitorFn>(GetProcAddress(shcore, "GetDpiForMonitor"));
             if (getDpiForMonitor) {
                 UINT dpiX = 0;
                 UINT dpiY = 0;
@@ -243,8 +241,7 @@ inline bool PrimeWindowForBenchmark(HWND hwnd, bool fullscreen, int clientWidth,
 
     if (fullscreen) {
         const RECT monitorRect = GetPrimaryMonitorRect();
-        SetWindowPos(hwnd, HWND_TOPMOST, monitorRect.left, monitorRect.top, clientWidth, clientHeight,
-                     SWP_SHOWWINDOW);
+        SetWindowPos(hwnd, HWND_TOPMOST, monitorRect.left, monitorRect.top, clientWidth, clientHeight, SWP_SHOWWINDOW);
     } else {
         SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     }

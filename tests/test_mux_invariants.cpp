@@ -23,8 +23,7 @@ TEST(MuxInvariantTest, HeaderValidationRejectsMissingStream) {
 
 TEST(MuxInvariantTest, HeaderValidationRejectsMissingCodecParameters) {
     EXPECT_EQ(ValidateStreamForHeader(true, false, 1, 1000), HeaderValidationIssue::kMissingCodecParams);
-    EXPECT_STREQ(HeaderValidationIssueToString(HeaderValidationIssue::kMissingCodecParams),
-                 "missing codec parameters");
+    EXPECT_STREQ(HeaderValidationIssueToString(HeaderValidationIssue::kMissingCodecParams), "missing codec parameters");
 }
 
 TEST(MuxInvariantTest, HeaderValidationRejectsInvalidTimeBase) {

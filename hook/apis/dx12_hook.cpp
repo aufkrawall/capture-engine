@@ -2227,8 +2227,7 @@ static bool IsDX12Swapchain(IDXGISwapChain1* pSwapChain) {
     return true;
 }
 
-static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain1* pSwapChain,
-                                                  const char* context) {
+static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain1* pSwapChain, const char* context) {
     if (!pDevice || !pSwapChain)
         return;
 
@@ -2249,8 +2248,8 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             "leaving swapchain queue unchanged",
             context, pDevice, qiHr);
     } else {
-        HookLogImportant("%s: Non-DX12 swapchain for device=%p (queue QI hr=0x%08X) — skipping queue capture",
-                         context, pDevice, qiHr);
+        HookLogImportant("%s: Non-DX12 swapchain for device=%p (queue QI hr=0x%08X) — skipping queue capture", context,
+                         pDevice, qiHr);
     }
 }
 

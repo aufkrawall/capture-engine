@@ -11,8 +11,8 @@
 
 #include <aclapi.h>
 #include <bcrypt.h>
-#include <oleauto.h>
 #include <ntstatus.h>
+#include <oleauto.h>
 #include <softpub.h>
 #include <wintrust.h>
 #include <fstream>
@@ -377,13 +377,13 @@ bool InjectionManager::InitializeWMI() {
     }
 
     hres = pLoc->ConnectServer(namespaceName,  // Object path of WMI namespace
-                               NULL,            // User name
-                               NULL,            // User password
-                               0,               // Locale
-                               NULL,            // Security flags
-                               0,               // Authority
-                               0,               // Context object
-                               &pSvc            // IWbemServices proxy
+                               NULL,           // User name
+                               NULL,           // User password
+                               0,              // Locale
+                               NULL,           // Security flags
+                               0,              // Authority
+                               0,              // Context object
+                               &pSvc           // IWbemServices proxy
     );
     connectUs = Log_GetQpcUs() - phaseStartUs;
 
@@ -453,8 +453,9 @@ bool InjectionManager::InitializeWMI() {
     // within half a second.
     phaseStartUs = Log_GetQpcUs();
     const BstrGuard queryLanguage(L"WQL");
-    const BstrGuard queryText(L"SELECT * FROM __InstanceCreationEvent WITHIN 0.5 WHERE "
-                              L"TargetInstance ISA 'Win32_Process'");
+    const BstrGuard queryText(
+        L"SELECT * FROM __InstanceCreationEvent WITHIN 0.5 WHERE "
+        L"TargetInstance ISA 'Win32_Process'");
     if (!queryLanguage.valid() || !queryText.valid()) {
         LogError("Failed to allocate WMI query BSTR");
         return false;

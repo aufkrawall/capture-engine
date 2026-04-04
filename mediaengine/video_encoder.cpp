@@ -1,10 +1,10 @@
 #include "video_encoder.h"
-#include "mux_invariants.h"
 #include "../common/capture_pipeline_policy.h"
 #include "../common/frame_timing_utils.h"
 #include "../common/raii_helpers.h"
 #include "../common/shared_defs.h"
 #include "mediaengine.h"
+#include "mux_invariants.h"
 #include "video_encoder_options.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -61,9 +61,9 @@ bool ValidateFormatContextForHeader(const AVFormatContext* fmtCtx) {
 
     for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
         const AVStream* stream = fmtCtx->streams[i];
-        const ce::mux::HeaderValidationIssue issue = ce::mux::ValidateStreamForHeader(
-            stream != nullptr, stream && stream->codecpar != nullptr, stream ? stream->time_base.num : 0,
-            stream ? stream->time_base.den : 0);
+        const ce::mux::HeaderValidationIssue issue =
+            ce::mux::ValidateStreamForHeader(stream != nullptr, stream && stream->codecpar != nullptr,
+                                             stream ? stream->time_base.num : 0, stream ? stream->time_base.den : 0);
         if (issue != ce::mux::HeaderValidationIssue::kNone) {
             DLL_Log("[VideoEncoder] ERROR: Refusing to write header: stream %u invalid (%s)", i,
                     ce::mux::HeaderValidationIssueToString(issue));
@@ -1507,7 +1507,8 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
             "produce undecodeable bitstreams. If video artifacts occur, update GPU driver.");
         av_dict_set_int(&opts, "repeat_pps", 1, 0);
         DLL_Log("[VideoEncoder] Applied av1_nvenc mitigation: repeat_pps=1");
-        DLL_Log("[VideoEncoder] AV1 duplicate frames will be re-encoded from the cached texture (packet replay disabled)");
+        DLL_Log(
+            "[VideoEncoder] AV1 duplicate frames will be re-encoded from the cached texture (packet replay disabled)");
     }
 
     stream = avformat_new_stream(fmtCtx, codec);

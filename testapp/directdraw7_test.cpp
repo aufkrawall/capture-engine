@@ -575,8 +575,8 @@ int main(int argc, char* argv[]) {
     int winW = g_PresentWidth;
     int winH = g_PresentHeight;
     if (!g_Fullscreen) {
-        RECT wr = testapp::AdjustWindowRectForClientSize(WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, g_WindowWidth,
-                                                         g_WindowHeight);
+        RECT wr =
+            testapp::AdjustWindowRectForClientSize(WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, g_WindowWidth, g_WindowHeight);
         winW = wr.right - wr.left;
         winH = wr.bottom - wr.top;
     }
