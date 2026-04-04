@@ -108,6 +108,37 @@ bool IsHdrOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace) {
     }
 }
 
+static const GUID IID_IGraphicsCaptureSession5Abi = {
+    0x67C0EA62, 0x1F85, 0x5061, {0x92, 0x5A, 0x23, 0x9B, 0xE0, 0xAC, 0x09, 0xCB}};
+
+struct IGraphicsCaptureSession5Abi : ::IInspectable {
+    virtual HRESULT STDMETHODCALLTYPE get_MinUpdateInterval(int64_t* value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_MinUpdateInterval(int64_t value) = 0;
+};
+
+static const GUID IID_IDirect3D11CaptureFrame2Abi = {
+    0x37869CFA, 0x2B48, 0x5EBF, {0x9A, 0xFB, 0xDF, 0xFD, 0x80, 0x5D, 0xEF, 0xDB}};
+
+struct IDirect3D11CaptureFrame2Abi : ::IInspectable {
+    virtual HRESULT STDMETHODCALLTYPE get_DirtyRegions(void** value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_DirtyRegionMode(int32_t* value) = 0;
+};
+
+template <typename T>
+bool TryQueryComInterface(const T& object, const GUID& iid, void** result) {
+    if (!result) {
+        return false;
+    }
+
+    *result = nullptr;
+    auto* unknown = reinterpret_cast<::IUnknown*>(winrt::get_abi(object));
+    if (!unknown) {
+        return false;
+    }
+
+    return SUCCEEDED(unknown->QueryInterface(iid, result));
+}
+
 bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
     RECT clientRect = {};
     if (!GetClientRect(hwnd, &clientRect)) {
@@ -705,20 +736,32 @@ public:
         }
 
         try {
+            const int64_t interval100ns = targetFps_ > 0
+                                              ? std::max<int64_t>(1, 10000000ll / static_cast<int64_t>(targetFps_))
+                                              : 0;
+
+            IGraphicsCaptureSession5Abi* session5 = nullptr;
+            if (!TryQueryComInterface(session_, IID_IGraphicsCaptureSession5Abi, reinterpret_cast<void**>(&session5)) ||
+                !session5) {
+                LogInfo("[WGC] MinUpdateInterval not available (older WinRT projection/runtime)");
+                return;
+            }
+
+            const HRESULT hr = session5->put_MinUpdateInterval(interval100ns);
+            session5->Release();
+            if (FAILED(hr)) {
+                LogInfo("[WGC] MinUpdateInterval not available (older WinRT projection/runtime)");
+                return;
+            }
+
             if (targetFps_ > 0) {
-                int64_t interval100ns = 10000000ll / targetFps_;
-                if (interval100ns <= 0) {
-                    interval100ns = 1;
-                }
-                session_.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{interval100ns});
                 LogInfo("[WGC] MinUpdateInterval set to %lld (100ns) for %u fps target", (long long)interval100ns,
                         targetFps_);
             } else {
-                session_.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{0});
                 LogInfo("[WGC] MinUpdateInterval set to 0 (max rate)");
             }
         } catch (...) {
-            LogInfo("[WGC] MinUpdateInterval not available (older Windows)");
+            LogInfo("[WGC] MinUpdateInterval not available (older WinRT projection/runtime)");
         }
     }
 
@@ -862,12 +905,21 @@ public:
             return false;
         }
 
-        auto frame2 = frame.try_as<winrt::Windows::Graphics::Capture::IDirect3D11CaptureFrame2>();
-        if (!frame2) {
+        IDirect3D11CaptureFrame2Abi* frame2 = nullptr;
+        if (!TryQueryComInterface(frame, IID_IDirect3D11CaptureFrame2Abi, reinterpret_cast<void**>(&frame2)) ||
+            !frame2) {
             return false;
         }
 
-        auto dirtyRegions = frame2.DirtyRegions();
+        void* dirtyRegionsAbi = nullptr;
+        const HRESULT dirtyRegionsHr = frame2->get_DirtyRegions(&dirtyRegionsAbi);
+        frame2->Release();
+        if (FAILED(dirtyRegionsHr) || !dirtyRegionsAbi) {
+            return false;
+        }
+
+        winrt::Windows::Foundation::Collections::IVectorView<winrt::Windows::Graphics::RectInt32> dirtyRegions{
+            dirtyRegionsAbi, winrt::take_ownership_from_abi};
         if (!dirtyRegions) {
             return false;
         }
