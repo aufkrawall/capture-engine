@@ -9,7 +9,7 @@
 
 // Pseudo-overlay indicator for WGC capture.
 // Shows a colored circle in a screen corner:
-//   Red = recording active, Blue = connected/idle, Gray = disconnected
+//   Red = recording active, Blue = idle
 // Blinking warning when a whitelisted game is focused but not recording.
 // Runs entirely within the controller process (no extra DLL/EXE).
 class PseudoOverlay {
@@ -46,6 +46,7 @@ private:
     struct AnchorInfo {
         RECT monitorRect = {0, 0, 0, 0};
         HWND window = NULL;
+        HMONITOR monitor = NULL;
         UINT dpi = 96;
     };
 
@@ -62,6 +63,7 @@ private:
     // Check if inject overlay is active in a hooked game (via shared memory)
     bool EnsureSharedMemoryMapping();
     bool IsInjectOverlayActive();
+    bool IsInjectOverlayPending();
     AnchorInfo ResolveAnchorInfo();
     void UpdateScaleForDpi(UINT dpi);
 
@@ -82,7 +84,6 @@ private:
     std::atomic<ULONGLONG> overloadWarnUntil_{0};
     std::atomic<uint32_t> overloadWarnSustainFpsX100_{0};
     std::atomic<ULONGLONG> screenshotNotifyUntil_{0};
-
     // Warning blink state
     bool warnActive_ = false;
     bool warnVisible_ = false;
@@ -107,6 +108,7 @@ private:
     UINT currentDpi_ = 96;
     uint32_t mappedInjectPid_ = 0;
     uint32_t lastEncoderOverloadFlags_ = 0;
+    bool lastOverlaySuppressed_ = false;
 
     // Timer ID
     static constexpr UINT_PTR kTimerId = 1001;

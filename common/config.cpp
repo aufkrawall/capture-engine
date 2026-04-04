@@ -466,7 +466,7 @@ dlss_fg_dll_path=
 
 [pseudo-overlay]
 ; Pseudo-overlay indicator for WGC capture (no injection required)
-; Shows a colored circle in screen corner: red=recording, blue=idle, gray=disconnected
+; Shows a colored circle in screen corner while recording
 ; Blinking warning appears when a whitelisted game is focused but not recording
 ; enabled - Values: true, false
 enabled=false
@@ -478,7 +478,7 @@ pad=20
 pos=0
 ; mode - Values: 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
 mode=0
-; always_render - Keep overlay window always present (invisible when idle, prevents MPO stutters)
+; always_render - Keep the indicator window alive with a 1x1 alpha=1 ghost pixel when idle
 always_render=false
 ; always_render_only_when_game - Only use always_render when a whitelisted game is focused
 always_render_only_when_game=false

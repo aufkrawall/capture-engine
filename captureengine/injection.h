@@ -40,6 +40,7 @@ public:
 
   // Check if any process is currently injected
   bool HasActiveInjections() const;
+  bool HasPendingInjections();
 
   // Inject into a specific process (CreateRemoteThread - runs after loader)
   bool Inject(DWORD pid, const std::string &processName);
@@ -108,6 +109,7 @@ private:
   struct PendingInjection {
     DWORD pid;
     std::string name;
+    std::string source;
     uint64_t injectTime; // When to inject (now + delay)
   };
 
@@ -122,9 +124,14 @@ private:
   IWbemObjectSink *pStubSink = nullptr;
 
   void ScanExistingProcesses();
+  void LaunchDelayedInjectionThread(const std::shared_ptr<InjectionManager> &managerShared,
+                                    DWORD pid, const std::string &name,
+                                    const char *sourceTag);
+  void ReapCompletedDelayedInjectionThreadsLocked();
   bool IsWhitelisted(const std::string &processName);
   bool IsAlreadyInjected(DWORD pid);
   bool IsAlreadyInjectedLocked(DWORD pid);  // Assumes injectMutex is held
+  bool IsAlreadyPendingLocked(DWORD pid);
   bool IsRecentlyFailed(DWORD pid);
   bool IsRecentlyFailedLocked(DWORD pid);   // Assumes injectMutex is held
 

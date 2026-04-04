@@ -535,8 +535,10 @@ int InjectProcessMain(const AppConfig& config) {
             injector->Update();
             lastInjectorUpdate = now;
 
-            // Track inject overlay active state for pseudo-overlay suppression
-            bool hasActive = injector->HasActiveInjections();
+            // Track inject overlay state for pseudo-overlay suppression.
+            const bool hasPending = injector->HasPendingInjections();
+            const bool hasActive = injector->HasActiveInjections();
+            pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending, hasPending);
             pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive, hasActive);
         }
 
@@ -545,6 +547,8 @@ int InjectProcessMain(const AppConfig& config) {
 
     // Signal hook to exit
     LogInfo("[Inject] Signaling hook to exit...");
+    pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending, false);
+    pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive, false);
     pSharedMem->SetRequestExit(true);
     Sleep(200);  // Give hook time to unload
 

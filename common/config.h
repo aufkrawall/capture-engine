@@ -258,7 +258,7 @@ struct PseudoOverlayConfig {
     int pad = 20;               // Padding from screen edge (0-100)
     int pos = 0;                // 0=BR, 1=BL, 2=TR, 3=TL
     int mode = 0;               // 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
-    bool alwaysRender = false;  // Ghost mode: keep window present at alpha=1 when idle
+    bool alwaysRender = false;  // Ghost mode: keep indicator window alive with a 1x1 alpha=1 pixel when idle
     bool alwaysRenderOnlyWhenGame = false;
     bool showEncoderOverloadWarn = true;
     std::string processList;  // Pipe-delimited process names for foreground detection

@@ -51,6 +51,21 @@ bool GetMonitorRectForWindow(HWND hwnd, RECT* rect) {
     return true;
 }
 
+bool GetMonitorRectForMonitor(HMONITOR monitor, RECT* rect) {
+    if (!monitor || !rect) {
+        return false;
+    }
+
+    MONITORINFO monitorInfo = {};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (!GetMonitorInfo(monitor, &monitorInfo)) {
+        return false;
+    }
+
+    *rect = monitorInfo.rcMonitor;
+    return true;
+}
+
 UINT GetResolvedWindowDpi(HWND hwnd) {
     UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 0u;
     if (dpi == 0) {
@@ -255,25 +270,25 @@ bool PseudoOverlay::IsInjectOverlayActive() {
            pSharedMem_->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive);
 }
 
+bool PseudoOverlay::IsInjectOverlayPending() {
+    return EnsureSharedMemoryMapping() &&
+           pSharedMem_->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending);
+}
+
 PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
     AnchorInfo anchor;
 
-    HWND anchorWindow = GetForegroundWindow();
-    if (!anchorWindow || !IsWindow(anchorWindow)) {
-        anchorWindow = GetDesktopWindow();
+    const POINT primaryPoint = {0, 0};
+    anchor.monitor = MonitorFromPoint(primaryPoint, MONITOR_DEFAULTTOPRIMARY);
+    if (!GetMonitorRectForMonitor(anchor.monitor, &anchor.monitorRect)) {
+        anchor.monitorRect.left = 0;
+        anchor.monitorRect.top = 0;
+        anchor.monitorRect.right = GetSystemMetrics(SM_CXSCREEN);
+        anchor.monitorRect.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    RECT monitorRect = {};
-    if (!GetMonitorRectForWindow(anchorWindow, &monitorRect)) {
-        monitorRect.left = 0;
-        monitorRect.top = 0;
-        monitorRect.right = GetSystemMetrics(SM_CXSCREEN);
-        monitorRect.bottom = GetSystemMetrics(SM_CYSCREEN);
-    }
-
-    anchor.monitorRect = monitorRect;
-    anchor.window = anchorWindow;
-    anchor.dpi = GetResolvedWindowDpi(anchorWindow);
+    anchor.window = NULL;
+    anchor.dpi = GetResolvedWindowDpi(NULL);
     return anchor;
 }
 
@@ -319,18 +334,29 @@ void PseudoOverlay::UpdateOverlay() {
             ShowWindow(hWarn_, SW_HIDE);
         lastOv_ = {};
         lastWarnVis_ = false;
+        lastOverlaySuppressed_ = false;
         return;
     }
 
     // Suppress when inject overlay is active in a hooked game
-    if (IsInjectOverlayActive()) {
+    const bool suppressOverlay = IsInjectOverlayPending() || IsInjectOverlayActive();
+    if (suppressOverlay) {
+        if (!lastOverlaySuppressed_) {
+            LogInfo("[PseudoOverlay] Suppressed while inject overlay handoff is active");
+        }
         if (IsWindowVisible(hOv_))
             ShowWindow(hOv_, SW_HIDE);
         if (IsWindowVisible(hWarn_))
             ShowWindow(hWarn_, SW_HIDE);
         lastOv_ = {};
         lastWarnVis_ = false;
+        lastOverlaySuppressed_ = true;
         return;
+    }
+
+    if (lastOverlaySuppressed_) {
+        LogInfo("[PseudoOverlay] Resuming after inject overlay suppression");
+        lastOverlaySuppressed_ = false;
     }
 
     const AnchorInfo anchor = ResolveAnchorInfo();
@@ -776,7 +802,7 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     }
 
     // Create indicator overlay window
-    hOv_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+    hOv_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
                            kIndicatorClass, "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
     if (!hOv_) {
         LogError("[PseudoOverlay] Failed to create indicator overlay window");
@@ -798,7 +824,7 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     }
 
     // Create warning overlay window
-    hWarn_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+    hWarn_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
                              kWarningClass, "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
     if (!hWarn_) {
         LogError("[PseudoOverlay] Failed to create warning overlay window");
@@ -811,8 +837,10 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     // Start timer for blink cycle and periodic refresh on indicator window
     SetTimer(hOv_, kTimerId, kTimerInterval, NULL);
 
+    const AnchorInfo anchor = ResolveAnchorInfo();
     initialized_ = true;
     LogInfo("[PseudoOverlay] Initialized (scale=%.2f)", scale_);
+    LogInfo("[PseudoOverlay] Using primary monitor anchor (monitor=%p dpi=%u)", anchor.monitor, currentDpi_);
 
     // Initial render
     UpdateOverlay();
@@ -865,6 +893,7 @@ void PseudoOverlay::Shutdown() {
     mappedInjectPid_ = 0;
     lastEncoderOverloadFlags_ = 0;
     overloadWarnSustainFpsX100_.store(0, std::memory_order_relaxed);
+    lastOverlaySuppressed_ = false;
 
     initialized_ = false;
     instance_ = nullptr;
