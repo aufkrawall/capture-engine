@@ -2207,6 +2207,7 @@ public:
     int64_t gdiLastCaptureQpc = 0;               // Rate-limiting timestamp
     int64_t gdiBufferTimestampQpc[2] = {};
     std::atomic<bool> gdiBufferBusy[2] = {{false}, {false}};  // Per-buffer busy flags
+    bool allowAsyncD3D9WorkerCapture = false;  // Safe only when the hooked device was created multithreaded.
 
     // Background capture thread proc for D3D11 staging path.
     // Processes LockRect + UpdateSubresource + SignalFrameReady off the render
@@ -2989,37 +2990,57 @@ public:
             return false;
         }
 
-        LogDirectD3D9SharingDiagnostics(device, params, "game device");
-        ProbeDirectD3D9SharedTexture(device, "game device");
+        const D3DFORMAT preferredSharedFormat = d3d9SharedFormat;
+        D3DFORMAT sharedFormatCandidates[2] = {preferredSharedFormat, d3d9Format};
+        const int candidateCount =
+            (d3d9Format != D3DFMT_UNKNOWN && d3d9Format != preferredSharedFormat) ? 2 : 1;
 
-        if (isD3D9Ex && d3d9DeviceEx) {
-            if (TrySetupDirectD3D9SharedRingWithProducer(device, d3d9DeviceEx, false, "native D3D9Ex producer")) {
-                return true;
+        for (int candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex) {
+            d3d9SharedFormat = sharedFormatCandidates[candidateIndex];
+            if (candidateIndex > 0) {
+                HookLogImportant("DX9: Retrying direct shared ring with native backbuffer format %s/%d",
+                                 D3D9FormatName(d3d9SharedFormat), (int)d3d9SharedFormat);
             }
+
+            LogDirectD3D9SharingDiagnostics(device, params, "game device");
+            const bool nativeProbeOk = ProbeDirectD3D9SharedTexture(device, "game device");
+
+            if (nativeProbeOk) {
+                const char* nativeProducerLabel = isD3D9Ex ? "native D3D9Ex producer" : "native D3D9 producer";
+                if (TrySetupDirectD3D9SharedRingWithProducer(device, device, false, nativeProducerLabel)) {
+                    return true;
+                }
+            }
+
+            if (EnsureDirectD3D9ExProducerDevice(params)) {
+                D3DDEVICE_CREATION_PARAMETERS helperParams = {};
+                if (SUCCEEDED(directSharedProducerDeviceEx->GetCreationParameters(&helperParams))) {
+                    LogDirectD3D9SharingDiagnostics(directSharedProducerDeviceEx, helperParams,
+                                                    "helper D3D9Ex producer");
+                }
+                if (TrySetupDirectD3D9SharedRingWithProducer(device, directSharedProducerDeviceEx, true,
+                                                             "helper D3D9Ex producer")) {
+                    return true;
+                }
+            }
+
+            if (EnsureDirectD3D9LegacyProducerDevice(params)) {
+                D3DDEVICE_CREATION_PARAMETERS helperParams = {};
+                if (SUCCEEDED(directSharedProducerDevice->GetCreationParameters(&helperParams))) {
+                    LogDirectD3D9SharingDiagnostics(directSharedProducerDevice, helperParams,
+                                                    "helper legacy D3D9 producer");
+                }
+                if (TrySetupDirectD3D9SharedRingWithProducer(device, directSharedProducerDevice, true,
+                                                             "helper legacy D3D9 producer")) {
+                    return true;
+                }
+            }
+
+            CleanupSharedHandles();
+            ReleaseDirectD3D9SharedRing();
         }
 
-        if (EnsureDirectD3D9ExProducerDevice(params)) {
-            D3DDEVICE_CREATION_PARAMETERS helperParams = {};
-            if (SUCCEEDED(directSharedProducerDeviceEx->GetCreationParameters(&helperParams))) {
-                LogDirectD3D9SharingDiagnostics(directSharedProducerDeviceEx, helperParams, "helper D3D9Ex producer");
-            }
-            if (TrySetupDirectD3D9SharedRingWithProducer(device, directSharedProducerDeviceEx, true,
-                                                         "helper D3D9Ex producer")) {
-                return true;
-            }
-        }
-
-        if (EnsureDirectD3D9LegacyProducerDevice(params)) {
-            D3DDEVICE_CREATION_PARAMETERS helperParams = {};
-            if (SUCCEEDED(directSharedProducerDevice->GetCreationParameters(&helperParams))) {
-                LogDirectD3D9SharingDiagnostics(directSharedProducerDevice, helperParams,
-                                                "helper legacy D3D9 producer");
-            }
-            if (TrySetupDirectD3D9SharedRingWithProducer(device, directSharedProducerDevice, true,
-                                                         "helper legacy D3D9 producer")) {
-                return true;
-            }
-        }
+        d3d9SharedFormat = preferredSharedFormat;
 
         HookLogImportant("DX9: Direct D3D9 shared ring unavailable after all producer attempts");
         return false;
@@ -3082,6 +3103,7 @@ public:
         gdiBufferTimestampQpc[1] = 0;
         gdiBufferBusy[0].store(false, std::memory_order_relaxed);
         gdiBufferBusy[1].store(false, std::memory_order_relaxed);
+        allowAsyncD3D9WorkerCapture = false;
 
         if (d3d11SharedTexture) {
             d3d11SharedTexture->Release();
@@ -3503,6 +3525,18 @@ public:
             d3d9DeviceEx = nullptr;
         }
 
+        D3DDEVICE_CREATION_PARAMETERS creationParams = {};
+        const HRESULT creationParamsHr = device->GetCreationParameters(&creationParams);
+        allowAsyncD3D9WorkerCapture =
+            SUCCEEDED(creationParamsHr) && ((creationParams.BehaviorFlags & D3DCREATE_MULTITHREADED) != 0);
+        if (SUCCEEDED(creationParamsHr)) {
+            HookLogImportant("DX9: Device creation flags=0x%08x (multithreaded=%d)",
+                             (unsigned)creationParams.BehaviorFlags, allowAsyncD3D9WorkerCapture ? 1 : 0);
+        } else {
+            HookLogImportant("DX9: GetCreationParameters failed during init (hr=0x%08x); async D3D9 worker capture disabled",
+                             (unsigned)creationParamsHr);
+        }
+
         HookLogImportant("DX9: Init Step 7: Create DX9 Shared Resource");
         if (SetupDirectD3D9SharedRing(device, isD3D9Ex)) {
             goto create_ring_buffer;
@@ -3753,13 +3787,19 @@ public:
             g_DX9StagingCaptureActive.store(useD3D11Staging, std::memory_order_release);
 
             // Start background capture thread for D3D11 staging path
-            if (useD3D11Staging) {
+            if (useD3D11Staging && allowAsyncD3D9WorkerCapture) {
                 StartCaptureThread([this]() { StagingCaptureThreadProc(); });
+            } else if (useD3D11Staging) {
+                HookLogImportant(
+                    "DX9: D3D11 staging consume will stay on the render thread (device lacks D3DCREATE_MULTITHREADED)");
             }
 
             // Start background capture thread for GDI interop path
-            if (useGDIInterop) {
+            if (useGDIInterop && allowAsyncD3D9WorkerCapture) {
                 StartCaptureThread([this]() { GDICaptureThreadProc(); });
+            } else if (useGDIInterop) {
+                HookLogImportant(
+                    "DX9: GDI interop consume will stay on the render thread (device lacks D3DCREATE_MULTITHREADED)");
             }
 
             const char* captureMode = useShmem                  ? "SHMEM"
@@ -3796,6 +3836,7 @@ public:
         if (useGDIInterop) {
             zeroCopyQueryWaitUs = 0;
             zeroCopyReadbackUs = 0;
+            const bool asyncGdiCapture = captureThreadRunning.load(std::memory_order_acquire);
 
             // Cadence gating: skip frames when game runs faster than capture target
             if (g_IPC && g_IPC->GetSharedMem()) {
@@ -3806,7 +3847,7 @@ public:
             }
 
             // Check that write buffer isn't still being read by capture thread
-            if (gdiBufferBusy[gdiWriteIdx].load(std::memory_order_acquire)) {
+            if (asyncGdiCapture && gdiBufferBusy[gdiWriteIdx].load(std::memory_order_acquire)) {
                 return;  // Capture thread still busy with this buffer, skip frame
             }
 
@@ -3818,8 +3859,25 @@ public:
                     // Enqueue PREVIOUS frame's RT to capture thread
                     if (gdiHasPrevFrame) {
                         int readIdx = 1 - gdiWriteIdx;
-                        EnqueueFrame(gdiBufferTimestampQpc[readIdx], 0, readIdx, nullptr);
-                        gdiLastCaptureQpc = gdiBufferTimestampQpc[readIdx];
+                        const int64_t readTimestampQpc = gdiBufferTimestampQpc[readIdx];
+                        if (asyncGdiCapture) {
+                            EnqueueFrame(readTimestampQpc, 0, readIdx, nullptr);
+                        } else {
+                            static int64_t gdiQpcFreq = 0;
+                            if (gdiQpcFreq == 0) {
+                                LARGE_INTEGER f;
+                                QueryPerformanceFrequency(&f);
+                                gdiQpcFreq = f.QuadPart;
+                            }
+
+                            LARGE_INTEGER captureStart, captureEnd;
+                            QueryPerformanceCounter(&captureStart);
+                            CompleteGDIInteropCapture(gdiCopySurfaces[readIdx], readTimestampQpc);
+                            QueryPerformanceCounter(&captureEnd);
+                            zeroCopyReadbackUs = static_cast<int32_t>(
+                                ((captureEnd.QuadPart - captureStart.QuadPart) * 1000000) / gdiQpcFreq);
+                        }
+                        gdiLastCaptureQpc = readTimestampQpc;
                     }
                     LARGE_INTEGER now;
                     QueryPerformanceCounter(&now);
