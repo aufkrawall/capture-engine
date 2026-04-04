@@ -1223,24 +1223,31 @@ void CheckAndInstallHooks() {
   // d3d12.dll can be loaded by D3D11On12 even in non-DX12 apps.
   // We use the actual device creation flag instead of just DLL presence.
   bool dx12ActuallyUsed = WasD3D12DeviceCreated();
+  const bool dxvkD3D9WrapperLoaded = IsDXVKD3D9WrapperLoaded();
 
-  // NOTE: Skip D3D9 hooks for Vulkan games
-  if (!s_vulkanActive && !g_DX9Hook && !dx12ActuallyUsed &&
+  // NOTE: Skip D3D9 hooks for Vulkan games, except DXVK D3D9. That path still
+  // needs the DX9 hook for game-thread Present pacing and overlay integration
+  // while Vulkan remains the primary capture path.
+  if ((!s_vulkanActive || dxvkD3D9WrapperLoaded) && !g_DX9Hook && !dx12ActuallyUsed &&
       GetModuleHandleA("d3d9.dll")) {
-    EarlyLog("DX9 Hook Check: Installing DX9 hooks (d3d9.dll loaded, vulkanActive=%d, dx12Used=%d)",
-             s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0);
+    EarlyLog(
+        "DX9 Hook Check: Installing DX9 hooks (d3d9.dll loaded, vulkanActive=%d, dx12Used=%d, dxvkD3D9=%d)",
+        s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
     HookLog("Detected d3d9.dll. Installing DX9 hooks...");
     g_DX9Hook = new DX9Hook();
     g_DX9Hook->Init();
     HookLog("DX9 hooks installed (hook ptr=%p)", (void*)g_DX9Hook);
   } else if (!g_DX9Hook && GetModuleHandleA("d3d9.dll")) {
-    EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d)",
-             s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0);
+    EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d, dxvkD3D9=%d)",
+             s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
   }
 
   // DirectDraw titles can still load or probe D3D12 through DXGI/driver helper
   // components. That must not suppress the actual DirectDraw hook path.
-  if (!g_DDrawHook && GetModuleHandleA("ddraw.dll")) {
+  // Skip DirectDraw hooks when the Vulkan layer owns presentation. In the DXVK
+  // D3D9 case the DX9 hook stays active, and synthesizing DirectDraw objects on
+  // our worker thread can recurse into external overlays and crash.
+  if (!s_vulkanActive && !g_DDrawHook && GetModuleHandleA("ddraw.dll")) {
     HookLog("Detected ddraw.dll. Installing DirectDraw hooks... (dx12Used=%d)",
             dx12ActuallyUsed ? 1 : 0);
     g_DDrawHook = new DDrawHook();

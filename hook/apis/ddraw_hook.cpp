@@ -28,6 +28,7 @@
 #include "hook_common.h"
 #include "lod_helper.h"
 #include "performance_metrics.h"
+#include "dx9_hook.h"
 #include "../wrappers/inline_hook.h"
 
 extern HMODULE g_hModule;
@@ -135,6 +136,29 @@ static HWND g_DDrawBootstrapWindow = NULL;
 static DWORD g_DDrawBootstrapThreadId = 0;
 static std::atomic<bool> g_DDrawBootstrapQueued{false};
 static std::atomic<bool> g_DDrawBootstrapRunning{false};
+
+static bool ShouldSuppressDirectDrawHooking() {
+    if (!IsDXVKD3D9WrapperLoaded()) {
+        return false;
+    }
+
+    SharedMemoryLayout* shm = nullptr;
+    if (g_IPC) {
+        shm = g_IPC->GetSharedMem();
+    }
+    if (!shm) {
+        shm = g_pSharedMem;
+    }
+    if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    static std::atomic<int> s_suppressionLogCount{0};
+    if (s_suppressionLogCount.fetch_add(1, std::memory_order_relaxed) < 6) {
+        HookLogImportant("DDraw: DXVK d3d9 + Vulkan layer detected - suppressing DirectDraw bootstrap/hooks");
+    }
+    return true;
+}
 
 static bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& h);
 
@@ -1528,6 +1552,10 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
     if (!directDrawObject)
         return false;
 
+    if (ShouldSuppressDirectDrawHooking()) {
+        return false;
+    }
+
     if (IsEqualIID(iid, IID_IDirectDraw7)) {
         InstallDirectDrawHooksForInstance(reinterpret_cast<IDirectDraw7*>(directDrawObject), "wrapper CreateEx");
         return true;
@@ -1921,6 +1949,11 @@ static HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REF
 
 void DDrawHook::Init() {
     HookLog("DDrawHook::Init()");
+
+    if (ShouldSuppressDirectDrawHooking()) {
+        HookLog("DDraw: Init suppressed because DXVK d3d9 Vulkan path is active");
+        return;
+    }
 
     // Check if ddraw.dll is loaded
     HMODULE ddrawModule = GetModuleHandleA("ddraw.dll");

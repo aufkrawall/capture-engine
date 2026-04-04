@@ -1205,7 +1205,7 @@ static bool IsCurrentProcessNamed(const char* expectedExeName) {
     return _stricmp(exeName, expectedExeName) == 0;
 }
 
-static bool IsDXVKD3D9WrapperLoaded() {
+bool IsDXVKD3D9WrapperLoaded() {
     HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
     if (!d3d9)
         return false;
