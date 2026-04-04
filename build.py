@@ -2928,7 +2928,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                 ),
             )
 
-    # DX9 Test App
+    # DX9 / DX9Ex Test Apps
     dx9_src = os.path.join(testapp_src_dir, "dx9_test.cpp")
     dx9_exe = os.path.join(testapp_bin_dir, "dx9_test.exe")
     if os.path.exists(dx9_src):
@@ -2940,15 +2940,28 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             "-luser32",
             "-lavrt",
         ]
+        dx9ex_exe = os.path.join(testapp_bin_dir, "dx9ex_test.exe")
+        dx9ex_cflags = list(cflags) + ["-DCE_TESTAPP_D3D9EX=1"]
+
         add_task(
             "dx9_test.exe", make_cmd(clang_exe, cflags, dx9_src, dx9_ldflags, dx9_exe)
+        )
+        add_task(
+            "dx9ex_test.exe",
+            make_cmd(clang_exe, dx9ex_cflags, dx9_src, dx9_ldflags, dx9ex_exe),
         )
 
         if have_x86:
             dx9_exe_x86 = os.path.join(x86_bin_dir, "dx9_test.exe")
+            dx9ex_exe_x86 = os.path.join(x86_bin_dir, "dx9ex_test.exe")
+            dx9ex_cflags_x86 = list(cflags_x86) + ["-DCE_TESTAPP_D3D9EX=1"]
             add_task(
                 "dx9_test.exe (x86)",
                 make_cmd(clang_exe_x86, cflags_x86, dx9_src, dx9_ldflags, dx9_exe_x86),
+            )
+            add_task(
+                "dx9ex_test.exe (x86)",
+                make_cmd(clang_exe_x86, dx9ex_cflags_x86, dx9_src, dx9_ldflags, dx9ex_exe_x86),
             )
 
     # DX10 Test App

@@ -1,4 +1,4 @@
-// DX9 Test App for Capture + FPS Limiter Testing
+// DX9 / DX9Ex Test App for Capture + FPS Limiter Testing
 #define WIN32_LEAN_AND_MEAN
 // clang-format off
 #include <windows.h>
@@ -21,6 +21,18 @@ static int g_GpuLoadPasses = 5;
 static int g_VSync = 0;
 static int g_Fullscreen = 1;
 
+#if defined(CE_TESTAPP_D3D9EX)
+using Direct3DFactory = IDirect3D9Ex;
+using Direct3DDevice = IDirect3DDevice9Ex;
+static constexpr wchar_t kWindowClassName[] = L"DX9ExTest";
+static constexpr wchar_t kWindowTitle[] = L"DX9Ex Test";
+#else
+using Direct3DFactory = IDirect3D9;
+using Direct3DDevice = IDirect3DDevice9;
+static constexpr wchar_t kWindowClassName[] = L"DX9Test";
+static constexpr wchar_t kWindowTitle[] = L"DX9 Test";
+#endif
+
 void LoadConfig() {
     char path[MAX_PATH];
     GetModuleFileNameA(NULL, path, MAX_PATH);
@@ -36,8 +48,8 @@ void LoadConfig() {
     g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
 }
 
-IDirect3D9Ex* g_pD3D = nullptr;
-IDirect3DDevice9Ex* g_pd3dDevice = nullptr;
+Direct3DFactory* g_pD3D = nullptr;
+Direct3DDevice* g_pd3dDevice = nullptr;
 bool g_Running = true;
 float g_BarPosition = 0.0f;
 auto g_StartTime = std::chrono::high_resolution_clock::now();
@@ -56,21 +68,62 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
+void ShutdownDX9() {
+    if (g_pd3dDevice) {
+        g_pd3dDevice->Release();
+        g_pd3dDevice = nullptr;
+    }
+    if (g_pD3D) {
+        g_pD3D->Release();
+        g_pD3D = nullptr;
+    }
+}
+
 bool InitDX9(HWND hwnd) {
+#if defined(CE_TESTAPP_D3D9EX)
     if (FAILED(Direct3DCreate9Ex(D3D_SDK_VERSION, &g_pD3D)))
         return false;
+#else
+    g_pD3D = Direct3DCreate9(D3D_SDK_VERSION);
+    if (!g_pD3D)
+        return false;
+#endif
+
     D3DPRESENT_PARAMETERS d3dpp = {};
+#if defined(CE_TESTAPP_D3D9EX)
     d3dpp.Windowed = TRUE;
     d3dpp.SwapEffect = D3DSWAPEFFECT_FLIPEX;
     d3dpp.BackBufferFormat = D3DFMT_X8R8G8B8;
     d3dpp.BackBufferCount = 2;
+#else
+    d3dpp.Windowed = g_Fullscreen ? FALSE : TRUE;
+    d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    d3dpp.BackBufferFormat = g_Fullscreen ? D3DFMT_X8R8G8B8 : D3DFMT_UNKNOWN;
+    d3dpp.BackBufferCount = 1;
+#endif
     d3dpp.BackBufferWidth = g_WindowWidth;
     d3dpp.BackBufferHeight = g_WindowHeight;
+    d3dpp.hDeviceWindow = hwnd;
     d3dpp.PresentationInterval = g_VSync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
+    d3dpp.FullScreen_RefreshRateInHz =
+#if defined(CE_TESTAPP_D3D9EX)
+        0;
+#else
+        g_Fullscreen ? D3DPRESENT_RATE_DEFAULT : 0;
+#endif
+
+#if defined(CE_TESTAPP_D3D9EX)
     if (FAILED(g_pD3D->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
                                       &d3dpp, nullptr, &g_pd3dDevice)))
         return false;
-    g_pd3dDevice->SetMaximumFrameLatency(1);
+    if (!g_Fullscreen)
+        g_pd3dDevice->SetMaximumFrameLatency(1);
+#else
+    if (FAILED(g_pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
+                                    &d3dpp, &g_pd3dDevice)))
+        return false;
+#endif
+
     return true;
 }
 
@@ -123,7 +176,7 @@ int main(int argc, char* argv[]) {
                       LoadCursor(nullptr, IDC_ARROW),
                       nullptr,
                       nullptr,
-                      L"DX9Test",
+                      kWindowClassName,
                       nullptr};
     RegisterClassExW(&wc);
     RECT monitorRect = testapp::GetPrimaryMonitorRect();
@@ -137,7 +190,7 @@ int main(int argc, char* argv[]) {
     RECT windowRect = testapp::AdjustWindowRectForClientSize(winStyle, 0, g_WindowWidth, g_WindowHeight);
     int winW = g_Fullscreen ? g_WindowWidth : (windowRect.right - windowRect.left);
     int winH = g_Fullscreen ? g_WindowHeight : (windowRect.bottom - windowRect.top);
-    HWND hwnd = CreateWindowW(L"DX9Test", L"DX9 Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
+    HWND hwnd = CreateWindowW(kWindowClassName, kWindowTitle, winStyle, posX, posY, winW, winH, nullptr, nullptr,
                               wc.hInstance, nullptr);
     if (!InitDX9(hwnd))
         return 1;
@@ -153,5 +206,6 @@ int main(int argc, char* argv[]) {
             break;
         Render();
     }
+    ShutdownDX9();
     return 0;
 }

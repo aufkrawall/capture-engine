@@ -8,6 +8,7 @@ frame_times.csv, and enforces strict per-target pass criteria.
 Usage:
     python run_tests.py
     python run_tests.py --api dx9 --arch both --tests 1 --duration 5
+    python run_tests.py --api dx9ex --arch both --tests 1 --duration 5
     python run_tests.py --api all --arch both --min-frames 60
 """
 
@@ -39,11 +40,14 @@ FRAME_TIMES_CSV = CAPTURE_BIN / "logs" / "frame_times.csv"
 MEDIA_LOG = CAPTURE_BIN / "logs" / "media.log"
 DEFAULT_RESULTS_JSON = CAPTURE_BIN / "logs" / "integration_results.json"
 RUN_LOG_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
+CAPTURE_CONFIG = CAPTURE_BIN / "config.ini"
+CAPTURE_CONFIG_TEMPLATE = PROJECT_ROOT / "captureengine" / "config.ini.template"
 
 SUPPORTED_APIS = [
     "dx12",
     "dx11",
     "dx9",
+    "dx9ex",
     "dx8",
     "dx7",
     "dx6",
@@ -56,6 +60,7 @@ API_EXECUTABLES = {
     "dx12": "dx12_test.exe",
     "dx11": "dx11_test.exe",
     "dx9": "dx9_test.exe",
+    "dx9ex": "dx9ex_test.exe",
     "dx8": "dx8_test.exe",
     "dx7": "dx7_test.exe",
     "dx6": "dx6_test.exe",
@@ -67,7 +72,8 @@ API_EXECUTABLES = {
 API_LOG_NAMES = {
     "dx12": {"dx12"},
     "dx11": {"dx11"},
-    "dx9": {"dx9"},
+    "dx9": {"dx9", "dx9ex"},
+    "dx9ex": {"dx9", "dx9ex"},
     "dx8": {"dx8"},
     "dx7": {"dx7", "d3d7", "direct3d7", "ddraw", "directdraw"},
     "dx6": {"dx6", "d3d6", "direct3d6", "ddraw", "directdraw"},
@@ -78,6 +84,113 @@ API_LOG_NAMES = {
 }
 
 
+def ensure_capture_config_exists() -> str:
+    if CAPTURE_CONFIG.exists():
+        return CAPTURE_CONFIG.read_text(encoding="utf-8")
+
+    if CAPTURE_CONFIG_TEMPLATE.exists():
+        text = CAPTURE_CONFIG_TEMPLATE.read_text(encoding="utf-8")
+    else:
+        text = "[General]\ndebug_logging=true\n\n[Injection]\nwhitelist=(\n)\n"
+
+    CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CAPTURE_CONFIG.write_text(text, encoding="utf-8")
+    return text
+
+
+def add_whitelist_entries_to_config_text(config_text: str, executable_names: List[str]) -> str:
+    lines = config_text.splitlines(keepends=True)
+    executable_names = [name for name in executable_names if name]
+    if not executable_names:
+        return config_text
+
+    injection_start = None
+    for idx, line in enumerate(lines):
+        if line.strip().lower() == "[injection]":
+            injection_start = idx
+            break
+
+    if injection_start is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        if lines and lines[-1].strip():
+            lines.append("\n")
+        lines.extend(["[Injection]\n", "whitelist=(\n", ")\n"])
+        injection_start = len(lines) - 3
+
+    section_end = len(lines)
+    for idx in range(injection_start + 1, len(lines)):
+        stripped = lines[idx].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section_end = idx
+            break
+
+    whitelist_start = None
+    for idx in range(injection_start + 1, section_end):
+        if lines[idx].strip().lower().startswith("whitelist=("):
+            whitelist_start = idx
+            break
+
+    if whitelist_start is None:
+        insert_idx = injection_start + 1
+        block = ["whitelist=(\n", ")\n"]
+        lines[insert_idx:insert_idx] = block
+        whitelist_start = insert_idx
+        section_end += len(block)
+
+    whitelist_end = None
+    for idx in range(whitelist_start + 1, section_end):
+        if lines[idx].strip() == ")":
+            whitelist_end = idx
+            break
+
+    if whitelist_end is None:
+        whitelist_end = section_end
+        lines.insert(whitelist_end, ")\n")
+
+    existing_entries = {
+        lines[idx].strip().lower()
+        for idx in range(whitelist_start + 1, whitelist_end)
+        if lines[idx].strip() and not lines[idx].lstrip().startswith(";")
+    }
+
+    new_lines = []
+    for executable_name in executable_names:
+        if executable_name.lower() not in existing_entries:
+            new_lines.append(f"{executable_name}\n")
+            existing_entries.add(executable_name.lower())
+
+    if not new_lines:
+        return config_text
+
+    lines[whitelist_end:whitelist_end] = new_lines
+    return "".join(lines)
+
+
+def ensure_testapp_whitelist_entries(executable_names: List[str]) -> Optional[Tuple[bool, str]]:
+    config_existed = CAPTURE_CONFIG.exists()
+    original_text = ensure_capture_config_exists()
+    updated_text = add_whitelist_entries_to_config_text(original_text, executable_names)
+    if updated_text == original_text:
+        return None
+
+    CAPTURE_CONFIG.write_text(updated_text, encoding="utf-8")
+    added_names = ", ".join(executable_names)
+    print(f"Temporarily added capture whitelist entries: {added_names}")
+    return config_existed, original_text
+
+
+def restore_capture_config(snapshot: Optional[Tuple[bool, str]]) -> None:
+    if snapshot is None:
+        return
+
+    config_existed, original_text = snapshot
+    if config_existed:
+        CAPTURE_CONFIG.write_text(original_text, encoding="utf-8")
+    elif CAPTURE_CONFIG.exists():
+        CAPTURE_CONFIG.unlink()
+
+
 def kill_processes() -> None:
     """Kill any existing test/capture processes."""
     for proc in [
@@ -85,6 +198,7 @@ def kill_processes() -> None:
         "dx12_test.exe",
         "dx11_test.exe",
         "dx9_test.exe",
+        "dx9ex_test.exe",
         "dx8_test.exe",
         "dx7_test.exe",
         "dx6_test.exe",
@@ -555,6 +669,7 @@ def main() -> None:
             "dx12",
             "dx11",
             "dx9",
+            "dx9ex",
             "dx8",
             "dx7",
             "dx6",
@@ -612,91 +727,97 @@ def main() -> None:
     print(f"Architectures under test: {', '.join(a.upper() for a in arches_to_test)}")
 
     ensure_binaries_exist(apis_to_test, arches_to_test)
+    config_snapshot = ensure_testapp_whitelist_entries([API_EXECUTABLES[api] for api in apis_to_test])
 
-    print("\nCleaning up existing processes...")
-    kill_processes()
+    try:
+        print("\nCleaning up existing processes...")
+        kill_processes()
 
-    all_results: List[Dict[str, Any]] = []
+        all_results: List[Dict[str, Any]] = []
 
-    for arch in arches_to_test:
-        for api in apis_to_test:
-            for test_num in range(1, args.tests + 1):
-                test_name = f"{api.upper()}-{arch.upper()} Test {test_num}"
-                stats, error = run_single_test(
-                    api=api,
-                    arch=arch,
-                    width=width,
-                    height=height,
-                    gpu_load=args.gpu_load,
-                    total_record_s=args.duration,
-                    test_name=test_name,
-                    min_frames=args.min_frames,
-                )
+        for arch in arches_to_test:
+            for api in apis_to_test:
+                for test_num in range(1, args.tests + 1):
+                    test_name = f"{api.upper()}-{arch.upper()} Test {test_num}"
+                    stats, error = run_single_test(
+                        api=api,
+                        arch=arch,
+                        width=width,
+                        height=height,
+                        gpu_load=args.gpu_load,
+                        total_record_s=args.duration,
+                        test_name=test_name,
+                        min_frames=args.min_frames,
+                    )
 
-                status = "passed" if error is None else "failed"
-                result_entry: Dict[str, Any] = {
-                    "name": test_name,
-                    "api": api,
-                    "arch": arch,
-                    "iteration": test_num,
-                    "status": status,
-                    "error": error,
-                    "stats": stats,
-                }
-                all_results.append(result_entry)
+                    status = "passed" if error is None else "failed"
+                    result_entry: Dict[str, Any] = {
+                        "name": test_name,
+                        "api": api,
+                        "arch": arch,
+                        "iteration": test_num,
+                        "status": status,
+                        "error": error,
+                        "stats": stats,
+                    }
+                    all_results.append(result_entry)
 
-                kill_processes()
-                time.sleep(2)
+                    kill_processes()
+                    time.sleep(2)
 
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("SUMMARY")
+        print("=" * 60)
 
-    failures = [r for r in all_results if r["status"] == "failed"]
+        failures = [r for r in all_results if r["status"] == "failed"]
 
-    for arch in arches_to_test:
-        for api in apis_to_test:
-            combo = [r for r in all_results if r["api"] == api and r["arch"] == arch]
-            combo_passed = [r for r in combo if r["status"] == "passed" and r["stats"]]
+        for arch in arches_to_test:
+            for api in apis_to_test:
+                combo = [r for r in all_results if r["api"] == api and r["arch"] == arch]
+                combo_passed = [r for r in combo if r["status"] == "passed" and r["stats"]]
 
-            print(f"\n{api.upper()}-{arch.upper()} " f"(passed {len(combo_passed)}/{len(combo)} tests):")
+                print(f"\n{api.upper()}-{arch.upper()} " f"(passed {len(combo_passed)}/{len(combo)} tests):")
 
-            stats_for_combo: List[Dict[str, Any]] = [r["stats"] for r in combo_passed if isinstance(r["stats"], dict)]
-            if stats_for_combo:
-                avg_min = statistics.mean(float(s["min"]) for s in stats_for_combo)
-                avg_max = statistics.mean(float(s["max"]) for s in stats_for_combo)
-                avg_avg = statistics.mean(float(s["avg"]) for s in stats_for_combo)
-                avg_variance = statistics.mean(float(s["variance"]) for s in stats_for_combo)
-                total_spikes = sum(int(s["spikes_12ms"]) for s in stats_for_combo)
-                total_frames = sum(int(s.get("effective_count", s["count"])) for s in stats_for_combo)
-                spike_pct = 100.0 * total_spikes / total_frames if total_frames > 0 else 0.0
+                stats_for_combo: List[Dict[str, Any]] = [r["stats"] for r in combo_passed if isinstance(r["stats"], dict)]
+                if stats_for_combo:
+                    avg_min = statistics.mean(float(s["min"]) for s in stats_for_combo)
+                    avg_max = statistics.mean(float(s["max"]) for s in stats_for_combo)
+                    avg_avg = statistics.mean(float(s["avg"]) for s in stats_for_combo)
+                    avg_variance = statistics.mean(float(s["variance"]) for s in stats_for_combo)
+                    total_spikes = sum(int(s["spikes_12ms"]) for s in stats_for_combo)
+                    total_frames = sum(int(s.get("effective_count", s["count"])) for s in stats_for_combo)
+                    spike_pct = 100.0 * total_spikes / total_frames if total_frames > 0 else 0.0
 
-                print(f"  Avg frame time: {avg_avg:.2f}ms " f"(range: {avg_min:.2f}-{avg_max:.2f}ms)")
-                print(f"  Avg variance: {avg_variance:.2f}ms")
-                print(f"  Total spikes >12ms: {total_spikes}/{total_frames} " f"({spike_pct:.1f}%)")
-            else:
-                print("  No passing runs for this target.")
+                    print(f"  Avg frame time: {avg_avg:.2f}ms " f"(range: {avg_min:.2f}-{avg_max:.2f}ms)")
+                    print(f"  Avg variance: {avg_variance:.2f}ms")
+                    print(f"  Total spikes >12ms: {total_spikes}/{total_frames} " f"({spike_pct:.1f}%)")
+                else:
+                    print("  No passing runs for this target.")
 
-    if failures:
-        print("\nFAILURES")
-        print("-" * 60)
-        for failure in failures:
-            print(f"  {failure['name']}: {failure['error'] or 'Unknown failure'}")
+        if failures:
+            print("\nFAILURES")
+            print("-" * 60)
+            for failure in failures:
+                print(f"  {failure['name']}: {failure['error'] or 'Unknown failure'}")
 
-    write_results_json(
-        output_path=Path(args.results_json),
-        args=args,
-        apis_to_test=apis_to_test,
-        arches_to_test=arches_to_test,
-        results=all_results,
-    )
+        write_results_json(
+            output_path=Path(args.results_json),
+            args=args,
+            apis_to_test=apis_to_test,
+            arches_to_test=arches_to_test,
+            results=all_results,
+        )
 
-    print("\n" + "=" * 60)
-    print("TEST COMPLETE")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("TEST COMPLETE")
+        print("=" * 60)
 
-    if failures:
-        sys.exit(1)
+        if failures:
+            sys.exit(1)
+    finally:
+        restore_capture_config(config_snapshot)
+        kill_processes()
+        time.sleep(1)
 
 
 if __name__ == "__main__":

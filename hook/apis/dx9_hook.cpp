@@ -2498,6 +2498,12 @@ public:
         return helperFlags;
     }
 
+    static DWORD BuildDirectD3D9HelperSoftwareVpFlags(DWORD helperFlags) {
+        helperFlags &= ~(D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MIXED_VERTEXPROCESSING);
+        helperFlags |= D3DCREATE_SOFTWARE_VERTEXPROCESSING;
+        return helperFlags;
+    }
+
     D3DFORMAT ResolveDirectD3D9HelperBackBufferFormat() const {
         if (d3d9SharedFormat != D3DFMT_UNKNOWN) {
             return d3d9SharedFormat;
@@ -2508,16 +2514,26 @@ public:
         return D3DFMT_A8R8G8B8;
     }
 
-    void BuildDirectD3D9HelperPresentParameters(D3DPRESENT_PARAMETERS& pp) const {
+    void BuildDirectD3D9HelperPresentParameters(D3DPRESENT_PARAMETERS& pp, bool useExRuntime) const {
         pp = {};
         pp.Windowed = TRUE;
         pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
         pp.hDeviceWindow = directSharedHelperWindow;
-        // The helper producer never presents. A minimal hidden swapchain avoids
-        // 0x0/UNKNOWN device-creation quirks and keeps helper VRAM pressure low.
-        pp.BackBufferWidth = 1;
-        pp.BackBufferHeight = 1;
-        pp.BackBufferFormat = ResolveDirectD3D9HelperBackBufferFormat();
+        if (useExRuntime) {
+            // The Ex helper producer never presents. A minimal hidden swapchain
+            // avoids 0x0/UNKNOWN device-creation quirks and keeps helper VRAM
+            // pressure low while still allowing shared-resource creation.
+            pp.BackBufferWidth = 1;
+            pp.BackBufferHeight = 1;
+            pp.BackBufferFormat = ResolveDirectD3D9HelperBackBufferFormat();
+        } else {
+            // Plain D3D9 is stricter in windowed mode: let the runtime pick a
+            // desktop-compatible backbuffer so the helper device can exist only
+            // as a resource factory for native shared-texture zero-copy.
+            pp.BackBufferWidth = 0;
+            pp.BackBufferHeight = 0;
+            pp.BackBufferFormat = D3DFMT_UNKNOWN;
+        }
         pp.BackBufferCount = 1;
         pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     }
@@ -2739,7 +2755,7 @@ public:
         }
 
         D3DPRESENT_PARAMETERS pp = {};
-        BuildDirectD3D9HelperPresentParameters(pp);
+        BuildDirectD3D9HelperPresentParameters(pp, true);
         HookLogImportant("DX9: Trying helper D3D9Ex producer (adapter=%u type=%u flags=0x%08x)", params.AdapterOrdinal,
                          (unsigned)params.DeviceType, (unsigned)helperFlags);
 
@@ -2813,15 +2829,37 @@ public:
             }
         }
 
-        D3DPRESENT_PARAMETERS pp = {};
-        BuildDirectD3D9HelperPresentParameters(pp);
-        HookLogImportant("DX9: Trying helper legacy D3D9 producer (adapter=%u type=%u flags=0x%08x)",
-                         params.AdapterOrdinal, (unsigned)params.DeviceType, (unsigned)helperFlags);
+        auto tryCreateLegacyHelper = [&](DWORD attemptFlags, const char* attemptLabel) {
+            D3DPRESENT_PARAMETERS pp = {};
+            BuildDirectD3D9HelperPresentParameters(pp, false);
+            HookLogImportant(
+                "DX9: Trying helper legacy D3D9 producer (%s adapter=%u type=%u flags=0x%08x bbFmt=%s/%d bb=%ux%u)",
+                attemptLabel, params.AdapterOrdinal, (unsigned)params.DeviceType, (unsigned)attemptFlags,
+                D3D9FormatName(pp.BackBufferFormat), (int)pp.BackBufferFormat, pp.BackBufferWidth,
+                pp.BackBufferHeight);
 
-        const DX9InternalBypassScope helperBypass;
-        const HRESULT deviceHr = directSharedFactory->CreateDevice(params.AdapterOrdinal, params.DeviceType,
-                                                                   directSharedHelperWindow, helperFlags, &pp,
-                                                                   &directSharedProducerDevice);
+            const DX9InternalBypassScope helperBypass;
+            return directSharedFactory->CreateDevice(params.AdapterOrdinal, params.DeviceType, directSharedHelperWindow,
+                                                     attemptFlags, &pp, &directSharedProducerDevice);
+        };
+
+        DWORD selectedFlags = helperFlags;
+        HRESULT deviceHr = tryCreateLegacyHelper(helperFlags, "game-flags");
+        if ((FAILED(deviceHr) || !directSharedProducerDevice)) {
+            const DWORD softwareVpFlags = BuildDirectD3D9HelperSoftwareVpFlags(helperFlags);
+            if (softwareVpFlags != helperFlags) {
+                if (directSharedProducerDevice) {
+                    directSharedProducerDevice->Release();
+                    directSharedProducerDevice = nullptr;
+                }
+                HookLogImportant(
+                    "DX9: Helper legacy D3D9 producer retrying with software vertex processing after hr=0x%08x",
+                    (unsigned)deviceHr);
+                deviceHr = tryCreateLegacyHelper(softwareVpFlags, "software-vp fallback");
+                selectedFlags = softwareVpFlags;
+            }
+        }
+
         if (FAILED(deviceHr) || !directSharedProducerDevice) {
             HookLogImportant("DX9: Direct D3D9 helper unavailable - CreateDevice failed (0x%08x)", (unsigned)deviceHr);
             if (directSharedProducerDevice) {
@@ -2834,7 +2872,7 @@ public:
 
         directSharedLegacyConfig.adapterOrdinal = params.AdapterOrdinal;
         directSharedLegacyConfig.deviceType = params.DeviceType;
-        directSharedLegacyConfig.behaviorFlags = helperFlags;
+    directSharedLegacyConfig.behaviorFlags = selectedFlags;
         directSharedLegacyConfig.valid = true;
 
         DX9_RegisterInternalHelperDevice(directSharedProducerDevice);
@@ -2888,6 +2926,9 @@ public:
                 if (producerTexture) {
                     producerTexture->Release();
                 }
+                if (sharedHandle) {
+                    CloseHandle(sharedHandle);
+                }
                 return failSetup("Direct D3D9 shared ring producer texture creation failed", producerHr);
             }
 
@@ -2899,6 +2940,9 @@ public:
                                               D3DPOOL_DEFAULT, &captureTexture, &openHandle);
                 if (FAILED(openHr) || !captureTexture) {
                     producerTexture->Release();
+                    if (sharedHandle) {
+                        CloseHandle(sharedHandle);
+                    }
                     return failSetup("Direct D3D9 shared ring open-on-game-device failed", openHr);
                 }
                 if (openHandle) {
@@ -2908,6 +2952,7 @@ public:
             }
 
             directSharedTextures9[i] = captureTexture;
+            sharedTextureHandles[i].store(sharedHandle, std::memory_order_release);
 
             const HRESULT surfaceHr = captureTexture->GetSurfaceLevel(0, &directSharedSurfaces9[i]);
             if (FAILED(surfaceHr) || !directSharedSurfaces9[i]) {
@@ -2918,8 +2963,6 @@ public:
             if (FAILED(queryHr) || !directSharedQueries9[i]) {
                 return failSetup("Direct D3D9 shared ring query creation failed", queryHr);
             }
-
-            sharedTextureHandles[i].store(sharedHandle, std::memory_order_release);
         }
 
         if (!ValidateDirectD3D9SharedHandle(sharedTextureHandles[0].load(std::memory_order_acquire))) {
