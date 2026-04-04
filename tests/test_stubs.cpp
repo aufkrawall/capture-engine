@@ -40,7 +40,7 @@ void DX12_OnSwapchainResizeEnd() {}
 void DX12_SignalFSR4SwapchainRecreated() {}
 
 // DX12_SetCommandQueue is extern "C" in the header
-extern "C" void DX12_SetCommandQueue(IUnknown*) {}
+extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}
 
 // Stubs for DX11
 extern "C" void DX11_ProcessFrameExternal(IDXGISwapChain*) {}
