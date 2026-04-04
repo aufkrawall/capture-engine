@@ -11,6 +11,7 @@
 
 #include <aclapi.h>
 #include <bcrypt.h>
+#include <oleauto.h>
 #include <ntstatus.h>
 #include <softpub.h>
 #include <wintrust.h>
@@ -61,6 +62,29 @@ namespace {
 double QpcDeltaToMs(int64_t deltaUs) {
     return static_cast<double>(deltaUs) / 1000.0;
 }
+
+struct BstrGuard {
+    BSTR value = nullptr;
+
+    explicit BstrGuard(const wchar_t* text) : value(SysAllocString(text)) {}
+
+    ~BstrGuard() {
+        if (value) {
+            SysFreeString(value);
+        }
+    }
+
+    BstrGuard(const BstrGuard&) = delete;
+    BstrGuard& operator=(const BstrGuard&) = delete;
+
+    operator BSTR() const {
+        return value;
+    }
+
+    bool valid() const {
+        return value != nullptr;
+    }
+};
 }  // namespace
 
 InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
@@ -344,14 +368,22 @@ bool InjectionManager::InitializeWMI() {
 
     // Connect to WMI
     phaseStartUs = Log_GetQpcUs();
-    hres = pLoc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"),  // Object path of WMI namespace
-                               NULL,                     // User name
-                               NULL,                     // User password
-                               0,                        // Locale
-                               NULL,                     // Security flags
-                               0,                        // Authority
-                               0,                        // Context object
-                               &pSvc                     // IWbemServices proxy
+    const BstrGuard namespaceName(L"ROOT\\CIMV2");
+    if (!namespaceName.valid()) {
+        LogError("Failed to allocate WMI namespace BSTR");
+        pLoc->Release();
+        pLoc = nullptr;
+        return false;
+    }
+
+    hres = pLoc->ConnectServer(namespaceName,  // Object path of WMI namespace
+                               NULL,            // User name
+                               NULL,            // User password
+                               0,               // Locale
+                               NULL,            // Security flags
+                               0,               // Authority
+                               0,               // Context object
+                               &pSvc            // IWbemServices proxy
     );
     connectUs = Log_GetQpcUs() - phaseStartUs;
 
@@ -420,10 +452,15 @@ bool InjectionManager::InitializeWMI() {
     // Use WITHIN 0.5 to reduce idle WMI churn while still reacting to launches
     // within half a second.
     phaseStartUs = Log_GetQpcUs();
-    hres = pSvc->ExecNotificationQueryAsync(_bstr_t("WQL"),
-                                            _bstr_t("SELECT * FROM __InstanceCreationEvent WITHIN 0.5 WHERE "
-                                                    "TargetInstance ISA 'Win32_Process'"),
-                                            WBEM_FLAG_SEND_STATUS, NULL, pStubSink);
+    const BstrGuard queryLanguage(L"WQL");
+    const BstrGuard queryText(L"SELECT * FROM __InstanceCreationEvent WITHIN 0.5 WHERE "
+                              L"TargetInstance ISA 'Win32_Process'");
+    if (!queryLanguage.valid() || !queryText.valid()) {
+        LogError("Failed to allocate WMI query BSTR");
+        return false;
+    }
+
+    hres = pSvc->ExecNotificationQueryAsync(queryLanguage, queryText, WBEM_FLAG_SEND_STATUS, NULL, pStubSink);
     notificationUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
