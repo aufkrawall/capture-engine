@@ -1594,6 +1594,10 @@ public:
         frameWidth_ = width;
         frameHeight_ = height;
         UpdateCaptureFormatSelection();
+        const DXGI_FORMAT requestedDxgiFormat = captureDxgiFormat_;
+        const bool requestedHighPrecision = useHighPrecisionCapture_;
+        bool attemptedFp16Fallback = false;
+        bool attemptedBgraFallback = false;
 
         // CRITICAL: Must use CreateFreeThreaded (not Create) because we have no
         // message pump! Create() requires a DispatcherQueue pumping messages for
@@ -1605,8 +1609,10 @@ public:
                 framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(winrtDevice_, format, 12, size);
                 return framePool_ != nullptr;
             } catch (const winrt::hresult_error& e) {
-                LogWarn("[WGC] Frame pool creation failed for format=%d: 0x%08X", (int)format,
-                        (unsigned)e.code().value);
+                if (format == capturePixelFormat_) {
+                    LogWarn("[WGC] Frame pool creation failed for format=%d: 0x%08X", (int)format,
+                            (unsigned)e.code().value);
+                }
                 framePool_ = nullptr;
                 return false;
             }
@@ -1616,11 +1622,12 @@ public:
             if (!captureIsHDR_ && capturePixelFormat_ == winrt::DirectXPixelFormat::R10G10B10A2UIntNormalized) {
                 // SDR 10-bpc: try FP16 to preserve full 10-bit precision in the
                 // captured texture.  Only fall to BGRA8 if FP16 also fails.
-                LogWarn("[WGC] R10G10B10A2 frame pool unavailable for SDR 10-bit, trying FP16");
+                attemptedFp16Fallback = true;
                 capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
                 captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
                 // useHighPrecisionCapture_ stays true
             } else {
+                attemptedBgraFallback = true;
                 capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
                 captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
                 useHighPrecisionCapture_ = false;
@@ -1628,7 +1635,7 @@ public:
 
             if (!tryCreateFramePool(capturePixelFormat_)) {
                 if (capturePixelFormat_ != winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized) {
-                    LogWarn("[WGC] High-precision frame pool unavailable, falling back to BGRA8 capture");
+                    attemptedBgraFallback = true;
                     capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
                     captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
                     useHighPrecisionCapture_ = false;
@@ -1641,6 +1648,17 @@ public:
                     return false;
                 }
             }
+        }
+        if (captureDxgiFormat_ != requestedDxgiFormat) {
+            const char* requestedFormat = requestedDxgiFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
+                                              ? "R16G16B16A16_FLOAT"
+                                              : (requestedDxgiFormat == DXGI_FORMAT_R10G10B10A2_UNORM
+                                                     ? "R10G10B10A2_UNORM"
+                                                     : "B8G8R8A8_UNORM");
+            LogWarn("[WGC] Frame pool fallback: requested=%s final=%s hdr=%s highPrecision=%s tried(fp16=%d bgra8=%d)",
+                    requestedFormat, DescribeCaptureFormat(), captureIsHDR_ ? "YES" : "NO",
+                    requestedHighPrecision ? "YES" : "NO", attemptedFp16Fallback ? 1 : 0,
+                    attemptedBgraFallback ? 1 : 0);
         }
         LogInfo("[WGC] Frame pool format: %s", DescribeCaptureFormat());
 

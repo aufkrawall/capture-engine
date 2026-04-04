@@ -262,6 +262,32 @@ inline int64_t ComputeDurationUsToSamples(int64_t durationUs, int sampleRate) {
     return ((durationUs * static_cast<int64_t>(sampleRate)) + (kMicrosecondsPerSecond / 2)) / kMicrosecondsPerSecond;
 }
 
+inline double ComputeSamplesPerMinute(uint64_t sampleCount, int64_t durationUs) {
+    if (durationUs <= 0) {
+        return 0.0;
+    }
+
+    const double durationMinutes = static_cast<double>(durationUs) / 60000000.0;
+    if (durationMinutes <= 0.0) {
+        return 0.0;
+    }
+
+    return static_cast<double>(sampleCount) / durationMinutes;
+}
+
+inline double ComputeClockMismatchPpm(int32_t compensationDelta, int sampleRate, int compensationWindowSeconds = 10) {
+    if (sampleRate <= 0 || compensationWindowSeconds <= 0) {
+        return 0.0;
+    }
+
+    const double baseSamples = static_cast<double>(sampleRate) * static_cast<double>(compensationWindowSeconds);
+    if (baseSamples <= 0.0) {
+        return 0.0;
+    }
+
+    return static_cast<double>(compensationDelta) * 1000000.0 / baseSamples;
+}
+
 inline bool ShouldAllowWgcSteadyStateDriftCompensation(bool trackStartupSettled, int64_t videoPipelineLagMs,
                                                        int64_t bufferedSamples, int64_t targetLatencySamples,
                                                        int64_t leadWarningSamples) {

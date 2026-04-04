@@ -1540,12 +1540,10 @@ bool VideoEncoder::EnsureDevice() {
         return false;
     }
 
+    const bool hasInjectLuid = (luidLow != 0 || luidHigh != 0);
     DLL_Log("[VideoEncoder] EnsureDevice with LUID: %08x %08x", luidLow, luidHigh);
-
-    if (luidLow == 0 && luidHigh == 0) {
-        DLL_Log(
-            "[VideoEncoder] WARNING: EnsureDevice called with default LUID (0:0). "
-            "In inject mode, this usually indicates a propagation failure.");
+    if (!hasInjectLuid) {
+        DLL_Log("[VideoEncoder] EnsureDevice using shared framegrab device (no inject LUID)");
     }
 
     // D3D11 Video Processor is the only supported color conversion path
@@ -1553,7 +1551,7 @@ bool VideoEncoder::EnsureDevice() {
 
     // 1. Find Adapter by LUID
     IDXGIAdapter* targetAdapter = nullptr;
-    if (luidLow != 0 || luidHigh != 0) {
+    if (hasInjectLuid) {
         LUID searchLuid;
         searchLuid.LowPart = (DWORD)luidLow;
         searchLuid.HighPart = (LONG)luidHigh;
@@ -1600,13 +1598,16 @@ bool VideoEncoder::EnsureDevice() {
     // Skip device creation if already preserved (DXVK zero-copy across recordings)
     if (d3d11Device && d3d11Context) {
         DLL_Log("[VideoEncoder] Reusing existing D3D11 device (preserved for encoder textures)");
-    } else if ((luidLow == 0 && luidHigh == 0) && g_SharedD3D11Device) {
+    } else if (!hasInjectLuid && g_SharedD3D11Device) {
         // Framegrab mode - use the shared device that ScreenCapture also uses
         DLL_Log("[VideoEncoder] Framegrab using dimensions: %dx%d", width, height);
         g_SharedD3D11Device->QueryInterface(IID_PPV_ARGS(&d3d11Device));
         g_SharedD3D11Context->QueryInterface(IID_PPV_ARGS(&d3d11Context));
         DLL_Log("[VideoEncoder] Using shared D3D11 device for framegrab");
     } else {
+        if (!hasInjectLuid) {
+            DLL_Log("[VideoEncoder] WARNING: no inject LUID and no shared framegrab device are available");
+        }
         // Inject mode - create device on specific adapter
         DLL_Log("[VideoEncoder] Creating D3D11 Device (Flags: BGRA + VIDEO)...");
 
@@ -4509,8 +4510,8 @@ bool VideoEncoder::InitVideoProcessor() {
 
         if (attemptSucceeded) {
             if (bindAttempt.bindFlags != bindAttempts[0].bindFlags) {
-                DLL_Log("[VideoProcessor] Using fallback output bind flags %s for fmt=%d", bindAttempt.name,
-                        outputFormat);
+                DLL_Log("[VideoProcessor] Output surface fallback: fmt=%d primary=%s final=%s", outputFormat,
+                        bindAttempts[0].name, bindAttempt.name);
             }
             outputPoolCreated = true;
             break;
@@ -4668,7 +4669,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         vpInputIsLinear = !encodeSdrGamma;
         vpInputTexture->GetDesc(&vpInputDesc);
         if (priorHr != S_OK && !vpFp16CompatLogged) {
-            DLL_Log("[VP] FP16 staging input view failed (HR=%x), using RGB10A2 compatibility path (%s)", priorHr,
+            DLL_Log("[VP] FP16 input fallback: HR=%x final=RGB10A2 path=%s", priorHr,
                     encodeSdrGamma ? "SDR gamma encoded" : "linear passthrough");
             vpFp16CompatLogged = true;
         }

@@ -740,6 +740,8 @@ public:
 
     void StopRecording() {
         int64_t endUs = 0;
+        constexpr int kStopSampleRate = 48000;
+        const int64_t expectedVideoUsForStop = videoEnc ? videoEnc->GetExpectedFinalDurationUs() : 0;
         {
             std::lock_guard<std::recursive_mutex> lock(muxMutex);
             if (!recording)
@@ -808,14 +810,13 @@ public:
 
         // Final A/V sync diagnostic before stopping sources
         {
-            constexpr int SAMPLE_RATE = 48000;
-            const int64_t expectedVideoUs = videoEnc ? videoEnc->GetExpectedFinalDurationUs() : 0;
-            const int64_t expectedVideoMs = expectedVideoUs / 1000;
-            const int64_t expectedVideoSamples = ce::audio::ComputeDurationUsToSamples(expectedVideoUs, SAMPLE_RATE);
+            const int64_t expectedVideoMs = expectedVideoUsForStop / 1000;
+            const int64_t expectedVideoSamples =
+                ce::audio::ComputeDurationUsToSamples(expectedVideoUsForStop, kStopSampleRate);
             for (size_t i = 0; i < audioSources.size() && i < encodedSamplesPerSource.size(); i++) {
                 const int64_t encSamples = encodedSamplesPerSource[i];
                 const int64_t diffSamples = encSamples - expectedVideoSamples;
-                const double diffMs = (double)diffSamples * 1000.0 / SAMPLE_RATE;
+                const double diffMs = (double)diffSamples * 1000.0 / kStopSampleRate;
                 DLL_Log(
                     "[StopAudio] Source %zu: encodedSamples=%lld expectedVideoSamples=%lld diff=%+lld (%+.1f ms) "
                     "track=%d",
@@ -840,6 +841,17 @@ public:
             if (neverStarted) {
                 DLL_Log("[STOP AUDIO] Source %zu (app-never-started): track=%d", i, src.track);
             } else {
+                const double latencyTrimPerMinute =
+                    ce::audio::ComputeSamplesPerMinute(src.latencyTrimSamples, expectedVideoUsForStop);
+                const double bootstrapTrimPerMinute =
+                    ce::audio::ComputeSamplesPerMinute(src.bootstrapTrimSamples, expectedVideoUsForStop);
+                const double coverageTrimPerMinute =
+                    ce::audio::ComputeSamplesPerMinute(src.coverageLossTrimSamples, expectedVideoUsForStop);
+                const double tier2TrimPerMinute =
+                    ce::audio::ComputeSamplesPerMinute(src.tier2TrimSamples, expectedVideoUsForStop);
+                const double retainedTrimPerMinute =
+                    ce::audio::ComputeSamplesPerMinute(src.retainedNewestTrimSamples, expectedVideoUsForStop);
+                const double ratePpm = ce::audio::ComputeClockMismatchPpm(src.currentRateDelta, kStopSampleRate);
                 DLL_Log(
                     "[STOP AUDIO] Source %zu: track=%d encoded=%llu trim=cov:%llu lat:%llu pad:%llu qgap:%llu "
                     "ringPeak=%zu ringUnderruns=%u",
@@ -847,6 +859,15 @@ public:
                     (unsigned long long)src.coverageLossTrimSamples, (unsigned long long)src.latencyTrimSamples,
                     (unsigned long long)src.underrunPadSamples, (unsigned long long)src.packetTimelineGapSamples,
                     src.ringBufferPeakSamples, src.ringBufferUnderrunCount);
+                DLL_Log(
+                    "[STOP AUDIO DETAIL] Source %zu: ratePpm=%+.2f compDelta=%d sat=%d trimRate(lat=%.1f/min "
+                    "boot=%.1f/min cov=%.1f/min tier2=%.1f/min retain=%.1f/min) totals(boot=%llu tier2=%llu "
+                    "retain=%llu post=%llu overlap=%llu ovf=%llu)",
+                    i, ratePpm, src.currentRateDelta, src.targetRateSaturated ? 1 : 0, latencyTrimPerMinute,
+                    bootstrapTrimPerMinute, coverageTrimPerMinute, tier2TrimPerMinute, retainedTrimPerMinute,
+                    (unsigned long long)src.bootstrapTrimSamples, (unsigned long long)src.tier2TrimSamples,
+                    (unsigned long long)src.retainedNewestTrimSamples, (unsigned long long)src.postResampleTrimSamples,
+                    (unsigned long long)src.packetTimelineOverlapSamples, (unsigned long long)src.overflowDropSamples);
             }
         }
 
@@ -2379,12 +2400,15 @@ public:
                         src.pendingCoverageLossTrimSamples = 0;
                     }
                     if (src.pendingLatencyTrimEvents > 0) {
+                        const double trimRatePerMinute =
+                            ce::audio::ComputeSamplesPerMinute(src.pendingLatencyTrimSamples, 10000000ll) * 6.0;
                         DLL_Log(
-                            "[PullAudio] Latency trim summary - src=%zu events=%u samples=%llu total=%llu target=%lld "
-                            "pipelineLag=%lldms",
+                            "[PullAudio] Latency trim summary - src=%zu events=%u samples=%llu total=%llu rate=%.1f/min "
+                            "target=%lld pipelineLag=%lldms",
                             srcIdx, src.pendingLatencyTrimEvents,
                             static_cast<unsigned long long>(src.pendingLatencyTrimSamples),
-                            static_cast<unsigned long long>(src.latencyTrimSamples), targetBufferedSamples,
+                            static_cast<unsigned long long>(src.latencyTrimSamples), trimRatePerMinute,
+                            targetBufferedSamples,
                             pipelineLagMs);
                         src.pendingLatencyTrimEvents = 0;
                         src.pendingLatencyTrimSamples = 0;
