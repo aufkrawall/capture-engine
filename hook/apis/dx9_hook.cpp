@@ -2174,6 +2174,11 @@ public:
     };
     DirectSharedHelperConfig directSharedLegacyConfig = {};
     DirectSharedHelperConfig directSharedExConfig = {};
+    bool directSharedPending[CAPTURE_TEXTURE_COUNT] = {};
+    int64_t directSharedPendingTimestampQpc[CAPTURE_TEXTURE_COUNT] = {};
+    int directSharedSubmitIdx = 0;
+    int directSharedDrainIdx = 0;
+    int directSharedPendingCount = 0;
 
     // Per-frame staging metrics (set by CaptureFrame, read by PresentEnd)
     int32_t stagingStretchRectUs = 0;
@@ -2415,13 +2420,12 @@ public:
         }
 
         useDirectD3D9SharedRing = false;
-        zeroCopyPendingCopy = false;
-        zeroCopyPendingIdx = -1;
-        zeroCopyPendingTimestampQpc = 0;
+        ResetDirectD3D9SharedRingPendingState();
     }
 
     void ReleaseDirectD3D9HelperDevices() {
         if (directSharedProducerDevice) {
+            DX9_UnregisterInternalHelperDevice(directSharedProducerDevice);
             directSharedProducerDevice->Release();
             directSharedProducerDevice = nullptr;
         }
@@ -2431,6 +2435,7 @@ public:
             directSharedFactory = nullptr;
         }
         if (directSharedProducerDeviceEx) {
+            DX9_UnregisterInternalHelperDevice(directSharedProducerDeviceEx);
             directSharedProducerDeviceEx->Release();
             directSharedProducerDeviceEx = nullptr;
         }
@@ -2491,6 +2496,132 @@ public:
         }
 
         return helperFlags;
+    }
+
+    D3DFORMAT ResolveDirectD3D9HelperBackBufferFormat() const {
+        if (d3d9SharedFormat != D3DFMT_UNKNOWN) {
+            return d3d9SharedFormat;
+        }
+        if (d3d9Format != D3DFMT_UNKNOWN) {
+            return d3d9Format;
+        }
+        return D3DFMT_A8R8G8B8;
+    }
+
+    void BuildDirectD3D9HelperPresentParameters(D3DPRESENT_PARAMETERS& pp) const {
+        pp = {};
+        pp.Windowed = TRUE;
+        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+        pp.hDeviceWindow = directSharedHelperWindow;
+        // The helper producer never presents. A minimal hidden swapchain avoids
+        // 0x0/UNKNOWN device-creation quirks and keeps helper VRAM pressure low.
+        pp.BackBufferWidth = 1;
+        pp.BackBufferHeight = 1;
+        pp.BackBufferFormat = ResolveDirectD3D9HelperBackBufferFormat();
+        pp.BackBufferCount = 1;
+        pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    }
+
+    void ResetDirectD3D9SharedRingPendingState() {
+        directSharedSubmitIdx = 0;
+        directSharedDrainIdx = 0;
+        directSharedPendingCount = 0;
+        zeroCopyPendingCopy = false;
+        zeroCopyPendingIdx = -1;
+        zeroCopyPendingTimestampQpc = 0;
+        zeroCopyQueryWaitUs = 0;
+        zeroCopyReadbackUs = 0;
+        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+            directSharedPending[i] = false;
+            directSharedPendingTimestampQpc[i] = 0;
+        }
+    }
+
+    int AcquireDirectD3D9SharedRingSubmitIndex() {
+        for (int attempt = 0; attempt < CAPTURE_TEXTURE_COUNT; ++attempt) {
+            const int idx = (directSharedSubmitIdx + attempt) % CAPTURE_TEXTURE_COUNT;
+            if (!directSharedPending[idx]) {
+                directSharedSubmitIdx = (idx + 1) % CAPTURE_TEXTURE_COUNT;
+                return idx;
+            }
+        }
+        return -1;
+    }
+
+    void SignalDirectD3D9SharedRingFrame(int idx, int64_t frameTimestampQpc) {
+        if (useFences && fence && context4) {
+            fenceValue++;
+            context4->Signal(fence, fenceValue);
+            SignalFrameReady(g_IPC, idx, frameTimestampQpc, fenceValue);
+        } else {
+            SignalFrameReady(g_IPC, idx, frameTimestampQpc, 0);
+        }
+    }
+
+    void DrainDirectD3D9SharedRingCompletions(bool flushOutstanding) {
+        zeroCopyQueryWaitUs = 0;
+        zeroCopyReadbackUs = 0;
+
+        if (!useDirectD3D9SharedRing || directSharedPendingCount <= 0) {
+            return;
+        }
+
+        const DWORD getDataFlags = flushOutstanding ? D3DGETDATA_FLUSH : 0;
+        int completedThisPass = 0;
+
+        while (directSharedPendingCount > 0 && completedThisPass < CAPTURE_TEXTURE_COUNT) {
+            int idx = -1;
+            for (int attempt = 0; attempt < CAPTURE_TEXTURE_COUNT; ++attempt) {
+                const int candidate = (directSharedDrainIdx + attempt) % CAPTURE_TEXTURE_COUNT;
+                if (directSharedPending[candidate]) {
+                    idx = candidate;
+                    break;
+                }
+            }
+
+            if (idx < 0) {
+                ResetDirectD3D9SharedRingPendingState();
+                return;
+            }
+
+            IDirect3DQuery9* query = directSharedQueries9[idx];
+            HRESULT queryHr = S_OK;
+            if (query) {
+                if (flushOutstanding) {
+                    while ((queryHr = query->GetData(nullptr, 0, getDataFlags)) == S_FALSE) {
+                        Sleep(0);
+                    }
+                } else {
+                    queryHr = query->GetData(nullptr, 0, 0);
+                }
+            }
+
+            if (queryHr == S_FALSE) {
+                break;
+            }
+
+            const int64_t frameTimestampQpc = directSharedPendingTimestampQpc[idx];
+            directSharedPending[idx] = false;
+            directSharedPendingTimestampQpc[idx] = 0;
+            if (directSharedPendingCount > 0) {
+                directSharedPendingCount--;
+            }
+            directSharedDrainIdx = (idx + 1) % CAPTURE_TEXTURE_COUNT;
+
+            if (SUCCEEDED(queryHr)) {
+                SignalDirectD3D9SharedRingFrame(idx, frameTimestampQpc);
+            } else {
+                droppedFrames.fetch_add(1, std::memory_order_relaxed);
+                static int queryFailLogCount = 0;
+                if (queryFailLogCount < 4) {
+                    HookLogImportant("DX9: Direct shared-ring query failed idx=%d hr=0x%08x", idx,
+                                     (unsigned)queryHr);
+                    queryFailLogCount++;
+                }
+            }
+
+            completedThisPass++;
+        }
     }
 
     void LogDirectD3D9SharingDiagnostics(IDirect3DDevice9* device, const D3DDEVICE_CREATION_PARAMETERS& params,
@@ -2608,15 +2739,14 @@ public:
         }
 
         D3DPRESENT_PARAMETERS pp = {};
-        pp.Windowed = TRUE;
-        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        pp.hDeviceWindow = directSharedHelperWindow;
+        BuildDirectD3D9HelperPresentParameters(pp);
         HookLogImportant("DX9: Trying helper D3D9Ex producer (adapter=%u type=%u flags=0x%08x)", params.AdapterOrdinal,
                          (unsigned)params.DeviceType, (unsigned)helperFlags);
 
-        const HRESULT deviceHr =
-            directSharedFactoryEx->CreateDeviceEx(params.AdapterOrdinal, params.DeviceType, directSharedHelperWindow,
-                                                  helperFlags, &pp, nullptr, &directSharedProducerDeviceEx);
+        const DX9InternalBypassScope helperBypass;
+        const HRESULT deviceHr = directSharedFactoryEx->CreateDeviceEx(params.AdapterOrdinal, params.DeviceType,
+                                                                       directSharedHelperWindow, helperFlags, &pp,
+                                                                       nullptr, &directSharedProducerDeviceEx);
         if (FAILED(deviceHr) || !directSharedProducerDeviceEx) {
             HookLogImportant("DX9: Direct D3D9Ex helper unavailable - CreateDeviceEx failed (0x%08x)",
                              (unsigned)deviceHr);
@@ -2632,6 +2762,8 @@ public:
         directSharedExConfig.deviceType = params.DeviceType;
         directSharedExConfig.behaviorFlags = helperFlags;
         directSharedExConfig.valid = true;
+
+        DX9_RegisterInternalHelperDevice(directSharedProducerDeviceEx);
 
         ProbeDirectD3D9SharedTexture(directSharedProducerDeviceEx, "helper D3D9Ex producer");
         return true;
@@ -2682,15 +2814,14 @@ public:
         }
 
         D3DPRESENT_PARAMETERS pp = {};
-        pp.Windowed = TRUE;
-        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        pp.hDeviceWindow = directSharedHelperWindow;
+        BuildDirectD3D9HelperPresentParameters(pp);
         HookLogImportant("DX9: Trying helper legacy D3D9 producer (adapter=%u type=%u flags=0x%08x)",
                          params.AdapterOrdinal, (unsigned)params.DeviceType, (unsigned)helperFlags);
 
-        const HRESULT deviceHr =
-            directSharedFactory->CreateDevice(params.AdapterOrdinal, params.DeviceType, directSharedHelperWindow,
-                                              helperFlags, &pp, &directSharedProducerDevice);
+        const DX9InternalBypassScope helperBypass;
+        const HRESULT deviceHr = directSharedFactory->CreateDevice(params.AdapterOrdinal, params.DeviceType,
+                                                                   directSharedHelperWindow, helperFlags, &pp,
+                                                                   &directSharedProducerDevice);
         if (FAILED(deviceHr) || !directSharedProducerDevice) {
             HookLogImportant("DX9: Direct D3D9 helper unavailable - CreateDevice failed (0x%08x)", (unsigned)deviceHr);
             if (directSharedProducerDevice) {
@@ -2705,6 +2836,8 @@ public:
         directSharedLegacyConfig.deviceType = params.DeviceType;
         directSharedLegacyConfig.behaviorFlags = helperFlags;
         directSharedLegacyConfig.valid = true;
+
+        DX9_RegisterInternalHelperDevice(directSharedProducerDevice);
 
         ProbeDirectD3D9SharedTexture(directSharedProducerDevice, "helper legacy D3D9 producer");
         return true;
@@ -3073,16 +3206,6 @@ public:
         if (!srcSurface || !d3d11Context)
             return;
 
-        static int64_t qpcFreq = 0;
-        if (qpcFreq == 0) {
-            LARGE_INTEGER f;
-            QueryPerformanceFrequency(&f);
-            qpcFreq = f.QuadPart;
-        }
-
-        LARGE_INTEGER copyStart;
-        QueryPerformanceCounter(&copyStart);
-
         // Get GDI DC from D3D9 render target (source - written in a previous frame)
         HDC srcDC = nullptr;
         HRESULT hr = srcSurface->GetDC(&srcDC);
@@ -3122,10 +3245,6 @@ public:
         dstSurface->ReleaseDC(nullptr);
         srcSurface->ReleaseDC(srcDC);
 
-        LARGE_INTEGER blitEnd;
-        QueryPerformanceCounter(&blitEnd);
-        zeroCopyQueryWaitUs = static_cast<int32_t>(((blitEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
-
         if (gdiDirectSharedRing && useFences && fence && context4) {
             fenceValue++;
             context4->Signal(fence, fenceValue);
@@ -3136,7 +3255,6 @@ public:
             SignalFrameReady(g_IPC, idx, frameTimestampQpc, 0);
         }
 
-        zeroCopyReadbackUs = static_cast<int32_t>(((blitEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
         AdvanceWriteIndex();
     }
 
@@ -3633,6 +3751,9 @@ public:
         // Render thread only does StretchRect (async GPU, ~0us overhead).
         // Heavy GetDC+BitBlt runs on dedicated capture thread off render path.
         if (useGDIInterop) {
+            zeroCopyQueryWaitUs = 0;
+            zeroCopyReadbackUs = 0;
+
             // Cadence gating: skip frames when game runs faster than capture target
             if (g_IPC && g_IPC->GetSharedMem()) {
                 if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire))
@@ -3945,6 +4066,38 @@ public:
             // 1. Complete PREVIOUS frame's GPU work (query has had an entire frame to finish)
             // 2. StretchRect CURRENT frame's backbuffer to the shared surface/ring slot
             // 3. Issue a D3D9 event query for NEXT frame's synchronization
+            if (useDirectD3D9SharedRing) {
+                zeroCopyQueryWaitUs = 0;
+                zeroCopyReadbackUs = 0;
+
+                DrainDirectD3D9SharedRingCompletions(false);
+
+                const int idx = AcquireDirectD3D9SharedRingSubmitIndex();
+                if (idx < 0 || !directSharedSurfaces9[idx]) {
+                    droppedFrames.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+
+                HRESULT hr = device->StretchRect(backBuffer, NULL, directSharedSurfaces9[idx], NULL, D3DTEXF_NONE);
+                if (FAILED(hr)) {
+                    return;
+                }
+
+                IDirect3DQuery9* completionQuery = directSharedQueries9[idx];
+                if (!completionQuery) {
+                    SignalDirectD3D9SharedRingFrame(idx, qpc.QuadPart);
+                    return;
+                }
+
+                completionQuery->Issue(D3DISSUE_END);
+                directSharedPending[idx] = true;
+                directSharedPendingTimestampQpc[idx] = qpc.QuadPart;
+                if (directSharedPendingCount < CAPTURE_TEXTURE_COUNT) {
+                    directSharedPendingCount++;
+                }
+                return;
+            }
+
             CompletePendingZeroCopy();
 
             int idx = writeIndex.load(std::memory_order_acquire);
@@ -4047,6 +4200,12 @@ public:
         if (useGDIInterop)
             return;
 
+        bool isRecordingNow = g_IPC && g_IPC->IsRecording();
+        if (useDirectD3D9SharedRing) {
+            DrainDirectD3D9SharedRingCompletions(!isRecordingNow);
+            return;
+        }
+
         static int64_t qpcFreq = 0;
         if (qpcFreq == 0) {
             LARGE_INTEGER f;
@@ -4078,7 +4237,6 @@ public:
 
         // Zero-copy path: completion is pipelined to next CaptureFrame.
         // Only flush here when recording is NOT active (final frame cleanup).
-        bool isRecordingNow = g_IPC && g_IPC->IsRecording();
         if (!useD3D11Staging && zeroCopyPendingCopy && !isRecordingNow) {
             CompletePendingZeroCopy();
         }
