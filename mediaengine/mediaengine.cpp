@@ -1655,7 +1655,7 @@ public:
                     if (!allowWgcCoverageLossTrim) {
                         src.wgcCoverageLossTrimAccumulator = 0.0;
                     }
-                    if (allowWgcCoverageLossTrim && !startupTimelineProtected) {
+                    if (!forceDrain && allowWgcCoverageLossTrim && !startupTimelineProtected) {
                         const int64_t dropSamplesTotal = static_cast<int64_t>(rbAvailable) -
                                                          (targetLatencySamples + kWgcCoverageLossLeadSlackSamples);
                         int64_t dropSamples = ce::audio::ComputeWgcCoverageLossTrimSamples(
@@ -1698,9 +1698,10 @@ public:
                             }
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
-                    } else if (isWgcCfrRecording && wgcCoverageLossActive && kWgcPreferVideoRepeatsOverAudioCuts &&
+                    } else if (!forceDrain && isWgcCfrRecording && wgcCoverageLossActive &&
+                               kWgcPreferVideoRepeatsOverAudioCuts &&
                                static_cast<int64_t>(rbAvailable) >
-                                   targetLatencySamples + kWgcCoverageLossLeadSlackSamples &&
+                                    targetLatencySamples + kWgcCoverageLossLeadSlackSamples &&
                                dropLogCounter++ % 500 == 0) {
                         DLL_Log(
                             "[PullAudio] WGC coverage loss active: preserving audio continuity and expecting host "
@@ -1712,7 +1713,7 @@ public:
                             wgcDeliveredFps, wgcTargetFps,
                             ce::audio::ComputeWgcCoverageLossRatio(videoPipelineLagMs, wgcBufferedVideoContentLagMs) *
                                 100.0);
-                    } else if (!startupTimelineProtected && !IsWgcCfrRecording()) {
+                    } else if (!forceDrain && !startupTimelineProtected && !IsWgcCfrRecording()) {
                         int64_t dropSamplesTotal = ce::audio::ComputeLeadTrimExcessSamples(
                             static_cast<int64_t>(rbAvailable), targetLatencySamples, kRuntimeMaxLeadSamples,
                             kLatencyTrimHysteresisSamples);
@@ -1773,7 +1774,7 @@ public:
 
                             // Paced lead trimming when lead exceeds hard cap (500ms).
                             // Prevents unbounded growth while keeping fades smooth.
-                            if (leadExcess > kWgcLeadHardCapSamples && src.ringBuffer) {
+                            if (!forceDrain && leadExcess > kWgcLeadHardCapSamples && src.ringBuffer) {
                                 const int64_t excessAboveCap = leadExcess - kWgcLeadHardCapSamples;
                                 const int64_t maxTrimThisCall =
                                     std::min(excessAboveCap, kWgcCoverageLossMaxDropPerCall);
@@ -1992,7 +1993,7 @@ public:
                     // ring buffer grows to 10+ seconds.  This overflow cap discards excess
                     // samples with a crossfade whenever the buffer exceeds
                     // targetLatency + kMaxOverflowSamples (500ms).
-                    if (src.ringBuffer && !startupTimelineProtected) {
+                    if (!forceDrain && src.ringBuffer && !startupTimelineProtected) {
                         constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;  // 500ms max overflow
                         rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         const int64_t overflowExcess =
