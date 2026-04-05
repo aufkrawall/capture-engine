@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <cwchar>
+
 #include "../common/shared_defs.h"
 
 TEST(CaptureStateTest, RuntimeFlagsRoundTrip) {
@@ -58,4 +60,82 @@ TEST(CaptureStateTest, WgcTelemetryFieldsRepresentFreshnessAndReserveCounters) {
     EXPECT_EQ(state.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed), 375u);
     EXPECT_EQ(state.wgcStarvedTickCount.load(std::memory_order_relaxed), 9u);
     EXPECT_EQ(state.wgcSingleFrameTickCount.load(std::memory_order_relaxed), 15u);
+}
+
+TEST(SharedDefsTest, DlssFrameGenerationHelpersClampToSupportedRange) {
+    EXPECT_EQ(NormalizeDLSSFGFactor(1), 0);
+    EXPECT_EQ(NormalizeDLSSFGFactor(2), 2);
+    EXPECT_EQ(NormalizeDLSSFGFactor(4), 4);
+    EXPECT_EQ(NormalizeDLSSFGFactor(5), 0);
+
+    EXPECT_EQ(DLSSFGMultiplierToGeneratedFrames(0), 0u);
+    EXPECT_EQ(DLSSFGMultiplierToGeneratedFrames(2), 1u);
+    EXPECT_EQ(DLSSFGMultiplierToGeneratedFrames(4), 3u);
+
+    EXPECT_EQ(StreamlineGeneratedFramesToDLSSFGMultiplier(0), 0);
+    EXPECT_EQ(StreamlineGeneratedFramesToDLSSFGMultiplier(1), 2);
+    EXPECT_EQ(StreamlineGeneratedFramesToDLSSFGMultiplier(3), 4);
+    EXPECT_EQ(StreamlineGeneratedFramesToDLSSFGMultiplier(4), 0);
+}
+
+TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
+    wchar_t sharedMemName[64]{};
+    wchar_t shutdownEventName[64]{};
+    wchar_t shmemName[64]{};
+
+    GenerateSharedMemName(sharedMemName, std::size(sharedMemName), 0x1234ABCDu);
+    GenerateShutdownEventName(shutdownEventName, std::size(shutdownEventName), 0x89ABCDEFu);
+    GenerateShmemName(shmemName, std::size(shmemName), 0x00ABCDEFu);
+
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
+    EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
+}
+
+TEST(SharedDefsTest, CapturePipelinePhaseStringCoversKnownAndUnknownValues) {
+    EXPECT_STREQ(CapturePipelinePhaseToString(CapturePipelinePhase::kIdle), "idle");
+    EXPECT_STREQ(CapturePipelinePhaseToString(CapturePipelinePhase::kWarmup), "warmup");
+    EXPECT_STREQ(CapturePipelinePhaseToString(CapturePipelinePhase::kLive), "live");
+    EXPECT_STREQ(CapturePipelinePhaseToString(CapturePipelinePhase::kDrain), "drain");
+    EXPECT_STREQ(CapturePipelinePhaseToString(CapturePipelinePhase::kStopping), "stopping");
+    EXPECT_STREQ(CapturePipelinePhaseToString(999u), "unknown");
+}
+
+TEST(SharedDefsTest, OverlayConfigSeqlockPublishesStableSnapshot) {
+    SharedMemoryLayout sharedMemory;
+    EXPECT_EQ(sharedMemory.overlayConfigSeq.load(std::memory_order_relaxed), 0u);
+
+    sharedMemory.BeginWriteOverlayConfig();
+    const uint32_t lockedSeq = sharedMemory.overlayConfigSeq.load(std::memory_order_relaxed);
+    EXPECT_EQ(lockedSeq & 1u, 1u);
+    sharedMemory.overlayConfig.showOverlay = true;
+    sharedMemory.overlayConfig.padding = 18;
+    sharedMemory.overlayConfig.fontSize = 22.5f;
+    sharedMemory.EndWriteOverlayConfig();
+
+    const uint32_t publishedSeq = sharedMemory.overlayConfigSeq.load(std::memory_order_relaxed);
+    EXPECT_EQ(publishedSeq & 1u, 0u);
+
+    const OverlayConfig snapshot = sharedMemory.ReadOverlayConfig();
+    EXPECT_TRUE(snapshot.showOverlay);
+    EXPECT_EQ(snapshot.padding, 18);
+    EXPECT_FLOAT_EQ(snapshot.fontSize, 22.5f);
+}
+
+TEST(SharedDefsTest, ValidateSharedMemoryRejectsBadHeaderAndAcceptsDefaultLayout) {
+    SharedMemoryLayout sharedMemory;
+    sharedMemory.structSize.store(sizeof(SharedMemoryLayout), std::memory_order_relaxed);
+
+    EXPECT_TRUE(ValidateSharedMemory(&sharedMemory));
+
+    sharedMemory.SetMagic(0);
+    EXPECT_FALSE(ValidateSharedMemory(&sharedMemory));
+    sharedMemory.SetMagic(SHARED_MEMORY_MAGIC);
+
+    sharedMemory.SetVersion(SHARED_MEMORY_VERSION + 1);
+    EXPECT_FALSE(ValidateSharedMemory(&sharedMemory));
+    sharedMemory.SetVersion(SHARED_MEMORY_VERSION);
+
+    sharedMemory.structSize.store(sizeof(SharedMemoryLayout) - 1, std::memory_order_relaxed);
+    EXPECT_FALSE(ValidateSharedMemory(&sharedMemory));
 }

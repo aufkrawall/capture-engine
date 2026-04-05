@@ -100,6 +100,19 @@ TEST(FrameQueueTest, PushPop) {
     EXPECT_EQ(queue.Size(), 0);
 }
 
+TEST(FrameQueueTest, PeekTimestampReturnsFrontWithoutRemovingIt) {
+    FrameQueue queue(3);
+    QueuedFrame frame;
+    frame.timestamp = 98765;
+
+    EXPECT_TRUE(queue.Push(std::move(frame)));
+
+    int64_t timestamp = 0;
+    EXPECT_TRUE(queue.PeekTimestamp(timestamp));
+    EXPECT_EQ(timestamp, 98765);
+    EXPECT_EQ(queue.Size(), 1u);
+}
+
 TEST(FrameQueueTest, CapacityAndDrop) {
     FrameQueue queue(2);
 
@@ -125,6 +138,24 @@ TEST(FrameQueueTest, CapacityAndDrop) {
 
     EXPECT_TRUE(queue.Pop(out, 0));
     EXPECT_EQ(out.timestamp, 3);
+}
+
+TEST(FrameQueueTest, StartRecordingGracePeriodSuppresssImmediateOverflowDrops) {
+    FrameQueue queue(1);
+    queue.StartRecording();
+
+    QueuedFrame first;
+    first.timestamp = 1;
+    QueuedFrame second;
+    second.timestamp = 2;
+
+    EXPECT_TRUE(queue.Push(std::move(first)));
+    EXPECT_TRUE(queue.Push(std::move(second)));
+    EXPECT_EQ(queue.GetDroppedCount(), 0u);
+
+    QueuedFrame out;
+    ASSERT_TRUE(queue.Pop(out, 0));
+    EXPECT_EQ(out.timestamp, 2);
 }
 
 TEST(FrameQueueTest, PopTimeout) {

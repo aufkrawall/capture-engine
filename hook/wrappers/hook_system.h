@@ -4,6 +4,7 @@
 #include <atomic>
 #include <functional>
 #include <mutex>
+#include <string>
 
 // Custom hook system (replaces MinHook)
 #include "custom_hook.h"
@@ -16,6 +17,7 @@ void Shutdown();
 
 // Hook types
 enum class HookType {
+    Function,
     Export,     // Function exported from DLL
     COMVTable,  // COM interface method
 };
@@ -25,6 +27,9 @@ struct HookHandle {
     void* target = nullptr;
     void* detour = nullptr;
     void* original = nullptr;
+    HookType type = HookType::COMVTable;
+    std::string moduleName;
+    std::string functionName;
     std::atomic<bool> enabled{false};
 };
 
@@ -68,6 +73,25 @@ public:
 private:
     bool m_initialized = false;
 };
+
+struct HookBackendOps {
+    bool (*initialize)();
+    void (*shutdown)();
+    const char* (*getStatusString)(CustomHook::Status status);
+    CustomHook::Status (*hookFunction)(void* target, void* detour, void** original);
+    CustomHook::Status (*hookExport)(const char* moduleName, const char* functionName, void* detour, void** original);
+    CustomHook::Status (*hookExportW)(const wchar_t* moduleName, const char* functionName, void* detour,
+                                      void** original);
+    CustomHook::Status (*hookVTableEntry)(void** vtableEntry, void* detour, void** original);
+    CustomHook::Status (*unhookFunction)(void* target, void* original);
+    CustomHook::Status (*unhookExport)(const char* moduleName, const char* functionName, void* original);
+    CustomHook::Status (*unhookVTableEntry)(void** vtableEntry, void* original);
+};
+
+#ifdef CE_UNIT_TESTS
+void SetHookBackendOpsForTesting(const HookBackendOps& ops);
+void ResetHookBackendOpsForTesting();
+#endif
 
 // Helper template for type-safe hook management
 template <typename FuncType>

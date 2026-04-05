@@ -1687,7 +1687,7 @@ public:
                             wgcDeliveredFps, wgcTargetFps,
                             ce::audio::ComputeWgcCoverageLossRatio(videoPipelineLagMs, wgcBufferedVideoContentLagMs) *
                                 100.0);
-                    } else if (!isWgcCfrRecording && !startupTimelineProtected) {
+                    } else if (!startupTimelineProtected && !IsWgcCfrRecording()) {
                         int64_t dropSamplesTotal = ce::audio::ComputeLeadTrimExcessSamples(
                             static_cast<int64_t>(rbAvailable), targetLatencySamples, kRuntimeMaxLeadSamples,
                             kLatencyTrimHysteresisSamples);

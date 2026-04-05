@@ -337,3 +337,68 @@ TEST(FrameTimingUtilsTest, QueuedFrameMovePreservesCaptureOrigin) {
     EXPECT_EQ(input.rawTimestamp, 0);
     EXPECT_FALSE(input.duplicateSourceTimestamp);
 }
+
+TEST(FrameTimingUtilsTest, InputFrameRatePredictorCalibratesAndTracksStableCadence) {
+    InputFrameRatePredictor predictor;
+    constexpr int64_t kQpcFreq = 60000;
+    constexpr int64_t kFrameInterval = 1000;
+
+    EXPECT_EQ(predictor.Update(10000, kQpcFreq), 0);
+    EXPECT_EQ(predictor.Update(11000, kQpcFreq), kFrameInterval);
+    EXPECT_EQ(predictor.Update(12000, kQpcFreq), kFrameInterval);
+    EXPECT_EQ(predictor.Update(13000, kQpcFreq), kFrameInterval);
+    EXPECT_FALSE(predictor.IsCalibrated());
+    EXPECT_EQ(predictor.Update(14000, kQpcFreq), kFrameInterval);
+    EXPECT_TRUE(predictor.IsCalibrated());
+    EXPECT_NEAR(predictor.GetPredictedFps(kQpcFreq), 60.0, 0.1);
+    EXPECT_NEAR(predictor.GetJitterUs(kQpcFreq), 0.0, 0.1);
+    EXPECT_EQ(predictor.GetIdealTimestamp(13550), 14000);
+}
+
+TEST(FrameTimingUtilsTest, InputFrameRatePredictorCountsDuplicateTimestampsTowardCalibration) {
+    InputFrameRatePredictor predictor;
+    constexpr int64_t kQpcFreq = 60000;
+
+    EXPECT_EQ(predictor.Update(10000, kQpcFreq), 0);
+    EXPECT_EQ(predictor.Update(11000, kQpcFreq), 1000);
+    EXPECT_EQ(predictor.Update(11000, kQpcFreq), 1000);
+    EXPECT_EQ(predictor.Update(11000, kQpcFreq), 1000);
+    EXPECT_EQ(predictor.Update(11000, kQpcFreq), 1000);
+    EXPECT_TRUE(predictor.IsCalibrated());
+    EXPECT_NEAR(predictor.GetPredictedFps(kQpcFreq), 60.0, 0.1);
+}
+
+TEST(FrameTimingUtilsTest, InputFrameRatePredictorResetOnTimestampRegressionDropsCalibration) {
+    InputFrameRatePredictor predictor;
+    constexpr int64_t kQpcFreq = 60000;
+
+    predictor.Update(10000, kQpcFreq);
+    predictor.Update(11000, kQpcFreq);
+    predictor.Update(12000, kQpcFreq);
+    predictor.Update(13000, kQpcFreq);
+    predictor.Update(14000, kQpcFreq);
+    ASSERT_TRUE(predictor.IsCalibrated());
+    const int64_t previousIdeal = predictor.GetIdealTimestamp(9555);
+    const double previousFps = predictor.GetPredictedFps(kQpcFreq);
+
+    EXPECT_EQ(predictor.Update(9000, kQpcFreq), 0);
+    EXPECT_FALSE(predictor.IsCalibrated());
+    EXPECT_LE(AbsoluteTimestampDistance(predictor.GetIdealTimestamp(9555), previousIdeal), 1);
+    EXPECT_DOUBLE_EQ(predictor.GetPredictedFps(kQpcFreq), previousFps);
+}
+
+TEST(FrameTimingUtilsTest, InputFrameRatePredictorTracksJitterAndZeroFrequencySafely) {
+    InputFrameRatePredictor predictor;
+    constexpr int64_t kQpcFreq = 1000000;
+
+    EXPECT_EQ(predictor.Update(100000, kQpcFreq), 0);
+    EXPECT_EQ(predictor.Update(116000, kQpcFreq), 16000);
+    EXPECT_EQ(predictor.Update(133000, kQpcFreq), 17000);
+    EXPECT_EQ(predictor.Update(149000, kQpcFreq), 16400);
+
+    EXPECT_GT(predictor.GetJitterUs(kQpcFreq), 0.0);
+    EXPECT_GT(predictor.SmoothedIntervalQpc(), 15000.0);
+    EXPECT_EQ(predictor.Update(200000, 0), 0);
+    EXPECT_DOUBLE_EQ(predictor.GetPredictedFps(0), 0.0);
+    EXPECT_DOUBLE_EQ(predictor.GetJitterUs(0), 0.0);
+}

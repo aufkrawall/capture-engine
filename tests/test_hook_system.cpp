@@ -1,43 +1,175 @@
-#include <d3d9.h>
 #include <gtest/gtest.h>
-#include <windows.h>
+#include <array>
 
-#include "../hook/wrappers/custom_hook.h"
-#include "../hook/wrappers/iat_hook.h"
-#include "../hook/wrappers/vtable_hook.h"
+#include "../hook/wrappers/hook_system.h"
 
-// Test CustomHook basic initialization - DISABLED due to missing symbols in test build
-TEST(CustomHookTest, DISABLED_InitializeAndShutdown) {
-    // This test requires full hook linkage which is not available in unit test build
-    SUCCEED() << "Test disabled - requires full hook DLL linkage";
+namespace {
+
+void* g_LastFunctionTarget = nullptr;
+void* g_LastFunctionOriginal = nullptr;
+void* g_LastExportOriginal = nullptr;
+void* g_LastRemovedFunctionTarget = nullptr;
+const char* g_LastRemovedExportModule = nullptr;
+const char* g_LastRemovedExportName = nullptr;
+void* g_LastRemovedVtableEntry = nullptr;
+
+bool StubInitialize() {
+    return true;
 }
 
-// Test VTableHook basic functionality - DISABLED in test build
-TEST(VTableHookTest, DISABLED_CreateAndDestroy) {
-    // This test requires D3D9 and full hook linkage
-    SUCCEED() << "Test disabled - requires D3D9 runtime";
+void StubShutdown() {
 }
 
-// Test VTableHook idempotency (double-hook protection)
-TEST(VTableHookTest, DISABLED_Idempotency) {
-    // Requires a mock COM object with vtable to verify double-hook safety
-    SUCCEED();
+const char* StubStatusString(CustomHook::Status status) {
+    switch (status) {
+        case CustomHook::Status::Success:
+            return "Success";
+        case CustomHook::Status::ErrorInvalidParameter:
+            return "Invalid parameter";
+        default:
+            return "Other";
+    }
 }
 
-// Test IATHook basic initialization
-TEST(IATHookTest, DISABLED_BasicInit) {
-    // Requires loaded module with IAT to test against
-    SUCCEED();
+CustomHook::Status StubHookFunction(void* target, void* detour, void** original) {
+    g_LastFunctionTarget = target;
+    if (original) {
+        *original = reinterpret_cast<void*>(0x1234);
+        g_LastFunctionOriginal = *original;
+    }
+    return target && detour ? CustomHook::Status::Success : CustomHook::Status::ErrorInvalidParameter;
 }
 
-// Test HookSystem integration
-TEST(HookSystemTest, DISABLED_CreateHookAndTrampoline) {
-    // Requires runtime hook target functions
-    SUCCEED();
+CustomHook::Status StubHookExport(const char* moduleName, const char* functionName, void* detour, void** original) {
+    if (original) {
+        *original = reinterpret_cast<void*>(0x5678);
+        g_LastExportOriginal = *original;
+    }
+    return moduleName && functionName && detour ? CustomHook::Status::Success : CustomHook::Status::ErrorInvalidParameter;
 }
 
-// Test hook collision detection
-TEST(HookSystemTest, DISABLED_CollisionDetection) {
-    // Requires creating two hooks to the same target
-    SUCCEED();
+CustomHook::Status StubHookExportW(const wchar_t* moduleName, const char* functionName, void* detour, void** original) {
+    return StubHookExport(moduleName ? "wide" : nullptr, functionName, detour, original);
+}
+
+CustomHook::Status StubHookVtableEntry(void** vtableEntry, void* detour, void** original) {
+    if (!vtableEntry || !detour) {
+        return CustomHook::Status::ErrorInvalidParameter;
+    }
+    if (original) {
+        *original = *vtableEntry;
+    }
+    *vtableEntry = detour;
+    return CustomHook::Status::Success;
+}
+
+CustomHook::Status StubUnhookFunction(void* target, void* original) {
+    g_LastRemovedFunctionTarget = target;
+    g_LastFunctionOriginal = original;
+    return CustomHook::Status::Success;
+}
+
+CustomHook::Status StubUnhookExport(const char* moduleName, const char* functionName, void* original) {
+    g_LastRemovedExportModule = moduleName;
+    g_LastRemovedExportName = functionName;
+    g_LastExportOriginal = original;
+    return CustomHook::Status::Success;
+}
+
+CustomHook::Status StubUnhookVtableEntry(void** vtableEntry, void* original) {
+    g_LastRemovedVtableEntry = vtableEntry;
+    if (vtableEntry && original) {
+        *vtableEntry = original;
+    }
+    return CustomHook::Status::Success;
+}
+
+HookSystem::HookBackendOps MakeStubOps() {
+    return HookSystem::HookBackendOps{StubInitialize,      StubShutdown,       StubStatusString,
+                                      StubHookFunction,    StubHookExport,     StubHookExportW,
+                                      StubHookVtableEntry, StubUnhookFunction, StubUnhookExport,
+                                      StubUnhookVtableEntry};
+}
+
+class HookSystemTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        g_LastFunctionTarget = nullptr;
+        g_LastFunctionOriginal = nullptr;
+        g_LastExportOriginal = nullptr;
+        g_LastRemovedFunctionTarget = nullptr;
+        g_LastRemovedExportModule = nullptr;
+        g_LastRemovedExportName = nullptr;
+        g_LastRemovedVtableEntry = nullptr;
+        HookSystem::ResetHookBackendOpsForTesting();
+        HookSystem::SetHookBackendOpsForTesting(MakeStubOps());
+        HookSystem::Shutdown();
+    }
+
+    void TearDown() override {
+        HookSystem::Shutdown();
+        HookSystem::ResetHookBackendOpsForTesting();
+    }
+};
+
+void DummyDetour() {
+}
+
+void DummyOriginal() {
+}
+
+}  // namespace
+
+TEST_F(HookSystemTest, CreateFunctionHookStoresAndRemovesHook) {
+    ASSERT_TRUE(HookSystem::Initialize());
+
+    void* original = nullptr;
+    ASSERT_TRUE(HookSystem::CreateFunctionHook(reinterpret_cast<void*>(0x1000), reinterpret_cast<void*>(&DummyDetour),
+                                               &original));
+    EXPECT_EQ(original, reinterpret_cast<void*>(0x1234));
+    EXPECT_EQ(g_LastFunctionTarget, reinterpret_cast<void*>(0x1000));
+
+    EXPECT_TRUE(HookSystem::DisableHook(reinterpret_cast<void*>(0x1000)));
+    EXPECT_TRUE(HookSystem::EnableHook(reinterpret_cast<void*>(0x1000)));
+
+    HookSystem::RemoveHook(reinterpret_cast<void*>(0x1000));
+    EXPECT_EQ(g_LastRemovedFunctionTarget, reinterpret_cast<void*>(0x1000));
+    EXPECT_EQ(g_LastFunctionOriginal, reinterpret_cast<void*>(0x1234));
+}
+
+TEST_F(HookSystemTest, CreateFunctionHookRejectsDuplicateTarget) {
+    ASSERT_TRUE(HookSystem::Initialize());
+
+    ASSERT_TRUE(HookSystem::CreateFunctionHook(reinterpret_cast<void*>(0x2000), reinterpret_cast<void*>(&DummyDetour),
+                                               nullptr));
+    EXPECT_FALSE(HookSystem::CreateFunctionHook(reinterpret_cast<void*>(0x2000), reinterpret_cast<void*>(&DummyOriginal),
+                                                nullptr));
+}
+
+TEST_F(HookSystemTest, CreateExportHookTracksRemovalByModuleAndName) {
+    ASSERT_TRUE(HookSystem::Initialize());
+
+    void* original = nullptr;
+    ASSERT_TRUE(HookSystem::CreateExportHook("missing-module.dll", "CreateThing", reinterpret_cast<void*>(&DummyDetour),
+                                             &original));
+    EXPECT_EQ(original, reinterpret_cast<void*>(0x5678));
+
+    HookSystem::RemoveHook(reinterpret_cast<void*>(&DummyDetour));
+    EXPECT_STREQ(g_LastRemovedExportModule, "missing-module.dll");
+    EXPECT_STREQ(g_LastRemovedExportName, "CreateThing");
+    EXPECT_EQ(g_LastExportOriginal, reinterpret_cast<void*>(0x5678));
+}
+
+TEST_F(HookSystemTest, CreateComHookRestoresOriginalEntryOnRemove) {
+    ASSERT_TRUE(HookSystem::Initialize());
+
+    std::array<void*, 1> vtable{reinterpret_cast<void*>(&DummyOriginal)};
+    void* original = nullptr;
+    ASSERT_TRUE(HookSystem::CreateCOMHook(&vtable[0], reinterpret_cast<void*>(&DummyDetour), &original));
+    EXPECT_EQ(original, reinterpret_cast<void*>(&DummyOriginal));
+    EXPECT_EQ(vtable[0], reinterpret_cast<void*>(&DummyDetour));
+
+    HookSystem::RemoveHook(&vtable[0]);
+    EXPECT_EQ(g_LastRemovedVtableEntry, &vtable[0]);
+    EXPECT_EQ(vtable[0], reinterpret_cast<void*>(&DummyOriginal));
 }

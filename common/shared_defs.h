@@ -1090,6 +1090,10 @@ inline bool ValidateSharedMemory(const SharedMemoryLayout* shm) {
         return false;
     if (shm->GetVersion() > SHARED_MEMORY_VERSION)
         return false;
+    if (shm->GetVersion() == SHARED_MEMORY_VERSION &&
+        shm->structSize.load(std::memory_order_acquire) != sizeof(SharedMemoryLayout)) {
+        return false;
+    }
     return true;
 }
 

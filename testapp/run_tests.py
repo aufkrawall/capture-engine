@@ -83,6 +83,14 @@ API_LOG_NAMES = {
     "directdraw7": {"directdraw7", "directdraw", "ddraw"},
 }
 
+FATAL_LOG_PATTERNS = [
+    (re.compile(r"DXGI_ERROR_DEVICE_REMOVED", re.IGNORECASE), "DXGI device removed"),
+    (re.compile(r"DXGI_ERROR_DEVICE_HUNG", re.IGNORECASE), "DXGI device hung"),
+    (re.compile(r"DEVICE_REMOVED", re.IGNORECASE), "device removed"),
+    (re.compile(r"DEVICE_HUNG", re.IGNORECASE), "device hung"),
+    (re.compile(r"unhandled exception", re.IGNORECASE), "unhandled exception"),
+]
+
 
 def ensure_capture_config_exists() -> str:
     if CAPTURE_CONFIG.exists():
@@ -98,7 +106,9 @@ def ensure_capture_config_exists() -> str:
     return text
 
 
-def add_whitelist_entries_to_config_text(config_text: str, executable_names: List[str]) -> str:
+def add_whitelist_entries_to_config_text(
+    config_text: str, executable_names: List[str]
+) -> str:
     lines = config_text.splitlines(keepends=True)
     executable_names = [name for name in executable_names if name]
     if not executable_names:
@@ -167,7 +177,9 @@ def add_whitelist_entries_to_config_text(config_text: str, executable_names: Lis
     return "".join(lines)
 
 
-def ensure_testapp_whitelist_entries(executable_names: List[str]) -> Optional[Tuple[bool, str]]:
+def ensure_testapp_whitelist_entries(
+    executable_names: List[str],
+) -> Optional[Tuple[bool, str]]:
     config_existed = CAPTURE_CONFIG.exists()
     original_text = ensure_capture_config_exists()
     updated_text = add_whitelist_entries_to_config_text(original_text, executable_names)
@@ -220,7 +232,9 @@ def resolve_test_exe(api: str, arch: str) -> Path:
     return base_dir / API_EXECUTABLES[api]
 
 
-def start_test_app(api: str, arch: str, width: int, height: int, gpu_load: int) -> Optional[subprocess.Popen]:
+def start_test_app(
+    api: str, arch: str, width: int, height: int, gpu_load: int
+) -> Optional[subprocess.Popen]:
     """Start a test app process for the selected API and architecture."""
     exe = resolve_test_exe(api, arch)
     if not exe.exists():
@@ -286,10 +300,14 @@ def parse_frame_times(csv_path: Path) -> List[float]:
 
 def parse_perf_metrics_frame_times(api: str, since_unix_ts: float) -> List[float]:
     """Parse per-process perf_metrics CSV files and return frame times in ms."""
-    return parse_perf_metrics_frame_times_from_dir(api, CAPTURE_BIN / "logs", since_unix_ts)
+    return parse_perf_metrics_frame_times_from_dir(
+        api, CAPTURE_BIN / "logs", since_unix_ts
+    )
 
 
-def parse_perf_metrics_frame_times_from_dir(api: str, logs_dir: Path, since_unix_ts: float) -> List[float]:
+def parse_perf_metrics_frame_times_from_dir(
+    api: str, logs_dir: Path, since_unix_ts: float
+) -> List[float]:
     """Parse per-process perf_metrics CSV files from a specific log directory."""
     if not logs_dir.exists():
         return []
@@ -357,7 +375,9 @@ def find_latest_run_log_dir(since_unix_ts: float) -> Optional[Path]:
     return candidates[0]
 
 
-def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> Tuple[List[float], int]:
+def parse_media_log_frame_times(
+    media_log_path: Path, since_unix_ts: float
+) -> Tuple[List[float], int]:
     """Parse media.log timing lines written since since_unix_ts."""
     if not media_log_path.exists():
         return [], 0
@@ -366,7 +386,9 @@ def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> T
     max_frame_num = 0
     time_pattern = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
     perf_pattern = re.compile(r"\[PERF\]\s+Frame\s+(\d+):\s+TOTAL=([0-9]*\.?[0-9]+)ms")
-    packet_pattern = re.compile(r"Queuing video pkt #(\d+): pts=(\d+) dts=\d+ dur=(\d+) .* codec_tb=(\d+)/(\d+)")
+    packet_pattern = re.compile(
+        r"Queuing video pkt #(\d+): pts=(\d+) dts=\d+ dur=(\d+) .* codec_tb=(\d+)/(\d+)"
+    )
     recording_stats_pattern = re.compile(r"Recording stats: input=(\d+) output=(\d+)")
     previous_packet_pts_ms: Optional[float] = None
     try:
@@ -375,7 +397,9 @@ def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> T
                 time_match = time_pattern.search(line)
                 if time_match:
                     try:
-                        line_ts = datetime.strptime(time_match.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
+                        line_ts = datetime.strptime(
+                            time_match.group(1), "%Y-%m-%d %H:%M:%S"
+                        ).timestamp()
                         if line_ts + 1.0 < since_unix_ts:
                             continue
                     except ValueError:
@@ -431,7 +455,9 @@ def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> T
     return frame_times, max_frame_num
 
 
-def analyze_frame_times(frame_times: List[float], name: str = "") -> Dict[str, Any]:
+def analyze_frame_times(
+    frame_times: List[float], target_fps: int, name: str = ""
+) -> Dict[str, Any]:
     """Analyze frame times and return stats dictionary."""
     if not frame_times:
         return {"name": name, "error": "No frames"}
@@ -456,7 +482,113 @@ def analyze_frame_times(frame_times: List[float], name: str = "") -> Dict[str, A
     stats["spike_pct_10ms"] = 100.0 * int(stats["spikes_10ms"]) / count
     stats["spike_pct_12ms"] = 100.0 * int(stats["spikes_12ms"]) / count
 
+    if target_fps > 0:
+        target_frame_time_ms = 1000.0 / target_fps
+        spikes_15x_budget = sum(
+            1 for ft in frame_times if ft > target_frame_time_ms * 1.5
+        )
+        spikes_2x_budget = sum(
+            1 for ft in frame_times if ft > target_frame_time_ms * 2.0
+        )
+        spikes_3x_budget = sum(
+            1 for ft in frame_times if ft > target_frame_time_ms * 3.0
+        )
+        stats["target_fps"] = target_fps
+        stats["target_frame_time_ms"] = target_frame_time_ms
+        stats["spikes_1_5x_budget"] = spikes_15x_budget
+        stats["spikes_2x_budget"] = spikes_2x_budget
+        stats["spikes_3x_budget"] = spikes_3x_budget
+        stats["spike_pct_2x_budget"] = 100.0 * spikes_2x_budget / count
+
     return stats
+
+
+def scan_logs_for_fatal_errors(
+    run_log_dir: Optional[Path], since_unix_ts: float
+) -> Optional[str]:
+    candidate_logs: List[Path] = []
+    if run_log_dir and run_log_dir.exists():
+        candidate_logs.extend(sorted(run_log_dir.glob("*.log")))
+    elif MEDIA_LOG.exists():
+        candidate_logs.append(MEDIA_LOG)
+
+    for log_path in candidate_logs:
+        try:
+            if log_path.stat().st_mtime + 1.0 < since_unix_ts:
+                continue
+        except OSError:
+            continue
+
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    for pattern, label in FATAL_LOG_PATTERNS:
+                        if pattern.search(line):
+                            return (
+                                f"Fatal log pattern '{label}' found in {log_path.name}"
+                            )
+        except Exception:
+            continue
+
+    return None
+
+
+def evaluate_quality(
+    stats: Dict[str, Any],
+    total_record_s: float,
+    min_frames: int,
+    target_fps: int,
+    min_frame_ratio: float,
+    max_avg_frame_ratio: float,
+    max_frame_spike_ratio: float,
+    max_spike_pct: float,
+) -> Optional[str]:
+    if "error" in stats:
+        return str(stats["error"])
+
+    effective_count = int(stats.get("effective_count", stats["count"]))
+    required_frames = min_frames
+    if target_fps > 0 and min_frame_ratio > 0.0 and total_record_s > 0.0:
+        required_frames = max(
+            required_frames, int(target_fps * total_record_s * min_frame_ratio)
+        )
+    stats["required_frames"] = required_frames
+
+    if effective_count < required_frames:
+        return f"Frame count below threshold ({effective_count} < {required_frames})"
+
+    target_frame_time_ms = float(stats.get("target_frame_time_ms", 0.0))
+    if target_frame_time_ms <= 0.0:
+        return None
+
+    if (
+        max_avg_frame_ratio > 0.0
+        and float(stats["avg"]) > target_frame_time_ms * max_avg_frame_ratio
+    ):
+        return (
+            f"Average frame time too high ({float(stats['avg']):.2f}ms > "
+            f"{target_frame_time_ms * max_avg_frame_ratio:.2f}ms)"
+        )
+
+    if (
+        max_frame_spike_ratio > 0.0
+        and float(stats["max"]) > target_frame_time_ms * max_frame_spike_ratio
+    ):
+        return (
+            f"Worst frame time too high ({float(stats['max']):.2f}ms > "
+            f"{target_frame_time_ms * max_frame_spike_ratio:.2f}ms)"
+        )
+
+    if (
+        max_spike_pct > 0.0
+        and float(stats.get("spike_pct_2x_budget", 0.0)) > max_spike_pct
+    ):
+        return (
+            f"Too many >2x-budget spikes ({float(stats['spike_pct_2x_budget']):.1f}% > "
+            f"{max_spike_pct:.1f}%)"
+        )
+
+    return None
 
 
 def print_stats(stats: Dict[str, Any]) -> None:
@@ -466,15 +598,41 @@ def print_stats(stats: Dict[str, Any]) -> None:
         return
 
     print(f"  Frames: {stats['count']}")
-    if "effective_count" in stats and int(stats["effective_count"]) != int(stats["count"]):
+    if "effective_count" in stats and int(stats["effective_count"]) != int(
+        stats["count"]
+    ):
         print(f"  Estimated total frames: {stats['effective_count']}")
     if "source" in stats:
         print(f"  Source: {stats['source']}")
-    print(f"  Min: {float(stats['min']):.2f}ms, Max: {float(stats['max']):.2f}ms, " f"Avg: {float(stats['avg']):.2f}ms")
-    print(f"  Median: {float(stats['median']):.2f}ms, " f"StdDev: {float(stats['stdev']):.2f}ms")
+    if "target_frame_time_ms" in stats:
+        print(
+            f"  Target: {int(stats['target_fps'])} FPS "
+            f"({float(stats['target_frame_time_ms']):.2f}ms budget)"
+        )
+    print(
+        f"  Min: {float(stats['min']):.2f}ms, Max: {float(stats['max']):.2f}ms, "
+        f"Avg: {float(stats['avg']):.2f}ms"
+    )
+    print(
+        f"  Median: {float(stats['median']):.2f}ms, "
+        f"StdDev: {float(stats['stdev']):.2f}ms"
+    )
     print(f"  Variance (max-min): {float(stats['variance']):.2f}ms")
-    print(f"  Spikes >10ms: {int(stats['spikes_10ms'])} " f"({float(stats['spike_pct_10ms']):.1f}%)")
-    print(f"  Spikes >12ms: {int(stats['spikes_12ms'])} " f"({float(stats['spike_pct_12ms']):.1f}%)")
+    print(
+        f"  Spikes >10ms: {int(stats['spikes_10ms'])} "
+        f"({float(stats['spike_pct_10ms']):.1f}%)"
+    )
+    print(
+        f"  Spikes >12ms: {int(stats['spikes_12ms'])} "
+        f"({float(stats['spike_pct_12ms']):.1f}%)"
+    )
+    if "spikes_2x_budget" in stats:
+        print(
+            f"  Spikes >2x budget: {int(stats['spikes_2x_budget'])} "
+            f"({float(stats['spike_pct_2x_budget']):.1f}%)"
+        )
+    if "required_frames" in stats:
+        print(f"  Required frames: {int(stats['required_frames'])}")
     if int(stats["spikes_20ms"]) > 0:
         print(f"  Spikes >20ms: {int(stats['spikes_20ms'])}")
 
@@ -488,11 +646,19 @@ def run_single_test(
     total_record_s: float,
     test_name: str,
     min_frames: int,
+    target_fps: int,
+    min_frame_ratio: float,
+    max_avg_frame_ratio: float,
+    max_frame_spike_ratio: float,
+    max_spike_pct: float,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Run a single integration test and return (stats, error_message)."""
     print(f"\n{'=' * 60}")
     print(f"TEST: {test_name}")
-    print(f"  API: {api.upper()}, ARCH: {arch.upper()}, Resolution: {width}x{height}, " f"GPU Load: {gpu_load}")
+    print(
+        f"  API: {api.upper()}, ARCH: {arch.upper()}, Resolution: {width}x{height}, "
+        f"GPU Load: {gpu_load}"
+    )
     print(f"  Recording duration: {total_record_s}s, Min frames: {min_frames}")
     print("=" * 60)
 
@@ -509,7 +675,12 @@ def run_single_test(
 
     launch_command: Optional[List[str]] = None
     if launch_via_captureengine:
-        launch_command = [str(resolve_test_exe(api, arch)), str(width), str(height), str(gpu_load)]
+        launch_command = [
+            str(resolve_test_exe(api, arch)),
+            str(width),
+            str(height),
+            str(gpu_load),
+        ]
 
     print(f"Starting capture (delay={delay_ms}ms, record={duration_ms}ms)...")
     capture_proc = start_auto_record(delay_ms, duration_ms, launch_command)
@@ -552,21 +723,27 @@ def run_single_test(
     time.sleep(1)
 
     run_log_dir = find_latest_run_log_dir(test_start_unix_ts)
-    frame_times_csv = (run_log_dir / "frame_times.csv") if run_log_dir else FRAME_TIMES_CSV
+    frame_times_csv = (
+        (run_log_dir / "frame_times.csv") if run_log_dir else FRAME_TIMES_CSV
+    )
     media_log_path = (run_log_dir / "media.log") if run_log_dir else MEDIA_LOG
 
     frame_times = parse_frame_times(frame_times_csv)
     frame_source = "frame_times.csv"
     if not frame_times:
         perf_logs_dir = run_log_dir if run_log_dir else CAPTURE_BIN / "logs"
-        frame_times = parse_perf_metrics_frame_times_from_dir(api, perf_logs_dir, test_start_unix_ts)
+        frame_times = parse_perf_metrics_frame_times_from_dir(
+            api, perf_logs_dir, test_start_unix_ts
+        )
         frame_source = "perf_metrics_*.csv"
     estimated_frame_count = 0
     if not frame_times:
-        frame_times, estimated_frame_count = parse_media_log_frame_times(media_log_path, test_start_unix_ts)
+        frame_times, estimated_frame_count = parse_media_log_frame_times(
+            media_log_path, test_start_unix_ts
+        )
         frame_source = f"{media_log_path.parent.name}/media.log"
 
-    stats = analyze_frame_times(frame_times, test_name)
+    stats = analyze_frame_times(frame_times, target_fps, test_name)
     if "error" not in stats:
         stats["source"] = frame_source
         if estimated_frame_count > 0:
@@ -575,12 +752,22 @@ def run_single_test(
     print("\nResults:")
     print_stats(stats)
 
-    if "error" in stats:
-        return stats, str(stats["error"])
+    fatal_log_error = scan_logs_for_fatal_errors(run_log_dir, test_start_unix_ts)
+    if fatal_log_error:
+        return stats, fatal_log_error
 
-    effective_count = int(stats.get("effective_count", stats["count"]))
-    if effective_count < min_frames:
-        return stats, f"Frame count below threshold ({effective_count} < {min_frames})"
+    quality_error = evaluate_quality(
+        stats,
+        total_record_s=total_record_s,
+        min_frames=min_frames,
+        target_fps=target_fps,
+        min_frame_ratio=min_frame_ratio,
+        max_avg_frame_ratio=max_avg_frame_ratio,
+        max_frame_spike_ratio=max_frame_spike_ratio,
+        max_spike_pct=max_spike_pct,
+    )
+    if quality_error:
+        return stats, quality_error
 
     return stats, None
 
@@ -620,6 +807,11 @@ def write_results_json(
             "arch": args.arch,
             "apis_resolved": apis_to_test,
             "arches_resolved": arches_to_test,
+            "target_fps": args.target_fps,
+            "min_frame_ratio": args.min_frame_ratio,
+            "max_avg_frame_ratio": args.max_avg_frame_ratio,
+            "max_frame_spike_ratio": args.max_frame_spike_ratio,
+            "max_spike_pct": args.max_spike_pct,
         },
         "results": results,
         "passed_count": sum(1 for r in results if r["status"] == "passed"),
@@ -698,6 +890,36 @@ def main() -> None:
         default=str(DEFAULT_RESULTS_JSON),
         help=f"Path to write machine-readable JSON results (default: {DEFAULT_RESULTS_JSON})",
     )
+    parser.add_argument(
+        "--target-fps",
+        type=int,
+        default=120,
+        help="Expected recording FPS for local quality checks (default: 120)",
+    )
+    parser.add_argument(
+        "--min-frame-ratio",
+        type=float,
+        default=0.60,
+        help="Minimum fraction of expected frames required per test (default: 0.60)",
+    )
+    parser.add_argument(
+        "--max-avg-frame-ratio",
+        type=float,
+        default=1.35,
+        help="Maximum allowed average frame time as a multiple of budget (default: 1.35)",
+    )
+    parser.add_argument(
+        "--max-frame-spike-ratio",
+        type=float,
+        default=4.0,
+        help="Maximum allowed worst frame time as a multiple of budget (default: 4.0)",
+    )
+    parser.add_argument(
+        "--max-spike-pct",
+        type=float,
+        default=5.0,
+        help="Maximum allowed percentage of >2x-budget spikes (default: 5.0)",
+    )
     args = parser.parse_args()
 
     width, height = args.resolution
@@ -711,6 +933,11 @@ def main() -> None:
     print(f"Tests per target: {args.tests}")
     print(f"Recording duration: {args.duration}s per test")
     print(f"Minimum frames required: {args.min_frames}")
+    print(f"Target FPS: {args.target_fps}")
+    print(f"Minimum frame ratio: {args.min_frame_ratio:.2f}")
+    print(f"Max average frame ratio: {args.max_avg_frame_ratio:.2f}")
+    print(f"Max spike ratio: {args.max_frame_spike_ratio:.2f}")
+    print(f"Max >2x-budget spike percentage: {args.max_spike_pct:.1f}%")
 
     if args.api == "all":
         apis_to_test = list(SUPPORTED_APIS)
@@ -725,7 +952,9 @@ def main() -> None:
     print(f"Architectures under test: {', '.join(a.upper() for a in arches_to_test)}")
 
     ensure_binaries_exist(apis_to_test, arches_to_test)
-    config_snapshot = ensure_testapp_whitelist_entries([API_EXECUTABLES[api] for api in apis_to_test])
+    config_snapshot = ensure_testapp_whitelist_entries(
+        [API_EXECUTABLES[api] for api in apis_to_test]
+    )
 
     try:
         print("\nCleaning up existing processes...")
@@ -746,6 +975,11 @@ def main() -> None:
                         total_record_s=args.duration,
                         test_name=test_name,
                         min_frames=args.min_frames,
+                        target_fps=args.target_fps,
+                        min_frame_ratio=args.min_frame_ratio,
+                        max_avg_frame_ratio=args.max_avg_frame_ratio,
+                        max_frame_spike_ratio=args.max_frame_spike_ratio,
+                        max_spike_pct=args.max_spike_pct,
                     )
 
                     status = "passed" if error is None else "failed"
@@ -771,10 +1005,17 @@ def main() -> None:
 
         for arch in arches_to_test:
             for api in apis_to_test:
-                combo = [r for r in all_results if r["api"] == api and r["arch"] == arch]
-                combo_passed = [r for r in combo if r["status"] == "passed" and r["stats"]]
+                combo = [
+                    r for r in all_results if r["api"] == api and r["arch"] == arch
+                ]
+                combo_passed = [
+                    r for r in combo if r["status"] == "passed" and r["stats"]
+                ]
 
-                print(f"\n{api.upper()}-{arch.upper()} " f"(passed {len(combo_passed)}/{len(combo)} tests):")
+                print(
+                    f"\n{api.upper()}-{arch.upper()} "
+                    f"(passed {len(combo_passed)}/{len(combo)} tests):"
+                )
 
                 stats_for_combo: List[Dict[str, Any]] = [
                     r["stats"] for r in combo_passed if isinstance(r["stats"], dict)
@@ -783,14 +1024,27 @@ def main() -> None:
                     avg_min = statistics.mean(float(s["min"]) for s in stats_for_combo)
                     avg_max = statistics.mean(float(s["max"]) for s in stats_for_combo)
                     avg_avg = statistics.mean(float(s["avg"]) for s in stats_for_combo)
-                    avg_variance = statistics.mean(float(s["variance"]) for s in stats_for_combo)
+                    avg_variance = statistics.mean(
+                        float(s["variance"]) for s in stats_for_combo
+                    )
                     total_spikes = sum(int(s["spikes_12ms"]) for s in stats_for_combo)
-                    total_frames = sum(int(s.get("effective_count", s["count"])) for s in stats_for_combo)
-                    spike_pct = 100.0 * total_spikes / total_frames if total_frames > 0 else 0.0
+                    total_frames = sum(
+                        int(s.get("effective_count", s["count"]))
+                        for s in stats_for_combo
+                    )
+                    spike_pct = (
+                        100.0 * total_spikes / total_frames if total_frames > 0 else 0.0
+                    )
 
-                    print(f"  Avg frame time: {avg_avg:.2f}ms " f"(range: {avg_min:.2f}-{avg_max:.2f}ms)")
+                    print(
+                        f"  Avg frame time: {avg_avg:.2f}ms "
+                        f"(range: {avg_min:.2f}-{avg_max:.2f}ms)"
+                    )
                     print(f"  Avg variance: {avg_variance:.2f}ms")
-                    print(f"  Total spikes >12ms: {total_spikes}/{total_frames} " f"({spike_pct:.1f}%)")
+                    print(
+                        f"  Total spikes >12ms: {total_spikes}/{total_frames} "
+                        f"({spike_pct:.1f}%)"
+                    )
                 else:
                     print("  No passing runs for this target.")
 
