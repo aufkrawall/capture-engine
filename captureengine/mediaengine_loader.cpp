@@ -7,6 +7,7 @@ MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback = nullptr;
 DLL_Log_t DLL_Log = nullptr;
 MediaEngine_Init_t MediaEngine_Init = nullptr;
 MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig = nullptr;
+MediaEngine_SetActiveScreenGrab_t MediaEngine_SetActiveScreenGrab = nullptr;
 MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame = nullptr;
 MediaEngine_RepeatLastFrame_t MediaEngine_RepeatLastFrame = nullptr;
 MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWithTimeline = nullptr;
@@ -94,6 +95,7 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "DLL_Log", &DLL_Log);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_Init", &MediaEngine_Init);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ReloadConfig", &MediaEngine_ReloadConfig);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetActiveScreenGrab", &MediaEngine_SetActiveScreenGrab);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ProcessFrame", &MediaEngine_ProcessFrame);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_RepeatLastFrame", &MediaEngine_RepeatLastFrame);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_RepeatLastFrameWithTimeline",
@@ -141,6 +143,7 @@ void MediaEngine_Unload() {
     DLL_Log = nullptr;
     MediaEngine_Init = nullptr;
     MediaEngine_ReloadConfig = nullptr;
+    MediaEngine_SetActiveScreenGrab = nullptr;
     MediaEngine_ProcessFrame = nullptr;
     MediaEngine_RepeatLastFrame = nullptr;
     MediaEngine_RepeatLastFrameWithTimeline = nullptr;

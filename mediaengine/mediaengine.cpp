@@ -153,6 +153,9 @@ public:
     AppConfig config;
     std::recursive_mutex muxMutex;  // Must be recursive - WritePacket callback from EncodeFrame
     bool recording;
+    bool timingModeFrozenForSession = false;
+    bool sessionUseVfr = false;
+    bool activeScreenGrab = false;
 
     // Audio thread
     std::thread audioThread;
@@ -172,8 +175,16 @@ public:
         return videoElapsedMs.load();
     }
 
+    bool SessionUsesVfr() const {
+        return timingModeFrozenForSession ? sessionUseVfr : config.video.useVFR;
+    }
+
+    bool SessionUsesScreenGrab() const {
+        return activeScreenGrab;
+    }
+
     int64_t GetCommittedVideoElapsedUs(int64_t fallbackElapsedUs) const {
-        if (config.video.useVFR || !videoEnc) {
+        if (SessionUsesVfr() || !videoEnc) {
             return fallbackElapsedUs;
         }
 
@@ -395,6 +406,11 @@ public:
         }
     }
 
+    void SetActiveScreenGrab(bool enabled) {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        activeScreenGrab = enabled;
+    }
+
     // Trusted System QPC Frequency
     int64_t qpcFreq = 0;
 
@@ -586,6 +602,8 @@ public:
         // Audio stream is now added in EnsureDevice after video stream
         // We don't add it here anymore - just set the index when it becomes
         // available The stream index will be set after first frame in ProcessFrame
+        timingModeFrozenForSession = true;
+        sessionUseVfr = config.video.useVFR;
 
         // Start Audio Capture and Processing Thread
         if (!audioSources.empty()) {
@@ -838,8 +856,14 @@ public:
                     "track=%d",
                     i, encSamples, expectedVideoSamples, diffSamples, diffMs, audioSources[i].track);
             }
-            DLL_Log("[StopAudio] Video: expectedDuration=%lld ms (%lld samples)", expectedVideoMs,
-                    expectedVideoSamples);
+                DLL_Log("[StopAudio] Video: expectedDuration=%lld ms (%lld samples)", expectedVideoMs,
+                        expectedVideoSamples);
+        }
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(muxMutex);
+            timingModeFrozenForSession = false;
+            activeScreenGrab = false;
         }
 
         DLL_Log("[STOP SUMMARY] Recording finalized");
@@ -1012,7 +1036,7 @@ public:
         const int64_t steadyElapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
         int64_t realElapsedUs = steadyElapsedUs;
-        if (config.video.useVFR) {
+        if (SessionUsesVfr()) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
         } else {
             realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, -1, injectTimelineState.lastElapsedUs);
@@ -1072,7 +1096,7 @@ public:
             std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
 
         int64_t realElapsedUs = steadyElapsedUs;
-        if (config.video.useVFR) {
+        if (SessionUsesVfr()) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
         } else if (wgcCfrRecording) {
             realElapsedUs = ResolveAuthoritativeCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs,
@@ -1104,7 +1128,7 @@ public:
     }
 
     bool IsWgcCfrRecording() const {
-        return config.captureMethod != "inject" && !config.video.useVFR;
+        return SessionUsesScreenGrab() && !SessionUsesVfr();
     }
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
@@ -1159,7 +1183,7 @@ public:
         int64_t realElapsedUs = 0;
         const int64_t steadyElapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
-        if (config.video.useVFR) {
+        if (SessionUsesVfr()) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, d3d11TimelineState);
         } else {
             // CFR output cadence is already driven by the encoder thread's fixed-rate
@@ -3124,6 +3148,12 @@ MEDIAENGINE_API void MediaEngine_ReloadConfig(const AppConfig* config) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         g_Engine->ReloadConfig(config);
+}
+
+MEDIAENGINE_API void MediaEngine_SetActiveScreenGrab(bool activeScreenGrab) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine)
+        g_Engine->SetActiveScreenGrab(activeScreenGrab);
 }
 
 MEDIAENGINE_API void MediaEngine_StopRecording() {

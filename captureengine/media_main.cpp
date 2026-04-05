@@ -280,6 +280,9 @@ bool IsActiveScreenGrab() {
 
 void SetActiveScreenGrab(bool enabled) {
     g_UseScreenGrab.store(enabled, std::memory_order_release);
+    if (MediaEngine_SetActiveScreenGrab) {
+        MediaEngine_SetActiveScreenGrab(enabled);
+    }
 }
 
 bool IsPreferredScreenGrab() {

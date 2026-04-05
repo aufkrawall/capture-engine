@@ -24,6 +24,10 @@ MEDIAENGINE_API bool MediaEngine_Init(const AppConfig* config);
 // Reload configuration (thread-safe, effective on next recording)
 MEDIAENGINE_API void MediaEngine_ReloadConfig(const AppConfig* config);
 
+// Inform the media engine which capture path is actually active for the
+// current recording session. true = WGC/screen-grab, false = inject.
+MEDIAENGINE_API void MediaEngine_SetActiveScreenGrab(bool activeScreenGrab);
+
 // Process a frame from D3D12 shared handle (inject mode)
 MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
                                               int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
