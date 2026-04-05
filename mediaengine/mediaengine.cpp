@@ -2942,7 +2942,10 @@ private:
                                     packetStartSamples = ce::audio::ApplyStartupPacketTimelineRebaseOffset(
                                         packetStartSamples, static_cast<int64_t>(src.startupRebasedGapSamples));
                                     if (firstTimelinePacket) {
-                                        constexpr int64_t kStartupFirstPacketGapCapSamples = 480;
+                                        // Keep only one small startup quantum of preserved silence so the
+                                        // first bootstrap pull can already include some real audio.
+                                        constexpr int64_t kStartupFirstPacketGapCapSamples =
+                                            ce::audio::kDefaultAudioPullQuantumSamples;
                                         constexpr int64_t kStartupFirstPacketRebaseThresholdSamples = 2400;
                                         const int64_t rebaseOffset = ce::audio::ComputeStartupFirstPacketRebaseOffset(
                                             packetStartSamples, src.sawSyncPendingPackets, kStartupFirstPacketGapCapSamples,
