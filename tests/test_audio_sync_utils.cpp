@@ -304,6 +304,13 @@ TEST(AudioSyncUtilsTest, StartupFirstPacketRebaseOffsetOnlyAppliesAfterSyncPendi
     EXPECT_EQ(ce::audio::ComputeStartupFirstPacketRebaseOffset(480, true, 480, 2400), 0);
 }
 
+TEST(AudioSyncUtilsTest, StartupPacketTimelineRebaseOffsetKeepsLaterPacketsContiguous) {
+    EXPECT_EQ(ce::audio::ApplyStartupPacketTimelineRebaseOffset(10747, 0), 10747);
+    EXPECT_EQ(ce::audio::ApplyStartupPacketTimelineRebaseOffset(10747, 10267), 480);
+    EXPECT_EQ(ce::audio::ApplyStartupPacketTimelineRebaseOffset(11227, 10267), 960);
+    EXPECT_EQ(ce::audio::ApplyStartupPacketTimelineRebaseOffset(400, 10267), 0);
+}
+
 // --- Encoder bottleneck gating tests ---
 
 TEST(AudioSyncUtilsTest, CoverageLossSuppressedWhenEncoderBottleneckedAndWgcDeliveringFrames) {

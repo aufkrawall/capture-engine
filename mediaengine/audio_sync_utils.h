@@ -482,6 +482,17 @@ inline int64_t ComputeStartupFirstPacketRebaseOffset(int64_t packetStartSamples,
     return clampedPacketStartSamples - clampedCappedGapSamples;
 }
 
+inline int64_t ApplyStartupPacketTimelineRebaseOffset(int64_t packetStartSamples,
+                                                      int64_t startupRebasedGapSamples) {
+    const int64_t clampedPacketStartSamples = std::max<int64_t>(0, packetStartSamples);
+    const int64_t clampedRebasedGapSamples = std::max<int64_t>(0, startupRebasedGapSamples);
+    if (clampedRebasedGapSamples <= 0) {
+        return clampedPacketStartSamples;
+    }
+
+    return std::max<int64_t>(0, clampedPacketStartSamples - clampedRebasedGapSamples);
+}
+
 inline PacketTimelineAdjustment ComputeStartupAwarePacketTimelineAdjustment(
     int64_t packetStartSamples, int64_t writtenTimelineSamples, int64_t steadyStateSlopSamples,
     int64_t startupWindowSamples, int64_t startupSlopSamples, int64_t startupOverlapTrimThresholdSamples) {

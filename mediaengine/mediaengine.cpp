@@ -77,7 +77,7 @@ public:
         uint64_t qpcAlignedWrittenSamples = 0;     // Timeline samples represented in the ring from packet QPC stitching
         uint64_t packetTimelineGapSamples = 0;     // Silence inserted to preserve packet-QPC continuity
         uint64_t packetTimelineOverlapSamples = 0;  // Packet-leading samples trimmed to avoid time overlap
-        uint64_t startupRebasedGapSamples = 0;      // Large first-packet startup gap suppressed after sync reset
+        uint64_t startupRebasedGapSamples = 0;      // Persistent startup packet-QPC offset suppressed after sync reset
         int64_t alignedStartMs = -1;                // First source packet offset relative to recording start
         int64_t observedLateStartMs = 0;            // Latest observed startup delay used for startup pull slack
         bool hasAlignedStart = false;               // True after first packet aligned to recording start
@@ -1138,6 +1138,7 @@ public:
                 }
             }
 
+            const int64_t anchorMs = (qpcFreq > 0 && anchorQPC > 0) ? (anchorQPC * 1000) / qpcFreq : debugTimestamp;
             this->recordingStartTime = now;
             const int64_t startQpc100ns = (qpcFreq > 0 && anchorQPC > 0)
                                               ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(
@@ -1147,12 +1148,12 @@ public:
             DLL_Log(
                 "MediaEngine: First D3D11 frame at %lld ms (QPC: %lld) "
                 "(StartQPC: %lld)",
-                debugTimestamp, timestampQPC, debugTimestamp);
+                debugTimestamp, timestampQPC, anchorMs);
 
             // Reset elapsed clock for audio sync
             videoElapsedMs.store(0);
 
-            SyncAudioToFirstVideoFrame(debugTimestamp, startQpc100ns);
+            SyncAudioToFirstVideoFrame(anchorMs, startQpc100ns);
         }
 
         int64_t realElapsedUs = 0;
@@ -2815,7 +2816,6 @@ private:
                         src.packetTimelineGapSamples = 0;
                         src.packetTimelineOverlapSamples = 0;
                         src.startupRebasedGapSamples = 0;
-                        src.sawSyncPendingPackets = false;
                         src.startupRealAudioSeen = false;
                         src.pendingStartupJoinFade = false;
                         src.bootstrapTrimSamples = 0;
@@ -2939,6 +2939,8 @@ private:
                                     int64_t packetStartSamples = static_cast<int64_t>(
                                         ce::audio::HundredNanosecondsToSamples(packetStartDelta100ns,
                                                                                targetFmt.sampleRate));
+                                    packetStartSamples = ce::audio::ApplyStartupPacketTimelineRebaseOffset(
+                                        packetStartSamples, static_cast<int64_t>(src.startupRebasedGapSamples));
                                     if (firstTimelinePacket) {
                                         constexpr int64_t kStartupFirstPacketGapCapSamples = 480;
                                         constexpr int64_t kStartupFirstPacketRebaseThresholdSamples = 2400;
