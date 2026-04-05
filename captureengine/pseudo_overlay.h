@@ -67,8 +67,11 @@ private:
     bool EnsureSharedMemoryMapping();
     bool IsInjectOverlayActive();
     bool IsInjectOverlayPending();
+    bool EnsureOverlayWindows();
+    void DestroyOverlayWindows();
     AnchorInfo ResolveAnchorInfo();
     void UpdateScaleForDpi(UINT dpi);
+    void OnTimerTick();
 
     // GDI rendering helpers
     void InitGDI();
@@ -76,6 +79,7 @@ private:
 
     // Overlay state
     bool initialized_ = false;
+    HINSTANCE hInstance_ = NULL;
     PseudoOverlayConfig config_;
     float scale_ = 1.0f;
 
@@ -109,10 +113,14 @@ private:
     HFONT fontWarn_ = NULL;
     SIZE sizeWarn_ = {0, 0};
     UINT currentDpi_ = 96;
+    UINT_PTR timerHandle_ = 0;
     uint32_t mappedInjectPid_ = 0;
     uint32_t lastEncoderOverloadFlags_ = 0;
     bool lastOverlaySuppressed_ = false;
     bool lastFullscreenSuppressed_ = false;
+    HWND stickyAnchorWindow_ = NULL;
+    HMONITOR stickyAnchorMonitor_ = NULL;
+    UINT stickyAnchorDpi_ = 96;
 
     // Timer ID
     static constexpr UINT_PTR kTimerId = 1001;
@@ -125,6 +133,7 @@ private:
     // Window procedures
     static LRESULT CALLBACK IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARAM l);
     static LRESULT CALLBACK WarningWndProc(HWND h, UINT m, WPARAM w, LPARAM l);
+    static VOID CALLBACK TimerProc(HWND hwnd, UINT msg, UINT_PTR timerId, DWORD time);
 
     // Instance for static wndproc routing
     static PseudoOverlay* instance_;

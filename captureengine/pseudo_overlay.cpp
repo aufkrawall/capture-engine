@@ -185,6 +185,15 @@ HWND GetMainWindowForProcess(DWORD pid) {
     EnumWindows(EnumWindowsCallback, reinterpret_cast<LPARAM>(&search));
     return search.hwnd;
 }
+
+bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, bool isRecording, bool warnVisible, ULONGLONG overloadWarnUntil,
+                            ULONGLONG screenshotNotifyUntil, bool ghostActive) {
+    const ULONGLONG now = GetTickCount64();
+    const bool showIndicator = isRecording && config.mode != 2;
+    const bool showWarning = warnVisible || (config.showEncoderOverloadWarn && now < overloadWarnUntil) ||
+                             (now < screenshotNotifyUntil);
+    return showIndicator || showWarning || ghostActive;
+}
 }  // namespace
 
 // ---- Static instance pointer for wndproc routing ----
@@ -372,18 +381,49 @@ bool PseudoOverlay::IsInjectOverlayPending() {
 PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
     AnchorInfo anchor;
 
-    HWND anchorWindow = GetForegroundWindow();
-    if (anchorWindow && (!IsWindow(anchorWindow) || !IsWindowVisible(anchorWindow) || GetWindow(anchorWindow, GW_OWNER))) {
-        anchorWindow = NULL;
+    auto isUsableAnchorWindow = [](HWND hwnd) -> bool {
+        return hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == 0;
+    };
+
+    HWND sourceWindow = NULL;
+    if (EnsureSharedMemoryMapping() && pSharedMem_) {
+        sourceWindow = GetMainWindowForProcess(pSharedMem_->GetSourcePid());
+        if (!isUsableAnchorWindow(sourceWindow)) {
+            sourceWindow = NULL;
+        }
     }
 
-    if (!anchorWindow && EnsureSharedMemoryMapping() && pSharedMem_) {
-        anchorWindow = GetMainWindowForProcess(pSharedMem_->GetSourcePid());
+    HWND anchorWindow = sourceWindow;
+    if (!anchorWindow && isUsableAnchorWindow(this->stickyAnchorWindow_)) {
+        anchorWindow = this->stickyAnchorWindow_;
+    }
+
+    HMONITOR anchorMonitor = NULL;
+    if (anchorWindow) {
+        anchorMonitor = MonitorFromWindow(anchorWindow, MONITOR_DEFAULTTONEAREST);
+    }
+
+    if (!anchorMonitor && this->stickyAnchorMonitor_) {
+        RECT stickyRect = {};
+        if (GetMonitorRectForMonitor(this->stickyAnchorMonitor_, &stickyRect)) {
+            anchorMonitor = this->stickyAnchorMonitor_;
+        }
+    }
+
+    if (!anchorMonitor) {
+        const HWND foreground = GetForegroundWindow();
+        if (isUsableAnchorWindow(foreground)) {
+            anchorWindow = foreground;
+            anchorMonitor = MonitorFromWindow(anchorWindow, MONITOR_DEFAULTTONEAREST);
+        }
+    }
+
+    if (!anchorMonitor) {
+        anchorMonitor = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
     }
 
     anchor.window = anchorWindow;
-    anchor.monitor = anchorWindow ? MonitorFromWindow(anchorWindow, MONITOR_DEFAULTTONEAREST)
-                                  : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    anchor.monitor = anchorMonitor;
     if (!GetMonitorRectForMonitor(anchor.monitor, &anchor.monitorRect)) {
         anchor.monitorRect.left = 0;
         anchor.monitorRect.top = 0;
@@ -391,8 +431,25 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
         anchor.monitorRect.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    anchor.dpi = GetResolvedWindowDpi(anchorWindow);
+    anchor.dpi = anchorWindow ? GetResolvedWindowDpi(anchorWindow)
+                              : (this->stickyAnchorDpi_ ? this->stickyAnchorDpi_ : GetDpiForSystem());
     anchor.fullscreenLike = IsWindowFullscreenLike(anchorWindow);
+
+    if (anchorWindow) {
+        if (this->stickyAnchorWindow_ != anchorWindow || this->stickyAnchorMonitor_ != anchor.monitor ||
+            this->stickyAnchorDpi_ != anchor.dpi) {
+            LogInfo("[PseudoOverlay] Sticky anchor updated: window=%p monitor=%p dpi=%u fullscreenLike=%d", anchorWindow,
+                    anchor.monitor, anchor.dpi, anchor.fullscreenLike ? 1 : 0);
+        }
+        this->stickyAnchorWindow_ = anchorWindow;
+        this->stickyAnchorMonitor_ = anchor.monitor;
+        this->stickyAnchorDpi_ = anchor.dpi;
+    } else if (this->stickyAnchorMonitor_ != anchor.monitor || this->stickyAnchorDpi_ != anchor.dpi) {
+        LogInfo("[PseudoOverlay] Sticky anchor monitor fallback: monitor=%p dpi=%u", anchor.monitor, anchor.dpi);
+        this->stickyAnchorMonitor_ = anchor.monitor;
+        this->stickyAnchorDpi_ = anchor.dpi;
+    }
+
     return anchor;
 }
 
@@ -406,6 +463,80 @@ void PseudoOverlay::InitGDI() {
     ReleaseDC(NULL, hdcScreen);
 
     UpdateScaleForDpi(currentDpi_);
+}
+
+void PseudoOverlay::OnTimerTick() {
+    if (!initialized_) {
+        return;
+    }
+
+    ULONGLONG now = GetTickCount64();
+
+    if (config_.mode == 1 || config_.mode == 2) {
+        bool warnTargetFocused = IsForegroundTarget();
+        bool condition = warnTargetFocused && !isRecording_.load();
+
+        if (condition) {
+            if (!warnActive_) {
+                warnActive_ = true;
+                warnCycleStart_ = now;
+                warnVisible_ = true;
+                UpdateOverlay();
+            } else {
+                ULONGLONG elapsed = now - warnCycleStart_;
+                ULONGLONG cycleTime = elapsed % 3000;
+                bool shouldBeVisible = (cycleTime < 2000);
+                if (warnVisible_ != shouldBeVisible) {
+                    warnVisible_ = shouldBeVisible;
+                    UpdateOverlay();
+                }
+            }
+        } else if (warnActive_ || warnVisible_) {
+            warnActive_ = false;
+            warnVisible_ = false;
+            UpdateOverlay();
+        }
+    } else if (warnActive_ || warnVisible_) {
+        warnActive_ = false;
+        warnVisible_ = false;
+        UpdateOverlay();
+    }
+
+    if (config_.showEncoderOverloadWarn) {
+        static ULONGLONG lastOverloadWarnUntil = 0;
+        ULONGLONG current = overloadWarnUntil_.load();
+        if ((lastOverloadWarnUntil > 0 && current == 0) || (current > 0 && GetTickCount64() > current)) {
+            UpdateOverlay();
+        }
+        lastOverloadWarnUntil = current;
+    }
+
+    static ULONGLONG lastScreenshotNotifyUntil = 0;
+    ULONGLONG currentScreenshot = screenshotNotifyUntil_.load();
+    if ((lastScreenshotNotifyUntil > 0 && currentScreenshot == 0) ||
+        (currentScreenshot > 0 && GetTickCount64() > currentScreenshot)) {
+        UpdateOverlay();
+    }
+    lastScreenshotNotifyUntil = currentScreenshot;
+
+    if (config_.showEncoderOverloadWarn && EnsureSharedMemoryMapping() && pSharedMem_) {
+        const uint32_t overloadFlags = pSharedMem_->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+        if (overloadFlags != 0) {
+            ULONGLONG current = GetTickCount64();
+            uint32_t currentFps = pSharedMem_->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
+            uint32_t lastFps = overloadWarnSustainFpsX100_.load(std::memory_order_relaxed);
+            bool fpsChanged = (currentFps > lastFps ? currentFps - lastFps : lastFps - currentFps) > 100;
+
+            if (lastEncoderOverloadFlags_ == 0 || (current > overloadWarnUntil_.load() - 2500) || fpsChanged) {
+                TriggerEncoderOverloadWarning(currentFps);
+            }
+        }
+        lastEncoderOverloadFlags_ = overloadFlags;
+    }
+
+    if (config_.mode == 0) {
+        UpdateOverlay();
+    }
 }
 
 void PseudoOverlay::CleanupGDI() {
@@ -431,11 +562,14 @@ void PseudoOverlay::UpdateOverlay() {
     if (!initialized_)
         return;
 
+    const bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
+
+    const bool shouldHaveVisibleOverlay =
+        ShouldOverlayBeVisible(config_, isRecording_.load(), warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(),
+                               ghostActive);
+
     if (!config_.enabled) {
-        if (IsWindowVisible(hOv_))
-            ShowWindow(hOv_, SW_HIDE);
-        if (IsWindowVisible(hWarn_))
-            ShowWindow(hWarn_, SW_HIDE);
+        DestroyOverlayWindows();
         lastOv_ = {};
         lastWarnVis_ = false;
         lastOverlaySuppressed_ = false;
@@ -449,10 +583,7 @@ void PseudoOverlay::UpdateOverlay() {
         if (!lastOverlaySuppressed_) {
             LogInfo("[PseudoOverlay] Suppressed while inject overlay handoff is active");
         }
-        if (IsWindowVisible(hOv_))
-            ShowWindow(hOv_, SW_HIDE);
-        if (IsWindowVisible(hWarn_))
-            ShowWindow(hWarn_, SW_HIDE);
+        DestroyOverlayWindows();
         lastOv_ = {};
         lastWarnVis_ = false;
         lastOverlaySuppressed_ = true;
@@ -463,6 +594,20 @@ void PseudoOverlay::UpdateOverlay() {
     if (lastOverlaySuppressed_) {
         LogInfo("[PseudoOverlay] Resuming after inject overlay suppression");
         lastOverlaySuppressed_ = false;
+    }
+
+    if (!shouldHaveVisibleOverlay) {
+        if (hOv_ || hWarn_) {
+            LogInfo("[PseudoOverlay] Destroying idle overlay windows");
+            DestroyOverlayWindows();
+        }
+        lastOv_ = {};
+        lastWarnVis_ = false;
+        return;
+    }
+
+    if (!EnsureOverlayWindows()) {
+        return;
     }
 
     const AnchorInfo anchor = ResolveAnchorInfo();
@@ -549,8 +694,6 @@ void PseudoOverlay::UpdateOverlay() {
     bool showInd = false;
     if (rec && config_.mode != 2)  // MODE_WARN_ONLY
         showInd = true;
-
-    bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
 
     BYTE indAlpha = 0;
     if (ghostActive) {
@@ -673,7 +816,9 @@ void PseudoOverlay::UpdateOverlay() {
                 ShowWindow(hWarn_, SW_SHOWNA);
             SetWindowPos(hWarn_, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
         } else {
-            ShowWindow(hWarn_, SW_HIDE);
+            if (hWarn_) {
+                ShowWindow(hWarn_, SW_HIDE);
+            }
         }
 
         // Check if cached bitmap needs refresh
@@ -776,93 +921,21 @@ LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARA
     if (m == WM_MOUSEACTIVATE) {
         return MA_NOACTIVATE;
     }
+    if (m == WM_ACTIVATE || m == WM_ACTIVATEAPP) {
+        return 0;
+    }
+    if (m == WM_SETFOCUS) {
+        SetFocus(NULL);
+        return 0;
+    }
+    if (m == WM_NCACTIVATE) {
+        return FALSE;
+    }
     if (m == WM_NCHITTEST) {
         return HTTRANSPARENT;
     }
     if (m == WM_TIMER && w == kTimerId && instance_ && instance_->initialized_) {
-        PseudoOverlay* self = instance_;
-        ULONGLONG now = GetTickCount64();
-
-        if (self->config_.mode == 1 || self->config_.mode == 2) {
-            // Warning mode active
-            bool warnTargetFocused = self->IsForegroundTarget();
-            bool condition = warnTargetFocused && !self->isRecording_.load();
-
-            if (condition) {
-                if (!self->warnActive_) {
-                    self->warnActive_ = true;
-                    self->warnCycleStart_ = now;
-                    self->warnVisible_ = true;
-                    self->UpdateOverlay();
-                } else {
-                    // Cycle: 2s ON, 1s OFF = 3s total
-                    ULONGLONG elapsed = now - self->warnCycleStart_;
-                    ULONGLONG cycleTime = elapsed % 3000;
-                    bool shouldBeVisible = (cycleTime < 2000);
-                    if (self->warnVisible_ != shouldBeVisible) {
-                        self->warnVisible_ = shouldBeVisible;
-                        self->UpdateOverlay();
-                    }
-                }
-            } else {
-                if (self->warnActive_ || self->warnVisible_) {
-                    self->warnActive_ = false;
-                    self->warnVisible_ = false;
-                    self->UpdateOverlay();
-                }
-            }
-        } else {
-            if (self->warnActive_ || self->warnVisible_) {
-                self->warnActive_ = false;
-                self->warnVisible_ = false;
-                self->UpdateOverlay();
-            }
-        }
-
-        // Check encoder overload expiry
-        if (self->config_.showEncoderOverloadWarn) {
-            static ULONGLONG lastOverloadWarnUntil = 0;
-            ULONGLONG current = self->overloadWarnUntil_.load();
-            if ((lastOverloadWarnUntil > 0 && current == 0) || (current > 0 && GetTickCount64() > current)) {
-                self->UpdateOverlay();
-            }
-            lastOverloadWarnUntil = current;
-        }
-
-        // Check screenshot notification expiry
-        {
-            static ULONGLONG lastScreenshotNotifyUntil = 0;
-            ULONGLONG current = self->screenshotNotifyUntil_.load();
-            if ((lastScreenshotNotifyUntil > 0 && current == 0) || (current > 0 && GetTickCount64() > current)) {
-                self->UpdateOverlay();
-            }
-            lastScreenshotNotifyUntil = current;
-        }
-
-        if (self->config_.showEncoderOverloadWarn && self->EnsureSharedMemoryMapping() && self->pSharedMem_) {
-            const uint32_t overloadFlags =
-                self->pSharedMem_->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
-            if (overloadFlags != 0) {
-                ULONGLONG current = GetTickCount64();
-                // Update if it's newly overloaded, or if our timer is halfway expired, or FPS changed significantly
-                uint32_t currentFps =
-                    self->pSharedMem_->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
-                uint32_t lastFps = self->overloadWarnSustainFpsX100_.load(std::memory_order_relaxed);
-                bool fpsChanged =
-                    (currentFps > lastFps ? currentFps - lastFps : lastFps - currentFps) > 100;  // 1 fps difference
-
-                if (self->lastEncoderOverloadFlags_ == 0 || (current > self->overloadWarnUntil_.load() - 2500) ||
-                    fpsChanged) {
-                    self->TriggerEncoderOverloadWarning(currentFps);
-                }
-            }
-            self->lastEncoderOverloadFlags_ = overloadFlags;
-        }
-
-        // Periodic refresh in info mode
-        if (self->config_.mode == 0)
-            self->UpdateOverlay();
-
+        instance_->OnTimerTick();
         return 0;
     }
     return DefWindowProc(h, m, w, l);
@@ -872,10 +945,26 @@ LRESULT CALLBACK PseudoOverlay::WarningWndProc(HWND h, UINT m, WPARAM w, LPARAM 
     if (m == WM_MOUSEACTIVATE) {
         return MA_NOACTIVATE;
     }
+    if (m == WM_ACTIVATE || m == WM_ACTIVATEAPP) {
+        return 0;
+    }
+    if (m == WM_SETFOCUS) {
+        SetFocus(NULL);
+        return 0;
+    }
+    if (m == WM_NCACTIVATE) {
+        return FALSE;
+    }
     if (m == WM_NCHITTEST) {
         return HTTRANSPARENT;
     }
     return DefWindowProc(h, m, w, l);
+}
+
+VOID CALLBACK PseudoOverlay::TimerProc(HWND, UINT, UINT_PTR timerId, DWORD) {
+    if (timerId != 0 && instance_ && instance_->initialized_) {
+        instance_->OnTimerTick();
+    }
 }
 
 // ---- Init / Shutdown ----
@@ -885,6 +974,7 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
         return true;
 
     instance_ = this;
+    hInstance_ = hInstance;
     currentDpi_ = 96;
     scale_ = 1.0f;
     UpdateScaleForDpi(GetDpiForSystem());
@@ -902,16 +992,6 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
         return false;
     }
 
-    // Create indicator overlay window
-    hOv_ = CreateWindowExA(
-        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kIndicatorClass, "",
-                           WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
-    if (!hOv_) {
-        LogError("[PseudoOverlay] Failed to create indicator overlay window");
-        CleanupGDI();
-        return false;
-    }
-
     // Register warning window class
     WNDCLASSA wcWarn = {};
     wcWarn.lpfnWndProc = WarningWndProc;
@@ -919,26 +999,16 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     wcWarn.lpszClassName = kWarningClass;
     if (!RegisterClassA(&wcWarn) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         LogError("[PseudoOverlay] Failed to register warning window class");
-        DestroyWindow(hOv_);
-        hOv_ = NULL;
         CleanupGDI();
         return false;
     }
 
-    // Create warning overlay window
-    hWarn_ = CreateWindowExA(
-        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kWarningClass, "",
-                              WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
-    if (!hWarn_) {
-        LogError("[PseudoOverlay] Failed to create warning overlay window");
-        DestroyWindow(hOv_);
-        hOv_ = NULL;
+    timerHandle_ = SetTimer(NULL, kTimerId, kTimerInterval, TimerProc);
+    if (timerHandle_ == 0) {
+        LogError("[PseudoOverlay] Failed to start timer");
         CleanupGDI();
         return false;
     }
-
-    // Start timer for blink cycle and periodic refresh on indicator window
-    SetTimer(hOv_, kTimerId, kTimerInterval, NULL);
 
     const AnchorInfo anchor = ResolveAnchorInfo();
     initialized_ = true;
@@ -956,15 +1026,12 @@ void PseudoOverlay::Shutdown() {
     if (!initialized_)
         return;
 
-    if (hOv_) {
-        KillTimer(hOv_, kTimerId);
-        DestroyWindow(hOv_);
-        hOv_ = NULL;
+    if (timerHandle_ != 0) {
+        KillTimer(NULL, timerHandle_);
+        timerHandle_ = 0;
     }
-    if (hWarn_) {
-        DestroyWindow(hWarn_);
-        hWarn_ = NULL;
-    }
+
+    DestroyOverlayWindows();
 
     CleanupGDI();
 
@@ -999,6 +1066,10 @@ void PseudoOverlay::Shutdown() {
     overloadWarnSustainFpsX100_.store(0, std::memory_order_relaxed);
     lastOverlaySuppressed_ = false;
     lastFullscreenSuppressed_ = false;
+    stickyAnchorWindow_ = NULL;
+    stickyAnchorMonitor_ = NULL;
+    stickyAnchorDpi_ = 96;
+    hInstance_ = NULL;
 
     initialized_ = false;
     instance_ = nullptr;
@@ -1016,10 +1087,7 @@ void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
 
     if (wasEnabled && !cfg.enabled) {
         // Disable overlay: hide windows
-        if (hOv_)
-            ShowWindow(hOv_, SW_HIDE);
-        if (hWarn_)
-            ShowWindow(hWarn_, SW_HIDE);
+        DestroyOverlayWindows();
         return;
     }
 
@@ -1032,7 +1100,9 @@ void PseudoOverlay::SetRecordingState(bool recording) {
     isRecording_.store(recording);
     if (initialized_) {
         UpdateOverlay();
-        InvalidateRect(hOv_, NULL, FALSE);
+        if (hOv_) {
+            InvalidateRect(hOv_, NULL, FALSE);
+        }
     }
 }
 
@@ -1048,5 +1118,50 @@ void PseudoOverlay::ShowScreenshotNotification() {
     screenshotNotifyUntil_.store(GetTickCount64() + 2000ULL);
     if (initialized_) {
         UpdateOverlay();
+    }
+}
+bool PseudoOverlay::EnsureOverlayWindows() {
+    if (hOv_ && hWarn_) {
+        return true;
+    }
+
+    if (!hInstance_) {
+        LogError("[PseudoOverlay] Missing HINSTANCE for overlay window creation");
+        return false;
+    }
+
+    if (!hOv_) {
+        hOv_ = CreateWindowExA(
+            WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kIndicatorClass,
+            "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance_, 0);
+        if (!hOv_) {
+            LogError("[PseudoOverlay] Failed to create indicator overlay window");
+            return false;
+        }
+    }
+
+    if (!hWarn_) {
+        hWarn_ = CreateWindowExA(
+            WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kWarningClass, "",
+            WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance_, 0);
+        if (!hWarn_) {
+            LogError("[PseudoOverlay] Failed to create warning overlay window");
+            DestroyWindow(hOv_);
+            hOv_ = NULL;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void PseudoOverlay::DestroyOverlayWindows() {
+    if (hWarn_) {
+        DestroyWindow(hWarn_);
+        hWarn_ = NULL;
+    }
+    if (hOv_) {
+        DestroyWindow(hOv_);
+        hOv_ = NULL;
     }
 }
