@@ -183,11 +183,17 @@ inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint3
         queueEmptyTickPermille >= 125 || bufferedAtTickMin <= 1 || singleFrameTickCount >= targetFps / 4;
     const bool severeQueueHealth =
         queueEmptyTickPermille >= 250 || bufferedAtTickMin == 0 || singleFrameTickCount >= targetFps / 2;
+
+    // WGC source starvation should bias us toward preserving audio continuity, but
+    // not by inflating the steady-state audio backlog target so far that the audio
+    // path starts performing audible trim/correction. Keep only a modest cushion in
+    // degraded queue health and cap severe starvation to the same conservative band
+    // unless the encoder itself is the bottleneck.
     if (degradedQueueHealth) {
         lagMs = std::max<int64_t>(lagMs, degradedLagMs);
     }
-    if (severeQueueHealth && (encoderBottlenecked || effectiveDeliveredFps + 2 < targetFps)) {
-        lagMs = std::max<int64_t>(lagMs, severeLagMs);
+    if (severeQueueHealth) {
+        lagMs = std::max<int64_t>(lagMs, encoderBottlenecked ? severeLagMs : degradedLagMs);
     }
 
     return std::clamp<int64_t>(lagMs, 0, maxLagMs);
