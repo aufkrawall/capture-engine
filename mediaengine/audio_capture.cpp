@@ -364,8 +364,7 @@ void AudioCapture::CaptureLoop() {
     DLL_Log("[AudioCapture] CaptureLoop exited");
     if (queueDropPackets > 0 || queueDropFrames > 0) {
         DLL_Log("[AudioCapture] Final queue overrun summary: dropped %llu packet(s) / %llu frame(s)",
-                static_cast<unsigned long long>(queueDropPackets),
-                static_cast<unsigned long long>(queueDropFrames));
+                static_cast<unsigned long long>(queueDropPackets), static_cast<unsigned long long>(queueDropFrames));
     }
     // Only uninitialize COM if we successfully initialized it on this thread.
     // S_FALSE means COM was already initialized (we don't own the reference).

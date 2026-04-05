@@ -1223,7 +1223,7 @@ public:
         constexpr int64_t kOverloadAudioPullQuantumSamples = SAMPLE_RATE / 50;  // 20ms
         constexpr int64_t kPacketTimelineFadeSamples = SAMPLE_RATE / 750;       // ~1.33ms
         constexpr int64_t kStartupPacketTimelineWindowSamples = (SAMPLE_RATE * 150) / 1000;
-        constexpr int64_t kStartupPacketTimelineSlopSamples = SAMPLE_RATE / 250;  // 4ms
+        constexpr int64_t kStartupPacketTimelineSlopSamples = SAMPLE_RATE / 250;          // 4ms
         constexpr int64_t kStartupPacketOverlapTrimThresholdSamples = SAMPLE_RATE / 200;  // 5ms
         constexpr int64_t kLatencyTrimHysteresisSamples = ce::audio::kDefaultAudioPullQuantumSamples;
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
@@ -1448,9 +1448,9 @@ public:
                     bufferedRealSamples += ce::audio::ComputeBufferedRealAudioSamples(
                         src.ringBuffer->GetAvailable() / CHANNELS, src.startupSyntheticRingSamples);
                 }
-                const bool srcReady = ce::audio::IsSourceBootstrapReady(
-                    src.bootstrapComplete, src.hasAlignedStart, src.isPrimed, isAppAudioSource, bufferedRealSamples,
-                    requiredBootstrapSamples);
+                const bool srcReady =
+                    ce::audio::IsSourceBootstrapReady(src.bootstrapComplete, src.hasAlignedStart, src.isPrimed,
+                                                      isAppAudioSource, bufferedRealSamples, requiredBootstrapSamples);
                 trackReadyForBootstrap = trackReadyForBootstrap && srcReady;
             }
 
@@ -1474,17 +1474,18 @@ public:
                     bootstrapProtected += static_cast<uint64_t>(remainingStartupProtectionSamples);
                     const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
                     const int64_t bufferedRealSamples = static_cast<int64_t>(ce::audio::ComputeBufferedRealAudioSamples(
-                        bufferedTimelineSamples,
-                        src.startupSyntheticPostSamples + src.startupSyntheticRingSamples));
+                        bufferedTimelineSamples, src.startupSyntheticPostSamples + src.startupSyntheticRingSamples));
                     const int64_t allowedRealBacklogSamples =
                         std::max<int64_t>(targetBufferedSamples, static_cast<int64_t>(kMinBootstrapRealSamples));
                     const int64_t excessRealBacklogSamples = bufferedRealSamples - allowedRealBacklogSamples;
-                    const int64_t excessTimelineSamples = static_cast<int64_t>(bufferedTimelineSamples) -
-                                                          (remainingStartupProtectionSamples + allowedRealBacklogSamples);
-                    const int64_t dropBeforeLive = std::max<int64_t>(0, std::min(excessRealBacklogSamples,
-                                                                                 excessTimelineSamples));
+                    const int64_t excessTimelineSamples =
+                        static_cast<int64_t>(bufferedTimelineSamples) -
+                        (remainingStartupProtectionSamples + allowedRealBacklogSamples);
+                    const int64_t dropBeforeLive =
+                        std::max<int64_t>(0, std::min(excessRealBacklogSamples, excessTimelineSamples));
                     if (dropBeforeLive > 0) {
-                        const size_t droppedSamples = DropOldestBufferedSamples(src, static_cast<size_t>(dropBeforeLive));
+                        const size_t droppedSamples =
+                            DropOldestBufferedSamples(src, static_cast<size_t>(dropBeforeLive));
                         bootstrapTrimmed += droppedSamples;
                         if (droppedSamples > 0) {
                             // Bootstrap trims can otherwise start playback mid-waveform
@@ -1923,8 +1924,8 @@ public:
                                             size_t trimmedSamples = trimmedFloats / CHANNELS;
                                             ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples,
                                                                                        trimmedSamples);
-                                            ce::audio::ConsumeSyntheticBufferedSamples(
-                                                src.startupGapProtectionSamples, trimmedSamples);
+                                            ce::audio::ConsumeSyntheticBufferedSamples(src.startupGapProtectionSamples,
+                                                                                       trimmedSamples);
                                             src.latencyTrimSamples += trimmedSamples;
                                             src.tier2TrimSamples += trimmedSamples;
                                             src.pendingLatencyTrimSamples += trimmedSamples;
@@ -2144,7 +2145,8 @@ public:
                 std::vector<float> srcData(totalFloats, 0.0f);
                 size_t available = src.postResampleBuffer.size();
                 size_t toCopy = std::min(available, totalFloats);
-                const size_t syntheticCopiedSamples = std::min<uint64_t>(src.startupSyntheticPostSamples, toCopy / CHANNELS);
+                const size_t syntheticCopiedSamples =
+                    std::min<uint64_t>(src.startupSyntheticPostSamples, toCopy / CHANNELS);
                 const size_t realCopiedSamples = (toCopy / CHANNELS) - syntheticCopiedSamples;
 
                 if (toCopy > 0) {
@@ -2291,7 +2293,8 @@ public:
             {
                 int64_t trackPos = encodedSamplesPerSource[firstSrcIdx];
                 const bool applyStartupTrackFade =
-                    !applyTransitionFade && trackPos == 0 && audioSources[firstSrcIdx].packetBoundaryFadeInSamplesRemaining <= 0 &&
+                    !applyTransitionFade && trackPos == 0 &&
+                    audioSources[firstSrcIdx].packetBoundaryFadeInSamplesRemaining <= 0 &&
                     audioSources[firstSrcIdx].underrunFadeSamplesRemaining <= 0 &&
                     !audioSources[firstSrcIdx].pendingUnderrunRecoveryFade;
                 const int64_t fadeSamples = applyTransitionFade ? SAMPLE_RATE / 20 : SAMPLE_RATE / 40;
@@ -2491,13 +2494,13 @@ public:
                         const double trimRatePerMinute =
                             ce::audio::ComputeSamplesPerMinute(src.pendingLatencyTrimSamples, 10000000ll) * 6.0;
                         DLL_Log(
-                            "[PullAudio] Latency trim summary - src=%zu events=%u samples=%llu total=%llu rate=%.1f/min "
+                            "[PullAudio] Latency trim summary - src=%zu events=%u samples=%llu total=%llu "
+                            "rate=%.1f/min "
                             "target=%lld pipelineLag=%lldms",
                             srcIdx, src.pendingLatencyTrimEvents,
                             static_cast<unsigned long long>(src.pendingLatencyTrimSamples),
                             static_cast<unsigned long long>(src.latencyTrimSamples), trimRatePerMinute,
-                            targetBufferedSamples,
-                            pipelineLagMs);
+                            targetBufferedSamples, pipelineLagMs);
                         src.pendingLatencyTrimEvents = 0;
                         src.pendingLatencyTrimSamples = 0;
                     }
@@ -2944,9 +2947,9 @@ private:
                                 if (startQpc100ns > 0 && packet.qpcPosition >= static_cast<uint64_t>(startQpc100ns)) {
                                     const uint64_t packetStartDelta100ns =
                                         packet.qpcPosition - static_cast<uint64_t>(startQpc100ns);
-                                    int64_t packetStartSamples = static_cast<int64_t>(
-                                        ce::audio::HundredNanosecondsToSamples(packetStartDelta100ns,
-                                                                               targetFmt.sampleRate));
+                                    int64_t packetStartSamples =
+                                        static_cast<int64_t>(ce::audio::HundredNanosecondsToSamples(
+                                            packetStartDelta100ns, targetFmt.sampleRate));
                                     packetStartSamples = ce::audio::ApplyStartupPacketTimelineRebaseOffset(
                                         packetStartSamples, static_cast<int64_t>(src.startupRebasedGapSamples));
                                     if (firstTimelinePacket) {
@@ -2956,13 +2959,15 @@ private:
                                         constexpr int64_t kStartupFirstPacketGapCapSamples = 480;
                                         constexpr int64_t kStartupFirstPacketRebaseThresholdSamples = 2400;
                                         const int64_t rebaseOffset = ce::audio::ComputeStartupFirstPacketRebaseOffset(
-                                            packetStartSamples, src.sawSyncPendingPackets, kStartupFirstPacketGapCapSamples,
+                                            packetStartSamples, src.sawSyncPendingPackets,
+                                            kStartupFirstPacketGapCapSamples,
                                             kStartupFirstPacketRebaseThresholdSamples);
                                         if (rebaseOffset > 0) {
                                             packetStartSamples -= rebaseOffset;
                                             src.startupRebasedGapSamples += static_cast<uint64_t>(rebaseOffset);
                                             DLL_Log(
-                                                "[AudioLoop] Startup rebase src=%d suppressed %lld samples of first-packet gap "
+                                                "[AudioLoop] Startup rebase src=%d suppressed %lld samples of "
+                                                "first-packet gap "
                                                 "(packetStart=%lld cap=%lld)",
                                                 (int)srcIdx, (long long)rebaseOffset,
                                                 (long long)(packetStartSamples + rebaseOffset),
@@ -2970,10 +2975,11 @@ private:
                                         }
                                         src.sawSyncPendingPackets = false;
                                     }
-                                    const auto timelineAdjustment = ce::audio::ComputeStartupAwarePacketTimelineAdjustment(
-                                        packetStartSamples, static_cast<int64_t>(src.qpcAlignedWrittenSamples),
-                                        targetFmt.sampleRate / 1000, (targetFmt.sampleRate * 150) / 1000,
-                                        targetFmt.sampleRate / 250, targetFmt.sampleRate / 200);
+                                    const auto timelineAdjustment =
+                                        ce::audio::ComputeStartupAwarePacketTimelineAdjustment(
+                                            packetStartSamples, static_cast<int64_t>(src.qpcAlignedWrittenSamples),
+                                            targetFmt.sampleRate / 1000, (targetFmt.sampleRate * 150) / 1000,
+                                            targetFmt.sampleRate / 250, targetFmt.sampleRate / 200);
                                     const size_t packetTimelineFadeSamples =
                                         static_cast<size_t>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
                                     if (timelineAdjustment.gapSamples > 0) {

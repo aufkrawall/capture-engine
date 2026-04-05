@@ -53,8 +53,7 @@ bool TestInitialize() {
     return true;
 }
 
-void TestShutdown() {
-}
+void TestShutdown() {}
 
 const char* TestGetStatusString(CustomHook::Status status) {
     return TestStatusToString(status);
@@ -169,15 +168,13 @@ CustomHook::Status DefaultUnhookVTableEntry(void** vtableEntry, void* original) 
 
 HookBackendOps MakeDefaultBackendOps() {
 #ifdef CE_UNIT_TESTS
-    return HookBackendOps{TestInitialize,      TestShutdown,       TestGetStatusString,
-                          TestHookFunction,    TestHookExport,     TestHookExportW,
-                          TestHookVTableEntry, TestUnhookFunction, TestUnhookExport,
-                          TestUnhookVTableEntry};
+    return HookBackendOps{TestInitialize,   TestShutdown,         TestGetStatusString, TestHookFunction,
+                          TestHookExport,   TestHookExportW,      TestHookVTableEntry, TestUnhookFunction,
+                          TestUnhookExport, TestUnhookVTableEntry};
 #else
-    return HookBackendOps{DefaultInitialize,      DefaultShutdown,       DefaultGetStatusString,
-                          DefaultHookFunction,    DefaultHookExport,     DefaultHookExportW,
-                          DefaultHookVTableEntry, DefaultUnhookFunction, DefaultUnhookExport,
-                          DefaultUnhookVTableEntry};
+    return HookBackendOps{DefaultInitialize,   DefaultShutdown,         DefaultGetStatusString, DefaultHookFunction,
+                          DefaultHookExport,   DefaultHookExportW,      DefaultHookVTableEntry, DefaultUnhookFunction,
+                          DefaultUnhookExport, DefaultUnhookVTableEntry};
 #endif
 }
 
@@ -229,12 +226,17 @@ bool Initialize() {
 }
 
 void Shutdown() {
-    int currentCount = g_InitCount.load();
-    if (currentCount <= 0) {
+    int count = g_InitCount.load(std::memory_order_acquire);
+    while (count > 0) {
+        if (g_InitCount.compare_exchange_weak(count, count - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            break;
+        }
+    }
+
+    if (count <= 0) {
         return;
     }
 
-    int count = g_InitCount.fetch_sub(1);
     if (count == 1) {
         // Clear our tracking
         {

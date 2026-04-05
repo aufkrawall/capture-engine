@@ -60,10 +60,7 @@ TEST(AudioResamplerTest, ProcessPacked24BitStereoProducesUsablePlanarFloatSample
 
     // Two stereo frames of packed 24-bit little-endian PCM.
     const std::array<uint8_t, 12> input = {
-        0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00,
-        0x00, 0x00, 0x40,
-        0x00, 0x00, 0xC0,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0xC0,
     };
 
     uint8_t** output = nullptr;
@@ -155,8 +152,7 @@ TEST(AudioResamplerTest, ResetClearsBufferedDelayAndClockTracking) {
     ASSERT_TRUE(resampler.Init(inFmt, outFmt));
 
     const std::array<int16_t, 12> input = {
-        32767, -32768, 1000, -1000, 2000, -2000,
-        3000, -3000, 4000, -4000, 5000, -5000,
+        32767, -32768, 1000, -1000, 2000, -2000, 3000, -3000, 4000, -4000, 5000, -5000,
     };
     uint8_t** output = nullptr;
     int outputSamples = 0;

@@ -289,8 +289,7 @@ inline int64_t ComputeLeadTrimExcessSamples(int64_t bufferedSamples, int64_t tar
                                             int64_t allowedLeadSamples,
                                             int64_t hysteresisSamples = kDefaultAudioPullQuantumSamples) {
     const int64_t thresholdSamples = std::max<int64_t>(0, targetLatencySamples) +
-                                     std::max<int64_t>(0, allowedLeadSamples) +
-                                     std::max<int64_t>(0, hysteresisSamples);
+                                     std::max<int64_t>(0, allowedLeadSamples) + std::max<int64_t>(0, hysteresisSamples);
     return std::max<int64_t>(0, bufferedSamples - thresholdSamples);
 }
 
@@ -425,8 +424,7 @@ inline bool IsSourceStartupPrimed(bool sourceIsPrimed, bool hasAlignedStart, boo
 }
 
 inline bool IsSourceBootstrapReady(bool sourceBootstrapComplete, bool hasAlignedStart, bool sourceIsPrimed,
-                                   bool isAppAudioSource, size_t bufferedRealSamples,
-                                   size_t requiredRealSamples) {
+                                   bool isAppAudioSource, size_t bufferedRealSamples, size_t requiredRealSamples) {
     if (sourceBootstrapComplete || IsOptionalUnstartedAppAudioSource(isAppAudioSource, hasAlignedStart)) {
         return true;
     }
@@ -435,8 +433,8 @@ inline bool IsSourceBootstrapReady(bool sourceBootstrapComplete, bool hasAligned
 }
 
 inline size_t ComputeRequiredBootstrapRealSamples(int64_t targetTimelineSamples, size_t minimumRealSamples) {
-    return static_cast<size_t>(std::max<int64_t>(std::max<int64_t>(0, targetTimelineSamples),
-                                                 static_cast<int64_t>(minimumRealSamples)));
+    return static_cast<size_t>(
+        std::max<int64_t>(std::max<int64_t>(0, targetTimelineSamples), static_cast<int64_t>(minimumRealSamples)));
 }
 
 inline size_t ComputeBufferedRealAudioSamples(size_t bufferedSamples, uint64_t syntheticBufferedSamples) {
@@ -472,8 +470,7 @@ inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetSt
 }
 
 inline int64_t ComputeStartupFirstPacketRebaseOffset(int64_t packetStartSamples, bool sawSyncPendingPackets,
-                                                     int64_t cappedStartupGapSamples,
-                                                     int64_t rebaseThresholdSamples) {
+                                                     int64_t cappedStartupGapSamples, int64_t rebaseThresholdSamples) {
     if (!sawSyncPendingPackets) {
         return 0;
     }
@@ -488,8 +485,7 @@ inline int64_t ComputeStartupFirstPacketRebaseOffset(int64_t packetStartSamples,
     return clampedPacketStartSamples - clampedCappedGapSamples;
 }
 
-inline int64_t ApplyStartupPacketTimelineRebaseOffset(int64_t packetStartSamples,
-                                                      int64_t startupRebasedGapSamples) {
+inline int64_t ApplyStartupPacketTimelineRebaseOffset(int64_t packetStartSamples, int64_t startupRebasedGapSamples) {
     const int64_t clampedPacketStartSamples = std::max<int64_t>(0, packetStartSamples);
     const int64_t clampedRebasedGapSamples = std::max<int64_t>(0, startupRebasedGapSamples);
     if (clampedRebasedGapSamples <= 0) {

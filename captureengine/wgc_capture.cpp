@@ -1650,11 +1650,10 @@ public:
             }
         }
         if (captureDxgiFormat_ != requestedDxgiFormat) {
-            const char* requestedFormat = requestedDxgiFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
-                                              ? "R16G16B16A16_FLOAT"
-                                              : (requestedDxgiFormat == DXGI_FORMAT_R10G10B10A2_UNORM
-                                                     ? "R10G10B10A2_UNORM"
-                                                     : "B8G8R8A8_UNORM");
+            const char* requestedFormat =
+                requestedDxgiFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
+                    ? "R16G16B16A16_FLOAT"
+                    : (requestedDxgiFormat == DXGI_FORMAT_R10G10B10A2_UNORM ? "R10G10B10A2_UNORM" : "B8G8R8A8_UNORM");
             LogWarn("[WGC] Frame pool fallback: requested=%s final=%s hdr=%s highPrecision=%s tried(fp16=%d bgra8=%d)",
                     requestedFormat, DescribeCaptureFormat(), captureIsHDR_ ? "YES" : "NO",
                     requestedHighPrecision ? "YES" : "NO", attemptedFp16Fallback ? 1 : 0,

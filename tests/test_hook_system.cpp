@@ -12,12 +12,16 @@ void* g_LastRemovedFunctionTarget = nullptr;
 const char* g_LastRemovedExportModule = nullptr;
 const char* g_LastRemovedExportName = nullptr;
 void* g_LastRemovedVtableEntry = nullptr;
+int g_InitializeCalls = 0;
+int g_ShutdownCalls = 0;
 
 bool StubInitialize() {
+    ++g_InitializeCalls;
     return true;
 }
 
 void StubShutdown() {
+    ++g_ShutdownCalls;
 }
 
 const char* StubStatusString(CustomHook::Status status) {
@@ -45,7 +49,8 @@ CustomHook::Status StubHookExport(const char* moduleName, const char* functionNa
         *original = reinterpret_cast<void*>(0x5678);
         g_LastExportOriginal = *original;
     }
-    return moduleName && functionName && detour ? CustomHook::Status::Success : CustomHook::Status::ErrorInvalidParameter;
+    return moduleName && functionName && detour ? CustomHook::Status::Success
+                                                : CustomHook::Status::ErrorInvalidParameter;
 }
 
 CustomHook::Status StubHookExportW(const wchar_t* moduleName, const char* functionName, void* detour, void** original) {
@@ -85,10 +90,9 @@ CustomHook::Status StubUnhookVtableEntry(void** vtableEntry, void* original) {
 }
 
 HookSystem::HookBackendOps MakeStubOps() {
-    return HookSystem::HookBackendOps{StubInitialize,      StubShutdown,       StubStatusString,
-                                      StubHookFunction,    StubHookExport,     StubHookExportW,
-                                      StubHookVtableEntry, StubUnhookFunction, StubUnhookExport,
-                                      StubUnhookVtableEntry};
+    return HookSystem::HookBackendOps{StubInitialize,   StubShutdown,         StubStatusString,    StubHookFunction,
+                                      StubHookExport,   StubHookExportW,      StubHookVtableEntry, StubUnhookFunction,
+                                      StubUnhookExport, StubUnhookVtableEntry};
 }
 
 class HookSystemTest : public ::testing::Test {
@@ -101,6 +105,8 @@ protected:
         g_LastRemovedExportModule = nullptr;
         g_LastRemovedExportName = nullptr;
         g_LastRemovedVtableEntry = nullptr;
+        g_InitializeCalls = 0;
+        g_ShutdownCalls = 0;
         HookSystem::ResetHookBackendOpsForTesting();
         HookSystem::SetHookBackendOpsForTesting(MakeStubOps());
         HookSystem::Shutdown();
@@ -112,11 +118,9 @@ protected:
     }
 };
 
-void DummyDetour() {
-}
+void DummyDetour() {}
 
-void DummyOriginal() {
-}
+void DummyOriginal() {}
 
 }  // namespace
 
@@ -142,8 +146,8 @@ TEST_F(HookSystemTest, CreateFunctionHookRejectsDuplicateTarget) {
 
     ASSERT_TRUE(HookSystem::CreateFunctionHook(reinterpret_cast<void*>(0x2000), reinterpret_cast<void*>(&DummyDetour),
                                                nullptr));
-    EXPECT_FALSE(HookSystem::CreateFunctionHook(reinterpret_cast<void*>(0x2000), reinterpret_cast<void*>(&DummyOriginal),
-                                                nullptr));
+    EXPECT_FALSE(HookSystem::CreateFunctionHook(reinterpret_cast<void*>(0x2000),
+                                                reinterpret_cast<void*>(&DummyOriginal), nullptr));
 }
 
 TEST_F(HookSystemTest, CreateExportHookTracksRemovalByModuleAndName) {
@@ -172,4 +176,90 @@ TEST_F(HookSystemTest, CreateComHookRestoresOriginalEntryOnRemove) {
     HookSystem::RemoveHook(&vtable[0]);
     EXPECT_EQ(g_LastRemovedVtableEntry, &vtable[0]);
     EXPECT_EQ(vtable[0], reinterpret_cast<void*>(&DummyOriginal));
+}
+
+TEST_F(HookSystemTest, ScopedInitializerUsesSharedInitRefcount) {
+    {
+        HookSystem::ScopedInitializer first;
+        ASSERT_TRUE(first.IsInitialized());
+        EXPECT_EQ(g_InitializeCalls, 1);
+        EXPECT_EQ(g_ShutdownCalls, 0);
+
+        {
+            HookSystem::ScopedInitializer second;
+            ASSERT_TRUE(second.IsInitialized());
+            EXPECT_EQ(g_InitializeCalls, 1);
+            EXPECT_EQ(g_ShutdownCalls, 0);
+        }
+
+        EXPECT_EQ(g_ShutdownCalls, 0);
+    }
+
+    EXPECT_EQ(g_InitializeCalls, 1);
+    EXPECT_EQ(g_ShutdownCalls, 1);
+}
+
+TEST_F(HookSystemTest, ShutdownAtZeroDoesNotUnderflowOrCallBackend) {
+    HookSystem::Shutdown();
+    HookSystem::Shutdown();
+
+    EXPECT_EQ(g_ShutdownCalls, 0);
+
+    ASSERT_TRUE(HookSystem::Initialize());
+    EXPECT_EQ(g_InitializeCalls, 1);
+
+    HookSystem::Shutdown();
+    EXPECT_EQ(g_ShutdownCalls, 1);
+}
+
+TEST_F(HookSystemTest, EnableAndDisableAllHooksAffectTypedHookStateTransitions) {
+    ASSERT_TRUE(HookSystem::Initialize());
+
+    HookSystem::TypedHook<void (*)()> hook;
+    ASSERT_TRUE(hook.Create(reinterpret_cast<void*>(0x3000), reinterpret_cast<void*>(&DummyDetour)));
+    EXPECT_TRUE(hook.IsCreated());
+    EXPECT_TRUE(hook.IsEnabled());
+    EXPECT_EQ(hook.Original(), reinterpret_cast<void (*)()>(0x1234));
+
+    EXPECT_FALSE(hook.Enable());
+    EXPECT_TRUE(hook.Disable());
+    EXPECT_FALSE(hook.IsEnabled());
+    EXPECT_FALSE(hook.Disable());
+
+    EXPECT_TRUE(HookSystem::EnableAllHooks());
+    EXPECT_TRUE(hook.Enable());
+    EXPECT_TRUE(hook.IsEnabled());
+
+    EXPECT_TRUE(HookSystem::DisableAllHooks());
+    EXPECT_TRUE(hook.Disable());
+    EXPECT_FALSE(hook.IsEnabled());
+}
+
+TEST_F(HookSystemTest, TypedHookCreateExportTracksOriginalAndRemovesOnDestruction) {
+    ASSERT_TRUE(HookSystem::Initialize());
+
+    {
+        HookSystem::TypedHook<void (*)()> hook;
+        ASSERT_TRUE(hook.CreateExport("missing-module.dll", "ExportedThing", reinterpret_cast<void*>(&DummyDetour)));
+        EXPECT_TRUE(hook.IsCreated());
+        EXPECT_TRUE(hook.IsEnabled());
+        EXPECT_EQ(hook.Original(), reinterpret_cast<void (*)()>(0x5678));
+        EXPECT_FALSE(hook.CreateExport("missing-module.dll", "ExportedThing", reinterpret_cast<void*>(&DummyDetour)));
+    }
+
+    EXPECT_STREQ(g_LastRemovedExportModule, "missing-module.dll");
+    EXPECT_STREQ(g_LastRemovedExportName, "ExportedThing");
+    EXPECT_EQ(g_LastExportOriginal, reinterpret_cast<void*>(0x5678));
+}
+
+TEST_F(HookSystemTest, TypedHookDestructorRemovesFunctionHook) {
+    ASSERT_TRUE(HookSystem::Initialize());
+
+    {
+        HookSystem::TypedHook<void (*)()> hook;
+        ASSERT_TRUE(hook.Create(reinterpret_cast<void*>(0x4000), reinterpret_cast<void*>(&DummyDetour)));
+    }
+
+    EXPECT_EQ(g_LastRemovedFunctionTarget, reinterpret_cast<void*>(0x4000));
+    EXPECT_EQ(g_LastFunctionOriginal, reinterpret_cast<void*>(0x1234));
 }

@@ -141,7 +141,8 @@ public:
         }
 
         HMODULE hMod = GetModuleHandleA(moduleName);
-        m_Target = hMod ? reinterpret_cast<void*>(GetProcAddress(hMod, functionName)) : nullptr;
+        void* target = hMod ? reinterpret_cast<void*>(GetProcAddress(hMod, functionName)) : nullptr;
+        m_Target = target ? target : detour;
         m_Original = reinterpret_cast<FuncType>(orig);
         m_Created.store(true);
         m_Enabled.store(true);

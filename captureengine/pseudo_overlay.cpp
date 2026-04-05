@@ -802,8 +802,8 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     }
 
     // Create indicator overlay window
-    hOv_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
-                           kIndicatorClass, "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
+    hOv_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW, kIndicatorClass, "",
+                           WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
     if (!hOv_) {
         LogError("[PseudoOverlay] Failed to create indicator overlay window");
         CleanupGDI();
@@ -824,8 +824,8 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     }
 
     // Create warning overlay window
-    hWarn_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
-                             kWarningClass, "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
+    hWarn_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW, kWarningClass, "",
+                             WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
     if (!hWarn_) {
         LogError("[PseudoOverlay] Failed to create warning overlay window");
         DestroyWindow(hOv_);

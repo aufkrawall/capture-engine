@@ -23,8 +23,7 @@ inline uint64_t HundredNanosecondsToSamples(uint64_t hundredNanoseconds, int sam
     const uint64_t wholeSeconds = hundredNanoseconds / kHundredNanosecondsPerSecond;
     const uint64_t remainingHundredNanoseconds = hundredNanoseconds % kHundredNanosecondsPerSecond;
     return (wholeSeconds * static_cast<uint64_t>(sampleRate)) +
-           ((remainingHundredNanoseconds * static_cast<uint64_t>(sampleRate)) +
-            (kHundredNanosecondsPerSecond / 2)) /
+           ((remainingHundredNanoseconds * static_cast<uint64_t>(sampleRate)) + (kHundredNanosecondsPerSecond / 2)) /
                kHundredNanosecondsPerSecond;
 }
 

@@ -633,8 +633,8 @@ void InjectionManager::LaunchDelayedInjectionThread(const std::shared_ptr<Inject
     std::string source = sourceTag ? sourceTag : "Inject";
     std::thread delayedThread([managerShared, pid, name, source]() {
         try {
-            LogInfo("[%s] %s (PID: %lu) - Waiting for graphics API initialization before injection...",
-                    source.c_str(), name.c_str(), (unsigned long)pid);
+            LogInfo("[%s] %s (PID: %lu) - Waiting for graphics API initialization before injection...", source.c_str(),
+                    name.c_str(), (unsigned long)pid);
 
             bool ready = false;
             bool d3d12Loaded = false;
@@ -711,8 +711,8 @@ void InjectionManager::LaunchDelayedInjectionThread(const std::shared_ptr<Inject
 
             std::lock_guard<std::mutex> lock(managerShared->injectMutex);
             if (!managerShared->IsWhitelisted(name)) {
-                LogInfo("[%s] %s (PID: %lu) - No longer whitelisted, skipping injection", source.c_str(),
-                        name.c_str(), (unsigned long)pid);
+                LogInfo("[%s] %s (PID: %lu) - No longer whitelisted, skipping injection", source.c_str(), name.c_str(),
+                        (unsigned long)pid);
             } else if (!managerShared->IsAlreadyInjectedLocked(pid) && !managerShared->IsRecentlyFailedLocked(pid)) {
                 LogInfo("[%s] %s (PID: %lu) - Injecting (%s detected, waited %d ms)", source.c_str(), name.c_str(),
                         (unsigned long)pid, d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)", waitMs);
@@ -730,8 +730,7 @@ void InjectionManager::LaunchDelayedInjectionThread(const std::shared_ptr<Inject
             LogError("[%s] Delayed injection thread exception for PID %lu: %s", source.c_str(), (unsigned long)pid,
                      e.what());
         } catch (...) {
-            LogError("[%s] Delayed injection thread unknown exception for PID %lu", source.c_str(),
-                     (unsigned long)pid);
+            LogError("[%s] Delayed injection thread unknown exception for PID %lu", source.c_str(), (unsigned long)pid);
         }
     });
 
