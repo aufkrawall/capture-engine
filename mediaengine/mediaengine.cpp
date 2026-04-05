@@ -1472,18 +1472,26 @@ public:
                     const int64_t remainingStartupProtectionSamples = std::max<int64_t>(
                         0, static_cast<int64_t>(src.startupGapProtectionSamples) - encodedSamplesPerSource[srcIdx]);
                     bootstrapProtected += static_cast<uint64_t>(remainingStartupProtectionSamples);
-                    if (remainingStartupProtectionSamples <= 0) {
-                        const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
-                        const int64_t dropBeforeLive = static_cast<int64_t>(bufferedTimelineSamples) -
-                                                       (std::max<int64_t>(targetSamples, 0) + targetBufferedSamples);
-                        if (dropBeforeLive > 0) {
-                            const size_t droppedSamples =
-                                DropOldestBufferedSamples(src, static_cast<size_t>(dropBeforeLive));
-                            bootstrapTrimmed += droppedSamples;
-                            if (droppedSamples > 0) {
-                                // Bootstrap trims can otherwise start playback mid-waveform
-                                // and create an audible click/distortion in the first live audio.
-                                src.pendingUnderrunRecoveryFade = true;
+                    const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
+                    const int64_t bufferedRealSamples = static_cast<int64_t>(ce::audio::ComputeBufferedRealAudioSamples(
+                        bufferedTimelineSamples,
+                        src.startupSyntheticPostSamples + src.startupSyntheticRingSamples));
+                    const int64_t allowedRealBacklogSamples =
+                        std::max<int64_t>(targetBufferedSamples, static_cast<int64_t>(kMinBootstrapRealSamples));
+                    const int64_t excessRealBacklogSamples = bufferedRealSamples - allowedRealBacklogSamples;
+                    const int64_t excessTimelineSamples = static_cast<int64_t>(bufferedTimelineSamples) -
+                                                          (remainingStartupProtectionSamples + allowedRealBacklogSamples);
+                    const int64_t dropBeforeLive = std::max<int64_t>(0, std::min(excessRealBacklogSamples,
+                                                                                 excessTimelineSamples));
+                    if (dropBeforeLive > 0) {
+                        const size_t droppedSamples = DropOldestBufferedSamples(src, static_cast<size_t>(dropBeforeLive));
+                        bootstrapTrimmed += droppedSamples;
+                        if (droppedSamples > 0) {
+                            // Bootstrap trims can otherwise start playback mid-waveform
+                            // and create an audible click/distortion in the first live audio.
+                            src.pendingUnderrunRecoveryFade = true;
+                            if (remainingStartupProtectionSamples > 0) {
+                                src.pendingStartupJoinFade = true;
                             }
                         }
                     }
@@ -2942,10 +2950,10 @@ private:
                                     packetStartSamples = ce::audio::ApplyStartupPacketTimelineRebaseOffset(
                                         packetStartSamples, static_cast<int64_t>(src.startupRebasedGapSamples));
                                     if (firstTimelinePacket) {
-                                        // Keep only one small startup quantum of preserved silence so the
-                                        // first bootstrap pull can already include some real audio.
-                                        constexpr int64_t kStartupFirstPacketGapCapSamples =
-                                            ce::audio::kDefaultAudioPullQuantumSamples;
+                                        // Keep a small preserved startup gap so the first live chunk does not
+                                        // begin mid-waveform. A smaller 5ms cap caused large real-audio
+                                        // startup backlogs and aggressive steady-state trim/correction.
+                                        constexpr int64_t kStartupFirstPacketGapCapSamples = 480;
                                         constexpr int64_t kStartupFirstPacketRebaseThresholdSamples = 2400;
                                         const int64_t rebaseOffset = ce::audio::ComputeStartupFirstPacketRebaseOffset(
                                             packetStartSamples, src.sawSyncPendingPackets, kStartupFirstPacketGapCapSamples,
