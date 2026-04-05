@@ -8,9 +8,8 @@
 #include "../common/shared_defs.h"
 
 // Controller-side pseudo-overlay indicator for WGC capture.
-// This uses layered top-level desktop windows, so fullscreen-like anchors use a
-// reduced-impact mode that keeps the small indicator visible but suppresses the
-// larger warning/text overlay to reduce DirectFlip/MPO/VRR disruption.
+// This uses layered top-level desktop windows and retains both the ghost
+// keepalive path and animated warning text behavior for compatibility.
 // Shows a colored circle in a screen corner:
 //   Red = recording active, Blue = idle
 // Blinking warning when a whitelisted game is focused but not recording.

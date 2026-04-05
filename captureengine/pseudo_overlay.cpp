@@ -468,11 +468,11 @@ void PseudoOverlay::UpdateOverlay() {
     const AnchorInfo anchor = ResolveAnchorInfo();
     if (anchor.fullscreenLike) {
         if (!lastFullscreenSuppressed_) {
-            LogInfo("[PseudoOverlay] Fullscreen-like anchor detected; using reduced-impact mode");
+            LogInfo("[PseudoOverlay] Fullscreen-like anchor detected");
             lastFullscreenSuppressed_ = true;
         }
     } else if (lastFullscreenSuppressed_) {
-        LogInfo("[PseudoOverlay] Fullscreen-like anchor cleared; restoring normal mode");
+        LogInfo("[PseudoOverlay] Fullscreen-like anchor cleared");
         lastFullscreenSuppressed_ = false;
     }
 
@@ -526,15 +526,38 @@ void PseudoOverlay::UpdateOverlay() {
         indY = 0;
     }  // BR
 
+    // Ghost pixel offsets (relative to window, furthest corner)
+    int pixX = 0, pixY = 0;
+    if (config_.pos == 3) {
+        pixX = 0;
+        pixY = 0;
+    }  // TL -> 0,0
+    else if (config_.pos == 2) {
+        pixX = fullS - 1;
+        pixY = 0;
+    }  // TR
+    else if (config_.pos == 1) {
+        pixX = 0;
+        pixY = fullS - 1;
+    }  // BL
+    else {
+        pixX = fullS - 1;
+        pixY = fullS - 1;
+    }  // BR
+
     bool rec = isRecording_.load();
     bool showInd = false;
     if (rec && config_.mode != 2)  // MODE_WARN_ONLY
         showInd = true;
 
-    // Keep ghost mode disabled on layered pseudo-overlay windows. A hidden
-    // window is safer for DirectFlip/MPO/VRR than a 1px keepalive surface.
-    bool ghostActive = false;
-    BYTE indAlpha = showInd ? 255 : 0;
+    bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
+
+    BYTE indAlpha = 0;
+    if (ghostActive) {
+        indAlpha = showInd ? 255 : 1;
+    } else {
+        indAlpha = showInd ? 255 : 0;
+    }
 
     // Determine color
     COLORREF curCol = rec ? RGB(255, 0, 0) : RGB(0, 100, 255);
@@ -564,20 +587,27 @@ void PseudoOverlay::UpdateOverlay() {
                     if (hBm) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
 
-                        HBRUSH hBlack = CreateSolidBrush(RGB(0, 0, 0));
-                        RECT r = {0, 0, fullS, fullS};
-                        FillRect(hdcMem, &r, hBlack);
-                        DeleteObject(hBlack);
+                        if (indAlpha == 1) {
+                            HBRUSH hInv = CreateSolidBrush(RGB(0, 0, 1));
+                            RECT rPixel = {pixX, pixY, pixX + 1, pixY + 1};
+                            FillRect(hdcMem, &rPixel, hInv);
+                            DeleteObject(hInv);
+                        } else {
+                            HBRUSH hBlack = CreateSolidBrush(RGB(0, 0, 0));
+                            RECT r = {0, 0, fullS, fullS};
+                            FillRect(hdcMem, &r, hBlack);
+                            DeleteObject(hBlack);
 
-                        HPEN hPen = CreatePen(PS_SOLID, S(2), RGB(255, 255, 255));
-                        HBRUSH hBrush = CreateSolidBrush(curCol);
-                        HPEN hOldPen = (HPEN)SelectObject(hdcMem, hPen);
-                        HBRUSH hOldBrush = (HBRUSH)SelectObject(hdcMem, hBrush);
-                        Ellipse(hdcMem, indX + S(1), indY + S(1), indX + s - S(1), indY + s - S(1));
-                        SelectObject(hdcMem, hOldPen);
-                        SelectObject(hdcMem, hOldBrush);
-                        DeleteObject(hBrush);
-                        DeleteObject(hPen);
+                            HPEN hPen = CreatePen(PS_SOLID, S(2), RGB(255, 255, 255));
+                            HBRUSH hBrush = CreateSolidBrush(curCol);
+                            HPEN hOldPen = (HPEN)SelectObject(hdcMem, hPen);
+                            HBRUSH hOldBrush = (HBRUSH)SelectObject(hdcMem, hBrush);
+                            Ellipse(hdcMem, indX + S(1), indY + S(1), indX + s - S(1), indY + s - S(1));
+                            SelectObject(hdcMem, hOldPen);
+                            SelectObject(hdcMem, hOldBrush);
+                            DeleteObject(hBrush);
+                            DeleteObject(hPen);
+                        }
 
                         POINT ptDst = {winX, winY};
                         SIZE szWnd = {fullS, fullS};
@@ -604,7 +634,7 @@ void PseudoOverlay::UpdateOverlay() {
     ULONGLONG now = GetTickCount64();
     bool showScreenshot = now < screenshotNotifyUntil_.load();
     bool showOverload = !showScreenshot && config_.showEncoderOverloadWarn && (now < overloadWarnUntil_.load());
-    bool showW = !anchor.fullscreenLike && (warnVisible_ || showOverload || showScreenshot);
+    bool showW = warnVisible_ || showOverload || showScreenshot;
     BYTE warnAlpha = 0;
     bool doUpdateWarn = false;
 
@@ -981,8 +1011,6 @@ void PseudoOverlay::Shutdown() {
 void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
     bool wasEnabled = config_.enabled;
     config_ = cfg;
-    config_.alwaysRender = false;
-    config_.alwaysRenderOnlyWhenGame = false;
     lastWarnMsg_.clear();
     sizeWarn_ = {0, 0};
 

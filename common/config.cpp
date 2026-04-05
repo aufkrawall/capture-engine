@@ -466,8 +466,8 @@ dlss_fg_dll_path=
 
 [pseudo-overlay]
 ; Controller-side pseudo-overlay indicator for WGC capture (no injection required)
-; Uses layered desktop windows, so fullscreen-like windows use an indicator-only
-; reduced-impact mode to reduce DirectFlip/MPO/VRR disruption
+; Uses layered desktop windows and keeps the ghost keepalive / animated warning
+; behavior, while reducing extra z-order churn and using target-aware anchoring
 ; Shows a colored circle in screen corner while recording
 ; Blinking warning appears when a whitelisted game is focused but not recording
 ; enabled - Values: true, false
@@ -480,10 +480,9 @@ pad=20
 pos=0
 ; mode - Values: 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
 mode=0
-; always_render - Deprecated safety-off mode. Ignored at runtime because a
-; layered keepalive window is hostile to DirectFlip/MPO/VRR.
+; always_render - Keep the indicator window alive with a 1x1 alpha=1 ghost pixel when idle
 always_render=false
-; always_render_only_when_game - Deprecated with always_render and ignored at runtime
+; always_render_only_when_game - Only use always_render when a whitelisted game is focused
 always_render_only_when_game=false
 ; show_encoder_overload_warnings - Show encoder overload status warning
 show_encoder_overload_warnings=true
