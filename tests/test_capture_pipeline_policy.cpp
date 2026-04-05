@@ -298,6 +298,14 @@ TEST(CapturePipelinePolicyTest, WgcWarmupCommitRequiresStableBufferedSource) {
     EXPECT_FALSE(policy::ShouldCommitWgcWarmup(true, 3, policy::kRecordingWarmupMinMs, 115.0, 120));
 }
 
+TEST(CapturePipelinePolicyTest, WgcWarmupTelemetryStartsUnready) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+
+    EXPECT_EQ(policy::ClassifyWgcLowSourceState(telemetry), policy::WgcLowSourceState::kInputBelowTarget);
+    EXPECT_EQ(policy::ClassifyWgcLiveRecoveryState(telemetry, 4, false), policy::WgcLiveRecoveryState::kSourceStarved);
+}
+
 TEST(CapturePipelinePolicyTest, WgcLowSourceSelectionClampProtectsFragileQueue) {
     EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 4, 2, 116, 116, 120, 130), 0u);
     EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 4, 2, 119, 119, 120, 90), 1u);

@@ -1736,10 +1736,16 @@ void EncoderThreadFunc(const AppConfig& config) {
     wgcSessionSummary.Reset();
     const uint64_t minLoggedWgcStarvedEpisodeMs =
         std::max<uint64_t>(100ull, static_cast<uint64_t>(frameIntervalMs * 8.0 + 0.5));
-    const auto shouldLogWgcStarvedEpisode = [&](uint64_t durationMs, uint64_t duplicateTicks,
+    const auto shouldLogWgcStarvedEpisode = [&](uint64_t durationMs, uint64_t outputTicks, uint64_t duplicateTicks,
                                                 uint32_t peakFreshMissPermille) {
-        return duplicateTicks > 0 || peakFreshMissPermille >= ce::capture_policy::kWgcDeepUnderfeedEmptyTickPermille ||
-               durationMs >= minLoggedWgcStarvedEpisodeMs;
+        if (duplicateTicks > 0 || durationMs >= minLoggedWgcStarvedEpisodeMs) {
+            return true;
+        }
+
+        // Suppress single-tick/no-duplicate blips that can occur when the rolling
+        // no-fresh telemetry briefly spikes without a visible cadence miss.
+        return outputTicks > 1 &&
+               peakFreshMissPermille >= ce::capture_policy::kWgcDeepUnderfeedEmptyTickPermille;
     };
     const auto finishWgcStarvedEpisode = [&](uint64_t durationMs, uint64_t outputTicks, uint64_t duplicateTicks) {
         ++wgcSessionSummary.starvedEpisodes;
@@ -1758,7 +1764,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcSessionSummary.longestStarvedEpisodeMinInputFps = minInputFps;
             wgcSessionSummary.longestStarvedEpisodeMinDeliveredFps = minDeliveredFps;
         }
-        if (shouldLogWgcStarvedEpisode(durationMs, duplicateTicks, wgcStarvedEpisode.peakFreshMissPermille)) {
+        if (shouldLogWgcStarvedEpisode(durationMs, outputTicks, duplicateTicks,
+                                      wgcStarvedEpisode.peakFreshMissPermille)) {
             LogInfo(
                 "[WGC CFR] Source-starved episode: duration=%llums out=%llu dup=%llu minIn=%u minDel=%u "
                 "freshMiss=%upm minBuf=%u",
@@ -2495,8 +2502,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                 };
                 const bool allowWgcLiveRecoveryMode =
                     recordingOutputLive && g_Recording.load(std::memory_order_acquire);
+                const bool wgcSourceHealthTelemetryReady = allowWgcLiveRecoveryMode &&
+                                                           liveTicksOutput >= std::max<uint64_t>(8ull, outputFps / 8u) &&
+                                                           wgcRecentDeliveredMin250Fps > 0 &&
+                                                           wgcRecentDeliveredMin500Fps > 0 &&
+                                                           wgcRecentInputMin250Fps > 0 &&
+                                                           wgcRecentInputMin500Fps > 0;
                 const ce::capture_policy::WgcLiveRecoveryState wgcLiveRecoveryStateCurrent =
-                    allowWgcLiveRecoveryMode
+                    wgcSourceHealthTelemetryReady
                         ? ce::capture_policy::ClassifyWgcLiveRecoveryState(wgcAdaptiveTelemetry, outputShortfallTicks,
                                                                            encoderTooSlowForTargetCurrent)
                         : ce::capture_policy::WgcLiveRecoveryState::kHealthy;
@@ -2512,7 +2525,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcReservePressureActive = ce::capture_policy::IsWgcReservePressureActive(
                     wgcNoReserveTickCount, wgcQueueTickSampleCount, outputFps);
                 const ce::capture_policy::WgcLowSourceState wgcLowSourceStateCurrent =
-                    ce::capture_policy::ClassifyWgcLowSourceState(wgcAdaptiveTelemetry);
+                    wgcSourceHealthTelemetryReady
+                        ? ce::capture_policy::ClassifyWgcLowSourceState(wgcAdaptiveTelemetry)
+                        : ce::capture_policy::WgcLowSourceState::kHealthy;
                 const bool shouldEnterWgcLowSourceMode =
                     wgcLowSourceStateCurrent != ce::capture_policy::WgcLowSourceState::kHealthy;
                 const bool bufferedReserveRecovered = bufferedWgcFrames.size() >= 3;
@@ -2541,7 +2556,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
 
-                if (allowWgcLiveRecoveryMode) {
+                if (wgcSourceHealthTelemetryReady) {
                     const bool shouldEnterWgcLiveRecoveryMode = ce::capture_policy::ShouldEnterWgcLiveRecoveryMode(
                         wgcAdaptiveTelemetry, outputShortfallTicks, encoderTooSlowForTargetCurrent);
                     const bool shouldExitWgcLiveRecoveryMode = ce::capture_policy::ShouldExitWgcLiveRecoveryMode(
@@ -2580,9 +2595,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 const bool starvedEpisodeShouldBeActive =
-                    ce::capture_policy::IsWgcDeepUnderfeed(outputFps, wgcRecentDeliveredMin250Fps,
-                                                           wgcRecentInputMin250Fps, wgcNoFreshTickPermille) ||
-                    (wgcLiveRecoveryModeActive && wgcSourceStarvedCurrent);
+                    wgcSourceHealthTelemetryReady &&
+                    (ce::capture_policy::IsWgcDeepUnderfeed(outputFps, wgcRecentDeliveredMin250Fps,
+                                                            wgcRecentInputMin250Fps, wgcNoFreshTickPermille) ||
+                     (wgcLiveRecoveryModeActive && wgcSourceStarvedCurrent));
                 if (starvedEpisodeShouldBeActive) {
                     if (!wgcStarvedEpisode.active) {
                         wgcStarvedEpisode.Reset();
