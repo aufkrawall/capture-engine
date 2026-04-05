@@ -7,7 +7,10 @@
 #include "../common/config.h"
 #include "../common/shared_defs.h"
 
-// Pseudo-overlay indicator for WGC capture.
+// Controller-side pseudo-overlay indicator for WGC capture.
+// This uses layered top-level desktop windows, so fullscreen-like anchors use a
+// reduced-impact mode that keeps the small indicator visible but suppresses the
+// larger warning/text overlay to reduce DirectFlip/MPO/VRR disruption.
 // Shows a colored circle in a screen corner:
 //   Red = recording active, Blue = idle
 // Blinking warning when a whitelisted game is focused but not recording.
@@ -48,6 +51,7 @@ private:
         HWND window = NULL;
         HMONITOR monitor = NULL;
         UINT dpi = 96;
+        bool fullscreenLike = false;
     };
 
     // Overlay state tracking (to avoid redundant UpdateLayeredWindow calls)
@@ -109,6 +113,7 @@ private:
     uint32_t mappedInjectPid_ = 0;
     uint32_t lastEncoderOverloadFlags_ = 0;
     bool lastOverlaySuppressed_ = false;
+    bool lastFullscreenSuppressed_ = false;
 
     // Timer ID
     static constexpr UINT_PTR kTimerId = 1001;

@@ -402,6 +402,10 @@ int InjectProcessMain(const AppConfig& config) {
         manager->SetOnInjectCallback([&](const std::string& processName) {
             LogInfo("[Inject] Reloading config for target: %s", processName.c_str());
 
+            // Suppress the controller-side layered pseudo overlay immediately
+            // while the injected overlay handoff settles.
+            pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending, true);
+
             // Load fresh config with process-specific overrides
             AppConfig targetConfig;
             LoadConfig(configPath, targetConfig, processName);
@@ -522,6 +526,10 @@ int InjectProcessMain(const AppConfig& config) {
             // Reload config for this process
             AppConfig targetConfig;
             LoadConfig(configPath, targetConfig, procName);
+
+            // The hook is live now, so hide the controller-side layered pseudo
+            // overlay immediately before the regular injector state poll runs.
+            pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending, true);
 
             // Update Shared Memory
             UpdateSharedMemoryFromConfig(pSharedMem, targetConfig);

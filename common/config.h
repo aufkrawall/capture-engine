@@ -251,14 +251,16 @@ struct WhitelistEntry {
     }
 };
 
-// Pseudo-overlay for WGC capture (no injection required)
+// Controller-side pseudo-overlay for WGC capture (no injection required).
+// Uses layered desktop windows and switches to an indicator-only reduced-impact
+// mode around fullscreen-like windows to reduce DirectFlip/MPO/VRR disruption.
 struct PseudoOverlayConfig {
     bool enabled = false;
     int size = 30;              // Indicator circle diameter (10-200)
     int pad = 20;               // Padding from screen edge (0-100)
     int pos = 0;                // 0=BR, 1=BL, 2=TR, 3=TL
     int mode = 0;               // 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
-    bool alwaysRender = false;  // Ghost mode: keep indicator window alive with a 1x1 alpha=1 pixel when idle
+    bool alwaysRender = false;  // Deprecated safety-off mode: kept for config compatibility, ignored at runtime
     bool alwaysRenderOnlyWhenGame = false;
     bool showEncoderOverloadWarn = true;
     std::string processList;  // Pipe-delimited process names for foreground detection

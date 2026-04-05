@@ -91,6 +91,100 @@ std::string FormatEncoderOverloadMessage(uint32_t sustainFpsX100, uint32_t targe
     }
     return buffer;
 }
+
+bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
+    RECT clientRect = {};
+    if (!GetClientRect(hwnd, &clientRect)) {
+        return false;
+    }
+
+    POINT topLeft = {clientRect.left, clientRect.top};
+    POINT bottomRight = {clientRect.right, clientRect.bottom};
+    if (!ClientToScreen(hwnd, &topLeft) || !ClientToScreen(hwnd, &bottomRight)) {
+        return false;
+    }
+
+    rect.left = topLeft.x;
+    rect.top = topLeft.y;
+    rect.right = bottomRight.x;
+    rect.bottom = bottomRight.y;
+    return true;
+}
+
+bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance) {
+    auto absDiff = [](LONG a, LONG b) -> LONG { return (a >= b) ? (a - b) : (b - a); };
+
+    return absDiff(lhs.left, rhs.left) <= tolerance && absDiff(lhs.top, rhs.top) <= tolerance &&
+           absDiff(lhs.right, rhs.right) <= tolerance && absDiff(lhs.bottom, rhs.bottom) <= tolerance;
+}
+
+// Keep the pseudo-overlay fullscreen-like heuristic aligned with media_main's
+// window detection so controller-side overlay behavior tracks capture policy.
+bool IsWindowFullscreenLike(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+        return false;
+    }
+
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!monitor) {
+        return false;
+    }
+
+    MONITORINFO monitorInfo = {sizeof(monitorInfo)};
+    if (!GetMonitorInfo(monitor, &monitorInfo)) {
+        return false;
+    }
+
+    RECT windowRect = {};
+    RECT clientRect = {};
+    const bool haveWindowRect = GetWindowRect(hwnd, &windowRect) != FALSE;
+    const bool haveClientRect = GetWindowClientRectInScreen(hwnd, clientRect);
+    constexpr LONG kFullscreenTolerancePx = 8;
+
+    if (!haveWindowRect && !haveClientRect) {
+        return false;
+    }
+
+    const bool windowMatchesMonitor =
+        haveWindowRect && RectNearlyMatches(windowRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
+    const bool clientMatchesMonitor =
+        haveClientRect && RectNearlyMatches(clientRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
+    return windowMatchesMonitor || clientMatchesMonitor;
+}
+
+struct WindowSearch {
+    DWORD pid = 0;
+    HWND hwnd = NULL;
+};
+
+BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
+    auto* search = reinterpret_cast<WindowSearch*>(lParam);
+    if (!search || !IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER) != 0) {
+        return TRUE;
+    }
+
+    DWORD windowPid = 0;
+    GetWindowThreadProcessId(hwnd, &windowPid);
+    if (windowPid == search->pid) {
+        LONG_PTR styles = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        if (!(styles & WS_EX_TOOLWINDOW)) {
+            search->hwnd = hwnd;
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+HWND GetMainWindowForProcess(DWORD pid) {
+    if (pid == 0) {
+        return NULL;
+    }
+
+    WindowSearch search = {pid, NULL};
+    EnumWindows(EnumWindowsCallback, reinterpret_cast<LPARAM>(&search));
+    return search.hwnd;
+}
 }  // namespace
 
 // ---- Static instance pointer for wndproc routing ----
@@ -278,8 +372,18 @@ bool PseudoOverlay::IsInjectOverlayPending() {
 PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
     AnchorInfo anchor;
 
-    const POINT primaryPoint = {0, 0};
-    anchor.monitor = MonitorFromPoint(primaryPoint, MONITOR_DEFAULTTOPRIMARY);
+    HWND anchorWindow = GetForegroundWindow();
+    if (anchorWindow && (!IsWindow(anchorWindow) || !IsWindowVisible(anchorWindow) || GetWindow(anchorWindow, GW_OWNER))) {
+        anchorWindow = NULL;
+    }
+
+    if (!anchorWindow && EnsureSharedMemoryMapping() && pSharedMem_) {
+        anchorWindow = GetMainWindowForProcess(pSharedMem_->GetSourcePid());
+    }
+
+    anchor.window = anchorWindow;
+    anchor.monitor = anchorWindow ? MonitorFromWindow(anchorWindow, MONITOR_DEFAULTTONEAREST)
+                                  : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
     if (!GetMonitorRectForMonitor(anchor.monitor, &anchor.monitorRect)) {
         anchor.monitorRect.left = 0;
         anchor.monitorRect.top = 0;
@@ -287,8 +391,8 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
         anchor.monitorRect.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    anchor.window = NULL;
-    anchor.dpi = GetResolvedWindowDpi(NULL);
+    anchor.dpi = GetResolvedWindowDpi(anchorWindow);
+    anchor.fullscreenLike = IsWindowFullscreenLike(anchorWindow);
     return anchor;
 }
 
@@ -335,6 +439,7 @@ void PseudoOverlay::UpdateOverlay() {
         lastOv_ = {};
         lastWarnVis_ = false;
         lastOverlaySuppressed_ = false;
+        lastFullscreenSuppressed_ = false;
         return;
     }
 
@@ -351,6 +456,7 @@ void PseudoOverlay::UpdateOverlay() {
         lastOv_ = {};
         lastWarnVis_ = false;
         lastOverlaySuppressed_ = true;
+        lastFullscreenSuppressed_ = false;
         return;
     }
 
@@ -360,6 +466,16 @@ void PseudoOverlay::UpdateOverlay() {
     }
 
     const AnchorInfo anchor = ResolveAnchorInfo();
+    if (anchor.fullscreenLike) {
+        if (!lastFullscreenSuppressed_) {
+            LogInfo("[PseudoOverlay] Fullscreen-like anchor detected; using reduced-impact mode");
+            lastFullscreenSuppressed_ = true;
+        }
+    } else if (lastFullscreenSuppressed_) {
+        LogInfo("[PseudoOverlay] Fullscreen-like anchor cleared; restoring normal mode");
+        lastFullscreenSuppressed_ = false;
+    }
+
     UpdateScaleForDpi(anchor.dpi);
 
     const int monitorLeft = anchor.monitorRect.left;
@@ -410,39 +526,15 @@ void PseudoOverlay::UpdateOverlay() {
         indY = 0;
     }  // BR
 
-    // Ghost pixel offsets (relative to window, furthest corner)
-    int pixX = 0, pixY = 0;
-    if (config_.pos == 3) {
-        pixX = 0;
-        pixY = 0;
-    }  // TL -> 0,0
-    else if (config_.pos == 2) {
-        pixX = fullS - 1;
-        pixY = 0;
-    }  // TR
-    else if (config_.pos == 1) {
-        pixX = 0;
-        pixY = fullS - 1;
-    }  // BL
-    else {
-        pixX = fullS - 1;
-        pixY = fullS - 1;
-    }  // BR
-
     bool rec = isRecording_.load();
     bool showInd = false;
     if (rec && config_.mode != 2)  // MODE_WARN_ONLY
         showInd = true;
 
-    bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
-
-    // Determine alpha
-    BYTE indAlpha = 0;
-    if (ghostActive) {
-        indAlpha = showInd ? 255 : 1;
-    } else {
-        indAlpha = showInd ? 255 : 0;
-    }
+    // Keep ghost mode disabled on layered pseudo-overlay windows. A hidden
+    // window is safer for DirectFlip/MPO/VRR than a 1px keepalive surface.
+    bool ghostActive = false;
+    BYTE indAlpha = showInd ? 255 : 0;
 
     // Determine color
     COLORREF curCol = rec ? RGB(255, 0, 0) : RGB(0, 100, 255);
@@ -458,47 +550,25 @@ void PseudoOverlay::UpdateOverlay() {
         if (indAlpha > 0) {
             if (!IsWindowVisible(hOv_))
                 ShowWindow(hOv_, SW_SHOWNA);
-            SetWindowPos(hOv_, HWND_TOPMOST, winX, winY, fullS, fullS, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SetWindowPos(hOv_, NULL, winX, winY, fullS, fullS, SWP_NOACTIVATE | SWP_NOZORDER);
         } else {
-            if (!config_.alwaysRender) {
-                SetWindowPos(hOv_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
-            }
+            ShowWindow(hOv_, SW_HIDE);
         }
 
-        // Capture locals for the static draw callback
-        int lIndX = indX, lIndY = indY, lS = s, lFullS = fullS;
-        int lPixX = pixX, lPixY = pixY;
-        COLORREF lCurCol = curCol;
-        int lScale2 = S(2);
-        int lScale1 = S(1);
-        bool lGhostPixel = (indAlpha == 1);
+        if (indAlpha > 0) {
+            HDC hdcScreen = GetDC(NULL);
+            if (hdcScreen) {
+                HDC hdcMem = CreateCompatibleDC(hdcScreen);
+                if (hdcMem) {
+                    HBITMAP hBm = CreateCompatibleBitmap(hdcScreen, fullS, fullS);
+                    if (hBm) {
+                        HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
 
-        // Draw function using captured values via a lambda wrapped as function pointer
-        // We use a different approach: pass context through a static and call it.
-        // Actually, let's use a simpler approach - do the drawing inline.
-
-        HDC hdcScreen = GetDC(NULL);
-        if (hdcScreen) {
-            HDC hdcMem = CreateCompatibleDC(hdcScreen);
-            if (hdcMem) {
-                HBITMAP hBm = CreateCompatibleBitmap(hdcScreen, fullS, fullS);
-                if (hBm) {
-                    HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
-
-                    if (indAlpha == 1) {
-                        // Ghost mode: draw single invisible pixel at furthest corner
-                        HBRUSH hInv = CreateSolidBrush(RGB(0, 0, 1));
-                        RECT rPixel = {pixX, pixY, pixX + 1, pixY + 1};
-                        FillRect(hdcMem, &rPixel, hInv);
-                        DeleteObject(hInv);
-                    } else {
-                        // Fill with black (color key = transparent)
                         HBRUSH hBlack = CreateSolidBrush(RGB(0, 0, 0));
                         RECT r = {0, 0, fullS, fullS};
                         FillRect(hdcMem, &r, hBlack);
                         DeleteObject(hBlack);
 
-                        // Draw indicator circle
                         HPEN hPen = CreatePen(PS_SOLID, S(2), RGB(255, 255, 255));
                         HBRUSH hBrush = CreateSolidBrush(curCol);
                         HPEN hOldPen = (HPEN)SelectObject(hdcMem, hPen);
@@ -508,21 +578,22 @@ void PseudoOverlay::UpdateOverlay() {
                         SelectObject(hdcMem, hOldBrush);
                         DeleteObject(hBrush);
                         DeleteObject(hPen);
+
+                        POINT ptDst = {winX, winY};
+                        SIZE szWnd = {fullS, fullS};
+                        POINT ptSrc = {0, 0};
+                        BLENDFUNCTION blend = {AC_SRC_OVER, 0, indAlpha, 0};
+                        DWORD flags = ULW_COLORKEY | ULW_ALPHA;
+                        UpdateLayeredWindow(hOv_, hdcScreen, &ptDst, &szWnd, hdcMem, &ptSrc, RGB(0, 0, 0), &blend,
+                                            flags);
+
+                        SelectObject(hdcMem, hOldBm);
+                        DeleteObject(hBm);
                     }
-
-                    POINT ptDst = {winX, winY};
-                    SIZE szWnd = {fullS, fullS};
-                    POINT ptSrc = {0, 0};
-                    BLENDFUNCTION blend = {AC_SRC_OVER, 0, indAlpha, 0};
-                    DWORD flags = ULW_COLORKEY | ULW_ALPHA;
-                    UpdateLayeredWindow(hOv_, hdcScreen, &ptDst, &szWnd, hdcMem, &ptSrc, RGB(0, 0, 0), &blend, flags);
-
-                    SelectObject(hdcMem, hOldBm);
-                    DeleteObject(hBm);
+                    DeleteDC(hdcMem);
                 }
-                DeleteDC(hdcMem);
+                ReleaseDC(NULL, hdcScreen);
             }
-            ReleaseDC(NULL, hdcScreen);
         }
 
         lastOv_ = {winX, winY, fullS, showInd, ghostActive};
@@ -533,7 +604,7 @@ void PseudoOverlay::UpdateOverlay() {
     ULONGLONG now = GetTickCount64();
     bool showScreenshot = now < screenshotNotifyUntil_.load();
     bool showOverload = !showScreenshot && config_.showEncoderOverloadWarn && (now < overloadWarnUntil_.load());
-    bool showW = warnVisible_ || showOverload || showScreenshot;
+    bool showW = !anchor.fullscreenLike && (warnVisible_ || showOverload || showScreenshot);
     BYTE warnAlpha = 0;
     bool doUpdateWarn = false;
 
@@ -570,9 +641,9 @@ void PseudoOverlay::UpdateOverlay() {
         if (warnAlpha > 0) {
             if (!IsWindowVisible(hWarn_))
                 ShowWindow(hWarn_, SW_SHOWNA);
-            SetWindowPos(hWarn_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SetWindowPos(hWarn_, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
         } else {
-            SetWindowPos(hWarn_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
+            ShowWindow(hWarn_, SW_HIDE);
         }
 
         // Check if cached bitmap needs refresh
@@ -802,7 +873,8 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     }
 
     // Create indicator overlay window
-    hOv_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW, kIndicatorClass, "",
+    hOv_ = CreateWindowExA(
+        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kIndicatorClass, "",
                            WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
     if (!hOv_) {
         LogError("[PseudoOverlay] Failed to create indicator overlay window");
@@ -824,8 +896,9 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     }
 
     // Create warning overlay window
-    hWarn_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW, kWarningClass, "",
-                             WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
+    hWarn_ = CreateWindowExA(
+        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kWarningClass, "",
+                              WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
     if (!hWarn_) {
         LogError("[PseudoOverlay] Failed to create warning overlay window");
         DestroyWindow(hOv_);
@@ -840,7 +913,8 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     const AnchorInfo anchor = ResolveAnchorInfo();
     initialized_ = true;
     LogInfo("[PseudoOverlay] Initialized (scale=%.2f)", scale_);
-    LogInfo("[PseudoOverlay] Using primary monitor anchor (monitor=%p dpi=%u)", anchor.monitor, currentDpi_);
+    LogInfo("[PseudoOverlay] Initial anchor: monitor=%p window=%p dpi=%u fullscreenLike=%d", anchor.monitor,
+            anchor.window, currentDpi_, anchor.fullscreenLike ? 1 : 0);
 
     // Initial render
     UpdateOverlay();
@@ -894,6 +968,7 @@ void PseudoOverlay::Shutdown() {
     lastEncoderOverloadFlags_ = 0;
     overloadWarnSustainFpsX100_.store(0, std::memory_order_relaxed);
     lastOverlaySuppressed_ = false;
+    lastFullscreenSuppressed_ = false;
 
     initialized_ = false;
     instance_ = nullptr;
@@ -906,6 +981,8 @@ void PseudoOverlay::Shutdown() {
 void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
     bool wasEnabled = config_.enabled;
     config_ = cfg;
+    config_.alwaysRender = false;
+    config_.alwaysRenderOnlyWhenGame = false;
     lastWarnMsg_.clear();
     sizeWarn_ = {0, 0};
 
