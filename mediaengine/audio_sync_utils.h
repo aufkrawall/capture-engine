@@ -262,6 +262,23 @@ inline int64_t ComputeDurationUsToSamples(int64_t durationUs, int sampleRate) {
     return ((durationUs * static_cast<int64_t>(sampleRate)) + (kMicrosecondsPerSecond / 2)) / kMicrosecondsPerSecond;
 }
 
+inline int64_t ClampStartupAnchorQpc(int64_t sourceAnchorQpc, int64_t observedNowQpc, int64_t qpcFrequency,
+                                     uint32_t nominalFps, int64_t fallbackFrameMs = 16) {
+    if (sourceAnchorQpc <= 0 || observedNowQpc <= 0 || qpcFrequency <= 0 || observedNowQpc <= sourceAnchorQpc) {
+        return sourceAnchorQpc;
+    }
+
+    int64_t frameDurationQpc = 0;
+    if (nominalFps > 0) {
+        frameDurationQpc = (qpcFrequency + static_cast<int64_t>(nominalFps / 2)) / static_cast<int64_t>(nominalFps);
+    }
+    if (frameDurationQpc <= 0) {
+        frameDurationQpc = ((qpcFrequency * std::max<int64_t>(1, fallbackFrameMs)) + 500) / 1000;
+    }
+
+    return std::min<int64_t>(observedNowQpc, sourceAnchorQpc + std::max<int64_t>(1, frameDurationQpc));
+}
+
 inline int64_t ComputeLeadTrimExcessSamples(int64_t bufferedSamples, int64_t targetLatencySamples,
                                             int64_t allowedLeadSamples,
                                             int64_t hysteresisSamples = kDefaultAudioPullQuantumSamples) {
@@ -402,13 +419,18 @@ inline bool IsSourceStartupPrimed(bool sourceIsPrimed, bool hasAlignedStart, boo
 }
 
 inline bool IsSourceBootstrapReady(bool sourceBootstrapComplete, bool hasAlignedStart, bool sourceIsPrimed,
-                                   bool isAppAudioSource, size_t bufferedTimelineSamples,
-                                   size_t requiredTimelineSamples) {
+                                   bool isAppAudioSource, size_t bufferedRealSamples,
+                                   size_t requiredRealSamples) {
     if (sourceBootstrapComplete || IsOptionalUnstartedAppAudioSource(isAppAudioSource, hasAlignedStart)) {
         return true;
     }
 
-    return hasAlignedStart && sourceIsPrimed && bufferedTimelineSamples >= requiredTimelineSamples;
+    return hasAlignedStart && sourceIsPrimed && bufferedRealSamples >= requiredRealSamples;
+}
+
+inline size_t ComputeRequiredBootstrapRealSamples(int64_t targetTimelineSamples, size_t minimumRealSamples) {
+    return static_cast<size_t>(std::max<int64_t>(std::max<int64_t>(0, targetTimelineSamples),
+                                                 static_cast<int64_t>(minimumRealSamples)));
 }
 
 inline size_t ComputeBufferedRealAudioSamples(size_t bufferedSamples, uint64_t syntheticBufferedSamples) {
@@ -440,6 +462,40 @@ inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetSt
     } else {
         adjustment.overlapSamples = -deltaSamples;
     }
+    return adjustment;
+}
+
+inline int64_t ComputeStartupFirstPacketRebaseOffset(int64_t packetStartSamples, bool sawSyncPendingPackets,
+                                                     int64_t cappedStartupGapSamples,
+                                                     int64_t rebaseThresholdSamples) {
+    if (!sawSyncPendingPackets) {
+        return 0;
+    }
+
+    const int64_t clampedPacketStartSamples = std::max<int64_t>(0, packetStartSamples);
+    const int64_t clampedCappedGapSamples = std::max<int64_t>(0, cappedStartupGapSamples);
+    const int64_t clampedThresholdSamples = std::max<int64_t>(clampedCappedGapSamples, rebaseThresholdSamples);
+    if (clampedPacketStartSamples < clampedThresholdSamples || clampedPacketStartSamples <= clampedCappedGapSamples) {
+        return 0;
+    }
+
+    return clampedPacketStartSamples - clampedCappedGapSamples;
+}
+
+inline PacketTimelineAdjustment ComputeStartupAwarePacketTimelineAdjustment(
+    int64_t packetStartSamples, int64_t writtenTimelineSamples, int64_t steadyStateSlopSamples,
+    int64_t startupWindowSamples, int64_t startupSlopSamples, int64_t startupOverlapTrimThresholdSamples) {
+    const int64_t startupBoundarySamples =
+        std::max(std::max<int64_t>(0, packetStartSamples), std::max<int64_t>(0, writtenTimelineSamples));
+    const bool startupSettling = startupBoundarySamples < std::max<int64_t>(0, startupWindowSamples);
+
+    PacketTimelineAdjustment adjustment = ComputePacketTimelineAdjustment(
+        packetStartSamples, writtenTimelineSamples, startupSettling ? startupSlopSamples : steadyStateSlopSamples);
+    if (startupSettling && adjustment.overlapSamples > 0 &&
+        adjustment.overlapSamples < std::max<int64_t>(0, startupOverlapTrimThresholdSamples)) {
+        adjustment.overlapSamples = 0;
+    }
+
     return adjustment;
 }
 

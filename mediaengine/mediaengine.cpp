@@ -77,12 +77,16 @@ public:
         uint64_t qpcAlignedWrittenSamples = 0;     // Timeline samples represented in the ring from packet QPC stitching
         uint64_t packetTimelineGapSamples = 0;     // Silence inserted to preserve packet-QPC continuity
         uint64_t packetTimelineOverlapSamples = 0;  // Packet-leading samples trimmed to avoid time overlap
+        uint64_t startupRebasedGapSamples = 0;      // Large first-packet startup gap suppressed after sync reset
         int64_t alignedStartMs = -1;                // First source packet offset relative to recording start
         int64_t observedLateStartMs = 0;            // Latest observed startup delay used for startup pull slack
         bool hasAlignedStart = false;               // True after first packet aligned to recording start
         bool isPrimed = false;                      // True after source has buffered a startup safety cushion
         bool bootstrapComplete = false;             // True after startup backlog is settled and live sync may engage
         bool pendingUnderrunRecoveryFade = false;   // Arm fade-in when real audio resumes after padded silence
+        bool sawSyncPendingPackets = false;         // Audio arrived while sync gate was closed before first video frame
+        bool startupRealAudioSeen = false;          // Real audio has been emitted for this source since sync reset
+        bool pendingStartupJoinFade = false;        // Fade in real audio when a late source joins after startup silence
         uint64_t pendingRetainedTrimSamples = 0;    // Aggregated ring-headroom trims since the last periodic log
         uint32_t pendingRetainedTrimEvents = 0;     // Aggregated ring-headroom trim events since the last periodic log
         uint64_t pendingLatencyTrimSamples = 0;     // Aggregated trim samples since the last periodic log
@@ -290,12 +294,15 @@ public:
             src.qpcAlignedWrittenSamples = 0;
             src.packetTimelineGapSamples = 0;
             src.packetTimelineOverlapSamples = 0;
+            src.startupRebasedGapSamples = 0;
             src.alignedStartMs = -1;
             src.observedLateStartMs = 0;
             src.hasAlignedStart = false;
             src.isPrimed = false;
             src.bootstrapComplete = false;
             src.pendingUnderrunRecoveryFade = false;
+            src.startupRealAudioSeen = false;
+            src.pendingStartupJoinFade = false;
             src.pendingRetainedTrimSamples = 0;
             src.pendingRetainedTrimEvents = 0;
             src.pendingLatencyTrimSamples = 0;
@@ -667,12 +674,16 @@ public:
                 src.qpcAlignedWrittenSamples = 0;
                 src.packetTimelineGapSamples = 0;
                 src.packetTimelineOverlapSamples = 0;
+                src.startupRebasedGapSamples = 0;
                 src.alignedStartMs = -1;
                 src.observedLateStartMs = 0;
                 src.hasAlignedStart = false;
                 src.isPrimed = false;
                 src.bootstrapComplete = false;
                 src.pendingUnderrunRecoveryFade = false;
+                src.sawSyncPendingPackets = false;
+                src.startupRealAudioSeen = false;
+                src.pendingStartupJoinFade = false;
                 src.pendingRetainedTrimSamples = 0;
                 src.pendingRetainedTrimEvents = 0;
                 src.pendingLatencyTrimSamples = 0;
@@ -918,12 +929,16 @@ public:
             src.qpcAlignedWrittenSamples = 0;
             src.packetTimelineGapSamples = 0;
             src.packetTimelineOverlapSamples = 0;
+            src.startupRebasedGapSamples = 0;
             src.alignedStartMs = -1;
             src.observedLateStartMs = 0;
             src.hasAlignedStart = false;
             src.isPrimed = false;
             src.bootstrapComplete = false;
             src.pendingUnderrunRecoveryFade = false;
+            src.sawSyncPendingPackets = false;
+            src.startupRealAudioSeen = false;
+            src.pendingStartupJoinFade = false;
             src.pendingRetainedTrimSamples = 0;
             src.pendingRetainedTrimEvents = 0;
             src.pendingLatencyTrimSamples = 0;
@@ -1110,13 +1125,17 @@ public:
             if (IsWgcCfrRecording()) {
                 LARGE_INTEGER qpcNow;
                 QueryPerformanceCounter(&qpcNow);
-                anchorQPC = qpcNow.QuadPart;
+                const int64_t nowQPC = qpcNow.QuadPart;
+                anchorQPC = ce::audio::ClampStartupAnchorQpc(timestampQPC, nowQPC, qpcFreq,
+                                                             static_cast<uint32_t>(std::max(0, config.video.fps)));
                 int64_t anchorDeltaQpc = anchorQPC - timestampQPC;
                 int64_t anchorDeltaMs = (qpcFreq > 0) ? (anchorDeltaQpc * 1000) / qpcFreq : 0;
-                DLL_Log(
-                    "MediaEngine: WGC CFR overriding audio anchor from %lld to %lld "
-                    "(delta=%lldms)",
-                    timestampQPC, anchorQPC, anchorDeltaMs);
+                if (anchorDeltaMs > 0) {
+                    DLL_Log(
+                        "MediaEngine: WGC CFR clamped startup audio anchor from %lld to %lld "
+                        "(delta=%lldms)",
+                        timestampQPC, anchorQPC, anchorDeltaMs);
+                }
             }
 
             this->recordingStartTime = now;
@@ -1202,6 +1221,9 @@ public:
         constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 100;          // 10ms
         constexpr int64_t kOverloadAudioPullQuantumSamples = SAMPLE_RATE / 50;  // 20ms
         constexpr int64_t kPacketTimelineFadeSamples = SAMPLE_RATE / 750;       // ~1.33ms
+        constexpr int64_t kStartupPacketTimelineWindowSamples = (SAMPLE_RATE * 150) / 1000;
+        constexpr int64_t kStartupPacketTimelineSlopSamples = SAMPLE_RATE / 250;  // 4ms
+        constexpr int64_t kStartupPacketOverlapTrimThresholdSamples = SAMPLE_RATE / 200;  // 5ms
         constexpr int64_t kLatencyTrimHysteresisSamples = ce::audio::kDefaultAudioPullQuantumSamples;
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 10;  // 100ms
@@ -1413,13 +1435,20 @@ public:
                 isWgcCfrRecording ? effectiveWgcTargetBufferLagMs : videoPipelineLagMs, targetBufferedLagCapMs);
 
             bool trackReadyForBootstrap = true;
-            const size_t requiredBootstrapSamples = static_cast<size_t>(std::max<int64_t>(targetSamples, 0));
+            constexpr size_t kMinBootstrapRealSamples = static_cast<size_t>(SAMPLE_RATE / 40);  // 25ms
+            const size_t requiredBootstrapSamples =
+                ce::audio::ComputeRequiredBootstrapRealSamples(targetSamples, kMinBootstrapRealSamples);
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
-                const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
+                size_t bufferedRealSamples = ce::audio::ComputeBufferedRealAudioSamples(
+                    src.postResampleBuffer.size() / CHANNELS, src.startupSyntheticPostSamples);
+                if (src.ringBuffer) {
+                    bufferedRealSamples += ce::audio::ComputeBufferedRealAudioSamples(
+                        src.ringBuffer->GetAvailable() / CHANNELS, src.startupSyntheticRingSamples);
+                }
                 const bool srcReady = ce::audio::IsSourceBootstrapReady(
-                    src.bootstrapComplete, src.hasAlignedStart, src.isPrimed, isAppAudioSource, bufferedTimelineSamples,
+                    src.bootstrapComplete, src.hasAlignedStart, src.isPrimed, isAppAudioSource, bufferedRealSamples,
                     requiredBootstrapSamples);
                 trackReadyForBootstrap = trackReadyForBootstrap && srcReady;
             }
@@ -2106,13 +2135,24 @@ public:
                 std::vector<float> srcData(totalFloats, 0.0f);
                 size_t available = src.postResampleBuffer.size();
                 size_t toCopy = std::min(available, totalFloats);
+                const size_t syntheticCopiedSamples = std::min<uint64_t>(src.startupSyntheticPostSamples, toCopy / CHANNELS);
+                const size_t realCopiedSamples = (toCopy / CHANNELS) - syntheticCopiedSamples;
 
                 if (toCopy > 0) {
                     std::copy(src.postResampleBuffer.begin(), src.postResampleBuffer.begin() + toCopy, srcData.begin());
                     src.postResampleBuffer.erase(src.postResampleBuffer.begin(),
                                                  src.postResampleBuffer.begin() + toCopy);
                     ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticPostSamples, toCopy / CHANNELS);
-                    activeSources++;
+                    if (realCopiedSamples > 0 && src.pendingStartupJoinFade) {
+                        ApplyPacketBoundaryFadeIn(srcData.data() + syntheticCopiedSamples * CHANNELS, realCopiedSamples,
+                                                  CHANNELS,
+                                                  static_cast<size_t>(std::max<int64_t>(1, SAMPLE_RATE / 200)));
+                        src.pendingStartupJoinFade = false;
+                    }
+                    if (realCopiedSamples > 0) {
+                        activeSources++;
+                        src.startupRealAudioSeen = true;
+                    }
                 }
                 if (toCopy < totalFloats) {
                     // Underrun: apply a short fade-out on the last real samples
@@ -2161,7 +2201,10 @@ public:
                                 (int)srcIdx);
                         }
                     }
-                    src.pendingUnderrunRecoveryFade = true;
+                    src.pendingUnderrunRecoveryFade = !startupPadding;
+                    if (startupPadding && realCopiedSamples == 0) {
+                        src.pendingStartupJoinFade = true;
+                    }
                     if (!startupPadding && src.alignedStartMs >= 0 && padSamples >= (size_t)(SAMPLE_RATE / 200) &&
                         dropLogCounter++ % 100 == 0) {
                         DLL_Log(
@@ -2237,13 +2280,17 @@ public:
 
             // Soft clipping: Clamp values to [-1, 1] to prevent distortion
             {
-                const int64_t FADE_SAMPLES = SAMPLE_RATE / 20;  // 50ms
                 int64_t trackPos = encodedSamplesPerSource[firstSrcIdx];
+                const bool applyStartupTrackFade =
+                    !applyTransitionFade && trackPos == 0 && audioSources[firstSrcIdx].packetBoundaryFadeInSamplesRemaining <= 0 &&
+                    audioSources[firstSrcIdx].underrunFadeSamplesRemaining <= 0 &&
+                    !audioSources[firstSrcIdx].pendingUnderrunRecoveryFade;
+                const int64_t fadeSamples = applyTransitionFade ? SAMPLE_RATE / 20 : SAMPLE_RATE / 40;
                 int64_t fadeStart = applyTransitionFade ? 0 : trackPos;
-                if (trackPos < FADE_SAMPLES || applyTransitionFade) {
+                if ((applyStartupTrackFade || applyTransitionFade) && fadeSamples > 0) {
                     for (int64_t s = 0; s < samplesToEncode; s++) {
                         int64_t global = fadeStart + s;
-                        float gain = (global >= FADE_SAMPLES) ? 1.0f : (float)global / (float)FADE_SAMPLES;
+                        float gain = (global >= fadeSamples) ? 1.0f : (float)global / (float)fadeSamples;
                         size_t base = (size_t)s * CHANNELS;
                         mixBuffer[base + 0] *= gain;
                         mixBuffer[base + 1] *= gain;
@@ -2767,6 +2814,10 @@ private:
                         src.qpcAlignedWrittenSamples = 0;
                         src.packetTimelineGapSamples = 0;
                         src.packetTimelineOverlapSamples = 0;
+                        src.startupRebasedGapSamples = 0;
+                        src.sawSyncPendingPackets = false;
+                        src.startupRealAudioSeen = false;
+                        src.pendingStartupJoinFade = false;
                         src.bootstrapTrimSamples = 0;
                         src.lastPacketTimelineAdjustWarnTick = 0;
                     }
@@ -2885,12 +2936,31 @@ private:
                                 if (startQpc100ns > 0 && packet.qpcPosition >= static_cast<uint64_t>(startQpc100ns)) {
                                     const uint64_t packetStartDelta100ns =
                                         packet.qpcPosition - static_cast<uint64_t>(startQpc100ns);
-                                    const int64_t packetStartSamples = static_cast<int64_t>(
+                                    int64_t packetStartSamples = static_cast<int64_t>(
                                         ce::audio::HundredNanosecondsToSamples(packetStartDelta100ns,
                                                                                targetFmt.sampleRate));
-                                    const auto timelineAdjustment = ce::audio::ComputePacketTimelineAdjustment(
+                                    if (firstTimelinePacket) {
+                                        constexpr int64_t kStartupFirstPacketGapCapSamples = 480;
+                                        constexpr int64_t kStartupFirstPacketRebaseThresholdSamples = 2400;
+                                        const int64_t rebaseOffset = ce::audio::ComputeStartupFirstPacketRebaseOffset(
+                                            packetStartSamples, src.sawSyncPendingPackets, kStartupFirstPacketGapCapSamples,
+                                            kStartupFirstPacketRebaseThresholdSamples);
+                                        if (rebaseOffset > 0) {
+                                            packetStartSamples -= rebaseOffset;
+                                            src.startupRebasedGapSamples += static_cast<uint64_t>(rebaseOffset);
+                                            DLL_Log(
+                                                "[AudioLoop] Startup rebase src=%d suppressed %lld samples of first-packet gap "
+                                                "(packetStart=%lld cap=%lld)",
+                                                (int)srcIdx, (long long)rebaseOffset,
+                                                (long long)(packetStartSamples + rebaseOffset),
+                                                (long long)kStartupFirstPacketGapCapSamples);
+                                        }
+                                        src.sawSyncPendingPackets = false;
+                                    }
+                                    const auto timelineAdjustment = ce::audio::ComputeStartupAwarePacketTimelineAdjustment(
                                         packetStartSamples, static_cast<int64_t>(src.qpcAlignedWrittenSamples),
-                                        targetFmt.sampleRate / 1000);
+                                        targetFmt.sampleRate / 1000, (targetFmt.sampleRate * 150) / 1000,
+                                        targetFmt.sampleRate / 250, targetFmt.sampleRate / 200);
                                     const size_t packetTimelineFadeSamples =
                                         static_cast<size_t>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
                                     if (timelineAdjustment.gapSamples > 0) {
@@ -2959,6 +3029,7 @@ private:
                                 // The sync gate is still closed, so this packet is
                                 // intentionally discarded and must not establish the
                                 // source timeline yet.
+                                src.sawSyncPendingPackets = true;
                             } else if (!src.ringBuffer) {
                                 DLL_Log("[AudioLoop] ERROR: No RingBuffer for source %d", (int)srcIdx);
                             }

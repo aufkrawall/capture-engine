@@ -332,7 +332,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         if (resampler)
             resampler->Reset();
 
-        DLL_Log("[AudioEnc] Reset complete - audio will start from PTS=0 with fade-in");
+        DLL_Log("[AudioEnc] Reset complete - audio will restart from PTS=0");
     }
 
     // CRITICAL: Discard audio samples that arrive before first video frame
