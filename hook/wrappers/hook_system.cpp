@@ -318,13 +318,16 @@ bool CreateExportHookW(const wchar_t* moduleName, const char* functionName, void
     HMODULE hModule = GetModuleHandleW(moduleName);
     void* target = hModule ? reinterpret_cast<void*>(GetProcAddress(hModule, functionName)) : nullptr;
 
+    char narrowModuleName[MAX_PATH] = {};
+    WideCharToMultiByte(CP_ACP, 0, moduleName, -1, narrowModuleName, MAX_PATH, nullptr, nullptr);
+
     std::unique_lock<std::shared_mutex> lock(g_HookMutex);
     void* key = target ? target : reinterpret_cast<void*>(detour);
     if (g_Hooks.find(key) != g_Hooks.end()) {
         HookLog("HookSystem: Duplicate export hook ignored for %ls!%s", moduleName, functionName);
         return false;
     }
-    StoreHookHandle(key, HookType::Export, detour, original ? *original : nullptr, nullptr, functionName);
+    StoreHookHandle(key, HookType::Export, detour, original ? *original : nullptr, narrowModuleName, functionName);
 
     return true;
 }

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <array>
+#include <string>
 
 #include "../hook/wrappers/hook_system.h"
 
@@ -9,8 +10,8 @@ void* g_LastFunctionTarget = nullptr;
 void* g_LastFunctionOriginal = nullptr;
 void* g_LastExportOriginal = nullptr;
 void* g_LastRemovedFunctionTarget = nullptr;
-const char* g_LastRemovedExportModule = nullptr;
-const char* g_LastRemovedExportName = nullptr;
+std::string g_LastRemovedExportModule;
+std::string g_LastRemovedExportName;
 void* g_LastRemovedVtableEntry = nullptr;
 int g_InitializeCalls = 0;
 int g_ShutdownCalls = 0;
@@ -75,8 +76,8 @@ CustomHook::Status StubUnhookFunction(void* target, void* original) {
 }
 
 CustomHook::Status StubUnhookExport(const char* moduleName, const char* functionName, void* original) {
-    g_LastRemovedExportModule = moduleName;
-    g_LastRemovedExportName = functionName;
+    g_LastRemovedExportModule = moduleName ? moduleName : "";
+    g_LastRemovedExportName = functionName ? functionName : "";
     g_LastExportOriginal = original;
     return CustomHook::Status::Success;
 }
@@ -102,8 +103,8 @@ protected:
         g_LastFunctionOriginal = nullptr;
         g_LastExportOriginal = nullptr;
         g_LastRemovedFunctionTarget = nullptr;
-        g_LastRemovedExportModule = nullptr;
-        g_LastRemovedExportName = nullptr;
+        g_LastRemovedExportModule.clear();
+        g_LastRemovedExportName.clear();
         g_LastRemovedVtableEntry = nullptr;
         g_InitializeCalls = 0;
         g_ShutdownCalls = 0;
@@ -159,8 +160,8 @@ TEST_F(HookSystemTest, CreateExportHookTracksRemovalByModuleAndName) {
     EXPECT_EQ(original, reinterpret_cast<void*>(0x5678));
 
     HookSystem::RemoveHook(reinterpret_cast<void*>(&DummyDetour));
-    EXPECT_STREQ(g_LastRemovedExportModule, "missing-module.dll");
-    EXPECT_STREQ(g_LastRemovedExportName, "CreateThing");
+    EXPECT_EQ(g_LastRemovedExportModule, "missing-module.dll");
+    EXPECT_EQ(g_LastRemovedExportName, "CreateThing");
     EXPECT_EQ(g_LastExportOriginal, reinterpret_cast<void*>(0x5678));
 }
 
@@ -247,8 +248,8 @@ TEST_F(HookSystemTest, TypedHookCreateExportTracksOriginalAndRemovesOnDestructio
         EXPECT_FALSE(hook.CreateExport("missing-module.dll", "ExportedThing", reinterpret_cast<void*>(&DummyDetour)));
     }
 
-    EXPECT_STREQ(g_LastRemovedExportModule, "missing-module.dll");
-    EXPECT_STREQ(g_LastRemovedExportName, "ExportedThing");
+    EXPECT_EQ(g_LastRemovedExportModule, "missing-module.dll");
+    EXPECT_EQ(g_LastRemovedExportName, "ExportedThing");
     EXPECT_EQ(g_LastExportOriginal, reinterpret_cast<void*>(0x5678));
 }
 
