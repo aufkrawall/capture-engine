@@ -529,7 +529,8 @@ public:
 
             // If the game is already calling NvAPI_D3D_Sleep itself, just push our
             // target interval and let the game's native pacing drive the frame loop.
-            if (gameSleepActive && g_ReflexLimiter.PushFpsLimit()) {
+            if (gameSleepActive) {
+                g_ReflexLimiter.PushFpsLimit();
                 reflexLimiterActive_ = true;
                 loggedNativeFallback_ = false;
 
