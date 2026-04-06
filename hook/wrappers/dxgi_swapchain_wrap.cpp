@@ -83,6 +83,27 @@ bool IsInWrapperPresent() {
     return g_InWrapperPresent;
 }
 
+static bool ShouldYieldToVulkanLayer() {
+    SharedMemoryLayout* shm = nullptr;
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        shm = g_IPC->GetSharedMem();
+    } else {
+        shm = g_pSharedMem;
+    }
+    if (!shm) {
+        return false;
+    }
+
+    const uint64_t lastVulkan = shm->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+    if (lastVulkan == 0) {
+        return false;
+    }
+
+    const uint64_t now = GetTickCount64();
+    return shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire) && now >= lastVulkan &&
+           (now - lastVulkan) < 200;
+}
+
 static const char* DetectWrappedSwapchainApi(IUnknown* pDevice, bool isD3D12) {
     if (isD3D12)
         return "DX12";
@@ -808,6 +829,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         return pRealCached->Present(SyncInterval, Flags);
     }
 
+    if (ShouldYieldToVulkanLayer()) {
+        static std::atomic<int> s_vulkanYieldLog{0};
+        if (s_vulkanYieldLog.fetch_add(1, std::memory_order_relaxed) < 20) {
+            WrapperLog("Present: Vulkan layer is presenting, bypassing DXGI wrapper path");
+        }
+        return pRealCached->Present(SyncInterval, Flags);
+    }
+
     const char* delegationOverlayModule = nullptr;
     if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule)) {
         static std::atomic<int> s_inlineRouteLogCount{0};
@@ -1166,6 +1195,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
 
     // NVIDIA Smooth Motion compatibility: skip overlay for invisible windows
     if (g_FGCompat.IsNvPresentLoaded() && m_hWnd && !IsWindowVisible(m_hWnd)) {
+        return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    }
+
+    if (ShouldYieldToVulkanLayer()) {
+        static std::atomic<int> s_vulkanYieldLog1{0};
+        if (s_vulkanYieldLog1.fetch_add(1, std::memory_order_relaxed) < 20) {
+            WrapperLog("Present1: Vulkan layer is presenting, bypassing DXGI wrapper path");
+        }
         return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     }
 

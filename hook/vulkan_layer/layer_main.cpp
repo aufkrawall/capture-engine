@@ -53,7 +53,45 @@ static std::string GetSessionLogsDirectory() {
 // Uses absolute path based on DLL location to avoid CWD issues
 static bool IsLayerDebugLoggingEnabled() {
     auto* shm = g_IPCClient.GetSharedMem();
-    return shm && shm->GetDebugLogging();
+    if (shm) {
+        return shm->GetDebugLogging();
+    }
+
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (!hDisc) {
+        return false;
+    }
+
+    bool debugLoggingEnabled = false;
+    DiscoveryInfo* pDisc =
+        (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+    if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC) {
+        const uint32_t hostPid = pDisc->GetInjectPid();
+        if (hostPid != 0) {
+            wchar_t sharedMemName[64] = {};
+            GenerateSharedMemName(sharedMemName, _countof(sharedMemName), hostPid);
+
+            HANDLE hSharedMem = OpenFileMappingW(FILE_MAP_READ, FALSE, sharedMemName);
+            if (hSharedMem) {
+                SharedMemoryLayout* pSharedMem =
+                    (SharedMemoryLayout*)MapViewOfFile(hSharedMem, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
+                if (pSharedMem && pSharedMem->GetMagic() == SHARED_MEMORY_MAGIC &&
+                    pSharedMem->GetVersion() >= SHARED_MEMORY_MIN_VERSION) {
+                    debugLoggingEnabled = pSharedMem->GetDebugLogging();
+                }
+                if (pSharedMem) {
+                    UnmapViewOfFile(pSharedMem);
+                }
+                CloseHandle(hSharedMem);
+            }
+        }
+    }
+
+    if (pDisc) {
+        UnmapViewOfFile(pDisc);
+    }
+    CloseHandle(hDisc);
+    return debugLoggingEnabled;
 }
 
 static void EarlyLog(const char* fmt, ...) {

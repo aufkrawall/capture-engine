@@ -17,6 +17,7 @@
 #include "apis/ffx_hook.h" // FSR Frame Generation hook
 #include "apis/nvngx_hook.h"
 #include "capture/shared_capture.h"
+#include "common/dll_utils.h"
 #include "common/dxgi_shared.h"
 #include "common/fg_detection.h"
 #include "common/hook_common.h"
@@ -77,6 +78,10 @@ AppConfig *g_pLocalConfig = nullptr;
 
 namespace {
 std::unique_ptr<AppConfig> g_LocalConfigOwner;
+
+bool IsDXVKD3D11WrapperLoaded() {
+  return IsDllFromProject("d3d11.dll", "dxvk");
+}
 
 void EnsureLocalConfigAllocated() {
   if (!g_LocalConfigOwner) {
@@ -1096,6 +1101,9 @@ void EnforceRR() {
 void CheckAndInstallHooks() {
   std::lock_guard<std::mutex> lock(g_HookMutex);
 
+  const bool dxvkD3D11WrapperLoaded = IsDXVKD3D11WrapperLoaded();
+  const bool dxvkD3D9WrapperLoaded = IsDXVKD3D9WrapperLoaded();
+
   // CRITICAL FIX: Skip all D3D/DXGI hooks when Vulkan is the primary API.
   // Vulkan games using WSI-to-DXGI mapping can freeze if we hook DXGI/D3D.
   // The Vulkan layer (VK_LAYER_CE_overlay) handles overlay for Vulkan apps.
@@ -1120,13 +1128,20 @@ void CheckAndInstallHooks() {
     bool legacyD3DLoaded = (GetModuleHandleA("d3d9.dll") != nullptr) ||
                            (GetModuleHandleA("d3d8.dll") != nullptr) ||
                            (GetModuleHandleA("ddraw.dll") != nullptr);
-    // Also treat d3d12.dll/d3d11.dll presence as D3D evidence — UE5 loads
-    // vulkan-1.dll even for DX12 games, and our D3D12CreateDevice wrapper may
-    // not be installed yet if d3d12.dll loaded after our initial IAT scan.
-    bool d3dDllPresent = (GetModuleHandleA("d3d12.dll") != nullptr) ||
-                         (GetModuleHandleA("d3d11.dll") != nullptr);
-    bool d3dDeviceCreated = WasD3D12DeviceCreated() || d3dDllPresent ||
-                            WasD3D11Or10DeviceCreated() || legacyD3DLoaded;
+    // DXVK's d3d11.dll is only a D3D front-end over Vulkan. Treat it as Vulkan-backed
+    // so the implicit Vulkan layer can take ownership once the loader finishes startup.
+    bool d3dDeviceCreated = false;
+    if (dxvkD3D11WrapperLoaded) {
+      d3dDeviceCreated = WasD3D12DeviceCreated();
+    } else {
+      // Also treat d3d12.dll/d3d11.dll presence as D3D evidence — UE5 loads
+      // vulkan-1.dll even for DX12 games, and our D3D12CreateDevice wrapper may
+      // not be installed yet if d3d12.dll loaded after our initial IAT scan.
+      bool d3dDllPresent = (GetModuleHandleA("d3d12.dll") != nullptr) ||
+                           (GetModuleHandleA("d3d11.dll") != nullptr);
+      d3dDeviceCreated = WasD3D12DeviceCreated() || d3dDllPresent ||
+                         WasD3D11Or10DeviceCreated() || legacyD3DLoaded;
+    }
     if (vulkanLayerOwned) {
       if (!s_vulkanActive) {
         EarlyLog("CheckAndInstallHooks: Vulkan layer ownership established, skipping D3D/DXGI hooks");
@@ -1157,8 +1172,14 @@ void CheckAndInstallHooks() {
   // issues. The wrappers (CWrapDXGISwapChain, CWrapDXGIFactory2) handle all
   // interception. NOTE: InitializeWrapperHooks is skipped for Vulkan to prevent
   // DXGI interference
-  if (!s_vulkanActive) {
+  if (!s_vulkanActive && !dxvkD3D11WrapperLoaded) {
     InitializeWrapperHooks();
+  } else if (!s_vulkanActive && dxvkD3D11WrapperLoaded) {
+    static bool s_loggedDXVKD3D11WrapperDeferral = false;
+    if (!s_loggedDXVKD3D11WrapperDeferral) {
+      EarlyLog("CheckAndInstallHooks: DXVK d3d11 detected, deferring DXGI/D3D wrapper init to Vulkan layer");
+      s_loggedDXVKD3D11WrapperDeferral = true;
+    }
   }
 
   // DX12: Only initialize the hook instance for state tracking and
@@ -1173,7 +1194,8 @@ void CheckAndInstallHooks() {
 #else
     const bool shouldInitDX12Hook = true;
 #endif
-    if (!s_vulkanActive && !g_DX12Hook && hD3D12 && shouldInitDX12Hook) {
+    const bool suppressDX12HookForDXVK = dxvkD3D11WrapperLoaded && !d3d12DeviceCreated;
+    if (!s_vulkanActive && !g_DX12Hook && hD3D12 && shouldInitDX12Hook && !suppressDX12HookForDXVK) {
       HookLogImportant(
           "Detected D3D12 runtime presence. Initializing DX12 hook instance... "
           "(deviceCreated=%d)",
@@ -1190,6 +1212,12 @@ void CheckAndInstallHooks() {
       // the Present/swapchain recovery path.
       g_DX12Hook->Init();
       HookLogImportant("DX12 hook instance ready");
+    } else if (!s_vulkanActive && !g_DX12Hook && hD3D12 && suppressDX12HookForDXVK) {
+      static bool s_loggedDX12SkipForDXVK = false;
+      if (!s_loggedDX12SkipForDXVK) {
+        HookLog("DX12 hook init deferred: d3d12.dll is present, but DXVK d3d11 owns rendering");
+        s_loggedDX12SkipForDXVK = true;
+      }
     } else if (!s_vulkanActive && !g_DX12Hook && hD3D12 && !shouldInitDX12Hook) {
       static bool s_loggedWaitingForRealDX12Use = false;
       if (!s_loggedWaitingForRealDX12Use) {
@@ -1217,12 +1245,13 @@ void CheckAndInstallHooks() {
   //      D3D12CreateDevice was NOT actually called (so it's not a real DX12
   //      app)
   bool d3d11Or10DllPresent =
-      (GetModuleHandleA("d3d11.dll") || GetModuleHandleA("d3d10.dll") ||
-       GetModuleHandleA("d3d10_1.dll"));
+      (!dxvkD3D11WrapperLoaded &&
+       (GetModuleHandleA("d3d11.dll") || GetModuleHandleA("d3d10.dll") ||
+        GetModuleHandleA("d3d10_1.dll")));
   bool legacyD3DLoaded = (GetModuleHandleA("d3d9.dll") != nullptr) ||
                          (GetModuleHandleA("d3d8.dll") != nullptr) ||
                          (GetModuleHandleA("ddraw.dll") != nullptr);
-  bool d3d11Or10DeviceCreated = WasD3D11Or10DeviceCreated();
+  bool d3d11Or10DeviceCreated = !dxvkD3D11WrapperLoaded && WasD3D11Or10DeviceCreated();
   bool d3d12DeviceCreated = WasD3D12DeviceCreated();
 
   // NOTE: Skip D3D11 hooks for Vulkan games to prevent DXGI interference
@@ -1245,7 +1274,6 @@ void CheckAndInstallHooks() {
   // d3d12.dll can be loaded by D3D11On12 even in non-DX12 apps.
   // We use the actual device creation flag instead of just DLL presence.
   bool dx12ActuallyUsed = WasD3D12DeviceCreated();
-  const bool dxvkD3D9WrapperLoaded = IsDXVKD3D9WrapperLoaded();
 
   // NOTE: Skip D3D9 hooks for Vulkan games, except DXVK D3D9. That path still
   // needs the DX9 hook for game-thread Present pacing and overlay integration
@@ -1960,10 +1988,12 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
 
       // Initialize hooks for all graphics APIs (injection delay prevents D3D12
       // init crashes)
-      if (hasGraphicsAPI) {
+      if (hasGraphicsAPI && !IsDXVKD3D11WrapperLoaded()) {
         EarlyLog("DllMain: Graphics API detected - initializing IAT hooks "
                  "immediately...");
         InitializeWrapperHooks();
+      } else if (hasGraphicsAPI) {
+        EarlyLog("DllMain: DXVK d3d11 detected - skipping immediate DXGI/D3D wrapper init");
       } else {
         EarlyLog("DllMain: No graphics API detected - hooks will be installed "
                  "when API loads");
