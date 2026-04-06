@@ -807,7 +807,7 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
 
     DLL_Log("[VideoEncoder] Step 3: Creating output filename");
     outputFilename = GenerateOutputFilename(config);
-    DLL_Log("[VideoEncoder] Output file: %s", outputFilename.c_str());
+    DLL_Log("[VideoEncoder] Initial output file candidate: %s", outputFilename.c_str());
 
     DLL_Log("[VideoEncoder] Step 4: Calling avformat_alloc_output_context2");
     if (avformat_alloc_output_context2(&fmtCtx, nullptr, nullptr, outputFilename.c_str()) < 0) {

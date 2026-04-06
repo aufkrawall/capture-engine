@@ -1937,8 +1937,8 @@ static bool InstallD3D9InlineHooks() {
                          (void*)presentExAddr, (void*)swapChainPresentAddr);
         g_InlineHooksInstalled = true;
     } else {
-        LogDirect("ALL inline hooks failed - DX9 overlay will not work!");
-        EarlyLog("DX9: ALL inline hooks failed - DX9 overlay will not work!");
+        LogDirect("ALL inline hooks failed - falling back to DX9 vtable hooks");
+        EarlyLog("DX9: ALL inline hooks failed - falling back to vtable hooks");
         HookLogImportant("DX9: ALL inline hooks FAILED - falling back to vtable hooks");
     }
 
