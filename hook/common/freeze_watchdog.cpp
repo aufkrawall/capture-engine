@@ -14,17 +14,10 @@
 FreezeWatchdog g_RenderWatchdog;
 
 static std::string GetLogsDirectory() {
-    char dllPath[MAX_PATH];
-    HMODULE hModule = nullptr;
-
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCSTR)&GetLogsDirectory, &hModule)) {
-        if (GetModuleFileNameA(hModule, dllPath, MAX_PATH)) {
-            std::filesystem::path hookPath(dllPath);
-            std::filesystem::path captureEngineDir = hookPath.parent_path();
-            std::filesystem::path logsDir = captureEngineDir / "logs";
-            return logsDir.string();
-        }
+    char pathBuffer[MAX_PATH] = {};
+    if (BuildLogFilePathForModuleAddress((const void*)&GetLogsDirectory, "freeze_watchdog.tmp", pathBuffer,
+                                         sizeof(pathBuffer))) {
+        return std::filesystem::path(pathBuffer).parent_path().string();
     }
 
     return ".\\logs";

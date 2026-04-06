@@ -84,10 +84,16 @@ public:
 
         // Cache the real SetSleepMode entrypoint before we patch QueryInterface.
         realSetSleepModeForHook_ = origSetSleepMode_;
+        realSleepForHook_ = origSleep_;
 
-        // Hook nvapi_QueryInterface to intercept game's Reflex calls.
-        // This must happen AFTER resolving origSetSleepMode_ or we'd end up
-        // caching our own detour as the forward target.
+        // Hook the concrete Reflex entrypoints first so we still observe late-load
+        // cases where the game cached raw function pointers before QueryInterface
+        // was detoured.
+        HookNvAPIEntryPoints();
+
+        // Hook nvapi_QueryInterface to intercept future Reflex queries.
+        // This must happen AFTER resolving origSetSleepMode_ / origSleep_ or we'd
+        // end up caching our own detours as the forward targets.
         HookNvAPIQueryInterface();
 
         available_.store(true, std::memory_order_release);
@@ -286,6 +292,12 @@ public:
         lastNativePacingSignalTick_.store(0, std::memory_order_release);
         lastGameSleepTick_.store(0, std::memory_order_release);
         lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+        directSetSleepModeHooked_ = false;
+        directSleepHooked_ = false;
+        directSetSleepModeTrampoline_ = nullptr;
+        directSleepTrampoline_ = nullptr;
+        detourOrigQueryInterface_ = nullptr;
+        realSetSleepModeForHook_ = nullptr;
         realSleepForHook_ = nullptr;
     }
 
@@ -312,15 +324,20 @@ public:
         if (!origQueryInterface_)
             return;
 
-        // Verify we can resolve SetSleepMode before hooking
-        auto pRealSetSleepMode = reinterpret_cast<void*>(origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
-        if (!pRealSetSleepMode) {
+        // Verify we can resolve SetSleepMode before hooking. If a direct inline
+        // hook is already installed, keep forwarding through its trampoline
+        // instead of re-caching the now-hooked entrypoint and recursing.
+        auto pResolvedSetSleepMode = reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
+        if (!pResolvedSetSleepMode) {
             HookLog("ReflexLimiter: Cannot resolve SetSleepMode, skipping game activation hook");
             return;
         }
 
-        // Store the real SetSleepMode for our intercept wrapper to forward to
-        realSetSleepModeForHook_ = reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(pRealSetSleepMode);
+        // Store the real SetSleepMode for our intercept wrapper to forward to.
+        // When the direct hook is already active, the trampoline is the only
+        // safe forward target.
+        realSetSleepModeForHook_ =
+            directSetSleepModeTrampoline_ ? directSetSleepModeTrampoline_ : pResolvedSetSleepMode;
 
         // Install inline hook on nvapi_QueryInterface itself.
         // This intercepts ALL calls to nvapi_QueryInterface, regardless of how the
@@ -337,6 +354,43 @@ public:
                 queryInterfaceAddr, (void*)&ReflexDetour_QueryInterface, trampoline);
         } else {
             HookLogImportant("ReflexLimiter: Failed to install inline hook on nvapi_QueryInterface");
+        }
+#endif
+    }
+
+    void HookNvAPIEntryPoints() {
+#if !REFLEX_IAT_HOOK_AVAILABLE
+        (void)realSetSleepModeForHook_;
+        (void)realSleepForHook_;
+#else
+        if (origSetSleepMode_ && !directSetSleepModeHooked_) {
+            void* trampoline = nullptr;
+            if (InlineHook::Install(reinterpret_cast<void*>(origSetSleepMode_),
+                                    reinterpret_cast<void*>(&ReflexDetour_SetSleepMode), &trampoline)) {
+                directSetSleepModeHooked_ = true;
+                directSetSleepModeTrampoline_ = reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(trampoline);
+                realSetSleepModeForHook_ = directSetSleepModeTrampoline_;
+                HookLogImportant(
+                    "ReflexLimiter: Inline hook installed on NvAPI_D3D_SetSleepMode (target=%p, detour=%p, trampoline=%p)",
+                    (void*)origSetSleepMode_, (void*)&ReflexDetour_SetSleepMode, trampoline);
+            } else {
+                HookLogImportant("ReflexLimiter: Failed to install inline hook on NvAPI_D3D_SetSleepMode");
+            }
+        }
+
+        if (origSleep_ && !directSleepHooked_) {
+            void* trampoline = nullptr;
+            if (InlineHook::Install(reinterpret_cast<void*>(origSleep_), reinterpret_cast<void*>(&ReflexDetour_Sleep),
+                                    &trampoline)) {
+                directSleepHooked_ = true;
+                directSleepTrampoline_ = reinterpret_cast<PFN_NvAPI_D3D_Sleep>(trampoline);
+                realSleepForHook_ = directSleepTrampoline_;
+                HookLogImportant(
+                    "ReflexLimiter: Inline hook installed on NvAPI_D3D_Sleep (target=%p, detour=%p, trampoline=%p)",
+                    (void*)origSleep_, (void*)&ReflexDetour_Sleep, trampoline);
+            } else {
+                HookLogImportant("ReflexLimiter: Failed to install inline hook on NvAPI_D3D_Sleep");
+            }
         }
 #endif
     }
@@ -378,6 +432,10 @@ private:
     PFN_NvAPI_D3D_SetSleepMode realSetSleepModeForHook_ = nullptr;  // Real SetSleepMode for detour forwarding
     PFN_NvAPI_D3D_Sleep realSleepForHook_ = nullptr;                // Real Sleep for detour forwarding
     PFN_NvAPI_QueryInterface detourOrigQueryInterface_ = nullptr;   // Original QueryInterface from dynamic hook
+    bool directSetSleepModeHooked_ = false;
+    bool directSleepHooked_ = false;
+    PFN_NvAPI_D3D_SetSleepMode directSetSleepModeTrampoline_ = nullptr;
+    PFN_NvAPI_D3D_Sleep directSleepTrampoline_ = nullptr;
 };
 
 // Global instance (forward-declared for static detour methods)
