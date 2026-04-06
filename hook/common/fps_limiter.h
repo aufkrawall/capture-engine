@@ -525,20 +525,21 @@ public:
             }
 
             g_ReflexLimiter.SetTargetFps(effectiveTargetFps);
+            const bool gameSleepActive = g_ReflexLimiter.HasRecentGameSleep(250);
 
-            // Try to push our limit through the Reflex pipeline
-            if (g_ReflexLimiter.PushFpsLimit()) {
+            // If the game is already calling NvAPI_D3D_Sleep itself, just push our
+            // target interval and let the game's native pacing drive the frame loop.
+            if (gameSleepActive && g_ReflexLimiter.PushFpsLimit()) {
                 reflexLimiterActive_ = true;
                 loggedNativeFallback_ = false;
 
-                // Log on first successful Reflex activation
                 if (!reflexLoggedSuccess_) {
-                    HookLog("FPS Limiter: Reflex API active (target=%d fps, driver-handled pacing)",
+                    TraceLog("Apply: REFLEX game-sleep target=%d", effectiveTargetFps);
+                    HookLog("FPS Limiter: Reflex API active (target=%d fps, game-driven sleep pacing)",
                             effectiveTargetFps);
                     reflexLoggedSuccess_ = true;
                 }
 
-                // Driver handles frame pacing — we don't SmartWait
                 isActivelyLimiting_.store(false, std::memory_order_relaxed);
                 lastActualWaitUs_ = 0;
 
@@ -548,11 +549,34 @@ public:
                 return;
             }
 
-            // Push failed — fall through to timer-based limiting
+            // Otherwise drive the native Reflex sleep ourselves. This matches the
+            // intended native limiter flow more closely than the software timer path.
+            if (!gameSleepActive && g_ReflexLimiter.Sleep()) {
+                reflexLimiterActive_ = true;
+                loggedNativeFallback_ = false;
+
+                if (!reflexLoggedSuccess_) {
+                    TraceLog("Apply: REFLEX native-sleep target=%d", effectiveTargetFps);
+                    HookLog("FPS Limiter: Reflex API active (target=%d fps, injected driver sleep pacing)",
+                            effectiveTargetFps);
+                    reflexLoggedSuccess_ = true;
+                }
+
+                isActivelyLimiting_.store(false, std::memory_order_relaxed);
+                lastActualWaitUs_ = 0;
+
+                LARGE_INTEGER retQpc;
+                QueryPerformanceCounter(&retQpc);
+                lastApplyReturnQpc = retQpc.QuadPart;
+                return;
+            }
+
             if (reflexLimiterActive_) {
-                HookLog("FPS Limiter: Reflex push failed, falling back to timer");
+                HookLog("FPS Limiter: Reflex native pacing failed, falling back to timer");
             }
             if (!loggedNativeFallback_) {
+                TraceLog("Apply: REFLEX timer fallback gameActive=%d gameSleep=%d",
+                         g_ReflexLimiter.IsGameActivated() ? 1 : 0, gameSleepActive ? 1 : 0);
                 HookLog("FPS Limiter: Reflex native mode unavailable at runtime; using timer fallback");
                 loggedNativeFallback_ = true;
             }

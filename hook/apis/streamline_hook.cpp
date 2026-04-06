@@ -448,6 +448,37 @@ bool MaybeHookDLSSGGetState(void*& function, bool fallbackToReturnedWrapper) {
     return g_DLSSGGetStateHooked.load(std::memory_order_acquire);
 }
 
+bool MaybeHookReflexSetConstants(void*& function, bool fallbackToReturnedWrapper) {
+    if (!function) {
+        return false;
+    }
+
+    if (function == reinterpret_cast<void*>(Hooked_slReflexSetConstants)) {
+        g_ReflexSetConstantsHooked.store(true, std::memory_order_release);
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_FeatureHookMutex);
+        if (!g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ||
+            g_ReflexSetConstantsTarget.load(std::memory_order_acquire) != function) {
+            InstallInlineHookOnce(reinterpret_cast<void*>(function), reinterpret_cast<void*>(Hooked_slReflexSetConstants),
+                                  g_Original_slReflexSetConstants, g_ReflexSetConstantsHooked,
+                                  g_ReflexSetConstantsTarget, "slReflexSetConstants");
+        }
+    }
+
+    if (fallbackToReturnedWrapper && !g_ReflexSetConstantsHooked.load(std::memory_order_acquire)) {
+        if (!g_Original_slReflexSetConstants) {
+            g_Original_slReflexSetConstants = reinterpret_cast<PFN_slReflexSetConstants>(function);
+        }
+        function = reinterpret_cast<void*>(Hooked_slReflexSetConstants);
+        return true;
+    }
+
+    return g_ReflexSetConstantsHooked.load(std::memory_order_acquire);
+}
+
 bool TryResolveDLSSGFeatureHooks() {
     if (!g_Original_slGetFeatureFunction) {
         return false;
@@ -733,12 +764,11 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
     }
     // Reflex feature hook — detect game activation of native Reflex
     else if (feature == kSLFeatureReflex) {
-        if (strcmp(functionName, "slReflexSetConstants") == 0 && !g_ReflexSetConstantsHooked.exchange(true)) {
-            g_Original_slReflexSetConstants = reinterpret_cast<PFN_slReflexSetConstants>(function);
-            g_ReflexSetConstantsTarget.store(function, std::memory_order_release);
-            function = reinterpret_cast<void*>(&Hooked_slReflexSetConstants);
-            HookLogImportant("Streamline Hook: Intercepted slReflexSetConstants (original=%p)",
-                             g_Original_slReflexSetConstants);
+        if (strcmp(functionName, "slReflexSetConstants") == 0) {
+            if (MaybeHookReflexSetConstants(function, true)) {
+                HookLogImportant("Streamline Hook: Intercepted slReflexSetConstants (returned=%p original=%p)",
+                                 function, g_Original_slReflexSetConstants);
+            }
         }
     }
 
@@ -763,6 +793,8 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
         return kSlResultErrorInvalidState;
     }
 
+    SLReflexConstants adjustedConsts = consts;
+
     // Detect game activation: mode is low-latency (enabled, low latency, or boost)
     if (consts.mode >= kSLReflexModeEnabled) {
         if (!g_ReflexLimiter.IsGameActivated()) {
@@ -771,6 +803,12 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
                 consts.mode, consts.frameLimitUs);
         }
         g_ReflexLimiter.SetGameActivated(true);
+
+        const uint32_t targetIntervalUs = g_ReflexLimiter.GetTargetIntervalUs();
+        if (targetIntervalUs > 0) {
+            adjustedConsts.frameLimitUs = targetIntervalUs;
+        }
+        g_ReflexLimiter.MarkNativePacingSignal();
     } else if (consts.mode == kSLReflexModeOff) {
         if (g_ReflexLimiter.IsGameActivated()) {
             HookLogImportant("Streamline Hook: Game DEACTIVATED Reflex via slReflexSetConstants (mode=off)");
@@ -779,7 +817,12 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
     }
 
     // Forward to the real slReflexSetConstants
-    return g_Original_slReflexSetConstants(consts);
+    const slResult result = g_Original_slReflexSetConstants(adjustedConsts);
+    if (result == kSlResultOk && adjustedConsts.frameLimitUs != consts.frameLimitUs) {
+        HookLog("Streamline Hook: Overrode Reflex frameLimitUs %u->%u (mode=%d)", consts.frameLimitUs,
+                adjustedConsts.frameLimitUs, adjustedConsts.mode);
+    }
+    return result;
 }
 
 }  // namespace

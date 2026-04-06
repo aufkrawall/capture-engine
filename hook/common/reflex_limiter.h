@@ -99,6 +99,9 @@ public:
     // Provide the D3D device from our Present hooks. Must be called before
     // PushFpsLimit() can work. Safe to call repeatedly (stores latest).
     void SetDevice(IUnknown* device) {
+        if (device && lastDevice_ != device) {
+            lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+        }
         lastDevice_ = device;
     }
 
@@ -109,6 +112,40 @@ public:
         } else {
             targetIntervalUs_.store(1000000 / fps, std::memory_order_release);
         }
+    }
+
+    uint32_t GetTargetIntervalUs() const {
+        return targetIntervalUs_.load(std::memory_order_acquire);
+    }
+
+    void MarkNativePacingSignal() {
+        lastNativePacingSignalTick_.store(GetTickCount64(), std::memory_order_release);
+    }
+
+    bool HasRecentNativePacingSignal(uint32_t maxAgeMs) const {
+        const ULONGLONG lastTick = lastNativePacingSignalTick_.load(std::memory_order_acquire);
+        if (lastTick == 0) {
+            return false;
+        }
+        const ULONGLONG now = GetTickCount64();
+        return now >= lastTick && (now - lastTick) <= maxAgeMs;
+    }
+
+    void MarkGameSleep() {
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG previous = lastGameSleepTick_.exchange(now, std::memory_order_acq_rel);
+        if (previous == 0) {
+            HookLogImportant("ReflexLimiter: Game called Reflex Sleep");
+        }
+    }
+
+    bool HasRecentGameSleep(uint32_t maxAgeMs) const {
+        const ULONGLONG lastTick = lastGameSleepTick_.load(std::memory_order_acquire);
+        if (lastTick == 0) {
+            return false;
+        }
+        const ULONGLONG now = GetTickCount64();
+        return now >= lastTick && (now - lastTick) <= maxAgeMs;
     }
 
     // Returns true if we've successfully pushed an FPS limit via Reflex.
@@ -133,6 +170,10 @@ public:
         }
 
         uint32_t intervalUs = targetIntervalUs_.load(std::memory_order_acquire);
+        if (pushSucceeded_.load(std::memory_order_acquire) &&
+            lastPushedIntervalUs_.load(std::memory_order_acquire) == intervalUs) {
+            return true;
+        }
 
         NV_SET_SLEEP_MODE_PARAMS params{};
         params.version = NV_SET_SLEEP_MODE_PARAMS_VER;
@@ -144,6 +185,7 @@ public:
             if (!pushSucceeded_.load(std::memory_order_acquire)) {
                 HookLog("ReflexLimiter: Pushed FPS limit (intervalUs=%u)", intervalUs);
             }
+            lastPushedIntervalUs_.store(intervalUs, std::memory_order_release);
             pushSucceeded_.store(true, std::memory_order_release);
             return true;
         }
@@ -154,6 +196,30 @@ public:
         return false;
     }
 
+    bool Sleep() {
+        auto forwardSleep = GetForwardSleep();
+        if (!forwardSleep || !lastDevice_) {
+            sleepSucceeded_.store(false, std::memory_order_release);
+            return false;
+        }
+
+        if (!PushFpsLimit()) {
+            sleepSucceeded_.store(false, std::memory_order_release);
+            return false;
+        }
+
+        NvAPI_Status status = forwardSleep(lastDevice_);
+        if (status == NVAPI_OK) {
+            sleepSucceeded_.store(true, std::memory_order_release);
+            return true;
+        }
+        if (sleepSucceeded_.load(std::memory_order_acquire)) {
+            HookLog("ReflexLimiter: Sleep failed (status=%d)", status);
+        }
+        sleepSucceeded_.store(false, std::memory_order_release);
+        return false;
+    }
+
     // Intercept a SetSleepMode call (for IAT hook integration).
     // When installed as a detour, this detects when the game activates Reflex.
     NvAPI_Status InterceptSetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* pParams) {
@@ -161,20 +227,27 @@ public:
         if (!forwardSetSleepMode || !pParams)
             return NVAPI_ERROR;
 
+        const uint32_t ourInterval = targetIntervalUs_.load(std::memory_order_acquire);
+
         // Detect game activation: game called with low-latency mode enabled
         if (pParams->bLowLatencyMode && !gameActivated_.load(std::memory_order_acquire)) {
             gameActivated_.store(true, std::memory_order_release);
-            HookLogImportant("ReflexLimiter: Game activated Reflex (minimumIntervalUs=%u)", pParams->minimumIntervalUs);
+            HookLogImportant("ReflexLimiter: Game activated Reflex (minimumIntervalUs=%u, override=%u)",
+                             pParams->minimumIntervalUs, ourInterval);
         } else if (!pParams->bLowLatencyMode && gameActivated_.load(std::memory_order_acquire)) {
             gameActivated_.store(false, std::memory_order_release);
             HookLogImportant("ReflexLimiter: Game deactivated Reflex");
         }
 
-        // Store device for PushFpsLimit
+        // Store device for PushFpsLimit / Sleep
+        if (pDev && lastDevice_ != pDev) {
+            lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+        }
         lastDevice_ = pDev;
 
+        MarkNativePacingSignal();
+
         // Override minimumIntervalUs if we have a target
-        uint32_t ourInterval = targetIntervalUs_.load(std::memory_order_acquire);
         if (ourInterval > 0) {
             pParams->minimumIntervalUs = ourInterval;
         }
@@ -194,12 +267,15 @@ public:
             HookLogImportant("ReflexLimiter: Game ACTIVATED Reflex (via Streamline)");
         } else if (!activated && wasActive) {
             HookLogImportant("ReflexLimiter: Game DEACTIVATED Reflex (via Streamline)");
+            lastNativePacingSignalTick_.store(0, std::memory_order_release);
+            lastGameSleepTick_.store(0, std::memory_order_release);
         }
     }
 
     void Shutdown() {
         targetIntervalUs_.store(0, std::memory_order_release);
         pushSucceeded_.store(false, std::memory_order_release);
+        sleepSucceeded_.store(false, std::memory_order_release);
         gameActivated_.store(false, std::memory_order_release);
         available_.store(false, std::memory_order_release);
         inited_.store(false, std::memory_order_release);
@@ -207,6 +283,10 @@ public:
         origSetSleepMode_ = nullptr;
         origSleep_ = nullptr;
         origQueryInterface_ = nullptr;
+        lastNativePacingSignalTick_.store(0, std::memory_order_release);
+        lastGameSleepTick_.store(0, std::memory_order_release);
+        lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+        realSleepForHook_ = nullptr;
     }
 
     // Get original function pointers (for pass-through when not overriding)
@@ -268,6 +348,9 @@ public:
 
     // Detour for NvAPI_D3D_SetSleepMode — detects game activation.
     static NvAPI_Status __cdecl ReflexDetour_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* pParams);
+
+    // Detour for NvAPI_D3D_Sleep — detects whether the game actually uses native pacing.
+    static NvAPI_Status __cdecl ReflexDetour_Sleep(IUnknown* pDev);
 #endif
 
 private:
@@ -275,16 +358,25 @@ private:
         return realSetSleepModeForHook_ ? realSetSleepModeForHook_ : origSetSleepMode_;
     }
 
+    PFN_NvAPI_D3D_Sleep GetForwardSleep() const {
+        return realSleepForHook_ ? realSleepForHook_ : origSleep_;
+    }
+
     std::atomic<bool> inited_{false};
     std::atomic<bool> available_{false};
     std::atomic<bool> pushSucceeded_{false};
+    std::atomic<bool> sleepSucceeded_{false};
     std::atomic<bool> gameActivated_{false};  // True when game calls SetSleepMode with bLowLatencyMode=true
     IUnknown* lastDevice_ = nullptr;
     PFN_NvAPI_QueryInterface origQueryInterface_ = nullptr;
     PFN_NvAPI_D3D_SetSleepMode origSetSleepMode_ = nullptr;
     PFN_NvAPI_D3D_Sleep origSleep_ = nullptr;
     std::atomic<uint32_t> targetIntervalUs_{0};
+    std::atomic<ULONGLONG> lastNativePacingSignalTick_{0};
+    std::atomic<ULONGLONG> lastGameSleepTick_{0};
+    std::atomic<uint32_t> lastPushedIntervalUs_{UINT32_MAX};
     PFN_NvAPI_D3D_SetSleepMode realSetSleepModeForHook_ = nullptr;  // Real SetSleepMode for detour forwarding
+    PFN_NvAPI_D3D_Sleep realSleepForHook_ = nullptr;                // Real Sleep for detour forwarding
     PFN_NvAPI_QueryInterface detourOrigQueryInterface_ = nullptr;   // Original QueryInterface from dynamic hook
 };
 
@@ -304,6 +396,10 @@ inline void* __cdecl ReflexLimiter::ReflexDetour_QueryInterface(uint32_t id) {
     if (id == NVAPI_ID_D3D_SetSleepMode) {
         // Return our intercept wrapper instead of the real function
         return reinterpret_cast<void*>(&ReflexDetour_SetSleepMode);
+    }
+
+    if (id == NVAPI_ID_D3D_Sleep) {
+        return reinterpret_cast<void*>(&ReflexDetour_Sleep);
     }
 
     // Forward other IDs to the real nvapi_QueryInterface
@@ -338,6 +434,22 @@ inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_SetSleepMode(IUnknown* p
     // Reuse the shared interception path so the inline NvAPI detour also applies
     // our minimumIntervalUs override instead of only observing activation.
     return status;
+}
+
+inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_Sleep(IUnknown* pDev) {
+    auto& limiter = g_ReflexLimiter;
+
+    auto forwardSleep = limiter.GetForwardSleep();
+    if (!forwardSleep) {
+        return NVAPI_ERROR;
+    }
+
+    if (pDev && limiter.lastDevice_ != pDev) {
+        limiter.lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+    }
+    limiter.lastDevice_ = pDev;
+    limiter.MarkGameSleep();
+    return forwardSleep(pDev);
 }
 
 #endif  // REFLEX_IAT_HOOK_AVAILABLE
