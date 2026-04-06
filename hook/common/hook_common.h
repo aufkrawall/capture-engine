@@ -44,6 +44,23 @@ void NVNGXLog(const char* fmt, ...);
 // to {moduleDir}\logs. Returns false if the path could not be constructed.
 bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen);
 void ReportLUID(uint32_t low, uint32_t high);
+inline std::atomic<ULONGLONG>& LastLargePresentGapTickStorage() {
+    static std::atomic<ULONGLONG> tick{0};
+    return tick;
+}
+
+inline void MarkLargePresentGap() {
+    LastLargePresentGapTickStorage().store(GetTickCount64(), std::memory_order_release);
+}
+
+inline bool HasRecentLargePresentGap(uint32_t maxAgeMs) {
+    const ULONGLONG lastTick = LastLargePresentGapTickStorage().load(std::memory_order_acquire);
+    if (lastTick == 0) {
+        return false;
+    }
+    const ULONGLONG now = GetTickCount64();
+    return now >= lastTick && (now - lastTick) <= maxAgeMs;
+}
 extern char g_ProcessName[260];
 // Debug log independent of IPC
 

@@ -80,7 +80,8 @@ BOOL WINAPI LimiterConsoleHandler(DWORD ctrlType) {
 static LARGE_INTEGER g_QpcFreq = {};
 static LARGE_INTEGER g_TargetTime = {};
 static int64_t g_FrameCount = 0;
-// Ramp-up for smooth activation (Reduced for faster lock)
+// Legacy ramp-up support. In practice we re-arm fallback pacing immediately
+// after stalls so brief Reflex transition windows do not run uncapped.
 constexpr int64_t RAMP_UP_FRAMES = 10;
 static int64_t g_LastIntervalTicks = 0;
 
@@ -144,12 +145,21 @@ void ApplyFramePacing(SharedMemoryLayout* shm) {
 
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
+    int64_t phaseOffsetTicks = intervalTicks / 2;
+    if (phaseOffsetTicks < 1) {
+        phaseOffsetTicks = 1;
+    }
 
     // Initialize target time on first frame
     if (g_TargetTime.QuadPart == 0) {
-        g_TargetTime = now;
-        g_FrameCount = 0;
+        g_TargetTime.QuadPart = now.QuadPart + phaseOffsetTicks;
+        g_FrameCount = RAMP_UP_FRAMES;
         LogInfo("[Limiter] Activated (Interval: %lld ticks)", intervalTicks);
+    } else if ((now.QuadPart - g_TargetTime.QuadPart) > intervalTicks * 2) {
+        // After a long load/menu transition gap, re-arm into the current frame
+        // instead of releasing immediately and letting a short uncapped burst through.
+        g_TargetTime.QuadPart = now.QuadPart + phaseOffsetTicks;
+        g_FrameCount = RAMP_UP_FRAMES;
     }
 
     // Calculate wait time
@@ -206,7 +216,8 @@ void ApplyFramePacing(SharedMemoryLayout* shm) {
     QueryPerformanceCounter(&now);
     int64_t lagTicks = now.QuadPart - g_TargetTime.QuadPart;
     if (lagTicks > intervalTicks * 2) {
-        g_TargetTime = now;
+        g_TargetTime.QuadPart = now.QuadPart + phaseOffsetTicks;
+        g_FrameCount = RAMP_UP_FRAMES;
     }
 }
 

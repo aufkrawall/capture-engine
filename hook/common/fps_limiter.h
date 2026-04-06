@@ -333,6 +333,8 @@ public:
             lastActualWaitUs_ = 0;
             loggedNativeFallback_ = false;
             reflexNativeSleepActive_ = false;
+            reflexSleepBaselineCount_ = 0;
+            reflexRecentPresentGap_ = false;
             // Release timer resolution if we had it set
             {
                 std::lock_guard<std::mutex> lock(timerStateMutex_);
@@ -454,6 +456,8 @@ public:
         }
         if (effectiveMode != LimiterModeValues::kNative) {
             loggedNativeFallback_ = false;
+            reflexSleepBaselineCount_ = 0;
+            reflexRecentPresentGap_ = false;
         }
 
         // FG-aware FPS adjustment for FG fallback and all native low-latency modes:
@@ -554,67 +558,70 @@ public:
             }
             const bool gameSleepRecent = g_ReflexLimiter.HasRecentGameSleep(reflexSleepGraceMs);
             const bool gameActivated = g_ReflexLimiter.IsGameActivated();
+            const uint32_t gameSleepCount = g_ReflexLimiter.GetGameSleepCount();
+            const bool recentPresentGap = HasRecentLargePresentGap(500);
+            if (recentPresentGap && !reflexRecentPresentGap_) {
+                reflexSleepBaselineCount_ = gameSleepCount;
+            }
+            reflexRecentPresentGap_ = recentPresentGap;
+            const uint32_t freshSleepCount =
+                (gameSleepCount > reflexSleepBaselineCount_) ? (gameSleepCount - reflexSleepBaselineCount_) : 0;
+            const bool reflexHandoffReady = gameSleepRecent && freshSleepCount >= 3 && !recentPresentGap;
+            const bool reflexPushOk = g_ReflexLimiter.PushFpsLimit();
 
-            if (g_ReflexLimiter.PushFpsLimit() || gameActivated) {
+            if (reflexHandoffReady) {
                 reflexLimiterActive_ = true;
                 loggedNativeFallback_ = false;
                 g_ReflexLimiter.ConfigureHybridPacing(qpcFrequency, effectiveTargetFps);
 
-                if (gameSleepRecent != reflexNativeSleepActive_) {
-                    reflexNativeSleepActive_ = gameSleepRecent;
-                    if (!gameSleepRecent) {
-                        // Reset local cadence when native Sleep drops out so the
-                        // temporary fallback paces immediately instead of using a
-                        // stale target from an earlier handoff.
-                        localTargetTime_ = 0;
-                        localFrameCount_ = 0;
-                        localStatsIntervalStart_ = 0;
-                        localStatsFrameCount_ = 0;
-                        lastApplyEntryQpc_ = 0;
-                        applyInterFrameSum_ = 0;
-                        applyInterFrameCount_ = 0;
-                        TraceLog("Apply: REFLEX sleep stalled graceMs=%u", reflexSleepGraceMs);
-                        HookLog("FPS Limiter: Reflex Sleep paused; using temporary local fallback pacing");
-                    } else {
-                        TraceLog("Apply: REFLEX native resume");
-                        HookLog("FPS Limiter: Reflex Sleep resumed; returning to native pacing");
-                    }
+                if (!reflexNativeSleepActive_) {
+                    reflexNativeSleepActive_ = true;
+                    TraceLog("Apply: REFLEX native resume");
+                    HookLog("FPS Limiter: Reflex Sleep resumed; returning to native pacing");
                 }
 
                 if (!reflexLoggedSuccess_) {
-                    TraceLog("Apply: REFLEX hybrid target=%d gameSleep=%d gameActive=%d", effectiveTargetFps,
-                             gameSleepObserved ? 1 : 0, gameActivated ? 1 : 0);
+                    TraceLog("Apply: REFLEX hybrid target=%d gameSleep=%d gameActive=%d fresh=%u", effectiveTargetFps,
+                             gameSleepObserved ? 1 : 0, gameActivated ? 1 : 0, freshSleepCount);
                     HookLog(
-                        "FPS Limiter: Reflex hybrid active (target=%d fps, native low-latency + local pacing, gameSleep=%d, gameActive=%d)",
-                        effectiveTargetFps, gameSleepObserved ? 1 : 0, gameActivated ? 1 : 0);
+                        "FPS Limiter: Reflex hybrid active (target=%d fps, native low-latency + local pacing, gameSleep=%d, gameActive=%d, freshSleep=%u)",
+                        effectiveTargetFps, gameSleepObserved ? 1 : 0, gameActivated ? 1 : 0, freshSleepCount);
                     reflexLoggedSuccess_ = true;
                 }
 
-                // Only trust native pacing while the game is calling Sleep recently.
-                // Some games appear to stop doing that briefly during load transitions,
-                // so fall back to local pacing until Sleep resumes.
-                if (gameSleepRecent) {
-                    isActivelyLimiting_.store(false, std::memory_order_relaxed);
-                    lastActualWaitUs_ = 0;
-                    LARGE_INTEGER retQpc;
-                    QueryPerformanceCounter(&retQpc);
-                    lastApplyReturnQpc = retQpc.QuadPart;
-                    return;
-                }
-
-                // Before the game's Sleep path is observed, use the local pre-present
-                // cadence path as a temporary fallback.
-                usingCaptureSync = true;
+                isActivelyLimiting_.store(false, std::memory_order_relaxed);
+                lastActualWaitUs_ = 0;
+                LARGE_INTEGER retQpc;
+                QueryPerformanceCounter(&retQpc);
+                lastApplyReturnQpc = retQpc.QuadPart;
+                return;
             } else {
                 g_ReflexLimiter.DisableHybridPacing();
-                reflexNativeSleepActive_ = false;
-                if (reflexLimiterActive_) {
-                    HookLog("FPS Limiter: Reflex setup failed, falling back to timer");
+                if (reflexNativeSleepActive_) {
+                    reflexSleepBaselineCount_ = gameSleepCount;
+                    reflexNativeSleepActive_ = false;
+                    TraceLog("Apply: REFLEX sleep stalled graceMs=%u", reflexSleepGraceMs);
+                    HookLog("FPS Limiter: Reflex Sleep paused; using timer fallback pacing");
                 }
+                reflexNativeSleepActive_ = false;
+                reflexLimiterActive_ = false;
                 if (!loggedNativeFallback_) {
-                    TraceLog("Apply: REFLEX timer fallback gameActive=%d gameSleep=%d",
-                             gameActivated ? 1 : 0, gameSleepObserved ? 1 : 0);
-                    HookLog("FPS Limiter: Reflex native mode unavailable at runtime; using timer fallback");
+                    TraceLog(
+                        "Apply: REFLEX timer fallback gameActive=%d gameSleep=%d push=%d sleepCount=%u fresh=%u recent=%d gap=%d",
+                             gameActivated ? 1 : 0, gameSleepObserved ? 1 : 0, reflexPushOk ? 1 : 0, gameSleepCount,
+                             freshSleepCount, gameSleepRecent ? 1 : 0, recentPresentGap ? 1 : 0);
+                    if (recentPresentGap) {
+                        HookLog(
+                            "FPS Limiter: Recent Present gap detected during Reflex activation; holding timer fallback until pacing restabilizes");
+                    } else if (gameSleepObserved && freshSleepCount < 3) {
+                        HookLog(
+                            "FPS Limiter: Reflex Sleep observed but waiting for a fresh stable Sleep streak; using timer fallback");
+                    } else if (reflexPushOk) {
+                        HookLog(
+                            "FPS Limiter: Reflex armed but native Sleep cadence is not stable yet; using timer fallback");
+                    } else {
+                        HookLog("FPS Limiter: Reflex native mode unavailable at runtime; using timer fallback");
+                    }
                     loggedNativeFallback_ = true;
                 }
             }
@@ -624,6 +631,8 @@ public:
             g_ReflexLimiter.DisableHybridPacing();
             reflexLimiterActive_ = false;
             reflexNativeSleepActive_ = false;
+            reflexSleepBaselineCount_ = 0;
+            reflexRecentPresentGap_ = false;
         }
 
         // =====================================================================
@@ -974,6 +983,8 @@ public:
         nativeApiRecheckCounter_ = 0;
         reflexDeviceProvided_ = false;
         reflexNativeSleepActive_ = false;
+        reflexSleepBaselineCount_ = 0;
+        reflexRecentPresentGap_ = false;
         if (reflexLimiterActive_) {
             g_ReflexLimiter.SetTargetFps(0);
             reflexLimiterActive_ = false;
@@ -1012,6 +1023,8 @@ private:
     bool reflexNativeSleepActive_ = false;                   // True while recent game Sleep calls are pacing natively
     bool reflexLoggedSuccess_ = false;                       // True once we've logged successful Reflex activation
     bool loggedNativeFallback_ = false;                      // Avoid spam when native mode falls back to timer
+    uint32_t reflexSleepBaselineCount_ = 0;                  // Sleep count at the last disruption; native handoff needs a fresh streak after it
+    bool reflexRecentPresentGap_ = false;                    // Edge detector for recent large Present gaps
     bool antilag2InitAttempted_ = false;                     // Lazy init flag for Anti-Lag 2
     bool xellInitAttempted_ = false;                         // Lazy init flag for XeLL
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)

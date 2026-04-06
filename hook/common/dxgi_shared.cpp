@@ -557,7 +557,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     int entryNum = ++s_entryCount;
 
     // Present-call heartbeat diagnostic:
-    // Logs periodically (every 1000th call) and whenever there's a gap >500ms.
+    // Logs periodically (every 1000th call) and whenever there's a gap >250ms.
     // Purpose: Detect whether the game stops calling Present during menus/pauses.
     //
     // GTA V Enhanced: During pause menu, Present calls stop entirely (10+ second
@@ -576,8 +576,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             LARGE_INTEGER freq;
             QueryPerformanceFrequency(&freq);
             double gapMs = (double)(now.QuadPart - s_lastPresentTime.QuadPart) * 1000.0 / freq.QuadPart;
-            // Log if gap is large (menu/pause) or every 1000th call
-            if (gapMs > 500.0 || (s_heartbeatCount % 1000 == 0)) {
+            static constexpr double kLargePresentGapMs = 250.0;
+
+            // Treat quarter-second Present gaps as scene/load transitions. This
+            // is conservative enough to ignore ordinary jitter while still
+            // catching save-load handoff disruptions.
+            if (gapMs > kLargePresentGapMs || (s_heartbeatCount % 1000 == 0)) {
+                if (gapMs > kLargePresentGapMs) {
+                    MarkLargePresentGap();
+                }
                 // READ-ONLY state peek: DO NOT call IsRecursivePresent() here!
                 // IsRecursivePresent() has side effects (CAS on g_presentThreadId)
                 // and would permanently corrupt the present ownership tracking,
@@ -801,6 +808,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
             HookLogImportant("DetourPresent: Startup compatibility pass #%d for third-party overlay %s", startupPass,
                              overlayModule ? overlayModule : "module");
+            if (g_IPC) {
+                g_SharedFpsLimiter.SetIPCClient(g_IPC);
+                g_SharedFpsLimiter.Apply();
+            }
+            ProcessVSyncOverride(SyncInterval, Flags);
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
     }
@@ -995,6 +1007,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
             HookLogImportant("DetourPresent1: Startup compatibility pass #%d for third-party overlay %s", startupPass,
                              overlayModule ? overlayModule : "module");
+            if (g_IPC) {
+                g_SharedFpsLimiter.SetIPCClient(g_IPC);
+                g_SharedFpsLimiter.Apply();
+            }
+            ProcessVSyncOverride(SyncInterval, Flags);
             return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     }
