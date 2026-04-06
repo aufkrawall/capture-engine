@@ -229,7 +229,6 @@ static void** s_hookedVTable = nullptr;
 enum class DX12StartupPresentMode {
     kNone,
     kPassThroughOriginal,
-    kBypassExternalHook,
 };
 
 static bool IsSteamOverlayModule(const char* overlayModule) {
@@ -258,9 +257,18 @@ static bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAv
     if (overlayModuleOut) {
         *overlayModuleOut = overlayModule;
     }
-    if (!pSwapChain || !bypassAvailable || slLoaded || !IsSteamOverlayModule(overlayModule)) {
+    if (!pSwapChain || !bypassAvailable || !IsSteamOverlayModule(overlayModule)) {
         return false;
     }
+
+    // Steam's outer Present wrapper can crash if we re-enter the entry-point hook
+    // chain from inside our DetourPresent while Streamline is merely loaded.
+    // Keep using the DXGI bypass path until FG is actually running.
+    if (slLoaded &&
+        (g_StreamlineFGRunning.load(std::memory_order_acquire) || g_FGCompat.IsFGActive())) {
+        return false;
+    }
+
     if (IsInWrapperPresent() || IsWrappedSwapChainObject(pSwapChain)) {
         return false;
     }
@@ -287,8 +295,7 @@ static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, co
             if (passIndexOut) {
                 *passIndexOut = expected + 1;
             }
-            return (steamOverlay && bypassAvailable) ? DX12StartupPresentMode::kBypassExternalHook
-                                                     : DX12StartupPresentMode::kPassThroughOriginal;
+            return DX12StartupPresentMode::kPassThroughOriginal;
         }
     }
     return DX12StartupPresentMode::kNone;
@@ -444,7 +451,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters);
 
 namespace {
-thread_local bool s_bypassVtableHook = false;
 
 // Streamline FG routing state.
 //
@@ -792,15 +798,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         int startupPass = 0;
         DX12StartupPresentMode startupMode =
             GetDX12StartupPresentMode(oPresentBypass != nullptr, &overlayModule, &startupPass);
-        if (startupMode == DX12StartupPresentMode::kBypassExternalHook) {
-            HookLogImportant("DetourPresent: Startup bypass #%d for Steam overlay %s", startupPass,
-                             overlayModule ? overlayModule : "module");
-            s_bypassVtableHook = true;
-            auto bypassGuard = ce::make_scope_guard([]() { s_bypassVtableHook = false; });
-            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-        }
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
-            HookLogImportant("DetourPresent: Startup pass-through #%d for third-party overlay %s", startupPass,
+            HookLogImportant("DetourPresent: Startup compatibility pass #%d for third-party overlay %s", startupPass,
                              overlayModule ? overlayModule : "module");
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
@@ -993,15 +992,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         int startupPass = 0;
         DX12StartupPresentMode startupMode =
             GetDX12StartupPresentMode(oPresent1Bypass != nullptr, &overlayModule, &startupPass);
-        if (startupMode == DX12StartupPresentMode::kBypassExternalHook) {
-            HookLogImportant("DetourPresent1: Startup bypass #%d for Steam overlay %s", startupPass,
-                             overlayModule ? overlayModule : "module");
-            s_bypassVtableHook = true;
-            auto bypassGuard = ce::make_scope_guard([]() { s_bypassVtableHook = false; });
-            return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
-        }
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
-            HookLogImportant("DetourPresent1: Startup pass-through #%d for third-party overlay %s", startupPass,
+            HookLogImportant("DetourPresent1: Startup compatibility pass #%d for third-party overlay %s", startupPass,
                              overlayModule ? overlayModule : "module");
             return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
@@ -1715,19 +1707,12 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return presentTrampoline(pSwapChain, SyncInterval, Flags);
     }
 
-    if (s_bypassVtableHook && presentBypass) {
-        static int s_copBypassLogCount = 0;
-        if (s_copBypassLogCount++ < 5) {
-            HookLogImportant("CallOriginalPresent: bypass path=%p", presentBypass);
-        }
-        return presentBypass(pSwapChain, SyncInterval, Flags);
-    }
-
     const char* forcedBypassOverlay = nullptr;
     if (ShouldForceSteamDX12Bypass(pSwapChain, presentBypass != nullptr, slLoaded, &forcedBypassOverlay)) {
         static int s_forcedBypassLogCount = 0;
         if (s_forcedBypassLogCount++ < 10) {
-            HookLogImportant("CallOriginalPresent: forcing DXGI bypass for Steam overlay %s", forcedBypassOverlay);
+            HookLogImportant("CallOriginalPresent: forcing DXGI bypass for Steam overlay %s while FG is inactive",
+                             forcedBypassOverlay);
         }
         return presentBypass(pSwapChain, SyncInterval, Flags);
     }
@@ -1792,19 +1777,12 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         return present1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
     }
 
-    if (s_bypassVtableHook && present1Bypass) {
-        static int s_copBypassLogCount = 0;
-        if (s_copBypassLogCount++ < 5) {
-            HookLogImportant("CallOriginalPresent1: bypass path=%p", present1Bypass);
-        }
-        return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
-    }
-
     const char* forcedBypassOverlay = nullptr;
     if (ShouldForceSteamDX12Bypass(pSwapChain, present1Bypass != nullptr, slLoaded, &forcedBypassOverlay)) {
         static int s_forcedBypassLogCount = 0;
         if (s_forcedBypassLogCount++ < 10) {
-            HookLogImportant("CallOriginalPresent1: forcing DXGI bypass for Steam overlay %s", forcedBypassOverlay);
+            HookLogImportant("CallOriginalPresent1: forcing DXGI bypass for Steam overlay %s while FG is inactive",
+                             forcedBypassOverlay);
         }
         return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
     }

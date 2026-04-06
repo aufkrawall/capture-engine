@@ -647,7 +647,7 @@ void InjectionManager::LaunchDelayedInjectionThread(const std::shared_ptr<Inject
                     return;
                 }
 
-                HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, pid);
+                HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid);
                 if (!hProcess) {
                     LogInfo("[%s] %s (PID: %lu) - Process exited before injection (OpenProcess failed, error=%lu)",
                             source.c_str(), name.c_str(), (unsigned long)pid, (unsigned long)GetLastError());
@@ -680,8 +680,11 @@ void InjectionManager::LaunchDelayedInjectionThread(const std::shared_ptr<Inject
                     } else {
                         DWORD err = GetLastError();
                         if (!loggedModuleEnumFailure) {
-                            LogInfo("[%s] %s (PID: %lu) - EnumProcessModules failed (error=%lu)", source.c_str(),
-                                    name.c_str(), (unsigned long)pid, (unsigned long)err);
+                            LogInfo(
+                                "[%s] %s (PID: %lu) - EnumProcessModules failed (error=%lu, access=0x%lX); "
+                                "continuing with conservative non-D3D12 injection timing",
+                                source.c_str(), name.c_str(), (unsigned long)pid, (unsigned long)err,
+                                (unsigned long)(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE));
                             loggedModuleEnumFailure = true;
                         }
                         if (err == ERROR_ACCESS_DENIED && i < 2) {

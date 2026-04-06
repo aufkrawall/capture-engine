@@ -1167,8 +1167,17 @@ void CheckAndInstallHooks() {
   // prevent DXGI interference
   {
     HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
-    if (!s_vulkanActive && !g_DX12Hook && hD3D12 && WasD3D12DeviceCreated()) {
-      HookLogImportant("Detected active D3D12 device usage. Initializing DX12 hook instance...");
+    const bool d3d12DeviceCreated = WasD3D12DeviceCreated();
+#ifdef ENABLE_D3D12_WRAPPER
+    const bool shouldInitDX12Hook = d3d12DeviceCreated;
+#else
+    const bool shouldInitDX12Hook = true;
+#endif
+    if (!s_vulkanActive && !g_DX12Hook && hD3D12 && shouldInitDX12Hook) {
+      HookLogImportant(
+          "Detected D3D12 runtime presence. Initializing DX12 hook instance... "
+          "(deviceCreated=%d)",
+          d3d12DeviceCreated ? 1 : 0);
 
       // STATIC DESTRUCTOR FIX: Dynamically allocate the hook instance
       if (!g_dx12HookInstance) {
@@ -1176,10 +1185,23 @@ void CheckAndInstallHooks() {
       }
       g_DX12Hook = g_dx12HookInstance;
 
-      // Note: DX12Hook::Init() now only hooks ExecuteCommandLists for frame
-      // detection. DXGI Present/Resize is handled by CWrapDXGISwapChain.
+      // In no-wrapper builds WasD3D12DeviceCreated() never flips true, so late
+      // injection would otherwise skip DX12Hook::Init() entirely and never arm
+      // the Present/swapchain recovery path.
       g_DX12Hook->Init();
-      HookLogImportant("DX12 hook instance ready (wrappers active)");
+      HookLogImportant("DX12 hook instance ready");
+    } else if (!s_vulkanActive && !g_DX12Hook && hD3D12 && !shouldInitDX12Hook) {
+      static bool s_loggedWaitingForRealDX12Use = false;
+      if (!s_loggedWaitingForRealDX12Use) {
+        HookLog("DX12 hook init deferred: waiting for confirmed D3D12 device creation");
+        s_loggedWaitingForRealDX12Use = true;
+      }
+    } else if (!s_vulkanActive && !g_DX12Hook && !hD3D12) {
+      static bool s_loggedNoD3D12Yet = false;
+      if (!s_loggedNoD3D12Yet) {
+        HookLog("DX12 hook init deferred: d3d12.dll not loaded yet");
+        s_loggedNoD3D12Yet = true;
+      }
     }
   }
 
