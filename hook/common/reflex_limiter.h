@@ -176,9 +176,16 @@ public:
     bool PushFpsLimit() {
         auto forwardSetSleepMode = GetForwardSetSleepMode();
         if (!forwardSetSleepMode || !lastDevice_) {
+            if (!loggedMissingDevice_) {
+                HookLog("ReflexLimiter: PushFpsLimit skipped (SetSleepMode=%p, device=%p)", (void*)forwardSetSleepMode,
+                        lastDevice_);
+                loggedMissingDevice_ = true;
+            }
             pushSucceeded_.store(false, std::memory_order_release);
             return false;
         }
+
+        loggedMissingDevice_ = false;
 
         uint32_t intervalUs = targetIntervalUs_.load(std::memory_order_acquire);
         if (pushSucceeded_.load(std::memory_order_acquire) &&
@@ -187,14 +194,19 @@ public:
         }
 
         NV_SET_SLEEP_MODE_PARAMS params{};
-        params.version = NV_SET_SLEEP_MODE_PARAMS_VER;
-        params.bLowLatencyMode = 1;
+        if (hasLastSleepModeParams_.load(std::memory_order_acquire)) {
+            params = lastSleepModeParams_;
+        } else {
+            params.version = NV_SET_SLEEP_MODE_PARAMS_VER;
+            params.bLowLatencyMode = 1;
+        }
         params.minimumIntervalUs = intervalUs;
 
         NvAPI_Status status = forwardSetSleepMode(lastDevice_, &params);
         if (status == NVAPI_OK) {
             if (!pushSucceeded_.load(std::memory_order_acquire)) {
-                HookLog("ReflexLimiter: Pushed FPS limit (intervalUs=%u)", intervalUs);
+                HookLog("ReflexLimiter: Pushed FPS limit (intervalUs=%u boost=%u markers=%u)", intervalUs,
+                        params.bLowLatencyBoost, params.bUseMarkersToOptimize);
             }
             lastPushedIntervalUs_.store(intervalUs, std::memory_order_release);
             pushSucceeded_.store(true, std::memory_order_release);
@@ -210,17 +222,27 @@ public:
     bool Sleep() {
         auto forwardSleep = GetForwardSleep();
         if (!forwardSleep || !lastDevice_) {
+            if (!loggedMissingSleepDevice_) {
+                HookLog("ReflexLimiter: Sleep skipped (Sleep=%p, device=%p)", (void*)forwardSleep, lastDevice_);
+                loggedMissingSleepDevice_ = true;
+            }
             sleepSucceeded_.store(false, std::memory_order_release);
             return false;
         }
 
-        if (!PushFpsLimit()) {
+        loggedMissingSleepDevice_ = false;
+
+        bool pushOk = PushFpsLimit();
+        if (!pushOk && !gameActivated_.load(std::memory_order_acquire)) {
             sleepSucceeded_.store(false, std::memory_order_release);
             return false;
         }
 
         NvAPI_Status status = forwardSleep(lastDevice_);
         if (status == NVAPI_OK) {
+            if (!pushOk && gameActivated_.load(std::memory_order_acquire)) {
+                HookLog("ReflexLimiter: Sleep succeeded using game-managed SetSleepMode state");
+            }
             sleepSucceeded_.store(true, std::memory_order_release);
             return true;
         }
@@ -240,11 +262,15 @@ public:
 
         const uint32_t ourInterval = targetIntervalUs_.load(std::memory_order_acquire);
 
+        lastSleepModeParams_ = *pParams;
+        hasLastSleepModeParams_.store(true, std::memory_order_release);
+
         // Detect game activation: game called with low-latency mode enabled
         if (pParams->bLowLatencyMode && !gameActivated_.load(std::memory_order_acquire)) {
             gameActivated_.store(true, std::memory_order_release);
-            HookLogImportant("ReflexLimiter: Game activated Reflex (minimumIntervalUs=%u, override=%u)",
-                             pParams->minimumIntervalUs, ourInterval);
+            HookLogImportant(
+                "ReflexLimiter: Game activated Reflex (minimumIntervalUs=%u, override=%u, boost=%u, markers=%u)",
+                pParams->minimumIntervalUs, ourInterval, pParams->bLowLatencyBoost, pParams->bUseMarkersToOptimize);
         } else if (!pParams->bLowLatencyMode && gameActivated_.load(std::memory_order_acquire)) {
             gameActivated_.store(false, std::memory_order_release);
             HookLogImportant("ReflexLimiter: Game deactivated Reflex");
@@ -288,6 +314,10 @@ public:
         targetIntervalUs_.store(0, std::memory_order_release);
         pushSucceeded_.store(false, std::memory_order_release);
         sleepSucceeded_.store(false, std::memory_order_release);
+        loggedMissingDevice_ = false;
+        loggedMissingSleepDevice_ = false;
+        hasLastSleepModeParams_.store(false, std::memory_order_release);
+        ZeroMemory(&lastSleepModeParams_, sizeof(lastSleepModeParams_));
         gameActivated_.store(false, std::memory_order_release);
         available_.store(false, std::memory_order_release);
         inited_.store(false, std::memory_order_release);
@@ -444,6 +474,10 @@ private:
     bool directSleepHooked_ = false;
     PFN_NvAPI_D3D_SetSleepMode directSetSleepModeTrampoline_ = nullptr;
     PFN_NvAPI_D3D_Sleep directSleepTrampoline_ = nullptr;
+    bool loggedMissingDevice_ = false;
+    bool loggedMissingSleepDevice_ = false;
+    std::atomic<bool> hasLastSleepModeParams_{false};
+    NV_SET_SLEEP_MODE_PARAMS lastSleepModeParams_{};
 };
 
 // Global instance (forward-declared for static detour methods)

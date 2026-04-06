@@ -526,45 +526,42 @@ public:
 
             g_ReflexLimiter.SetTargetFps(effectiveTargetFps);
             const bool gameSleepObserved = g_ReflexLimiter.HasObservedGameSleep();
+            const bool gameActivated = g_ReflexLimiter.IsGameActivated();
 
-            // Talos proves that observing a game Reflex sleep call is not enough
-            // to guarantee real pacing. Always drive the native sleep ourselves
-            // once Reflex is active, while still tracking whether the game uses
-            // its own sleep path for diagnostics.
-            if (g_ReflexLimiter.Sleep()) {
+            // Keep Reflex configured with our interval, but do not use NvAPI_D3D_Sleep
+            // itself as the frame cap. In Talos this produces low latency but fails
+            // to enforce the cap cleanly. Fall through to the precise pre-present wait
+            // path after the push succeeds.
+            if (g_ReflexLimiter.PushFpsLimit() || gameActivated) {
                 reflexLimiterActive_ = true;
                 loggedNativeFallback_ = false;
 
                 if (!reflexLoggedSuccess_) {
-                    TraceLog("Apply: REFLEX native-sleep target=%d gameSleep=%d", effectiveTargetFps,
+                    TraceLog("Apply: REFLEX hybrid target=%d gameSleep=%d gameActive=%d", effectiveTargetFps,
                              gameSleepObserved ? 1 : 0);
-                    HookLog("FPS Limiter: Reflex API active (target=%d fps, injected driver sleep pacing, gameSleep=%d)",
-                            effectiveTargetFps, gameSleepObserved ? 1 : 0);
+                    HookLog(
+                        "FPS Limiter: Reflex hybrid active (target=%d fps, native low-latency + local pacing, gameSleep=%d, gameActive=%d)",
+                        effectiveTargetFps, gameSleepObserved ? 1 : 0, gameActivated ? 1 : 0);
                     reflexLoggedSuccess_ = true;
                 }
 
-                isActivelyLimiting_.store(false, std::memory_order_relaxed);
-                lastActualWaitUs_ = 0;
-
-                LARGE_INTEGER retQpc;
-                QueryPerformanceCounter(&retQpc);
-                lastApplyReturnQpc = retQpc.QuadPart;
-                return;
+                // Use the local pre-present cadence path, not the cross-process
+                // event limiter. The event round-trip is what still shows up in
+                // the logs as the main latency cost in this Talos Reflex setup.
+                usingCaptureSync = true;
+            } else {
+                if (reflexLimiterActive_) {
+                    HookLog("FPS Limiter: Reflex setup failed, falling back to timer");
+                }
+                if (!loggedNativeFallback_) {
+                    TraceLog("Apply: REFLEX timer fallback gameActive=%d gameSleep=%d",
+                             gameActivated ? 1 : 0, gameSleepObserved ? 1 : 0);
+                    HookLog("FPS Limiter: Reflex native mode unavailable at runtime; using timer fallback");
+                    loggedNativeFallback_ = true;
+                }
             }
-
-            if (reflexLimiterActive_) {
-                HookLog("FPS Limiter: Reflex native pacing failed, falling back to timer");
-            }
-            if (!loggedNativeFallback_) {
-                TraceLog("Apply: REFLEX timer fallback gameActive=%d gameSleep=%d",
-                         g_ReflexLimiter.IsGameActivated() ? 1 : 0, gameSleepObserved ? 1 : 0);
-                HookLog("FPS Limiter: Reflex native mode unavailable at runtime; using timer fallback");
-                loggedNativeFallback_ = true;
-            }
-        }
-
-        // Clear Reflex override if we were using it but switched away
-        if (reflexLimiterActive_) {
+        } else if (reflexLimiterActive_) {
+            // Clear Reflex override if we were using it but switched away
             g_ReflexLimiter.SetTargetFps(0);
             reflexLimiterActive_ = false;
         }
