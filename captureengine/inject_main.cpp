@@ -54,14 +54,13 @@ struct InjectorConfigState {
 };
 
 static InjectorConfigState BuildInjectorConfigState(const AppConfig& config) {
-    const bool screenGrabMode = (config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
-                                 config.captureMethod == "desktop_dup");
-    const bool overlayOnlyInjection = screenGrabMode && !config.overlayWhitelist.empty();
+    const bool wgcMode = IsWgcCaptureMethod(config.captureMethod);
+    const bool overlayOnlyInjection = wgcMode && !config.overlayWhitelist.empty();
     const bool hasInjectionTargets = !config.gameWhitelist.empty() || !config.overlayWhitelist.empty();
 
     InjectorConfigState state;
     state.config = config;
-    state.allowInjection = hasInjectionTargets && (!screenGrabMode || overlayOnlyInjection);
+    state.allowInjection = hasInjectionTargets && (!wgcMode || overlayOnlyInjection);
 
     if (!state.allowInjection) {
         state.config.gameWhitelist.clear();
@@ -387,11 +386,11 @@ int InjectProcessMain(const AppConfig& config) {
     LogInfo("[Inject] Shared memory created and initialized");
 
     // Initialize injector (WMI based)
-    // In screengrab/desktop_dup mode we still allow explicit overlay targets, but
+    // In WGC mode we still allow explicit overlay targets, but
     // restrict WMI injection to overlay_whitelist entries only.
     if (injectorState.allowInjection && injectorState.config.gameWhitelist.empty() &&
         !currentConfig.gameWhitelist.empty()) {
-        LogInfo("[Inject] Screengrab mode + overlay_whitelist: enabling overlay-only injection");
+        LogInfo("[Inject] WGC mode + overlay_whitelist: enabling overlay-only injection");
     }
     std::shared_ptr<InjectionManager> injector;
     auto configureInjector = [&](const std::shared_ptr<InjectionManager>& manager) {

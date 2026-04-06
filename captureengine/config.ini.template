@@ -6,7 +6,10 @@
 [General]
 ; debug_logging - Values: true, false
 debug_logging=true
-; capture_method - Values: inject, screengrab, desktop_dup, auto
+; capture_method - Values: inject, wgc, auto
+;   inject = injected shared-memory capture only
+;   wgc    = Windows Graphics Capture only (legacy aliases: screengrab, framegrab, desktop_dup)
+;   auto   = WGC, unless application is on inject whitelist
 capture_method=auto
 
 [Injection]

@@ -4401,8 +4401,21 @@ void StartRecording(const AppConfig& config) {
 
     LogInfo("[Media] Starting recording...");
 
-    const bool useScreenGrab = IsPreferredScreenGrab();
+    bool useScreenGrab = IsPreferredScreenGrab();
+    if (IsWgcCaptureMethod(config.captureMethod)) {
+        useScreenGrab = true;
+    } else if (IsInjectCaptureMethod(config.captureMethod)) {
+        useScreenGrab = false;
+    }
     SetActiveScreenGrab(useScreenGrab);
+
+    if (useScreenGrab && !g_WgcCap) {
+        LogError("[Media] WGC capture requested but no WGC target is available");
+        SetActiveScreenGrab(false);
+        SetCaptureRequestedState(false);
+        SetRecordingVisibleState(false);
+        return;
+    }
 
     // Clear any stale shared memory commands/state from previous (possibly crashed)
     // recording sessions. If a previous media process crashed, cmdStopRecording
@@ -4619,11 +4632,16 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     ID3D11Device* d3dDevice = nullptr;
     ID3D11DeviceContext* d3dContext = nullptr;
 
-    bool explicitScreengrab = (config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
-                               config.captureMethod == "desktop_dup");
-    if (explicitScreengrab) {
+    auto isExplicitInjectConfig = [&]() -> bool { return IsInjectCaptureMethod(config.captureMethod); };
+    auto isExplicitWgcConfig = [&]() -> bool { return IsWgcCaptureMethod(config.captureMethod); };
+    auto isAutoCaptureConfig = [&]() -> bool { return IsAutoCaptureMethod(config.captureMethod); };
+    auto setWgcPreferenceAfterFailure = [&]() {
+        SetPreferredScreenGrab(isExplicitWgcConfig());
+    };
+
+    if (isExplicitWgcConfig()) {
         SetPreferredScreenGrab(true);
-        LogInfo("[Media] Using screengrab mode (explicit)");
+        LogInfo("[Media] Using WGC mode (explicit)");
     }
 
     LogInfo("[Media] Attempting to connect to shared memory...");
@@ -4685,24 +4703,24 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
         }
 
-        if (explicitScreengrab) {
+        if (isExplicitWgcConfig()) {
             SetPreferredScreenGrab(true);
-            LogInfo("[Media] Connected to shared memory - using screengrab for capture");
+            LogInfo("[Media] Connected to shared memory - using WGC for capture");
         } else {
             SetPreferredScreenGrab(false);
             LogInfo("[Media] Connected to shared memory - using inject mode");
         }
-    } else if (config.captureMethod == "inject") {
+    } else if (isExplicitInjectConfig()) {
         LogError("[Media] Failed to connect to shared memory in inject mode!");
         unloadMediaEngineIdle();
         timeEndPeriod(1);
         return 1;
     } else {
         SetPreferredScreenGrab(true);
-        LogInfo("[Media] Shared memory not available - using screengrab mode");
+        LogInfo("[Media] Shared memory not available - using WGC mode");
     }
 
-    if (IsPreferredScreenGrab() || config.captureMethod == "auto") {
+    if (IsPreferredScreenGrab() || isAutoCaptureConfig()) {
         if (!ensureMediaEngineReady()) {
             timeEndPeriod(1);
             return 1;
@@ -4741,7 +4759,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     }
 
     LogInfo("[Media] Process started (PID: %lu) Mode: %s", GetCurrentProcessId(),
-            IsPreferredScreenGrab() ? "screengrab" : "inject");
+            IsPreferredScreenGrab() ? "WGC" : "inject");
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     LARGE_INTEGER qpcFreq;
@@ -4797,11 +4815,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
         LogInfo("[Media] Released idle WGC D3D11 resources");
     };
-    auto isExplicitScreenGrabConfig = [&]() -> bool {
-        return config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
-               config.captureMethod == "desktop_dup";
-    };
-
     DWORD lastEarlyWgcScan = 0;
     DWORD lastWindowScanTime = 0;
     HWND currentCapturedWindow = NULL;
@@ -4872,6 +4885,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     };
 
     auto markInjectPreferredTarget = [&](HWND targetWindow, uint32_t sourcePid, const char* reason) -> bool {
+        if (isExplicitWgcConfig()) {
+            return false;
+        }
+
         if (!ShouldPreferInjectCaptureForFullscreenWindow(targetWindow, sourcePid)) {
             return false;
         }
@@ -4890,6 +4907,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     };
 
     auto primeWgcMonitorTarget = [&](HMONITOR targetMonitor = NULL) -> bool {
+        if (isExplicitInjectConfig()) {
+            return false;
+        }
+
         if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
             g_WgcCap->SetThrottleFlag(nullptr);
@@ -4927,6 +4948,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     };
 
     auto primeWgcWindowTarget = [&](HWND targetWindow, bool logPrimed) -> bool {
+        if (isExplicitInjectConfig()) {
+            return false;
+        }
+
         if (!targetWindow) {
             return false;
         }
@@ -4939,7 +4964,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         if (!ensureWgcDevice()) {
-            SetPreferredScreenGrab(false);
+            setWgcPreferenceAfterFailure();
             return false;
         }
 
@@ -4959,7 +4984,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         LogError("[Media] Failed to init WGC for found window.");
         if (!primeWgcMonitorTarget()) {
-            SetPreferredScreenGrab(false);
+            setWgcPreferenceAfterFailure();
             clearCurrentWgcTarget();
             return false;
         }
@@ -5009,9 +5034,16 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     auto prepareCaptureForRecordingStart = [&]() {
         const std::string processName = refreshActiveConfig(false);
         const uint32_t sourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
-        const bool injectWhitelisted = !processName.empty() && MatchesProcessEntries(config.gameWhitelist, processName);
+        const bool injectWhitelisted =
+            isAutoCaptureConfig() && !processName.empty() && MatchesProcessEntries(config.gameWhitelist, processName);
 
         g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
+
+        if (isExplicitInjectConfig()) {
+            SetPreferredScreenGrab(false);
+            clearCurrentWgcTarget();
+            return;
+        }
 
         if (!config.wgcWindowTitles.empty()) {
             HWND matchedWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
@@ -5027,7 +5059,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         if (sourcePid != 0 && MatchesProcessEntries(config.overlayWhitelist, processName)) {
             if (!ensureWgcDevice()) {
                 LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
-                SetPreferredScreenGrab(false);
+                setWgcPreferenceAfterFailure();
                 clearCurrentWgcTarget();
                 return;
             }
@@ -5040,15 +5072,15 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 }
                 primeWgcWindowTarget(hGameWindow, false);
             } else if (!primeWgcMonitorTarget()) {
-                SetPreferredScreenGrab(false);
+                setWgcPreferenceAfterFailure();
                 clearCurrentWgcTarget();
             }
             return;
         }
 
-        if (isExplicitScreenGrabConfig()) {
+        if (isExplicitWgcConfig()) {
             if (!primeWgcMonitorTarget()) {
-                SetPreferredScreenGrab(false);
+                setWgcPreferenceAfterFailure();
                 clearCurrentWgcTarget();
             }
             return;
@@ -5058,9 +5090,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             clearCurrentWgcTarget();
         }
 
-        if (!isExplicitScreenGrabConfig()) {
-            SetPreferredScreenGrab(false);
-        }
+        SetPreferredScreenGrab(false);
 
         if (injectWhitelisted) {
             LogInfo("[Media] Injection whitelist matched %s; auto mode will stay on inject capture",
@@ -5068,7 +5098,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return;
         }
 
-        if (config.captureMethod == "auto" && WGCCapture::IsSupported()) {
+        if (isAutoCaptureConfig() && WGCCapture::IsSupported()) {
             if (g_WgcCap || ensureWgcStandby()) {
                 g_AutoWgcFallbackArmed.store(true, std::memory_order_release);
                 LogInfo("[Media] WGC fallback armed for this recording");
@@ -5083,8 +5113,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         // CreateSharedCaptureTextures sets the encoder's LUID device, which conflicts
         // with WGC's shared device. By scanning first, the preferred capture mode is set correctly
         // and we skip the LUID-based texture creation for WGC games.
-        if (mediaEngineReady && g_pSharedMem && !config.wgcWindowTitles.empty() && !IsPreferredScreenGrab() &&
-            !g_Recording) {
+        if (mediaEngineReady && g_pSharedMem && isAutoCaptureConfig() && !config.wgcWindowTitles.empty() &&
+            !IsPreferredScreenGrab() && !g_Recording) {
             DWORD now = GetTickCount();
             if (now - lastEarlyWgcScan > 500) {
                 lastEarlyWgcScan = now;
@@ -5203,7 +5233,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             }
 
             DWORD now = GetTickCount();
-            if (!g_Recording && !config.wgcWindowTitles.empty() && (now - lastWindowScanTime > 1000)) {
+            if (!g_Recording && !isExplicitInjectConfig() && !config.wgcWindowTitles.empty() &&
+                (now - lastWindowScanTime > 1000)) {
                 lastWindowScanTime = now;
                 HWND foundWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
 
@@ -5229,7 +5260,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                             currentCapturedWindow);
                         clearCurrentWgcTarget();
                         if (!primeWgcMonitorTarget()) {
-                            SetPreferredScreenGrab(false);
+                            setWgcPreferenceAfterFailure();
                         }
                     }
                 }
@@ -5245,8 +5276,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 }
                 LogInfo("[Media] Hook connected: %s (PID: %u)", procName.c_str(), currentSourcePid);
 
-                const bool forceWGC = MatchesProcessEntries(config.overlayWhitelist, procName);
-                const bool injectWhitelisted = MatchesProcessEntries(config.gameWhitelist, procName);
+                const bool forceWGC = !isExplicitInjectConfig() && MatchesProcessEntries(config.overlayWhitelist, procName);
+                const bool injectWhitelisted =
+                    isAutoCaptureConfig() && MatchesProcessEntries(config.gameWhitelist, procName);
                 if (forceWGC) {
                     LogInfo("[Media] Overlay whitelist matched %s; preferring WGC when the target allows it",
                             procName.c_str());
@@ -5277,7 +5309,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
                     if (!ensureWgcDevice()) {
                         LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
-                        SetPreferredScreenGrab(false);
+                        setWgcPreferenceAfterFailure();
                         clearCurrentWgcTarget();
                     } else {
                         SetPreferredScreenGrab(true);
@@ -5304,12 +5336,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                                 "Monitor Capture.",
                                 currentSourcePid);
                             if (!primeWgcMonitorTarget()) {
-                                SetPreferredScreenGrab(false);
+                                setWgcPreferenceAfterFailure();
                             }
                         }
                     }
 
-                } else if (!g_Recording && !isExplicitScreenGrabConfig()) {
+                } else if (!g_Recording && !isExplicitWgcConfig()) {
                     SetPreferredScreenGrab(false);
                     LogInfo("[Media] Using Inject Mode (Default)");
                 }
@@ -5384,12 +5416,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 LogInfo("[Media] Inject delivery confirmed before monitor observed ring activity");
             }
 
-            if (!receivedFirstFrame && config.captureMethod == "auto" &&
+            if (!receivedFirstFrame && isAutoCaptureConfig() &&
                 g_AutoWgcFallbackArmed.load(std::memory_order_acquire) && g_WgcCap) {
                 DWORD elapsed = GetTickCount() - injectModeStartTime;
                 const uint32_t activeSourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
                 if (ce::capture_policy::ShouldTriggerAutoWgcFallback(
-                        receivedFirstFrame, config.captureMethod == "auto",
+                        receivedFirstFrame, isAutoCaptureConfig(),
                         g_AutoWgcFallbackArmed.load(std::memory_order_acquire), g_WgcCap != nullptr, elapsed,
                         activeSourcePid)) {
                     LogInfo(

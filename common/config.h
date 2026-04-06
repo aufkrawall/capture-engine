@@ -270,7 +270,7 @@ struct PseudoOverlayConfig {
 struct AppConfig {
     // General
     bool debugLogging = true;   // Default to true, matches LoadConfig default
-    std::string captureMethod;  // "inject", "screengrab", "auto"
+    std::string captureMethod;  // "inject", "wgc", "auto"
     std::string logFilePath;    // Path to captureengine.log
 
     std::string crashDumpDir;  // Directory for crash dumps
@@ -338,6 +338,14 @@ struct AppConfig {
 // overrideProcessName: Optional process name (e.g. "game.exe") to force
 // app-specific overrides
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName = "");
+
+// capture_method accepts canonical values "inject", "wgc", and "auto".
+// Legacy explicit-WGC aliases ("screengrab", "framegrab", "desktop_dup")
+// are normalized to "wgc" when loading config.
+std::string NormalizeCaptureMethod(const std::string& val);
+bool IsInjectCaptureMethod(const std::string& val);
+bool IsWgcCaptureMethod(const std::string& val);
+bool IsAutoCaptureMethod(const std::string& val);
 
 // Parsing helpers
 uint32_t ParseDlssPreset(const std::string& val);

@@ -54,6 +54,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     ASSERT_TRUE(generated.is_open());
     std::string generatedText((std::istreambuf_iterator<char>(generated)), std::istreambuf_iterator<char>());
     generated.close();
+    EXPECT_NE(generatedText.find("; capture_method - Values: inject, wgc, auto"), std::string::npos);
     EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
@@ -91,6 +92,29 @@ TEST_F(ConfigTest, ParseValues) {
     EXPECT_EQ(config.video.encoder, "av1_nvenc");
     EXPECT_EQ(config.video.fps, 60);
     EXPECT_EQ(config.video.bitrate, "50Mbps");
+}
+
+TEST_F(ConfigTest, ParseExplicitWgcCaptureMethod) {
+    WriteConfig("[General]\n"
+                "capture_method=wgc\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.captureMethod, "wgc");
+}
+
+TEST_F(ConfigTest, LegacyWgcAliasesNormalizeToWgc) {
+    const char* aliases[] = {"screengrab", "framegrab", "desktop_dup"};
+
+    for (const char* alias : aliases) {
+        WriteConfig(std::string("[General]\n") + "capture_method=" + alias + "\n");
+
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+
+        EXPECT_EQ(config.captureMethod, "wgc") << alias;
+    }
 }
 
 TEST_F(ConfigTest, ParseOverlayInclusionOptions) {

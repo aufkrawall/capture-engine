@@ -1,6 +1,7 @@
 #include "config.h"
 #include <windows.h>
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include "logging.h"
@@ -35,6 +36,35 @@ static std::string NormalizePseudoOverlayProcessList(const std::string& raw) {
     }
 
     return normalized;
+}
+
+std::string NormalizeCaptureMethod(const std::string& val) {
+    std::string normalized = Trim(val);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    if (normalized == "inject") {
+        return "inject";
+    }
+
+    if (normalized == "wgc" || normalized == "screengrab" || normalized == "framegrab" ||
+        normalized == "desktop_dup") {
+        return "wgc";
+    }
+
+    return "auto";
+}
+
+bool IsInjectCaptureMethod(const std::string& val) {
+    return NormalizeCaptureMethod(val) == "inject";
+}
+
+bool IsWgcCaptureMethod(const std::string& val) {
+    return NormalizeCaptureMethod(val) == "wgc";
+}
+
+bool IsAutoCaptureMethod(const std::string& val) {
+    return NormalizeCaptureMethod(val) == "auto";
 }
 
 // Split string by unquoted colons (quotes prevent splitting)
@@ -201,7 +231,10 @@ void CreateDefaultConfig(const std::string& path) {
 [General]
 ; debug_logging - Values: true, false (also enables the per-frame CSV profiler)
 debug_logging=true
-; capture_method - Values: inject, screen or window grab (WGC), auto (WGC, unless application is on inject whitelist)
+; capture_method - Values: inject, wgc, auto
+;   inject = injected shared-memory capture only
+;   wgc    = Windows Graphics Capture only (legacy aliases: screengrab, framegrab, desktop_dup)
+;   auto   = WGC, unless application is on inject whitelist
 capture_method=auto
 
 ; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay.
@@ -637,7 +670,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     if (!legacyPerfMetricsLogging.empty() && ParseBool(legacyPerfMetricsLogging)) {
         config.debugLogging = true;
     }
-    config.captureMethod = GetStr("General", "capture_method", "auto");
+    config.captureMethod = NormalizeCaptureMethod(GetStr("General", "capture_method", "auto"));
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
 
     // Performance (Priority Settings)
