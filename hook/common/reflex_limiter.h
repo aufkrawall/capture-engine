@@ -23,6 +23,7 @@
 #include <windows.h>
 // clang-format on
 #include <atomic>
+#include <intrin.h>
 #include "hook_common.h"
 #include "reflex_defs.h"
 
@@ -157,6 +158,28 @@ public:
 
     bool HasObservedGameSleep() const {
         return gameSleepObserved_.load(std::memory_order_acquire);
+    }
+
+    void ConfigureHybridPacing(int64_t qpcFreq, int fps) {
+        if (qpcFreq <= 0 || fps <= 0) {
+            hybridIntervalTicks_.store(0, std::memory_order_release);
+            hybridTargetTick_.store(0, std::memory_order_release);
+            return;
+        }
+
+        const int64_t newIntervalTicks = qpcFreq / fps;
+        const int64_t oldIntervalTicks = hybridIntervalTicks_.load(std::memory_order_acquire);
+        hybridQpcFrequency_.store(qpcFreq, std::memory_order_release);
+        hybridIntervalTicks_.store(newIntervalTicks, std::memory_order_release);
+        if (newIntervalTicks != oldIntervalTicks) {
+            hybridTargetTick_.store(0, std::memory_order_release);
+        }
+    }
+
+    void DisableHybridPacing() {
+        hybridIntervalTicks_.store(0, std::memory_order_release);
+        hybridTargetTick_.store(0, std::memory_order_release);
+        hybridQpcFrequency_.store(0, std::memory_order_release);
     }
 
     // Returns true if we've successfully pushed an FPS limit via Reflex.
@@ -316,6 +339,7 @@ public:
         sleepSucceeded_.store(false, std::memory_order_release);
         loggedMissingDevice_ = false;
         loggedMissingSleepDevice_ = false;
+        DisableHybridPacing();
         hasLastSleepModeParams_.store(false, std::memory_order_release);
         ZeroMemory(&lastSleepModeParams_, sizeof(lastSleepModeParams_));
         gameActivated_.store(false, std::memory_order_release);
@@ -478,6 +502,9 @@ private:
     bool loggedMissingSleepDevice_ = false;
     std::atomic<bool> hasLastSleepModeParams_{false};
     NV_SET_SLEEP_MODE_PARAMS lastSleepModeParams_{};
+    std::atomic<int64_t> hybridQpcFrequency_{0};
+    std::atomic<int64_t> hybridIntervalTicks_{0};
+    std::atomic<int64_t> hybridTargetTick_{0};
 };
 
 // Global instance (forward-declared for static detour methods)
@@ -549,6 +576,34 @@ inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_Sleep(IUnknown* pDev) {
     }
     limiter.lastDevice_ = pDev;
     limiter.MarkGameSleep();
+
+    const int64_t intervalTicks = limiter.hybridIntervalTicks_.load(std::memory_order_acquire);
+    const int64_t qpcFrequency = limiter.hybridQpcFrequency_.load(std::memory_order_acquire);
+    if (intervalTicks > 0 && qpcFrequency > 0) {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+
+        int64_t targetTick = limiter.hybridTargetTick_.load(std::memory_order_acquire);
+        if (targetTick == 0) {
+            targetTick = now.QuadPart + intervalTicks / 2;
+        }
+
+        while (targetTick > now.QuadPart) {
+            const int64_t diffTicks = targetTick - now.QuadPart;
+            const int64_t diffUs = (diffTicks * 1000000) / qpcFrequency;
+            if (diffUs > 2000) {
+                ::Sleep(0);
+            } else if (diffUs > 500) {
+                SwitchToThread();
+            } else {
+                _mm_pause();
+            }
+            QueryPerformanceCounter(&now);
+        }
+
+        limiter.hybridTargetTick_.store(targetTick + intervalTicks, std::memory_order_release);
+    }
+
     return forwardSleep(pDev);
 }
 

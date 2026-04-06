@@ -291,9 +291,10 @@ public:
 
         // Periodically check for native low-latency APIs (Reflex, AntiLag2, XeLL).
         // Games may load these dynamically (e.g., user enables Reflex in settings).
-        // Re-check every ~1 second (60 frames at 60fps) to catch late-loaded APIs.
+        // Re-check every ~250ms (15 frames at 60fps) to catch late-loaded APIs
+        // and in-game Reflex toggles faster.
         nativeApiRecheckCounter_++;
-        if (nativeApiRecheckCounter_ >= 60) {
+        if (nativeApiRecheckCounter_ >= 15) {
             nativeApiRecheckCounter_ = 0;
             bool reflexWasAvailable = g_ReflexLimiter.IsAvailable();
             g_ReflexLimiter.Init();
@@ -470,6 +471,16 @@ public:
         // Log mode transitions - always log on first activation to confirm mode
         if (!loggedActive_ || lastTargetFps_ != effectiveTargetFps || lastUsedCaptureSync_ != usingCaptureSync ||
             lastEffectiveMode_ != effectiveMode) {
+            // Reset pacing cadence immediately when FPS or mode changes so hot
+            // config reloads apply on the next frame instead of riding stale state.
+            localTargetTime_ = 0;
+            localFrameCount_ = 0;
+            localStatsIntervalStart_ = 0;
+            localStatsFrameCount_ = 0;
+            lastApplyEntryQpc_ = 0;
+            applyInterFrameSum_ = 0;
+            applyInterFrameCount_ = 0;
+
             const char* modeStr = "basic";
             if (effectiveMode == LimiterModeValues::kFGFallback)
                 modeStr = "fg_fallback";
@@ -528,28 +539,36 @@ public:
             const bool gameSleepObserved = g_ReflexLimiter.HasObservedGameSleep();
             const bool gameActivated = g_ReflexLimiter.IsGameActivated();
 
-            // Keep Reflex configured with our interval, but do not use NvAPI_D3D_Sleep
-            // itself as the frame cap. In Talos this produces low latency but fails
-            // to enforce the cap cleanly. Fall through to the precise pre-present wait
-            // path after the push succeeds.
             if (g_ReflexLimiter.PushFpsLimit() || gameActivated) {
                 reflexLimiterActive_ = true;
                 loggedNativeFallback_ = false;
+                g_ReflexLimiter.ConfigureHybridPacing(qpcFrequency, effectiveTargetFps);
 
                 if (!reflexLoggedSuccess_) {
                     TraceLog("Apply: REFLEX hybrid target=%d gameSleep=%d gameActive=%d", effectiveTargetFps,
-                             gameSleepObserved ? 1 : 0);
+                             gameSleepObserved ? 1 : 0, gameActivated ? 1 : 0);
                     HookLog(
                         "FPS Limiter: Reflex hybrid active (target=%d fps, native low-latency + local pacing, gameSleep=%d, gameActive=%d)",
                         effectiveTargetFps, gameSleepObserved ? 1 : 0, gameActivated ? 1 : 0);
                     reflexLoggedSuccess_ = true;
                 }
 
-                // Use the local pre-present cadence path, not the cross-process
-                // event limiter. The event round-trip is what still shows up in
-                // the logs as the main latency cost in this Talos Reflex setup.
+                // Once the game is actually calling NvAPI_D3D_Sleep, pace there.
+                // That is later in the frame than our present-time local wait.
+                if (gameSleepObserved) {
+                    isActivelyLimiting_.store(false, std::memory_order_relaxed);
+                    lastActualWaitUs_ = 0;
+                    LARGE_INTEGER retQpc;
+                    QueryPerformanceCounter(&retQpc);
+                    lastApplyReturnQpc = retQpc.QuadPart;
+                    return;
+                }
+
+                // Before the game's Sleep path is observed, use the local pre-present
+                // cadence path as a temporary fallback.
                 usingCaptureSync = true;
             } else {
+                g_ReflexLimiter.DisableHybridPacing();
                 if (reflexLimiterActive_) {
                     HookLog("FPS Limiter: Reflex setup failed, falling back to timer");
                 }
@@ -563,6 +582,7 @@ public:
         } else if (reflexLimiterActive_) {
             // Clear Reflex override if we were using it but switched away
             g_ReflexLimiter.SetTargetFps(0);
+            g_ReflexLimiter.DisableHybridPacing();
             reflexLimiterActive_ = false;
         }
 
@@ -641,13 +661,19 @@ public:
         // Instead, maintain a local cadence using SmartWait for sub-ms precision.
         if (usingCaptureSync) {
             int64_t intervalTicks = qpcFrequency / effectiveTargetFps;
+            int64_t phaseOffsetTicks = intervalTicks / 2;
+            if (phaseOffsetTicks < 1) {
+                phaseOffsetTicks = 1;
+            }
 
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
 
             if (localTargetTime_ == 0) {
-                // First frame: start cadence one interval from now
-                localTargetTime_ = now.QuadPart + intervalTicks;
+                // Start the first paced present later in the current frame rather
+                // than a full frame ahead. This reduces the queued-frame behavior
+                // that shows up as high latency in Reflex hybrid mode.
+                localTargetTime_ = now.QuadPart + phaseOffsetTicks;
                 localFrameCount_ = 0;
                 localStatsIntervalStart_ = now.QuadPart;
                 localStatsFrameCount_ = 0;
@@ -669,7 +695,7 @@ public:
             // If we fell more than 2 frames behind, resync to avoid burst catch-up
             QueryPerformanceCounter(&now);
             if (localTargetTime_ < now.QuadPart - intervalTicks * 2) {
-                localTargetTime_ = now.QuadPart + intervalTicks;
+                localTargetTime_ = now.QuadPart + phaseOffsetTicks;
             }
 
             // Track stats

@@ -135,10 +135,10 @@ DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
     DWORD now = GetTickCount();
 
     DWORD configElapsed = now - lastConfigCheck;
-    if (configElapsed >= 2000) {
+    if (configElapsed >= 250) {
         return 0;
     }
-    DWORD configWaitMs = 2000 - configElapsed;
+    DWORD configWaitMs = 250 - configElapsed;
     if (configWaitMs < waitMs) {
         waitMs = configWaitMs;
     }
@@ -1112,7 +1112,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
         // Config hot-reload
         static DWORD lastConfigCheck = 0;
-        if (GetTickCount() - lastConfigCheck > 2000) {
+        if (GetTickCount() - lastConfigCheck > 250) {
             WIN32_FILE_ATTRIBUTE_DATA fileInfo;
             if (GetFileAttributesExA(g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
                 static FILETIME lastWriteTime = fileInfo.ftLastWriteTime;
