@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include "../apis/dx11_hook.h"
 #include "../apis/lod_helper.h"
+#include "../common/sampler_override_utils.h"
 #include "../common/overlay_compat.h"
 #include "hook_common.h"
 #include "wrapper_hooks.h"
@@ -51,26 +52,19 @@ extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* pDe
     std::string af = gfx.anisotropicFiltering;
     if (af != "default") {
         if (af == "off") {
-            if (pDesc->Filter == D3D12_FILTER_ANISOTROPIC || pDesc->Filter == D3D12_FILTER_COMPARISON_ANISOTROPIC) {
-                bool wasComparison = (pDesc->Filter >= D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
+            if (ce::sampler_override::IsD3D12AnisotropicFilter(pDesc->Filter)) {
+                bool wasComparison = ce::sampler_override::IsD3D12ComparisonFilter(pDesc->Filter);
                 pDesc->Filter =
                     wasComparison ? D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
                 pDesc->MaxAnisotropy = 1;
             }
         } else {
-            int maxAniso = 16;
-            if (af == "2x")
-                maxAniso = 2;
-            else if (af == "4x")
-                maxAniso = 4;
-            else if (af == "8x")
-                maxAniso = 8;
+            UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
 
             if (pDesc->AddressU != D3D12_TEXTURE_ADDRESS_MODE_BORDER &&
                 pDesc->AddressV != D3D12_TEXTURE_ADDRESS_MODE_BORDER &&
                 pDesc->AddressW != D3D12_TEXTURE_ADDRESS_MODE_BORDER) {
-                bool comparison = (pDesc->Filter >= D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
-                pDesc->Filter = comparison ? D3D12_FILTER_COMPARISON_ANISOTROPIC : D3D12_FILTER_ANISOTROPIC;
+                pDesc->Filter = ce::sampler_override::GetForcedAnisotropicFilter(pDesc->Filter);
                 pDesc->MaxAnisotropy = maxAniso;
             }
         }

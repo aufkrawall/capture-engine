@@ -19,6 +19,7 @@
 #include "../common/hook_common.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
+#include "../common/sampler_override_utils.h"
 #include "../common/screenshot_hook.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
@@ -150,6 +151,25 @@ typedef HRESULT(STDMETHODCALLTYPE* CreateSamplerState_t)(ID3D11Device* pDevice, 
                                                          ID3D11SamplerState** ppSamplerState);
 static CreateSamplerState_t oCreateSamplerState = NULL;
 
+typedef void(STDMETHODCALLTYPE* SetShaderResources11_t)(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumViews,
+                                                        ID3D11ShaderResourceView* const* ppShaderResourceViews);
+typedef void(STDMETHODCALLTYPE* SetSamplers11_t)(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumSamplers,
+                                                 ID3D11SamplerState* const* ppSamplers);
+
+static SetShaderResources11_t oPSSetShaderResources11 = NULL;
+static SetShaderResources11_t oVSSetShaderResources11 = NULL;
+static SetShaderResources11_t oGSSetShaderResources11 = NULL;
+static SetShaderResources11_t oHSSetShaderResources11 = NULL;
+static SetShaderResources11_t oDSSetShaderResources11 = NULL;
+static SetShaderResources11_t oCSSetShaderResources11 = NULL;
+
+static SetSamplers11_t oPSSetSamplers11 = NULL;
+static SetSamplers11_t oVSSetSamplers11 = NULL;
+static SetSamplers11_t oGSSetSamplers11 = NULL;
+static SetSamplers11_t oHSSetSamplers11 = NULL;
+static SetSamplers11_t oDSSetSamplers11 = NULL;
+static SetSamplers11_t oCSSetSamplers11 = NULL;
+
 // D3D10 CreateSamplerState hook
 typedef HRESULT(STDMETHODCALLTYPE* CreateSamplerState10_t)(ID3D10Device* pDevice,
                                                            const D3D10_SAMPLER_DESC* pSamplerDesc,
@@ -186,6 +206,26 @@ static std::vector<std::pair<ID3D10SamplerState*, ID3D10SamplerState*>> g_Sample
 static std::shared_mutex g_SamplerCacheMutex10;
 static ID3D10Device* g_CachedD3D10Device = nullptr;
 static std::vector<ID3D10SamplerState*> g_ReplacementSamplers10;  // Prevent recursive replacements
+static uint64_t g_SamplerConfigHash10 = 0;
+
+static std::vector<std::pair<ID3D11SamplerState*, ID3D11SamplerState*>> g_SamplerCache11;
+static std::shared_mutex g_SamplerCacheMutex11;
+static std::vector<ID3D11SamplerState*> g_ReplacementSamplers11;
+static uint64_t g_SamplerConfigHash11 = 0;
+
+static std::mutex g_D3D11FormatSupportMutex;
+static std::unordered_map<DXGI_FORMAT, bool> g_D3D11FormatSupportCache;
+
+static thread_local bool g_InOverlayRender = false;
+
+enum class D3D11ShaderStage : uint32_t {
+    Pixel,
+    Vertex,
+    Geometry,
+    Hull,
+    Domain,
+    Compute,
+};
 
 // Helper for linear search
 static ID3D10SamplerState* FindReplacementSampler(ID3D10SamplerState* original) {
@@ -199,6 +239,12 @@ static ID3D10SamplerState* FindReplacementSampler(ID3D10SamplerState* original) 
 
 static void AddReplacementSampler(ID3D10SamplerState* original, ID3D10SamplerState* replacement) {
     std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
+    for (auto& entry : g_SamplerCache10) {
+        if (entry.first == original) {
+            entry.second = replacement;
+            return;
+        }
+    }
     g_SamplerCache10.push_back({original, replacement});
 }
 
@@ -212,6 +258,586 @@ static bool IsReplacementSampler(ID3D10SamplerState* sampler) {
 
 static void AddToReplacementSet(ID3D10SamplerState* sampler) {
     g_ReplacementSamplers10.push_back(sampler);
+}
+
+static void ClearReplacementSamplerCache10Unlocked() {
+    for (auto* sampler : g_ReplacementSamplers10) {
+        if (sampler) {
+            sampler->Release();
+        }
+    }
+    g_ReplacementSamplers10.clear();
+    g_SamplerCache10.clear();
+    g_SamplerConfigHash10 = 0;
+}
+
+static void ClearReplacementSamplerCache10() {
+    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
+    ClearReplacementSamplerCache10Unlocked();
+}
+
+static void EnsureSamplerCacheFresh10(const GraphicsConfig& gfx) {
+    const uint64_t configHash = ce::sampler_override::HashSamplerOverrideConfig(gfx);
+    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
+    if (g_SamplerConfigHash10 == configHash) {
+        return;
+    }
+    ClearReplacementSamplerCache10Unlocked();
+    g_SamplerConfigHash10 = configHash;
+}
+
+static ID3D11SamplerState* FindReplacementSampler11(ID3D11SamplerState* original) {
+    std::shared_lock<std::shared_mutex> lock(g_SamplerCacheMutex11);
+    for (const auto& entry : g_SamplerCache11) {
+        if (entry.first == original) {
+            return entry.second;
+        }
+    }
+    return nullptr;
+}
+
+static void AddReplacementSampler11(ID3D11SamplerState* original, ID3D11SamplerState* replacement) {
+    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex11);
+    for (auto& entry : g_SamplerCache11) {
+        if (entry.first == original) {
+            entry.second = replacement;
+            return;
+        }
+    }
+    g_SamplerCache11.push_back({original, replacement});
+}
+
+static bool IsReplacementSampler11(ID3D11SamplerState* sampler) {
+    for (auto* replacement : g_ReplacementSamplers11) {
+        if (replacement == sampler) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void AddToReplacementSet11(ID3D11SamplerState* sampler) {
+    g_ReplacementSamplers11.push_back(sampler);
+}
+
+static void ClearReplacementSamplerCache11Unlocked() {
+    for (auto* sampler : g_ReplacementSamplers11) {
+        if (sampler) {
+            sampler->Release();
+        }
+    }
+    g_ReplacementSamplers11.clear();
+    g_SamplerCache11.clear();
+    g_SamplerConfigHash11 = 0;
+}
+
+static void ClearReplacementSamplerCache11() {
+    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex11);
+    ClearReplacementSamplerCache11Unlocked();
+}
+
+static void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx) {
+    const uint64_t configHash = ce::sampler_override::HashSamplerOverrideConfig(gfx);
+    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex11);
+    if (g_SamplerConfigHash11 == configHash) {
+        return;
+    }
+    ClearReplacementSamplerCache11Unlocked();
+    g_SamplerConfigHash11 = configHash;
+}
+
+struct D3D11StageState {
+    ID3D11ShaderResourceView* srvs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+};
+
+struct D3D11PerContextState {
+    D3D11StageState stages[6];
+};
+
+static std::mutex g_D3D11ContextStateMutex;
+static std::unordered_map<ID3D11DeviceContext*, D3D11PerContextState> g_D3D11ContextStates;
+
+static size_t GetStageIndex(D3D11ShaderStage stage) {
+    switch (stage) {
+        case D3D11ShaderStage::Pixel:
+            return 0;
+        case D3D11ShaderStage::Vertex:
+            return 1;
+        case D3D11ShaderStage::Geometry:
+            return 2;
+        case D3D11ShaderStage::Hull:
+            return 3;
+        case D3D11ShaderStage::Domain:
+            return 4;
+        case D3D11ShaderStage::Compute:
+        default:
+            return 5;
+    }
+}
+
+static void ReleaseTrackedShaderResources11Unlocked() {
+    for (auto& [context, state] : g_D3D11ContextStates) {
+        (void)context;
+        for (D3D11StageState& stageState : state.stages) {
+            for (ID3D11ShaderResourceView*& view : stageState.srvs) {
+                if (view) {
+                    view->Release();
+                    view = nullptr;
+                }
+            }
+        }
+    }
+    g_D3D11ContextStates.clear();
+}
+
+static void ReleaseTrackedShaderResources11() {
+    std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
+    ReleaseTrackedShaderResources11Unlocked();
+}
+
+static void UpdateStageShaderResources(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numViews,
+                                       ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+    if (!context) {
+        return;
+    }
+    if (startSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
+    D3D11PerContextState& contextState = g_D3D11ContextStates[context];
+    D3D11StageState& state = contextState.stages[GetStageIndex(stage)];
+    const UINT maxViews = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - startSlot;
+    const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
+
+    for (UINT i = 0; i < actualViews; ++i) {
+        const UINT slot = startSlot + i;
+        if (state.srvs[slot]) {
+            state.srvs[slot]->Release();
+            state.srvs[slot] = nullptr;
+        }
+
+        ID3D11ShaderResourceView* view = ppShaderResourceViews ? ppShaderResourceViews[i] : nullptr;
+        if (view) {
+            view->AddRef();
+        }
+        state.srvs[slot] = view;
+    }
+}
+
+static ID3D11ShaderResourceView* GetTrackedShaderResourceView11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
+                                                                UINT slot) {
+    if (!context || slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
+    auto it = g_D3D11ContextStates.find(context);
+    if (it == g_D3D11ContextStates.end()) {
+        return nullptr;
+    }
+
+    ID3D11ShaderResourceView* view = it->second.stages[GetStageIndex(stage)].srvs[slot];
+    if (view) {
+        view->AddRef();
+    }
+    return view;
+}
+
+static bool SupportsD3D11SamplingFormat(ID3D11Device* device, DXGI_FORMAT format) {
+    if (!device || format == DXGI_FORMAT_UNKNOWN) {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_D3D11FormatSupportMutex);
+        auto it = g_D3D11FormatSupportCache.find(format);
+        if (it != g_D3D11FormatSupportCache.end()) {
+            return it->second;
+        }
+    }
+
+    UINT support = 0;
+    bool result = SUCCEEDED(device->CheckFormatSupport(format, &support)) &&
+                  (support & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) != 0;
+
+    std::lock_guard<std::mutex> lock(g_D3D11FormatSupportMutex);
+    g_D3D11FormatSupportCache[format] = result;
+    return result;
+}
+
+static bool IsPotentiallyProblematicDXGIFormat(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_UNKNOWN:
+        case DXGI_FORMAT_R32_UINT:
+        case DXGI_FORMAT_R32_SINT:
+        case DXGI_FORMAT_R32G32_UINT:
+        case DXGI_FORMAT_R32G32_SINT:
+        case DXGI_FORMAT_R32G32B32_UINT:
+        case DXGI_FORMAT_R32G32B32_SINT:
+        case DXGI_FORMAT_R32G32B32A32_UINT:
+        case DXGI_FORMAT_R32G32B32A32_SINT:
+        case DXGI_FORMAT_R16_UINT:
+        case DXGI_FORMAT_R16_SINT:
+        case DXGI_FORMAT_R16G16_UINT:
+        case DXGI_FORMAT_R16G16_SINT:
+        case DXGI_FORMAT_R16G16B16A16_UINT:
+        case DXGI_FORMAT_R16G16B16A16_SINT:
+        case DXGI_FORMAT_R8_UINT:
+        case DXGI_FORMAT_R8_SINT:
+        case DXGI_FORMAT_R8G8_UINT:
+        case DXGI_FORMAT_R8G8_SINT:
+        case DXGI_FORMAT_R8G8B8A8_UINT:
+        case DXGI_FORMAT_R8G8B8A8_SINT:
+        case DXGI_FORMAT_BC4_TYPELESS:
+        case DXGI_FORMAT_BC5_TYPELESS:
+        case DXGI_FORMAT_BC6H_TYPELESS:
+        case DXGI_FORMAT_BC7_TYPELESS:
+        case DXGI_FORMAT_R16_TYPELESS:
+        case DXGI_FORMAT_R32_TYPELESS:
+        case DXGI_FORMAT_R24G8_TYPELESS:
+        case DXGI_FORMAT_R32G8X24_TYPELESS:
+        case DXGI_FORMAT_R16G16_TYPELESS:
+        case DXGI_FORMAT_R32G32_TYPELESS:
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+        case DXGI_FORMAT_D16_UNORM:
+        case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        case DXGI_FORMAT_D32_FLOAT:
+        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool ViewHasMultipleVisibleMips(ID3D11ShaderResourceView* view) {
+    if (!view) {
+        return false;
+    }
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    view->GetDesc(&srvDesc);
+
+    ID3D11Resource* resource = nullptr;
+    view->GetResource(&resource);
+    if (!resource) {
+        return false;
+    }
+
+    bool hasMultipleVisibleMips = false;
+
+    ID3D11Texture2D* texture2D = nullptr;
+    if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture2D))) && texture2D) {
+        D3D11_TEXTURE2D_DESC textureDesc = {};
+        texture2D->GetDesc(&textureDesc);
+
+        const bool singleSample = textureDesc.SampleDesc.Count <= 1;
+        const bool isArrayResource = textureDesc.ArraySize > 1;
+        const UINT totalMipLevels = ce::sampler_override::ResolveFullMipCount2D(textureDesc.Width, textureDesc.Height,
+                                                                                textureDesc.MipLevels);
+
+        UINT mostDetailedMip = 0;
+        UINT viewMipLevels = UINT_MAX;
+        switch (srvDesc.ViewDimension) {
+            case D3D11_SRV_DIMENSION_TEXTURE2D:
+                mostDetailedMip = srvDesc.Texture2D.MostDetailedMip;
+                viewMipLevels = srvDesc.Texture2D.MipLevels;
+                break;
+            case D3D11_SRV_DIMENSION_TEXTURE2DARRAY:
+                mostDetailedMip = srvDesc.Texture2DArray.MostDetailedMip;
+                viewMipLevels = srvDesc.Texture2DArray.MipLevels;
+                break;
+            case D3D11_SRV_DIMENSION_TEXTURECUBE:
+                mostDetailedMip = srvDesc.TextureCube.MostDetailedMip;
+                viewMipLevels = srvDesc.TextureCube.MipLevels;
+                break;
+            case D3D11_SRV_DIMENSION_TEXTURECUBEARRAY:
+                mostDetailedMip = srvDesc.TextureCubeArray.MostDetailedMip;
+                viewMipLevels = srvDesc.TextureCubeArray.MipLevels;
+                break;
+            default:
+                viewMipLevels = 0;
+                break;
+        }
+
+        const UINT visibleMipLevels = ce::sampler_override::ResolveVisibleMipCount(totalMipLevels, mostDetailedMip,
+                                                                                   viewMipLevels);
+        const bool safeDimension = !isArrayResource;
+        const bool safeUsage = (textureDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL) == 0 &&
+                               (textureDesc.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE) == 0;
+        const bool safeFormat = !IsPotentiallyProblematicDXGIFormat(textureDesc.Format);
+
+        hasMultipleVisibleMips = singleSample && safeDimension && safeUsage && safeFormat && visibleMipLevels > 1;
+        texture2D->Release();
+    }
+
+    resource->Release();
+    return hasMultipleVisibleMips;
+}
+
+static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
+    if (!ce::sampler_override::IsAnisotropicOverrideEnabled(gfx)) {
+        return false;
+    }
+    if (desc.MaxLOD == 0.0f || desc.MinLOD == desc.MaxLOD) {
+        return false;
+    }
+    if (desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
+        desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
+        return false;
+    }
+    if (ce::sampler_override::IsD3D11ReductionFilter(desc.Filter)) {
+        return false;
+    }
+    if (desc.ComparisonFunc != D3D11_COMPARISON_NEVER) {
+        return false;
+    }
+    return true;
+}
+
+static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot,
+                                              const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
+    if (!SamplerAllowsForcedAF(desc, gfx)) {
+        return false;
+    }
+    // D3D11 does not guarantee sampler-slot == SRV-slot. Keep this runtime AF path
+    // to the common low slots where most games pair sN/tN conventionally.
+    if (slot >= 8) {
+        return false;
+    }
+    if (slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+        return false;
+    }
+
+    ID3D11ShaderResourceView* view = GetTrackedShaderResourceView11(context, stage, slot);
+    if (!view) {
+        return false;
+    }
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    view->GetDesc(&srvDesc);
+    if (!SupportsD3D11SamplingFormat(device, srvDesc.Format)) {
+        view->Release();
+        return false;
+    }
+
+    const bool shouldForce = ViewHasMultipleVisibleMips(view);
+    view->Release();
+    return shouldForce;
+}
+
+static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx, bool allowAnisotropicOverride) {
+    bool modified = false;
+
+    const std::string& af = gfx.anisotropicFiltering;
+    if (af != "default" && !af.empty()) {
+        if (af == "off") {
+            if (ce::sampler_override::IsD3D11AnisotropicFilter(desc.Filter)) {
+                desc.Filter = ce::sampler_override::IsD3D11ComparisonFilter(desc.Filter)
+                                  ? D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR
+                                  : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+                desc.MaxAnisotropy = 1;
+                modified = true;
+            }
+        } else if (allowAnisotropicOverride) {
+            const UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
+            const D3D11_FILTER newFilter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
+            if (desc.Filter != newFilter || desc.MaxAnisotropy != maxAniso) {
+                desc.Filter = newFilter;
+                desc.MaxAnisotropy = maxAniso;
+                modified = true;
+            }
+        }
+    }
+
+    const std::string& mip = gfx.mipMapping;
+    const bool isAniso = ce::sampler_override::IsD3D11AnisotropicFilter(desc.Filter);
+    if (mip != "default" && !isAniso) {
+        if (mip == "trilinear") {
+            if (desc.Filter != D3D11_FILTER_MIN_MAG_MIP_LINEAR) {
+                desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+                modified = true;
+            }
+        } else if (mip == "bilinear") {
+            if (desc.Filter != D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT) {
+                desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+                modified = true;
+            }
+        }
+    }
+
+    float userBiasVal = 0.0f;
+    const bool userBiasActive = TryParseConfiguredMipBias(gfx, userBiasVal);
+    const float originalBias = desc.MipLODBias;
+    desc.MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
+    if (desc.MipLODBias != originalBias) {
+        modified = true;
+    }
+
+    if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
+        float sgBias = 0.0f;
+        if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
+            desc.MipLODBias += sgBias;
+            modified = true;
+        }
+    }
+
+    if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess() && !gfx.forceMipBiasClamp) {
+        if (desc.MipLODBias < -0.5f) {
+            desc.MipLODBias = -0.5f;
+            modified = true;
+        }
+    }
+
+    const float finalizedBias = FinalizeMipBias(gfx, desc.MipLODBias);
+    if (finalizedBias != desc.MipLODBias) {
+        desc.MipLODBias = finalizedBias;
+        modified = true;
+    }
+
+    return modified;
+}
+
+static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
+                                                            UINT slot, ID3D11SamplerState* original) {
+    if (!context || !original) {
+        return original;
+    }
+
+    if (IsReplacementSampler11(original)) {
+        return original;
+    }
+
+    const auto& gfx = GetActiveGraphicsConfig();
+    EnsureSamplerCacheFresh11(gfx);
+
+    if (ID3D11SamplerState* cached = FindReplacementSampler11(original)) {
+        return cached;
+    }
+
+    ID3D11Device* device = nullptr;
+    context->GetDevice(&device);
+    if (!device) {
+        AddReplacementSampler11(original, original);
+        return original;
+    }
+
+    D3D11_SAMPLER_DESC desc = {};
+    original->GetDesc(&desc);
+
+    const bool allowAnisotropicOverride = ShouldForceAnisotropyForStageSlot(device, context, stage, slot, desc, gfx);
+    const bool modified = ApplySamplerOverrides11(desc, gfx, allowAnisotropicOverride);
+    if (!modified) {
+        AddReplacementSampler11(original, original);
+        device->Release();
+        return original;
+    }
+
+    ID3D11SamplerState* replacement = nullptr;
+    const HRESULT hr = oCreateSamplerState ? oCreateSamplerState(device, &desc, &replacement)
+                                           : device->CreateSamplerState(&desc, &replacement);
+    device->Release();
+
+    if (FAILED(hr) || !replacement) {
+        AddReplacementSampler11(original, original);
+        return original;
+    }
+
+    AddReplacementSampler11(original, replacement);
+    AddToReplacementSet11(replacement);
+    return replacement;
+}
+
+static void SetSamplersWithOverrides11(SetSamplers11_t originalFn, ID3D11DeviceContext* context, D3D11ShaderStage stage,
+                                       UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* ppSamplers) {
+    if (!originalFn) {
+        return;
+    }
+    if (!ppSamplers || numSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire) ||
+        g_InOverlayRender) {
+        originalFn(context, startSlot, numSamplers, ppSamplers);
+        return;
+    }
+
+    const UINT maxSamplers = static_cast<UINT>(D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    const UINT actualNum = (numSamplers < maxSamplers) ? numSamplers : maxSamplers;
+    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    for (UINT i = 0; i < actualNum; ++i) {
+        const UINT slot = startSlot + i;
+        replaced[i] = GetOrCreateReplacementSampler11(context, stage, slot, ppSamplers[i]);
+    }
+
+    originalFn(context, startSlot, numSamplers, replaced);
+}
+
+static void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+    UpdateStageShaderResources(context, D3D11ShaderStage::Pixel, startSlot, numViews, ppShaderResourceViews);
+    oPSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+}
+
+static void STDMETHODCALLTYPE DetourVSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+    UpdateStageShaderResources(context, D3D11ShaderStage::Vertex, startSlot, numViews, ppShaderResourceViews);
+    oVSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+}
+
+static void STDMETHODCALLTYPE DetourGSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+    UpdateStageShaderResources(context, D3D11ShaderStage::Geometry, startSlot, numViews, ppShaderResourceViews);
+    oGSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+}
+
+static void STDMETHODCALLTYPE DetourHSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+    UpdateStageShaderResources(context, D3D11ShaderStage::Hull, startSlot, numViews, ppShaderResourceViews);
+    oHSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+}
+
+static void STDMETHODCALLTYPE DetourDSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+    UpdateStageShaderResources(context, D3D11ShaderStage::Domain, startSlot, numViews, ppShaderResourceViews);
+    oDSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+}
+
+static void STDMETHODCALLTYPE DetourCSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+    UpdateStageShaderResources(context, D3D11ShaderStage::Compute, startSlot, numViews, ppShaderResourceViews);
+    oCSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+}
+
+static void STDMETHODCALLTYPE DetourPSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers) {
+    SetSamplersWithOverrides11(oPSSetSamplers11, context, D3D11ShaderStage::Pixel, startSlot, numSamplers, ppSamplers);
+}
+
+static void STDMETHODCALLTYPE DetourVSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers) {
+    SetSamplersWithOverrides11(oVSSetSamplers11, context, D3D11ShaderStage::Vertex, startSlot, numSamplers, ppSamplers);
+}
+
+static void STDMETHODCALLTYPE DetourGSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers) {
+    SetSamplersWithOverrides11(oGSSetSamplers11, context, D3D11ShaderStage::Geometry, startSlot, numSamplers,
+                               ppSamplers);
+}
+
+static void STDMETHODCALLTYPE DetourHSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers) {
+    SetSamplersWithOverrides11(oHSSetSamplers11, context, D3D11ShaderStage::Hull, startSlot, numSamplers, ppSamplers);
+}
+
+static void STDMETHODCALLTYPE DetourDSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers) {
+    SetSamplersWithOverrides11(oDSSetSamplers11, context, D3D11ShaderStage::Domain, startSlot, numSamplers, ppSamplers);
+}
+
+static void STDMETHODCALLTYPE DetourCSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers) {
+    SetSamplersWithOverrides11(oCSSetSamplers11, context, D3D11ShaderStage::Compute, startSlot, numSamplers, ppSamplers);
 }
 
 // Use typedef from dx11_hook.h
@@ -937,6 +1563,30 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFa
 
 static HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const D3D11_SAMPLER_DESC* pSamplerDesc,
                                                           ID3D11SamplerState** ppSamplerState);
+static void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);
+static void STDMETHODCALLTYPE DetourVSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);
+static void STDMETHODCALLTYPE DetourGSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);
+static void STDMETHODCALLTYPE DetourHSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);
+static void STDMETHODCALLTYPE DetourDSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);
+static void STDMETHODCALLTYPE DetourCSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);
+static void STDMETHODCALLTYPE DetourPSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers);
+static void STDMETHODCALLTYPE DetourVSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers);
+static void STDMETHODCALLTYPE DetourGSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers);
+static void STDMETHODCALLTYPE DetourHSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers);
+static void STDMETHODCALLTYPE DetourDSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers);
+static void STDMETHODCALLTYPE DetourCSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                                    ID3D11SamplerState* const* ppSamplers);
 static HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice,
                                                             const D3D10_SAMPLER_DESC* pSamplerDesc,
                                                             ID3D10SamplerState** ppSamplerState);
@@ -970,6 +1620,83 @@ static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pCont
         }
     }
 
+    if (pContext) {
+        void** pContextVTable = *(void***)pContext;
+
+        if (oPSSetShaderResources11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[8], (LPVOID)&DetourPSSetShaderResources11,
+                                   (LPVOID*)&oPSSetShaderResources11) == VTableHook::Success) {
+                HookLog("DX11: PSSetShaderResources hook installed");
+            }
+        }
+        if (oPSSetSamplers11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[10], (LPVOID)&DetourPSSetSamplers11, (LPVOID*)&oPSSetSamplers11) ==
+                VTableHook::Success) {
+                HookLog("DX11: PSSetSamplers hook installed");
+            }
+        }
+        if (oVSSetShaderResources11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[25], (LPVOID)&DetourVSSetShaderResources11,
+                                   (LPVOID*)&oVSSetShaderResources11) == VTableHook::Success) {
+                HookLog("DX11: VSSetShaderResources hook installed");
+            }
+        }
+        if (oVSSetSamplers11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[26], (LPVOID)&DetourVSSetSamplers11, (LPVOID*)&oVSSetSamplers11) ==
+                VTableHook::Success) {
+                HookLog("DX11: VSSetSamplers hook installed");
+            }
+        }
+        if (oGSSetShaderResources11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[31], (LPVOID)&DetourGSSetShaderResources11,
+                                   (LPVOID*)&oGSSetShaderResources11) == VTableHook::Success) {
+                HookLog("DX11: GSSetShaderResources hook installed");
+            }
+        }
+        if (oGSSetSamplers11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[32], (LPVOID)&DetourGSSetSamplers11, (LPVOID*)&oGSSetSamplers11) ==
+                VTableHook::Success) {
+                HookLog("DX11: GSSetSamplers hook installed");
+            }
+        }
+        if (oHSSetShaderResources11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[59], (LPVOID)&DetourHSSetShaderResources11,
+                                   (LPVOID*)&oHSSetShaderResources11) == VTableHook::Success) {
+                HookLog("DX11: HSSetShaderResources hook installed");
+            }
+        }
+        if (oHSSetSamplers11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[61], (LPVOID)&DetourHSSetSamplers11, (LPVOID*)&oHSSetSamplers11) ==
+                VTableHook::Success) {
+                HookLog("DX11: HSSetSamplers hook installed");
+            }
+        }
+        if (oDSSetShaderResources11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[63], (LPVOID)&DetourDSSetShaderResources11,
+                                   (LPVOID*)&oDSSetShaderResources11) == VTableHook::Success) {
+                HookLog("DX11: DSSetShaderResources hook installed");
+            }
+        }
+        if (oDSSetSamplers11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[65], (LPVOID)&DetourDSSetSamplers11, (LPVOID*)&oDSSetSamplers11) ==
+                VTableHook::Success) {
+                HookLog("DX11: DSSetSamplers hook installed");
+            }
+        }
+        if (oCSSetShaderResources11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[67], (LPVOID)&DetourCSSetShaderResources11,
+                                   (LPVOID*)&oCSSetShaderResources11) == VTableHook::Success) {
+                HookLog("DX11: CSSetShaderResources hook installed");
+            }
+        }
+        if (oCSSetSamplers11 == NULL) {
+            if (VTableHook::Create(&pContextVTable[70], (LPVOID)&DetourCSSetSamplers11, (LPVOID*)&oCSSetSamplers11) ==
+                VTableHook::Success) {
+                HookLog("DX11: CSSetSamplers hook installed");
+            }
+        }
+    }
+
     // ALSO try to hook D3D10 device from swapchain (Windows D3D10/D3D11 interop
     // means both will succeed) We need to hook D3D10 CreateSamplerState and
     // SetSamplers for D3D10 games
@@ -999,6 +1726,8 @@ void DX11_UpdatePerformanceMetrics(int64_t qpcUs) {
 }
 
 void CleanupDX11Resources(bool releaseDeviceContext) {
+    ReleaseTrackedShaderResources11();
+
     // When the window is being destroyed (releaseDeviceContext=false), skip ALL
     // releases because the underlying D3D device is already being torn down.
     // Calling Release() on any resource (even RTVs) can crash at this point.
@@ -2405,7 +3134,9 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     EarlyLog("DX11: [frame %d] calling RenderOverlay", frameCount);
 
     // Render Custom Overlay
+    g_InOverlayRender = true;
     g_OverlayAdapter.RenderOverlay(desc.BufferDesc.Width, desc.BufferDesc.Height);
+    g_InOverlayRender = false;
 
     if (previousViewportCount > 0) {
         context->RSSetViewports(previousViewportCount, previousViewports);
@@ -2656,116 +3387,17 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
 
     bool debug = false;
     D3D11_SAMPLER_DESC desc = *pSamplerDesc;
-    bool modified = false;
 
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         debug = true;
     }
 
-    // Skip overrides for samplers that have no mipmapping (MipLevels == 1 equivalent):
-    // - MaxLOD == 0.0f: sampler is clamped to the base mip level only (no mipmaps accessible).
-    //   This is the standard D3D11 convention for non-mipmapped textures.
-    // - MinLOD == MaxLOD: sampler is locked to a single LOD level.
-    // Note: D3D11 decouples samplers from textures — we cannot check the texture's
-    // actual MipLevels at sampler creation time. Games that use MaxLOD=FLT_MAX with
-    // a single-mip texture are not caught here; that requires bind-time tracking.
-    bool overridesAllowed = true;
-    if (pSamplerDesc->MaxLOD == 0.0f)
-        overridesAllowed = false;
-    if (pSamplerDesc->MinLOD == pSamplerDesc->MaxLOD)
-        overridesAllowed = false;
-
-    if (overridesAllowed && g_IPC) {
-        const auto& gfx = GetActiveGraphicsConfig();
-        // Anisotropic Filtering
-        std::string af = gfx.anisotropicFiltering;
-        if (af != "default") {
-            if (af == "off") {
-                // Remove anisotropic filter if set
-                if ((desc.Filter & D3D11_FILTER_ANISOTROPIC) || (desc.Filter & D3D11_FILTER_COMPARISON_ANISOTROPIC)) {
-                    // Preserve comparison mode (used for shadow map PCF samplers)
-                    bool wasComparison = (desc.Filter >= D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
-                    desc.Filter =
-                        wasComparison ? D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-                    desc.MaxAnisotropy = 1;
-                    modified = true;
-                }
-            } else {
-                // Force AF
-                int maxAniso = 16;
-                if (af == "2x")
-                    maxAniso = 2;
-                else if (af == "4x")
-                    maxAniso = 4;
-                else if (af == "8x")
-                    maxAniso = 8;
-
-                // CRITICAL: D3D11 forbids Anisotropic Filtering if any address mode is
-                // BORDER.
-                if (desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
-                    desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
-                    // Skip AF override for Border address mode
-                } else {
-                    // Keep comparison flat if present
-                    bool comparison = (desc.Filter >= D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
-
-                    desc.Filter = comparison ? D3D11_FILTER_COMPARISON_ANISOTROPIC : D3D11_FILTER_ANISOTROPIC;
-                    desc.MaxAnisotropy = maxAniso;
-                    modified = true;
-                }
-            }
-        }
-
-        // Mip Mapping (Filter Override)
-        std::string mip = gfx.mipMapping;
-        // Don't override filter for MipMapping if Anisotropy is already enabled (AF
-        // implies Trilinear)
-        bool isAniso = (desc.Filter == D3D11_FILTER_ANISOTROPIC || desc.Filter == D3D11_FILTER_COMPARISON_ANISOTROPIC);
-
-        if (mip != "default" && !isAniso) {
-            // This is complex because we need to preserve Min/Mag filters if
-            // possible, or just force standard We will just force standard
-            // Trilinear/Bilinear for simplicity
-            if (mip == "trilinear") {
-                desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-                modified = true;
-            } else if (mip == "bilinear") {
-                desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-                modified = true;
-            }
-        }
-
-        // Mip Bias
-        float userBiasVal = 0.0f;
-        bool userBiasActive = TryParseConfiguredMipBias(gfx, userBiasVal);
-        float originalBias = pSamplerDesc->MipLODBias;
-        desc.MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
-        if (desc.MipLODBias != originalBias) {
-            modified = true;
-        }
-
-        // SGSSAA Auto-Bias
-        if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
-            float sgBias = 0.0f;
-            if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
-                desc.MipLODBias += sgBias;
-                modified = true;
-            }
-        }
-
-        if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess() && !gfx.forceMipBiasClamp) {
-            if (desc.MipLODBias < -0.5f) {
-                desc.MipLODBias = -0.5f;
-                modified = true;
-            }
-        }
-
-        float finalizedBias = FinalizeMipBias(gfx, desc.MipLODBias);
-        if (finalizedBias != desc.MipLODBias) {
-            desc.MipLODBias = finalizedBias;
-            modified = true;
-        }
-    }
+    const auto& gfx = GetActiveGraphicsConfig();
+    // D3D11 samplers are decoupled from textures, so create-time AF enablement is
+    // too broad for compatibility-sensitive titles. Keep AF disable and mip/bias
+    // adjustments here, and only allow AF enablement from the bind-time path that
+    // can inspect the currently tracked SRV.
+    const bool modified = ApplySamplerOverrides11(desc, gfx, false);
 
     HRESULT hr;
     if (modified) {
@@ -2817,28 +3449,21 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, cons
         std::string af = gfx.anisotropicFiltering;
         if (af != "default") {
             if (af == "off") {
-                if (desc.Filter == D3D10_FILTER_ANISOTROPIC || desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC) {
-                    bool isComparison = (desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
+                if (ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter)) {
+                    bool isComparison = ce::sampler_override::IsD3D10ComparisonFilter(desc.Filter);
                     desc.Filter =
                         isComparison ? D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D10_FILTER_MIN_MAG_MIP_LINEAR;
                     desc.MaxAnisotropy = 1;
                     modified = true;
                 }
             } else {
-                int maxAniso = 16;
-                if (af == "2x")
-                    maxAniso = 2;
-                else if (af == "4x")
-                    maxAniso = 4;
-                else if (af == "8x")
-                    maxAniso = 8;
+                UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
 
                 if (desc.AddressU == D3D10_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D10_TEXTURE_ADDRESS_BORDER ||
                     desc.AddressW == D3D10_TEXTURE_ADDRESS_BORDER) {
                     // Skip AF override for Border address mode
                 } else {
-                    bool isComparison = (desc.Filter >= D3D10_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
-                    desc.Filter = isComparison ? D3D10_FILTER_COMPARISON_ANISOTROPIC : D3D10_FILTER_ANISOTROPIC;
+                    desc.Filter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
                     desc.MaxAnisotropy = maxAniso;
                     modified = true;
                 }
@@ -2847,7 +3472,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, cons
 
         // Mip Mapping
         std::string mip = gfx.mipMapping;
-        bool isAniso = (desc.Filter == D3D10_FILTER_ANISOTROPIC || desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
+        bool isAniso = ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter);
 
         if (mip != "default" && !isAniso) {
             if (mip == "trilinear") {
@@ -2919,7 +3544,8 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
     if (!pOriginal)
         return nullptr;
 
-    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
+    const auto& gfx = GetActiveGraphicsConfig();
+    EnsureSamplerCacheFresh10(gfx);
 
     // 1. If it's already a replacement sampler, don't try to replace it again
     if (IsReplacementSampler(pOriginal)) {
@@ -2952,32 +3578,23 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
     D3D10_SAMPLER_DESC desc = originalDesc;
     bool modified = false;
 
-    const auto& gfx = GetActiveGraphicsConfig();
-
     // Anisotropic Filtering
     std::string af = gfx.anisotropicFiltering;
     if (af != "default") {
         if (af == "off") {
-            if (desc.Filter == D3D10_FILTER_ANISOTROPIC || desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC) {
-                bool isComparison = (desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
+            if (ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter)) {
+                bool isComparison = ce::sampler_override::IsD3D10ComparisonFilter(desc.Filter);
                 desc.Filter =
                     isComparison ? D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D10_FILTER_MIN_MAG_MIP_LINEAR;
                 desc.MaxAnisotropy = 1;
                 modified = true;
             }
         } else {
-            int maxAniso = 16;
-            if (af == "2x")
-                maxAniso = 2;
-            else if (af == "4x")
-                maxAniso = 4;
-            else if (af == "8x")
-                maxAniso = 8;
+            UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
 
             if (desc.AddressU != D3D10_TEXTURE_ADDRESS_BORDER && desc.AddressV != D3D10_TEXTURE_ADDRESS_BORDER &&
                 desc.AddressW != D3D10_TEXTURE_ADDRESS_BORDER) {
-                bool isComparison = (desc.Filter >= D3D10_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
-                desc.Filter = isComparison ? D3D10_FILTER_COMPARISON_ANISOTROPIC : D3D10_FILTER_ANISOTROPIC;
+                desc.Filter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
                 desc.MaxAnisotropy = maxAniso;
                 modified = true;
             }
@@ -2986,7 +3603,7 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
 
     // Mip Mapping
     std::string mip = gfx.mipMapping;
-    bool isAniso = (desc.Filter == D3D10_FILTER_ANISOTROPIC || desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
+    bool isAniso = ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter);
 
     if (mip != "default" && !isAniso) {
         if (mip == "trilinear") {
@@ -3329,10 +3946,12 @@ void DX11Hook::Shutdown() {
 
     // CRITICAL FIX: Clear sampler caches to prevent unbounded memory growth
     // These caches accumulate replacement samplers over time
+    ClearReplacementSamplerCache10();
+    ClearReplacementSamplerCache11();
+    ReleaseTrackedShaderResources11();
     {
-        std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
-        g_SamplerCache10.clear();
-        g_ReplacementSamplers10.clear();
+        std::lock_guard<std::mutex> lock(g_D3D11FormatSupportMutex);
+        g_D3D11FormatSupportCache.clear();
     }
 
     // Clean up prerender queries
@@ -3360,5 +3979,8 @@ void DX11Hook::OnHostDisconnect() {
     HookLog("DX11Hook::OnHostDisconnect() - ready for reconnection");
     // DX11 capture is synchronous, nothing to stop
     // Just cleanup for potential new session
+    ClearReplacementSamplerCache10();
+    ClearReplacementSamplerCache11();
+    ReleaseTrackedShaderResources11();
     g_DX11Capture.Cleanup();
 }

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include "../apis/lod_helper.h"
+#include "../common/sampler_override_utils.h"
 #include "../common/hook_common.h"
 
 namespace RootSignatureParser {
@@ -16,14 +17,7 @@ namespace RootSignatureParser {
 // Helper: Get filter type for anisotropic
 // ============================================================================
 static D3D12_FILTER GetAnisotropicFilter(D3D12_FILTER originalFilter) {
-    // Check if this is a comparison filter
-    bool isComparison = (originalFilter >= D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT &&
-                         originalFilter < D3D12_FILTER_MINIMUM_MIN_MAG_MIP_POINT);
-
-    if (isComparison) {
-        return D3D12_FILTER_COMPARISON_ANISOTROPIC;
-    }
-    return D3D12_FILTER_ANISOTROPIC;
+    return ce::sampler_override::GetForcedAnisotropicFilter(originalFilter);
 }
 
 // ============================================================================
@@ -47,8 +41,8 @@ bool ApplyStaticSamplerOverrides(D3D12_STATIC_SAMPLER_DESC& sampler) {
     if (af != "default" && !hasBorderAddress) {
         if (af == "off") {
             // Disable anisotropic - convert to linear
-            if (sampler.Filter == D3D12_FILTER_ANISOTROPIC || sampler.Filter == D3D12_FILTER_COMPARISON_ANISOTROPIC) {
-                bool isComparison = (sampler.Filter >= D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
+            if (ce::sampler_override::IsD3D12AnisotropicFilter(sampler.Filter)) {
+                bool isComparison = ce::sampler_override::IsD3D12ComparisonFilter(sampler.Filter);
                 sampler.Filter =
                     isComparison ? D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
                 sampler.MaxAnisotropy = 1;
@@ -56,13 +50,7 @@ bool ApplyStaticSamplerOverrides(D3D12_STATIC_SAMPLER_DESC& sampler) {
             }
         } else {
             // Enable anisotropic
-            int maxAniso = 16;
-            if (af == "2x")
-                maxAniso = 2;
-            else if (af == "4x")
-                maxAniso = 4;
-            else if (af == "8x")
-                maxAniso = 8;
+            UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
 
             D3D12_FILTER newFilter = GetAnisotropicFilter(sampler.Filter);
             if (sampler.Filter != newFilter || sampler.MaxAnisotropy != maxAniso) {

@@ -5,6 +5,7 @@
 #include "d3d10_device_wrap.h"
 #include <cstdlib>
 #include "../apis/lod_helper.h"
+#include "../common/sampler_override_utils.h"
 #include "dxgi_device_wrap.h"
 #include "hook_common.h"
 
@@ -48,25 +49,18 @@ void CWrapD3D10Device::ApplySamplerOverrides(D3D10_SAMPLER_DESC* pDesc) {
     const std::string& af = gfx.anisotropicFiltering;
     if (af != "default" && !af.empty()) {
         if (af == "off") {
-            if (pDesc->Filter == D3D10_FILTER_ANISOTROPIC || pDesc->Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC) {
-                bool comparison = (pDesc->Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
+            if (ce::sampler_override::IsD3D10AnisotropicFilter(pDesc->Filter)) {
+                bool comparison = ce::sampler_override::IsD3D10ComparisonFilter(pDesc->Filter);
                 pDesc->Filter =
                     comparison ? D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D10_FILTER_MIN_MAG_MIP_LINEAR;
                 pDesc->MaxAnisotropy = 1;
             }
         } else {
-            UINT maxAniso = 16;
-            if (af == "2x")
-                maxAniso = 2;
-            else if (af == "4x")
-                maxAniso = 4;
-            else if (af == "8x")
-                maxAniso = 8;
+            UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
 
             if (pDesc->AddressU != D3D10_TEXTURE_ADDRESS_BORDER && pDesc->AddressV != D3D10_TEXTURE_ADDRESS_BORDER &&
                 pDesc->AddressW != D3D10_TEXTURE_ADDRESS_BORDER) {
-                bool comparison = (pDesc->Filter >= D3D10_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
-                pDesc->Filter = comparison ? D3D10_FILTER_COMPARISON_ANISOTROPIC : D3D10_FILTER_ANISOTROPIC;
+                pDesc->Filter = ce::sampler_override::GetForcedAnisotropicFilter(pDesc->Filter);
                 pDesc->MaxAnisotropy = maxAniso;
             }
         }

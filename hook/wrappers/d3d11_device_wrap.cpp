@@ -6,6 +6,7 @@
 
 #include "d3d11_device_wrap.h"
 #include "../apis/lod_helper.h"
+#include "../common/sampler_override_utils.h"
 #include "d3d11_devicecontext_wrap.h"
 #include "dxgi_device_wrap.h"
 #include "hook_common.h"
@@ -84,25 +85,18 @@ void CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
     const std::string& af = gfx.anisotropicFiltering;
     if (af != "default" && !af.empty()) {
         if (af == "off") {
-            if ((pDesc->Filter & D3D11_FILTER_ANISOTROPIC) || (pDesc->Filter & D3D11_FILTER_COMPARISON_ANISOTROPIC)) {
-                bool wasComparison = (pDesc->Filter >= D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
+            if (ce::sampler_override::IsD3D11AnisotropicFilter(pDesc->Filter)) {
+                bool wasComparison = ce::sampler_override::IsD3D11ComparisonFilter(pDesc->Filter);
                 pDesc->Filter =
                     wasComparison ? D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
                 pDesc->MaxAnisotropy = 1;
             }
         } else {
-            int maxAniso = 16;
-            if (af == "2x")
-                maxAniso = 2;
-            else if (af == "4x")
-                maxAniso = 4;
-            else if (af == "8x")
-                maxAniso = 8;
+            UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
 
             if (pDesc->AddressU != D3D11_TEXTURE_ADDRESS_BORDER && pDesc->AddressV != D3D11_TEXTURE_ADDRESS_BORDER &&
                 pDesc->AddressW != D3D11_TEXTURE_ADDRESS_BORDER) {
-                bool comparison = (pDesc->Filter >= D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
-                pDesc->Filter = comparison ? D3D11_FILTER_COMPARISON_ANISOTROPIC : D3D11_FILTER_ANISOTROPIC;
+                pDesc->Filter = ce::sampler_override::GetForcedAnisotropicFilter(pDesc->Filter);
                 pDesc->MaxAnisotropy = maxAniso;
             }
         }
