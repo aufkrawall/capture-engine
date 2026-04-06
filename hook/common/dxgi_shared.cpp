@@ -275,6 +275,23 @@ static bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAv
     return DetectAPIType(pSwapChain) == APIType::D3D12;
 }
 
+static bool ShouldForceThirdPartyOverlayBypass(IDXGISwapChain* pSwapChain, bool bypassAvailable,
+                                               const char** overlayModuleOut = nullptr) {
+    const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+    if (overlayModuleOut) {
+        *overlayModuleOut = overlayModule;
+    }
+    if (!pSwapChain || !bypassAvailable || !overlayModule) {
+        return false;
+    }
+
+    if (!IsInWrapperPresent() && !IsWrappedSwapChainObject(pSwapChain)) {
+        return false;
+    }
+
+    return true;
+}
+
 static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, const char** overlayModuleOut = nullptr,
                                                         int* passIndexOut = nullptr) {
     const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
@@ -449,6 +466,73 @@ static bool IsReadableMemory(const void* ptr, size_t size) {
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters);
+
+static bool HasExternalEntryHook(const void* target) {
+    const auto* code = static_cast<const uint8_t*>(target);
+    if (!IsReadableMemory(code, 16)) {
+        return false;
+    }
+    return code[0] == 0xE9 || (code[0] == 0xFF && code[1] == 0x25);
+}
+
+static PFN_Present EnsurePresentBypassTrampoline() {
+    if (oPresentBypass) {
+        return oPresentBypass;
+    }
+
+    std::lock_guard<std::mutex> lock(g_SharedMutex);
+    if (oPresentBypass) {
+        return oPresentBypass;
+    }
+
+    const PFN_Present presentOriginal = oPresent;
+    if (!presentOriginal || presentOriginal == DetourPresent || !HasExternalEntryHook((const void*)presentOriginal)) {
+        return nullptr;
+    }
+
+    void* bypass = InlineHook::CreateBypassTrampoline((void*)presentOriginal);
+    if (!bypass) {
+        static int s_bypassFailLogCount = 0;
+        if (s_bypassFailLogCount++ < 5) {
+            HookLogImportant("DXGIShared: Failed to lazily create Present bypass trampoline from %p", presentOriginal);
+        }
+        return nullptr;
+    }
+
+    oPresentBypass = (PFN_Present)bypass;
+    HookLogImportant("DXGIShared: Lazily created Present bypass trampoline at %p from %p", bypass, presentOriginal);
+    return oPresentBypass;
+}
+
+static PFN_Present1 EnsurePresent1BypassTrampoline() {
+    if (oPresent1Bypass) {
+        return oPresent1Bypass;
+    }
+
+    std::lock_guard<std::mutex> lock(g_SharedMutex);
+    if (oPresent1Bypass) {
+        return oPresent1Bypass;
+    }
+
+    const PFN_Present1 present1Original = oPresent1;
+    if (!present1Original || present1Original == DetourPresent1 || !HasExternalEntryHook((const void*)present1Original)) {
+        return nullptr;
+    }
+
+    void* bypass = InlineHook::CreateBypassTrampoline((void*)present1Original);
+    if (!bypass) {
+        static int s_bypassFailLogCount = 0;
+        if (s_bypassFailLogCount++ < 5) {
+            HookLogImportant("DXGIShared: Failed to lazily create Present1 bypass trampoline from %p", present1Original);
+        }
+        return nullptr;
+    }
+
+    oPresent1Bypass = (PFN_Present1)bypass;
+    HookLogImportant("DXGIShared: Lazily created Present1 bypass trampoline at %p from %p", bypass,
+                     present1Original);
+    return oPresent1Bypass;
+}
 
 namespace {
 
@@ -1712,7 +1796,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     const PFN_Present presentTrampoline = oPresentTrampoline;
     const PFN_Present presentOriginal = oPresent;
-    const PFN_Present presentBypass = oPresentBypass;
+    const PFN_Present presentBypass = EnsurePresentBypassTrampoline();
     bool slLoaded = IsSLInterposerLoaded();
 
     // Inline-hook path: trampoline always bypasses the detour safely.
@@ -1730,6 +1814,16 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (s_forcedBypassLogCount++ < 10) {
             HookLogImportant("CallOriginalPresent: forcing DXGI bypass for Steam overlay %s while FG is inactive",
                              forcedBypassOverlay);
+        }
+        return presentBypass(pSwapChain, SyncInterval, Flags);
+    }
+
+    const char* thirdPartyBypassOverlay = nullptr;
+    if (ShouldForceThirdPartyOverlayBypass(pSwapChain, presentBypass != nullptr, &thirdPartyBypassOverlay)) {
+        static int s_wrapperBypassLogCount = 0;
+        if (s_wrapperBypassLogCount++ < 10) {
+            HookLogImportant("CallOriginalPresent: forcing bypass for wrapped present under overlay %s",
+                             thirdPartyBypassOverlay);
         }
         return presentBypass(pSwapChain, SyncInterval, Flags);
     }
@@ -1786,7 +1880,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
 
     const PFN_Present1 present1Trampoline = oPresent1Trampoline;
     const PFN_Present1 present1Original = oPresent1;
-    const PFN_Present1 present1Bypass = oPresent1Bypass;
+    const PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
     bool slLoaded = IsSLInterposerLoaded();
 
     // Inline-hook path: trampoline always bypasses the detour safely.
@@ -1800,6 +1894,16 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         if (s_forcedBypassLogCount++ < 10) {
             HookLogImportant("CallOriginalPresent1: forcing DXGI bypass for Steam overlay %s while FG is inactive",
                              forcedBypassOverlay);
+        }
+        return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
+    }
+
+    const char* thirdPartyBypassOverlay = nullptr;
+    if (ShouldForceThirdPartyOverlayBypass(pSwapChain, present1Bypass != nullptr, &thirdPartyBypassOverlay)) {
+        static int s_wrapperBypassLogCount = 0;
+        if (s_wrapperBypassLogCount++ < 10) {
+            HookLogImportant("CallOriginalPresent1: forcing bypass for wrapped present under overlay %s",
+                             thirdPartyBypassOverlay);
         }
         return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
     }

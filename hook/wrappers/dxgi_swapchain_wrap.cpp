@@ -686,12 +686,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         }
     });
 
-    // CRITICAL: Set this FIRST before any other code, especially before recursion
-    // guard This ensures DetourPresent knows we're in a wrapper call even if we
-    // return early
-    g_InWrapperPresent = true;
-    auto wrapperPresentGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
-
     DXGIShared::g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
     auto presentInFlightGuard = ::ce::make_scope_guard(
         []() { DXGIShared::g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel); });
@@ -821,10 +815,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
             WrapperLog("Present: Delegating DX12 Present to detour hook for external overlay %s",
                        delegationOverlayModule ? delegationOverlayModule : "module");
         }
+        const bool previousInWrapperPresent = g_InWrapperPresent;
         g_InWrapperPresent = false;
-        auto delegateGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = true; });
+        auto delegateGuard = ::ce::make_scope_guard(
+            [previousInWrapperPresent]() { g_InWrapperPresent = previousInWrapperPresent; });
         return pRealCached->Present(SyncInterval, Flags);
     }
+
+    // Only advertise wrapper-managed Present after ruling out the delegated
+    // external-overlay path. Otherwise DetourPresent sees a wrapper call and
+    // bounces back into the original chain immediately.
+    g_InWrapperPresent = true;
+    auto wrapperPresentGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
 
     // DEBUG: Log first few Present calls to verify wrapper is being invoked
     if (callCount < 10) {
@@ -1138,12 +1140,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetCoreWindow(REFIID refiid, void*
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
                                                        const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
-    // CRITICAL: Set this FIRST before any other code, especially before recursion
-    // guard This ensures DetourPresent knows we're in a wrapper call even if we
-    // return early
-    g_InWrapperPresent = true;
-    auto wrapperPresentGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
-
     // CRITICAL: Check for global shutdown - if app is closing, don't touch
     // anything
     if (HookIsShuttingDown()) {
@@ -1180,10 +1176,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
             WrapperLog("Present1: Delegating DX12 Present1 to detour hook for external overlay %s",
                        delegationOverlayModule ? delegationOverlayModule : "module");
         }
+        const bool previousInWrapperPresent = g_InWrapperPresent;
         g_InWrapperPresent = false;
-        auto delegateGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = true; });
+        auto delegateGuard = ::ce::make_scope_guard(
+            [previousInWrapperPresent]() { g_InWrapperPresent = previousInWrapperPresent; });
         return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     }
+
+    g_InWrapperPresent = true;
+    auto wrapperPresentGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
 
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_present1ThreadId{0};
