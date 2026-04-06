@@ -140,6 +140,7 @@ public:
     void MarkGameSleep() {
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG previous = lastGameSleepTick_.exchange(now, std::memory_order_acq_rel);
+        gameSleepObserved_.store(true, std::memory_order_release);
         if (previous == 0) {
             HookLogImportant("ReflexLimiter: Game called Reflex Sleep");
         }
@@ -152,6 +153,10 @@ public:
         }
         const ULONGLONG now = GetTickCount64();
         return now >= lastTick && (now - lastTick) <= maxAgeMs;
+    }
+
+    bool HasObservedGameSleep() const {
+        return gameSleepObserved_.load(std::memory_order_acquire);
     }
 
     // Returns true if we've successfully pushed an FPS limit via Reflex.
@@ -275,6 +280,7 @@ public:
             HookLogImportant("ReflexLimiter: Game DEACTIVATED Reflex (via Streamline)");
             lastNativePacingSignalTick_.store(0, std::memory_order_release);
             lastGameSleepTick_.store(0, std::memory_order_release);
+            gameSleepObserved_.store(false, std::memory_order_release);
         }
     }
 
@@ -291,6 +297,7 @@ public:
         origQueryInterface_ = nullptr;
         lastNativePacingSignalTick_.store(0, std::memory_order_release);
         lastGameSleepTick_.store(0, std::memory_order_release);
+        gameSleepObserved_.store(false, std::memory_order_release);
         lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
         directSetSleepModeHooked_ = false;
         directSleepHooked_ = false;
@@ -428,6 +435,7 @@ private:
     std::atomic<uint32_t> targetIntervalUs_{0};
     std::atomic<ULONGLONG> lastNativePacingSignalTick_{0};
     std::atomic<ULONGLONG> lastGameSleepTick_{0};
+    std::atomic<bool> gameSleepObserved_{false};
     std::atomic<uint32_t> lastPushedIntervalUs_{UINT32_MAX};
     PFN_NvAPI_D3D_SetSleepMode realSetSleepModeForHook_ = nullptr;  // Real SetSleepMode for detour forwarding
     PFN_NvAPI_D3D_Sleep realSleepForHook_ = nullptr;                // Real Sleep for detour forwarding

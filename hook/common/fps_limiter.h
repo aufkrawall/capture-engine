@@ -525,41 +525,21 @@ public:
             }
 
             g_ReflexLimiter.SetTargetFps(effectiveTargetFps);
-            const bool gameSleepActive = g_ReflexLimiter.HasRecentGameSleep(250);
+            const bool gameSleepObserved = g_ReflexLimiter.HasObservedGameSleep();
 
-            // If the game is already calling NvAPI_D3D_Sleep itself, just push our
-            // target interval and let the game's native pacing drive the frame loop.
-            if (gameSleepActive) {
-                g_ReflexLimiter.PushFpsLimit();
+            // Talos proves that observing a game Reflex sleep call is not enough
+            // to guarantee real pacing. Always drive the native sleep ourselves
+            // once Reflex is active, while still tracking whether the game uses
+            // its own sleep path for diagnostics.
+            if (g_ReflexLimiter.Sleep()) {
                 reflexLimiterActive_ = true;
                 loggedNativeFallback_ = false;
 
                 if (!reflexLoggedSuccess_) {
-                    TraceLog("Apply: REFLEX game-sleep target=%d", effectiveTargetFps);
-                    HookLog("FPS Limiter: Reflex API active (target=%d fps, game-driven sleep pacing)",
-                            effectiveTargetFps);
-                    reflexLoggedSuccess_ = true;
-                }
-
-                isActivelyLimiting_.store(false, std::memory_order_relaxed);
-                lastActualWaitUs_ = 0;
-
-                LARGE_INTEGER retQpc;
-                QueryPerformanceCounter(&retQpc);
-                lastApplyReturnQpc = retQpc.QuadPart;
-                return;
-            }
-
-            // Otherwise drive the native Reflex sleep ourselves. This matches the
-            // intended native limiter flow more closely than the software timer path.
-            if (!gameSleepActive && g_ReflexLimiter.Sleep()) {
-                reflexLimiterActive_ = true;
-                loggedNativeFallback_ = false;
-
-                if (!reflexLoggedSuccess_) {
-                    TraceLog("Apply: REFLEX native-sleep target=%d", effectiveTargetFps);
-                    HookLog("FPS Limiter: Reflex API active (target=%d fps, injected driver sleep pacing)",
-                            effectiveTargetFps);
+                    TraceLog("Apply: REFLEX native-sleep target=%d gameSleep=%d", effectiveTargetFps,
+                             gameSleepObserved ? 1 : 0);
+                    HookLog("FPS Limiter: Reflex API active (target=%d fps, injected driver sleep pacing, gameSleep=%d)",
+                            effectiveTargetFps, gameSleepObserved ? 1 : 0);
                     reflexLoggedSuccess_ = true;
                 }
 
@@ -577,7 +557,7 @@ public:
             }
             if (!loggedNativeFallback_) {
                 TraceLog("Apply: REFLEX timer fallback gameActive=%d gameSleep=%d",
-                         g_ReflexLimiter.IsGameActivated() ? 1 : 0, gameSleepActive ? 1 : 0);
+                         g_ReflexLimiter.IsGameActivated() ? 1 : 0, gameSleepObserved ? 1 : 0);
                 HookLog("FPS Limiter: Reflex native mode unavailable at runtime; using timer fallback");
                 loggedNativeFallback_ = true;
             }
