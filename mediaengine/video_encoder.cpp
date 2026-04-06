@@ -698,6 +698,13 @@ struct FrameStats {
     int64_t actualPtsDiff = 0;    // Actual ms between frames
 };
 
+static int64_t RoundUsToMs(int64_t valueUs) {
+    if (valueUs >= 0) {
+        return (valueUs + 500) / 1000;
+    }
+    return (valueUs - 500) / 1000;
+}
+
 // Global stats for frame analysis
 static int64_t g_lastFramePts = -1;
 static int64_t g_framesEncoded = 0;
@@ -2173,7 +2180,7 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
     // DEBUG: Log PTS after rescaling and detect corruption
     if (pkt->stream_index == stream->index) {
         if (vidDebugCount++ < 20 || pkt->pts < 0) {
-            DLL_Log("[VideoEncoder] PTS PRECISE: frameNum=%lld pts_ms=%lld st_tb=%d/%d", pkt->pts, pkt->pts,
+            DLL_Log("[VideoEncoder] PTS PRECISE: frame=%lld pts_us=%lld st_tb=%d/%d", pkt->pts, pkt->pts,
                     st->time_base.num, st->time_base.den);
         }
 
@@ -2585,13 +2592,13 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // Performance timing for this frame
     FrameStats stats;
     stats.frameNumber = encodeFrameCounter;
-    stats.ptsMs = timestamp / 1000;
+    stats.ptsMs = RoundUsToMs(timestamp);
 
     // Calculate frame timing for smoothness analysis
     double expectedFrameMs = 1000.0 / codecCtx->framerate.num;
     if (g_lastFramePts >= 0) {
-        stats.actualPtsDiff = (timestamp - g_lastFramePts) / 1000;
-        stats.expectedPtsDiff = (int64_t)expectedFrameMs;
+        stats.actualPtsDiff = RoundUsToMs(timestamp - g_lastFramePts);
+        stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
     g_lastFramePts = timestamp;
 
@@ -3267,7 +3274,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     }
 
     auto afterEncode = PerfTimer::now();
-    stats.ptsMs = timestamp;
+    stats.ptsMs = RoundUsToMs(timestamp);
     stats.textureOpenMs = PerfTimer::elapsed_ms(frameStart, afterOpen);
     stats.colorConvertMs = PerfTimer::elapsed_ms(afterOpen, afterConvert);
     stats.encodeMs = PerfTimer::elapsed_ms(encodeStart, afterEncode);
@@ -3349,12 +3356,9 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
         // Frame timing analysis for smoothness
         if (stats.actualPtsDiff > 0) {
-            double jitter = (double)(stats.actualPtsDiff - stats.expectedPtsDiff);
-            DLL_Log(
-                "[SMOOTHNESS] Expected frame interval: %lldms "
-                "Actual: %lldms "
-                "Jitter: %.2fms",
-                stats.expectedPtsDiff, stats.actualPtsDiff, jitter);
+            const double jitter = static_cast<double>(stats.actualPtsDiff - stats.expectedPtsDiff);
+            DLL_Log("[SMOOTHNESS] Expected=%0.2fms Actual=%0.2fms Jitter=%0.2fms",
+                    static_cast<double>(stats.expectedPtsDiff), static_cast<double>(stats.actualPtsDiff), jitter);
         }
     }
 
@@ -3481,12 +3485,12 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     FrameStats stats;
     stats.frameNumber = encodeFrameCounter;
-    stats.ptsMs = pts / 1000;
+    stats.ptsMs = RoundUsToMs(pts);
 
     double expectedFrameMs = 1000.0 / codecCtx->framerate.num;
     if (g_lastFramePts >= 0) {
-        stats.actualPtsDiff = (pts - g_lastFramePts) / 1000;
-        stats.expectedPtsDiff = (int64_t)expectedFrameMs;
+        stats.actualPtsDiff = RoundUsToMs(pts - g_lastFramePts);
+        stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
     g_lastFramePts = pts;
 
@@ -3699,9 +3703,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             "encode=%.2f packets=%d skipped=%lld duplicated=%lld",
             encodeFrameCounter, totalMs, convertMs, encodeMs, packetCount, skippedFrameCount, duplicatedFrameCount);
         if (stats.actualPtsDiff > 0) {
-            double jitter = (double)(stats.actualPtsDiff - stats.expectedPtsDiff);
-            DLL_Log("[Framegrab SMOOTHNESS] Expected frame interval: %lldms Actual: %lldms Jitter: %.2fms",
-                    stats.expectedPtsDiff, stats.actualPtsDiff, jitter);
+            const double jitter = static_cast<double>(stats.actualPtsDiff - stats.expectedPtsDiff);
+            DLL_Log("[Framegrab SMOOTHNESS] Expected=%0.2fms Actual=%0.2fms Jitter=%0.2fms",
+                    static_cast<double>(stats.expectedPtsDiff), static_cast<double>(stats.actualPtsDiff), jitter);
         }
     }
 
@@ -3758,11 +3762,11 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
 
     FrameStats stats;
     stats.frameNumber = encodeFrameCounter;
-    stats.ptsMs = timestamp / 1000;
+    stats.ptsMs = RoundUsToMs(timestamp);
     double expectedFrameMs = 1000.0 / codecCtx->framerate.num;
     if (g_lastFramePts >= 0) {
-        stats.actualPtsDiff = (timestamp - g_lastFramePts) / 1000;
-        stats.expectedPtsDiff = static_cast<int64_t>(expectedFrameMs);
+        stats.actualPtsDiff = RoundUsToMs(timestamp - g_lastFramePts);
+        stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
     g_lastFramePts = timestamp;
 
