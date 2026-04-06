@@ -71,9 +71,6 @@ public:
             return false;
         }
 
-        // Hook nvapi_QueryInterface to intercept game's Reflex calls
-        HookNvAPIQueryInterface();
-
         // Resolve original function pointers
         origSetSleepMode_ =
             reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
@@ -84,6 +81,14 @@ public:
                              (void*)origSetSleepMode_, (void*)origSleep_);
             return false;
         }
+
+        // Cache the real SetSleepMode entrypoint before we patch QueryInterface.
+        realSetSleepModeForHook_ = origSetSleepMode_;
+
+        // Hook nvapi_QueryInterface to intercept game's Reflex calls.
+        // This must happen AFTER resolving origSetSleepMode_ or we'd end up
+        // caching our own detour as the forward target.
+        HookNvAPIQueryInterface();
 
         available_.store(true, std::memory_order_release);
         HookLogImportant("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p)", (void*)origSetSleepMode_,
@@ -121,7 +126,8 @@ public:
     // Directly push our FPS limit to the driver's Reflex pipeline.
     // Returns true if the SetSleepMode call succeeded.
     bool PushFpsLimit() {
-        if (!origSetSleepMode_ || !lastDevice_) {
+        auto forwardSetSleepMode = GetForwardSetSleepMode();
+        if (!forwardSetSleepMode || !lastDevice_) {
             pushSucceeded_.store(false, std::memory_order_release);
             return false;
         }
@@ -133,7 +139,7 @@ public:
         params.bLowLatencyMode = 1;
         params.minimumIntervalUs = intervalUs;
 
-        NvAPI_Status status = origSetSleepMode_(lastDevice_, &params);
+        NvAPI_Status status = forwardSetSleepMode(lastDevice_, &params);
         if (status == NVAPI_OK) {
             if (!pushSucceeded_.load(std::memory_order_acquire)) {
                 HookLog("ReflexLimiter: Pushed FPS limit (intervalUs=%u)", intervalUs);
@@ -151,7 +157,8 @@ public:
     // Intercept a SetSleepMode call (for IAT hook integration).
     // When installed as a detour, this detects when the game activates Reflex.
     NvAPI_Status InterceptSetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* pParams) {
-        if (!origSetSleepMode_ || !pParams)
+        auto forwardSetSleepMode = GetForwardSetSleepMode();
+        if (!forwardSetSleepMode || !pParams)
             return NVAPI_ERROR;
 
         // Detect game activation: game called with low-latency mode enabled
@@ -172,7 +179,7 @@ public:
             pParams->minimumIntervalUs = ourInterval;
         }
 
-        return origSetSleepMode_(pDev, pParams);
+        return forwardSetSleepMode(pDev, pParams);
     }
 
     // Returns true if the game has activated Reflex (called SetSleepMode with bLowLatencyMode=true)
@@ -264,6 +271,10 @@ public:
 #endif
 
 private:
+    PFN_NvAPI_D3D_SetSleepMode GetForwardSetSleepMode() const {
+        return realSetSleepModeForHook_ ? realSetSleepModeForHook_ : origSetSleepMode_;
+    }
+
     std::atomic<bool> inited_{false};
     std::atomic<bool> available_{false};
     std::atomic<bool> pushSucceeded_{false};
@@ -310,31 +321,23 @@ inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_SetSleepMode(IUnknown* p
                                                                      NV_SET_SLEEP_MODE_PARAMS* pParams) {
     auto& limiter = g_ReflexLimiter;
 
-    if (!pParams) {
+    auto forwardSetSleepMode = limiter.GetForwardSetSleepMode();
+    if (!forwardSetSleepMode) {
         return NVAPI_ERROR;
     }
 
-    // Detect game activation: game called with low-latency mode enabled
-    if (pParams->bLowLatencyMode && !limiter.gameActivated_.load(std::memory_order_acquire)) {
-        limiter.gameActivated_.store(true, std::memory_order_release);
-        HookLogImportant("ReflexLimiter: Game ACTIVATED Reflex via SetSleepMode (minimumIntervalUs=%u)",
-                         pParams->minimumIntervalUs);
-    } else if (!pParams->bLowLatencyMode && limiter.gameActivated_.load(std::memory_order_acquire)) {
-        limiter.gameActivated_.store(false, std::memory_order_release);
-        HookLogImportant("ReflexLimiter: Game DEACTIVATED Reflex via SetSleepMode");
+    static thread_local bool s_InsideReflexSetSleepMode = false;
+    if (s_InsideReflexSetSleepMode) {
+        return forwardSetSleepMode(pDev, pParams);
     }
 
-    // Store device reference for PushFpsLimit
-    limiter.lastDevice_ = pDev;
+    s_InsideReflexSetSleepMode = true;
+    NvAPI_Status status = limiter.InterceptSetSleepMode(pDev, pParams);
+    s_InsideReflexSetSleepMode = false;
 
-    // Forward to the real SetSleepMode function
-    if (limiter.realSetSleepModeForHook_) {
-        return limiter.realSetSleepModeForHook_(pDev, pParams);
-    }
-    if (limiter.origSetSleepMode_) {
-        return limiter.origSetSleepMode_(pDev, pParams);
-    }
-    return NVAPI_ERROR;
+    // Reuse the shared interception path so the inline NvAPI detour also applies
+    // our minimumIntervalUs override instead of only observing activation.
+    return status;
 }
 
 #endif  // REFLEX_IAT_HOOK_AVAILABLE
