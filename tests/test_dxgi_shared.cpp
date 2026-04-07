@@ -74,3 +74,33 @@ TEST(DXGISharedTest, DX12OverlayWaitPolicySkipsSmoothMotionButKeepsStartupSafety
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(
         true, true, false, ce::fg_runtime::RuntimeMode::kFSRFG));
 }
+
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesFSRSwapchainQueueWhenAvailable) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, true, true),
+              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, true, false, true, true),
+              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+}
+
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingSkipsOnlyWhenFSRQueueIsUnavailable) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, false, true),
+              SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, true, false, false, true),
+              SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue);
+}
+
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPreservesPostFSRStreamlineTransition) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, true, true, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, true, false, true),
+              SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
+}

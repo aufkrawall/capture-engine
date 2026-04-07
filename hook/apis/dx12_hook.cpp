@@ -3250,17 +3250,15 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         bool fsrFGNow = IsFSRFrameGenerationActive();
 
-        // CRITICAL: When FG runtime owns swapchain (FSR FG), use origGame's
-        // queue for backend init.  FSR's queue must not receive ANY GPU work
-        // from us — even ImGui font texture uploads disrupt FSR's fence sync.
-        if (g_FGRuntimeOwnsSwapchain && !slFGNow && g_OriginalGameQueue) {
-            queueForBackend = g_OriginalGameQueue;
-            HookLogImportant("InitImGui: FG runtime owns swapchain — using origGame queue %p (scQueue=%p)",
-                             queueForBackend, g_SwapchainQueue);
-        } else if (slFGNow && g_HadFSRFGPhase) {
+        const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
+            g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
+            g_OriginalGameQueue != nullptr);
+
+        if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
             // After FSR→DLSS: use scQueue (swapchain creation queue)
             queueForBackend = g_SwapchainQueue ? g_SwapchainQueue : g_OriginalGameQueue;
-        } else if (slFGNow) {
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue) {
             // During SL FG, prefer scQueue when it differs from origGame.
             // SL may recreate the swapchain on its own internal queue.
             if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
@@ -3268,7 +3266,8 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             } else if (g_OriginalGameQueue) {
                 queueForBackend = g_OriginalGameQueue;
             }
-        } else if (fsrFGNow && g_SwapchainQueue) {
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue) {
             queueForBackend = g_SwapchainQueue;
         } else if (fsrFGNow && g_OriginalGameQueue) {
             queueForBackend = g_OriginalGameQueue;  // fallback
@@ -5967,38 +5966,23 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         bool fsrFGNow = IsFSRFrameGenerationActive();
 
-        // CRITICAL FG SAFETY: When an FG runtime (FSR) owns the swapchain queue,
-        // we must NOT submit ANY GPU work (ECLs, resource priming, allocator/fence
-        // creation) on that queue.  FSR FG's internal fence synchronization is
-        // extremely sensitive — even a single ECL between FSR's work and its
-        // Signal() call disrupts the fence value chain, causing ffxQuery to
-        // WaitForSingleObject indefinitely.
-        //
-        // Exception: SL DLSS FG — Streamline provides the PostSL callback which
-        // renders at the correct point in SL's pipeline; that path is safe.
-        // FG RUNTIME OWNS SWAPCHAIN (FSR FG active):
-        // FSR created the swapchain on its own queue.  We CANNOT safely access
-        // FSR's backbuffers from ANY queue — FSR's internal fence sync is
-        // extremely tight, and any cross-queue access (even from origGame with
-        // barriers) causes a GPU-level resource conflict that deadlocks
-        // ffxQuery → WaitForSingleObject.  Skip all overlay work.
-        //
-        // Exception: SL DLSS FG provides PostSL callback which renders at the
-        // correct point in SL's pipeline — that path is safe.
-        //
-        // TODO: Implement separate overlay window (transparent HWND with own
-        // swapchain) for FG-agnostic overlay rendering.
-        if (g_FGRuntimeOwnsSwapchain && !slFGNow) {
+        const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
+            g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
+            g_OriginalGameQueue != nullptr);
+
+        if (routingDecision ==
+            ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {
             static int s_fgOwnSkipLog = 0;
             if (s_fgOwnSkipLog++ < 10 || (s_fgOwnSkipLog % 300) == 0) {
                 HookLogImportant(
-                    "DX12: ProcessFrame — FG runtime owns swapchain queue %p, SKIPPING overlay "
+                    "DX12: ProcessFrame — FG runtime owns swapchain but scQueue is null, SKIPPING overlay "
                     "(origGame=%p, fsrFGHeur=%d, fgOwnedSince=%llums ago) #%d",
-                    g_SwapchainQueue, g_OriginalGameQueue, fsrFGNow ? 1 : 0,
+                    g_OriginalGameQueue, fsrFGNow ? 1 : 0,
                     GetTickCount64() - g_FGRuntimeOwnsSwapchainSince, s_fgOwnSkipLog);
             }
             return;
-        } else if (slFGNow && g_HadFSRFGPhase) {
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
             // After FSR→DLSS: use scQueue (swapchain creation queue).
             // The swapchain was created on FSR's queue; backbuffers are
             // associated with it.  origGame can't access them (cross-queue).
@@ -6019,10 +6003,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 HookLogImportant("DX12: ProcessFrame — post-FSR SL FG but scQueue is null, fallback to origGame %p",
                                  gameQueue);
             }
-        } else if (slFGNow && g_OriginalGameQueue) {
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue) {
             // SL FG (no FSR history): use origGame.
             gameQueue = g_OriginalGameQueue;
-        } else if (fsrFGNow && g_SwapchainQueue) {
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue) {
             // FSR FG: pSwapChain is FSR's swapchain, backbuffers belong to
             // FSR's queue.  Submit on the swapchain queue to avoid cross-queue
             // resource state conflicts.  We use realECL to bypass FSR's ECL
@@ -6033,7 +6019,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 HookLogImportant(
                     "DX12: ProcessFrame — FSR FG API-confirmed, origGame potentially corrupted for future DLSS FG");
             }
-        } else if (fsrFGNow) {
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue) {
             // FSR FG active but g_SwapchainQueue not captured.
             // DO NOT fall back to origGame — FSR FG uses origGame internally
             // and injecting our ECLs on it will corrupt FSR's fence tracking,
