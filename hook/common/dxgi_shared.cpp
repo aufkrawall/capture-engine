@@ -788,9 +788,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // Capture the caller here, not in a helper. We need the code that called
     // into DetourPresent, not the helper's own return address inside this DLL.
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
+    const bool fgRuntimeOwnsSwapchain = (api == APIType::D3D12) && DoesFGRuntimeOwnSwapchain();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
-        IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress));
+        IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress), fgRuntimeOwnsSwapchain);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
@@ -1119,9 +1120,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     const APIType api = DetectAPIType(pSwapChain);
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
+    const bool fgRuntimeOwnsSwapchain = (api == APIType::D3D12) && DoesFGRuntimeOwnSwapchain();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
-        IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress));
+        IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress), fgRuntimeOwnsSwapchain);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();

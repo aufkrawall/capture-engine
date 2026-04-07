@@ -2300,12 +2300,14 @@ static void DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
         bool runtimeOwns = (g_OriginalGameQueue && pQueue != g_OriginalGameQueue);
         if (runtimeOwns && !g_FGRuntimeOwnsSwapchain) {
             g_FGRuntimeOwnsSwapchain = true;
+            DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(true, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = GetTickCount64();
             HookLogImportant(
                 "DX12: FG runtime now owns swapchain queue %p (origGame=%p) — overlay will skip GPU work on this queue",
                 pQueue, g_OriginalGameQueue);
         } else if (!runtimeOwns && g_FGRuntimeOwnsSwapchain) {
             g_FGRuntimeOwnsSwapchain = false;
+            DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = 0;
             HookLogImportant("DX12: Swapchain returned to origGame queue %p — FG runtime ownership cleared", pQueue);
         }
@@ -7652,6 +7654,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     // FG is off — FG runtime no longer owns the queue
                     if (g_FGRuntimeOwnsSwapchain) {
                         g_FGRuntimeOwnsSwapchain = false;
+                        DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                         g_FGRuntimeOwnsSwapchainSince = 0;
                         HookLogImportant("DX12: FG→off — clearing FG runtime ownership of swapchain queue");
                     }
@@ -7669,6 +7672,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     // Clear FG runtime ownership when transitioning away from FSR FG
                     if (g_FGRuntimeOwnsSwapchain && targetIsNone) {
                         g_FGRuntimeOwnsSwapchain = false;
+                        DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                         g_FGRuntimeOwnsSwapchainSince = 0;
                         HookLogImportant("DX12: FG type change to None — clearing FG runtime ownership");
                     }

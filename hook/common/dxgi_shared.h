@@ -53,7 +53,7 @@ struct SharedState {
     std::atomic<uint64_t> presentCallCount{0};
     std::chrono::steady_clock::time_point lastSwapchainCreation;
     std::atomic<bool> inPresentHook{false};
-    std::atomic<bool> fgSwapchainStabilized{false};
+    std::atomic<bool> fgRuntimeOwnsSwapchain{false};
 };
 
 extern SharedState g_SharedState;
@@ -75,6 +75,10 @@ void Init();
 
 // The unified hook installer
 bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly = false);
+
+inline bool DoesFGRuntimeOwnSwapchain() {
+    return g_SharedState.fgRuntimeOwnsSwapchain.load(std::memory_order_acquire);
+}
 
 // Set pending swapchain for lazy hook installation (called from DX12 hook)
 void SetPendingSwapChainForLazyHook(IDXGISwapChain* pSwapChain);
@@ -160,8 +164,9 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapCha
 }
 
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool streamlineFGRunning,
-                                                          bool callerFromFFXFGModule) {
-    return isD3D12SwapChain && streamlineFGRunning && callerFromFFXFGModule;
+                                                          bool callerFromFFXFGModule,
+                                                          bool fgRuntimeOwnsSwapchain) {
+    return isD3D12SwapChain && streamlineFGRunning && callerFromFFXFGModule && !fgRuntimeOwnsSwapchain;
 }
 
 inline bool ShouldKeepPostSLCallbackInstalledDuringTransition(bool streamlineFGRunningAfterTransition) {
