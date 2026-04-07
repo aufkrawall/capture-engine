@@ -233,7 +233,7 @@ std::atomic<int> g_PostSLECLDiagCount{0};
 
 // Post-FSR graduated probe system: after FSR→DLSS transition, incrementally test
 // what rendering operations are safe before committing to full overlay render.
-static int g_PostFSRProbeLevel = 0;  // 0=barriers, 1=clear, 2=full, 3=confirmed
+static int g_PostFSRProbeLevel = 0;  // 0=scratch, 1=reserved, 2=offscreen-copy-only, 3=full allowed
 static int g_PostFSRProbeFrames = 0;
 static constexpr int kPostFSRProbeFramesPerLevel = 3;
 static bool g_PostFSRDescFreeRecreated = false;
@@ -4708,12 +4708,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     // After FSR→DLSS: PostSL rendering causes DEVICE_REMOVED. Use graduated
-    // probe system to identify which EXACT operation triggers the fault:
-    // Probe A: barriers only (PRESENT→RT→PRESENT), no draw
-    // Probe B: barriers + ClearRTV, no DescFree draw
-    // Probe C: full render (barriers + DescFree draw)
-    // Each probe runs for 3 frames. If it passes, advance to next probe.
-    // If it fails, stay at current probe level and log the failure.
+    // probes so we do not jump directly from an empty submit to a full
+    // copy-render-copy overlay pass on the first real PostSL frame.
 
     // Scene transition cooldown: skip overlay during scene loads/transitions
     int cd = g_SceneTransitionCooldown.load(std::memory_order_acquire);
@@ -5042,21 +5038,19 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
     bool rendered = false;
 
+    const bool selectedQueueIsSwapchainQueue = (queue == scQueue);
+    bool isSLWrapperQ = (queue != g_OriginalGameQueue && queue != g_PostSLDedicatedQueue && queue != scQueue);
+    const bool useExplicitPostFSRSwapchainTransitions =
+        ce::dx12_overlay_policy::ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(
+            g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
+    const bool usePostSLOffscreenComposite = ce::dx12_overlay_policy::ShouldUsePostSLOffscreenCompositeAfterFSR(
+        g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
+
     // --- Post-FSR graduated probing ---
-    // After FSR→DLSS transition, PRESENT→RT barrier on backbuffer causes DEVICE_HUNG.
-    // Scratch resource barriers pass — queue and device are healthy.
-    // The backbuffer is NOT in PRESENT state on origGame (confirmed by probe failure).
-    //
-    // Strategy: skip barrier-based probes entirely (they crash the device on failure).
-    // Instead, try BARRIER-FREE rendering directly. If the backbuffer happens to be in
-    // RENDER_TARGET state (SL left it there after PostSL callback), we can render
-    // without the initial PRESENT→RT barrier. After rendering, we transition RT→PRESENT
-    // (which is safe even if wrong — worst case produces garbage or no-op).
-    //
-    // Level 0: Scratch resource barrier (confirms queue works)
-    // Level 1: Barrier-free ClearRTV (no PRESENT→RT, just create RTV + clear + RT→PRESENT)
-    // Level 2: Barrier-free full render (DescFree draw + RT→PRESENT)
-    // Level 3+: Confirmed safe, render normally
+    // Level 0: Scratch resource barrier (confirms queue/device path works)
+    // Level 1: Reserved for future backbuffer-specific probes
+    // Level 2: Offscreen copy-only pass (touch swapchain only via copy ops)
+    // Level 3+: Full offscreen composite/render is allowed
     bool isPostFSRProbe = g_HadFSRFGPhase && g_PostFSRProbeLevel < 3;
 
     // For post-FSR rendering, use SL's wrapper queue captured from ECL detour.
@@ -5138,6 +5132,51 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
             barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             list->ResourceBarrier(2, barriers);
+        } else if (ce::dx12_overlay_policy::ShouldUsePostSLOffscreenCopyOnlyProbeAfterFSR(
+                       g_HadFSRFGPhase, g_PostFSRProbeLevel, usePostSLOffscreenComposite)) {
+            if (!EnsureOffscreenRT(dev, g_State.cachedWidth, g_State.cachedHeight, g_State.format)) {
+                HookLogImportant(
+                    "DX12: PostSL post-FSR copy-only probe could not create offscreen RT (w=%d h=%d fmt=%d)",
+                    g_State.cachedWidth, g_State.cachedHeight, g_State.format);
+                bb->Release();
+                return;
+            }
+
+            D3D12_RESOURCE_BARRIER toCopyDest = {};
+            toCopyDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            toCopyDest.Transition.pResource = g_State.offscreenRT;
+            toCopyDest.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+            toCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+            toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &toCopyDest);
+
+            D3D12_TEXTURE_COPY_LOCATION bbSrc = {};
+            bbSrc.pResource = bb;
+            bbSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            bbSrc.SubresourceIndex = 0;
+            D3D12_TEXTURE_COPY_LOCATION offDst = {};
+            offDst.pResource = g_State.offscreenRT;
+            offDst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            offDst.SubresourceIndex = 0;
+            list->CopyTextureRegion(&offDst, 0, 0, 0, &bbSrc, nullptr);
+
+            D3D12_RESOURCE_BARRIER toCopySource = {};
+            toCopySource.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            toCopySource.Transition.pResource = g_State.offscreenRT;
+            toCopySource.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+            toCopySource.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            toCopySource.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &toCopySource);
+
+            D3D12_TEXTURE_COPY_LOCATION offSrc = {};
+            offSrc.pResource = g_State.offscreenRT;
+            offSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            offSrc.SubresourceIndex = 0;
+            D3D12_TEXTURE_COPY_LOCATION bbDst = {};
+            bbDst.pResource = bb;
+            bbDst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            bbDst.SubresourceIndex = 0;
+            list->CopyTextureRegion(&bbDst, 0, 0, 0, &offSrc, nullptr);
         } else if (g_PostFSRProbeLevel == 2) {
             probeHandled = false;
         }
@@ -5160,7 +5199,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
             HRESULT probeHr = dev->GetDeviceRemovedReason();
             g_PostFSRProbeFrames++;
-            const char* probeNames[] = {"scratch-barrier", "SLwrapper-bb-barrier", "full-render"};
+            const char* probeNames[] = {"scratch-barrier", "SLwrapper-bb-barrier", "offscreen-copy-only"};
             const char* probeName = g_PostFSRProbeLevel < 3 ? probeNames[g_PostFSRProbeLevel] : "unknown";
             HookLogImportant("DX12: PostSL post-FSR PROBE level=%d (%s) frame=%d/%d queue=%p devRemoved=0x%08X %s",
                              g_PostFSRProbeLevel, probeName, g_PostFSRProbeFrames, kPostFSRProbeFramesPerLevel,
@@ -5180,8 +5219,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             if (g_PostFSRProbeFrames >= kPostFSRProbeFramesPerLevel) {
                 // Skip level 1 (BB barrier): go directly from level 0 to level 2.
                 // BB barriers cause FATAL DEVICE_REMOVED on queues that don't own the
-                // swapchain's resource state (confirmed by prior testing).
-                // Level 2 (barrier-free render) is safe — worst case is visual artifacts.
+                // swapchain's resource state. Level 2 only validates copy traffic on
+                // the swapchain timeline before any real overlay rendering is attempted.
                 int nextLevel = (g_PostFSRProbeLevel == 0) ? 2 : g_PostFSRProbeLevel + 1;
                 g_PostFSRProbeLevel = nextLevel;
                 g_PostFSRProbeFrames = 0;
@@ -5252,11 +5291,6 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             willRender = willRender && g_DescFreeBackend && g_D3D11On12Adapter.IsInitialized();
         }
     }
-
-    // Detect SL wrapper queue: if queue is not origGame, not scQueue, and not our
-    // dedicated queue, it's SL's wrapper. Must use origECL for SL wrapper (not realECL).
-    // After FSR FG with scQueue retained: scQueue is a real D3D12 queue → realECL.
-    bool isSLWrapperQ = (queue != g_OriginalGameQueue && queue != g_PostSLDedicatedQueue && queue != scQueue);
 
     // PROBE: After FG transitions (epoch > 1), test queue health before full render.
     // Only do Probe 1 (empty ECL). Probe 2 (ClearRTV+barriers) is unsafe during PostSL
@@ -5339,13 +5373,6 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         bb->Release();
         return;
     }
-
-    const bool selectedQueueIsSwapchainQueue = (queue == scQueue);
-    const bool useExplicitPostFSRSwapchainTransitions =
-        ce::dx12_overlay_policy::ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(
-            g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
-    const bool usePostSLOffscreenComposite = ce::dx12_overlay_policy::ShouldUsePostSLOffscreenCompositeAfterFSR(
-        g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
 
     // Cross-queue sync fence — used for SL wrapper queue ↔ origGame synchronization
     // Created lazily when needed for PostSL ECL dispatch on SL's wrapper queue.

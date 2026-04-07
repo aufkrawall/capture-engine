@@ -152,10 +152,16 @@ inline PostSLBackbufferBarrierMode DecidePostSLBackbufferBarrierMode(bool stream
 }
 
 inline bool ShouldUsePostSLOffscreenCompositeAfterFSR(bool hadFSRFGPhase,
-                                                      bool streamlineFGActive,
-                                                      bool selectedQueueIsSwapchainQueue,
-                                                      bool queueIsSLWrapper) {
+                                                       bool streamlineFGActive,
+                                                       bool selectedQueueIsSwapchainQueue,
+                                                       bool queueIsSLWrapper) {
     return hadFSRFGPhase && streamlineFGActive && selectedQueueIsSwapchainQueue && !queueIsSLWrapper;
+}
+
+inline bool ShouldUsePostSLOffscreenCopyOnlyProbeAfterFSR(bool hadFSRFGPhase,
+                                                          int postFSRProbeLevel,
+                                                          bool usePostSLOffscreenComposite) {
+    return hadFSRFGPhase && usePostSLOffscreenComposite && postFSRProbeLevel == 2;
 }
 
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
