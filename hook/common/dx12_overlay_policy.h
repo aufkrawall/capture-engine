@@ -187,8 +187,19 @@ inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool p
 }
 
 inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOwnsSwapchain,
-                                                                  bool callerFromFFXFGModule) {
-    return runtimeOwnsSwapchain && callerFromFFXFGModule;
+                                                                  bool callerFromFFXFGModule,
+                                                                  bool streamlineFGRunning,
+                                                                  bool streamlineStartupHandoffPending,
+                                                                  bool runtimeOwnershipJustActivated) {
+    if (!runtimeOwnsSwapchain) {
+        return false;
+    }
+
+    if (callerFromFFXFGModule) {
+        return true;
+    }
+
+    return streamlineFGRunning && !streamlineStartupHandoffPending && runtimeOwnershipJustActivated;
 }
 
 }  // namespace ce::dx12_overlay_policy

@@ -1040,14 +1040,42 @@ static bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress, c
     return IsFFXFrameGenerationModuleHandle(callerModule);
 }
 
+static bool HasFFXFrameGenerationModuleInCurrentStack(char* modulePathOut = nullptr, size_t modulePathOutCount = 0) {
+    constexpr USHORT kMaxFrames = 16;
+    void* stackFrames[kMaxFrames] = {};
+    const USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        char candidatePath[MAX_PATH] = {};
+        if (IsCodeAddressFromFFXFrameGenerationModule(stackFrames[i], candidatePath, sizeof(candidatePath))) {
+            if (modulePathOut && modulePathOutCount > 0) {
+                strncpy_s(modulePathOut, modulePathOutCount, candidatePath, _TRUNCATE);
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddress, bool runtimeOwnsSwapchain,
+                                                        bool runtimeOwnershipJustActivated,
                                                         ID3D12CommandQueue* capturedQueue) {
     char callerModulePath[MAX_PATH] = {};
-    const bool callerFromFFXFGModule =
+    bool callerFromFFXFGModule =
         IsCodeAddressFromFFXFrameGenerationModule(callerAddress, callerModulePath, sizeof(callerModulePath));
-    if (!ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(runtimeOwnsSwapchain,
-                                                                                         callerFromFFXFGModule)) {
+    if (!callerFromFFXFGModule && runtimeOwnsSwapchain) {
+        callerFromFFXFGModule = HasFFXFrameGenerationModuleInCurrentStack(callerModulePath, sizeof(callerModulePath));
+    }
+    const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
+    if (!ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(
+            runtimeOwnsSwapchain, callerFromFFXFGModule, streamlineFGRunning, streamlineStartupHandoffPending,
+            runtimeOwnershipJustActivated)) {
         return;
+    }
+
+    if (!callerModulePath[0] && runtimeOwnershipJustActivated) {
+        strncpy_s(callerModulePath, sizeof(callerModulePath), "runtime-owned swapchain transition", _TRUNCATE);
     }
 
     g_FGCompat.SetFSRFGSupportPresent(true);
@@ -2264,18 +2292,20 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
 // Capture the queue that was passed to CreateSwapChain* so we can prefer it
 // for overlay submission.  Only accepts DIRECT queues (same rule as
 // DX12_SetCommandQueue).  Also hooks the queue vtable for ECL interception.
-static void DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
+static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
     if (!pQueue)
-        return;
+        return false;
 
     // Safety: freed COM objects have null vtable — skip
     void** vtblCheck = *reinterpret_cast<void***>(pQueue);
     if (!vtblCheck)
-        return;
+        return false;
 
     D3D12_COMMAND_QUEUE_DESC desc = pQueue->GetDesc();
     if (desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
-        return;
+        return false;
+
+    bool runtimeOwnershipJustActivated = false;
 
     // Diagnostic: log the queue's device to detect cross-device issues
     ID3D12Device* queueDev = nullptr;
@@ -2302,6 +2332,7 @@ static void DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
             g_FGRuntimeOwnsSwapchain = true;
             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(true, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = GetTickCount64();
+            runtimeOwnershipJustActivated = true;
             HookLogImportant(
                 "DX12: FG runtime now owns swapchain queue %p (origGame=%p) — overlay will skip GPU work on this queue",
                 pQueue, g_OriginalGameQueue);
@@ -2330,6 +2361,8 @@ static void DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
         HookLogImportant("DX12: Skipping vtable hook for FG runtime queue %p (origGame=%p) — preserving FSR timing",
                          pQueue, g_OriginalGameQueue);
     }
+
+    return runtimeOwnershipJustActivated;
 }
 
 static bool IsDX12Swapchain(IDXGISwapChain1* pSwapChain) {
@@ -2354,9 +2387,9 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
     HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
     if (SUCCEEDED(qiHr) && pQueue) {
         HookLogImportant("%s: QI for queue succeeded (queue=%p)", context, pQueue);
-        DX12_SetSwapchainQueue(pQueue);
-        ClearStaleStreamlineOwnershipForFSRTakeover(callerAddress,
-                                                    g_OriginalGameQueue && pQueue != g_OriginalGameQueue, pQueue);
+        const bool runtimeOwnershipJustActivated = DX12_SetSwapchainQueue(pQueue);
+        ClearStaleStreamlineOwnershipForFSRTakeover(callerAddress, g_OriginalGameQueue && pQueue != g_OriginalGameQueue,
+                                                    runtimeOwnershipJustActivated, pQueue);
         pQueue->Release();
         return;
     }
