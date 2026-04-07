@@ -5340,6 +5340,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         return;
     }
 
+    const bool selectedQueueIsSwapchainQueue = (queue == scQueue);
+    const bool useExplicitPostFSRSwapchainTransitions =
+        ce::dx12_overlay_policy::ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(
+            g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
+
     // Cross-queue sync fence — used for SL wrapper queue ↔ origGame synchronization
     // Created lazily when needed for PostSL ECL dispatch on SL's wrapper queue.
     static ID3D12Fence* s_xqSyncFence = nullptr;
@@ -5357,8 +5362,12 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     // Use cached FG state for barrier/queue decisions (prevents mid-function race).
-    // During SL FG: use UAV barriers (no state tracking conflict with SL).
-    bool slFGBarrierFree = cachedSLFGActive;
+    // The post-FSR selected-scQueue path is special: probes and the stable non-FG
+    // ProcessFrame path both indicate the backbuffer behaves like PRESENT on that
+    // queue, so keep using explicit PRESENT<->RT transitions there.
+    const auto postSLBarrierMode = ce::dx12_overlay_policy::DecidePostSLBackbufferBarrierMode(
+        cachedSLFGActive, useExplicitPostFSRSwapchainTransitions);
+    bool slFGBarrierFree = postSLBarrierMode == ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kUavBarrierOnly;
 
     // During SL FG with direct submission (bypassing SL's wrapper), we can render
     // every frame since we no longer pollute SL's internal pipeline.
@@ -5388,7 +5397,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         D3D12_RESOURCE_BARRIER preBarrier = {};
         preBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         preBarrier.Transition.pResource = bb;
-        preBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        preBarrier.Transition.StateBefore =
+            postSLBarrierMode == ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kPresentToRenderTarget
+                ? D3D12_RESOURCE_STATE_PRESENT
+                : D3D12_RESOURCE_STATE_COMMON;
         preBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         preBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         list->ResourceBarrier(1, &preBarrier);
@@ -5397,8 +5409,17 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         static bool s_loggedBarrierMode = false;
         if (!s_loggedBarrierMode) {
             s_loggedBarrierMode = true;
-            HookLogImportant("DX12: PostSL barrier mode — slFGBarrierFree=%d hadFSR=%d xqSync=%d",
-                             slFGBarrierFree ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, didXQSync ? 1 : 0);
+            const char* barrierModeName = "common->rt";
+            if (postSLBarrierMode == ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kUavBarrierOnly) {
+                barrierModeName = "uav-only";
+            } else if (postSLBarrierMode ==
+                       ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kPresentToRenderTarget) {
+                barrierModeName = "present->rt";
+            }
+            HookLogImportant(
+                "DX12: PostSL barrier mode — mode=%s slFGBarrierFree=%d explicitPostFSR=%d hadFSR=%d xqSync=%d",
+                barrierModeName, slFGBarrierFree ? 1 : 0, useExplicitPostFSRSwapchainTransitions ? 1 : 0,
+                g_HadFSRFGPhase ? 1 : 0, didXQSync ? 1 : 0);
         }
     }
     if (willRender) {
@@ -5632,7 +5653,6 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
         ExecuteCommandListsPtr realECLPtr = g_RealD3D12ECL.load(std::memory_order_acquire);
         ExecuteCommandListsPtr selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
-        const bool selectedQueueIsSwapchainQueue = (queue == scQueue);
         const bool hasSelectedQueueSubmitPath = selectedQueueOrigECL != nullptr || realECLPtr != nullptr;
 
         const bool allowScQueueVirtualSubmit =

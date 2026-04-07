@@ -4,6 +4,12 @@
 
 namespace ce::dx12_overlay_policy {
 
+enum class PostSLBackbufferBarrierMode {
+    kUavBarrierOnly,
+    kCommonToRenderTarget,
+    kPresentToRenderTarget,
+};
+
 inline bool ShouldWaitForOverlayCompletion(bool hasFenceEvent, bool usingDedicatedQueue, bool hasStartupBlockingOverlay,
                                            fg_runtime::RuntimeMode runtimeMode) {
     if (!hasFenceEvent) {
@@ -119,10 +125,30 @@ inline bool ShouldTreatPostSLAsReactivated(bool postSLActive, bool wasActiveInCu
 }
 
 inline bool ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(bool hadFSRFGPhase,
-                                                                bool selectedQueueIsSwapchainQueue,
-                                                                bool queueIsSLWrapper,
-                                                                bool hasSelectedQueueSubmitPath) {
+                                                                 bool selectedQueueIsSwapchainQueue,
+                                                                 bool queueIsSLWrapper,
+                                                                 bool hasSelectedQueueSubmitPath) {
     return hadFSRFGPhase && selectedQueueIsSwapchainQueue && !queueIsSLWrapper && hasSelectedQueueSubmitPath;
+}
+
+inline bool ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(bool hadFSRFGPhase,
+                                                                                bool streamlineFGActive,
+                                                                                bool selectedQueueIsSwapchainQueue,
+                                                                                bool queueIsSLWrapper) {
+    return hadFSRFGPhase && streamlineFGActive && selectedQueueIsSwapchainQueue && !queueIsSLWrapper;
+}
+
+inline PostSLBackbufferBarrierMode DecidePostSLBackbufferBarrierMode(bool streamlineFGActive,
+                                                                     bool useExplicitPostFSRSwapchainTransitions) {
+    if (streamlineFGActive && !useExplicitPostFSRSwapchainTransitions) {
+        return PostSLBackbufferBarrierMode::kUavBarrierOnly;
+    }
+
+    if (useExplicitPostFSRSwapchainTransitions) {
+        return PostSLBackbufferBarrierMode::kPresentToRenderTarget;
+    }
+
+    return PostSLBackbufferBarrierMode::kCommonToRenderTarget;
 }
 
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
