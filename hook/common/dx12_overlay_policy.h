@@ -179,6 +179,11 @@ inline bool ShouldUsePostSLOffscreenCompositeAfterFSR(bool hadFSRFGPhase,
     return hadFSRFGPhase && streamlineFGActive && selectedQueueIsSwapchainQueue && !queueIsSLWrapper;
 }
 
+inline bool ShouldUseExplicitBackbufferCopyTransitionsForPostFSROffscreenComposite(
+    bool usePostSLOffscreenComposite, bool useExplicitPostFSRSwapchainTransitions) {
+    return usePostSLOffscreenComposite && useExplicitPostFSRSwapchainTransitions;
+}
+
 inline bool ShouldUsePostSLOffscreenCopyOnlyProbeAfterFSR(bool hadFSRFGPhase,
                                                           int postFSRProbeLevel,
                                                           bool usePostSLOffscreenComposite) {

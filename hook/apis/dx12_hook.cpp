@@ -5106,6 +5106,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
     const bool usePostSLOffscreenComposite = ce::dx12_overlay_policy::ShouldUsePostSLOffscreenCompositeAfterFSR(
         g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
+    const bool useExplicitPostFSRBackbufferCopyTransitions =
+        ce::dx12_overlay_policy::ShouldUseExplicitBackbufferCopyTransitionsForPostFSROffscreenComposite(
+            usePostSLOffscreenComposite, useExplicitPostFSRSwapchainTransitions);
     ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
     ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
     ExecuteCommandListsPtr selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
@@ -5254,6 +5257,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             list->ResourceBarrier(1, &toCopyDest);
 
+            D3D12_RESOURCE_BARRIER bbToCopySource = {};
+            if (useExplicitPostFSRBackbufferCopyTransitions) {
+                bbToCopySource.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                bbToCopySource.Transition.pResource = bb;
+                bbToCopySource.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+                bbToCopySource.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                bbToCopySource.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                list->ResourceBarrier(1, &bbToCopySource);
+            }
+
             D3D12_TEXTURE_COPY_LOCATION bbSrc = {};
             bbSrc.pResource = bb;
             bbSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -5272,6 +5285,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             toCopySource.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             list->ResourceBarrier(1, &toCopySource);
 
+            D3D12_RESOURCE_BARRIER bbToCopyDest = {};
+            if (useExplicitPostFSRBackbufferCopyTransitions) {
+                bbToCopyDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                bbToCopyDest.Transition.pResource = bb;
+                bbToCopyDest.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                bbToCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                bbToCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                list->ResourceBarrier(1, &bbToCopyDest);
+            }
+
             D3D12_TEXTURE_COPY_LOCATION offSrc = {};
             offSrc.pResource = g_State.offscreenRT;
             offSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -5281,6 +5304,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             bbDst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             bbDst.SubresourceIndex = 0;
             list->CopyTextureRegion(&bbDst, 0, 0, 0, &offSrc, nullptr);
+
+            if (useExplicitPostFSRBackbufferCopyTransitions) {
+                D3D12_RESOURCE_BARRIER bbToPresent = {};
+                bbToPresent.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                bbToPresent.Transition.pResource = bb;
+                bbToPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                bbToPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+                bbToPresent.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                list->ResourceBarrier(1, &bbToPresent);
+            }
         } else if (g_PostFSRProbeLevel == 2) {
             probeHandled = false;
         }
@@ -5608,6 +5641,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             list->ResourceBarrier(1, &toCopyDest);
 
+            D3D12_RESOURCE_BARRIER bbToCopySource = {};
+            if (useExplicitPostFSRBackbufferCopyTransitions) {
+                bbToCopySource.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                bbToCopySource.Transition.pResource = bb;
+                bbToCopySource.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+                bbToCopySource.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                bbToCopySource.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                list->ResourceBarrier(1, &bbToCopySource);
+            }
+
             D3D12_TEXTURE_COPY_LOCATION bbSrc = {};
             bbSrc.pResource = bb;
             bbSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -5639,6 +5682,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             toCopySource.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             list->ResourceBarrier(1, &toCopySource);
 
+            D3D12_RESOURCE_BARRIER bbToCopyDest = {};
+            if (useExplicitPostFSRBackbufferCopyTransitions) {
+                bbToCopyDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                bbToCopyDest.Transition.pResource = bb;
+                bbToCopyDest.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                bbToCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                bbToCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                list->ResourceBarrier(1, &bbToCopyDest);
+            }
+
             D3D12_TEXTURE_COPY_LOCATION offSrc = {};
             offSrc.pResource = g_State.offscreenRT;
             offSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -5648,6 +5701,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             bbDst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             bbDst.SubresourceIndex = 0;
             list->CopyTextureRegion(&bbDst, 0, 0, 0, &offSrc, nullptr);
+
+            if (useExplicitPostFSRBackbufferCopyTransitions) {
+                D3D12_RESOURCE_BARRIER bbToPresent = {};
+                bbToPresent.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                bbToPresent.Transition.pResource = bb;
+                bbToPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                bbToPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+                bbToPresent.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                list->ResourceBarrier(1, &bbToPresent);
+            }
         } else {
             // Recreate RTV for this buffer index (cheap CPU-side op)
             D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
