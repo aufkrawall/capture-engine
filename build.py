@@ -4439,51 +4439,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             sys.exit(1)
         safe_delete_file(temp_ce_exe)
 
-        layer_register_src = os.path.join(
-            PROJECT_ROOT, "hook", "vulkan_layer", "layer_register.cpp"
-        )
-        if os.path.exists(layer_register_src):
-            layer_register_obj = os.path.join(
-                ce_obj_dir,
-                os.path.splitext(os.path.relpath(layer_register_src, PROJECT_ROOT))[0]
-                + ".o",
-            ).replace("\\", "/")
-            os.makedirs(os.path.dirname(layer_register_obj), exist_ok=True)
-            compile_object(
-                env, clang_exe, cflags, layer_register_src, layer_register_obj
-            )
-
-            layer_register_exe = os.path.join(BIN_DIR, "vulkan_layer_register.exe")
-            helper_objs = [
-                os.path.join(OBJ_DIR, "x64", "common", "logging.o"),
-                os.path.join(OBJ_DIR, "x64", "common", "vulkan_layer_registration.o"),
-            ]
-            helper_objs = [obj for obj in helper_objs if os.path.exists(obj)]
-            layer_register_ldflags: List[str] = [
-                "-municode",
-                "-static",
-                "-static-libgcc",
-                "-static-libstdc++",
-                "-ladvapi32",
-            ]
-            temp_layer_register_exe = os.path.join(
-                ce_obj_dir, "vulkan_layer_register.tmp.exe"
-            )
-            safe_delete_file(temp_layer_register_exe)
-            cmd = (
-                [clang_exe]
-                + [layer_register_obj]
-                + helper_objs
-                + layer_register_ldflags
-                + ["-o", temp_layer_register_exe]
-            )
-            run_command(cmd, env=env)
-            if not safe_copy_file(temp_layer_register_exe, layer_register_exe):
-                log(
-                    "ERROR: Failed to place vulkan_layer_register.exe (destination may be locked)"
-                )
-                sys.exit(1)
-            safe_delete_file(temp_layer_register_exe)
+        stale_layer_register_exe = os.path.join(BIN_DIR, "vulkan_layer_register.exe")
+        if os.path.exists(stale_layer_register_exe):
+            if safe_delete_file(stale_layer_register_exe):
+                log("Removed stale vulkan_layer_register.exe")
 
     # Copy FFmpeg runtime DLLs only to ffmpeg/ so CaptureEngine stays uncluttered.
     if not IS_LINUX:
