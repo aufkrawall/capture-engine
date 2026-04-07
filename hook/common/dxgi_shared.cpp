@@ -12,6 +12,8 @@
 #include "overlay_compat.h"
 #include "performance_metrics.h"
 
+#include <d3d10.h>
+#include <d3d10_1.h>
 #include <d3d11.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -381,19 +383,39 @@ APIType DetectAPIType(IDXGISwapChain* pSwapChain) {
         return s_cachedApi;
     }
 
-    APIType detected = APIType::Unknown;
+    bool hasD3D12Device = false;
+    bool hasD3D11Device = false;
+    bool hasD3D10Device = false;
 
     ID3D12Device* d12Device = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Device))) {
+    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Device)) && d12Device) {
         d12Device->Release();
-        detected = APIType::D3D12;
-    } else {
+        hasD3D12Device = true;
+    }
+
+    if (!hasD3D12Device) {
         ID3D11Device* d11Device = nullptr;
-        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&d11Device))) {
+        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&d11Device)) && d11Device) {
             d11Device->Release();
-            detected = APIType::D3D11;
+            hasD3D11Device = true;
         }
     }
+
+    if (!hasD3D12Device && !hasD3D11Device) {
+        ID3D10Device* d10Device = nullptr;
+        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&d10Device)) && d10Device) {
+            d10Device->Release();
+            hasD3D10Device = true;
+        } else {
+            ID3D10Device1* d10Device1 = nullptr;
+            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&d10Device1)) && d10Device1) {
+                d10Device1->Release();
+                hasD3D10Device = true;
+            }
+        }
+    }
+
+    APIType detected = SelectPrimarySwapChainAPIType(hasD3D12Device, hasD3D11Device, hasD3D10Device);
 
     s_cachedSwapchain = pSwapChain;
     s_cachedApi = detected;

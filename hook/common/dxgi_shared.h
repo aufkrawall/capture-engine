@@ -24,6 +24,23 @@ enum class APIType {
     Vulkan  // For WSI-DXGI interop
 };
 
+// Some runtimes expose lower-version compatibility interfaces on higher-version
+// swapchains (for example DX11-on-DXVK can answer ID3D10 queries). Always prefer
+// the highest actual device API so DX11 swapchains do not fall back to DX10 code
+// paths just because compatibility interfaces are present.
+inline APIType SelectPrimarySwapChainAPIType(bool hasD3D12Device, bool hasD3D11Device, bool hasD3D10Device) {
+    if (hasD3D12Device) {
+        return APIType::D3D12;
+    }
+    if (hasD3D11Device) {
+        return APIType::D3D11;
+    }
+    if (hasD3D10Device) {
+        return APIType::D3D10;
+    }
+    return APIType::Unknown;
+}
+
 struct SharedState {
     std::atomic<bool> swapchainInvalid{false};
     std::atomic<bool> fsr4RecreationPending{false};
@@ -96,6 +113,22 @@ bool HasPresentDetourHooks();
 // need a bypass trampoline available at install time so re-entrant Present can
 // still reach the real DXGI implementation.
 bool CanSafelyInstallExternalPresentDetourPath(bool requiresBypassTrampoline, bool bypassTrampolineAvailable);
+
+// Vulkan-layer label selection for translated APIs should prefer the active DXVK
+// D3D11 path over a merely-present DXVK D3D9 helper DLL in the same folder.
+inline const char* SelectTranslatedGraphicsAPIName(bool hasDxvkD3D11, bool hasDxvkD3D9, bool hasVkd3dD3D12,
+                                                   bool hasDX10) {
+    if (hasDxvkD3D11) {
+        return hasDX10 ? "DX10 (DXVK)" : "DX11 (DXVK)";
+    }
+    if (hasDxvkD3D9) {
+        return "DX9 (DXVK)";
+    }
+    if (hasVkd3dD3D12) {
+        return "DX12 (VKD3D-Proton)";
+    }
+    return "Vulkan";
+}
 
 // Direct-call helpers: bypass vtable hooks by calling saved original function
 // pointers directly. Used by CWrapDXGISwapChain to avoid re-entry through

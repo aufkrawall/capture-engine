@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include "../common/custom_overlay_vk.h"  // For VulkanBackend access
+#include "../common/dxgi_shared.h"
 #include "../common/ipc_client.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
@@ -30,6 +31,14 @@ static bool IsDXVKDll(const char* dllName) {
 
 static bool IsVKD3DDll(const char* dllName) {
     return IsDllFromProject(dllName, "vkd3d");
+}
+
+static const char* DetectTranslatedGraphicsAPIName() {
+    const bool hasDxvkD3D11 = IsDXVKDll("d3d11.dll");
+    const bool hasDxvkD3D9 = IsDXVKDll("d3d9.dll");
+    const bool hasVkd3dD3D12 = IsVKD3DDll("d3d12.dll");
+    const bool hasDX10 = (GetModuleHandleA("d3d10.dll") != nullptr || GetModuleHandleA("d3d10_1.dll") != nullptr);
+    return DXGIShared::SelectTranslatedGraphicsAPIName(hasDxvkD3D11, hasDxvkD3D9, hasVkd3dD3D12, hasDX10);
 }
 
 namespace {
@@ -387,20 +396,10 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     LayerLog(
         "Vulkan Layer: InitializeOverlay - IPC client set, setting graphics "
         "API...");
-    // Detect translated D3D APIs using version-verified wrapper fingerprints rather
-    // than DLL name presence alone. Check d3d9 first because DXVK game folders may
-    // contain multiple translated API DLLs even when the game is actually D3D9.
-    const char* apiName = "Vulkan";
-    if (IsDXVKDll("d3d9.dll")) {
-        apiName = "DX9 (DXVK)";
-    } else if (IsDXVKDll("d3d11.dll")) {
-        // Distinguish DX10 from DX11: DX10 games load d3d10.dll (even DXVK uses System32's d3d10.dll).
-        // DX11-only games never load d3d10.dll. We check for its presence regardless of path.
-        bool hasDX10 = (GetModuleHandleA("d3d10.dll") != nullptr || GetModuleHandleA("d3d10_1.dll") != nullptr);
-        apiName = hasDX10 ? "DX10 (DXVK)" : "DX11 (DXVK)";
-    } else if (IsVKD3DDll("d3d12.dll")) {
-        apiName = "DX12 (VKD3D-Proton)";
-    }
+    // Prefer the active translated API over merely-present helper DLLs. Some DXVK
+    // game folders ship multiple wrapper DLLs, but DX11/VKD3D should still label
+    // according to the path that actually owns rendering.
+    const char* apiName = DetectTranslatedGraphicsAPIName();
     state.overlayAdapter->SetGraphicsAPI(apiName);
 
     // Detect HDR from swapchain format

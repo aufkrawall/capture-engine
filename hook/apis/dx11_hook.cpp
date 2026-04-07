@@ -93,6 +93,81 @@ static thread_local bool g_CaptureUsesOverlayRTV = false;
 // Re-entrancy guard: prevents mutual recursion with other Present hooks (e.g. Steam overlay)
 thread_local bool g_InPresentHook = false;
 
+// DX11 runtimes can expose D3D10 compatibility interfaces on the same swapchain.
+// Prefer the highest actual device API so DX11 swapchains do not fall into the
+// DX10 overlay/capture paths just because ID3D10 queries happen to succeed.
+static DXGIShared::APIType DetectSwapChainAPITypeForDX11Hook(IDXGISwapChain* swapChain) {
+    if (!swapChain) {
+        return DXGIShared::APIType::Unknown;
+    }
+
+    bool hasD3D12Device = false;
+    bool hasD3D11Device = false;
+    bool hasD3D10Device = false;
+
+    ID3D12Device* d3d12Device = nullptr;
+    if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d3d12Device)) && d3d12Device) {
+        d3d12Device->Release();
+        hasD3D12Device = true;
+    }
+
+    if (!hasD3D12Device) {
+        ID3D11Device* d3d11Device = nullptr;
+        if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D11Device), (void**)&d3d11Device)) && d3d11Device) {
+            d3d11Device->Release();
+            hasD3D11Device = true;
+        }
+    }
+
+    if (!hasD3D12Device && !hasD3D11Device) {
+        ID3D10Device* d3d10Device = nullptr;
+        if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&d3d10Device)) && d3d10Device) {
+            d3d10Device->Release();
+            hasD3D10Device = true;
+        } else {
+            ID3D10Device1* d3d10Device1 = nullptr;
+            if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&d3d10Device1)) && d3d10Device1) {
+                d3d10Device1->Release();
+                hasD3D10Device = true;
+            }
+        }
+    }
+
+    return DXGIShared::SelectPrimarySwapChainAPIType(hasD3D12Device, hasD3D11Device, hasD3D10Device);
+}
+
+static const char* GetDX11HookBaseAPIName(DXGIShared::APIType api) {
+    switch (api) {
+        case DXGIShared::APIType::D3D10:
+            return "DX10";
+        case DXGIShared::APIType::D3D11:
+            return "DX11";
+        case DXGIShared::APIType::D3D12:
+            return "DX12";
+        default:
+            return "Unknown";
+    }
+}
+
+static bool IsDXVKD3D10OrD3D11Loaded() {
+    return IsDllFromProject("d3d11.dll", "dxvk") || IsDllFromProject("d3d10.dll", "dxvk") ||
+           IsDllFromProject("d3d10_1.dll", "dxvk");
+}
+
+static const char* GetDX11HookOverlayAPIName(DXGIShared::APIType api) {
+    const bool isDxvk = IsDXVKD3D10OrD3D11Loaded();
+    switch (api) {
+        case DXGIShared::APIType::D3D10:
+            return isDxvk ? "DX10 (DXVK)" : "DX10";
+        case DXGIShared::APIType::D3D11:
+            return isDxvk ? "DX11 (DXVK)" : "DX11";
+        case DXGIShared::APIType::D3D12:
+            return "DX12";
+        default:
+            return "Unknown";
+    }
+}
+
 static UINT ResolveDX11BackBufferIndex(IDXGISwapChain* swapChain, const DXGI_SWAP_CHAIN_DESC* swapChainDesc = nullptr) {
     if (!swapChain)
         return 0;
@@ -1697,10 +1772,10 @@ static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pCont
         }
     }
 
-    // ALSO try to hook D3D10 device from swapchain (Windows D3D10/D3D11 interop
-    // means both will succeed) We need to hook D3D10 CreateSamplerState and
-    // SetSamplers for D3D10 games
-    if (pSwapChain) {
+    // Some DX11 implementations expose D3D10 compatibility interfaces too.
+    // Only install the D3D10 runtime hooks when the swapchain actually belongs
+    // to a D3D10 device.
+    if (pSwapChain && DetectSwapChainAPITypeForDX11Hook(pSwapChain) == DXGIShared::APIType::D3D10) {
         ID3D10Device* pDevice10 = nullptr;
         HRESULT hr = pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&pDevice10);
         if (SUCCEEDED(hr) && pDevice10) {
@@ -2346,35 +2421,26 @@ public:
         // Initialize capture if needed (GetDevice only called during init to avoid per-frame COM overhead)
         if (!initialized) {
             HookLog("DX11Capture: [%d] Not initialized, initializing...", frameNum);
-            ID3D10Device* device10 = nullptr;
-            if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
+            const DXGIShared::APIType swapChainApi = DetectSwapChainAPITypeForDX11Hook(swapChain);
+            if (swapChainApi == DXGIShared::APIType::D3D10) {
                 if (!InitDX10(swapChain)) {
                     HookLog("DX11Capture: [%d] InitDX10 failed", frameNum);
-                    device10->Release();
                     return false;
                 }
-                device10->Release();
                 Init(nullptr, swapChain);
-            } else {
-                ID3D10Device1* device10_1 = nullptr;
-                if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1))) {
-                    if (!InitDX10(swapChain)) {
-                        HookLog("DX11Capture: [%d] InitDX10 failed", frameNum);
-                        device10_1->Release();
-                        return false;
-                    }
-                    device10_1->Release();
-                    Init(nullptr, swapChain);
-                } else {
-                    ID3D11Device* device = nullptr;
-                    HRESULT initHr = swapChain->GetDevice(IID_PPV_ARGS(&device));
-                    if (FAILED(initHr) || !device) {
-                        HookLog("DX11Capture: [%d] GetDevice failed hr=0x%08X", frameNum, initHr);
-                        return false;
-                    }
-                    Init(device, swapChain);
-                    device->Release();
+            } else if (swapChainApi == DXGIShared::APIType::D3D11) {
+                ID3D11Device* device = nullptr;
+                HRESULT initHr = swapChain->GetDevice(IID_PPV_ARGS(&device));
+                if (FAILED(initHr) || !device) {
+                    HookLog("DX11Capture: [%d] GetDevice failed hr=0x%08X", frameNum, initHr);
+                    return false;
                 }
+                Init(device, swapChain);
+                device->Release();
+            } else {
+                HookLog("DX11Capture: [%d] Unsupported swapchain API %s during init", frameNum,
+                        GetDX11HookBaseAPIName(swapChainApi));
+                return false;
             }
         }
 
@@ -2634,17 +2700,15 @@ static void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMem
     if (!shm)
         return;
 
-    ID3D10Device* device10 = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
-        device10->Release();
+    const DXGIShared::APIType swapChainApi = DetectSwapChainAPITypeForDX11Hook(pSwapChain);
+    if (swapChainApi == DXGIShared::APIType::D3D10) {
         CaptureDX10Screenshot(pSwapChain, shm);
         return;
     }
 
-    ID3D10Device1* device10_1 = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1))) {
-        device10_1->Release();
-        CaptureDX10Screenshot(pSwapChain, shm);
+    if (swapChainApi != DXGIShared::APIType::D3D11) {
+        HookLog("DX11 Screenshot: Unsupported swapchain API %s", GetDX11HookBaseAPIName(swapChainApi));
+        CompleteRequestedDX11Screenshot(shm);
         return;
     }
 
@@ -2936,6 +3000,21 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         return;
     }
 
+    const DXGIShared::APIType swapChainApi = DetectSwapChainAPITypeForDX11Hook(pSwapChain);
+    if (swapChainApi == DXGIShared::APIType::D3D10) {
+        g_DetectedAPI = GetDX11HookOverlayAPIName(swapChainApi);
+        DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
+        return;
+    }
+    if (swapChainApi != DXGIShared::APIType::D3D11) {
+        static std::atomic<int> s_unexpectedApiLogCount{0};
+        if (s_unexpectedApiLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            EarlyLog("DX11: DrawOverlay skipping swapchain classified as %s", GetDX11HookBaseAPIName(swapChainApi));
+        }
+        return;
+    }
+    g_DetectedAPI = GetDX11HookOverlayAPIName(swapChainApi);
+
     if (frameCount % 60 == 0) {
         EarlyLog("DX: DrawOverlay frame %d on SC %p (HWND %p, %ux%u)", frameCount, pSwapChain, currentHwnd,
                  desc.BufferDesc.Width, desc.BufferDesc.Height);
@@ -2946,40 +3025,14 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     // shutdown (the swapchain's internal device ref can be freed before our
     // Present hook stops being called).
     if (!g_pd3dDevice) {
-        // First frame: detect device type and cache with AddRef
-        ID3D10Device* device10 = NULL;
-        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
-            if (frameCount % 60 == 0)
-                EarlyLog("DX: Identified as D3D10 device");
-            device10->Release();
-            DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
-            return;
-        }
-
-        ID3D10Device1* device10_1 = NULL;
-        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1))) {
-            if (frameCount % 60 == 0)
-                EarlyLog("DX: Identified as D3D10.1 device");
-            device10_1->Release();
-            DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
-            return;
-        }
-
+        // First frame: cache the DX11 device with AddRef.
         ID3D11Device* device11 = NULL;
         HRESULT hrDevice = pSwapChain->GetDevice(IID_PPV_ARGS(&device11));
-        if (FAILED(hrDevice)) {
-            ID3D12Device* device12 = nullptr;
-            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&device12))) {
-                EarlyLog(
-                    "DX: Identified as D3D12 device (Interop/Mismatch) - Skipping "
-                    "DX11 Overlay");
-                device12->Release();
-                return;
-            }
-            EarlyLog("DX: FAILED to get D3D11 device (hr=0x%08X)", hrDevice);
+        if (FAILED(hrDevice) || !device11) {
+            EarlyLog("%s: FAILED to get D3D11 device (hr=0x%08X)", g_DetectedAPI, hrDevice);
             return;
         }
-        EarlyLog("DX: Identified as D3D11 device %p", device11);
+        EarlyLog("%s: Identified as D3D11 device %p", g_DetectedAPI, device11);
 
         // Initialize System Metrics (one-time)
         IDXGIDevice* dxgiDevice = nullptr;
@@ -3050,15 +3103,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
-    const char* finalApi = g_DetectedAPI;
-    if (IsDllFromProject("d3d11.dll", "dxvk")) {
-        if (strcmp(g_DetectedAPI, "DX10") == 0) {
-            finalApi = "DX10 (DXVK)";
-        } else if (strcmp(g_DetectedAPI, "DX11") == 0) {
-            finalApi = "DX11 (DXVK)";
-        }
-    }
-    g_OverlayAdapter.SetGraphicsAPI(finalApi);
+    g_OverlayAdapter.SetGraphicsAPI(g_DetectedAPI);
 
     ID3D11RenderTargetView* overlayRTV = nullptr;
     bool usingBoundRTV = false;
