@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <intrin.h>
 
 // Vulkan is handled by VK_LAYER_CE_overlay (ICD layer approach)
 // No global hook pointer needed - extern void* g_VulkanHook;
@@ -237,6 +238,45 @@ static bool IsSteamOverlayModule(const char* overlayModule) {
     return overlayModule && ce::overlay_compat::detail::ContainsInsensitive(overlayModule, "gameoverlayrenderer");
 }
 
+static bool IsStreamlineModuleHandle(HMODULE moduleHandle) {
+    if (!moduleHandle) {
+        return false;
+    }
+
+    char modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(moduleHandle, modulePath, MAX_PATH) == 0) {
+        return false;
+    }
+
+    return ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.interposer") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.common") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.dlss_g");
+}
+
+static const void* GetCallerReturnAddress() {
+#if defined(__clang__) || defined(__GNUC__)
+    return __builtin_return_address(0);
+#elif defined(_MSC_VER)
+    return _ReturnAddress();
+#else
+    return nullptr;
+#endif
+}
+
+static bool IsPresentCallFromStreamlineModule() {
+    const void* callerAddress = GetCallerReturnAddress();
+    if (!callerAddress) {
+        return false;
+    }
+
+    HMODULE callerModule = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(callerAddress), &callerModule)) {
+        return false;
+    }
+    return IsStreamlineModuleHandle(callerModule);
+}
+
 static bool IsWrappedSwapChainObject(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain) {
         return false;
@@ -292,14 +332,14 @@ static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, co
     if (overlayModuleOut) {
         *overlayModuleOut = overlayModule;
     }
-    if (!overlayModule || oPresentTrampoline || oPresent1Trampoline) {
-        return DX12StartupPresentMode::kNone;
-    }
-
-    if (ShouldForceSteamDX12BypassForState(bypassAvailable, IsSteamOverlayModule(overlayModule), true, false, false,
-                                           GetModuleHandleA("sl.interposer.dll") != nullptr, g_FGCompat.GetRuntimeMode(),
-                                           g_StreamlineFGRunning.load(std::memory_order_acquire),
-                                           g_FGCompat.IsNvPresentLoaded())) {
+    const bool steamBypassShouldOwnPath = ShouldForceSteamDX12BypassForState(
+        bypassAvailable, IsSteamOverlayModule(overlayModule), true, false, false,
+        GetModuleHandleA("sl.interposer.dll") != nullptr, g_FGCompat.GetRuntimeMode(),
+        g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.IsNvPresentLoaded());
+    if (!DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+            overlayModule != nullptr, oPresentTrampoline != nullptr, oPresent1Trampoline != nullptr,
+            steamBypassShouldOwnPath, g_FGCompat.GetRuntimeMode(),
+            g_StreamlineFGRunning.load(std::memory_order_acquire))) {
         return DX12StartupPresentMode::kNone;
     }
 
@@ -720,6 +760,29 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    const APIType api = DetectAPIType(pSwapChain);
+    const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
+        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire), IsPresentCallFromStreamlineModule());
+    if (streamlineSyntheticReentrant) {
+        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        if (postSLCallback) {
+            postSLCallback(pSwapChain);
+        }
+
+        PFN_Present presentBypass = EnsurePresentBypassTrampoline();
+        if (presentBypass) {
+            static std::atomic<int> s_streamlineSyntheticPresentLogCount{0};
+            int syntheticNum = s_streamlineSyntheticPresentLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (syntheticNum <= 10 || syntheticNum == 50 || (syntheticNum % 500) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #%d "
+                    "(postSL=%p, bypass=%p, tid=0x%04X)",
+                    syntheticNum, (void*)postSLCallback, (void*)presentBypass, GetCurrentThreadId());
+            }
+            return presentBypass(pSwapChain, SyncInterval, Flags);
+        }
+    }
+
     g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
     auto presentInFlightGuard =
         ce::make_scope_guard([]() { g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel); });
@@ -906,7 +969,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
     }
 
-    APIType api = DetectAPIType(pSwapChain);
     if (api == APIType::D3D12) {
         const char* overlayModule = nullptr;
         int startupPass = 0;
@@ -1010,6 +1072,29 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    const APIType api = DetectAPIType(pSwapChain);
+    const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
+        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire), IsPresentCallFromStreamlineModule());
+    if (streamlineSyntheticReentrant) {
+        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        if (postSLCallback) {
+            postSLCallback(pSwapChain);
+        }
+
+        PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
+        if (present1Bypass) {
+            static std::atomic<int> s_streamlineSyntheticPresent1LogCount{0};
+            int syntheticNum = s_streamlineSyntheticPresent1LogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (syntheticNum <= 10 || syntheticNum == 50 || (syntheticNum % 500) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Treating Streamline-originated Present1 as synthetic re-entrant #%d "
+                    "(postSL=%p, bypass=%p, tid=0x%04X)",
+                    syntheticNum, (void*)postSLCallback, (void*)present1Bypass, GetCurrentThreadId());
+            }
+            return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
+    }
+
     g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
     auto presentInFlightGuard =
         ce::make_scope_guard([]() { g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel); });
@@ -1105,7 +1190,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
 
-    APIType api = DetectAPIType(pSwapChain);
     if (api == APIType::D3D12) {
         const char* overlayModule = nullptr;
         int startupPass = 0;

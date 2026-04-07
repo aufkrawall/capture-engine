@@ -137,6 +137,28 @@ inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isStea
     return streamlineNeedsBypass || smoothMotionNeedsBypass;
 }
 
+inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay, bool presentTrampolineInstalled,
+                                                      bool present1TrampolineInstalled,
+                                                      bool steamBypassShouldOwnPath,
+                                                      ce::fg_runtime::RuntimeMode runtimeMode,
+                                                      bool streamlineFGRunning) {
+    if (!hasThirdPartyOverlay || presentTrampolineInstalled || present1TrampolineInstalled) {
+        return false;
+    }
+    if (steamBypassShouldOwnPath) {
+        return false;
+    }
+
+    const bool actualFrameGenerationActive = streamlineFGRunning || runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
+                                             runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
+    return !actualFrameGenerationActive;
+}
+
+inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapChain, bool streamlineFGRunning,
+                                                             bool callerFromStreamlineModule) {
+    return isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule;
+}
+
 // Vulkan-layer label selection for translated APIs should prefer the active DXVK
 // D3D11 path over a merely-present DXVK D3D9 helper DLL in the same folder.
 inline const char* SelectTranslatedGraphicsAPIName(bool hasDxvkD3D11, bool hasDxvkD3D9, bool hasVkd3dD3D12,

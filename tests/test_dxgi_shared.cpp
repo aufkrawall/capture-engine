@@ -60,6 +60,40 @@ TEST(DXGISharedTest, SteamDX12BypassRequiresCleanNonWrappedEntryPath) {
         true, true, true, false, false, false, ce::fg_runtime::RuntimeMode::kOff, false, false));
 }
 
+TEST(DXGISharedTest, DX12StartupPresentPassStaysAvailableOnlyForInactiveNonBypassStartup) {
+    EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
+    EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false));
+}
+
+TEST(DXGISharedTest, DX12StartupPresentPassDisablesWhenRealFGOrBypassOwnsPath) {
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        false, false, false, false, ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, true, false, false, ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, true, false, ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, ce::fg_runtime::RuntimeMode::kDLSSFG, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, ce::fg_runtime::RuntimeMode::kFSRFG, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, ce::fg_runtime::RuntimeMode::kOff, true));
+}
+
+TEST(DXGISharedTest, StreamlineGeneratedFramePresentUsesSyntheticReentrantRoutingOnlyForDX12FGCallers) {
+    EXPECT_TRUE(DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, false));
+}
+
 TEST(DXGISharedTest, DX12OverlayWaitPolicySkipsSmoothMotionButKeepsStartupSafety) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(
         false, true, true, ce::fg_runtime::RuntimeMode::kOff));
