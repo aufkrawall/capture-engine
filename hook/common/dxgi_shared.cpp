@@ -792,6 +792,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
         IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress));
     if (ffxStartupBypass) {
+        g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
         if (presentBypass) {
             static std::atomic<int> s_ffxStartupBypassLogCount{0};
@@ -1122,6 +1123,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
         IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress));
     if (ffxStartupBypass) {
+        g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
         if (present1Bypass) {
             static std::atomic<int> s_ffxStartupBypassLogCount1{0};

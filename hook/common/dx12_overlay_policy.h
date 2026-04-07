@@ -88,9 +88,21 @@ inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQu
     return hasRealQueueBehindWrapper || hasRealD3D12ECL;
 }
 
-inline bool ShouldDelayPostSLActivationUntilDirectQueuePath(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
-                                                            bool hasRealD3D12ECL) {
-    return hadFSRFGPhase && (!hasRealQueueBehindWrapper || !hasRealD3D12ECL);
+inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
+                                                              bool hasRealD3D12ECL, bool hasSLWrapperQueue) {
+    if (!hadFSRFGPhase) {
+        return false;
+    }
+
+    if (!hasRealD3D12ECL) {
+        return true;
+    }
+
+    return !hasRealQueueBehindWrapper && !hasSLWrapperQueue;
+}
+
+inline bool ShouldUsePostSLScQueueVirtualSubmit(bool hadFSRFGPhase, bool scQueueDiffers) {
+    return scQueueDiffers && !hadFSRFGPhase;
 }
 
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {

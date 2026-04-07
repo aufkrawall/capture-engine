@@ -178,13 +178,24 @@ TEST(DXGISharedTest, PostSLWrapperBootstrapIsBlockedForPureDLSSWithoutDirectPath
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(true, false, false));
 }
 
-TEST(DXGISharedTest, PostSLActivationWaitsForDirectQueuePathAfterFSRPhase) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(true, false, false));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(true, true, false));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(true, false, true));
+TEST(DXGISharedTest, PostSLActivationWaitsForSafeBootstrapPathAfterFSRPhase) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(true, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(true, true, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(true, false, true, false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(true, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(false, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(true, true, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(true, false, true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(false, false, false, false));
+}
+
+TEST(DXGISharedTest, PostSLScQueueVirtualSubmitIsDisabledAfterFSRPhase) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(false, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(false, false));
 }
 
 TEST(DXGISharedTest, SyntheticPostSLRefreshesMetricsOnlyWhenNormalFramePathIsDormant) {

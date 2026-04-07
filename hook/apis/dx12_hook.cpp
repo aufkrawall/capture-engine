@@ -1004,6 +1004,13 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddres
         return;
     }
 
+    g_FGCompat.SetFSRFGSupportPresent(true);
+    if (!g_HadFSRFGPhase) {
+        g_HadFSRFGPhase = true;
+        HookLogImportant(
+            "DX12: FFX swapchain takeover implies FSR FG history — latching post-FSR handoff state");
+    }
+
     const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);
     g_FGCompat.SetStreamlineFGSignal(false);
     g_FGCompat.SetDLSSFGActive(false);
@@ -4531,17 +4538,17 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
             ID3D12CommandQueue* directQueue = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
             ExecuteCommandListsPtr directECL = g_RealD3D12ECL.load(std::memory_order_acquire);
-            if (ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(g_HadFSRFGPhase,
-                                                                                          directQueue != nullptr,
-                                                                                          directECL != nullptr)) {
-                static int s_waitForDirectPathLog = 0;
-                if (s_waitForDirectPathLog < 10 || (s_waitForDirectPathLog % 100) == 0) {
+            ID3D12CommandQueue* slWrapperQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
+            if (ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(
+                    g_HadFSRFGPhase, directQueue != nullptr, directECL != nullptr, slWrapperQueue != nullptr)) {
+                static int s_waitForSafePathLog = 0;
+                if (s_waitForSafePathLog < 10 || (s_waitForSafePathLog % 100) == 0) {
                     HookLogImportant(
-                        "DX12: PostSL synthetic startup waiting for direct queue path after FSR phase "
-                        "(realQ=%p realECL=%p)",
-                        directQueue, (void*)directECL);
+                        "DX12: PostSL synthetic startup waiting for safe bootstrap path after FSR phase "
+                        "(realQ=%p realECL=%p slWrapper=%p)",
+                        directQueue, (void*)directECL, slWrapperQueue);
                 }
-                s_waitForDirectPathLog++;
+                s_waitForSafePathLog++;
                 return;
             }
 
@@ -4754,10 +4761,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         // GTA V's DLSS FG activation triggers a heuristic FSR ghost (brief swapchain
         // queue change) that clears within frames.  Setting hadFSR from heuristic forces
         // PostSL onto SL's internal queues which causes DEVICE_HUNG.
-        if (g_FGCompat.IsFSRFGApiActive()) {
+        if (g_FGCompat.IsFSRFGApiActive() || g_FGCompat.HasFSRFGSupport()) {
             if (!g_HadFSRFGPhase) {
                 g_HadFSRFGPhase = true;
-                HookLogImportant("DX12: PostSL — FSR FG API-confirmed, origGame driver state may be stale");
+                HookLogImportant("DX12: PostSL — FSR FG history confirmed, origGame driver state may be stale");
             }
         }
 
@@ -5599,8 +5606,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         ExecuteCommandListsPtr realECLPtr = g_RealD3D12ECL.load(std::memory_order_acquire);
 
         const bool allowScQueueVirtualSubmit =
-            scQueueDiffers && !ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(
-                                   g_HadFSRFGPhase, realQ != nullptr, realECLPtr != nullptr);
+            ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(g_HadFSRFGPhase, scQueueDiffers);
 
         if (allowScQueueVirtualSubmit) {
             // Direct submission on scQueue — backbuffers belong to this queue.
@@ -5642,6 +5648,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
             // Bootstrap: submit through SL's wrapper to capture real queue on first call
             ID3D12CommandQueue* slQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
+            if (!slQueue && g_HadFSRFGPhase) {
+                HookLogImportant(
+                    "DX12: PostSL refusing post-FSR bootstrap without SL wrapper queue (queue=%p scQueue=%p)", queue,
+                    scQueue);
+                bb->Release();
+                return;
+            }
             if (slQueue) {
                 submittedQueue = slQueue;
                 s_insidePostSLOverlayECL = true;
@@ -6217,10 +6230,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // resource state conflicts.  We use realECL to bypass FSR's ECL
             // hook on this queue.
             gameQueue = g_SwapchainQueue;
-            if (!g_HadFSRFGPhase && g_FGCompat.IsFSRFGApiActive()) {
+            if (!g_HadFSRFGPhase && (g_FGCompat.IsFSRFGApiActive() || g_FGCompat.HasFSRFGSupport())) {
                 g_HadFSRFGPhase = true;
                 HookLogImportant(
-                    "DX12: ProcessFrame — FSR FG API-confirmed, origGame potentially corrupted for future DLSS FG");
+                    "DX12: ProcessFrame — FSR FG history confirmed, origGame potentially corrupted for future DLSS FG");
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue) {
