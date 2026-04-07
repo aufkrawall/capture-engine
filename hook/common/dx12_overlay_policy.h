@@ -62,4 +62,16 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     return SwapchainOverlayRoutingDecision::kUseNormalRouting;
 }
 
+struct OverlayMetricsBindingDecision {
+    bool bindMetrics;
+    bool refreshFrameMetadata;
+};
+
+inline OverlayMetricsBindingDecision DecideOverlayMetricsBinding(bool isRealFrame) {
+    return OverlayMetricsBindingDecision{
+        true,
+        isRealFrame,
+    };
+}
+
 }  // namespace ce::dx12_overlay_policy

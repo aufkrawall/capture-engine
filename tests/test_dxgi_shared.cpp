@@ -104,3 +104,13 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPreservesPostFSRStreamlineTransi
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, true, false, true),
               SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
 }
+
+TEST(DXGISharedTest, DX12OverlayMetricsBindingAlwaysKeepsMetricsBound) {
+    const auto realFrameBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(true);
+    EXPECT_TRUE(realFrameBinding.bindMetrics);
+    EXPECT_TRUE(realFrameBinding.refreshFrameMetadata);
+
+    const auto interpolatedFrameBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(false);
+    EXPECT_TRUE(interpolatedFrameBinding.bindMetrics);
+    EXPECT_FALSE(interpolatedFrameBinding.refreshFrameMetadata);
+}

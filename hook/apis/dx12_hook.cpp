@@ -3327,9 +3327,12 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
     // RenderOverlay() guards on ipc being non-null, so if this was only set
     // on real frames, overlay would never render when isRealFrame is false.
     g_OverlayAdapter.SetIPCClient(g_IPC);
-
-    if (isRealFrame) {
+    const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
+    if (metricsBinding.bindMetrics) {
         g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+    }
+
+    if (metricsBinding.refreshFrameMetadata) {
         static const bool s_isVKD3D = []() {
             return GetModuleHandleA("d3d12core.dll") &&
                    (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"));
@@ -3608,8 +3611,11 @@ static bool RenderOverlayViaD3D11On12(int bufferIdx, bool isRealFrame) {
 
     // Feed data to the SL FG overlay adapter
     g_SLFGAdapter.SetIPCClient(g_IPC);
-    if (isRealFrame) {
+    const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
+    if (metricsBinding.bindMetrics) {
         g_SLFGAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+    }
+    if (metricsBinding.refreshFrameMetadata) {
         static const bool s_isVKD3D = []() {
             return GetModuleHandleA("d3d12core.dll") &&
                    (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"));
@@ -5215,11 +5221,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         s_descFreeCmdList = list;
         s_descFreeRtv = rtvHandle;
 
-        // Update metrics on real frames
+        // Update text/API labels on real frames, but always keep the overlay
+        // bound to the shared metrics object so FPS/history remain visible when
+        // the first frame after an FG-driven reinit is classified as interpolated.
         bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
         g_D3D11On12Adapter.SetIPCClient(g_IPC);
-        if (isRealFrame) {
+        const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
+        if (metricsBinding.bindMetrics) {
             g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+        }
+        if (metricsBinding.refreshFrameMetadata) {
             static const bool s_isVKD3D = []() {
                 return GetModuleHandleA("d3d12core.dll") &&
                        (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"));
@@ -8000,9 +8011,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     s_descFreeRtv = offRtv;
 
                                                     g_D3D11On12Adapter.SetIPCClient(g_IPC);
-                                                    if (isRealFrame) {
+                                                    const auto metricsBinding =
+                                                        ce::dx12_overlay_policy::DecideOverlayMetricsBinding(
+                                                            isRealFrame);
+                                                    if (metricsBinding.bindMetrics) {
                                                         g_D3D11On12Adapter.SetMetrics(
                                                             DXGIShared::GetPerformanceMetrics());
+                                                    }
+                                                    if (metricsBinding.refreshFrameMetadata) {
                                                         const char* api = "DX12";
                                                         g_D3D11On12Adapter.SetGraphicsAPI(api);
                                                     }
@@ -8083,8 +8099,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 s_descFreeRtv = rtvHandle;
 
                                                 g_D3D11On12Adapter.SetIPCClient(g_IPC);
-                                                if (isRealFrame) {
+                                                const auto metricsBinding =
+                                                    ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
+                                                if (metricsBinding.bindMetrics) {
                                                     g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+                                                }
+                                                if (metricsBinding.refreshFrameMetadata) {
                                                     static const bool s_isVKD3D = []() {
                                                         return GetModuleHandleA("d3d12core.dll") &&
                                                                (GetModuleHandleA("libvkd3d-1.dll") ||
