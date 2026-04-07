@@ -144,6 +144,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain);
 // callback should actually render or skip (e.g. during FG cooldown / resize).
 static std::atomic<bool> g_PostSLOverlayActive{false};
 static std::atomic<int> g_PostSLCooldownRemaining{0};
+static std::atomic<ULONGLONG> g_LastProcessFrameTickMs{0};
+static std::atomic<bool> g_PostSLSyntheticStartupActivationPending{false};
+static std::atomic<bool> g_PostSLSyntheticStartupTakeoverLogged{false};
 
 // Set to true when PostSLOverlayRender has confirmed it can render (i.e., re-entrant
 // Present calls are actually happening).  In games like GTA V, SL FG bypasses our
@@ -2475,10 +2478,17 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             DXGIShared::g_PostSLOverlayRenderCallback.store(&PostSLOverlayRender, std::memory_order_release);
             HookLogImportant("DX12: Streamline FG ON — pre-armed PostSL callback for startup routing");
         }
+        int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
+        while (cooldownLeft < 60 &&
+               !g_PostSLCooldownRemaining.compare_exchange_weak(cooldownLeft, 60, std::memory_order_acq_rel,
+                                                                std::memory_order_acquire)) {
+        }
         g_PostSLOverlayActive.store(false, std::memory_order_release);
         g_PostSLConfirmedRendering.store(false, std::memory_order_release);
         g_PostSLStallCounter.store(0, std::memory_order_release);
         g_PostSLStableFrameCount.store(0, std::memory_order_release);
+        g_PostSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
+        g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
         return;
     }
 
@@ -2487,6 +2497,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
     g_PostSLStallCounter.store(0, std::memory_order_release);
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
+    g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     HookLogImportant("DX12: Streamline FG OFF — cleared PostSL callback state");
 }
 
@@ -4418,6 +4430,38 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         return;  // Lock guard releases automatically
     }
 
+    {
+        constexpr ULONGLONG kDormantProcessFrameThresholdMs = 100;
+        const ULONGLONG nowMs = GetTickCount64();
+        const ULONGLONG lastProcessFrameTickMs = g_LastProcessFrameTickMs.load(std::memory_order_acquire);
+        const bool processFrameRecentlySeen =
+            lastProcessFrameTickMs != 0 && nowMs >= lastProcessFrameTickMs &&
+            (nowMs - lastProcessFrameTickMs) < kDormantProcessFrameThresholdMs;
+
+        if (ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
+                g_PostSLSyntheticStartupActivationPending.load(std::memory_order_acquire), cachedSLFGActive,
+                g_PostSLOverlayActive.load(std::memory_order_acquire), processFrameRecentlySeen)) {
+            if (!g_PostSLSyntheticStartupTakeoverLogged.exchange(true, std::memory_order_acq_rel)) {
+                HookLogImportant(
+                    "DX12: PostSL synthetic startup takeover — ProcessFrame dormant for %llums (cooldown=%d)",
+                    lastProcessFrameTickMs != 0 && nowMs >= lastProcessFrameTickMs ? (nowMs - lastProcessFrameTickMs) : 0,
+                    g_PostSLCooldownRemaining.load(std::memory_order_relaxed));
+            }
+
+            int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
+            if (cooldownLeft > 0) {
+                g_PostSLCooldownRemaining.store(cooldownLeft - 1, std::memory_order_release);
+                if (cooldownLeft > 1) {
+                    return;
+                }
+            }
+
+            g_PostSLOverlayActive.store(true, std::memory_order_release);
+            g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+            HookLogImportant("DX12: PostSL synthetic startup activation complete — enabling PostSL rendering");
+        }
+    }
+
     bool active = g_PostSLOverlayActive.load(std::memory_order_acquire);
     if (active && !s_wasActive) {
         s_reactivationEpoch++;
@@ -5646,6 +5690,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     }
     s_inProcessFrame = true;
     auto reentryGuard = ce::make_scope_guard([&]() { s_inProcessFrame = false; });
+    g_LastProcessFrameTickMs.store(GetTickCount64(), std::memory_order_release);
 
     static bool s_firstFrame = true;
     if (s_firstFrame) {
@@ -6313,6 +6358,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
                 if (slFGNow && DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed)) {
                     g_PostSLOverlayActive.store(true, std::memory_order_release);
+                    g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
                     HookLogImportant(
                         "DX12: FG transition cooldown complete — reactivated PostSL (slFG=1, reinit path)");
                 } else {
@@ -6981,6 +7027,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != &PostSLOverlayRender) {
                 DXGIShared::g_PostSLOverlayRenderCallback.store(&PostSLOverlayRender, std::memory_order_release);
                 g_PostSLOverlayActive.store(true, std::memory_order_release);
+                g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
                 HookLogImportant("DX12: [outer] Registered PostSL callback (overlay blocked, SL FG active)");
             }
         } else if (!outerSLFGRunning && g_FGTransitionCooldown == 0) {
@@ -7365,6 +7412,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // Re-enable post-SL rendering if SL FG is active
                 if (slFG) {
                     g_PostSLOverlayActive.store(true, std::memory_order_release);
+                    g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
                 }
             }
             skipOverlayDraw = true;
@@ -7435,6 +7483,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     if (!skipOverlayDraw) {
                         if (!g_PostSLOverlayActive.load(std::memory_order_acquire)) {
                             g_PostSLOverlayActive.store(true, std::memory_order_release);
+                            g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
                             HookLogImportant("DX12: SL FG active - activated POST-SL overlay rendering (hadFSR=%d)",
                                              g_HadFSRFGPhase ? 1 : 0);
                         }

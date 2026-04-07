@@ -74,4 +74,9 @@ inline OverlayMetricsBindingDecision DecideOverlayMetricsBinding(bool isRealFram
     };
 }
 
+inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
+                                                       bool postSLActive, bool processFrameRecentlySeen) {
+    return startupActivationPending && streamlineFGRunning && !postSLActive && !processFrameRecentlySeen;
+}
+
 }  // namespace ce::dx12_overlay_policy
