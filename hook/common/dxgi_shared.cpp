@@ -253,25 +253,22 @@ static bool IsStreamlineModuleHandle(HMODULE moduleHandle) {
            ce::overlay_compat::detail::ContainsInsensitive(modulePath, "sl.dlss_g");
 }
 
-static const void* GetCallerReturnAddress() {
 #if defined(__clang__) || defined(__GNUC__)
-    return __builtin_return_address(0);
+#define CE_CAPTURE_RETURN_ADDRESS() __builtin_return_address(0)
 #elif defined(_MSC_VER)
-    return _ReturnAddress();
+#define CE_CAPTURE_RETURN_ADDRESS() _ReturnAddress()
 #else
-    return nullptr;
+#define CE_CAPTURE_RETURN_ADDRESS() nullptr
 #endif
-}
 
-static bool IsPresentCallFromStreamlineModule() {
-    const void* callerAddress = GetCallerReturnAddress();
-    if (!callerAddress) {
+static bool IsCodeAddressFromStreamlineModule(const void* codeAddress) {
+    if (!codeAddress) {
         return false;
     }
 
     HMODULE callerModule = nullptr;
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCSTR>(callerAddress), &callerModule)) {
+                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule)) {
         return false;
     }
     return IsStreamlineModuleHandle(callerModule);
@@ -761,8 +758,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     const APIType api = DetectAPIType(pSwapChain);
+    // Capture the caller here, not in a helper. We need the code that called
+    // into DetourPresent, not the helper's own return address inside this DLL.
+    const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
     const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
-        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire), IsPresentCallFromStreamlineModule());
+        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
+        IsCodeAddressFromStreamlineModule(detourCallerAddress));
     if (streamlineSyntheticReentrant) {
         auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
@@ -1073,8 +1074,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     const APIType api = DetectAPIType(pSwapChain);
+    const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
     const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
-        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire), IsPresentCallFromStreamlineModule());
+        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
+        IsCodeAddressFromStreamlineModule(detourCallerAddress));
     if (streamlineSyntheticReentrant) {
         auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
