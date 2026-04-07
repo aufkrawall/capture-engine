@@ -963,20 +963,49 @@ static void ClearPostSLPinnedSLWrapperQueue(const char* reason) {
     }
 }
 
+static void DetachPostSLQueuesLocked(ID3D12CommandQueue** lockedQueueOut, ID3D12CommandQueue** dedicatedQueueOut) {
+    if (lockedQueueOut) {
+        *lockedQueueOut = nullptr;
+    }
+    if (dedicatedQueueOut) {
+        *dedicatedQueueOut = nullptr;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+    if (lockedQueueOut) {
+        *lockedQueueOut = g_PostSLLockedQueue;
+    }
+    if (dedicatedQueueOut) {
+        *dedicatedQueueOut = g_PostSLDedicatedQueue;
+    }
+    g_PostSLLockedQueue = nullptr;
+    g_PostSLDedicatedQueue = nullptr;
+}
+
+static void ReleaseDetachedPostSLQueues(const char* reason, ID3D12CommandQueue* lockedQueue,
+                                        ID3D12CommandQueue* dedicatedQueue) {
+    if (lockedQueue) {
+        HookLogImportant("%s — releasing PostSL locked queue %p", reason, lockedQueue);
+        lockedQueue->Release();
+    }
+
+    if (dedicatedQueue) {
+        HookLogImportant("%s — releasing PostSL dedicated queue %p", reason, dedicatedQueue);
+        dedicatedQueue->Release();
+    }
+}
+
+static void ClearPostSLQueues(const char* reason) {
+    ID3D12CommandQueue* oldLockedQueue = nullptr;
+    ID3D12CommandQueue* oldDedicatedQueue = nullptr;
+    DetachPostSLQueuesLocked(&oldLockedQueue, &oldDedicatedQueue);
+    ReleaseDetachedPostSLQueues(reason, oldLockedQueue, oldDedicatedQueue);
+}
+
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper) {
     g_PostSLLifecycleEpoch.fetch_add(1, std::memory_order_acq_rel);
 
-    if (g_PostSLLockedQueue) {
-        HookLogImportant("%s — releasing PostSL locked queue %p", reason, g_PostSLLockedQueue);
-        g_PostSLLockedQueue->Release();
-        g_PostSLLockedQueue = nullptr;
-    }
-
-    if (g_PostSLDedicatedQueue) {
-        HookLogImportant("%s — releasing PostSL dedicated queue %p", reason, g_PostSLDedicatedQueue);
-        g_PostSLDedicatedQueue->Release();
-        g_PostSLDedicatedQueue = nullptr;
-    }
+    ClearPostSLQueues(reason);
 
     ClearPostSLPinnedSLWrapperQueue(reason);
 
@@ -4657,11 +4686,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         s_postSLProbeFrames = 0;  // Reset probe counter for new reactivation
         // Clean up dedicated queue from previous epochs (no longer used — virtual
         // call through SL's COM wrapper is now the primary submission path).
-        if (g_PostSLDedicatedQueue) {
-            HookLogImportant("DX12: PostSL releasing stale dedicated queue %p", g_PostSLDedicatedQueue);
-            g_PostSLDedicatedQueue->Release();
-            g_PostSLDedicatedQueue = nullptr;
-        }
+        ClearPostSLQueues("DX12: PostSL reactivation");
         if (s_dedicatedSyncFence) {
             s_dedicatedSyncFence->Release();
             s_dedicatedSyncFence = nullptr;
@@ -4956,41 +4981,68 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Lock to the selected queue for the current epoch, but allow a one-time
     // post-FSR migration from the wrapper bootstrap queue to the captured real
     // queue behind it once the ECL detour has observed that path.
-    if (g_PostSLLockedQueue == nullptr) {
-        g_PostSLLockedQueue = queue;
-        queue->AddRef();  // prevent locked queue from being freed between PostSL calls
-        bool usingSLWrapper = (queue != g_OriginalGameQueue && queue != scQueue);
-        bool slFGAtLock = cachedSLFGActive;
-        HookLogImportant(
-            "DX12: PostSL locked to queue %p (origGame=%p scQueue=%p cmdQueue=%p preFG=%p epoch=%d slWrapper=%d "
-            "slFG=%d hadFSR=%d)",
-            queue, g_OriginalGameQueue, scQueue, (void*)g_CommandQueue.load(), g_PreFGGameQueue, s_reactivationEpoch,
-            usingSLWrapper ? 1 : 0, slFGAtLock ? 1 : 0, g_HadFSRFGPhase ? 1 : 0);
-    } else if (queue != g_PostSLLockedQueue) {
-        ID3D12CommandQueue* directQueueBehindWrapper = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
-        bool shouldPromoteLockedQueueToRealQueueBehindWrapper =
-            ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueBehindWrapperAfterFSR(
-                g_HadFSRFGPhase, cachedSLFGActive,
-                g_PostSLLockedQueue != g_OriginalGameQueue && g_PostSLLockedQueue != scQueue,
-                directQueueBehindWrapper != nullptr) &&
-            queue == directQueueBehindWrapper;
-        if (shouldPromoteLockedQueueToRealQueueBehindWrapper) {
-            HookLogImportant(
-                "DX12: PostSL promoting locked queue %p -> real queue behind wrapper %p after post-FSR bootstrap",
-                g_PostSLLockedQueue, directQueueBehindWrapper);
-            g_PostSLLockedQueue->Release();
-            g_PostSLLockedQueue = queue;
-            queue->AddRef();  // locked-queue ref; per-call ref is already held
-        } else {
-            // g_CommandQueue changed (SL switched to its FG worker queue).
-            // KEEP using the locked queue — it's proven safe.
-            // Release per-call ref on the new queue, switch to locked queue.
+    {
+        ID3D12CommandQueue* oldLockedQueue = nullptr;
+        bool lockedQueueWasUpdated = false;
+        bool shouldKeepExistingLockedQueue = false;
+        {
+            std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+            ID3D12CommandQueue* directQueueBehindWrapper = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
+            bool shouldPromoteLockedQueueToRealQueueBehindWrapper =
+                ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueBehindWrapperAfterFSR(
+                    g_HadFSRFGPhase, cachedSLFGActive,
+                    g_PostSLLockedQueue != g_OriginalGameQueue && g_PostSLLockedQueue != scQueue,
+                    directQueueBehindWrapper != nullptr) &&
+                queue == directQueueBehindWrapper;
+            const bool selectedQueueMatchesLockedQueue = queue == g_PostSLLockedQueue;
+
+            if (ce::dx12_overlay_policy::ShouldMutatePostSLLockedQueue(
+                    g_PostSLLockedQueue != nullptr, selectedQueueMatchesLockedQueue,
+                    shouldPromoteLockedQueueToRealQueueBehindWrapper)) {
+                oldLockedQueue = g_PostSLLockedQueue;
+                g_PostSLLockedQueue = queue;
+                queue->AddRef();  // prevent locked queue from being freed between PostSL calls
+                lockedQueueWasUpdated = true;
+
+                if (oldLockedQueue) {
+                    HookLogImportant(
+                        "DX12: PostSL promoting locked queue %p -> real queue behind wrapper %p after post-FSR bootstrap",
+                        oldLockedQueue, directQueueBehindWrapper);
+                } else {
+                    bool usingSLWrapper = (queue != g_OriginalGameQueue && queue != scQueue);
+                    bool slFGAtLock = cachedSLFGActive;
+                    HookLogImportant(
+                        "DX12: PostSL locked to queue %p (origGame=%p scQueue=%p cmdQueue=%p preFG=%p epoch=%d "
+                        "slWrapper=%d slFG=%d hadFSR=%d)",
+                        queue, g_OriginalGameQueue, scQueue, (void*)g_CommandQueue.load(), g_PreFGGameQueue,
+                        s_reactivationEpoch, usingSLWrapper ? 1 : 0, slFGAtLock ? 1 : 0, g_HadFSRFGPhase ? 1 : 0);
+                }
+            } else if (!selectedQueueMatchesLockedQueue) {
+                shouldKeepExistingLockedQueue = true;
+                queue->Release();  // Release per-call AddRef on the rejected queue
+                queue = g_PostSLLockedQueue;
+                if (queue) {
+                    queue->AddRef();  // Per-call AddRef on the locked queue instead
+                }
+            }
+        }
+
+        if (oldLockedQueue) {
+            oldLockedQueue->Release();
+        }
+
+        if (shouldKeepExistingLockedQueue && queue) {
             ID3D12CommandQueue* newCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
             HookLogImportant("DX12: PostSL REFUSING queue change: locked=%p, cmdQueue=%p (changed!), scQueue=%p",
-                             g_PostSLLockedQueue, newCmdQueue, scQueue);
-            queue->Release();  // Release per-call AddRef on the rejected queue
-            queue = g_PostSLLockedQueue;
-            queue->AddRef();  // Per-call AddRef on the locked queue instead
+                             queue, newCmdQueue, scQueue);
+        }
+
+        if (!queue) {
+            static int s_missingLockedQueue = 0;
+            if (s_missingLockedQueue++ < 5) {
+                HookLogImportant("DX12: PostSL SKIP — locked queue disappeared during synchronized selection");
+            }
+            return;
         }
     }
 
@@ -5006,10 +5058,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         void* vtbl = *reinterpret_cast<void* volatile*>(queue);
         if (!vtbl) {
             HookLogImportant("DX12: PostSL SKIP — queue %p has null vtable (freed?), clearing lock", queue);
-            if (g_PostSLLockedQueue) {
-                g_PostSLLockedQueue->Release();
-                g_PostSLLockedQueue = nullptr;
-            }
+            ClearPostSLQueues("DX12: PostSL null vtable");
             return;
         }
         ID3D12Device* queueDevice = nullptr;
@@ -5024,14 +5073,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 g_State.overlayInit = false;
                 g_State.syncInit = false;
                 g_State.syncDevice = nullptr;
-                if (g_PostSLLockedQueue) {
-                    g_PostSLLockedQueue->Release();
-                    g_PostSLLockedQueue = nullptr;
-                }
-                if (g_PostSLDedicatedQueue) {
-                    g_PostSLDedicatedQueue->Release();
-                    g_PostSLDedicatedQueue = nullptr;
-                }
+                ClearPostSLQueues("DX12: PostSL device mismatch");
                 ClearPostSLPinnedSLWrapperQueue("DX12: PostSL device mismatch");
                 SetPostSLLastWorkingQueue(nullptr);  // Cross-device — old queue invalid
                 return;
@@ -7819,14 +7861,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 }
             }
 
-            if (g_PostSLLockedQueue) {
-                g_PostSLLockedQueue->Release();
-                g_PostSLLockedQueue = nullptr;
-            }
-            if (g_PostSLDedicatedQueue) {
-                g_PostSLDedicatedQueue->Release();
-                g_PostSLDedicatedQueue = nullptr;
-            }
+            ClearPostSLQueues("DX12: FG transition queue reset");
             // Keep the SL wrapper queue alive while Streamline still owns the
             // presentation path, even if FG is temporarily idle.
             {
@@ -10086,14 +10121,7 @@ void DX12Hook::Shutdown() {
     }
     // Disable post-SL overlay callback before tearing down D3D12 resources.
     DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
-    if (g_PostSLLockedQueue) {
-        g_PostSLLockedQueue->Release();
-        g_PostSLLockedQueue = nullptr;
-    }
-    if (g_PostSLDedicatedQueue) {
-        g_PostSLDedicatedQueue->Release();
-        g_PostSLDedicatedQueue = nullptr;
-    }
+    ClearPostSLQueues("DX12: Shutdown");
     ClearPostSLPinnedSLWrapperQueue("DX12: Shutdown");
     SetPostSLLastWorkingQueue(nullptr);
     if (g_CommandQueue.load()) {

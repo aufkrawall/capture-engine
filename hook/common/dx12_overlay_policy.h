@@ -134,12 +134,12 @@ inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive,
 }
 
 inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool recentStreamlineTeardown,
-                                                                bool actualFGActive,
-                                                                bool streamlineFGRunning,
-                                                                bool runtimeOwnsSwapchain,
-                                                                bool hasSwapchainQueue,
-                                                                bool hasCommandQueue,
-                                                                bool commandQueueMatchesSwapchainQueue) {
+                                                                 bool actualFGActive,
+                                                                 bool streamlineFGRunning,
+                                                                 bool runtimeOwnsSwapchain,
+                                                                 bool hasSwapchainQueue,
+                                                                 bool hasCommandQueue,
+                                                                 bool commandQueueMatchesSwapchainQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
@@ -153,6 +153,19 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool recentStrea
     // Reinitializing pre-SL overlay resources before command-list traffic has
     // settled back onto the swapchain queue reproduces the Talos crash path.
     return !hasCommandQueue || !commandQueueMatchesSwapchainQueue;
+}
+
+inline bool ShouldMutatePostSLLockedQueue(bool hasLockedQueue, bool selectedQueueMatchesLockedQueue,
+                                          bool shouldPromoteLockedQueueToDirectQueue) {
+    if (!hasLockedQueue) {
+        return true;
+    }
+
+    if (selectedQueueMatchesLockedQueue) {
+        return false;
+    }
+
+    return shouldPromoteLockedQueueToDirectQueue;
 }
 
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
