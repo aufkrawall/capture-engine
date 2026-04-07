@@ -263,18 +263,10 @@ static bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAv
         return false;
     }
 
-    // Steam's outer Present wrapper can crash if we re-enter the entry-point hook
-    // chain from inside our DetourPresent while Streamline is merely loaded.
-    // Keep using the DXGI bypass path until FG is actually running.
-    if (slLoaded &&
-        (g_StreamlineFGRunning.load(std::memory_order_acquire) || g_FGCompat.IsFGActive())) {
-        return false;
-    }
-
-    if (IsInWrapperPresent() || IsWrappedSwapChainObject(pSwapChain)) {
-        return false;
-    }
-    return DetectAPIType(pSwapChain) == APIType::D3D12;
+    return ShouldForceSteamDX12BypassForState(
+        bypassAvailable, true, DetectAPIType(pSwapChain) == APIType::D3D12, IsInWrapperPresent(),
+        IsWrappedSwapChainObject(pSwapChain), slLoaded, g_FGCompat.GetRuntimeMode(),
+        g_StreamlineFGRunning.load(std::memory_order_acquire));
 }
 
 static bool ShouldForceThirdPartyOverlayBypass(IDXGISwapChain* pSwapChain, bool bypassAvailable,

@@ -51,6 +51,10 @@ inline bool IsRuntimeFGActive(RuntimeMode mode) {
     return mode == RuntimeMode::kDLSSFG || mode == RuntimeMode::kFSRFG || mode == RuntimeMode::kNvidiaSmoothMotion;
 }
 
+inline bool IsActualGeneratedFrameMode(RuntimeMode mode) {
+    return mode == RuntimeMode::kDLSSFG || mode == RuntimeMode::kFSRFG;
+}
+
 inline bool RuntimeModeUsesStreamline(RuntimeMode mode) {
     return mode == RuntimeMode::kStreamlineNoFG || mode == RuntimeMode::kDLSSFG;
 }

@@ -53,6 +53,7 @@ bool SaveDX12TextureAsHDR(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D1
 #include "lod_helper.h"
 
 #include "../common/custom_overlay.h"
+#include "../common/dx12_overlay_policy.h"
 #include "../common/overlay_shader_bytecode.h"
 
 #include "../wrappers/inline_hook.h"
@@ -6986,12 +6987,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // Unlike the old cooldown (which did teardown/reinit and caused resource
         // churn crashes), this only pauses the draw — no resources are destroyed.
         static bool s_lastFGActive = false;
-        static FGCompatibility::FGType s_lastFGType = FGCompatibility::FGType::None;
+        static ce::fg_runtime::RuntimeMode s_lastRuntimeMode = ce::fg_runtime::RuntimeMode::kOff;
         static bool s_lastSLFGRunning = false;
         // NOTE: FG transition cooldown is now file-scope g_FGTransitionCooldown
         // so swapchain-change detection (earlier in ProcessFrame) can check it.
         bool currentFGActive = g_FGCompat.IsFGActive();
-        auto currentFGType = g_FGCompat.GetActiveFGType();
+        auto currentRuntimeMode = g_FGCompat.GetRuntimeMode();
         bool currentSLFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
 
         // Grace period counter — declared here so epoch sync can reference it.
@@ -7006,16 +7007,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         if (s_innerSyncedEpoch != outerEpoch) {
             bool wasSlOn = s_lastSLFGRunning;
             s_lastFGActive = currentFGActive;
-            s_lastFGType = currentFGType;
+            s_lastRuntimeMode = currentRuntimeMode;
             s_lastSLFGRunning = currentSLFGRunning;
             s_innerSyncedEpoch = outerEpoch;
             // If SL turned off, start grace period (mirroring normal detection)
             if (wasSlOn && !currentSLFGRunning) {
                 s_slOffGraceFrames = 300;
             }
-            HookLogImportant("DX12: [inner] Synced tracking to outer epoch %u (fgActive=%d fgType=%s slFG=%d grace=%d)",
-                             outerEpoch, currentFGActive ? 1 : 0, g_FGCompat.GetFGTypeName(currentFGType),
-                             currentSLFGRunning ? 1 : 0, s_slOffGraceFrames);
+            HookLogImportant(
+                "DX12: [inner] Synced tracking to outer epoch %u (fgActive=%d runtime=%s slFG=%d grace=%d)",
+                outerEpoch, currentFGActive ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode),
+                currentSLFGRunning ? 1 : 0, s_slOffGraceFrames);
         }
 
         // If SL directly signals FG is running, force currentFGActive true.
@@ -7049,7 +7051,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 bool fsrApiConfirmed = g_FGCompat.IsFSRFGApiActive();
                 if (!fsrApiConfirmed) {
                     currentFGActive = false;
-                    currentFGType = FGCompatibility::FGType::None;
+                    currentRuntimeMode = ce::fg_runtime::RuntimeMode::kOff;
                 }
             }
         }
@@ -7057,19 +7059,19 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // Detect FG on/off changes AND FG type changes (e.g., FSR FG → DLSS FG)
         // Also detect SL FG signal changes (immediate from SL hook)
         bool fgChanged = (currentFGActive != s_lastFGActive);
-        bool fgTypeChanged = (currentFGType != s_lastFGType && currentFGActive);
+        bool runtimeModeChanged = (currentRuntimeMode != s_lastRuntimeMode);
         bool slSignalChanged = (currentSLFGRunning != s_lastSLFGRunning);
 
-        if (fgChanged || fgTypeChanged || slSignalChanged) {
+        if (fgChanged || runtimeModeChanged || slSignalChanged) {
             HookLogImportant("DX12: FG %s%s%s: %s(%s) -> %s(%s) slSignal=%d->%d — cooldown 60 frames",
-                             fgChanged ? "state " : "", fgTypeChanged ? "type " : "",
+                             fgChanged ? "state " : "", runtimeModeChanged ? "mode " : "",
                              slSignalChanged ? "slSignal " : "", s_lastFGActive ? "active" : "inactive",
-                             g_FGCompat.GetFGTypeName(s_lastFGType), currentFGActive ? "active" : "inactive",
-                             g_FGCompat.GetFGTypeName(currentFGType), s_lastSLFGRunning ? 1 : 0,
+                             ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode), currentFGActive ? "active" : "inactive",
+                             ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), s_lastSLFGRunning ? 1 : 0,
                              currentSLFGRunning ? 1 : 0);
-            auto s_lastFGType_saved = s_lastFGType;  // save before update for syncInit logic
+            auto s_lastRuntimeMode_saved = s_lastRuntimeMode;  // save before update for syncInit logic
             s_lastFGActive = currentFGActive;
-            s_lastFGType = currentFGType;
+            s_lastRuntimeMode = currentRuntimeMode;
             s_lastSLFGRunning = currentSLFGRunning;
             g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
@@ -7135,21 +7137,21 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 g_PostSLDedicatedQueue->Release();
                 g_PostSLDedicatedQueue = nullptr;
             }
-            // Release SL wrapper queue only when FG is truly turning OFF.
-            // During FG→FG transitions (FSR→DLSS, DLSS→FSR), keep the wrapper
-            // alive — PostSL needs it immediately after cooldown.  SL reuses
-            // the same COM wrapper queues across FG type changes.
+            // Keep the SL wrapper queue alive while Streamline still owns the
+            // presentation path, even if FG is temporarily idle.
             {
-                bool targetIsFGOff_wrapper = (currentFGType == FGCompatibility::FGType::None);
-                if (targetIsFGOff_wrapper) {
+                bool targetUsesStreamline = ce::fg_runtime::RuntimeModeUsesStreamline(currentRuntimeMode);
+                if (!targetUsesStreamline) {
                     ID3D12CommandQueue* oldWrapper = g_SLWrapperQueue.exchange(nullptr, std::memory_order_acq_rel);
                     if (oldWrapper) {
                         oldWrapper->Release();
-                        HookLogImportant("DX12: SL OFF — released SL wrapper queue %p", oldWrapper);
+                        HookLogImportant("DX12: runtime=%s — released SL wrapper queue %p",
+                                         ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), oldWrapper);
                     }
                 } else {
                     ID3D12CommandQueue* kept = g_SLWrapperQueue.load(std::memory_order_acquire);
-                    HookLogImportant("DX12: FG→FG transition — keeping SL wrapper queue %p alive", kept);
+                    HookLogImportant("DX12: runtime=%s — keeping SL wrapper queue %p alive",
+                                     ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), kept);
                 }
             }
             g_PostSLConfirmedRendering.store(false, std::memory_order_release);  // Re-probe needed
@@ -7185,28 +7187,30 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // do NOT invalidate sync.  The existing resources are device-level and
             // work on any DIRECT queue.  Forcing re-init here is unnecessary and
             // causes the "FG→FG" misclassification for what is really "off→on".
-            bool previousWasFG = (s_lastFGType_saved != FGCompatibility::FGType::None);
-            bool targetIsFGOff = (currentFGType == FGCompatibility::FGType::None);
+            bool previousWasFG = ce::fg_runtime::IsActualGeneratedFrameMode(s_lastRuntimeMode_saved);
+            bool targetIsFGOff = !ce::fg_runtime::IsActualGeneratedFrameMode(currentRuntimeMode);
             bool actualFGToFG = previousWasFG && !targetIsFGOff;
             if (g_State.syncInit && actualFGToFG) {
                 HookLogImportant("DX12: FG transition (FG→FG: %s→%s) — forcing syncInit=false for fresh resources",
-                                 g_FGCompat.GetFGTypeName(s_lastFGType_saved), g_FGCompat.GetFGTypeName(currentFGType));
+                                 ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
+                                 ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
                 g_State.syncInit = false;
             } else if (g_State.syncInit && targetIsFGOff) {
                 HookLogImportant("DX12: FG→off transition — keeping syncInit=true (reusing existing resources)");
             } else if (g_State.syncInit && !previousWasFG && !targetIsFGOff) {
                 HookLogImportant(
                     "DX12: FG off→on transition (%s→%s) — keeping syncInit=true (resources work on any queue)",
-                    g_FGCompat.GetFGTypeName(s_lastFGType_saved), g_FGCompat.GetFGTypeName(currentFGType));
+                    ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
+                    ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
             }
 
             // Clear stale swapchain queue only when transitioning TO SL-based FG
             // if we've never had an FSR FG phase. If FSR FG already ran, SL might
             // reuse FSR's swapchain (no new CreateSwapChainForHwnd), so scQueue is
             // the CORRECT queue for backbuffer access. Keep it alive via AddRef.
-            if (fgTypeChanged) {
-                bool newTypeNeedsScQueue = (currentFGType == FGCompatibility::FGType::FSR_FG);
-                bool targetIsNone = (currentFGType == FGCompatibility::FGType::None);
+            if (runtimeModeChanged) {
+                bool newTypeNeedsScQueue = (currentRuntimeMode == ce::fg_runtime::RuntimeMode::kFSRFG);
+                bool targetIsNone = !ce::fg_runtime::IsActualGeneratedFrameMode(currentRuntimeMode);
                 if (targetIsNone && !g_HadFSRFGPhase) {
                     // FG→off: keep g_SwapchainQueue as-is.  Same rationale as
                     // the outer slTurnedOff handler: SL's swapchain may persist
@@ -7249,12 +7253,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             HookLogImportant(
                                 "DX12: FG type change to %s — PRESERVING g_SwapchainQueue %p (captured %llu ms ago, "
                                 "too recent to clear)",
-                                g_FGCompat.GetFGTypeName(currentFGType), g_SwapchainQueue, age);
+                                ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue, age);
                         } else {
                             HookLogImportant(
                                 "DX12: FG type change to %s — clearing stale g_SwapchainQueue %p (no FSR history, "
                                 "age=%llu ms)",
-                                g_FGCompat.GetFGTypeName(currentFGType), g_SwapchainQueue, age);
+                                ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue, age);
                             g_SwapchainQueue->Release();
                             g_SwapchainQueue = nullptr;
                         }
@@ -7267,11 +7271,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     HookLogImportant(
                         "DX12: FG type change to %s — KEEPING g_SwapchainQueue %p for backbuffer access (it's the "
                         "swapchain creation queue)",
-                        g_FGCompat.GetFGTypeName(currentFGType), g_SwapchainQueue);
+                        ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue);
                     g_NeedGPUDrainBeforeRender = false;
                 } else {
                     HookLogImportant("DX12: FG type change to %s — keeping g_SwapchainQueue %p (FSR needs it)",
-                                     g_FGCompat.GetFGTypeName(currentFGType), g_SwapchainQueue);
+                                     ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue);
                 }
             }
 
@@ -7507,13 +7511,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 HookLogImportant(
                     "DX12: Routing state: frame=%llu fgActive=%d slFGActive=%d slSignal=%d "
                     "cooldown=%d sceneCool=%d postSLCallback=%d postSLActive=%d skip=%d stallCount=%d stableFrames=%d "
-                    "fgType=%s",
+                    "runtime=%s",
                     s_routingFrameCount, currentFGActive ? 1 : 0, slFGActive ? 1 : 0, currentSLFGRunning ? 1 : 0,
                     g_FGTransitionCooldown, g_SceneTransitionCooldown.load(std::memory_order_relaxed),
                     DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr ? 1 : 0,
                     g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0, skipOverlayDraw ? 1 : 0,
                     g_PostSLStallCounter.load(std::memory_order_relaxed),
-                    g_PostSLStableFrameCount.load(std::memory_order_relaxed), g_FGCompat.GetFGTypeName(currentFGType));
+                    g_PostSLStableFrameCount.load(std::memory_order_relaxed),
+                    ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
             }
         }
 
@@ -8751,11 +8756,12 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
         return;
 
     const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
-    const bool actualFGActive = IsActualFrameGenerationActive();
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     // Check ShouldUseDedicatedOverlayQueue() (FG active) instead of just queue
     // existence, since the queue is now kept alive across FG mode switches.
     const bool usingDedicatedQueue = ShouldUseDedicatedOverlayQueue() && (g_State.overlayQueue != nullptr);
-    if ((!usingDedicatedQueue && (!overlayModule || actualFGActive)) || !g_State.fenceEvent)
+    if (!ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(g_State.fenceEvent != nullptr, usingDedicatedQueue,
+                                                                 overlayModule != nullptr, runtimeMode))
         return;
 
     if (!usingDedicatedQueue) {

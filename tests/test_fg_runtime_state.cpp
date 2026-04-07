@@ -83,6 +83,10 @@ TEST(FGRuntimeStateTest, RuntimeModeHelpersMatchClassification) {
     EXPECT_TRUE(ce::fg_runtime::IsRuntimeFGActive(RuntimeMode::kDLSSFG));
     EXPECT_TRUE(ce::fg_runtime::IsRuntimeFGActive(RuntimeMode::kFSRFG));
     EXPECT_TRUE(ce::fg_runtime::IsRuntimeFGActive(RuntimeMode::kNvidiaSmoothMotion));
+    EXPECT_FALSE(ce::fg_runtime::IsActualGeneratedFrameMode(RuntimeMode::kOff));
+    EXPECT_TRUE(ce::fg_runtime::IsActualGeneratedFrameMode(RuntimeMode::kDLSSFG));
+    EXPECT_TRUE(ce::fg_runtime::IsActualGeneratedFrameMode(RuntimeMode::kFSRFG));
+    EXPECT_FALSE(ce::fg_runtime::IsActualGeneratedFrameMode(RuntimeMode::kNvidiaSmoothMotion));
     EXPECT_TRUE(ce::fg_runtime::RuntimeModeUsesStreamline(RuntimeMode::kStreamlineNoFG));
     EXPECT_TRUE(ce::fg_runtime::RuntimeModeUsesStreamline(RuntimeMode::kDLSSFG));
     EXPECT_FALSE(ce::fg_runtime::RuntimeModeUsesStreamline(RuntimeMode::kFSRFG));

@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <mutex>
 
+#include "fg_runtime_state.h"
+
 // Forward declaration
 class PerformanceMetrics;
 
@@ -113,6 +115,28 @@ bool HasPresentDetourHooks();
 // need a bypass trampoline available at install time so re-entrant Present can
 // still reach the real DXGI implementation.
 bool CanSafelyInstallExternalPresentDetourPath(bool requiresBypassTrampoline, bool bypassTrampolineAvailable);
+
+inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain,
+                                               bool inWrapperPresent, bool isWrappedSwapChain, bool streamlineLoaded,
+                                               ce::fg_runtime::RuntimeMode runtimeMode,
+                                               bool streamlineFGRunning) {
+    if (!bypassAvailable || !isSteamOverlay || !isD3D12SwapChain) {
+        return false;
+    }
+    if (inWrapperPresent || isWrappedSwapChain) {
+        return false;
+    }
+    if (!streamlineLoaded) {
+        return false;
+    }
+    if (streamlineFGRunning) {
+        return false;
+    }
+    if (runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG) {
+        return false;
+    }
+    return true;
+}
 
 // Vulkan-layer label selection for translated APIs should prefer the active DXVK
 // D3D11 path over a merely-present DXVK D3D9 helper DLL in the same folder.
