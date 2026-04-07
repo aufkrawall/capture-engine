@@ -22,6 +22,7 @@
 #include "pseudo_overlay.h"
 #include "screenshot.h"
 #include "tray.h"
+#include "../common/vulkan_layer_registration.h"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "winmm.lib")
@@ -926,65 +927,43 @@ bool CompleteControllerStartup() {
     return true;
 }
 
-static void Registry_ManageImplicitLayer(bool install) {
-    // IMPORTANT: HKEY_CURRENT_USER does NOT get WOW64 redirected!
-    // Both 32-bit and 64-bit apps read from the same HKCU\Software\Khronos\Vulkan\ImplicitLayers path.
-    // We must register BOTH manifests there so apps of either architecture can find their layer.
-    // Each manifest has a unique name (VK_LAYER_CE_overlay vs VK_LAYER_CE_overlay_x86)
-    // to avoid "wrong bit-type" conflicts.
-
-    HKEY hKey;
-    const char* regPath = "Software\\Khronos\\Vulkan\\ImplicitLayers";
-
-    LogInfo("[Controller] Attempting to %s registry key: %s", install ? "create/open" : "open", regPath);
-
-    LONG result =
-        RegCreateKeyExA(HKEY_CURRENT_USER, regPath, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
-    if (result == ERROR_SUCCESS) {
-        LogInfo("[Controller] Successfully opened registry key: %s", regPath);
-
-        char buffer[MAX_PATH];
-        GetModuleFileNameA(NULL, buffer, MAX_PATH);
-        std::string baseDir = buffer;
-        baseDir = baseDir.substr(0, baseDir.find_last_of("\\/"));
-
-        // Register BOTH manifests - each has unique name and correct library_path
-        const char* manifests[] = {"VK_LAYER_CE_overlay.json", "VK_LAYER_CE_overlay_x86.json"};
-
-        for (const char* manifest : manifests) {
-            std::string fullPath = baseDir + "\\" + manifest;
-            if (install) {
-                DWORD data = 0;
-                LONG setResult = RegSetValueExA(hKey, fullPath.c_str(), 0, REG_DWORD, (const BYTE*)&data, sizeof(data));
-                if (setResult == ERROR_SUCCESS) {
-                    LogInfo("[Controller] Registered Vulkan Layer: %s", manifest);
-                } else {
-                    LogError("[Controller] Failed to register Vulkan Layer: %s, error=%ld", manifest, setResult);
-                }
-            } else {
-                LONG delResult = RegDeleteValueA(hKey, fullPath.c_str());
-                if (delResult == ERROR_SUCCESS || delResult == ERROR_FILE_NOT_FOUND) {
-                    LogInfo("[Controller] Unregistered Vulkan Layer: %s", manifest);
-                } else {
-                    LogError("[Controller] Failed to unregister Vulkan Layer: %s, error=%ld", manifest, delResult);
-                }
-            }
-        }
-        RegCloseKey(hKey);
-    } else {
-        LogError("[Controller] Failed to open registry key for Vulkan Layer, error=%ld", result);
+static ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan() {
+    std::filesystem::path baseDir;
+    if (!ce::vulkan_layer::GetCurrentExecutableDirectory(&baseDir)) {
+        LogError("[Controller] Failed to resolve executable directory for Vulkan layer registration");
+        return {};
     }
+
+    return ce::vulkan_layer::BuildRegistrationPlan(baseDir, ce::vulkan_layer::RegistrationMode::Auto,
+                                                   ce::vulkan_layer::IsCurrentProcessElevated());
+}
+
+static bool Registry_ManageImplicitLayer(bool install) {
+    const ce::vulkan_layer::RegistrationPlan plan = BuildControllerVulkanRegistrationPlan();
+    ce::vulkan_layer::LogRegistrationPlan(plan);
+    const bool success = ce::vulkan_layer::ApplyRegistrationPlan(plan, install);
+    if (!success) {
+        LogError("[Controller] Vulkan layer %s failed", install ? "registration" : "cleanup");
+    }
+    return success;
 }
 
 // RAII Wrapper for guaranteed cleanup
 class ScopedVulkanRegistration {
 public:
     ScopedVulkanRegistration() {
-        Registry_ManageImplicitLayer(true);
+        active_ = Registry_ManageImplicitLayer(true);
     }
     ~ScopedVulkanRegistration() {
         Registry_ManageImplicitLayer(false);
     }
+
+    bool IsActive() const {
+        return active_;
+    }
+
+private:
+    bool active_ = false;
 };
 
 // Global pointer for emergency cleanup
@@ -1016,6 +995,9 @@ int ControllerMain(HINSTANCE hInstance) {
     ScopedVulkanRegistration vulkanReg;
     const int64_t vulkanRegUs = Log_GetQpcUs() - vulkanRegStartUs;
     g_VulkanReg = &vulkanReg;
+    if (!vulkanReg.IsActive()) {
+        LogWarn("[Controller] Vulkan layer registration is inactive; Vulkan capture may be unavailable for this session");
+    }
 
     // Create IPC clients
     g_InjectClient = std::make_unique<ProcessIPCClient>(ProcessMode::Inject);

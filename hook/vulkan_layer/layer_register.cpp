@@ -1,153 +1,52 @@
 /**
  * Vulkan Layer Registration Utility
  *
- * Registers/unregisters the capture overlay Vulkan layer in the Windows
- * registry. This allows the layer to be loaded automatically by the Vulkan
- * loader.
+ * Registers/unregisters the capture overlay Vulkan layer manifests in the
+ * Windows registry. Uses the same hardened implementation as captureengine.exe.
  */
 
 #include <windows.h>
+
 #include <filesystem>
 #include <iostream>
 #include <string>
 
-// Registry paths for implicit layers
-// On 64-bit Windows, 32-bit processes are redirected to WOW6432Node automatically
-// when not using KEY_WOW64_64KEY flag
-const wchar_t* VULKAN_IMPLICIT_LAYERS = L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
+#include "../../common/vulkan_layer_registration.h"
 
-// Access flags: 64-bit builds need KEY_WOW64_64KEY to ensure they write to 64-bit hive
-// 32-bit builds use default view (0) to allow WOW64 redirection to work naturally
-#ifdef _WIN64
-constexpr REGSAM kWow64Flags = KEY_WOW64_64KEY;
-#else
-constexpr REGSAM kWow64Flags = 0;
-#endif
-
-/**
- * Register the Vulkan layer manifest in the registry
- */
-bool RegisterVulkanLayer(const std::wstring& manifestPath, bool forAllUsers = false) {
-    HKEY hRootKey = forAllUsers ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
-    HKEY hKey = nullptr;
-
-    // Create/open the registry key
-    LONG result = RegCreateKeyExW(hRootKey, VULKAN_IMPLICIT_LAYERS, 0, nullptr, REG_OPTION_NON_VOLATILE,
-                                  KEY_SET_VALUE | kWow64Flags, nullptr, &hKey, nullptr);
-
-    if (result != ERROR_SUCCESS) {
-        std::wcerr << L"Failed to create registry key: " << result << std::endl;
-        return false;
-    }
-
-    // Set the value (0 = enabled, 1 = disabled)
-    DWORD enabled = 0;
-    result = RegSetValueExW(hKey, manifestPath.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE*>(&enabled),
-                            sizeof(enabled));
-
-    RegCloseKey(hKey);
-
-    if (result != ERROR_SUCCESS) {
-        std::wcerr << L"Failed to set registry value: " << result << std::endl;
-        return false;
-    }
-
-    std::wcout << L"Registered layer: " << manifestPath << std::endl;
-    return true;
-}
-
-/**
- * Unregister the Vulkan layer from the registry
- */
-bool UnregisterVulkanLayer(const std::wstring& manifestPath, bool forAllUsers = false) {
-    HKEY hRootKey = forAllUsers ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
-    HKEY hKey = nullptr;
-
-    LONG result = RegOpenKeyExW(hRootKey, VULKAN_IMPLICIT_LAYERS, 0, KEY_SET_VALUE | kWow64Flags, &hKey);
-
-    if (result != ERROR_SUCCESS) {
-        // Key doesn't exist, nothing to unregister
-        return true;
-    }
-
-    result = RegDeleteValueW(hKey, manifestPath.c_str());
-    RegCloseKey(hKey);
-
-    if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
-        std::wcerr << L"Failed to delete registry value: " << result << std::endl;
-        return false;
-    }
-
-    std::wcout << L"Unregistered layer: " << manifestPath << std::endl;
-    return true;
-}
-
-/**
- * Check if the layer is registered
- */
-bool IsLayerRegistered(const std::wstring& manifestPath, bool forAllUsers = false) {
-    HKEY hRootKey = forAllUsers ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
-    HKEY hKey = nullptr;
-
-    LONG result = RegOpenKeyExW(hRootKey, VULKAN_IMPLICIT_LAYERS, 0, KEY_QUERY_VALUE | kWow64Flags, &hKey);
-
-    if (result != ERROR_SUCCESS) {
-        return false;
-    }
-
-    DWORD value = 0;
-    DWORD size = sizeof(value);
-    result = RegQueryValueExW(hKey, manifestPath.c_str(), nullptr, nullptr, reinterpret_cast<BYTE*>(&value), &size);
-    RegCloseKey(hKey);
-
-    return result == ERROR_SUCCESS;
-}
-
-/**
- * Get the absolute path to the layer manifest
- */
-std::wstring GetLayerManifestPath() {
-    wchar_t modulePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-
-    std::filesystem::path exePath(modulePath);
-    std::filesystem::path manifestPath = exePath.parent_path() /
-#ifdef _WIN64
-                                         L"VK_LAYER_CE_overlay.json";
-#else
-                                         L"VK_LAYER_CE_overlay_x86.json";
-#endif
-
-    return manifestPath.wstring();
-}
+namespace {
 
 void PrintUsage(const wchar_t* programName) {
     std::wcout << L"Usage: " << programName << L" [options]" << std::endl;
     std::wcout << L"Options:" << std::endl;
-    std::wcout << L"  --register     Register the Vulkan layer" << std::endl;
-    std::wcout << L"  --unregister   Unregister the Vulkan layer" << std::endl;
-    std::wcout << L"  --status       Check if the layer is registered" << std::endl;
-    std::wcout << L"  --all-users    Apply to all users (requires admin)" << std::endl;
+    std::wcout << L"  --register     Register the Vulkan layer manifests" << std::endl;
+    std::wcout << L"  --unregister   Unregister the Vulkan layer manifests" << std::endl;
+    std::wcout << L"  --status       Check if the Vulkan layer is registered" << std::endl;
+    std::wcout << L"  --all-users    Use HKLM (requires elevation)" << std::endl;
+    std::wcout << L"  --current-user Force HKCU registration" << std::endl;
     std::wcout << L"  --help         Show this help" << std::endl;
 }
+
+}  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
     bool doRegister = false;
     bool doUnregister = false;
     bool doStatus = false;
-    bool forAllUsers = false;
+    ce::vulkan_layer::RegistrationMode requestedMode = ce::vulkan_layer::RegistrationMode::Auto;
 
-    for (int i = 1; i < argc; i++) {
-        std::wstring arg = argv[i];
-        if (arg == L"--register")
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring arg = argv[i];
+        if (arg == L"--register") {
             doRegister = true;
-        else if (arg == L"--unregister")
+        } else if (arg == L"--unregister") {
             doUnregister = true;
-        else if (arg == L"--status")
+        } else if (arg == L"--status") {
             doStatus = true;
-        else if (arg == L"--all-users")
-            forAllUsers = true;
-        else if (arg == L"--help") {
+        } else if (arg == L"--all-users") {
+            requestedMode = ce::vulkan_layer::RegistrationMode::AllUsers;
+        } else if (arg == L"--current-user") {
+            requestedMode = ce::vulkan_layer::RegistrationMode::CurrentUser;
+        } else if (arg == L"--help") {
             PrintUsage(argv[0]);
             return 0;
         }
@@ -158,30 +57,27 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
 
-    std::wstring manifestPath = GetLayerManifestPath();
-
-    if (!std::filesystem::exists(manifestPath)) {
-        std::wcerr << L"Layer manifest not found: " << manifestPath << std::endl;
+    std::filesystem::path baseDir;
+    if (!ce::vulkan_layer::GetCurrentExecutableDirectory(&baseDir)) {
+        std::wcerr << L"Failed to resolve executable directory" << std::endl;
         return 1;
     }
 
+    const bool elevated = ce::vulkan_layer::IsCurrentProcessElevated();
+    const ce::vulkan_layer::RegistrationPlan plan =
+        ce::vulkan_layer::BuildRegistrationPlan(baseDir, requestedMode, elevated);
+
     if (doStatus) {
-        bool registered = IsLayerRegistered(manifestPath, forAllUsers);
+        const bool registered = ce::vulkan_layer::IsRegistrationActive(plan);
         std::wcout << L"Layer status: " << (registered ? L"REGISTERED" : L"NOT REGISTERED") << std::endl;
         return registered ? 0 : 1;
     }
 
-    if (doRegister) {
-        if (!RegisterVulkanLayer(manifestPath, forAllUsers)) {
-            return 1;
-        }
+    if (plan.effectiveMode == ce::vulkan_layer::RegistrationMode::AllUsers && !elevated) {
+        std::wcerr << L"All-users registration requires elevation." << std::endl;
+        return 1;
     }
 
-    if (doUnregister) {
-        if (!UnregisterVulkanLayer(manifestPath, forAllUsers)) {
-            return 1;
-        }
-    }
-
-    return 0;
+    const bool success = ce::vulkan_layer::ApplyRegistrationPlan(plan, doRegister && !doUnregister);
+    return success ? 0 : 1;
 }
