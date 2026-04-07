@@ -159,6 +159,11 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapCha
     return isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule;
 }
 
+inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool streamlineFGRunning,
+                                                          bool callerFromFFXFGModule) {
+    return isD3D12SwapChain && streamlineFGRunning && callerFromFFXFGModule;
+}
+
 inline bool ShouldKeepPostSLCallbackInstalledDuringTransition(bool streamlineFGRunningAfterTransition) {
     return streamlineFGRunningAfterTransition;
 }

@@ -274,6 +274,33 @@ static bool IsCodeAddressFromStreamlineModule(const void* codeAddress) {
     return IsStreamlineModuleHandle(callerModule);
 }
 
+static bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle) {
+    if (!moduleHandle) {
+        return false;
+    }
+
+    char modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(moduleHandle, modulePath, MAX_PATH) == 0) {
+        return false;
+    }
+
+    return ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_dx12") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_vk");
+}
+
+static bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress) {
+    if (!codeAddress) {
+        return false;
+    }
+
+    HMODULE callerModule = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule)) {
+        return false;
+    }
+    return IsFFXFrameGenerationModuleHandle(callerModule);
+}
+
 static bool IsWrappedSwapChainObject(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain) {
         return false;
@@ -761,6 +788,22 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // Capture the caller here, not in a helper. We need the code that called
     // into DetourPresent, not the helper's own return address inside this DLL.
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
+    const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
+        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
+        IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress));
+    if (ffxStartupBypass) {
+        PFN_Present presentBypass = EnsurePresentBypassTrampoline();
+        if (presentBypass) {
+            static std::atomic<int> s_ffxStartupBypassLogCount{0};
+            int bypassNum = s_ffxStartupBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (bypassNum <= 10 || (bypassNum % 200) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Treating FFX-originated Present as startup handoff bypass #%d (bypass=%p, tid=0x%04X)",
+                    bypassNum, (void*)presentBypass, GetCurrentThreadId());
+            }
+            return presentBypass(pSwapChain, SyncInterval, Flags);
+        }
+    }
     const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
         IsCodeAddressFromStreamlineModule(detourCallerAddress));
@@ -1075,6 +1118,22 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     const APIType api = DetectAPIType(pSwapChain);
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
+    const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
+        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
+        IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress));
+    if (ffxStartupBypass) {
+        PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
+        if (present1Bypass) {
+            static std::atomic<int> s_ffxStartupBypassLogCount1{0};
+            int bypassNum = s_ffxStartupBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (bypassNum <= 10 || (bypassNum % 200) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Treating FFX-originated Present1 as startup handoff bypass #%d (bypass=%p, tid=0x%04X)",
+                    bypassNum, (void*)present1Bypass, GetCurrentThreadId());
+            }
+            return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
+    }
     const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
         IsCodeAddressFromStreamlineModule(detourCallerAddress));
