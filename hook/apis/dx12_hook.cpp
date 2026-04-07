@@ -4369,6 +4369,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Cache FG state ONCE at function entry to avoid mid-function transition races.
     // g_StreamlineFGRunning can change between reads if FG transitions during PostSL.
     const bool cachedSLFGActive = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    constexpr ULONGLONG kDormantProcessFrameThresholdMs = 100;
+    const ULONGLONG nowMs = GetTickCount64();
+    const ULONGLONG lastProcessFrameTickMs = g_LastProcessFrameTickMs.load(std::memory_order_acquire);
+    const bool processFrameRecentlySeen = lastProcessFrameTickMs != 0 && nowMs >= lastProcessFrameTickMs &&
+                                          (nowMs - lastProcessFrameTickMs) < kDormantProcessFrameThresholdMs;
 
     // --- PostSL periodic stats logging ---
     int callNum = s_postSLCalls.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -4431,13 +4436,6 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     {
-        constexpr ULONGLONG kDormantProcessFrameThresholdMs = 100;
-        const ULONGLONG nowMs = GetTickCount64();
-        const ULONGLONG lastProcessFrameTickMs = g_LastProcessFrameTickMs.load(std::memory_order_acquire);
-        const bool processFrameRecentlySeen =
-            lastProcessFrameTickMs != 0 && nowMs >= lastProcessFrameTickMs &&
-            (nowMs - lastProcessFrameTickMs) < kDormantProcessFrameThresholdMs;
-
         if (ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
                 g_PostSLSyntheticStartupActivationPending.load(std::memory_order_acquire), cachedSLFGActive,
                 g_PostSLOverlayActive.load(std::memory_order_acquire), processFrameRecentlySeen)) {
@@ -5286,6 +5284,26 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
     }
     if (willRender) {
+        if (ce::dx12_overlay_policy::ShouldSyntheticPostSLRefreshMetrics(cachedSLFGActive, processFrameRecentlySeen)) {
+            if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+                perf->Update(PerfLogger::GetQpcUs());
+                if (g_FGCompat.IsFGActive()) {
+                    auto fgType = g_FGCompat.GetActiveFGType();
+                    int typeInt = 0;
+                    if (fgType == FGCompatibility::FGType::DLSS_FG || fgType == FGCompatibility::FGType::DLSS_MSFG)
+                        typeInt = 1;
+                    else if (fgType == FGCompatibility::FGType::FSR_FG)
+                        typeInt = 2;
+                    else if (fgType == FGCompatibility::FGType::NVIDIA_SM)
+                        typeInt = 3;
+                    perf->SetFGMetrics(g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(), g_FGCompat.GetFGMultiplier(),
+                                       typeInt);
+                } else {
+                    perf->SetFGMetrics(0.0f, 0.0f, 1, 0);
+                }
+            }
+        }
+
         // Recreate RTV for this buffer index (cheap CPU-side op)
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
         UINT rtvSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
