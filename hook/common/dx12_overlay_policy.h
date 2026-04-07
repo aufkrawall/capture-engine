@@ -223,6 +223,18 @@ inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool p
     return streamlineFGRunning && !processFrameRecentlySeen;
 }
 
+inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning,
+                                                          bool postSLConfirmedRendering) {
+    return streamlineFGRunning && postSLConfirmedRendering;
+}
+
+inline bool ShouldLatchPostSLSuspensionOnStreamlineSignalDrop(bool streamlineFGRunning,
+                                                              bool postSLActive,
+                                                              bool postSLConfirmedRendering,
+                                                              bool startupActivationPending) {
+    return !streamlineFGRunning && !postSLActive && !postSLConfirmedRendering && !startupActivationPending;
+}
+
 inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOwnsSwapchain,
                                                                   bool callerFromFFXFGModule,
                                                                   bool streamlineFGRunning,

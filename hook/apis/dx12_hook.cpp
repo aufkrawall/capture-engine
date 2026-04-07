@@ -4552,41 +4552,38 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     static ID3D12Fence* s_dedicatedSyncFence = nullptr;
     static UINT64 s_dedicatedSyncFenceValue = 0;
 
-    // FG DEACTIVATION SUSPEND: When DLSS FG transitions from ON→OFF (e.g., user
-    // disables FG in settings, or game calls slDLSSGSetOptions with mode=0),
-    // stop PostSL rendering permanently until FG reactivates.
-    //
-    // WHY: When FG turns off, SL tears down its internal FG queues and pipeline.
-    // Submitting ECLs on origGame (which SL routed through) could use stale
-    // state, causing DEVICE_REMOVED.  The pre-SL path in ProcessFrame takes over
-    // for non-FG rendering.
-    //
-    // NOTE: This is different from "FG suspension" (game menu/pause where
-    // g_StreamlineFGRunning stays true but SL stops generating frames).
-    // In that case, cachedSLFGActive is still true, and this block doesn't trigger.
-    // The stall counter in ProcessFrame handles FG suspension instead.
-    //
-    // STATE MACHINE: s_wasSLFGActive tracks the previous-frame FG state.
-    //   - cachedSLFGActive=true  → s_wasSLFGActive=true, s_postSLFGSuspended=false
-    //   - cachedSLFGActive=false (after was true) → s_postSLFGSuspended=true (permanent)
-    //   - cachedSLFGActive=true (after suspend) → s_postSLFGSuspended=false (reactivation)
+    // Streamline signal guard: a real FG shutdown must stop PostSL immediately,
+    // but a transient signal drop during reactivation must not permanently strand
+    // PostSL in a locally suspended state while synthetic re-entrant Presents are
+    // still arriving.
     static bool s_wasSLFGActive = false;
     static bool s_postSLFGSuspended = false;
+    const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
+    const bool postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    const bool startupActivationPending =
+        g_PostSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     if (cachedSLFGActive) {
         s_wasSLFGActive = true;
-        s_postSLFGSuspended = false;  // FG is active — render normally
+        s_postSLFGSuspended = false;
     } else if (s_wasSLFGActive) {
-        // FG just turned off — suspend PostSL rendering until FG reactivates
         s_wasSLFGActive = false;
-        s_postSLFGSuspended = true;
-        HookLogImportant("DX12: PostSL FG deactivated — suspending PostSL rendering (normal Present path takes over)");
+        s_postSLFGSuspended = ce::dx12_overlay_policy::ShouldLatchPostSLSuspensionOnStreamlineSignalDrop(
+            cachedSLFGActive, postSLActive, postSLConfirmedRendering, startupActivationPending);
+        HookLogImportant(
+            "DX12: PostSL FG signal dropped — %s (active=%d confirmed=%d startupPending=%d)",
+            s_postSLFGSuspended ? "suspending until clean reactivation"
+                                : "treating as transient and waiting for signal recovery",
+            postSLActive ? 1 : 0, postSLConfirmedRendering ? 1 : 0, startupActivationPending ? 1 : 0);
     }
-    if (s_postSLFGSuspended) {
+    if (!cachedSLFGActive || s_postSLFGSuspended) {
+        s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         static int s_suspendLog = 0;
-        if (s_suspendLog < 3 || (s_suspendLog % 500 == 0))
-            HookLog("DX12: PostSL suspended (FG off) — frame #%d", s_suspendLog);
+        if (s_suspendLog < 5 || (s_suspendLog % 500 == 0)) {
+            HookLog("DX12: PostSL SKIP — Streamline FG signal inactive (latched=%d frame=%d)",
+                    s_postSLFGSuspended ? 1 : 0, s_suspendLog);
+        }
         s_suspendLog++;
-        return;  // Lock guard releases automatically
+        return;
     }
 
     {
@@ -4604,6 +4601,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             if (cooldownLeft > 0) {
                 g_PostSLCooldownRemaining.store(cooldownLeft - 1, std::memory_order_release);
                 if (cooldownLeft > 1) {
+                    s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
                     return;
                 }
             }
@@ -4628,6 +4626,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                         directQueue, (void*)directECL, slWrapperQueue);
                 }
                 s_waitForSafePathLog++;
+                s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
 
@@ -4680,6 +4679,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
     // Gate: only render when explicitly enabled (not during cooldown / resize).
     if (!active) {
+        s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         static int s_gateSkip = 0;
         if (s_gateSkip++ < 5)
             HookLog("DX12: PostSL SKIP — g_PostSLOverlayActive=false");
@@ -4690,6 +4690,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // g_PostSLOverlayActive may be stale if set before ProcessFrame disables it.
     int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
     if (cooldownLeft > 0) {
+        s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         static int s_cooldownSkip = 0;
         if (s_cooldownSkip++ < 5)
             HookLog("DX12: PostSL SKIP — FG transition cooldown active (%d frames left)", cooldownLeft);
@@ -4703,6 +4704,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Waiting ~30 frames lets SL's FG pipeline establish its internal state.
     constexpr int kPostSLReactivationWarmup = 30;
     if (s_reactivationEpoch > 1 && s_callsSinceReactivation <= kPostSLReactivationWarmup) {
+        s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         if (s_callsSinceReactivation <= 5 || s_callsSinceReactivation == kPostSLReactivationWarmup) {
             HookLogImportant("DX12: PostSL warm-up after reactivation epoch=%d frame=%d/%d", s_reactivationEpoch,
                              s_callsSinceReactivation, kPostSLReactivationWarmup);
@@ -7917,9 +7919,29 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         bool skipOverlayDraw = false;
         if (g_FGTransitionCooldown > 0) {
             --g_FGTransitionCooldown;
-            // During cooldown, suppress BOTH pre-SL and post-SL rendering.
-            g_PostSLOverlayActive.store(false, std::memory_order_release);
-            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            const bool preserveConfirmedPostSLDuringCooldown =
+                ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLDuringFGCooldown(
+                    currentSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+            if (preserveConfirmedPostSLDuringCooldown) {
+                // Synthetic startup can confirm a working PostSL path before the
+                // game-thread cooldown has fully counted down. Do not let the
+                // slower ProcessFrame cooldown re-disable that confirmed path.
+                g_PostSLOverlayActive.store(true, std::memory_order_release);
+                g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+
+                static int s_preserveConfirmedPostSLLog = 0;
+                if (s_preserveConfirmedPostSLLog < 10 || g_FGTransitionCooldown == 0) {
+                    HookLogImportant(
+                        "DX12: FG cooldown preserving confirmed PostSL rendering "
+                        "(remaining=%d slSignal=%d)",
+                        g_FGTransitionCooldown, currentSLFGRunning ? 1 : 0);
+                }
+                s_preserveConfirmedPostSLLog++;
+            } else {
+                // During cooldown, suppress BOTH pre-SL and post-SL rendering.
+                g_PostSLOverlayActive.store(false, std::memory_order_release);
+                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            }
 
             // Periodic device-removed check during cooldown to pinpoint
             // when the device dies (overlay is NOT rendering during this time).
