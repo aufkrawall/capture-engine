@@ -120,6 +120,11 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);
 bool HasPresentInlineHooks();
 bool HasPresentDetourHooks();
 
+inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool thirdPartyOverlayLoaded,
+                                                            bool hasPresentDetourHooks) {
+    return !thirdPartyOverlayLoaded || hasPresentDetourHooks;
+}
+
 // External Present entry hooks can recurse back through our detour. Some paths
 // need a bypass trampoline available at install time so re-entrant Present can
 // still reach the real DXGI implementation.

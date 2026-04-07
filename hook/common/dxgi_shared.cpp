@@ -1559,7 +1559,8 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     // Third-party overlays can install their own DXGI hooks and form recursive
     // Present chains with vtable patching. In that case the wrapper-based path
     // remains active and avoids hook wars.
-    if (IsThirdPartyOverlayLoaded()) {
+    if (!DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(IsThirdPartyOverlayLoaded(),
+                                                                      HasPresentDetourHooks())) {
         HookLog("DXGIShared::InstallHooks: External overlay detected, skipping DXGI swapchain hooks");
         return true;
     }

@@ -32,6 +32,13 @@ TEST(DXGISharedTest, DXGIFactoryEnumerationLoggingTreatsNotFoundAsBenign) {
     EXPECT_TRUE(ce::dxgi_factory_policy::ShouldLogAdapterEnumerationFailure(E_FAIL));
 }
 
+TEST(DXGISharedTest, RecreatedSwapchainsStayHookableWhenExternalOverlayPathIsAlreadyActive) {
+    EXPECT_TRUE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(true, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(true, false));
+}
+
 TEST(DXGISharedTest, SteamDX12BypassStaysEnabledUntilStreamlineFGActuallyRuns) {
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(
         true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false, false));
