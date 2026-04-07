@@ -264,6 +264,11 @@ TEST(DXGISharedTest, PostSLLockedQueueMutationOnlyHappensForInitialLockOrExplici
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldMutatePostSLLockedQueue(true, false, false));
 }
 
+TEST(DXGISharedTest, PostSLLastWorkingQueueIgnoresTransientWrapperQueues) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRememberPostSLLastWorkingQueue(false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRememberPostSLLastWorkingQueue(true));
+}
+
 TEST(DXGISharedTest, SyntheticPostSLAdvancesDormantStartupOnlyWhenNormalFramePathStops) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, false));
 

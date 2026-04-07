@@ -168,8 +168,12 @@ inline bool ShouldMutatePostSLLockedQueue(bool hasLockedQueue, bool selectedQueu
     return shouldPromoteLockedQueueToDirectQueue;
 }
 
+inline bool ShouldRememberPostSLLastWorkingQueue(bool queueIsSLWrapper) {
+    return !queueIsSLWrapper;
+}
+
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
-                                                        bool postSLActive, bool processFrameRecentlySeen) {
+                                                         bool postSLActive, bool processFrameRecentlySeen) {
     return startupActivationPending && streamlineFGRunning && !postSLActive && !processFrameRecentlySeen;
 }
 
