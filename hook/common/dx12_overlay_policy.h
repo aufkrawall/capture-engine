@@ -127,8 +127,17 @@ inline bool ShouldTreatPostSLAsReactivated(bool postSLActive, bool wasActiveInCu
 inline bool ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(bool hadFSRFGPhase,
                                                                  bool selectedQueueIsSwapchainQueue,
                                                                  bool queueIsSLWrapper,
-                                                                 bool hasSelectedQueueSubmitPath) {
-    return hadFSRFGPhase && selectedQueueIsSwapchainQueue && !queueIsSLWrapper && hasSelectedQueueSubmitPath;
+                                                                 bool hasSelectedQueueSubmitPath,
+                                                                 bool hasWrapperDerivedDirectPath) {
+    return hadFSRFGPhase && selectedQueueIsSwapchainQueue && !queueIsSLWrapper && hasSelectedQueueSubmitPath &&
+           !hasWrapperDerivedDirectPath;
+}
+
+inline bool ShouldUsePostSLWrapperSubmitAfterFSR(bool hadFSRFGPhase,
+                                                 bool usePostSLOffscreenComposite,
+                                                 bool selectedQueueIsSwapchainQueue,
+                                                 bool hasSLWrapperQueue) {
+    return hadFSRFGPhase && usePostSLOffscreenComposite && selectedQueueIsSwapchainQueue && hasSLWrapperQueue;
 }
 
 inline bool ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(bool hadFSRFGPhase,

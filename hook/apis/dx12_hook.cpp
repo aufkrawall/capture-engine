@@ -5058,8 +5058,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // invalid (FSR created the swapchain on its own queue, origGame never saw the backbuffers).
     // SL's wrapper queue dispatches through SL's ECL interception which knows the correct state.
     ID3D12CommandQueue* slWrapperQueue = nullptr;
+    bool haveCapturedSLWrapperQueue = false;
     if (g_HadFSRFGPhase) {
         slWrapperQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
+        haveCapturedSLWrapperQueue = slWrapperQueue != nullptr;
         if (!slWrapperQueue) {
             // Fallback: try g_CommandQueue if it's not origGame or scQueue
             ID3D12CommandQueue* cmdQ = g_CommandQueue.load(std::memory_order_acquire);
@@ -5184,7 +5186,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         if (probeHandled) {
             list->Close();
             ID3D12CommandList* lists[] = {list};
-            // Submit via vtable call on the selected queue
+            // Keep probe submission on the queue that actually owns the tested path.
+            // Post-FSR copy probes have only been observed to survive when routed
+            // through the SL wrapper path rather than forcing an immediate direct
+            // queue handoff.
             probeQueue->ExecuteCommandLists(1, lists);
 
             if (g_State.fence) {
@@ -5735,15 +5740,39 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         ExecuteCommandListsPtr realECLPtr = g_RealD3D12ECL.load(std::memory_order_acquire);
         ExecuteCommandListsPtr selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
         const bool hasSelectedQueueSubmitPath = selectedQueueOrigECL != nullptr || realECLPtr != nullptr;
+        const bool hasWrapperDerivedDirectPath = realQ != nullptr && realECLPtr != nullptr;
+        ID3D12CommandQueue* slQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
 
         const bool allowScQueueVirtualSubmit =
             ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(g_HadFSRFGPhase, scQueueDiffers);
 
+        const bool useWrapperSubmitAfterFSR = ce::dx12_overlay_policy::ShouldUsePostSLWrapperSubmitAfterFSR(
+            g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue, slQueue != nullptr);
+
         const bool useSelectedSwapchainQueueSubmitAfterFSR =
             ce::dx12_overlay_policy::ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(
-                g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, isSLWrapperQ, hasSelectedQueueSubmitPath);
+                g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, isSLWrapperQ, hasSelectedQueueSubmitPath,
+                hasWrapperDerivedDirectPath);
 
-        if (useSelectedSwapchainQueueSubmitAfterFSR) {
+        if (useWrapperSubmitAfterFSR) {
+            // After an FSR phase, keep swapchain-touching PostSL work on the SL
+            // wrapper path when that is the only path that has successfully
+            // survived the post-FSR copy probes. We can still capture the real
+            // queue behind the wrapper for diagnostics and later promotion.
+            submittedQueue = slQueue;
+            s_insidePostSLOverlayECL = true;
+            slQueue->ExecuteCommandLists(1, lists);
+            s_insidePostSLOverlayECL = false;
+            usedVirtualCall = true;
+
+            static int s_postFSRWrapperSubmitLog = 0;
+            if (s_postFSRWrapperSubmitLog < 5 || (s_postFSRWrapperSubmitLog % 200) == 0) {
+                HookLogImportant(
+                    "DX12: PostSL post-FSR submit #%d via SL wrapper %p (scQueue=%p realQ=%p offscreen=%d)",
+                    s_postFSRWrapperSubmitLog, slQueue, scQueue, realQ, usePostSLOffscreenComposite ? 1 : 0);
+            }
+            s_postFSRWrapperSubmitLog++;
+        } else if (useSelectedSwapchainQueueSubmitAfterFSR) {
             // After an FSR phase, if PostSL already resolved to the runtime's
             // swapchain queue and probe submits on that queue succeeded, keep
             // using that queue directly. Falling back to the SL wrapper here
@@ -5798,13 +5827,12 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             if (!allowWrapperBootstrap) {
                 HookLogImportant(
                     "DX12: PostSL refusing SL wrapper bootstrap without direct path (queue=%p scQueue=%p wrapper=%p)",
-                    queue, scQueue, (void*)g_SLWrapperQueue.load(std::memory_order_acquire));
+                    queue, scQueue, (void*)slQueue);
                 bb->Release();
                 return;
             }
 
             // Bootstrap: submit through SL's wrapper to capture real queue on first call
-            ID3D12CommandQueue* slQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
             if (!slQueue && g_HadFSRFGPhase) {
                 HookLogImportant(
                     "DX12: PostSL refusing post-FSR bootstrap without SL wrapper queue (queue=%p scQueue=%p)", queue,
@@ -5873,24 +5901,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     bool slFGSubmit = cachedSLFGActive;
     if (g_State.fence) {
         UINT64 next = g_State.currentFenceValue + 1;
-        ID3D12CommandQueue* submitQueue = queue;  // default: selected queue (may be scQueue)
-        if (slFGSubmit) {
-            // When scQueue differs from origGame, we submitted on scQueue → signal there.
-            bool scQDiffers = (scQueue && scQueue != g_OriginalGameQueue);
-            if (scQDiffers && scQueue) {
-                submitQueue = scQueue;
-            } else {
-                // Prefer real queue (direct path) over SL's wrapper
-                ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
-                if (realQ) {
-                    submitQueue = realQ;
-                } else {
-                    ID3D12CommandQueue* slQ = g_SLWrapperQueue.load(std::memory_order_acquire);
-                    if (slQ)
-                        submitQueue = slQ;
-                }
-            }
-        }
+        ID3D12CommandQueue* submitQueue = submittedQueue ? submittedQueue : queue;
         HRESULT sigHr = submitQueue->Signal(g_State.fence, next);
         if (SUCCEEDED(sigHr)) {
             g_State.currentFenceValue = next;
@@ -5898,7 +5909,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 g_State.fenceValues[idx] = next;
 
             // Cross-queue GPU sync: only for non-SL-FG, non-same-queue scenarios
-            bool crossQueueSafe = scQueue && scQueue != queue && !slFGSubmit;
+            bool crossQueueSafe = scQueue && scQueue != submitQueue && !slFGSubmit;
             if (crossQueueSafe) {
                 HRESULT waitHr = scQueue->Wait(g_State.fence, next);
                 crossQueueSynced = true;
@@ -9272,8 +9283,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         // no known trigger for this.  If stale, PostSL would crash and we'd see
         // DEVICE_REMOVED in logs — at which point re-bootstrap can be triggered.
         static std::atomic<ID3D12CommandQueue*> s_realQueueBehindSL{nullptr};
-        s_realQueueBehindSL.store((ID3D12CommandQueue*)pThis, std::memory_order_release);
-        g_RealQueueBehindSLWrapper.store((ID3D12CommandQueue*)pThis, std::memory_order_release);
+        ID3D12CommandQueue* realQueue = (ID3D12CommandQueue*)pThis;
+        ID3D12CommandQueue* previousRealQueue = s_realQueueBehindSL.exchange(realQueue, std::memory_order_acq_rel);
+        g_RealQueueBehindSLWrapper.store(realQueue, std::memory_order_release);
+        if (previousRealQueue != realQueue) {
+            HookLogImportant("DX12: ECL captured real queue behind SL wrapper %p during PostSL submit/probe",
+                             realQueue);
+        }
 
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (original)
