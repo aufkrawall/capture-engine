@@ -2798,8 +2798,13 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    g_SLOffHeuristicGrace.store(600, std::memory_order_release);
+    g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+    g_FGCompat.SetHeuristicFSRFGActive(false);
+    g_FGCompat.ClearNvidiaSMState();
     g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
     ResetPostSLLifecycleForTransition("DX12: Streamline FG OFF transition", true, true);
+    HookLogImportant("DX12: Streamline FG OFF — seeded heuristic reset/grace (slOffGrace=600)");
     HookLogImportant("DX12: Streamline FG OFF — cleared PostSL callback state");
 }
 
