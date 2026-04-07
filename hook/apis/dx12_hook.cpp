@@ -147,6 +147,7 @@ static std::atomic<int> g_PostSLCooldownRemaining{0};
 static std::atomic<ULONGLONG> g_LastProcessFrameTickMs{0};
 static std::atomic<bool> g_PostSLSyntheticStartupActivationPending{false};
 static std::atomic<bool> g_PostSLSyntheticStartupTakeoverLogged{false};
+static std::atomic<uint32_t> g_PostSLLifecycleEpoch{0};
 
 // Set to true when PostSLOverlayRender has confirmed it can render (i.e., re-entrant
 // Present calls are actually happening).  In games like GTA V, SL FG bypasses our
@@ -937,6 +938,29 @@ static std::atomic<ID3D12CommandQueue*> g_SLWrapperQueue{nullptr};
 // Currently no known trigger for SL queue recreation during a session.
 static std::atomic<ID3D12CommandQueue*> g_RealQueueBehindSLWrapper{nullptr};
 
+static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper) {
+    g_PostSLLifecycleEpoch.fetch_add(1, std::memory_order_acq_rel);
+
+    if (g_PostSLLockedQueue) {
+        HookLogImportant("%s — releasing PostSL locked queue %p", reason, g_PostSLLockedQueue);
+        g_PostSLLockedQueue->Release();
+        g_PostSLLockedQueue = nullptr;
+    }
+
+    if (g_PostSLDedicatedQueue) {
+        HookLogImportant("%s — releasing PostSL dedicated queue %p", reason, g_PostSLDedicatedQueue);
+        g_PostSLDedicatedQueue->Release();
+        g_PostSLDedicatedQueue = nullptr;
+    }
+
+    if (clearRealQueueBehindSLWrapper) {
+        ID3D12CommandQueue* oldRealQueue = g_RealQueueBehindSLWrapper.exchange(nullptr, std::memory_order_acq_rel);
+        if (oldRealQueue) {
+            HookLogImportant("%s — cleared cached real queue behind SL wrapper %p", reason, oldRealQueue);
+        }
+    }
+}
+
 // IPC ready flag
 static bool g_IPCReady = false;
 
@@ -1015,6 +1039,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddres
     g_FGCompat.SetStreamlineFGSignal(false);
     g_FGCompat.SetDLSSFGActive(false);
     g_PostSLOverlayActive.store(false, std::memory_order_release);
+    ResetPostSLLifecycleForTransition("DX12: FFX swapchain takeover", true);
     DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
     g_PostSLStallCounter.store(0, std::memory_order_release);
@@ -2560,6 +2585,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         g_PostSLStableFrameCount.store(0, std::memory_order_release);
         g_PostSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
         g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+        ResetPostSLLifecycleForTransition("DX12: Streamline FG ON transition", true);
         return;
     }
 
@@ -2570,6 +2596,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
     g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    ResetPostSLLifecycleForTransition("DX12: Streamline FG OFF transition", true);
     HookLogImportant("DX12: Streamline FG OFF — cleared PostSL callback state");
 }
 
@@ -4207,15 +4234,7 @@ void DX12_OnSwapchainResizeBegin() {
     // Disable post-SL overlay rendering IMMEDIATELY to prevent rendering
     // to invalidated backbuffers during the resize.
     g_PostSLOverlayActive.store(false, std::memory_order_release);
-    if (g_PostSLLockedQueue) {
-        g_PostSLLockedQueue->Release();
-        g_PostSLLockedQueue = nullptr;
-    }
-    // Release dedicated PostSL queue — will be re-created if needed after FG transition
-    if (g_PostSLDedicatedQueue) {
-        g_PostSLDedicatedQueue->Release();
-        g_PostSLDedicatedQueue = nullptr;
-    }
+    ResetPostSLLifecycleForTransition("DX12: swapchain resize", true);
     SetPostSLLastWorkingQueue(nullptr);  // Swapchain resize — rendering setup changed
     // Prevent recursion - if already in resize, return immediately
     if (wasAlreadySet) {
@@ -4469,6 +4488,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     static int s_callsSinceReactivation = 0;
     static int s_postSLProbeFrames = 0;
     static bool s_wasActive = false;
+    static uint32_t s_seenLifecycleEpoch = 0;
     static HANDLE s_dedicatedFenceEvent = nullptr;
     static ID3D12Fence* s_dedicatedSyncFence = nullptr;
     static UINT64 s_dedicatedSyncFenceValue = 0;
@@ -4558,8 +4578,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
     }
 
+    uint32_t lifecycleEpoch = g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
+    bool lifecycleChanged = lifecycleEpoch != s_seenLifecycleEpoch;
+    if (lifecycleChanged) {
+        s_wasActive = false;
+        s_seenLifecycleEpoch = lifecycleEpoch;
+    }
+
     bool active = g_PostSLOverlayActive.load(std::memory_order_acquire);
-    if (active && !s_wasActive) {
+    if (ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(active, s_wasActive, lifecycleChanged)) {
         s_reactivationEpoch++;
         s_callsSinceReactivation = 0;
         s_postSLProbeFrames = 0;  // Reset probe counter for new reactivation

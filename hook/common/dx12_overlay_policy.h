@@ -109,6 +109,15 @@ inline bool ShouldLatchFSRFGHistory(bool fsrFGApiActive, bool sawAuthoritativeFS
     return fsrFGApiActive || sawAuthoritativeFSRRuntimeTraffic;
 }
 
+inline bool ShouldTreatPostSLAsReactivated(bool postSLActive, bool wasActiveInCurrentCallbackLifetime,
+                                           bool postSLLifecycleChanged) {
+    if (!postSLActive) {
+        return false;
+    }
+
+    return !wasActiveInCurrentCallbackLifetime || postSLLifecycleChanged;
+}
+
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
     return streamlineFGRunning && !processFrameRecentlySeen;
 }
