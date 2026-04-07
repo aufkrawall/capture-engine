@@ -133,10 +133,19 @@ inline bool ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(bool hadFSRFGPha
            !hasWrapperDerivedDirectPath;
 }
 
+inline bool ShouldPinPostSLWrapperQueueAfterFSR(bool hadFSRFGPhase,
+                                                bool usePostSLOffscreenComposite,
+                                                bool selectedQueueIsSwapchainQueue,
+                                                bool hasPinnedWrapperQueue,
+                                                bool hasCapturedSLWrapperQueue) {
+    return hadFSRFGPhase && usePostSLOffscreenComposite && selectedQueueIsSwapchainQueue && !hasPinnedWrapperQueue &&
+           hasCapturedSLWrapperQueue;
+}
+
 inline bool ShouldUsePostSLWrapperSubmitAfterFSR(bool hadFSRFGPhase,
-                                                 bool usePostSLOffscreenComposite,
-                                                 bool selectedQueueIsSwapchainQueue,
-                                                 bool hasSLWrapperQueue) {
+                                                  bool usePostSLOffscreenComposite,
+                                                  bool selectedQueueIsSwapchainQueue,
+                                                  bool hasSLWrapperQueue) {
     return hadFSRFGPhase && usePostSLOffscreenComposite && selectedQueueIsSwapchainQueue && hasSLWrapperQueue;
 }
 
