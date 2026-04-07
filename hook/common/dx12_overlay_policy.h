@@ -133,8 +133,7 @@ inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive,
            swapchainQueueDiffersFromOriginalGameQueue;
 }
 
-inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool recentStreamlineTeardown,
-                                                                 bool actualFGActive,
+inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGActive,
                                                                  bool streamlineFGRunning,
                                                                  bool runtimeOwnsSwapchain,
                                                                  bool hasSwapchainQueue,
@@ -144,15 +143,37 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool recentStrea
         return false;
     }
 
-    if (!recentStreamlineTeardown || !runtimeOwnsSwapchain || !hasSwapchainQueue) {
+    if (!runtimeOwnsSwapchain || !hasSwapchainQueue) {
         return false;
     }
 
-    // After DLSS FG tears down, the swapchain can persist on a runtime-owned
-    // queue while ECL traffic is still draining through the departing SL wrapper.
-    // Reinitializing pre-SL overlay resources before command-list traffic has
-    // settled back onto the swapchain queue reproduces the Talos crash path.
+    // After FG shuts off, the swapchain can persist on a runtime-owned queue
+    // while command-list tracking is still null or stuck on a departed wrapper.
+    // Reinitializing pre-SL overlay resources before command traffic settles
+    // onto the live swapchain queue reproduces the Talos crash path.
     return !hasCommandQueue || !commandQueueMatchesSwapchainQueue;
+}
+
+inline bool ShouldRealignInactiveCommandQueueToSwapchainQueue(bool actualFGActive,
+                                                              bool streamlineFGRunning,
+                                                              bool hasSwapchainQueue,
+                                                              bool hasOriginalGameQueue,
+                                                              bool hasCommandQueue,
+                                                              bool commandQueueMatchesSwapchainQueue,
+                                                              bool commandQueueMatchesOriginalGameQueue) {
+    if (actualFGActive || streamlineFGRunning) {
+        return false;
+    }
+
+    if (!hasSwapchainQueue || !hasOriginalGameQueue || !hasCommandQueue) {
+        return false;
+    }
+
+    // Once Streamline is fully off, a command queue that matches neither the
+    // live swapchain queue nor the original game queue is just stale wrapper
+    // state. Realign it to the swapchain queue so pre-SL init stops observing a
+    // departed wrapper topology.
+    return !commandQueueMatchesSwapchainQueue && !commandQueueMatchesOriginalGameQueue;
 }
 
 inline bool ShouldMutatePostSLLockedQueue(bool hasLockedQueue, bool selectedQueueMatchesLockedQueue,

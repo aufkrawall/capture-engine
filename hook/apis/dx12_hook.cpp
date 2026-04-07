@@ -41,6 +41,7 @@ bool SaveDX12TextureAsBMP(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D1
                           const char* outputPath);
 bool SaveDX12TextureAsHDR(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, bool isPQ,
                           const char* outputPath);
+static bool IsActualFrameGenerationActive();
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
@@ -992,6 +993,7 @@ static void WaitForInFlightPostSLCallbacks(const char* reason) {
 }
 
 static void CleanupDeferredPostSLQueuesIfSafe(const char* reason);
+static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
 
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper,
                                               bool deferQueueReleaseUntilCallbacksDrain = false);
@@ -1067,6 +1069,8 @@ static void CleanupDeferredPostSLQueuesIfSafe(const char* reason) {
     }
 
     ClearPostSLQueues(reason);
+
+    RealignInactiveCommandQueueToSwapchainQueue(reason);
 }
 
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper,
@@ -1110,6 +1114,38 @@ static ULONGLONG g_SwapchainQueueCaptureTime = 0;  // GetTickCount64() when scQu
 // for a sustained period.
 static bool g_FGRuntimeOwnsSwapchain = false;
 static ULONGLONG g_FGRuntimeOwnsSwapchainSince = 0;
+
+static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason) {
+    ID3D12CommandQueue* oldCommandQueue = nullptr;
+    ID3D12CommandQueue* swapchainQueue = nullptr;
+    ID3D12CommandQueue* originalGameQueue = nullptr;
+    bool realignedCommandQueue = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        swapchainQueue = g_SwapchainQueue;
+        originalGameQueue = g_OriginalGameQueue;
+        ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+        bool actualFGActive = IsActualFrameGenerationActive();
+        bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+        if (ce::dx12_overlay_policy::ShouldRealignInactiveCommandQueueToSwapchainQueue(
+                actualFGActive, streamlineFGRunning, swapchainQueue != nullptr, originalGameQueue != nullptr,
+                currentCommandQueue != nullptr, currentCommandQueue == swapchainQueue,
+                currentCommandQueue == originalGameQueue)) {
+            oldCommandQueue = currentCommandQueue;
+            g_CommandQueue.store(swapchainQueue, std::memory_order_release);
+            swapchainQueue->AddRef();
+            realignedCommandQueue = true;
+        }
+    }
+
+    if (realignedCommandQueue) {
+        HookLogImportant("%s - realigned stale command queue %p -> swapchain queue %p (origGame=%p)", reason,
+                         oldCommandQueue, swapchainQueue, originalGameQueue);
+        if (oldCommandQueue) {
+            oldCommandQueue->Release();
+        }
+    }
+}
 
 // Guard flag: skip queue capture during temp swapchain creation
 static std::atomic<bool> g_CreatingTempSwapchain{false};
@@ -7120,7 +7156,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
             int slOffSwapchainGrace = g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
             if (ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
-                    slOffSwapchainGrace > 0, actualFGActive, streamlineFGRunning, g_FGRuntimeOwnsSwapchain,
+                    actualFGActive, streamlineFGRunning, g_FGRuntimeOwnsSwapchain,
                     currentSwapchainQueue != nullptr, currentCommandQueue != nullptr,
                     currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue)) {
                 static std::atomic<int> s_runtimeOwnedInactiveInitDeferLogCount{0};
