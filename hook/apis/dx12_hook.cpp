@@ -959,6 +959,67 @@ static ULONGLONG g_FGRuntimeOwnsSwapchainSince = 0;
 // Guard flag: skip queue capture during temp swapchain creation
 static std::atomic<bool> g_CreatingTempSwapchain{false};
 
+static bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle) {
+    if (!moduleHandle) {
+        return false;
+    }
+
+    char modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(moduleHandle, modulePath, MAX_PATH) == 0) {
+        return false;
+    }
+
+    return ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_dx12") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_vk");
+}
+
+static bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress, char* modulePathOut = nullptr,
+                                                      size_t modulePathOutCount = 0) {
+    if (!codeAddress) {
+        return false;
+    }
+
+    HMODULE callerModule = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule) ||
+        !callerModule) {
+        return false;
+    }
+
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+        GetModuleFileNameA(callerModule, modulePathOut, static_cast<DWORD>(modulePathOutCount));
+    }
+
+    return IsFFXFrameGenerationModuleHandle(callerModule);
+}
+
+static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddress, bool runtimeOwnsSwapchain,
+                                                        ID3D12CommandQueue* capturedQueue) {
+    char callerModulePath[MAX_PATH] = {};
+    const bool callerFromFFXFGModule =
+        IsCodeAddressFromFFXFrameGenerationModule(callerAddress, callerModulePath, sizeof(callerModulePath));
+    if (!ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(runtimeOwnsSwapchain,
+                                                                                         callerFromFFXFGModule)) {
+        return;
+    }
+
+    const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);
+    g_FGCompat.SetStreamlineFGSignal(false);
+    g_FGCompat.SetDLSSFGActive(false);
+    g_PostSLOverlayActive.store(false, std::memory_order_release);
+    DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    g_PostSLStallCounter.store(0, std::memory_order_release);
+    g_PostSLStableFrameCount.store(0, std::memory_order_release);
+    g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+
+    HookLogImportant(
+        "DX12: FFX swapchain takeover via %s (queue=%p, staleSL=%d) — cleared Streamline/PostSL ownership",
+        callerModulePath[0] ? callerModulePath : "unknown", capturedQueue, staleStreamlineSignal ? 1 : 0);
+}
+
 // LOCK HIERARCHY (MUST be acquired in this order to prevent deadlocks):
 // 1. g_OverlayMutex (outermost - protects overlay state)
 // 2. g_CommandQueueMutex (protects command queue pointer)
@@ -2228,7 +2289,8 @@ static bool IsDX12Swapchain(IDXGISwapChain1* pSwapChain) {
     return true;
 }
 
-static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain1* pSwapChain, const char* context) {
+static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain1* pSwapChain, const char* context,
+                                                  const void* callerAddress = nullptr) {
     if (!pDevice || !pSwapChain)
         return;
 
@@ -2237,6 +2299,8 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
     if (SUCCEEDED(qiHr) && pQueue) {
         HookLogImportant("%s: QI for queue succeeded (queue=%p)", context, pQueue);
         DX12_SetSwapchainQueue(pQueue);
+        ClearStaleStreamlineOwnershipForFSRTakeover(callerAddress,
+                                                    g_OriginalGameQueue && pQueue != g_OriginalGameQueue, pQueue);
         pQueue->Release();
         return;
     }
@@ -2551,6 +2615,8 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         return s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     }
 
+    const void* callerAddress = CE_RETURN_ADDRESS();
+
     HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
                      pThis, pDevice, hWnd, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1);
 
@@ -2629,7 +2695,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         DXGIShared::InstallHooks(newSC, /*presentOnly=*/true);
         DXGIShared::RepairVTableHooksIfNeeded();
 
-        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "DeepHook");
+        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "DeepHook", callerAddress);
     } else if (FAILED(hr)) {
         HookLogImportant("DeepHook: CreateSwapChainForHwnd FAILED hr=0x%08X hwnd=%p", hr, hWnd);
     }
@@ -2658,6 +2724,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         HookLog("CreateSwapChainForHwnd INLINE: Temp swapchain — passthrough");
         return s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     }
+
+    const void* callerAddress = CE_RETURN_ADDRESS();
 
     HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
 
@@ -2725,7 +2793,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         TrackSwapchainHwnd(*ppSC, hWnd);
         HookLogImportant("CreateSwapChainForHwnd INLINE: Created swapchain %p for HWND=%p", *ppSC, hWnd);
 
-        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd INLINE");
+        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd INLINE", callerAddress);
     }
 
     return hr;

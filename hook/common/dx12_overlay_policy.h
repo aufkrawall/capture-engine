@@ -92,4 +92,9 @@ inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool p
     return streamlineFGRunning && !processFrameRecentlySeen;
 }
 
+inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOwnsSwapchain,
+                                                                  bool callerFromFFXFGModule) {
+    return runtimeOwnsSwapchain && callerFromFFXFGModule;
+}
+
 }  // namespace ce::dx12_overlay_policy
