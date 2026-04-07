@@ -5106,6 +5106,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
     const bool usePostSLOffscreenComposite = ce::dx12_overlay_policy::ShouldUsePostSLOffscreenCompositeAfterFSR(
         g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
+    ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
+    ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
+    ExecuteCommandListsPtr selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
+    const bool hasSelectedQueueSubmitPath = selectedQueueOrigECL != nullptr || realECL != nullptr;
+    const bool hasWrapperDerivedDirectPath = realQ != nullptr && realECL != nullptr;
+    const bool preferSelectedSwapchainQueueSubmitAfterFSR =
+        ce::dx12_overlay_policy::ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(
+            g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, isSLWrapperQ, hasSelectedQueueSubmitPath,
+            hasWrapperDerivedDirectPath);
 
     // --- Post-FSR graduated probing ---
     // Level 0: Scratch resource barrier (confirms queue/device path works)
@@ -5138,7 +5147,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
         if (ce::dx12_overlay_policy::ShouldPinPostSLWrapperQueueAfterFSR(
                 g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue,
-                pinnedSLWrapperQueue != nullptr, wrapperCandidate != nullptr)) {
+                pinnedSLWrapperQueue != nullptr, wrapperCandidate != nullptr,
+                preferSelectedSwapchainQueueSubmitAfterFSR)) {
             wrapperCandidate->AddRef();
             g_PostSLPinnedSLWrapperQueue = wrapperCandidate;
             pinnedSLWrapperQueue = wrapperCandidate;
@@ -5170,8 +5180,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
 
         bool probeHandled = true;
-        // Use SL's wrapper queue for backbuffer probes (levels 1+), origGame for scratch
-        ID3D12CommandQueue* probeQueue = (g_PostFSRProbeLevel >= 1 && slWrapperQueue) ? slWrapperQueue : queue;
+        // Use the selected swapchain queue when we already have a proven direct
+        // submit path for it. Falling back to a transient SL wrapper queue here
+        // can hard-remove the device during post-FSR DLSS startup.
+        ID3D12CommandQueue* probeQueue =
+            (g_PostFSRProbeLevel >= 1 && slWrapperQueue && !preferSelectedSwapchainQueueSubmitAfterFSR)
+                ? slWrapperQueue
+                : queue;
 
         if (g_PostFSRProbeLevel == 0) {
             // Probe 0: Scratch resource barrier on origGame — confirms queue works.
@@ -5761,7 +5776,6 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // queue internally.  This lets SL properly track our ECL in its FG pipeline.
     //
     // For non-SL-FG paths (origECL/realECL): no change, those work as before.
-    ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
     ID3D12CommandList* lists[] = {list};
     bool usedRealECL = false;
     bool usedOrigECL = false;
@@ -5823,23 +5837,14 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         // CAUTION FOR TALOS/OTHER GAMES: If the game uses FSR FG → DLSS FG
         // transitions, the real queue behind SL might change.  Monitor for
         // DEVICE_REMOVED after transitions and re-bootstrap if needed.
-        ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
-        ExecuteCommandListsPtr realECLPtr = g_RealD3D12ECL.load(std::memory_order_acquire);
-        ExecuteCommandListsPtr selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
-        const bool hasSelectedQueueSubmitPath = selectedQueueOrigECL != nullptr || realECLPtr != nullptr;
-        const bool hasWrapperDerivedDirectPath = realQ != nullptr && realECLPtr != nullptr;
         ID3D12CommandQueue* slQueue = slWrapperQueue;
 
         const bool allowScQueueVirtualSubmit =
             ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(g_HadFSRFGPhase, scQueueDiffers);
 
         const bool useWrapperSubmitAfterFSR = ce::dx12_overlay_policy::ShouldUsePostSLWrapperSubmitAfterFSR(
-            g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue, slQueue != nullptr);
-
-        const bool useSelectedSwapchainQueueSubmitAfterFSR =
-            ce::dx12_overlay_policy::ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(
-                g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, isSLWrapperQ, hasSelectedQueueSubmitPath,
-                hasWrapperDerivedDirectPath);
+            g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue, slQueue != nullptr,
+            preferSelectedSwapchainQueueSubmitAfterFSR);
 
         if (useWrapperSubmitAfterFSR) {
             // After an FSR phase, keep swapchain-touching PostSL work on the SL
@@ -5861,7 +5866,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                     usePostSLOffscreenComposite ? 1 : 0, usingPinnedPostFSRWrapperQueue ? 1 : 0);
             }
             s_postFSRWrapperSubmitLog++;
-        } else if (useSelectedSwapchainQueueSubmitAfterFSR) {
+        } else if (preferSelectedSwapchainQueueSubmitAfterFSR) {
             // After an FSR phase, if PostSL already resolved to the runtime's
             // swapchain queue and probe submits on that queue succeeded, keep
             // using that queue directly. Falling back to the SL wrapper here
@@ -5871,7 +5876,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 selectedQueueOrigECL(queue, 1, lists);
                 usedOrigECL = true;
             } else {
-                realECLPtr(queue, 1, lists);
+                realECL(queue, 1, lists);
                 usedRealECL = true;
             }
 
@@ -5879,7 +5884,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             if (s_postFSRDirectScQueueLog < 5 || (s_postFSRDirectScQueueLog % 200) == 0) {
                 HookLogImportant(
                     "DX12: PostSL post-FSR submit #%d on selected scQueue %p (origECL=%d realECL=%d wrapper=%p)",
-                    s_postFSRDirectScQueueLog, queue, selectedQueueOrigECL ? 1 : 0, realECLPtr ? 1 : 0,
+                    s_postFSRDirectScQueueLog, queue, selectedQueueOrigECL ? 1 : 0, realECL ? 1 : 0,
                     liveSLWrapperQueue);
             }
             s_postFSRDirectScQueueLog++;
@@ -5897,11 +5902,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 HookLogImportant("DX12: PostSL scQueue submit #%d on %p (origGame=%p, bypassing SL wrapper)",
                                  s_scQSubmitLog, scQueue, g_OriginalGameQueue);
             s_scQSubmitLog++;
-        } else if (realQ && realECLPtr) {
+        } else if (realQ && realECL) {
             // Direct submission: bypass SL's wrapper entirely
             submittedQueue = realQ;
             s_insidePostSLOverlayECL = true;
-            realECLPtr(realQ, 1, lists);
+            realECL(realQ, 1, lists);
             s_insidePostSLOverlayECL = false;
             usedRealECL = true;
 
@@ -5912,7 +5917,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             s_directLog++;
         } else {
             const bool allowWrapperBootstrap = ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(
-                g_HadFSRFGPhase, realQ != nullptr, realECLPtr != nullptr);
+                g_HadFSRFGPhase, realQ != nullptr, realECL != nullptr);
             if (!allowWrapperBootstrap) {
                 HookLogImportant(
                     "DX12: PostSL refusing SL wrapper bootstrap without direct path (queue=%p scQueue=%p wrapper=%p)",
