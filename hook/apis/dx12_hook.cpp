@@ -202,6 +202,11 @@ static std::atomic<bool> g_ResetQueueChangeHeuristic{false};
 // origGame, which would otherwise false-positive as FSR FG.
 static std::atomic<int> g_SLOffHeuristicGrace{0};
 
+// Grace counter after Streamline FG turns OFF. Set when PostSL/Streamline
+// ownership tears down, and consumed by ProcessFrame swapchain-change handling
+// to keep the first replacement swapchain on the guarded transition path.
+static std::atomic<int> g_SLOffSwapchainReinitGrace{0};
+
 // Reset flag for per-reinit submit diagnostic counter.
 static std::atomic<bool> g_ResetReinitSubmitCounter{false};
 
@@ -2655,6 +2660,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
     ResetPostSLLifecycleForTransition("DX12: Streamline FG OFF transition", true);
     HookLogImportant("DX12: Streamline FG OFF — cleared PostSL callback state");
 }
@@ -6528,6 +6534,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             g_FramesSinceFGActive = 0;
         else if (g_FramesSinceFGActive < 9999)
             ++g_FramesSinceFGActive;
+
+        int slOffSwapchainGrace = g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
+        if (slOffSwapchainGrace > 0) {
+            g_SLOffSwapchainReinitGrace.store(slOffSwapchainGrace - 1, std::memory_order_release);
+        }
     }
 
     if (pSwapChain != g_LastSwapChain) {
@@ -6554,7 +6565,20 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // immediately, but the swapchain change is delayed.
             constexpr int kFGRecentWindowFrames = 300;
             bool fgRecentlyWasActive = (g_FramesSinceFGActive < kFGRecentWindowFrames);
-            if (fgCurrentlyActive || fgRecentlyWasActive || g_FGTransitionCooldown > 0) {
+            ID3D12CommandQueue* currentSwapchainQueue = nullptr;
+            ID3D12CommandQueue* currentOriginalGameQueue = nullptr;
+            {
+                std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                currentSwapchainQueue = g_SwapchainQueue;
+                currentOriginalGameQueue = g_OriginalGameQueue;
+            }
+            int slOffSwapchainGrace = g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
+            bool guardSwapchainReinit = ce::dx12_overlay_policy::ShouldGuardSwapchainReinitAfterChange(
+                fgCurrentlyActive, fgRecentlyWasActive, g_FGTransitionCooldown > 0, slOffSwapchainGrace > 0,
+                g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr, currentOriginalGameQueue != nullptr,
+                currentSwapchainQueue != nullptr && currentOriginalGameQueue != nullptr &&
+                    currentSwapchainQueue != currentOriginalGameQueue);
+            if (guardSwapchainReinit) {
                 int cooldownFrames = 90;  // ~1.5s at 60fps — longer than normal transition
                 g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, cooldownFrames);
                 g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
@@ -6566,9 +6590,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 }
                 HookLogImportant(
                     "DX12: Swapchain change during active FG — cooldown %d frames "
-                    "(fgActive=%d, fgRecentFrames=%d, slSignal=%d, prevCooldown=%d)",
+                    "(fgActive=%d, fgRecentFrames=%d, slSignal=%d, prevCooldown=%d, slOffGrace=%d, "
+                    "fgOwned=%d, scQueue=%p, origGame=%p)",
                     cooldownFrames, fgCurrentlyActive ? 1 : 0, g_FramesSinceFGActive,
-                    DXGIShared::g_StreamlineFGRunning.load() ? 1 : 0, g_FGTransitionCooldown);
+                    DXGIShared::g_StreamlineFGRunning.load() ? 1 : 0, g_FGTransitionCooldown, slOffSwapchainGrace,
+                    g_FGRuntimeOwnsSwapchain ? 1 : 0, currentSwapchainQueue, currentOriginalGameQueue);
             } else {
                 HookLogImportant("DX12: Swapchain change (no FG active) — normal reinit");
             }
@@ -7486,6 +7512,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // Use 600 frames (~4s@150fps) to cover high-fps menus where
                 // SL's swapchain queue persists after FG teardown.
                 g_SLOffHeuristicGrace.store(600, std::memory_order_release);
+                g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
 
                 // DO NOT restore g_SwapchainQueue to g_OriginalGameQueue here.
                 // When SL activates FG, it calls CreateSwapChainForHwnd with its

@@ -113,6 +113,26 @@ inline bool ShouldSuppressLikelyDuplicateTopLevelPresent(bool runtimeOwnsSwapcha
     return true;
 }
 
+inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive,
+                                                  bool fgRecentlyWasActive,
+                                                  bool hasFGTransitionCooldown,
+                                                  bool recentStreamlineTeardown,
+                                                  bool runtimeOwnsSwapchain,
+                                                  bool hasSwapchainQueue,
+                                                  bool hasOriginalGameQueue,
+                                                  bool swapchainQueueDiffersFromOriginalGameQueue) {
+    if (fgCurrentlyActive || fgRecentlyWasActive || hasFGTransitionCooldown) {
+        return true;
+    }
+
+    // Final DLSS FG teardown can briefly look like "FG fully off" even though
+    // the replacement swapchain still belongs to the departing runtime and is
+    // bound to a non-game queue. Immediate pre-SL reinit in that window can
+    // recreate sync resources on the wrong queue and crash the game.
+    return recentStreamlineTeardown && runtimeOwnsSwapchain && hasSwapchainQueue && hasOriginalGameQueue &&
+           swapchainQueueDiffersFromOriginalGameQueue;
+}
+
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
                                                         bool postSLActive, bool processFrameRecentlySeen) {
     return startupActivationPending && streamlineFGRunning && !postSLActive && !processFrameRecentlySeen;
