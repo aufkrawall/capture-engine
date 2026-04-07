@@ -4851,14 +4851,50 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             }
         }
 
-        if (g_PostSLLockedQueue) {
+        ID3D12CommandQueue* directQueueBehindWrapper = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
+        ID3D12CommandQueue* latestSLWrapperQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
+        bool hasDirectQueueBehindWrapper = directQueueBehindWrapper != nullptr;
+        bool preferRealQueueBehindWrapper = ce::dx12_overlay_policy::ShouldUsePostSLRealQueueBehindWrapperAfterFSR(
+            g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper);
+        bool allowWrapperBootstrapQueue = ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(
+            g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper, latestSLWrapperQueue != nullptr);
+        const bool lockedQueueIsSLWrapper =
+            g_PostSLLockedQueue && g_PostSLLockedQueue != g_OriginalGameQueue && g_PostSLLockedQueue != scQueue;
+        const bool selectDirectQueueInsteadOfLockedWrapper =
+            ce::dx12_overlay_policy::ShouldSelectPostSLRealQueueBehindWrapperInsteadOfLockedQueueAfterFSR(
+                g_PostSLLockedQueue != nullptr, g_HadFSRFGPhase, slFGNow, lockedQueueIsSLWrapper,
+                hasDirectQueueBehindWrapper);
+
+        if (selectDirectQueueInsteadOfLockedWrapper) {
+            queue = directQueueBehindWrapper;
+            static int s_promoteSelectionLog = 0;
+            if (s_promoteSelectionLog++ < 5) {
+                HookLog("DX12: PostSL queue candidate — direct real queue %p replacing locked wrapper %p",
+                        queue, g_PostSLLockedQueue);
+            }
+        } else if (g_PostSLLockedQueue) {
             queue = g_PostSLLockedQueue;
         } else if (slFGNow) {
-            // During SL FG, prefer scQueue when it differs from origGame.
-            // SL's FG may recreate the swapchain on its own internal queue.
-            // Backbuffers belong to scQueue — submitting on origGame causes
-            // DEVICE_REMOVED from cross-queue backbuffer access (GTA V).
-            if (scQueue && scQueue != g_OriginalGameQueue) {
+            if (preferRealQueueBehindWrapper) {
+                queue = directQueueBehindWrapper;
+                static int s_realQueueLog = 0;
+                if (s_realQueueLog++ < 5) {
+                    HookLog("DX12: PostSL queue — realQueueBehindWrapper %p (scQueue=%p hadFSR=%d)", queue, scQueue,
+                            g_HadFSRFGPhase ? 1 : 0);
+                }
+            } else if (allowWrapperBootstrapQueue && latestSLWrapperQueue && latestSLWrapperQueue != g_OriginalGameQueue &&
+                       latestSLWrapperQueue != scQueue) {
+                queue = latestSLWrapperQueue;
+                static int s_wrapperBootstrapLog = 0;
+                if (s_wrapperBootstrapLog++ < 5) {
+                    HookLog("DX12: PostSL queue — wrapper bootstrap %p (scQueue=%p hadFSR=%d)", queue, scQueue,
+                            g_HadFSRFGPhase ? 1 : 0);
+                }
+            } else if (scQueue && scQueue != g_OriginalGameQueue) {
+                // During SL FG, prefer scQueue when it differs from origGame.
+                // SL's FG may recreate the swapchain on its own internal queue.
+                // Backbuffers belong to scQueue — submitting on origGame causes
+                // DEVICE_REMOVED from cross-queue backbuffer access (GTA V).
                 queue = scQueue;
                 static int s_scQLog = 0;
                 if (s_scQLog++ < 5)
@@ -4900,14 +4936,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         return;
     }
 
-    // Lock to the first queue we select and REFUSE to follow g_CommandQueue changes.
-    // Epoch 1: locks to origGame (real D3D12 queue, uses realECL).
-    // Epoch ≥2: locks to SL's wrapper queue (uses origECL — dispatches through SL).
-    // Lock prevents mid-epoch queue switching that could cause state mismatches.
+    // Lock to the selected queue for the current epoch, but allow a one-time
+    // post-FSR migration from the wrapper bootstrap queue to the captured real
+    // queue behind it once the ECL detour has observed that path.
     if (g_PostSLLockedQueue == nullptr) {
         g_PostSLLockedQueue = queue;
         queue->AddRef();  // prevent locked queue from being freed between PostSL calls
-        bool usingSLWrapper = (g_HadFSRFGPhase && queue != g_OriginalGameQueue);
+        bool usingSLWrapper = (queue != g_OriginalGameQueue && queue != scQueue);
         bool slFGAtLock = cachedSLFGActive;
         HookLogImportant(
             "DX12: PostSL locked to queue %p (origGame=%p scQueue=%p cmdQueue=%p preFG=%p epoch=%d slWrapper=%d "
@@ -4915,15 +4950,31 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             queue, g_OriginalGameQueue, scQueue, (void*)g_CommandQueue.load(), g_PreFGGameQueue, s_reactivationEpoch,
             usingSLWrapper ? 1 : 0, slFGAtLock ? 1 : 0, g_HadFSRFGPhase ? 1 : 0);
     } else if (queue != g_PostSLLockedQueue) {
-        // g_CommandQueue changed (SL switched to its FG worker queue).
-        // KEEP using the locked queue — it's proven safe.
-        // Release per-call ref on the new queue, switch to locked queue.
-        ID3D12CommandQueue* newCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
-        HookLogImportant("DX12: PostSL REFUSING queue change: locked=%p, cmdQueue=%p (changed!), scQueue=%p",
-                         g_PostSLLockedQueue, newCmdQueue, scQueue);
-        queue->Release();  // Release per-call AddRef on the rejected queue
-        queue = g_PostSLLockedQueue;
-        queue->AddRef();  // Per-call AddRef on the locked queue instead
+        ID3D12CommandQueue* directQueueBehindWrapper = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
+        bool shouldPromoteLockedQueueToRealQueueBehindWrapper =
+            ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueBehindWrapperAfterFSR(
+                g_HadFSRFGPhase, cachedSLFGActive,
+                g_PostSLLockedQueue != g_OriginalGameQueue && g_PostSLLockedQueue != scQueue,
+                directQueueBehindWrapper != nullptr) &&
+            queue == directQueueBehindWrapper;
+        if (shouldPromoteLockedQueueToRealQueueBehindWrapper) {
+            HookLogImportant(
+                "DX12: PostSL promoting locked queue %p -> real queue behind wrapper %p after post-FSR bootstrap",
+                g_PostSLLockedQueue, directQueueBehindWrapper);
+            g_PostSLLockedQueue->Release();
+            g_PostSLLockedQueue = queue;
+            queue->AddRef();  // locked-queue ref; per-call ref is already held
+        } else {
+            // g_CommandQueue changed (SL switched to its FG worker queue).
+            // KEEP using the locked queue — it's proven safe.
+            // Release per-call ref on the new queue, switch to locked queue.
+            ID3D12CommandQueue* newCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
+            HookLogImportant("DX12: PostSL REFUSING queue change: locked=%p, cmdQueue=%p (changed!), scQueue=%p",
+                             g_PostSLLockedQueue, newCmdQueue, scQueue);
+            queue->Release();  // Release per-call AddRef on the rejected queue
+            queue = g_PostSLLockedQueue;
+            queue->AddRef();  // Per-call AddRef on the locked queue instead
+        }
     }
 
     // CRITICAL: Verify device compatibility before using sync resources.
@@ -5183,6 +5234,18 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
 
         bool probeHandled = true;
+        const bool preferRealQueueBehindWrapperAfterFSR =
+            ce::dx12_overlay_policy::ShouldUsePostSLRealQueueBehindWrapperAfterFSR(
+                g_HadFSRFGPhase, cachedSLFGActive, realQ != nullptr);
+        if (preferRealQueueBehindWrapperAfterFSR && g_PostFSRProbeLevel >= 2) {
+            g_PostFSRProbeLevel = 3;
+            g_PostFSRProbeFrames = 0;
+            HookLogImportant(
+                "DX12: PostSL post-FSR switching to direct real queue behind wrapper %p — skipping level 2 probe",
+                realQ);
+            bb->Release();
+            return;
+        }
         // Use the selected swapchain queue when we already have a proven direct
         // submit path for it. Falling back to a transient SL wrapper queue here
         // can hard-remove the device during post-FSR DLSS startup.
