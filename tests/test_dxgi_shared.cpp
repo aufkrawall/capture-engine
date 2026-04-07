@@ -162,3 +162,10 @@ TEST(DXGISharedTest, SyntheticPostSLAdvancesDormantStartupOnlyWhenNormalFramePat
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, true));
 }
+
+TEST(DXGISharedTest, PostSLWrapperBootstrapIsBlockedForPureDLSSWithoutDirectPath) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(false, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(true, false, false));
+}

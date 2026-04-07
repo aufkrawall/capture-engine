@@ -79,4 +79,13 @@ inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPen
     return startupActivationPending && streamlineFGRunning && !postSLActive && !processFrameRecentlySeen;
 }
 
+inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
+                                              bool hasRealD3D12ECL) {
+    if (hadFSRFGPhase) {
+        return true;
+    }
+
+    return hasRealQueueBehindWrapper || hasRealD3D12ECL;
+}
+
 }  // namespace ce::dx12_overlay_policy

@@ -4456,6 +4456,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 }
             }
 
+            auto* probeDev = g_Device.load(std::memory_order_acquire);
+            if (!g_RealD3D12ECL.load(std::memory_order_acquire) && probeDev && IsStreamlineLoaded()) {
+                ProbeRealD3D12ECL(probeDev);
+                HookLogImportant("DX12: PostSL synthetic startup activation probed realECL=%p",
+                                 (void*)g_RealD3D12ECL.load(std::memory_order_acquire));
+            }
+
             g_PostSLOverlayActive.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
             HookLogImportant("DX12: PostSL synthetic startup activation complete — enabling PostSL rendering");
@@ -5517,6 +5524,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                                  realQ);
             s_directLog++;
         } else {
+            const bool allowWrapperBootstrap = ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(
+                g_HadFSRFGPhase, realQ != nullptr, realECLPtr != nullptr);
+            if (!allowWrapperBootstrap) {
+                HookLogImportant(
+                    "DX12: PostSL refusing SL wrapper bootstrap without direct path (queue=%p scQueue=%p wrapper=%p)",
+                    queue, scQueue, (void*)g_SLWrapperQueue.load(std::memory_order_acquire));
+                bb->Release();
+                return;
+            }
+
             // Bootstrap: submit through SL's wrapper to capture real queue on first call
             ID3D12CommandQueue* slQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
             if (slQueue) {
