@@ -266,7 +266,7 @@ static bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAv
     return ShouldForceSteamDX12BypassForState(
         bypassAvailable, true, DetectAPIType(pSwapChain) == APIType::D3D12, IsInWrapperPresent(),
         IsWrappedSwapChainObject(pSwapChain), slLoaded, g_FGCompat.GetRuntimeMode(),
-        g_StreamlineFGRunning.load(std::memory_order_acquire));
+        g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.IsNvPresentLoaded());
 }
 
 static bool ShouldForceThirdPartyOverlayBypass(IDXGISwapChain* pSwapChain, bool bypassAvailable,
@@ -287,12 +287,19 @@ static bool ShouldForceThirdPartyOverlayBypass(IDXGISwapChain* pSwapChain, bool 
 }
 
 static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, const char** overlayModuleOut = nullptr,
-                                                        int* passIndexOut = nullptr) {
+                                                         int* passIndexOut = nullptr) {
     const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
     if (overlayModuleOut) {
         *overlayModuleOut = overlayModule;
     }
     if (!overlayModule || oPresentTrampoline || oPresent1Trampoline) {
+        return DX12StartupPresentMode::kNone;
+    }
+
+    if (ShouldForceSteamDX12BypassForState(bypassAvailable, IsSteamOverlayModule(overlayModule), true, false, false,
+                                           GetModuleHandleA("sl.interposer.dll") != nullptr, g_FGCompat.GetRuntimeMode(),
+                                           g_StreamlineFGRunning.load(std::memory_order_acquire),
+                                           g_FGCompat.IsNvPresentLoaded())) {
         return DX12StartupPresentMode::kNone;
     }
 
@@ -549,6 +556,8 @@ static PFN_Present1 EnsurePresent1BypassTrampoline() {
 }
 
 namespace {
+
+static bool IsSLInterposerLoaded();
 
 // Streamline FG routing state.
 //

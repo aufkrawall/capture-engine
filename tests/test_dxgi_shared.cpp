@@ -27,30 +27,37 @@ TEST(DXGISharedTest, SelectPrimarySwapChainAPITypePrefersHighestDeviceVersion) {
 
 TEST(DXGISharedTest, SteamDX12BypassStaysEnabledUntilStreamlineFGActuallyRuns) {
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false));
+        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false, false));
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
+        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false));
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false));
+        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false, false));
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kDLSSFG, false));
+        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kDLSSFG, false, false));
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, true));
+        true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, true, false));
+}
+
+TEST(DXGISharedTest, SteamDX12BypassAlsoCoversNvPresentStartupWindow) {
+    EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(
+        true, true, true, false, false, false, ce::fg_runtime::RuntimeMode::kOff, false, true));
+    EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(
+        true, true, true, false, false, false, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false, true));
 }
 
 TEST(DXGISharedTest, SteamDX12BypassRequiresCleanNonWrappedEntryPath) {
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        false, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false));
+        false, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false, false));
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, false, true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false));
+        true, false, true, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false, false));
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, false, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false));
+        true, true, false, false, false, true, ce::fg_runtime::RuntimeMode::kOff, false, false));
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, true, true, false, true, ce::fg_runtime::RuntimeMode::kOff, false));
+        true, true, true, true, false, true, ce::fg_runtime::RuntimeMode::kOff, false, false));
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, true, false, true, true, ce::fg_runtime::RuntimeMode::kOff, false));
+        true, true, true, false, true, true, ce::fg_runtime::RuntimeMode::kOff, false, false));
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, true, false, false, false, ce::fg_runtime::RuntimeMode::kOff, false));
+        true, true, true, false, false, false, ce::fg_runtime::RuntimeMode::kOff, false, false));
 }
 
 TEST(DXGISharedTest, DX12OverlayWaitPolicySkipsSmoothMotionButKeepsStartupSafety) {

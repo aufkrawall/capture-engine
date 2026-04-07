@@ -118,24 +118,23 @@ bool CanSafelyInstallExternalPresentDetourPath(bool requiresBypassTrampoline, bo
 
 inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain,
                                                bool inWrapperPresent, bool isWrappedSwapChain, bool streamlineLoaded,
-                                               ce::fg_runtime::RuntimeMode runtimeMode,
-                                               bool streamlineFGRunning) {
+                                               ce::fg_runtime::RuntimeMode runtimeMode, bool streamlineFGRunning,
+                                               bool nvPresentLoaded) {
     if (!bypassAvailable || !isSteamOverlay || !isD3D12SwapChain) {
         return false;
     }
     if (inWrapperPresent || isWrappedSwapChain) {
         return false;
     }
-    if (!streamlineLoaded) {
+    const bool unsafeSteamStartupWindow = streamlineLoaded || nvPresentLoaded;
+    if (!unsafeSteamStartupWindow) {
         return false;
     }
-    if (streamlineFGRunning) {
-        return false;
-    }
-    if (runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG) {
-        return false;
-    }
-    return true;
+
+    const bool streamlineNeedsBypass = streamlineLoaded && !streamlineFGRunning &&
+                                       runtimeMode != ce::fg_runtime::RuntimeMode::kDLSSFG;
+    const bool smoothMotionNeedsBypass = nvPresentLoaded;
+    return streamlineNeedsBypass || smoothMotionNeedsBypass;
 }
 
 // Vulkan-layer label selection for translated APIs should prefer the active DXVK
