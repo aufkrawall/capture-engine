@@ -94,6 +94,11 @@ TEST(DXGISharedTest, StreamlineGeneratedFramePresentUsesSyntheticReentrantRoutin
     EXPECT_FALSE(DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, false));
 }
 
+TEST(DXGISharedTest, PostSLCallbackStaysInstalledOnlyWhileStreamlineStillOwnsPresentPath) {
+    EXPECT_TRUE(DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(true));
+    EXPECT_FALSE(DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(false));
+}
+
 TEST(DXGISharedTest, DX12OverlayWaitPolicySkipsSmoothMotionButKeepsStartupSafety) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(
         false, true, true, ce::fg_runtime::RuntimeMode::kOff));

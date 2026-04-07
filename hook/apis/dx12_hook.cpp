@@ -138,6 +138,8 @@ static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwnd = nullptr;
 static ID3D12GraphicsCommandList* s_descFreeCmdList = nullptr;
 static D3D12_CPU_DESCRIPTOR_HANDLE s_descFreeRtv = {};
 
+static void PostSLOverlayRender(IDXGISwapChain* pSwapChain);
+
 // Post-SL overlay rendering state.  Controls whether the re-entrant Present
 // callback should actually render or skip (e.g. during FG cooldown / resize).
 static std::atomic<bool> g_PostSLOverlayActive{false};
@@ -2465,6 +2467,27 @@ static void StartTransitionCooldown() {
 
 void DX12_StartTransitionCooldown() {
     StartTransitionCooldown();
+}
+
+void DX12_OnStreamlineFGStateChanged(bool active) {
+    if (active) {
+        if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != &PostSLOverlayRender) {
+            DXGIShared::g_PostSLOverlayRenderCallback.store(&PostSLOverlayRender, std::memory_order_release);
+            HookLogImportant("DX12: Streamline FG ON — pre-armed PostSL callback for startup routing");
+        }
+        g_PostSLOverlayActive.store(false, std::memory_order_release);
+        g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+        g_PostSLStallCounter.store(0, std::memory_order_release);
+        g_PostSLStableFrameCount.store(0, std::memory_order_release);
+        return;
+    }
+
+    g_PostSLOverlayActive.store(false, std::memory_order_release);
+    DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    g_PostSLStallCounter.store(0, std::memory_order_release);
+    g_PostSLStableFrameCount.store(0, std::memory_order_release);
+    HookLogImportant("DX12: Streamline FG OFF — cleared PostSL callback state");
 }
 
 // HWND → swapchain tracking for diagnostics and E_ACCESSDENIED recovery.
@@ -6821,9 +6844,13 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
 
-            // Reset PostSL state for fresh start after transition
+            // Reset PostSL state for fresh start after transition.
+            // Keep the callback installed on Streamline FG activation so
+            // startup synthetic presents can immediately find it.
             g_PostSLOverlayActive.store(false, std::memory_order_release);
-            DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+            if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(outerSLFGRunning)) {
+                DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+            }
             g_PostSLStallCounter.store(0, std::memory_order_release);
             g_PostSLStableFrameCount.store(0, std::memory_order_release);
             g_PostSLConfirmedRendering.store(false, std::memory_order_release);
@@ -7073,12 +7100,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
 
-            // Immediately disable post-SL callback during FG transitions.
-            // This prevents stale callbacks from firing while the routing
-            // logic updates (e.g., FSR→DLSS switch where pre-SL ECL would
-            // interfere with SL's FG initialization).
+            // Immediately disable post-SL rendering during FG transitions.
+            // Keep the callback installed when Streamline is still running so
+            // synthetic startup presents can route through PostSL safely while
+            // the active gate and cooldown still suppress real rendering.
             g_PostSLOverlayActive.store(false, std::memory_order_release);
-            DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+            if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(currentSLFGRunning)) {
+                DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+            }
             g_PostSLStallCounter.store(0, std::memory_order_release);      // Fresh start after transition
             g_PostSLStableFrameCount.store(0, std::memory_order_release);  // Reset warmup counter
 

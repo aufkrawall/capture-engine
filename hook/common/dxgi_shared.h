@@ -159,6 +159,10 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapCha
     return isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule;
 }
 
+inline bool ShouldKeepPostSLCallbackInstalledDuringTransition(bool streamlineFGRunningAfterTransition) {
+    return streamlineFGRunningAfterTransition;
+}
+
 // Vulkan-layer label selection for translated APIs should prefer the active DXVK
 // D3D11 path over a merely-present DXVK D3D9 helper DLL in the same folder.
 inline const char* SelectTranslatedGraphicsAPIName(bool hasDxvkD3D11, bool hasDxvkD3D9, bool hasVkd3dD3D12,

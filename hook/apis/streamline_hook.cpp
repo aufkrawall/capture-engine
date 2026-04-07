@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include "dx12_hook.h"
 #include "../common/dxgi_shared.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
@@ -305,6 +306,7 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
     ApplyCombinedDLSSFGState(active, multiplier);
 
     if (previousSignal != active) {
+        DX12_OnStreamlineFGStateChanged(active);
         HookLogImportant("Streamline Hook: FG state transition %s->%s via %s", previousSignal ? "ON" : "OFF",
                          active ? "ON" : "OFF", source ? source : "runtime-state");
     }
