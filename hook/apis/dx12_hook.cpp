@@ -9338,11 +9338,16 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     bool hasDedicatedQueue = ShouldUseDedicatedOverlayQueue() && g_State.overlayQueue != nullptr &&
                              g_State.crossQueueFence != nullptr && g_State.crossQueueFenceEvent != nullptr;
     bool heuristicFSRFG = g_FGCompat.IsHeuristicFSRFGActive();
-    if (isInterpolatedFrame && !hasDedicatedQueue && !heuristicFSRFG) {
+    bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+            isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning)) {
         sc3->Release();
         return;
     }
-    if (!isInterpolatedFrame && ShouldSuppressLikelyDuplicateTopLevelPresent(sc3, currentBackBufferIdx)) {
+    if (!isInterpolatedFrame &&
+        ce::dx12_overlay_policy::ShouldSuppressLikelyDuplicateTopLevelPresent(g_FGRuntimeOwnsSwapchain,
+                                                                              streamlineFGRunning) &&
+        ShouldSuppressLikelyDuplicateTopLevelPresent(sc3, currentBackBufferIdx)) {
         sc3->Release();
         return;
     }

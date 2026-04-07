@@ -80,8 +80,41 @@ inline OverlayMetricsBindingDecision DecideOverlayMetricsBinding(bool isRealFram
     };
 }
 
+inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame,
+                                                    bool hasDedicatedQueue,
+                                                    bool heuristicFSRFG,
+                                                    bool runtimeOwnsSwapchain,
+                                                    bool streamlineFGRunning) {
+    if (!isInterpolatedFrame) {
+        return false;
+    }
+
+    if (hasDedicatedQueue || heuristicFSRFG) {
+        return false;
+    }
+
+    // FSR/runtime-owned swapchain transitions can temporarily stop feeding
+    // authoritative ECL counts even though top-level Presents are still the
+    // frames that must drive normal ProcessFrame recovery.
+    if (runtimeOwnsSwapchain && !streamlineFGRunning) {
+        return false;
+    }
+
+    return true;
+}
+
+inline bool ShouldSuppressLikelyDuplicateTopLevelPresent(bool runtimeOwnsSwapchain, bool streamlineFGRunning) {
+    // Runtime-owned non-Streamline swapchain transitions can temporarily depend
+    // on repeated top-level Presents to drive normal ProcessFrame recovery.
+    if (runtimeOwnsSwapchain && !streamlineFGRunning) {
+        return false;
+    }
+
+    return true;
+}
+
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
-                                                       bool postSLActive, bool processFrameRecentlySeen) {
+                                                        bool postSLActive, bool processFrameRecentlySeen) {
     return startupActivationPending && streamlineFGRunning && !postSLActive && !processFrameRecentlySeen;
 }
 
