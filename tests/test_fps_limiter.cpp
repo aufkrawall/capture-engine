@@ -186,6 +186,7 @@ TEST_F(FpsLimiterTest, FGFallback_CaptureSync_DoublesInterval) {
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));
 
     // Simulate FG active (DLSS FG)
+    g_FGCompat.SetDLSSFGMultiplier(2);
     g_FGCompat.SetDLSSFGActive(true);
 
     // Call Apply twice: first sets up cadence, second actually waits

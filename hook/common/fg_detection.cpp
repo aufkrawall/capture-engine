@@ -23,6 +23,27 @@ static void SetSwapchainWrapperDisabled(bool disabled) {}
 
 FGCompatibility g_FGCompat;
 
+namespace {
+
+FGCompatibility::FGType RuntimeModeToFGType(ce::fg_runtime::RuntimeMode mode, int dlssMultiplier) {
+    switch (mode) {
+        case ce::fg_runtime::RuntimeMode::kDLSSFG:
+            return dlssMultiplier >= 3 ? FGCompatibility::FGType::DLSS_MSFG : FGCompatibility::FGType::DLSS_FG;
+        case ce::fg_runtime::RuntimeMode::kFSRFG:
+            return FGCompatibility::FGType::FSR_FG;
+        case ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion:
+            return FGCompatibility::FGType::NVIDIA_SM;
+        case ce::fg_runtime::RuntimeMode::kUnknown:
+            return FGCompatibility::FGType::Unknown;
+        case ce::fg_runtime::RuntimeMode::kOff:
+        case ce::fg_runtime::RuntimeMode::kStreamlineNoFG:
+        default:
+            return FGCompatibility::FGType::None;
+    }
+}
+
+}  // namespace
+
 int64_t FGCompatibility::GetCurrentTimeUs() const {
     static int64_t qpcFreq = 0;
     if (qpcFreq == 0) {
@@ -54,41 +75,30 @@ const char* FGCompatibility::GetFGTypeName(FGType type) const {
     }
 }
 
-FGCompatibility::FGType FGCompatibility::GetActiveFGType() const {
-    // DORMANT MODE: Only return API-detected types, skip pattern detection
-    // This prevents false positives from pattern-based detection
-    if (dormantMode.load()) {
-        // Only check API-based detection
-        if (fsrFGApiActive.load(std::memory_order_acquire)) {
-            return FGType::FSR_FG;
-        }
-        if (dlssFGApiActive.load(std::memory_order_acquire)) {
-            return FGType::DLSS_FG;
-        }
-        if (heuristicFSRFGActive.load(std::memory_order_acquire)) {
-            return FGType::FSR_FG;
-        }
-        return FGType::None;
-    }
+ce::fg_runtime::DetectionSnapshot FGCompatibility::CaptureDetectionSnapshot() const {
+    ce::fg_runtime::DetectionSnapshot snapshot;
+    snapshot.dormant = dormantMode.load(std::memory_order_acquire);
+    snapshot.nvPresentLoaded = nvPresentDetected.load(std::memory_order_acquire);
+    snapshot.streamlineLoaded = streamlineSupportPresent.load(std::memory_order_acquire);
+    snapshot.streamlineFGSignaled = streamlineFGSignal.load(std::memory_order_acquire);
+    snapshot.dlssFGApiActive = dlssFGApiActive.load(std::memory_order_acquire);
+    snapshot.fsrFGApiActive = fsrFGApiActive.load(std::memory_order_acquire);
+    snapshot.heuristicFSRFGActive = heuristicFSRFGActive.load(std::memory_order_acquire);
+    snapshot.nvidiaSmoothMotionDetected = nvidiaSmoothMotionDetected.load(std::memory_order_acquire);
+    snapshot.dlssFGMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
+    return snapshot;
+}
 
-    // Normal mode: Priority: FSR FG > DLSS FG > NVIDIA SM > None
-    if (fsrFGApiActive.load(std::memory_order_acquire)) {
-        return FGType::FSR_FG;
-    }
-    if (dlssFGApiActive.load(std::memory_order_acquire)) {
-        return FGType::DLSS_FG;
-    }
-    if (heuristicFSRFGActive.load(std::memory_order_acquire)) {
-        return FGType::FSR_FG;
-    }
-    if (IsNvidiaSmoothMotionActive()) {
-        return FGType::NVIDIA_SM;
-    }
-    return FGType::None;
+ce::fg_runtime::RuntimeMode FGCompatibility::GetRuntimeMode() const {
+    return ce::fg_runtime::ClassifyRuntimeMode(CaptureDetectionSnapshot());
+}
+
+FGCompatibility::FGType FGCompatibility::GetActiveFGType() const {
+    return RuntimeModeToFGType(GetRuntimeMode(), dlssFGMultiplier.load(std::memory_order_acquire));
 }
 
 bool FGCompatibility::IsFGActive() const {
-    return GetActiveFGType() != FGType::None;
+    return ce::fg_runtime::IsRuntimeFGActive(GetRuntimeMode());
 }
 
 void FGCompatibility::SetDLSSFGActive(bool active) {
@@ -121,19 +131,7 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
             HookLog("FG: Disabled dormant mode for DLSS FG metrics");
         }
 
-        // Update the combined active behavior
-        FGType newType = GetActiveFGType();
-        FGType oldType = activeBehavior.exchange(newType);
-        if (oldType != newType) {
-            HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
-
-            // NOTE: We intentionally do NOT call DX12_InvalidateSwapchain() here.
-            // swapchainInvalid=true blocks DetourPresent from calling ProcessFrame,
-            // and is only cleared by ResizeBuffers — which may never come during a
-            // pure FG type switch.  Actual swapchain recreation (if any) is handled
-            // by CreateSwapChainForHwnd → StartTransitionCooldown.  ProcessFrame's
-            // FG transition cooldown handles the overlay pause/resume.
-        }
+        HookLog("FG: Active type now %s", GetFGTypeName(GetActiveFGType()));
     }
 }
 
@@ -169,11 +167,7 @@ void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
             HookLog("FG: Disabled dormant mode for heuristic FSR FG metrics");
         }
 
-        FGType newType = GetActiveFGType();
-        FGType oldType = activeBehavior.exchange(newType);
-        if (oldType != newType) {
-            HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
-        }
+        HookLog("FG: Active type now %s", GetFGTypeName(GetActiveFGType()));
     }
 }
 
@@ -182,11 +176,18 @@ void FGCompatibility::SetFSRFGActive(bool active) {
     if (wasActive != active) {
         HookLog("FG: FSR FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED", dormantMode.load() ? 1 : 0);
 
-        FGType newType = GetActiveFGType();
-        FGType oldType = activeBehavior.exchange(newType);
-        if (oldType != newType) {
-            HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
+        if (active && dlssFGApiActive.load(std::memory_order_acquire)) {
+            HookLog("FG: Clearing DLSS FG API state - FSR FG API takes priority");
+            dlssFGApiActive.store(false, std::memory_order_release);
+            dlssFGMultiplier.store(0, std::memory_order_release);
         }
+
+        if (active && dormantMode.load()) {
+            dormantMode.store(false, std::memory_order_release);
+            HookLog("FG: Disabled dormant mode for FSR FG metrics");
+        }
+
+        HookLog("FG: Active type now %s", GetFGTypeName(GetActiveFGType()));
     }
 }
 
@@ -369,31 +370,19 @@ void FGCompatibility::DetectPattern() {
         return;
     }
 
-    if (!IsFGActive()) {
+    if (GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kOff) {
         int mult = cachedMultiplier.load();
 
-        if (mult == 2) {
-            int expected = nvidiaSMConfirmCount.load(std::memory_order_acquire);
-            while (expected < NVIDIA_SM_CONFIRM_THRESHOLD) {
-                if (nvidiaSMConfirmCount.compare_exchange_weak(expected, expected + 1, std::memory_order_acq_rel,
-                                                               std::memory_order_acquire)) {
-                    expected++;
-                } else {
-                    expected = nvidiaSMConfirmCount.load(std::memory_order_acquire);
-                }
-            }
-
-            if (expected == NVIDIA_SM_CONFIRM_THRESHOLD) {
-                FGType prev = activeBehavior.exchange(FGType::NVIDIA_SM);
-                if (prev != FGType::NVIDIA_SM) {
+        if (mult == 2 && nvPresentDetected.load(std::memory_order_acquire)) {
+            const int confirmCount = nvidiaSMConfirmCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+            if (confirmCount >= NVIDIA_SM_CONFIRM_THRESHOLD) {
+                if (!nvidiaSmoothMotionDetected.exchange(true, std::memory_order_acq_rel)) {
                     HookLog("FG: NVIDIA Smooth Motion detected (2x multiplier confirmed)");
                 }
             }
         } else {
-            FGType current = activeBehavior.load(std::memory_order_acquire);
-            if (current == FGType::NVIDIA_SM) {
-                nvidiaSMConfirmCount.store(0, std::memory_order_release);
-                activeBehavior.store(FGType::None, std::memory_order_release);
+            nvidiaSMConfirmCount.store(0, std::memory_order_release);
+            if (nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel)) {
                 HookLog("FG: NVIDIA Smooth Motion pattern broken, resetting to None");
             }
         }

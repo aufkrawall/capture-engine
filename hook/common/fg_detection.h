@@ -4,6 +4,8 @@
 #include <atomic>
 #include <cstdint>
 
+#include "fg_runtime_state.h"
+
 // Forward declaration for HookLog
 void HookLog(const char* fmt, ...);
 
@@ -31,6 +33,20 @@ public:
     // State queries
     bool IsFGActive() const;
     FGType GetActiveFGType() const;
+    ce::fg_runtime::RuntimeMode GetRuntimeMode() const;
+    bool HasStreamlineSupport() const {
+        return streamlineSupportPresent.load(std::memory_order_acquire) || streamlineFGSignal.load(std::memory_order_acquire);
+    }
+    bool HasFSRFGSupport() const {
+        return fsrSupportPresent.load(std::memory_order_acquire) || fsrFGApiActive.load(std::memory_order_acquire) ||
+               heuristicFSRFGActive.load(std::memory_order_acquire);
+    }
+    void SetStreamlineSupportPresent(bool present) {
+        streamlineSupportPresent.store(present, std::memory_order_release);
+    }
+    void SetFSRFGSupportPresent(bool present) {
+        fsrSupportPresent.store(present, std::memory_order_release);
+    }
     int GetFGMultiplier() const {
         const int apiMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
         return apiMultiplier >= 2 ? apiMultiplier : cachedMultiplier.load(std::memory_order_acquire);
@@ -86,7 +102,7 @@ public:
 
     // NVIDIA Smooth Motion specific
     bool IsNvidiaSmoothMotionActive() const {
-        return activeBehavior.load() == FGType::NVIDIA_SM;
+        return nvidiaSmoothMotionDetected.load(std::memory_order_acquire);
     }
     void DetectNvidiaSmoothMotion();
 
@@ -131,9 +147,7 @@ public:
         // re-detected within 3 frames, triggering a phantom FG transition
         // and a second unnecessary cooldown.
         cachedMultiplier.store(1, std::memory_order_release);
-        FGType current = activeBehavior.load(std::memory_order_acquire);
-        if (current == FGType::NVIDIA_SM) {
-            activeBehavior.store(FGType::None, std::memory_order_release);
+        if (nvidiaSmoothMotionDetected.exchange(false, std::memory_order_acq_rel)) {
             HookLog("FG: Cleared NVIDIA_SM state + multiplier (SL FG transition cleanup)");
         }
     }
@@ -149,9 +163,6 @@ public:
 private:
     // Dormant mode flag - when true, skip all pattern-based detection
     std::atomic<bool> dormantMode{kDefaultDormantMode};
-
-    // Active FG type based on API activation (not DLL detection)
-    std::atomic<FGType> activeBehavior{FGType::None};
 
     // Frame history for pattern detection
     static constexpr int WINDOW_SIZE = 120;  // ~2 seconds at 60fps
@@ -193,12 +204,16 @@ private:
     std::atomic<bool> fsrFGApiActive{false};
     std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<int> dlssFGMultiplier{0};
+    std::atomic<bool> streamlineSupportPresent{false};
+    std::atomic<bool> fsrSupportPresent{false};
+    std::atomic<bool> nvidiaSmoothMotionDetected{false};
 
     // Direct signal from Streamline hook — set IMMEDIATELY when
     // slDLSSGSetOptions transitions FG on/off.  Faster than heuristic.
     std::atomic<bool> streamlineFGSignal{false};
 
     // Internal methods
+    ce::fg_runtime::DetectionSnapshot CaptureDetectionSnapshot() const;
     void UpdateMetrics();
     void DetectPattern();
     int64_t GetCurrentTimeUs() const;

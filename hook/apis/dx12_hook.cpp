@@ -1289,21 +1289,16 @@ static void ResetStartupOverlayBackendActivationStage() {
 }
 
 static bool IsActualFrameGenerationActive() {
-    // FSR FG API (ffxCreateContext-based) detection
-    if (g_FGCompat.IsFSRFGApiActive())
-        return true;
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    return runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG || runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
+}
 
-    // DLSS FG: require both the API flag AND a confirmed multiplier (>= 2).
-    // During FSR FG mode switches, the DLSS FG API state can toggle transiently
-    // without setting a multiplier.  Without the multiplier check, the transient
-    // state would trigger dedicated queue creation/destruction cycles → flickering.
-    if (g_FGCompat.IsDLSSFGApiActive()) {
-        int mult = g_FGCompat.GetFGMultiplier();
-        if (mult >= 2)
-            return true;
-    }
+static bool IsFSRFrameGenerationActive() {
+    return g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kFSRFG;
+}
 
-    return false;
+static bool IsNvidiaSmoothMotionActiveRuntime() {
+    return g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion;
 }
 
 static ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue* queue);
@@ -3252,7 +3247,7 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
     {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-        bool fsrFGNow = g_FGCompat.IsFGActive() && !slFGNow;
+        bool fsrFGNow = IsFSRFrameGenerationActive();
 
         // CRITICAL: When FG runtime owns swapchain (FSR FG), use origGame's
         // queue for backend init.  FSR's queue must not receive ANY GPU work
@@ -5970,7 +5965,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-        bool fsrFGNow = g_FGCompat.IsFGActive() && !slFGNow;
+        bool fsrFGNow = IsFSRFrameGenerationActive();
 
         // CRITICAL FG SAFETY: When an FG runtime (FSR) owns the swapchain queue,
         // we must NOT submit ANY GPU work (ECLs, resource priming, allocator/fence
@@ -6069,7 +6064,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         ++s_queueLogCount;
         if (s_queueLogCount <= 10 || (s_queueLogCount % 300) == 0) {
             bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-            bool fsrFGActive = g_FGCompat.IsFGActive();
+            bool fsrFGActive = IsFSRFrameGenerationActive();
             const char* qPath = "unknown";
             if (slFGNow && g_OriginalGameQueue && gameQueue == g_OriginalGameQueue)
                 qPath = "origGame(SL-FG)";
@@ -6148,7 +6143,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // ClearNvidiaSMState resets the confirm counter and cached multiplier,
             // but DetectPattern can re-detect within 3 frames if the multiplier
             // rebuilds from recent frame history.  Force-clear each frame.
-            if (g_FGCompat.IsNvidiaSmoothMotionActive()) {
+            if (IsNvidiaSmoothMotionActiveRuntime()) {
                 g_FGCompat.ClearNvidiaSMState();
                 static int s_phantomSMClears = 0;
                 if (s_phantomSMClears++ < 5)
@@ -8932,7 +8927,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // that can be freed at any time.  Skip registration for unknown queues to
     // avoid calling virtual methods (GetDesc/GetDevice) on freed objects.
     {
-        bool anyFGActive = g_FGCompat.IsFGActive() || DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed);
+        const bool anyFGActive = IsActualFrameGenerationActive() || IsNvidiaSmoothMotionActiveRuntime() ||
+                                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed);
 
         // Capture SL's wrapper queue: during SL FG, any DIRECT queue in ECL
         // that's NOT origGame/scQueue/primaryQ is likely SL's COM wrapper.

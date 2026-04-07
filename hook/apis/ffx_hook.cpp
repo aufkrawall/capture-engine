@@ -171,6 +171,7 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
         return false;
 
     HookLog("FFX Hook: Installing hooks for module %s (%p)", moduleName, hModule);
+    g_FGCompat.SetFSRFGSupportPresent(true);
 
     // Get the original functions
     PfnFfxCreateContext createCtx = (PfnFfxCreateContext)GetProcAddress(hModule, "ffxCreateContext");
@@ -259,6 +260,7 @@ void Init() {
         HMODULE hMod = GetModuleHandleW(ffxModules[i]);
         if (hMod) {
             HookLog("FFX Hook: Found module %s at %p", ffxModuleNames[i], hMod);
+            g_FGCompat.SetFSRFGSupportPresent(true);
             if (InstallHooksForModule(hMod, ffxModuleNames[i])) {
                 g_Initialized.store(true, std::memory_order_release);
                 g_NoModulesLogged.store(false, std::memory_order_release);
@@ -328,6 +330,8 @@ void Shutdown() {
     g_Original_ffxDestroyContext = nullptr;
     g_HookedModule = nullptr;
     g_ActiveFGContextCount.store(0, std::memory_order_release);
+    g_FGCompat.SetFSRFGActive(false);
+    g_FGCompat.SetFSRFGSupportPresent(false);
     g_NoModulesLogged.store(false, std::memory_order_release);
     g_Initialized.store(false, std::memory_order_release);
 

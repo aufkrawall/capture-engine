@@ -541,6 +541,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         return false;
     }
 
+    g_FGCompat.SetStreamlineSupportPresent(true);
+
     RegisterDynamicHooksOnce();
 
     const char* moduleBaseName = GetModuleBaseName(moduleNameOrPath);
@@ -845,6 +847,7 @@ void Init() {
     for (const auto& module : modules) {
         if (HMODULE handle = GetModuleHandleW(module.wideName)) {
             foundModule = true;
+            g_FGCompat.SetStreamlineSupportPresent(true);
             InstallHooksForModule(handle, module.narrowName);
         }
     }
@@ -870,6 +873,11 @@ void Shutdown() {
     std::lock_guard<std::mutex> lock(g_StateMutex);
     g_ViewportStates.clear();
     g_ViewportCapabilityMax.clear();
+    g_FGCompat.SetStreamlineFGSignal(false);
+    g_FGCompat.SetDLSSFGMultiplier(0);
+    g_FGCompat.SetDLSSFGActive(false);
+    g_FGCompat.SetStreamlineSupportPresent(false);
+    DXGIShared::g_StreamlineFGRunning.store(false, std::memory_order_release);
 }
 
 }  // namespace StreamlineHook
