@@ -151,6 +151,13 @@ inline PostSLBackbufferBarrierMode DecidePostSLBackbufferBarrierMode(bool stream
     return PostSLBackbufferBarrierMode::kCommonToRenderTarget;
 }
 
+inline bool ShouldUsePostSLOffscreenCompositeAfterFSR(bool hadFSRFGPhase,
+                                                      bool streamlineFGActive,
+                                                      bool selectedQueueIsSwapchainQueue,
+                                                      bool queueIsSLWrapper) {
+    return hadFSRFGPhase && streamlineFGActive && selectedQueueIsSwapchainQueue && !queueIsSLWrapper;
+}
+
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
     return streamlineFGRunning && !processFrameRecentlySeen;
 }

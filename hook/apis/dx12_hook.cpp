@@ -5344,6 +5344,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     const bool useExplicitPostFSRSwapchainTransitions =
         ce::dx12_overlay_policy::ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(
             g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
+    const bool usePostSLOffscreenComposite = ce::dx12_overlay_policy::ShouldUsePostSLOffscreenCompositeAfterFSR(
+        g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
 
     // Cross-queue sync fence — used for SL wrapper queue ↔ origGame synchronization
     // Created lazily when needed for PostSL ECL dispatch on SL's wrapper queue.
@@ -5387,13 +5389,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
         s_bbHealthLog++;
     }
-    if (willRender && slFGBarrierFree) {
+    if (willRender && !usePostSLOffscreenComposite && slFGBarrierFree) {
         // UAV barrier: full GPU pipeline flush, no state tracking modification
         D3D12_RESOURCE_BARRIER uavBarrier = {};
         uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         uavBarrier.UAV.pResource = nullptr;  // NULL = global flush
         list->ResourceBarrier(1, &uavBarrier);
-    } else if (willRender) {
+    } else if (willRender && !usePostSLOffscreenComposite) {
         D3D12_RESOURCE_BARRIER preBarrier = {};
         preBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         preBarrier.Transition.pResource = bb;
@@ -5417,9 +5419,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 barrierModeName = "present->rt";
             }
             HookLogImportant(
-                "DX12: PostSL barrier mode — mode=%s slFGBarrierFree=%d explicitPostFSR=%d hadFSR=%d xqSync=%d",
+                "DX12: PostSL barrier mode — mode=%s slFGBarrierFree=%d explicitPostFSR=%d offscreen=%d hadFSR=%d xqSync=%d",
                 barrierModeName, slFGBarrierFree ? 1 : 0, useExplicitPostFSRSwapchainTransitions ? 1 : 0,
-                g_HadFSRFGPhase ? 1 : 0, didXQSync ? 1 : 0);
+                usePostSLOffscreenComposite ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, didXQSync ? 1 : 0);
         }
     }
     if (willRender) {
@@ -5443,15 +5445,6 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             }
         }
 
-        // Recreate RTV for this buffer index (cheap CPU-side op)
-        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-        UINT rtvSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        rtvHandle.ptr += (SIZE_T)bufIdx * rtvSize;
-        dev->CreateRenderTargetView(bb, nullptr, rtvHandle);
-
-        s_descFreeCmdList = list;
-        s_descFreeRtv = rtvHandle;
-
         // Update text/API labels on real frames, but always keep the overlay
         // bound to the shared metrics object so FPS/history remain visible when
         // the first frame after an FG-driven reinit is classified as interpolated.
@@ -5470,8 +5463,69 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             g_D3D11On12Adapter.SetGraphicsAPI(api);
         }
 
-        g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
-        s_descFreeCmdList = nullptr;
+        if (usePostSLOffscreenComposite && EnsureOffscreenRT(dev, g_State.cachedWidth, g_State.cachedHeight, g_State.format)) {
+            // Avoid binding the post-FSR DLSS backbuffer as an RTV on the first real
+            // PostSL render. Instead composite through an offscreen RT and copy back.
+            D3D12_RESOURCE_BARRIER toCopyDest = {};
+            toCopyDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            toCopyDest.Transition.pResource = g_State.offscreenRT;
+            toCopyDest.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+            toCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+            toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &toCopyDest);
+
+            D3D12_TEXTURE_COPY_LOCATION bbSrc = {};
+            bbSrc.pResource = bb;
+            bbSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            bbSrc.SubresourceIndex = 0;
+            D3D12_TEXTURE_COPY_LOCATION offDst = {};
+            offDst.pResource = g_State.offscreenRT;
+            offDst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            offDst.SubresourceIndex = 0;
+            list->CopyTextureRegion(&offDst, 0, 0, 0, &bbSrc, nullptr);
+
+            D3D12_RESOURCE_BARRIER toRenderTarget = {};
+            toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            toRenderTarget.Transition.pResource = g_State.offscreenRT;
+            toRenderTarget.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+            toRenderTarget.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            toRenderTarget.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &toRenderTarget);
+
+            s_descFreeCmdList = list;
+            s_descFreeRtv = g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart();
+            g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
+            s_descFreeCmdList = nullptr;
+
+            D3D12_RESOURCE_BARRIER toCopySource = {};
+            toCopySource.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            toCopySource.Transition.pResource = g_State.offscreenRT;
+            toCopySource.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            toCopySource.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            toCopySource.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &toCopySource);
+
+            D3D12_TEXTURE_COPY_LOCATION offSrc = {};
+            offSrc.pResource = g_State.offscreenRT;
+            offSrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            offSrc.SubresourceIndex = 0;
+            D3D12_TEXTURE_COPY_LOCATION bbDst = {};
+            bbDst.pResource = bb;
+            bbDst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            bbDst.SubresourceIndex = 0;
+            list->CopyTextureRegion(&bbDst, 0, 0, 0, &offSrc, nullptr);
+        } else {
+            // Recreate RTV for this buffer index (cheap CPU-side op)
+            D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+            UINT rtvSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+            rtvHandle.ptr += (SIZE_T)bufIdx * rtvSize;
+            dev->CreateRenderTargetView(bb, nullptr, rtvHandle);
+
+            s_descFreeCmdList = list;
+            s_descFreeRtv = rtvHandle;
+            g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
+            s_descFreeCmdList = nullptr;
+        }
         rendered = true;
     } else {
         // Log why rendering was skipped (HookLogImportant for visibility after reactivation)
@@ -5483,7 +5537,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     // Post-rendering barrier: UAV during SL FG, standard RT→PRESENT otherwise
-    if (rendered && slFGBarrierFree) {
+    if (rendered && !usePostSLOffscreenComposite && slFGBarrierFree) {
         D3D12_RESOURCE_BARRIER uavBarrier = {};
         uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         uavBarrier.UAV.pResource = nullptr;
@@ -5494,7 +5548,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             HookLogImportant("DX12: PostSL UAV post-barrier #%d epoch=%d", s_postBarrierLog, s_reactivationEpoch);
         }
         s_postBarrierLog++;
-    } else if (rendered) {
+    } else if (rendered && !usePostSLOffscreenComposite) {
         D3D12_RESOURCE_BARRIER postBarrier = {};
         postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         postBarrier.Transition.pResource = bb;
