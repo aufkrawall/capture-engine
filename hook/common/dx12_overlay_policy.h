@@ -105,6 +105,10 @@ inline bool ShouldUsePostSLScQueueVirtualSubmit(bool hadFSRFGPhase, bool scQueue
     return scQueueDiffers && !hadFSRFGPhase;
 }
 
+inline bool ShouldLatchFSRFGHistory(bool fsrFGApiActive, bool sawAuthoritativeFSRRuntimeTraffic) {
+    return fsrFGApiActive || sawAuthoritativeFSRRuntimeTraffic;
+}
+
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
     return streamlineFGRunning && !processFrameRecentlySeen;
 }

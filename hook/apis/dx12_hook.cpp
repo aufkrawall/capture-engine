@@ -4761,7 +4761,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         // GTA V's DLSS FG activation triggers a heuristic FSR ghost (brief swapchain
         // queue change) that clears within frames.  Setting hadFSR from heuristic forces
         // PostSL onto SL's internal queues which causes DEVICE_HUNG.
-        if (g_FGCompat.IsFSRFGApiActive() || g_FGCompat.HasFSRFGSupport()) {
+        if (ce::dx12_overlay_policy::ShouldLatchFSRFGHistory(g_FGCompat.IsFSRFGApiActive(), false)) {
             if (!g_HadFSRFGPhase) {
                 g_HadFSRFGPhase = true;
                 HookLogImportant("DX12: PostSL — FSR FG history confirmed, origGame driver state may be stale");
@@ -6230,7 +6230,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // resource state conflicts.  We use realECL to bypass FSR's ECL
             // hook on this queue.
             gameQueue = g_SwapchainQueue;
-            if (!g_HadFSRFGPhase && (g_FGCompat.IsFSRFGApiActive() || g_FGCompat.HasFSRFGSupport())) {
+            if (!g_HadFSRFGPhase &&
+                ce::dx12_overlay_policy::ShouldLatchFSRFGHistory(g_FGCompat.IsFSRFGApiActive(), true)) {
                 g_HadFSRFGPhase = true;
                 HookLogImportant(
                     "DX12: ProcessFrame — FSR FG history confirmed, origGame potentially corrupted for future DLSS FG");
