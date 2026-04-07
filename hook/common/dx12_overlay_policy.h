@@ -133,6 +133,28 @@ inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive,
            swapchainQueueDiffersFromOriginalGameQueue;
 }
 
+inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool recentStreamlineTeardown,
+                                                                bool actualFGActive,
+                                                                bool streamlineFGRunning,
+                                                                bool runtimeOwnsSwapchain,
+                                                                bool hasSwapchainQueue,
+                                                                bool hasCommandQueue,
+                                                                bool commandQueueMatchesSwapchainQueue) {
+    if (actualFGActive || streamlineFGRunning) {
+        return false;
+    }
+
+    if (!recentStreamlineTeardown || !runtimeOwnsSwapchain || !hasSwapchainQueue) {
+        return false;
+    }
+
+    // After DLSS FG tears down, the swapchain can persist on a runtime-owned
+    // queue while ECL traffic is still draining through the departing SL wrapper.
+    // Reinitializing pre-SL overlay resources before command-list traffic has
+    // settled back onto the swapchain queue reproduces the Talos crash path.
+    return !hasCommandQueue || !commandQueueMatchesSwapchainQueue;
+}
+
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
                                                         bool postSLActive, bool processFrameRecentlySeen) {
     return startupActivationPending && streamlineFGRunning && !postSLActive && !processFrameRecentlySeen;

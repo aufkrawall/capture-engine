@@ -6975,6 +6975,33 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             }
         }
 
+        {
+            ID3D12CommandQueue* currentSwapchainQueue = nullptr;
+            {
+                std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+                currentSwapchainQueue = g_SwapchainQueue;
+            }
+            ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+            bool actualFGActive = IsActualFrameGenerationActive();
+            bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+            int slOffSwapchainGrace = g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
+            if (ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
+                    slOffSwapchainGrace > 0, actualFGActive, streamlineFGRunning, g_FGRuntimeOwnsSwapchain,
+                    currentSwapchainQueue != nullptr, currentCommandQueue != nullptr,
+                    currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue)) {
+                static std::atomic<int> s_runtimeOwnedInactiveInitDeferLogCount{0};
+                int logCount = s_runtimeOwnedInactiveInitDeferLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 20 || (logCount % 120) == 0) {
+                    HookLogImportant(
+                        "DX12: Deferring inactive runtime-owned swapchain overlay init until queue settles "
+                        "(slOffGrace=%d scQ=%p cmdQ=%p fgOwned=%d)",
+                        slOffSwapchainGrace, currentSwapchainQueue, currentCommandQueue,
+                        g_FGRuntimeOwnsSwapchain ? 1 : 0);
+                }
+                goto skipOverlayInit;
+            }
+        }
+
         ULONGLONG startupInitDelayRemainingMs = 0;
         if (ShouldDeferOverlayInitForStartupCompat(frameDesc.OutputWindow, &startupInitDelayRemainingMs)) {
             static std::atomic<int> s_startupInitDelayLogCount{0};
