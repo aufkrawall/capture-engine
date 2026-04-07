@@ -118,6 +118,13 @@ inline bool ShouldTreatPostSLAsReactivated(bool postSLActive, bool wasActiveInCu
     return !wasActiveInCurrentCallbackLifetime || postSLLifecycleChanged;
 }
 
+inline bool ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(bool hadFSRFGPhase,
+                                                                bool selectedQueueIsSwapchainQueue,
+                                                                bool queueIsSLWrapper,
+                                                                bool hasSelectedQueueSubmitPath) {
+    return hadFSRFGPhase && selectedQueueIsSwapchainQueue && !queueIsSLWrapper && hasSelectedQueueSubmitPath;
+}
+
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
     return streamlineFGRunning && !processFrameRecentlySeen;
 }

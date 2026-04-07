@@ -5631,11 +5631,40 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         // DEVICE_REMOVED after transitions and re-bootstrap if needed.
         ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
         ExecuteCommandListsPtr realECLPtr = g_RealD3D12ECL.load(std::memory_order_acquire);
+        ExecuteCommandListsPtr selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
+        const bool selectedQueueIsSwapchainQueue = (queue == scQueue);
+        const bool hasSelectedQueueSubmitPath = selectedQueueOrigECL != nullptr || realECLPtr != nullptr;
 
         const bool allowScQueueVirtualSubmit =
             ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(g_HadFSRFGPhase, scQueueDiffers);
 
-        if (allowScQueueVirtualSubmit) {
+        const bool useSelectedSwapchainQueueSubmitAfterFSR =
+            ce::dx12_overlay_policy::ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(
+                g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, isSLWrapperQ, hasSelectedQueueSubmitPath);
+
+        if (useSelectedSwapchainQueueSubmitAfterFSR) {
+            // After an FSR phase, if PostSL already resolved to the runtime's
+            // swapchain queue and probe submits on that queue succeeded, keep
+            // using that queue directly. Falling back to the SL wrapper here
+            // reintroduces the cross-queue handoff we are trying to avoid.
+            submittedQueue = queue;
+            if (selectedQueueOrigECL) {
+                selectedQueueOrigECL(queue, 1, lists);
+                usedOrigECL = true;
+            } else {
+                realECLPtr(queue, 1, lists);
+                usedRealECL = true;
+            }
+
+            static int s_postFSRDirectScQueueLog = 0;
+            if (s_postFSRDirectScQueueLog < 5 || (s_postFSRDirectScQueueLog % 200) == 0) {
+                HookLogImportant(
+                    "DX12: PostSL post-FSR submit #%d on selected scQueue %p (origECL=%d realECL=%d wrapper=%p)",
+                    s_postFSRDirectScQueueLog, queue, selectedQueueOrigECL ? 1 : 0, realECLPtr ? 1 : 0,
+                    g_SLWrapperQueue.load(std::memory_order_acquire));
+            }
+            s_postFSRDirectScQueueLog++;
+        } else if (allowScQueueVirtualSubmit) {
             // Direct submission on scQueue — backbuffers belong to this queue.
             // Bypass SL's wrapper entirely (routes to origGame → wrong queue).
             submittedQueue = scQueue;
