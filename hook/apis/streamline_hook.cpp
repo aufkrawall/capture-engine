@@ -11,6 +11,7 @@
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
 #include "../common/reflex_limiter.h"
+#include "../common/streamline_runtime_policy.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
 
@@ -175,10 +176,6 @@ const char* GetDLSSGModeName(uint32_t mode) {
     }
 }
 
-bool IsDLSSGEnabled(uint32_t mode) {
-    return mode != 0;
-}
-
 const char* GetModuleBaseName(const char* moduleNameOrPath) {
     if (!moduleNameOrPath || !moduleNameOrPath[0]) {
         return nullptr;
@@ -250,11 +247,8 @@ slDLSSGOptions CloneDLSSGOptions(const slDLSSGOptions& source) {
 }
 
 int GetEffectiveMultiplier(const slDLSSGOptions& options) {
-    if (!IsDLSSGEnabled(options.mode)) {
-        return 0;
-    }
-    const int multiplier = StreamlineGeneratedFramesToDLSSFGMultiplier(options.numFramesToGenerate);
-    return multiplier > 0 ? multiplier : 2;
+    return ce::streamline_runtime_policy::ResolveDLSSFGMultiplier(
+        ce::streamline_runtime_policy::IsDLSSGModeEnabled(options.mode), options.numFramesToGenerate);
 }
 
 uint32_t GetCachedCapabilityMax(uint32_t viewportKey) {
@@ -305,8 +299,29 @@ void ApplyCombinedDLSSFGState(bool active, int multiplier) {
     }
 }
 
+void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char* source) {
+    const bool previousSignal = DXGIShared::g_StreamlineFGRunning.exchange(active, std::memory_order_acq_rel);
+    g_FGCompat.SetStreamlineFGSignal(active);
+    ApplyCombinedDLSSFGState(active, multiplier);
+
+    if (previousSignal != active) {
+        HookLogImportant("Streamline Hook: FG state transition %s->%s via %s", previousSignal ? "ON" : "OFF",
+                         active ? "ON" : "OFF", source ? source : "runtime-state");
+    }
+}
+
+bool WasViewportRuntimeStateActive(uint32_t viewportKey) {
+    std::lock_guard<std::mutex> lock(g_StateMutex);
+    const auto it = g_ViewportStates.find(viewportKey);
+    return it != g_ViewportStates.end() && it->second.active;
+}
+
+bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state) {
+    return state.inputsProcessingCompletionFence != nullptr || state.lastPresentInputsProcessingCompletionFenceValue != 0;
+}
+
 void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplier, uint32_t generatedFrames,
-                                uint32_t capabilityMax) {
+                                uint32_t capabilityMax, const char* source) {
     ViewportFGState previousState{};
     bool hadPreviousState = false;
     bool stateChanged = false;
@@ -345,7 +360,7 @@ void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplie
         }
     }
 
-    ApplyCombinedDLSSFGState(anyActive, combinedMultiplier);
+    ApplyCombinedStreamlineRuntimeState(anyActive, combinedMultiplier, source);
 
     if (stateChanged) {
         HookLog("Streamline Hook: Viewport %u state active=%d multiplier=%dx generatedFrames=%u capabilityMax=%u",
@@ -502,7 +517,8 @@ bool TryResolveDLSSGFeatureHooks() {
         }
     }
 
-    return hookedAnything || g_DLSSGSetOptionsHooked.load(std::memory_order_acquire);
+    return hookedAnything || g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ||
+           g_DLSSGGetStateHooked.load(std::memory_order_acquire);
 }
 
 uint32_t QueryCapabilityMax(const slViewportHandle& viewport, const slDLSSGOptions* options) {
@@ -613,8 +629,20 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     }
 
     const slResult result = g_Original_slDLSSGGetState(viewport, state, options);
+    const uint32_t viewportKey = GetViewportKey(viewport);
     if (result == kSlResultOk && state.numFramesToGenerateMax > 0) {
-        CacheCapabilityMax(GetViewportKey(viewport), state.numFramesToGenerateMax);
+        CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
+    }
+
+    const uint32_t capabilityMax = state.numFramesToGenerateMax > 0 ? state.numFramesToGenerateMax
+                                                                     : GetCachedCapabilityMax(viewportKey);
+    const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
+        result == kSlResultOk, options != nullptr, WasViewportRuntimeStateActive(viewportKey),
+        HasDLSSGRuntimeFenceEvidence(state), options ? options->mode : 0,
+        options ? options->numFramesToGenerate : 0u, capabilityMax);
+    if (runtimeUpdate.shouldUpdate) {
+        UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
+                                   runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "GetState");
     }
 
     // SL may overwrite our Present vtable hook asynchronously during FG
@@ -636,13 +664,13 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     const uint32_t viewportKey = GetViewportKey(viewport);
     const int configuredFactor = NormalizeDLSSFGFactor(GetActiveGraphicsConfig().parsed.dlssFGFactor);
     const uint32_t originalGeneratedFrames = options.numFramesToGenerate;
-    const bool wasEnabled = IsDLSSGEnabled(options.mode);
+    const bool requestedEnabled = ce::streamline_runtime_policy::IsDLSSGModeEnabled(options.mode);
 
     uint32_t capabilityMax = GetCachedCapabilityMax(viewportKey);
     bool overrideApplied = false;
     bool overrideClamped = false;
 
-    if (configuredFactor > 0 && wasEnabled) {
+    if (configuredFactor > 0 && requestedEnabled) {
         const uint32_t desiredGeneratedFrames = DLSSFGMultiplierToGeneratedFrames(configuredFactor);
         if (capabilityMax == 0 && desiredGeneratedFrames > 1) {
             capabilityMax = QueryCapabilityMax(viewport, &adjustedOptions);
@@ -660,35 +688,11 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         }
     }
 
-    // Track FG state transitions for diagnostics.
-    // We do NOT trigger overlay cooldown here — the overlay hook chain
-    // (inline or vtable) works correctly through FG transitions.
-    // Cooldown-triggered teardown/reinit during rapid FG cycling caused
-    // repeated D3D12 resource churn and eventual crashes.
-    // Any swapchain changes during FG transitions are handled by the
-    // CreateSwapChainForHwnd / ResizeBuffers hooks instead.
-    {
-        static std::atomic<bool> s_prevFGEnabled{false};
-        bool prev = s_prevFGEnabled.load(std::memory_order_relaxed);
-        if (wasEnabled != prev) {
-            s_prevFGEnabled.store(wasEnabled, std::memory_order_relaxed);
-            // Update the global signal IMMEDIATELY so the DX12 hook can
-            // switch overlay routing (pre-SL ↔ post-SL) before the next
-            // Present call.  GetActiveFGType() heuristics may lag.
-            DXGIShared::g_StreamlineFGRunning.store(wasEnabled, std::memory_order_release);
-            // Also update FGCompatibility's signal so SetDLSSFGActive
-            // knows to trust SL over heuristic FSR FG detection.
-            g_FGCompat.SetStreamlineFGSignal(wasEnabled);
-            HookLogImportant("Streamline Hook: FG state transition %s->%s (signals set)", prev ? "ON" : "OFF",
-                             wasEnabled ? "ON" : "OFF");
-        }
-    }
-
     const slResult result = g_Original_slDLSSGSetOptions(viewport, adjustedOptions);
 
     // SL may overwrite our vtable hooks during slDLSSGSetOptions (especially
     // when re-activating FG).  Verify and repair immediately.
-    if (wasEnabled) {
+    if (requestedEnabled) {
         DXGIShared::RepairVTableHooksIfNeeded();
 
         // Detect Present bypass: if DetourPresent hasn't fired in the last N
@@ -716,9 +720,12 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     }
 
     if (result == kSlResultOk) {
+        const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(
+            true, true, adjustedOptions.mode, adjustedOptions.numFramesToGenerate, capabilityMax);
+        UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
+                                   runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "SetOptions");
+
         const int effectiveMultiplier = GetEffectiveMultiplier(adjustedOptions);
-        UpdateViewportRuntimeState(viewportKey, effectiveMultiplier > 0, effectiveMultiplier,
-                                   effectiveMultiplier > 0 ? adjustedOptions.numFramesToGenerate : 0u, capabilityMax);
 
         if (overrideApplied || overrideClamped) {
             if (capabilityMax > 0) {
@@ -866,7 +873,7 @@ bool IsInitialized() {
 }
 
 bool IsDLSSFGRequestedViaStreamline() {
-    return g_FGCompat.IsDLSSFGApiActive();
+    return DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
 }
 
 void Shutdown() {

@@ -5887,7 +5887,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // Update the FG recency counter BEFORE swapchain change check.
     {
         bool fgNow = IsActualFrameGenerationActive() ||
-                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) || g_FGCompat.IsFGActive();
+                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         if (fgNow)
             g_FramesSinceFGActive = 0;
         else if (g_FramesSinceFGActive < 9999)
@@ -5911,8 +5911,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // swapchain.  Set a transition cooldown so the reinit path (below) defers
             // until the FG runtime is stable.
             bool fgCurrentlyActive = IsActualFrameGenerationActive() ||
-                                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
-                                     g_FGCompat.IsFGActive();
+                                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
             // Also protect if FG was active within the last ~5 seconds (~300 frames).
             // When switching FG modes, the game may disable one FG type many frames
             // before the swapchain actually changes.  Heuristic detection goes inactive
