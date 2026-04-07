@@ -264,7 +264,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapters1(UINT Adapter, IDXGIAd
         WrapperLog("DXGI Factory: EnumAdapters1(%u) -> Wrapped adapter returned", Adapter);
     } else {
         *ppAdapter = nullptr;
-        if (FAILED(hr) && hr != DXGI_ERROR_NOT_FOUND) {
+        if (ce::dxgi_factory_policy::ShouldLogAdapterEnumerationFailure(hr)) {
             WrapperLog("DXGI Factory: EnumAdapters1(%u) -> FAILED hr=0x%08X", Adapter, hr);
         }
     }
@@ -537,9 +537,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CheckFeatureSupport(DXGI_FEATURE Fe
 // IDXGIFactory6
 // ============================================================================
 HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapterByGpuPreference(UINT Adapter, DXGI_GPU_PREFERENCE GpuPreference,
-                                                                        REFIID riid, void** ppvAdapter) {
+                                                                         REFIID riid, void** ppvAdapter) {
     if (!m_pReal6)
         return DXGI_ERROR_UNSUPPORTED;
+    if (ppvAdapter)
+        *ppvAdapter = nullptr;
     WrapperLog("DXGI Factory: EnumAdapterByGpuPreference(Adapter=%u, Preference=%d)", Adapter, (int)GpuPreference);
     IUnknown* pRealUnk = nullptr;
     HRESULT hr = m_pReal6->EnumAdapterByGpuPreference(Adapter, GpuPreference, IID_IDXGIAdapter, (void**)&pRealUnk);
@@ -550,7 +552,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapterByGpuPreference(UINT Ada
         pWrapper->Release();
         pRealAdapter->Release();
         WrapperLog("DXGI Factory: EnumAdapterByGpuPreference -> Wrapped adapter returned");
-    } else {
+    } else if (ce::dxgi_factory_policy::ShouldLogAdapterEnumerationFailure(hr)) {
         WrapperLog("DXGI Factory: EnumAdapterByGpuPreference -> FAILED hr=0x%08X", hr);
     }
     return hr;
