@@ -4529,6 +4529,22 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                                  (void*)g_RealD3D12ECL.load(std::memory_order_acquire));
             }
 
+            ID3D12CommandQueue* directQueue = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
+            ExecuteCommandListsPtr directECL = g_RealD3D12ECL.load(std::memory_order_acquire);
+            if (ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(g_HadFSRFGPhase,
+                                                                                          directQueue != nullptr,
+                                                                                          directECL != nullptr)) {
+                static int s_waitForDirectPathLog = 0;
+                if (s_waitForDirectPathLog < 10 || (s_waitForDirectPathLog % 100) == 0) {
+                    HookLogImportant(
+                        "DX12: PostSL synthetic startup waiting for direct queue path after FSR phase "
+                        "(realQ=%p realECL=%p)",
+                        directQueue, (void*)directECL);
+                }
+                s_waitForDirectPathLog++;
+                return;
+            }
+
             g_PostSLOverlayActive.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
             HookLogImportant("DX12: PostSL synthetic startup activation complete — enabling PostSL rendering");
@@ -5582,7 +5598,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
         ExecuteCommandListsPtr realECLPtr = g_RealD3D12ECL.load(std::memory_order_acquire);
 
-        if (scQueueDiffers) {
+        const bool allowScQueueVirtualSubmit =
+            scQueueDiffers && !ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(
+                                   g_HadFSRFGPhase, realQ != nullptr, realECLPtr != nullptr);
+
+        if (allowScQueueVirtualSubmit) {
             // Direct submission on scQueue — backbuffers belong to this queue.
             // Bypass SL's wrapper entirely (routes to origGame → wrong queue).
             submittedQueue = scQueue;
@@ -5759,16 +5779,17 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
     // Track last working queue — survives FG transitions so we can prefer
     // a proven-safe queue when PostSL re-activates after FSR→DLSS switch.
-    if (SUCCEEDED(postDevReason) && queue != g_PostSLLastWorkingQueue) {
-        HookLogImportant("DX12: PostSL updating lastWorkingQueue %p -> %p", g_PostSLLastWorkingQueue, queue);
-        SetPostSLLastWorkingQueue(queue);
+    if (SUCCEEDED(postDevReason) && submittedQueue != g_PostSLLastWorkingQueue) {
+        HookLogImportant("DX12: PostSL updating lastWorkingQueue %p -> %p", g_PostSLLastWorkingQueue, submittedQueue);
+        SetPostSLLastWorkingQueue(submittedQueue);
     }
 
     if (renderNum <= 20 || (renderNum % 10) == 0 || renderNum >= 1800 || FAILED(postDevReason)) {
         HookLogImportant(
             "DX12: Post-SL overlay SUBMIT #%d (bufIdx=%u queue=%p scQueue=%p slWrapper=%d rendered=%d "
             "virtualCall=%d realECL=%d origECL=%d xqSync=%d tid=0x%04X devRemoved=0x%08X epoch=%d)",
-            renderNum, bufIdx, queue, scQueue, isSLWrapperQ ? 1 : 0, rendered ? 1 : 0, usedVirtualCall ? 1 : 0,
+            renderNum, bufIdx, submittedQueue, scQueue, isSLWrapperQ ? 1 : 0, rendered ? 1 : 0,
+            usedVirtualCall ? 1 : 0,
             usedRealECL ? 1 : 0, usedOrigECL ? 1 : 0, crossQueueSynced ? 1 : 0, GetCurrentThreadId(),
             (unsigned)postDevReason, s_reactivationEpoch);
     }
@@ -5777,7 +5798,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         HookLogImportant(
             "DX12: DEVICE_REMOVED detected after PostSL ECL submit #%d "
             "(queue=%p scQueue=%p hr=0x%08X)",
-            renderNum, queue, scQueue, (unsigned)postDevReason);
+            renderNum, submittedQueue, scQueue, (unsigned)postDevReason);
     }
 
     bb->Release();

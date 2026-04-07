@@ -80,12 +80,17 @@ inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPen
 }
 
 inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
-                                               bool hasRealD3D12ECL) {
+                                              bool hasRealD3D12ECL) {
     if (hadFSRFGPhase) {
         return true;
     }
 
     return hasRealQueueBehindWrapper || hasRealD3D12ECL;
+}
+
+inline bool ShouldDelayPostSLActivationUntilDirectQueuePath(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
+                                                            bool hasRealD3D12ECL) {
+    return hadFSRFGPhase && (!hasRealQueueBehindWrapper || !hasRealD3D12ECL);
 }
 
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {

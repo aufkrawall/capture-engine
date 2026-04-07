@@ -178,6 +178,15 @@ TEST(DXGISharedTest, PostSLWrapperBootstrapIsBlockedForPureDLSSWithoutDirectPath
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(true, false, false));
 }
 
+TEST(DXGISharedTest, PostSLActivationWaitsForDirectQueuePathAfterFSRPhase) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(true, false, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilDirectQueuePath(false, false, false));
+}
+
 TEST(DXGISharedTest, SyntheticPostSLRefreshesMetricsOnlyWhenNormalFramePathIsDormant) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSyntheticPostSLRefreshMetrics(true, false));
 
