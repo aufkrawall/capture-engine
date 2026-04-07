@@ -133,6 +133,15 @@ inline bool ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(bool hadFSRFGPha
            !hasWrapperDerivedDirectPath;
 }
 
+inline bool ShouldUsePostSLSelectedQueueDirectSubmitAfterFSR(bool hadFSRFGPhase,
+                                                             bool selectedQueueIsSwapchainQueue,
+                                                             bool hasSelectedQueueOrigECL,
+                                                             bool selectedQueueOrigECLMatchesRealECL,
+                                                             bool hasDirectQueueBehindWrapper) {
+    return hadFSRFGPhase && !selectedQueueIsSwapchainQueue && !hasDirectQueueBehindWrapper &&
+           hasSelectedQueueOrigECL && selectedQueueOrigECLMatchesRealECL;
+}
+
 inline bool ShouldUsePostSLRealQueueBehindWrapperAfterFSR(bool hadFSRFGPhase,
                                                           bool streamlineFGActive,
                                                           bool hasDirectQueueBehindWrapper) {
@@ -144,6 +153,13 @@ inline bool ShouldUsePostSLWrapperBootstrapQueueAfterFSR(bool hadFSRFGPhase,
                                                          bool hasDirectQueueBehindWrapper,
                                                          bool hasSLWrapperQueue) {
     return hadFSRFGPhase && streamlineFGActive && !hasDirectQueueBehindWrapper && hasSLWrapperQueue;
+}
+
+inline bool ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(bool hadFSRFGPhase,
+                                                                   bool streamlineFGActive,
+                                                                   bool hasDirectQueueBehindWrapper,
+                                                                   bool commandQueueIsWrapper) {
+    return hadFSRFGPhase && streamlineFGActive && !hasDirectQueueBehindWrapper && commandQueueIsWrapper;
 }
 
 inline bool ShouldBootstrapPostSLRealQueueBehindWrapperAfterFSR(bool hadFSRFGPhase,
