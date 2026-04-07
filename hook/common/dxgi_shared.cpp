@@ -1453,6 +1453,10 @@ bool HasPresentDetourHooks() {
     return s_hookedVTable != nullptr || oPresentTrampoline != nullptr || oPresent1Trampoline != nullptr;
 }
 
+bool CanSafelyInstallExternalPresentDetourPath(bool requiresBypassTrampoline, bool bypassTrampolineAvailable) {
+    return !requiresBypassTrampoline || bypassTrampolineAvailable;
+}
+
 // Lazy hook installation - installs hooks on first Present if they were
 // deferred during swapchain creation
 static IDXGISwapChain* s_PendingSwapChainForLazyHook = nullptr;
@@ -1571,6 +1575,32 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     }
 
     if (externalJmpDetected) {
+#ifdef _WIN64
+        constexpr bool kRequiresBypassTrampolineOnInstall = false;
+#else
+        constexpr bool kRequiresBypassTrampolineOnInstall = true;
+#endif
+
+        void* presentBypass = InlineHook::CreateBypassTrampoline(presentAddr);
+        if (!presentBypass) {
+            HookLog("InstallPresentInlineHooks: WARNING - Failed to create Present bypass trampoline");
+            if (!CanSafelyInstallExternalPresentDetourPath(kRequiresBypassTrampolineOnInstall, false)) {
+                HookLogImportant(
+                    "InstallPresentInlineHooks: External Present hook detected but no bypass trampoline is available - skipping DXGI Present detour path");
+                return false;
+            }
+        }
+
+        void* present1Bypass = nullptr;
+        if (present1Addr) {
+            present1Bypass = InlineHook::CreateBypassTrampoline(present1Addr);
+            if (!present1Bypass && !CanSafelyInstallExternalPresentDetourPath(kRequiresBypassTrampolineOnInstall, false)) {
+                HookLogImportant(
+                    "InstallPresentInlineHooks: External Present1 hook detected but no bypass trampoline is available - skipping DXGI Present detour path");
+                return false;
+            }
+        }
+
         HookLogImportant("InstallPresentInlineHooks: External E9 JMP detected — using vtable hook path");
         // External overlay (e.g. Streamline) has hooked Present with an E9 JMP.
         // DO NOT inline-hook the external detour — patching 14 bytes of the
@@ -1609,14 +1639,9 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
             "external E9 JMP detected, using non-invasive hook for FG compat",
             oPresent, vtable);
 
-        // Create bypass trampoline for Present — reads original bytes from dxgi.dll
-        // on disk and builds a trampoline that skips the external E9 JMP.
-        void* presentBypass = InlineHook::CreateBypassTrampoline(presentAddr);
         if (presentBypass) {
             oPresentBypass = (PFN_Present)presentBypass;
             HookLog("InstallPresentInlineHooks: Present bypass trampoline created at %p", presentBypass);
-        } else {
-            HookLog("InstallPresentInlineHooks: WARNING - Failed to create Present bypass trampoline");
         }
 
         if (present1Addr) {
@@ -1624,8 +1649,6 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
             vtable[22] = (void*)DetourPresent1;
             HookLog("InstallPresentInlineHooks: VTable hook on Present1 (original=%p)", oPresent1);
 
-            // Create bypass trampoline for Present1 too
-            void* present1Bypass = InlineHook::CreateBypassTrampoline(present1Addr);
             if (present1Bypass) {
                 oPresent1Bypass = (PFN_Present1)present1Bypass;
                 HookLog("InstallPresentInlineHooks: Present1 bypass trampoline created at %p", present1Bypass);

@@ -1873,16 +1873,17 @@ bool RemoveDeepHook(void* target) {
 // ============================================================================
 
 void* CreateBypassTrampoline(void* target) {
-#ifndef _WIN64
-    HookLog("BypassTrampoline: Only supported on x64");
-    return nullptr;
-#else
     if (!target)
         return nullptr;
 
     std::lock_guard<std::mutex> lock(g_hookMutex);
 
     const uint8_t* code = (const uint8_t*)target;
+#ifdef _WIN64
+    constexpr bool kIs64Bit = true;
+#else
+    constexpr bool kIs64Bit = false;
+#endif
 
     // Step 1: Detect external hook at byte 0
     int existingJmpSize = 0;
@@ -1914,7 +1915,7 @@ void* CreateBypassTrampoline(void* target) {
     // Step 3: Find first instruction boundary >= external JMP size
     int resumeOffset = 0;
     while (resumeOffset < existingJmpSize) {
-        int len = GetInstructionLength(origDiskBytes + resumeOffset, true);
+        int len = GetInstructionLength(origDiskBytes + resumeOffset, kIs64Bit);
         if (len == 0) {
             HookLog("BypassTrampoline: Failed to decode instruction at disk offset %d", resumeOffset);
             return nullptr;
@@ -1950,7 +1951,7 @@ void* CreateBypassTrampoline(void* target) {
     int pendingCallInstrOffset = -1;
 
     while (srcOffset < resumeOffset) {
-        int instrLen = GetInstructionLength(origDiskBytes + srcOffset, true);
+        int instrLen = GetInstructionLength(origDiskBytes + srcOffset, kIs64Bit);
         if (instrLen == 0) {
             HookLog("BypassTrampoline: Instruction decode failed at offset %d", srcOffset);
             return nullptr;
@@ -1962,7 +1963,7 @@ void* CreateBypassTrampoline(void* target) {
         // The original instruction was at (target + srcOffset), so compute the
         // absolute target from the original location, then adjust the displacement
         // for the trampoline location.
-        int dispOff = GetRipRelativeDispOffset(origDiskBytes + srcOffset, instrLen, true);
+        int dispOff = GetRipRelativeDispOffset(origDiskBytes + srcOffset, instrLen, kIs64Bit);
         if (dispOff >= 0) {
             int32_t origDisp;
             memcpy(&origDisp, origDiskBytes + srcOffset + dispOff, 4);
@@ -1978,6 +1979,7 @@ void* CreateBypassTrampoline(void* target) {
                     (void*)absTarget, (long long)newDisp);
 
             if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
+#ifdef _WIN64
                 uint8_t opcode = origDiskBytes[srcOffset];
                 if (opcode == 0xE9) {
                     trampoline[trampolineOffset] = 0xFF;
@@ -2004,6 +2006,7 @@ void* CreateBypassTrampoline(void* target) {
                     srcOffset += instrLen;
                     continue;
                 }
+#endif
 
                 HookLog("BypassTrampoline: RIP fixup out of range at offset %d (opcode=0x%02X)", srcOffset,
                         origDiskBytes[srcOffset]);
@@ -2040,7 +2043,6 @@ void* CreateBypassTrampoline(void* target) {
             trampolineOffset, existingJmpSize, target);
 
     return trampoline;
-#endif
 }
 
 }  // namespace InlineHook

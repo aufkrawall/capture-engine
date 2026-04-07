@@ -92,6 +92,11 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);
 bool HasPresentInlineHooks();
 bool HasPresentDetourHooks();
 
+// External Present entry hooks can recurse back through our detour. Some paths
+// need a bypass trampoline available at install time so re-entrant Present can
+// still reach the real DXGI implementation.
+bool CanSafelyInstallExternalPresentDetourPath(bool requiresBypassTrampoline, bool bypassTrampolineAvailable);
+
 // Direct-call helpers: bypass vtable hooks by calling saved original function
 // pointers directly. Used by CWrapDXGISwapChain to avoid re-entry through
 // hooked vtable.
