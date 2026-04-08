@@ -2923,7 +2923,6 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
 
     if (g_HadFSRFGPhase) {
         ID3D12CommandQueue* staleScQueue = nullptr;
-        bool restoreOriginalSwapchainQueue = false;
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
 
@@ -2943,26 +2942,17 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                     "recovery can recapture the live non-FG queue (origGame=%p)",
                     staleScQueue, g_OriginalGameQueue);
             }
-
-            if (ce::dx12_overlay_policy::ShouldRestoreOriginalSwapchainQueueAfterPostFSRStreamlineTeardown(
-                    g_HadFSRFGPhase, g_OriginalGameQueue != nullptr, g_SwapchainQueue != nullptr)) {
-                g_OriginalGameQueue->AddRef();
-                g_SwapchainQueue = g_OriginalGameQueue;
-                g_SwapchainQueueCaptureTime = GetTickCount64();
-                restoreOriginalSwapchainQueue = true;
-            }
         }
 
         if (staleScQueue) {
             staleScQueue->Release();
         }
 
-        if (restoreOriginalSwapchainQueue) {
-            HookLogImportant(
-                "DX12: Streamline FG OFF after FSR history — restored swapchain queue to origGame %p so non-FG "
-                "recovery does not fall back to the stale PostSL wrapper queue",
-                g_OriginalGameQueue);
-        }
+        HookLogImportant(
+            "DX12: Streamline FG OFF after FSR history — leaving swapchain queue uncaptured until a live non-FG "
+            "queue is observed again (origGame=%p primary=%p cmdQ=%p)",
+            g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire),
+            g_CommandQueue.load(std::memory_order_acquire));
 
         // The post-FSR DLSS path rendered through Streamline/PostSL against a
         // different swapchain topology than the resumed non-FG path. Force a
@@ -8486,11 +8476,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     }
                 } else if (!newTypeNeedsScQueue && g_HadFSRFGPhase) {
                     if (targetIsNone) {
-                        // FSR→DLSS→Off: FG is fully off now. The FSR-created
-                        // swapchain was destroyed when DLSS FG recreated it, and
-                        // we cleared g_SwapchainQueue during the FSR→DLSS
-                        // transition. Restore to origGame so the non-PostSL
-                        // overlay path has a valid queue.
+                        // FSR→DLSS→Off: wait for live non-FG command traffic to
+                        // prove which queue owns the resumed Present path again.
+                        // Forcing origGame back into g_SwapchainQueue here caused
+                        // Talos to submit the first recovered non-FG overlay ECL
+                        // on the wrong queue/backbuffer pairing, immediately
+                        // triggering DEVICE_REMOVED.
                         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
                         if (g_FGRuntimeOwnsSwapchain) {
                             g_FGRuntimeOwnsSwapchain = false;
@@ -8501,19 +8492,21 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         }
                         if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
                             HookLogImportant(
-                                "DX12: FG→off after FSR phase — releasing stale g_SwapchainQueue %p, restoring to "
-                                "origGame %p",
-                                g_SwapchainQueue, g_OriginalGameQueue);
+                                "DX12: FG→off after FSR phase — releasing stale g_SwapchainQueue %p and waiting for "
+                                "the live non-FG queue to be recaptured (origGame=%p primary=%p cmdQ=%p)",
+                                g_SwapchainQueue, g_OriginalGameQueue,
+                                g_PrimaryGameQueue.load(std::memory_order_acquire),
+                                g_CommandQueue.load(std::memory_order_acquire));
                             g_SwapchainQueue->Release();
                             g_SwapchainQueue = nullptr;
+                            g_SwapchainQueueCaptureTime = 0;
                         }
-                        if (!g_SwapchainQueue && g_OriginalGameQueue) {
-                            g_OriginalGameQueue->AddRef();
-                            g_SwapchainQueue = g_OriginalGameQueue;
+                        if (!g_SwapchainQueue) {
                             HookLogImportant(
-                                "DX12: FG→off after FSR phase — restored g_SwapchainQueue to origGame %p for non-FG "
-                                "overlay",
-                                g_OriginalGameQueue);
+                                "DX12: FG→off after FSR phase — keeping g_SwapchainQueue null until non-wrapper "
+                                "command traffic settles (origGame=%p primary=%p cmdQ=%p)",
+                                g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire),
+                                g_CommandQueue.load(std::memory_order_acquire));
                         }
                     } else {
                         // FSR→DLSS transition: the swapchain was created on FSR's queue

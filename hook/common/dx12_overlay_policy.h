@@ -161,8 +161,17 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
         return false;
     }
 
-    if (!recentStreamlineTeardown || !hasSwapchainQueue || !hasOriginalGameQueue) {
+    if (!recentStreamlineTeardown || !hasOriginalGameQueue) {
         return false;
+    }
+
+    if (!hasSwapchainQueue) {
+        // After the post-FSR DLSS teardown path we intentionally leave
+        // g_SwapchainQueue unset until command traffic proves which non-wrapper
+        // queue is actually live again. Fabricating origGame as the swapchain
+        // queue reproduced Talos DEVICE_REMOVED on the first resumed non-FG
+        // overlay submit.
+        return !hasCommandQueue || (!commandQueueMatchesOriginalGameQueue && !commandQueueMatchesPrimaryGameQueue);
     }
 
     // After the post-FSR DLSS path turns FG off, late Streamline teardown ECLs
@@ -226,18 +235,8 @@ inline bool ShouldRealignInactiveCommandQueueToSwapchainQueue(bool actualFGActiv
 
     return !commandQueueMatchesSwapchainQueue && !commandQueueMatchesOriginalGameQueue;
 }
-
-inline bool ShouldRestoreOriginalSwapchainQueueAfterPostFSRStreamlineTeardown(bool hadFSRFGPhase,
-                                                                              bool hasOriginalGameQueue,
-                                                                              bool hasSwapchainQueue) {
-    // After an FSR->DLSS handoff, Streamline teardown can leave us with no
-    // recaptured non-FG swapchain queue yet even though ProcessFrame must
-    // immediately recover off the stale PostSL wrapper path.
-    return hadFSRFGPhase && hasOriginalGameQueue && !hasSwapchainQueue;
-}
-
 inline bool ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(bool hadFSRFGPhase, bool overlayInit,
-                                                                         bool syncInit) {
+                                                                          bool syncInit) {
     // The direct Streamline teardown path can invalidate overlay state before
     // ProcessFrame reaches its own SL transition tracking block. In that case,
     // ProcessFrame misses the OFF edge and would otherwise rebuild immediately
