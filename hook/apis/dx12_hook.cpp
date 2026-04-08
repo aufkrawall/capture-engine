@@ -231,6 +231,15 @@ static ID3D12CommandQueue* g_PostSLLockedQueue = nullptr;
 // after FSR FG phase) and PostSL uses g_CommandQueue (SL's wrapper) instead.
 static bool g_HadFSRFGPhase = false;
 
+// After FSR→DLSS→OFF: the swapchain's backbuffers have indeterminate GPU
+// resource state from the FG pipeline teardown.  Direct rendering with
+// explicit PRESENT→RENDER_TARGET barriers causes DEVICE_REMOVED when the
+// barrier's StateBefore doesn't match the actual backbuffer state.  The
+// offscreen compositing path (CopyTextureRegion + implicit state promotion)
+// avoids ALL explicit barriers on the backbuffer, making it safe regardless
+// of actual state.  Cleared on clean swapchain transition (non-FG).
+static bool g_NeedOffscreenOverlayAfterPostFSRNonFG = false;
+
 // GPU drain: flush all in-flight GPU work before first overlay render after
 // FSR→DLSS transition.  SL's FG pipeline may have concurrent backbuffer
 // access that causes DEVICE_HUNG if we draw simultaneously.
@@ -2985,6 +2994,10 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — cleared realECL %p for delayed non-FG recovery",
                 oldRealECL);
+            g_NeedOffscreenOverlayAfterPostFSRNonFG = true;
+            HookLogImportant(
+                "DX12: Streamline FG OFF after FSR history — enabled offscreen overlay compositing for non-FG "
+                "recovery (backbuffer state indeterminate after FG teardown)");
         }
     }
 
@@ -7068,6 +7081,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     g_FGRuntimeOwnsSwapchain ? 1 : 0, currentSwapchainQueue, currentOriginalGameQueue);
             } else {
                 HookLogImportant("DX12: Swapchain change (no FG active) — normal reinit");
+                g_NeedOffscreenOverlayAfterPostFSRNonFG = false;
+                HookLogImportant(
+                    "DX12: Cleared offscreen overlay flag — clean swapchain transition, backbuffer state is reliable");
             }
         }
         // Store raw pointer for change detection only - no AddRef to avoid
@@ -9191,9 +9207,22 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             // For pre-SL rendering on the game thread, the backbuffer
                                             // is in PRESENT state (game transitioned it before Present).
                                             // Use normal direct rendering with PRESENT→RT→PRESENT barriers.
-                                            bool useOffscreenCopy = false;
+                                            //
+                                            // EXCEPTION: After FSR→DLSS→OFF, the backbuffer state is
+                                            // indeterminate (FG pipeline may have left it in any state).
+                                            // Use offscreen compositing to avoid explicit barriers on
+                                            // the backbuffer entirely.  Cleared on clean swapchain
+                                            // transition.
+                                            bool useOffscreenCopy = g_NeedOffscreenOverlayAfterPostFSRNonFG;
 
                                             if (useOffscreenCopy && bb) {
+                                                static int s_postFSROffscreenLog = 0;
+                                                if (s_postFSROffscreenLog++ < 10) {
+                                                    HookLogImportant(
+                                                        "DX12: Using offscreen compositing for post-FSR non-FG overlay "
+                                                        "(bb=%p queue=%p bufIdx=%u #%d)",
+                                                        bb, gameQueue, bufferIdx, s_postFSROffscreenLog);
+                                                }
                                                 // Two-copy compositing: avoids ALL explicit barriers on backbuffer.
                                                 // 1. Copy bb→offscreen (bb implicitly promotes COMMON→COPY_SOURCE)
                                                 // 2. Barrier offscreen COPY_DEST→RT
@@ -10602,6 +10631,7 @@ void DX12Hook::Shutdown() {
         g_DrainEvent = nullptr;
     }
     g_DrainFenceValue = 0;
+    g_NeedOffscreenOverlayAfterPostFSRNonFG = false;
 
     // Clean up prerender fences/events
     for (auto* fence : g_PrerenderFences) {
