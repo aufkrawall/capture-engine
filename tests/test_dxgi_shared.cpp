@@ -469,20 +469,20 @@ TEST(DXGISharedTest, PostSLSelectsSwapchainQueueInsteadOfLockedWrapperAfterFSRWh
 
 TEST(DXGISharedTest, PostSLUsesOnlyLevelZeroWrapperProbeToCaptureRealQueueAfterFSR) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
-        true, true, 0, false, true, false));
+        true, true, 0, false, true, false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
-        false, true, 0, false, true, false));
+        false, true, 0, false, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
-        true, false, 0, false, true, false));
+        true, false, 0, false, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
-        true, true, 1, false, true, false));
+        true, true, 1, false, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
-        true, true, 0, true, true, false));
+        true, true, 0, true, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
-        true, true, 0, false, false, false));
+        true, true, 0, false, false, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
-        true, true, 0, false, true, true));
+        true, true, 0, false, true, true, false));
 }
 
 TEST(DXGISharedTest, PostSLPostFSRProbeFallbackDoesNotReuseWrapperWithoutValidatedDirectQueue) {
