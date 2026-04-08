@@ -5591,12 +5591,14 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             bb->Release();
             return;
         }
-        // Use the selected swapchain queue when we already have a proven direct
-        // submit path for it. Falling back to a transient SL wrapper queue here
-        // can hard-remove the device during post-FSR DLSS startup.
+        // CRITICAL: Always use the locked queue (stable across frames) for probe
+        // submissions, NOT the transient slWrapperQueue (g_SLWrapperQueue) which
+        // changes as different SL wrapper queues are seen by the ECL detour on
+        // other threads.  Using a transient wrapper mid-probe causes DEVICE_REMOVED
+        // when the new wrapper doesn't own the swapchain's resource state.
         ID3D12CommandQueue* probeQueue =
             bootstrapRealQueueCaptureViaWrapperProbe
-                ? slWrapperQueue
+                ? queue
                 : ((g_PostFSRProbeLevel >= 1 && slWrapperQueue && !preferSelectedSwapchainQueueSubmitAfterFSR)
                        ? slWrapperQueue
                        : queue);
@@ -5736,7 +5738,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             // Post-FSR copy probes have only been observed to survive when routed
             // through the SL wrapper path rather than forcing an immediate direct
             // queue handoff.
-            if (bootstrapRealQueueCaptureViaWrapperProbe && probeQueue == slWrapperQueue) {
+            if (bootstrapRealQueueCaptureViaWrapperProbe && isSLWrapperQ) {
                 s_insidePostSLOverlayECL = true;
                 probeQueue->ExecuteCommandLists(1, lists);
                 s_insidePostSLOverlayECL = false;
