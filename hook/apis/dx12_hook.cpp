@@ -8315,15 +8315,47 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         }
                     }
                 } else if (!newTypeNeedsScQueue && g_HadFSRFGPhase) {
-                    // FSR→DLSS transition: the swapchain was created on FSR's queue
-                    // (g_SwapchainQueue), so backbuffers belong to it. Keep it alive.
-                    // Render pre-SL on scQueue — the swapchain's own queue has
-                    // authorized access to backbuffers without cross-queue issues.
-                    HookLogImportant(
-                        "DX12: FG type change to %s — KEEPING g_SwapchainQueue %p for backbuffer access (it's the "
-                        "swapchain creation queue)",
-                        ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue);
-                    g_NeedGPUDrainBeforeRender = false;
+                    if (targetIsNone) {
+                        // FSR→DLSS→Off: FG is fully off now. The FSR-created
+                        // swapchain was destroyed when DLSS FG recreated it, and
+                        // we cleared g_SwapchainQueue during the FSR→DLSS
+                        // transition. Restore to origGame so the non-PostSL
+                        // overlay path has a valid queue.
+                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                        if (g_FGRuntimeOwnsSwapchain) {
+                            g_FGRuntimeOwnsSwapchain = false;
+                            DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
+                            g_FGRuntimeOwnsSwapchainSince = 0;
+                            HookLogImportant(
+                                "DX12: FG→off after FSR phase — clearing FG runtime ownership of swapchain queue");
+                        }
+                        if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
+                            HookLogImportant(
+                                "DX12: FG→off after FSR phase — releasing stale g_SwapchainQueue %p, restoring to "
+                                "origGame %p",
+                                g_SwapchainQueue, g_OriginalGameQueue);
+                            g_SwapchainQueue->Release();
+                            g_SwapchainQueue = nullptr;
+                        }
+                        if (!g_SwapchainQueue && g_OriginalGameQueue) {
+                            g_OriginalGameQueue->AddRef();
+                            g_SwapchainQueue = g_OriginalGameQueue;
+                            HookLogImportant(
+                                "DX12: FG→off after FSR phase — restored g_SwapchainQueue to origGame %p for non-FG "
+                                "overlay",
+                                g_OriginalGameQueue);
+                        }
+                    } else {
+                        // FSR→DLSS transition: the swapchain was created on FSR's queue
+                        // (g_SwapchainQueue), so backbuffers belong to it. Keep it alive.
+                        // Render pre-SL on scQueue — the swapchain's own queue has
+                        // authorized access to backbuffers without cross-queue issues.
+                        HookLogImportant(
+                            "DX12: FG type change to %s — KEEPING g_SwapchainQueue %p for backbuffer access (it's the "
+                            "swapchain creation queue)",
+                            ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue);
+                        g_NeedGPUDrainBeforeRender = false;
+                    }
                 } else {
                     HookLogImportant("DX12: FG type change to %s — keeping g_SwapchainQueue %p (FSR needs it)",
                                      ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue);
