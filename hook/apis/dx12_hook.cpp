@@ -994,6 +994,7 @@ static void WaitForInFlightPostSLCallbacks(const char* reason) {
 
 static void CleanupDeferredPostSLQueuesIfSafe(const char* reason);
 static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
+static std::atomic<ID3D12CommandQueue*> g_DeferredCommandQueueRelease{nullptr};
 
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper,
                                               bool deferQueueReleaseUntilCallbacksDrain = false);
@@ -1052,6 +1053,12 @@ static void ClearPostSLQueues(const char* reason) {
 }
 
 static void CleanupDeferredPostSLQueuesIfSafe(const char* reason) {
+    ID3D12CommandQueue* deferredCommandQueue = g_DeferredCommandQueueRelease.exchange(nullptr, std::memory_order_acq_rel);
+    if (deferredCommandQueue) {
+        HookLogImportant("%s - releasing deferred stale command queue %p", reason, deferredCommandQueue);
+        deferredCommandQueue->Release();
+    }
+
     if (!g_PostSLDeferredQueueCleanupPending.load(std::memory_order_acquire)) {
         return;
     }
@@ -1142,7 +1149,13 @@ static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason) {
         HookLogImportant("%s - realigned stale command queue %p -> swapchain queue %p (origGame=%p)", reason,
                          oldCommandQueue, swapchainQueue, originalGameQueue);
         if (oldCommandQueue) {
-            oldCommandQueue->Release();
+            ID3D12CommandQueue* previouslyDeferred =
+                g_DeferredCommandQueueRelease.exchange(oldCommandQueue, std::memory_order_acq_rel);
+            if (previouslyDeferred) {
+                HookLogImportant("%s - releasing superseded deferred stale command queue %p", reason,
+                                 previouslyDeferred);
+                previouslyDeferred->Release();
+            }
         }
     }
 }
@@ -10261,6 +10274,9 @@ void DX12Hook::Shutdown() {
     if (g_CommandQueue.load()) {
         g_CommandQueue.load()->Release();
         g_CommandQueue.store(nullptr);
+    }
+    if (auto* deferredCommandQueue = g_DeferredCommandQueueRelease.exchange(nullptr, std::memory_order_acq_rel)) {
+        deferredCommandQueue->Release();
     }
     if (g_OriginalGameQueue) {
         g_OriginalGameQueue->Release();
