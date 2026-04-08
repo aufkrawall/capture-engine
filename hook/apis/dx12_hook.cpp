@@ -5508,6 +5508,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         const bool preferRealQueueBehindWrapperAfterFSR =
             ce::dx12_overlay_policy::ShouldUsePostSLRealQueueBehindWrapperAfterFSR(
                 g_HadFSRFGPhase, cachedSLFGActive, realQ != nullptr);
+        const bool bootstrapRealQueueCaptureViaWrapperProbe =
+            ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
+                g_HadFSRFGPhase, cachedSLFGActive, g_PostFSRProbeLevel, realQ != nullptr, slWrapperQueue != nullptr);
         if (preferRealQueueBehindWrapperAfterFSR && g_PostFSRProbeLevel >= 2) {
             g_PostFSRProbeLevel = 3;
             g_PostFSRProbeFrames = 0;
@@ -5520,10 +5523,12 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         // Use the selected swapchain queue when we already have a proven direct
         // submit path for it. Falling back to a transient SL wrapper queue here
         // can hard-remove the device during post-FSR DLSS startup.
-        ID3D12CommandQueue* probeQueue =
-            (g_PostFSRProbeLevel >= 1 && slWrapperQueue && !preferSelectedSwapchainQueueSubmitAfterFSR)
-                ? slWrapperQueue
-                : queue;
+        ID3D12CommandQueue* probeQueue = bootstrapRealQueueCaptureViaWrapperProbe
+                                             ? slWrapperQueue
+                                             : ((g_PostFSRProbeLevel >= 1 && slWrapperQueue &&
+                                                 !preferSelectedSwapchainQueueSubmitAfterFSR)
+                                                    ? slWrapperQueue
+                                                    : queue);
 
         if (g_PostFSRProbeLevel == 0) {
             // Probe 0: Scratch resource barrier on origGame — confirms queue works.
@@ -5659,7 +5664,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             // Post-FSR copy probes have only been observed to survive when routed
             // through the SL wrapper path rather than forcing an immediate direct
             // queue handoff.
-            probeQueue->ExecuteCommandLists(1, lists);
+            if (bootstrapRealQueueCaptureViaWrapperProbe && probeQueue == slWrapperQueue) {
+                s_insidePostSLOverlayECL = true;
+                probeQueue->ExecuteCommandLists(1, lists);
+                s_insidePostSLOverlayECL = false;
+            } else {
+                probeQueue->ExecuteCommandLists(1, lists);
+            }
 
             if (g_State.fence) {
                 UINT64 next = g_State.currentFenceValue + 1;

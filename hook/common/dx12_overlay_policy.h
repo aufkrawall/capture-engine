@@ -303,6 +303,15 @@ inline bool ShouldSelectPostSLSwapchainQueueInsteadOfLockedWrapperAfterFSR(bool 
            swapchainQueueDiffersFromOriginalGameQueue && hasSwapchainQueueSubmitPath && !hasWrapperDerivedDirectPath;
 }
 
+inline bool ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(bool hadFSRFGPhase,
+                                                                          bool streamlineFGActive,
+                                                                          int postFSRProbeLevel,
+                                                                          bool hasDirectQueueBehindWrapper,
+                                                                          bool hasSLWrapperQueue) {
+    return hadFSRFGPhase && streamlineFGActive && postFSRProbeLevel == 0 && !hasDirectQueueBehindWrapper &&
+           hasSLWrapperQueue;
+}
+
 inline bool ShouldPinPostSLWrapperQueueAfterFSR(bool hadFSRFGPhase,
                                                  bool usePostSLOffscreenComposite,
                                                  bool selectedQueueIsSwapchainQueue,
