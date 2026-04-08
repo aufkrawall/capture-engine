@@ -95,8 +95,9 @@ TEST_F(ConfigTest, ParseValues) {
 }
 
 TEST_F(ConfigTest, ParseExplicitWgcCaptureMethod) {
-    WriteConfig("[General]\n"
-                "capture_method=wgc\n");
+    WriteConfig(
+        "[General]\n"
+        "capture_method=wgc\n");
 
     AppConfig config;
     LoadConfig(tempConfigFile, config);

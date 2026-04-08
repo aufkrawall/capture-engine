@@ -63,8 +63,7 @@ static bool IsLayerDebugLoggingEnabled() {
     }
 
     bool debugLoggingEnabled = false;
-    DiscoveryInfo* pDisc =
-        (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
     if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC) {
         const uint32_t hostPid = pDisc->GetInjectPid();
         if (hostPid != 0) {

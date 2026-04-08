@@ -72,7 +72,8 @@ private:
 };
 
 std::wstring ToLower(std::wstring value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
     return value;
 }
 
@@ -129,7 +130,8 @@ std::string FormatWindowsError(DWORD error) {
     std::string result(message, length);
     LocalFree(message);
 
-    while (!result.empty() && (result.back() == '\r' || result.back() == '\n' || std::isspace(static_cast<unsigned char>(result.back())))) {
+    while (!result.empty() && (result.back() == '\r' || result.back() == '\n' ||
+                               std::isspace(static_cast<unsigned char>(result.back())))) {
         result.pop_back();
     }
     return result;
@@ -140,11 +142,8 @@ bool IsRegularFile(const std::filesystem::path& path) {
     return std::filesystem::is_regular_file(path, ec);
 }
 
-LayerManifest BuildManifest(const std::filesystem::path& baseDir,
-                            const wchar_t* manifestName,
-                            const wchar_t* libraryName,
-                            const wchar_t* layerName,
-                            bool is32Bit) {
+LayerManifest BuildManifest(const std::filesystem::path& baseDir, const wchar_t* manifestName,
+                            const wchar_t* libraryName, const wchar_t* layerName, bool is32Bit) {
     LayerManifest manifest;
     manifest.manifestPath = baseDir / manifestName;
     manifest.libraryPath = baseDir / libraryName;
@@ -185,9 +184,7 @@ bool MatchesCurrentManifestPath(const RegistrationPlan& plan, const std::filesys
     return false;
 }
 
-bool TargetContainsManifestPath(const RegistrationPlan& plan,
-                                RegistryRoot root,
-                                RegistryView view,
+bool TargetContainsManifestPath(const RegistrationPlan& plan, RegistryRoot root, RegistryView view,
                                 const std::filesystem::path& path) {
     const std::wstring normalized = NormalizePathForComparison(path);
     for (const RegistryTarget& target : plan.installTargets) {
@@ -297,7 +294,8 @@ std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
     return targets;
 }
 
-bool DeleteRegistryValue(HKEY key, const std::wstring& valueName, const char* reason, const RegistryLocation& location) {
+bool DeleteRegistryValue(HKEY key, const std::wstring& valueName, const char* reason,
+                         const RegistryLocation& location) {
     const LONG result = RegDeleteValueW(key, valueName.c_str());
     if (result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND) {
         LogInfo("[VulkanReg] Removed %s entry from %s: %s", reason, DescribeLocation(location).c_str(),
@@ -311,7 +309,8 @@ bool DeleteRegistryValue(HKEY key, const std::wstring& valueName, const char* re
     return false;
 }
 
-bool CleanupRegistryLocation(const RegistrationPlan& plan, const RegistryLocation& location, bool removeCurrentManifests) {
+bool CleanupRegistryLocation(const RegistrationPlan& plan, const RegistryLocation& location,
+                             bool removeCurrentManifests) {
     RegistryKeyGuard key;
     const LONG openResult = OpenRegistryKey(location, KEY_QUERY_VALUE | KEY_SET_VALUE, false, &key);
     if (openResult == ERROR_FILE_NOT_FOUND) {
@@ -339,9 +338,9 @@ bool CleanupRegistryLocation(const RegistrationPlan& plan, const RegistryLocatio
         }
 
         const bool intendedForTarget = TargetContainsManifestPath(plan, location.root, location.view, valuePath);
-        const char* reason = (!manifestExists && !isCurrentManifest) ? "stale manifest"
-                                                                     : (intendedForTarget ? "inactive manifest"
-                                                                                          : "duplicate manifest");
+        const char* reason = (!manifestExists && !isCurrentManifest)
+                                 ? "stale manifest"
+                                 : (intendedForTarget ? "inactive manifest" : "duplicate manifest");
         success &= DeleteRegistryValue(key.Get(), valueName, reason, location);
     }
 
@@ -466,8 +465,7 @@ bool GetCurrentExecutableDirectory(std::filesystem::path* outDir) {
     }
 }
 
-RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir,
-                                       RegistrationMode requestedMode,
+RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, RegistrationMode requestedMode,
                                        bool processElevated) {
     RegistrationPlan plan;
     plan.baseDir = baseDir;
@@ -534,11 +532,8 @@ std::string PathToUtf8ForLogging(const std::filesystem::path& path) {
     return PathToUtf8(path);
 }
 
-bool ShouldDeleteRegistryValueForTarget(const RegistrationPlan& plan,
-                                        RegistryRoot root,
-                                        RegistryView view,
-                                        const std::filesystem::path& valuePath,
-                                        bool manifestExists) {
+bool ShouldDeleteRegistryValueForTarget(const RegistrationPlan& plan, RegistryRoot root, RegistryView view,
+                                        const std::filesystem::path& valuePath, bool manifestExists) {
     if (!IsCaptureEngineLayerManifestPath(valuePath)) {
         return false;
     }
@@ -558,7 +553,9 @@ void LogRegistrationPlan(const RegistrationPlan& plan) {
     if (plan.effectiveMode == RegistrationMode::CurrentUser) {
         LogInfo("[VulkanReg] Using HKCU registration. Elevated Vulkan apps will ignore per-user implicit layers.");
     } else {
-        LogInfo("[VulkanReg] Using HKLM registration because this process is elevated or all-users registration was requested.");
+        LogInfo(
+            "[VulkanReg] Using HKLM registration because this process is elevated or all-users registration was "
+            "requested.");
     }
 
     if (plan.effectiveMode == RegistrationMode::AllUsers && !plan.processElevated) {

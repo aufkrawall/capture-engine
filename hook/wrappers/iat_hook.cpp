@@ -13,8 +13,8 @@
 #include <unordered_map>
 #include "../apis/dx11_hook.h"
 #include "../apis/lod_helper.h"
-#include "../common/sampler_override_utils.h"
 #include "../common/overlay_compat.h"
+#include "../common/sampler_override_utils.h"
 #include "hook_common.h"
 #include "wrapper_hooks.h"
 

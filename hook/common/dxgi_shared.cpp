@@ -17,6 +17,7 @@
 #include <d3d11.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <intrin.h>
 #include <psapi.h>
 #include <windows.h>
 #include <atomic>
@@ -24,7 +25,6 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
-#include <intrin.h>
 
 // Vulkan is handled by VK_LAYER_CE_overlay (ICD layer approach)
 // No global hook pointer needed - extern void* g_VulkanHook;
@@ -351,7 +351,7 @@ static bool ShouldForceThirdPartyOverlayBypass(IDXGISwapChain* pSwapChain, bool 
 }
 
 static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, const char** overlayModuleOut = nullptr,
-                                                         int* passIndexOut = nullptr) {
+                                                        int* passIndexOut = nullptr) {
     const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
     if (overlayModuleOut) {
         *overlayModuleOut = overlayModule;
@@ -360,10 +360,10 @@ static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, co
         bypassAvailable, IsSteamOverlayModule(overlayModule), true, false, false,
         GetModuleHandleA("sl.interposer.dll") != nullptr, g_FGCompat.GetRuntimeMode(),
         g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.IsNvPresentLoaded());
-    if (!DXGIShared::ShouldAllowDX12StartupPresentPassForState(
-            overlayModule != nullptr, oPresentTrampoline != nullptr, oPresent1Trampoline != nullptr,
-            steamBypassShouldOwnPath, g_FGCompat.GetRuntimeMode(),
-            g_StreamlineFGRunning.load(std::memory_order_acquire))) {
+    if (!DXGIShared::ShouldAllowDX12StartupPresentPassForState(overlayModule != nullptr, oPresentTrampoline != nullptr,
+                                                               oPresent1Trampoline != nullptr, steamBypassShouldOwnPath,
+                                                               g_FGCompat.GetRuntimeMode(),
+                                                               g_StreamlineFGRunning.load(std::memory_order_acquire))) {
         return DX12StartupPresentMode::kNone;
     }
 
@@ -600,7 +600,8 @@ static PFN_Present1 EnsurePresent1BypassTrampoline() {
     }
 
     const PFN_Present1 present1Original = oPresent1;
-    if (!present1Original || present1Original == DetourPresent1 || !HasExternalEntryHook((const void*)present1Original)) {
+    if (!present1Original || present1Original == DetourPresent1 ||
+        !HasExternalEntryHook((const void*)present1Original)) {
         return nullptr;
     }
 
@@ -608,14 +609,14 @@ static PFN_Present1 EnsurePresent1BypassTrampoline() {
     if (!bypass) {
         static int s_bypassFailLogCount = 0;
         if (s_bypassFailLogCount++ < 5) {
-            HookLogImportant("DXGIShared: Failed to lazily create Present1 bypass trampoline from %p", present1Original);
+            HookLogImportant("DXGIShared: Failed to lazily create Present1 bypass trampoline from %p",
+                             present1Original);
         }
         return nullptr;
     }
 
     oPresent1Bypass = (PFN_Present1)bypass;
-    HookLogImportant("DXGIShared: Lazily created Present1 bypass trampoline at %p from %p", bypass,
-                     present1Original);
+    HookLogImportant("DXGIShared: Lazily created Present1 bypass trampoline at %p from %p", bypass, present1Original);
     return oPresent1Bypass;
 }
 
@@ -800,7 +801,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             int bypassNum = s_ffxStartupBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (bypassNum <= 10 || (bypassNum % 200) == 0) {
                 HookLogImportant(
-                    "DetourPresent: Treating FFX-originated Present as startup handoff bypass #%d (bypass=%p, tid=0x%04X)",
+                    "DetourPresent: Treating FFX-originated Present as startup handoff bypass #%d (bypass=%p, "
+                    "tid=0x%04X)",
                     bypassNum, (void*)presentBypass, GetCurrentThreadId());
             }
             return presentBypass(pSwapChain, SyncInterval, Flags);
@@ -1132,7 +1134,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             int bypassNum = s_ffxStartupBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
             if (bypassNum <= 10 || (bypassNum % 200) == 0) {
                 HookLogImportant(
-                    "DetourPresent1: Treating FFX-originated Present1 as startup handoff bypass #%d (bypass=%p, tid=0x%04X)",
+                    "DetourPresent1: Treating FFX-originated Present1 as startup handoff bypass #%d (bypass=%p, "
+                    "tid=0x%04X)",
                     bypassNum, (void*)present1Bypass, GetCurrentThreadId());
             }
             return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
@@ -1760,7 +1763,8 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
             HookLog("InstallPresentInlineHooks: WARNING - Failed to create Present bypass trampoline");
             if (!CanSafelyInstallExternalPresentDetourPath(kRequiresBypassTrampolineOnInstall, false)) {
                 HookLogImportant(
-                    "InstallPresentInlineHooks: External Present hook detected but no bypass trampoline is available - skipping DXGI Present detour path");
+                    "InstallPresentInlineHooks: External Present hook detected but no bypass trampoline is available - "
+                    "skipping DXGI Present detour path");
                 return false;
             }
         }
@@ -1768,9 +1772,11 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         void* present1Bypass = nullptr;
         if (present1Addr) {
             present1Bypass = InlineHook::CreateBypassTrampoline(present1Addr);
-            if (!present1Bypass && !CanSafelyInstallExternalPresentDetourPath(kRequiresBypassTrampolineOnInstall, false)) {
+            if (!present1Bypass &&
+                !CanSafelyInstallExternalPresentDetourPath(kRequiresBypassTrampolineOnInstall, false)) {
                 HookLogImportant(
-                    "InstallPresentInlineHooks: External Present1 hook detected but no bypass trampoline is available - skipping DXGI Present detour path");
+                    "InstallPresentInlineHooks: External Present1 hook detected but no bypass trampoline is available "
+                    "- skipping DXGI Present detour path");
                 return false;
             }
         }

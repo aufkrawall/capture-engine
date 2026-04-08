@@ -120,8 +120,7 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);
 bool HasPresentInlineHooks();
 bool HasPresentDetourHooks();
 
-inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool thirdPartyOverlayLoaded,
-                                                            bool hasPresentDetourHooks) {
+inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool thirdPartyOverlayLoaded, bool hasPresentDetourHooks) {
     return !thirdPartyOverlayLoaded || hasPresentDetourHooks;
 }
 
@@ -145,15 +144,14 @@ inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isStea
         return false;
     }
 
-    const bool streamlineNeedsBypass = streamlineLoaded && !streamlineFGRunning &&
-                                       runtimeMode != ce::fg_runtime::RuntimeMode::kDLSSFG;
+    const bool streamlineNeedsBypass =
+        streamlineLoaded && !streamlineFGRunning && runtimeMode != ce::fg_runtime::RuntimeMode::kDLSSFG;
     const bool smoothMotionNeedsBypass = nvPresentLoaded;
     return streamlineNeedsBypass || smoothMotionNeedsBypass;
 }
 
 inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay, bool presentTrampolineInstalled,
-                                                      bool present1TrampolineInstalled,
-                                                      bool steamBypassShouldOwnPath,
+                                                      bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
                                                       ce::fg_runtime::RuntimeMode runtimeMode,
                                                       bool streamlineFGRunning) {
     if (!hasThirdPartyOverlay || presentTrampolineInstalled || present1TrampolineInstalled) {
@@ -163,7 +161,8 @@ inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay,
         return false;
     }
 
-    const bool actualFrameGenerationActive = streamlineFGRunning || runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
+    const bool actualFrameGenerationActive = streamlineFGRunning ||
+                                             runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
                                              runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
     return !actualFrameGenerationActive;
 }

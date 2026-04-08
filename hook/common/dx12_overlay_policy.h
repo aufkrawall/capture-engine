@@ -40,12 +40,10 @@ enum class SwapchainOverlayRoutingDecision {
     kSkipFSRWithoutSwapchainQueue,
 };
 
-inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtimeOwnsSwapchain,
-                                                                    bool streamlineFGActive,
-                                                                    bool fsrFGActive,
-                                                                    bool hadFSRFGPhase,
-                                                                    bool hasSwapchainQueue,
-                                                                    bool hasOriginalGameQueue) {
+inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtimeOwnsSwapchain, bool streamlineFGActive,
+                                                                     bool fsrFGActive, bool hadFSRFGPhase,
+                                                                     bool hasSwapchainQueue,
+                                                                     bool hasOriginalGameQueue) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
                                  : SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
@@ -80,10 +78,8 @@ inline OverlayMetricsBindingDecision DecideOverlayMetricsBinding(bool isRealFram
     };
 }
 
-inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame,
-                                                    bool hasDedicatedQueue,
-                                                    bool heuristicFSRFG,
-                                                    bool runtimeOwnsSwapchain,
+inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
+                                                    bool heuristicFSRFG, bool runtimeOwnsSwapchain,
                                                     bool streamlineFGRunning) {
     if (!isInterpolatedFrame) {
         return false;
@@ -113,12 +109,9 @@ inline bool ShouldSuppressLikelyDuplicateTopLevelPresent(bool runtimeOwnsSwapcha
     return true;
 }
 
-inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive,
-                                                  bool fgRecentlyWasActive,
-                                                  bool hasFGTransitionCooldown,
-                                                  bool recentStreamlineTeardown,
-                                                  bool runtimeOwnsSwapchain,
-                                                  bool hasSwapchainQueue,
+inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive, bool fgRecentlyWasActive,
+                                                  bool hasFGTransitionCooldown, bool recentStreamlineTeardown,
+                                                  bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
                                                   bool hasOriginalGameQueue,
                                                   bool swapchainQueueDiffersFromOriginalGameQueue) {
     if (fgCurrentlyActive || fgRecentlyWasActive || hasFGTransitionCooldown) {
@@ -133,12 +126,10 @@ inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive,
            swapchainQueueDiffersFromOriginalGameQueue;
 }
 
-inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGActive,
-                                                                 bool streamlineFGRunning,
-                                                                 bool runtimeOwnsSwapchain,
-                                                                 bool hasSwapchainQueue,
-                                                                 bool hasCommandQueue,
-                                                                 bool commandQueueMatchesSwapchainQueue) {
+inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGActive, bool streamlineFGRunning,
+                                                                bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
+                                                                bool hasCommandQueue,
+                                                                bool commandQueueMatchesSwapchainQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
@@ -154,10 +145,8 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
     return !hasCommandQueue || !commandQueueMatchesSwapchainQueue;
 }
 
-inline bool ShouldRealignInactiveCommandQueueToSwapchainQueue(bool actualFGActive,
-                                                              bool streamlineFGRunning,
-                                                              bool hasSwapchainQueue,
-                                                              bool hasOriginalGameQueue,
+inline bool ShouldRealignInactiveCommandQueueToSwapchainQueue(bool actualFGActive, bool streamlineFGRunning,
+                                                              bool hasSwapchainQueue, bool hasOriginalGameQueue,
                                                               bool hasCommandQueue,
                                                               bool commandQueueMatchesSwapchainQueue,
                                                               bool commandQueueMatchesOriginalGameQueue) {
@@ -194,7 +183,7 @@ inline bool ShouldRememberPostSLLastWorkingQueue(bool queueIsSLWrapper) {
 }
 
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
-                                                         bool postSLActive, bool processFrameRecentlySeen) {
+                                                       bool postSLActive, bool processFrameRecentlySeen) {
     return startupActivationPending && streamlineFGRunning && !postSLActive && !processFrameRecentlySeen;
 }
 
@@ -237,127 +226,118 @@ inline bool ShouldTreatPostSLAsReactivated(bool postSLActive, bool wasActiveInCu
     return !wasActiveInCurrentCallbackLifetime || postSLLifecycleChanged;
 }
 
-inline bool ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(bool hadFSRFGPhase,
-                                                                 bool selectedQueueIsSwapchainQueue,
-                                                                 bool queueIsSLWrapper,
-                                                                 bool hasSelectedQueueSubmitPath,
-                                                                 bool hasWrapperDerivedDirectPath) {
+inline bool ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(bool hadFSRFGPhase, bool selectedQueueIsSwapchainQueue,
+                                                                bool queueIsSLWrapper, bool hasSelectedQueueSubmitPath,
+                                                                bool hasWrapperDerivedDirectPath) {
     return hadFSRFGPhase && selectedQueueIsSwapchainQueue && !queueIsSLWrapper && hasSelectedQueueSubmitPath &&
            !hasWrapperDerivedDirectPath;
 }
 
-inline bool ShouldUsePostSLSelectedQueueDirectSubmitAfterFSR(bool hadFSRFGPhase,
-                                                             bool selectedQueueIsSwapchainQueue,
+inline bool ShouldUsePostSLSelectedQueueDirectSubmitAfterFSR(bool hadFSRFGPhase, bool selectedQueueIsSwapchainQueue,
                                                              bool hasSelectedQueueOrigECL,
                                                              bool selectedQueueOrigECLMatchesRealECL,
                                                              bool hasDirectQueueBehindWrapper) {
-    return hadFSRFGPhase && !selectedQueueIsSwapchainQueue && !hasDirectQueueBehindWrapper &&
-           hasSelectedQueueOrigECL && selectedQueueOrigECLMatchesRealECL;
+    return hadFSRFGPhase && !selectedQueueIsSwapchainQueue && !hasDirectQueueBehindWrapper && hasSelectedQueueOrigECL &&
+           selectedQueueOrigECLMatchesRealECL;
 }
 
-inline bool ShouldUsePostSLRealQueueBehindWrapperAfterFSR(bool hadFSRFGPhase,
-                                                          bool streamlineFGActive,
+inline bool ShouldUsePostSLRealQueueBehindWrapperAfterFSR(bool hadFSRFGPhase, bool streamlineFGActive,
                                                           bool hasDirectQueueBehindWrapper) {
     return hadFSRFGPhase && streamlineFGActive && hasDirectQueueBehindWrapper;
 }
 
-inline bool ShouldPreferValidatedDirectQueueForPostFSRLock(bool hadFSRFGPhase,
-                                                           bool streamlineFGActive,
+inline bool ShouldPreferValidatedDirectQueueForPostFSRLock(bool hadFSRFGPhase, bool streamlineFGActive,
                                                            bool hasDirectQueueBehindWrapper) {
     return hadFSRFGPhase && streamlineFGActive && hasDirectQueueBehindWrapper;
 }
 
-inline bool IsUsableValidatedPostSLDirectQueueCandidate(bool queueLooksDirect,
-                                                        bool matchesCapturedSLWrapperQueue,
-                                                        bool matchesCurrentCommandQueue,
-                                                        bool matchesOriginalGameQueue,
+inline bool IsUsableValidatedPostSLDirectQueueCandidate(bool queueLooksDirect, bool matchesCapturedSLWrapperQueue,
+                                                        bool matchesCurrentCommandQueue, bool matchesOriginalGameQueue,
                                                         bool matchesSwapchainQueue) {
     return queueLooksDirect && !matchesCapturedSLWrapperQueue && !matchesCurrentCommandQueue &&
            !matchesOriginalGameQueue && !matchesSwapchainQueue;
 }
 
-inline bool ShouldUsePostSLWrapperBootstrapQueueAfterFSR(bool hadFSRFGPhase,
-                                                         bool streamlineFGActive,
-                                                         bool hasDirectQueueBehindWrapper,
-                                                         bool hasSLWrapperQueue) {
-    return false;
+inline bool ShouldUsePostSLWrapperBootstrapQueueAfterFSR(bool hadFSRFGPhase, bool streamlineFGActive,
+                                                         bool hasDirectQueueBehindWrapper, bool hasSLWrapperQueue) {
+    if (!hadFSRFGPhase || !streamlineFGActive) {
+        return false;
+    }
+    if (hasDirectQueueBehindWrapper) {
+        return false;
+    }
+    return hasSLWrapperQueue;
 }
 
-inline bool ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(bool hadFSRFGPhase,
-                                                                   bool streamlineFGActive,
+inline bool ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(bool hadFSRFGPhase, bool streamlineFGActive,
                                                                    bool hasDirectQueueBehindWrapper,
                                                                    bool commandQueueIsWrapper) {
     return hadFSRFGPhase && streamlineFGActive && !hasDirectQueueBehindWrapper && commandQueueIsWrapper;
 }
 
-inline bool ShouldBootstrapPostSLRealQueueBehindWrapperAfterFSR(bool hadFSRFGPhase,
-                                                                 bool streamlineFGActive,
-                                                                 bool queueIsSLWrapper,
-                                                                 bool hasDirectQueueBehindWrapper) {
+inline bool ShouldBootstrapPostSLRealQueueBehindWrapperAfterFSR(bool hadFSRFGPhase, bool streamlineFGActive,
+                                                                bool queueIsSLWrapper,
+                                                                bool hasDirectQueueBehindWrapper) {
     return hadFSRFGPhase && streamlineFGActive && queueIsSLWrapper && !hasDirectQueueBehindWrapper;
 }
 
 inline bool ShouldSelectPostSLRealQueueBehindWrapperInsteadOfLockedQueueAfterFSR(bool hasLockedQueue,
-                                                                                  bool hadFSRFGPhase,
-                                                                                  bool streamlineFGActive,
-                                                                                  bool lockedQueueIsSLWrapper,
-                                                                                  bool hasDirectQueueBehindWrapper) {
+                                                                                 bool hadFSRFGPhase,
+                                                                                 bool streamlineFGActive,
+                                                                                 bool lockedQueueIsSLWrapper,
+                                                                                 bool hasDirectQueueBehindWrapper) {
     return hasLockedQueue && hadFSRFGPhase && streamlineFGActive && lockedQueueIsSLWrapper &&
            hasDirectQueueBehindWrapper;
 }
 
-inline bool ShouldSelectPostSLSwapchainQueueInsteadOfLockedWrapperAfterFSR(bool hasLockedQueue,
-                                                                            bool hadFSRFGPhase,
-                                                                            bool streamlineFGActive,
-                                                                            bool lockedQueueIsSLWrapper,
-                                                                            bool hasSwapchainQueue,
-                                                                            bool swapchainQueueDiffersFromOriginalGameQueue,
-                                                                            bool hasSwapchainQueueSubmitPath,
-                                                                            bool hasWrapperDerivedDirectPath) {
+inline bool ShouldSelectPostSLSwapchainQueueInsteadOfLockedWrapperAfterFSR(
+    bool hasLockedQueue, bool hadFSRFGPhase, bool streamlineFGActive, bool lockedQueueIsSLWrapper,
+    bool hasSwapchainQueue, bool swapchainQueueDiffersFromOriginalGameQueue, bool hasSwapchainQueueSubmitPath,
+    bool hasWrapperDerivedDirectPath) {
     return hasLockedQueue && hadFSRFGPhase && streamlineFGActive && lockedQueueIsSLWrapper && hasSwapchainQueue &&
            swapchainQueueDiffersFromOriginalGameQueue && hasSwapchainQueueSubmitPath && !hasWrapperDerivedDirectPath;
 }
 
-inline bool ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(bool hadFSRFGPhase,
-                                                                          bool streamlineFGActive,
-                                                                          int postFSRProbeLevel,
-                                                                          bool hasDirectQueueBehindWrapper,
-                                                                          bool hasSLWrapperQueue,
-                                                                          bool hasSelectedQueueSubmitPath) {
-    return hadFSRFGPhase && streamlineFGActive && postFSRProbeLevel == 0 && !hasDirectQueueBehindWrapper &&
-           hasSLWrapperQueue && !hasSelectedQueueSubmitPath;
+inline bool ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
+    bool hadFSRFGPhase, bool streamlineFGActive, int postFSRProbeLevel, bool hasDirectQueueBehindWrapper,
+    bool hasSLWrapperQueue, bool hasSelectedQueueSubmitPath, bool selectedQueueIsSLWrapper) {
+    if (!hadFSRFGPhase || !streamlineFGActive || postFSRProbeLevel != 0) {
+        return false;
+    }
+    if (hasDirectQueueBehindWrapper) {
+        return false;
+    }
+    if (!hasSLWrapperQueue) {
+        return false;
+    }
+    return !hasSelectedQueueSubmitPath || selectedQueueIsSLWrapper;
 }
 
-inline bool ShouldUseWrapperQueueForPostFSRProbeFallback(bool hadFSRFGPhase,
-                                                         int postFSRProbeLevel,
+inline bool ShouldUseWrapperQueueForPostFSRProbeFallback(bool hadFSRFGPhase, int postFSRProbeLevel,
                                                          bool hasSLWrapperQueue,
                                                          bool preferSelectedSwapchainQueueSubmitAfterFSR,
                                                          bool hasValidatedDirectQueueBehindWrapper) {
-    return !hadFSRFGPhase && postFSRProbeLevel >= 1 && hasSLWrapperQueue && !preferSelectedSwapchainQueueSubmitAfterFSR &&
-           hasValidatedDirectQueueBehindWrapper;
+    return !hadFSRFGPhase && postFSRProbeLevel >= 1 && hasSLWrapperQueue &&
+           !preferSelectedSwapchainQueueSubmitAfterFSR && hasValidatedDirectQueueBehindWrapper;
 }
 
-inline bool ShouldPinPostSLWrapperQueueAfterFSR(bool hadFSRFGPhase,
-                                                 bool usePostSLOffscreenComposite,
-                                                 bool selectedQueueIsSwapchainQueue,
-                                                 bool hasPinnedWrapperQueue,
-                                                 bool hasCapturedSLWrapperQueue,
+inline bool ShouldPinPostSLWrapperQueueAfterFSR(bool hadFSRFGPhase, bool usePostSLOffscreenComposite,
+                                                bool selectedQueueIsSwapchainQueue, bool hasPinnedWrapperQueue,
+                                                bool hasCapturedSLWrapperQueue,
+                                                bool preferSelectedSwapchainQueueSubmitAfterFSR) {
+    return false;
+}
+
+inline bool ShouldUsePostSLWrapperSubmitAfterFSR(bool hadFSRFGPhase, bool usePostSLOffscreenComposite,
+                                                 bool selectedQueueIsSwapchainQueue, bool hasSLWrapperQueue,
                                                  bool preferSelectedSwapchainQueueSubmitAfterFSR) {
     return false;
 }
 
-inline bool ShouldUsePostSLWrapperSubmitAfterFSR(bool hadFSRFGPhase,
-                                                  bool usePostSLOffscreenComposite,
-                                                  bool selectedQueueIsSwapchainQueue,
-                                                  bool hasSLWrapperQueue,
-                                                  bool preferSelectedSwapchainQueueSubmitAfterFSR) {
-    return false;
-}
-
 inline bool ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(bool hadFSRFGPhase,
-                                                                                bool streamlineFGActive,
-                                                                                bool selectedQueueIsSwapchainQueue,
-                                                                                bool queueIsSLWrapper) {
+                                                                               bool streamlineFGActive,
+                                                                               bool selectedQueueIsSwapchainQueue,
+                                                                               bool queueIsSLWrapper) {
     return hadFSRFGPhase && streamlineFGActive && selectedQueueIsSwapchainQueue && !queueIsSLWrapper;
 }
 
@@ -374,10 +354,8 @@ inline PostSLBackbufferBarrierMode DecidePostSLBackbufferBarrierMode(bool stream
     return PostSLBackbufferBarrierMode::kCommonToRenderTarget;
 }
 
-inline bool ShouldUsePostSLOffscreenCompositeAfterFSR(bool hadFSRFGPhase,
-                                                       bool streamlineFGActive,
-                                                       bool selectedQueueIsSwapchainQueue,
-                                                       bool queueIsSLWrapper) {
+inline bool ShouldUsePostSLOffscreenCompositeAfterFSR(bool hadFSRFGPhase, bool streamlineFGActive,
+                                                      bool selectedQueueIsSwapchainQueue, bool queueIsSLWrapper) {
     // The direct post-FSR swapchain-queue path already proved that queue can
     // handle explicit PRESENT<->RT traffic. Reintroducing copy-render-copy on
     // that same path only adds the copy operations that previously hung Talos.
@@ -389,32 +367,27 @@ inline bool ShouldUseExplicitBackbufferCopyTransitionsForPostFSROffscreenComposi
     return usePostSLOffscreenComposite && useExplicitPostFSRSwapchainTransitions;
 }
 
-inline bool ShouldUsePostSLOffscreenCopyOnlyProbeAfterFSR(bool hadFSRFGPhase,
-                                                          int postFSRProbeLevel,
+inline bool ShouldUsePostSLOffscreenCopyOnlyProbeAfterFSR(bool hadFSRFGPhase, int postFSRProbeLevel,
                                                           bool usePostSLOffscreenComposite,
                                                           bool selectedQueueIsSwapchainQueue) {
-    return hadFSRFGPhase && usePostSLOffscreenComposite && postFSRProbeLevel == 2 &&
-           !selectedQueueIsSwapchainQueue;
+    return hadFSRFGPhase && usePostSLOffscreenComposite && postFSRProbeLevel == 2 && !selectedQueueIsSwapchainQueue;
 }
 
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
     return streamlineFGRunning && !processFrameRecentlySeen;
 }
 
-inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning,
-                                                          bool postSLConfirmedRendering) {
+inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
     return streamlineFGRunning && postSLConfirmedRendering;
 }
 
-inline bool ShouldLatchPostSLSuspensionOnStreamlineSignalDrop(bool streamlineFGRunning,
-                                                              bool postSLActive,
+inline bool ShouldLatchPostSLSuspensionOnStreamlineSignalDrop(bool streamlineFGRunning, bool postSLActive,
                                                               bool postSLConfirmedRendering,
                                                               bool startupActivationPending) {
     return !streamlineFGRunning && !postSLActive && !postSLConfirmedRendering && !startupActivationPending;
 }
 
-inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOwnsSwapchain,
-                                                                  bool callerFromFFXFGModule,
+inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOwnsSwapchain, bool callerFromFFXFGModule,
                                                                   bool streamlineFGRunning,
                                                                   bool streamlineStartupHandoffPending,
                                                                   bool runtimeOwnershipJustActivated) {

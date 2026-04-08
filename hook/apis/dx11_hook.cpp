@@ -470,8 +470,8 @@ static void ReleaseTrackedShaderResources11() {
     ReleaseTrackedShaderResources11Unlocked();
 }
 
-static void UpdateStageShaderResources(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numViews,
-                                       ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+static void UpdateStageShaderResources(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
+                                       UINT numViews, ID3D11ShaderResourceView* const* ppShaderResourceViews) {
     if (!context) {
         return;
     }
@@ -533,8 +533,8 @@ static bool SupportsD3D11SamplingFormat(ID3D11Device* device, DXGI_FORMAT format
     }
 
     UINT support = 0;
-    bool result = SUCCEEDED(device->CheckFormatSupport(format, &support)) &&
-                  (support & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) != 0;
+    bool result =
+        SUCCEEDED(device->CheckFormatSupport(format, &support)) && (support & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) != 0;
 
     std::lock_guard<std::mutex> lock(g_D3D11FormatSupportMutex);
     g_D3D11FormatSupportCache[format] = result;
@@ -611,8 +611,8 @@ static bool ViewHasMultipleVisibleMips(ID3D11ShaderResourceView* view) {
 
         const bool singleSample = textureDesc.SampleDesc.Count <= 1;
         const bool isArrayResource = textureDesc.ArraySize > 1;
-        const UINT totalMipLevels = ce::sampler_override::ResolveFullMipCount2D(textureDesc.Width, textureDesc.Height,
-                                                                                textureDesc.MipLevels);
+        const UINT totalMipLevels =
+            ce::sampler_override::ResolveFullMipCount2D(textureDesc.Width, textureDesc.Height, textureDesc.MipLevels);
 
         UINT mostDetailedMip = 0;
         UINT viewMipLevels = UINT_MAX;
@@ -638,8 +638,8 @@ static bool ViewHasMultipleVisibleMips(ID3D11ShaderResourceView* view) {
                 break;
         }
 
-        const UINT visibleMipLevels = ce::sampler_override::ResolveVisibleMipCount(totalMipLevels, mostDetailedMip,
-                                                                                   viewMipLevels);
+        const UINT visibleMipLevels =
+            ce::sampler_override::ResolveVisibleMipCount(totalMipLevels, mostDetailedMip, viewMipLevels);
         const bool safeDimension = !isArrayResource;
         const bool safeUsage = (textureDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL) == 0 &&
                                (textureDesc.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE) == 0;
@@ -673,8 +673,9 @@ static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const Graphics
     return true;
 }
 
-static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot,
-                                              const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
+static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11DeviceContext* context,
+                                              D3D11ShaderStage stage, UINT slot, const D3D11_SAMPLER_DESC& desc,
+                                              const GraphicsConfig& gfx) {
     if (!SamplerAllowsForcedAF(desc, gfx)) {
         return false;
     }
@@ -704,7 +705,8 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
     return shouldForce;
 }
 
-static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx, bool allowAnisotropicOverride) {
+static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx,
+                                    bool allowAnisotropicOverride) {
     bool modified = false;
 
     const std::string& af = gfx.anisotropicFiltering;
@@ -777,7 +779,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
 }
 
 static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
-                                                            UINT slot, ID3D11SamplerState* original) {
+                                                           UINT slot, ID3D11SamplerState* original) {
     if (!context || !original) {
         return original;
     }
@@ -912,7 +914,8 @@ static void STDMETHODCALLTYPE DetourDSSetSamplers11(ID3D11DeviceContext* context
 
 static void STDMETHODCALLTYPE DetourCSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                                                     ID3D11SamplerState* const* ppSamplers) {
-    SetSamplersWithOverrides11(oCSSetSamplers11, context, D3D11ShaderStage::Compute, startSlot, numSamplers, ppSamplers);
+    SetSamplersWithOverrides11(oCSSetSamplers11, context, D3D11ShaderStage::Compute, startSlot, numSamplers,
+                               ppSamplers);
 }
 
 // Use typedef from dx11_hook.h

@@ -5,8 +5,8 @@
 namespace {
 
 TEST(StreamlineRuntimePolicyTest, RequestedOptionsEnableBuildsActiveRuntimeUpdate) {
-    const auto update = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(
-        true, true, 1, 1, 3);
+    const auto update =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(true, true, 1, 1, 3);
 
     EXPECT_TRUE(update.shouldUpdate);
     EXPECT_TRUE(update.active);
@@ -16,8 +16,8 @@ TEST(StreamlineRuntimePolicyTest, RequestedOptionsEnableBuildsActiveRuntimeUpdat
 }
 
 TEST(StreamlineRuntimePolicyTest, RequestedOptionsOffBuildsInactiveRuntimeUpdate) {
-    const auto update = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(
-        true, true, 0, 3, 3);
+    const auto update =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(true, true, 0, 3, 3);
 
     EXPECT_TRUE(update.shouldUpdate);
     EXPECT_FALSE(update.active);
@@ -26,8 +26,8 @@ TEST(StreamlineRuntimePolicyTest, RequestedOptionsOffBuildsInactiveRuntimeUpdate
 }
 
 TEST(StreamlineRuntimePolicyTest, RequestedOptionsFallbacksToTwoXForInvalidGeneratedFrameCount) {
-    const auto update = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(
-        true, true, 2, 0, 1);
+    const auto update =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(true, true, 2, 0, 1);
 
     EXPECT_TRUE(update.shouldUpdate);
     EXPECT_TRUE(update.active);
@@ -36,16 +36,16 @@ TEST(StreamlineRuntimePolicyTest, RequestedOptionsFallbacksToTwoXForInvalidGener
 }
 
 TEST(StreamlineRuntimePolicyTest, GetStateIgnoresEnableRequestsWithoutRuntimeEvidence) {
-    const auto update = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
-        true, true, false, false, 1, 1, 3);
+    const auto update =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, false, false, 1, 1, 3);
 
     EXPECT_FALSE(update.shouldUpdate);
     EXPECT_FALSE(update.active);
 }
 
 TEST(StreamlineRuntimePolicyTest, GetStateAllowsEnableWithRuntimeEvidence) {
-    const auto update = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
-        true, true, false, true, 1, 3, 3);
+    const auto update =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, false, true, 1, 3, 3);
 
     EXPECT_TRUE(update.shouldUpdate);
     EXPECT_TRUE(update.active);
@@ -54,8 +54,8 @@ TEST(StreamlineRuntimePolicyTest, GetStateAllowsEnableWithRuntimeEvidence) {
 }
 
 TEST(StreamlineRuntimePolicyTest, GetStateAllowsDisableWithoutRuntimeEvidence) {
-    const auto update = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
-        true, true, true, false, 0, 1, 3);
+    const auto update =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, true, false, 0, 1, 3);
 
     EXPECT_TRUE(update.shouldUpdate);
     EXPECT_FALSE(update.active);
@@ -64,8 +64,8 @@ TEST(StreamlineRuntimePolicyTest, GetStateAllowsDisableWithoutRuntimeEvidence) {
 }
 
 TEST(StreamlineRuntimePolicyTest, GetStateKeepsKnownActiveViewportWithoutFreshFenceEvidence) {
-    const auto update = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
-        true, true, true, false, 1, 1, 3);
+    const auto update =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, true, false, 1, 1, 3);
 
     EXPECT_TRUE(update.shouldUpdate);
     EXPECT_TRUE(update.active);
@@ -74,10 +74,10 @@ TEST(StreamlineRuntimePolicyTest, GetStateKeepsKnownActiveViewportWithoutFreshFe
 }
 
 TEST(StreamlineRuntimePolicyTest, FailedOrOptionlessCallsDoNotUpdateRuntimeState) {
-    const auto failedUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(
-        false, true, 1, 1, 3);
-    const auto optionlessUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
-        true, false, false, true, 1, 1, 3);
+    const auto failedUpdate =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(false, true, 1, 1, 3);
+    const auto optionlessUpdate =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, false, false, true, 1, 1, 3);
 
     EXPECT_FALSE(failedUpdate.shouldUpdate);
     EXPECT_FALSE(optionlessUpdate.shouldUpdate);

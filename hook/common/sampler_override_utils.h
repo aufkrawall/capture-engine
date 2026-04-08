@@ -1,18 +1,19 @@
 #pragma once
 
-#include <algorithm>
-#include <climits>
-#include <cstdint>
 #include <d3d10.h>
 #include <d3d11.h>
 #include <d3d12.h>
+#include <algorithm>
+#include <climits>
+#include <cstdint>
 
 #include "../../common/config.h"
 
 namespace ce::sampler_override {
 
 inline bool IsAnisotropicOverrideEnabled(const GraphicsConfig& gfx) {
-    return !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default" && gfx.anisotropicFiltering != "off";
+    return !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default" &&
+           gfx.anisotropicFiltering != "off";
 }
 
 inline UINT GetConfiguredMaxAnisotropy(const GraphicsConfig& gfx) {

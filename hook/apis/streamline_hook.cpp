@@ -7,7 +7,6 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include "dx12_hook.h"
 #include "../common/dxgi_shared.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
@@ -15,6 +14,7 @@
 #include "../common/streamline_runtime_policy.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
+#include "dx12_hook.h"
 
 namespace {
 
@@ -319,7 +319,8 @@ bool WasViewportRuntimeStateActive(uint32_t viewportKey) {
 }
 
 bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state) {
-    return state.inputsProcessingCompletionFence != nullptr || state.lastPresentInputsProcessingCompletionFenceValue != 0;
+    return state.inputsProcessingCompletionFence != nullptr ||
+           state.lastPresentInputsProcessingCompletionFenceValue != 0;
 }
 
 void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplier, uint32_t generatedFrames,
@@ -479,9 +480,9 @@ bool MaybeHookReflexSetConstants(void*& function, bool fallbackToReturnedWrapper
         std::lock_guard<std::mutex> lock(g_FeatureHookMutex);
         if (!g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ||
             g_ReflexSetConstantsTarget.load(std::memory_order_acquire) != function) {
-            InstallInlineHookOnce(reinterpret_cast<void*>(function), reinterpret_cast<void*>(Hooked_slReflexSetConstants),
-                                  g_Original_slReflexSetConstants, g_ReflexSetConstantsHooked,
-                                  g_ReflexSetConstantsTarget, "slReflexSetConstants");
+            InstallInlineHookOnce(reinterpret_cast<void*>(function),
+                                  reinterpret_cast<void*>(Hooked_slReflexSetConstants), g_Original_slReflexSetConstants,
+                                  g_ReflexSetConstantsHooked, g_ReflexSetConstantsTarget, "slReflexSetConstants");
         }
     }
 
@@ -636,12 +637,12 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
     }
 
-    const uint32_t capabilityMax = state.numFramesToGenerateMax > 0 ? state.numFramesToGenerateMax
-                                                                     : GetCachedCapabilityMax(viewportKey);
+    const uint32_t capabilityMax =
+        state.numFramesToGenerateMax > 0 ? state.numFramesToGenerateMax : GetCachedCapabilityMax(viewportKey);
     const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
         result == kSlResultOk, options != nullptr, WasViewportRuntimeStateActive(viewportKey),
-        HasDLSSGRuntimeFenceEvidence(state), options ? options->mode : 0,
-        options ? options->numFramesToGenerate : 0u, capabilityMax);
+        HasDLSSGRuntimeFenceEvidence(state), options ? options->mode : 0, options ? options->numFramesToGenerate : 0u,
+        capabilityMax);
     if (runtimeUpdate.shouldUpdate) {
         UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
                                    runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "GetState");

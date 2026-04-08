@@ -186,12 +186,12 @@ HWND GetMainWindowForProcess(DWORD pid) {
     return search.hwnd;
 }
 
-bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, bool isRecording, bool warnVisible, ULONGLONG overloadWarnUntil,
-                            ULONGLONG screenshotNotifyUntil, bool ghostActive) {
+bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, bool isRecording, bool warnVisible,
+                            ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil, bool ghostActive) {
     const ULONGLONG now = GetTickCount64();
     const bool showIndicator = isRecording && config.mode != 2;
-    const bool showWarning = warnVisible || (config.showEncoderOverloadWarn && now < overloadWarnUntil) ||
-                             (now < screenshotNotifyUntil);
+    const bool showWarning =
+        warnVisible || (config.showEncoderOverloadWarn && now < overloadWarnUntil) || (now < screenshotNotifyUntil);
     return showIndicator || showWarning || ghostActive;
 }
 }  // namespace
@@ -438,8 +438,8 @@ PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
     if (anchorWindow) {
         if (this->stickyAnchorWindow_ != anchorWindow || this->stickyAnchorMonitor_ != anchor.monitor ||
             this->stickyAnchorDpi_ != anchor.dpi) {
-            LogInfo("[PseudoOverlay] Sticky anchor updated: window=%p monitor=%p dpi=%u fullscreenLike=%d", anchorWindow,
-                    anchor.monitor, anchor.dpi, anchor.fullscreenLike ? 1 : 0);
+            LogInfo("[PseudoOverlay] Sticky anchor updated: window=%p monitor=%p dpi=%u fullscreenLike=%d",
+                    anchorWindow, anchor.monitor, anchor.dpi, anchor.fullscreenLike ? 1 : 0);
         }
         this->stickyAnchorWindow_ = anchorWindow;
         this->stickyAnchorMonitor_ = anchor.monitor;
@@ -565,8 +565,8 @@ void PseudoOverlay::UpdateOverlay() {
     const bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
 
     const bool shouldHaveVisibleOverlay =
-        ShouldOverlayBeVisible(config_, isRecording_.load(), warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(),
-                               ghostActive);
+        ShouldOverlayBeVisible(config_, isRecording_.load(), warnVisible_, overloadWarnUntil_.load(),
+                               screenshotNotifyUntil_.load(), ghostActive);
 
     if (!config_.enabled) {
         DestroyOverlayWindows();
@@ -1131,9 +1131,8 @@ bool PseudoOverlay::EnsureOverlayWindows() {
     }
 
     if (!hOv_) {
-        hOv_ = CreateWindowExA(
-            WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kIndicatorClass,
-            "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance_, 0);
+        hOv_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                               kIndicatorClass, "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance_, 0);
         if (!hOv_) {
             LogError("[PseudoOverlay] Failed to create indicator overlay window");
             return false;
@@ -1141,9 +1140,9 @@ bool PseudoOverlay::EnsureOverlayWindows() {
     }
 
     if (!hWarn_) {
-        hWarn_ = CreateWindowExA(
-            WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kWarningClass, "",
-            WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance_, 0);
+        hWarn_ =
+            CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                            kWarningClass, "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance_, 0);
         if (!hWarn_) {
             LogError("[PseudoOverlay] Failed to create warning overlay window");
             DestroyWindow(hOv_);

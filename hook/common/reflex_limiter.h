@@ -22,8 +22,8 @@
 // clang-format off
 #include <windows.h>
 // clang-format on
-#include <atomic>
 #include <intrin.h>
+#include <atomic>
 #include "hook_common.h"
 #include "reflex_defs.h"
 
@@ -395,7 +395,8 @@ public:
         // Verify we can resolve SetSleepMode before hooking. If a direct inline
         // hook is already installed, keep forwarding through its trampoline
         // instead of re-caching the now-hooked entrypoint and recursing.
-        auto pResolvedSetSleepMode = reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
+        auto pResolvedSetSleepMode =
+            reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
         if (!pResolvedSetSleepMode) {
             HookLog("ReflexLimiter: Cannot resolve SetSleepMode, skipping game activation hook");
             return;
@@ -439,7 +440,8 @@ public:
                 directSetSleepModeTrampoline_ = reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(trampoline);
                 realSetSleepModeForHook_ = directSetSleepModeTrampoline_;
                 HookLogImportant(
-                    "ReflexLimiter: Inline hook installed on NvAPI_D3D_SetSleepMode (target=%p, detour=%p, trampoline=%p)",
+                    "ReflexLimiter: Inline hook installed on NvAPI_D3D_SetSleepMode (target=%p, detour=%p, "
+                    "trampoline=%p)",
                     (void*)origSetSleepMode_, (void*)&ReflexDetour_SetSleepMode, trampoline);
             } else {
                 HookLogImportant("ReflexLimiter: Failed to install inline hook on NvAPI_D3D_SetSleepMode");

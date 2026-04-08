@@ -126,9 +126,10 @@ TEST(VulkanLayerRegistrationTest, CleanupRemovesMismatchedTargetEntries) {
     const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::Auto, true);
     ASSERT_EQ(plan.installTargets.size(), 2u);
 
-    EXPECT_TRUE(ShouldDeleteRegistryValueForTarget(plan, RegistryRoot::CurrentUser, RegistryView::Default, manifest64, true));
-    EXPECT_TRUE(ShouldDeleteRegistryValueForTarget(plan, RegistryRoot::LocalMachine, RegistryView::Registry32, manifest64,
-                                                   true));
+    EXPECT_TRUE(
+        ShouldDeleteRegistryValueForTarget(plan, RegistryRoot::CurrentUser, RegistryView::Default, manifest64, true));
+    EXPECT_TRUE(ShouldDeleteRegistryValueForTarget(plan, RegistryRoot::LocalMachine, RegistryView::Registry32,
+                                                   manifest64, true));
     EXPECT_FALSE(ShouldDeleteRegistryValueForTarget(plan, RegistryRoot::LocalMachine, RegistryView::Registry64,
                                                     manifest64, true));
     EXPECT_TRUE(ShouldDeleteRegistryValueForTarget(plan, RegistryRoot::LocalMachine, RegistryView::Registry64,

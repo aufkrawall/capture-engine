@@ -584,7 +584,8 @@ public:
                     TraceLog("Apply: REFLEX hybrid target=%d gameSleep=%d gameActive=%d fresh=%u", effectiveTargetFps,
                              gameSleepObserved ? 1 : 0, gameActivated ? 1 : 0, freshSleepCount);
                     HookLog(
-                        "FPS Limiter: Reflex hybrid active (target=%d fps, native low-latency + local pacing, gameSleep=%d, gameActive=%d, freshSleep=%u)",
+                        "FPS Limiter: Reflex hybrid active (target=%d fps, native low-latency + local pacing, "
+                        "gameSleep=%d, gameActive=%d, freshSleep=%u)",
                         effectiveTargetFps, gameSleepObserved ? 1 : 0, gameActivated ? 1 : 0, freshSleepCount);
                     reflexLoggedSuccess_ = true;
                 }
@@ -607,18 +608,22 @@ public:
                 reflexLimiterActive_ = false;
                 if (!loggedNativeFallback_) {
                     TraceLog(
-                        "Apply: REFLEX timer fallback gameActive=%d gameSleep=%d push=%d sleepCount=%u fresh=%u recent=%d gap=%d",
-                             gameActivated ? 1 : 0, gameSleepObserved ? 1 : 0, reflexPushOk ? 1 : 0, gameSleepCount,
-                             freshSleepCount, gameSleepRecent ? 1 : 0, recentPresentGap ? 1 : 0);
+                        "Apply: REFLEX timer fallback gameActive=%d gameSleep=%d push=%d sleepCount=%u fresh=%u "
+                        "recent=%d gap=%d",
+                        gameActivated ? 1 : 0, gameSleepObserved ? 1 : 0, reflexPushOk ? 1 : 0, gameSleepCount,
+                        freshSleepCount, gameSleepRecent ? 1 : 0, recentPresentGap ? 1 : 0);
                     if (recentPresentGap) {
                         HookLog(
-                            "FPS Limiter: Recent Present gap detected during Reflex activation; holding timer fallback until pacing restabilizes");
+                            "FPS Limiter: Recent Present gap detected during Reflex activation; holding timer fallback "
+                            "until pacing restabilizes");
                     } else if (gameSleepObserved && freshSleepCount < 3) {
                         HookLog(
-                            "FPS Limiter: Reflex Sleep observed but waiting for a fresh stable Sleep streak; using timer fallback");
+                            "FPS Limiter: Reflex Sleep observed but waiting for a fresh stable Sleep streak; using "
+                            "timer fallback");
                     } else if (reflexPushOk) {
                         HookLog(
-                            "FPS Limiter: Reflex armed but native Sleep cadence is not stable yet; using timer fallback");
+                            "FPS Limiter: Reflex armed but native Sleep cadence is not stable yet; using timer "
+                            "fallback");
                     } else {
                         HookLog("FPS Limiter: Reflex native mode unavailable at runtime; using timer fallback");
                     }
@@ -1023,10 +1028,11 @@ private:
     bool reflexNativeSleepActive_ = false;                   // True while recent game Sleep calls are pacing natively
     bool reflexLoggedSuccess_ = false;                       // True once we've logged successful Reflex activation
     bool loggedNativeFallback_ = false;                      // Avoid spam when native mode falls back to timer
-    uint32_t reflexSleepBaselineCount_ = 0;                  // Sleep count at the last disruption; native handoff needs a fresh streak after it
-    bool reflexRecentPresentGap_ = false;                    // Edge detector for recent large Present gaps
-    bool antilag2InitAttempted_ = false;                     // Lazy init flag for Anti-Lag 2
-    bool xellInitAttempted_ = false;                         // Lazy init flag for XeLL
+    uint32_t reflexSleepBaselineCount_ =
+        0;  // Sleep count at the last disruption; native handoff needs a fresh streak after it
+    bool reflexRecentPresentGap_ = false;          // Edge detector for recent large Present gaps
+    bool antilag2InitAttempted_ = false;           // Lazy init flag for Anti-Lag 2
+    bool xellInitAttempted_ = false;               // Lazy init flag for XeLL
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence
     uint32_t localFrameCount_ = 0;                 // Frame count for local capture sync stats

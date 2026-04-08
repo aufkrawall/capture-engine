@@ -18,11 +18,11 @@
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
+#include "../common/vulkan_layer_registration.h"
 #include "injection.h"
 #include "pseudo_overlay.h"
 #include "screenshot.h"
 #include "tray.h"
-#include "../common/vulkan_layer_registration.h"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "winmm.lib")
@@ -996,7 +996,8 @@ int ControllerMain(HINSTANCE hInstance) {
     const int64_t vulkanRegUs = Log_GetQpcUs() - vulkanRegStartUs;
     g_VulkanReg = &vulkanReg;
     if (!vulkanReg.IsActive()) {
-        LogWarn("[Controller] Vulkan layer registration is inactive; Vulkan capture may be unavailable for this session");
+        LogWarn(
+            "[Controller] Vulkan layer registration is inactive; Vulkan capture may be unavailable for this session");
     }
 
     // Create IPC clients

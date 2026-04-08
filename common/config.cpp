@@ -47,8 +47,7 @@ std::string NormalizeCaptureMethod(const std::string& val) {
         return "inject";
     }
 
-    if (normalized == "wgc" || normalized == "screengrab" || normalized == "framegrab" ||
-        normalized == "desktop_dup") {
+    if (normalized == "wgc" || normalized == "screengrab" || normalized == "framegrab" || normalized == "desktop_dup") {
         return "wgc";
     }
 

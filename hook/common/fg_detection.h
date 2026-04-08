@@ -35,7 +35,8 @@ public:
     FGType GetActiveFGType() const;
     ce::fg_runtime::RuntimeMode GetRuntimeMode() const;
     bool HasStreamlineSupport() const {
-        return streamlineSupportPresent.load(std::memory_order_acquire) || streamlineFGSignal.load(std::memory_order_acquire);
+        return streamlineSupportPresent.load(std::memory_order_acquire) ||
+               streamlineFGSignal.load(std::memory_order_acquire);
     }
     bool HasFSRFGSupport() const {
         return fsrSupportPresent.load(std::memory_order_acquire) || fsrFGApiActive.load(std::memory_order_acquire) ||

@@ -8,8 +8,8 @@
 #include <algorithm>
 #include <cstring>
 #include "../apis/lod_helper.h"
-#include "../common/sampler_override_utils.h"
 #include "../common/hook_common.h"
+#include "../common/sampler_override_utils.h"
 
 namespace RootSignatureParser {
 

@@ -856,8 +856,8 @@ public:
                     "track=%d",
                     i, encSamples, expectedVideoSamples, diffSamples, diffMs, audioSources[i].track);
             }
-                DLL_Log("[StopAudio] Video: expectedDuration=%lld ms (%lld samples)", expectedVideoMs,
-                        expectedVideoSamples);
+            DLL_Log("[StopAudio] Video: expectedDuration=%lld ms (%lld samples)", expectedVideoMs,
+                    expectedVideoSamples);
         }
 
         {
@@ -1701,7 +1701,7 @@ public:
                     } else if (!forceDrain && isWgcCfrRecording && wgcCoverageLossActive &&
                                kWgcPreferVideoRepeatsOverAudioCuts &&
                                static_cast<int64_t>(rbAvailable) >
-                                    targetLatencySamples + kWgcCoverageLossLeadSlackSamples &&
+                                   targetLatencySamples + kWgcCoverageLossLeadSlackSamples &&
                                dropLogCounter++ % 500 == 0) {
                         DLL_Log(
                             "[PullAudio] WGC coverage loss active: preserving audio continuity and expecting host "

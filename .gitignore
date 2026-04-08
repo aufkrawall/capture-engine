@@ -74,3 +74,5 @@ common/build_version.h
 
 
 CLAUDE.md
+common/config.h.tmp0
+hook/common/hook_common.h.tmp0

@@ -537,7 +537,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CheckFeatureSupport(DXGI_FEATURE Fe
 // IDXGIFactory6
 // ============================================================================
 HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapterByGpuPreference(UINT Adapter, DXGI_GPU_PREFERENCE GpuPreference,
-                                                                         REFIID riid, void** ppvAdapter) {
+                                                                        REFIID riid, void** ppvAdapter) {
     if (!m_pReal6)
         return DXGI_ERROR_UNSUPPORTED;
     if (ppvAdapter)

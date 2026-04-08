@@ -1739,62 +1739,61 @@ void EncoderThreadFunc(const AppConfig& config) {
     wgcStarvedEpisode.Reset();
     CaptureSessionSummary captureSessionSummary;
     captureSessionSummary.Reset();
-    const auto accumulateCaptureSummarySample = [&](bool useScreenGrabSession, uint32_t srcFpsX100Val,
-                                                    uint32_t srcJitterUsVal, uint32_t dupNoSource,
-                                                    uint32_t dupDeferred, uint32_t dupTimer, uint32_t dupDrain,
-                                                    uint32_t oldestBufferedFrameAgeUs, double shortfallDurationMs,
-                                                    double sustainableOutputFps) {
-        captureSessionSummary.duplicateTicks += cadenceCounters.liveTickDuplicateCount;
-        captureSessionSummary.duplicateNoSourceTicks += dupNoSource - lastDuplicateReasonNoSource;
-        captureSessionSummary.duplicateDeferredTicks += dupDeferred - lastDuplicateReasonDeferred;
-        captureSessionSummary.duplicateTimerTicks += dupTimer - lastDuplicateReasonTimerRebase;
-        captureSessionSummary.duplicateDrainTicks += dupDrain - lastDuplicateReasonDrain;
-        captureSessionSummary.maxEncodeEmaMs = std::max(captureSessionSummary.maxEncodeEmaMs, smoothedEncodeMs);
-        captureSessionSummary.minEncoderSustainFps =
-            std::min(captureSessionSummary.minEncoderSustainFps, sustainableOutputFps);
+    const auto accumulateCaptureSummarySample =
+        [&](bool useScreenGrabSession, uint32_t srcFpsX100Val, uint32_t srcJitterUsVal, uint32_t dupNoSource,
+            uint32_t dupDeferred, uint32_t dupTimer, uint32_t dupDrain, uint32_t oldestBufferedFrameAgeUs,
+            double shortfallDurationMs, double sustainableOutputFps) {
+            captureSessionSummary.duplicateTicks += cadenceCounters.liveTickDuplicateCount;
+            captureSessionSummary.duplicateNoSourceTicks += dupNoSource - lastDuplicateReasonNoSource;
+            captureSessionSummary.duplicateDeferredTicks += dupDeferred - lastDuplicateReasonDeferred;
+            captureSessionSummary.duplicateTimerTicks += dupTimer - lastDuplicateReasonTimerRebase;
+            captureSessionSummary.duplicateDrainTicks += dupDrain - lastDuplicateReasonDrain;
+            captureSessionSummary.maxEncodeEmaMs = std::max(captureSessionSummary.maxEncodeEmaMs, smoothedEncodeMs);
+            captureSessionSummary.minEncoderSustainFps =
+                std::min(captureSessionSummary.minEncoderSustainFps, sustainableOutputFps);
 
-        if (useScreenGrabSession) {
-            captureSessionSummary.queueTickSamples += wgcQueueTickSampleCount;
-            captureSessionSummary.noFreshTicks += wgcNoFreshTickCount;
-            captureSessionSummary.noReserveTicks += wgcNoReserveTickCount;
-            captureSessionSummary.worstFreshMissPermille =
-                std::max(captureSessionSummary.worstFreshMissPermille, wgcNoFreshTickPermille);
-            if (srcFpsX100Val > 0) {
-                captureSessionSummary.worstSourceFpsX100 =
-                    std::min(captureSessionSummary.worstSourceFpsX100, srcFpsX100Val);
-                captureSessionSummary.bestSourceFpsX100 =
-                    std::max(captureSessionSummary.bestSourceFpsX100, srcFpsX100Val);
+            if (useScreenGrabSession) {
+                captureSessionSummary.queueTickSamples += wgcQueueTickSampleCount;
+                captureSessionSummary.noFreshTicks += wgcNoFreshTickCount;
+                captureSessionSummary.noReserveTicks += wgcNoReserveTickCount;
+                captureSessionSummary.worstFreshMissPermille =
+                    std::max(captureSessionSummary.worstFreshMissPermille, wgcNoFreshTickPermille);
+                if (srcFpsX100Val > 0) {
+                    captureSessionSummary.worstSourceFpsX100 =
+                        std::min(captureSessionSummary.worstSourceFpsX100, srcFpsX100Val);
+                    captureSessionSummary.bestSourceFpsX100 =
+                        std::max(captureSessionSummary.bestSourceFpsX100, srcFpsX100Val);
+                }
+                if (wgcRecentInputMin250Fps > 0) {
+                    captureSessionSummary.worstInputMin250Fps =
+                        std::min(captureSessionSummary.worstInputMin250Fps, wgcRecentInputMin250Fps);
+                }
+                if (wgcRecentDeliveredMin250Fps > 0) {
+                    captureSessionSummary.worstDeliveredMin250Fps =
+                        std::min(captureSessionSummary.worstDeliveredMin250Fps, wgcRecentDeliveredMin250Fps);
+                }
+                captureSessionSummary.worstSourceJitterUs =
+                    std::max(captureSessionSummary.worstSourceJitterUs, srcJitterUsVal);
+                captureSessionSummary.worstSelectionErrorUs =
+                    std::max(captureSessionSummary.worstSelectionErrorUs, cadenceCounters.selectionErrorMaxUs);
+                captureSessionSummary.worstWgcSelectionErrorUs =
+                    std::max(captureSessionSummary.worstWgcSelectionErrorUs, wgcSelectionErrorMaxUs);
+                captureSessionSummary.worstOldestBufferedFrameAgeUs =
+                    std::max(captureSessionSummary.worstOldestBufferedFrameAgeUs, oldestBufferedFrameAgeUs);
+                captureSessionSummary.maxShortfallDurationMs =
+                    std::max(captureSessionSummary.maxShortfallDurationMs, shortfallDurationMs);
+            } else {
+                captureSessionSummary.worstSelectionErrorUs =
+                    std::max(captureSessionSummary.worstSelectionErrorUs, cadenceCounters.selectionErrorMaxUs);
+                injectWorstSelectionErrorUs =
+                    std::max(injectWorstSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs);
+                if (srcFpsX100Val > 0) {
+                    injectWorstSourceFpsX100 = std::min(injectWorstSourceFpsX100, srcFpsX100Val);
+                    injectBestSourceFpsX100 = std::max(injectBestSourceFpsX100, srcFpsX100Val);
+                }
+                injectWorstSourceJitterUs = std::max(injectWorstSourceJitterUs, srcJitterUsVal);
             }
-            if (wgcRecentInputMin250Fps > 0) {
-                captureSessionSummary.worstInputMin250Fps =
-                    std::min(captureSessionSummary.worstInputMin250Fps, wgcRecentInputMin250Fps);
-            }
-            if (wgcRecentDeliveredMin250Fps > 0) {
-                captureSessionSummary.worstDeliveredMin250Fps =
-                    std::min(captureSessionSummary.worstDeliveredMin250Fps, wgcRecentDeliveredMin250Fps);
-            }
-            captureSessionSummary.worstSourceJitterUs =
-                std::max(captureSessionSummary.worstSourceJitterUs, srcJitterUsVal);
-            captureSessionSummary.worstSelectionErrorUs =
-                std::max(captureSessionSummary.worstSelectionErrorUs, cadenceCounters.selectionErrorMaxUs);
-            captureSessionSummary.worstWgcSelectionErrorUs =
-                std::max(captureSessionSummary.worstWgcSelectionErrorUs, wgcSelectionErrorMaxUs);
-            captureSessionSummary.worstOldestBufferedFrameAgeUs =
-                std::max(captureSessionSummary.worstOldestBufferedFrameAgeUs, oldestBufferedFrameAgeUs);
-            captureSessionSummary.maxShortfallDurationMs =
-                std::max(captureSessionSummary.maxShortfallDurationMs, shortfallDurationMs);
-        } else {
-            captureSessionSummary.worstSelectionErrorUs =
-                std::max(captureSessionSummary.worstSelectionErrorUs, cadenceCounters.selectionErrorMaxUs);
-            injectWorstSelectionErrorUs =
-                std::max(injectWorstSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs);
-            if (srcFpsX100Val > 0) {
-                injectWorstSourceFpsX100 = std::min(injectWorstSourceFpsX100, srcFpsX100Val);
-                injectBestSourceFpsX100 = std::max(injectBestSourceFpsX100, srcFpsX100Val);
-            }
-            injectWorstSourceJitterUs = std::max(injectWorstSourceJitterUs, srcJitterUsVal);
-        }
-    };
+        };
     const uint64_t minLoggedWgcStarvedEpisodeMs =
         std::max<uint64_t>(100ull, static_cast<uint64_t>(frameIntervalMs * 8.0 + 0.5));
     const auto shouldLogWgcStarvedEpisode = [&](uint64_t durationMs, uint64_t outputTicks, uint64_t duplicateTicks,
@@ -1805,8 +1804,7 @@ void EncoderThreadFunc(const AppConfig& config) {
 
         // Suppress single-tick/no-duplicate blips that can occur when the rolling
         // no-fresh telemetry briefly spikes without a visible cadence miss.
-        return outputTicks > 1 &&
-               peakFreshMissPermille >= ce::capture_policy::kWgcDeepUnderfeedEmptyTickPermille;
+        return outputTicks > 1 && peakFreshMissPermille >= ce::capture_policy::kWgcDeepUnderfeedEmptyTickPermille;
     };
     const auto finishWgcStarvedEpisode = [&](uint64_t durationMs, uint64_t outputTicks, uint64_t duplicateTicks) {
         ++captureSessionSummary.starvedEpisodes;
@@ -1826,7 +1824,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             captureSessionSummary.longestStarvedEpisodeMinDeliveredFps = minDeliveredFps;
         }
         if (shouldLogWgcStarvedEpisode(durationMs, outputTicks, duplicateTicks,
-                                      wgcStarvedEpisode.peakFreshMissPermille)) {
+                                       wgcStarvedEpisode.peakFreshMissPermille)) {
             LogInfo(
                 "[WGC CFR] Source-starved episode: duration=%llums out=%llu dup=%llu minIn=%u minDel=%u "
                 "freshMiss=%upm minBuf=%u",
@@ -2563,12 +2561,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 };
                 const bool allowWgcLiveRecoveryMode =
                     recordingOutputLive && g_Recording.load(std::memory_order_acquire);
-                const bool wgcSourceHealthTelemetryReady = allowWgcLiveRecoveryMode &&
-                                                           liveTicksOutput >= std::max<uint64_t>(8ull, outputFps / 8u) &&
-                                                           wgcRecentDeliveredMin250Fps > 0 &&
-                                                           wgcRecentDeliveredMin500Fps > 0 &&
-                                                           wgcRecentInputMin250Fps > 0 &&
-                                                           wgcRecentInputMin500Fps > 0;
+                const bool wgcSourceHealthTelemetryReady =
+                    allowWgcLiveRecoveryMode && liveTicksOutput >= std::max<uint64_t>(8ull, outputFps / 8u) &&
+                    wgcRecentDeliveredMin250Fps > 0 && wgcRecentDeliveredMin500Fps > 0 && wgcRecentInputMin250Fps > 0 &&
+                    wgcRecentInputMin500Fps > 0;
                 const ce::capture_policy::WgcLiveRecoveryState wgcLiveRecoveryStateCurrent =
                     wgcSourceHealthTelemetryReady
                         ? ce::capture_policy::ClassifyWgcLiveRecoveryState(wgcAdaptiveTelemetry, outputShortfallTicks,
@@ -2586,9 +2582,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcReservePressureActive = ce::capture_policy::IsWgcReservePressureActive(
                     wgcNoReserveTickCount, wgcQueueTickSampleCount, outputFps);
                 const ce::capture_policy::WgcLowSourceState wgcLowSourceStateCurrent =
-                    wgcSourceHealthTelemetryReady
-                        ? ce::capture_policy::ClassifyWgcLowSourceState(wgcAdaptiveTelemetry)
-                        : ce::capture_policy::WgcLowSourceState::kHealthy;
+                    wgcSourceHealthTelemetryReady ? ce::capture_policy::ClassifyWgcLowSourceState(wgcAdaptiveTelemetry)
+                                                  : ce::capture_policy::WgcLowSourceState::kHealthy;
                 const bool shouldEnterWgcLowSourceMode =
                     wgcLowSourceStateCurrent != ce::capture_policy::WgcLowSourceState::kHealthy;
                 const bool bufferedReserveRecovered = bufferedWgcFrames.size() >= 3;
@@ -4202,14 +4197,16 @@ void EncoderThreadFunc(const AppConfig& config) {
             cadenceCounters.CommitHoldRun();
 
             // Compute input frame rate predictor diagnostics
-            const InputFrameRatePredictor& activeInputPredictor = useScreenGrab ? wgcInputPredictor : injectInputPredictor;
-            const uint32_t srcFpsX100Val = activeInputPredictor.IsCalibrated()
-                                             ? static_cast<uint32_t>(activeInputPredictor.GetPredictedFps(qpcFreq.QuadPart) *
-                                                                    100.0)
-                                             : 0u;
-            const uint32_t srcJitterUsVal = activeInputPredictor.IsCalibrated()
-                                                ? static_cast<uint32_t>(activeInputPredictor.GetJitterUs(qpcFreq.QuadPart))
-                                                : 0u;
+            const InputFrameRatePredictor& activeInputPredictor =
+                useScreenGrab ? wgcInputPredictor : injectInputPredictor;
+            const uint32_t srcFpsX100Val =
+                activeInputPredictor.IsCalibrated()
+                    ? static_cast<uint32_t>(activeInputPredictor.GetPredictedFps(qpcFreq.QuadPart) * 100.0)
+                    : 0u;
+            const uint32_t srcJitterUsVal =
+                activeInputPredictor.IsCalibrated()
+                    ? static_cast<uint32_t>(activeInputPredictor.GetJitterUs(qpcFreq.QuadPart))
+                    : 0u;
             const uint32_t dupTsPerSec =
                 g_WgcCap ? g_WgcCap->GetNormalizedDuplicateTimestampCount() : dupTimestampCount;
             dupTimestampCount = 0;
@@ -4379,16 +4376,15 @@ void EncoderThreadFunc(const AppConfig& config) {
             ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
         const double sustainableOutputFps = ce::capture_policy::GetEncoderSustainableOutputFps(smoothedEncodeMs);
         const InputFrameRatePredictor& activeInputPredictor = useScreenGrab ? wgcInputPredictor : injectInputPredictor;
-        const uint32_t srcFpsX100Val = activeInputPredictor.IsCalibrated()
-                                         ? static_cast<uint32_t>(activeInputPredictor.GetPredictedFps(qpcFreq.QuadPart) *
-                                                                100.0)
-                                         : 0u;
+        const uint32_t srcFpsX100Val =
+            activeInputPredictor.IsCalibrated()
+                ? static_cast<uint32_t>(activeInputPredictor.GetPredictedFps(qpcFreq.QuadPart) * 100.0)
+                : 0u;
         const uint32_t srcJitterUsVal = activeInputPredictor.IsCalibrated()
                                             ? static_cast<uint32_t>(activeInputPredictor.GetJitterUs(qpcFreq.QuadPart))
                                             : 0u;
-        accumulateCaptureSummarySample(useScreenGrab, srcFpsX100Val, srcJitterUsVal, dupNoSource, dupDeferred,
-                                       dupTimer, dupDrain, oldestBufferedFrameAgeUs, shortfallDurationMs,
-                                       sustainableOutputFps);
+        accumulateCaptureSummarySample(useScreenGrab, srcFpsX100Val, srcJitterUsVal, dupNoSource, dupDeferred, dupTimer,
+                                       dupDrain, oldestBufferedFrameAgeUs, shortfallDurationMs, sustainableOutputFps);
     }
 
     if (wgcStarvedEpisode.active) {
@@ -4454,7 +4450,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 captureSessionSummary.lowSourceImmediateExits);
         } else {
             LogInfo(
-                "[Inject CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% DupReason(src=%llu def=%llu timer=%llu drain=%llu)",
+                "[Inject CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% DupReason(src=%llu def=%llu timer=%llu "
+                "drain=%llu)",
                 static_cast<unsigned long long>(liveTicksOutput),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
                 static_cast<double>(duplicatePermille) / 10.0,
@@ -4463,11 +4460,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTimerTicks),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateDrainTicks));
             LogInfo(
-                "[Inject CFR SUMMARY] SourceFps=%.2f..%.2f JitterMax=%uus SelMax=%uus EncEmaMax=%.2fms SustainMin=%.1ffps",
+                "[Inject CFR SUMMARY] SourceFps=%.2f..%.2f JitterMax=%uus SelMax=%uus EncEmaMax=%.2fms "
+                "SustainMin=%.1ffps",
                 injectWorstSourceFpsX100 == std::numeric_limits<uint32_t>::max() ? 0.0
-                                                                          : (injectWorstSourceFpsX100 / 100.0),
-                injectBestSourceFpsX100 / 100.0, injectWorstSourceJitterUs,
-                injectWorstSelectionErrorUs, captureSessionSummary.maxEncodeEmaMs,
+                                                                                 : (injectWorstSourceFpsX100 / 100.0),
+                injectBestSourceFpsX100 / 100.0, injectWorstSourceJitterUs, injectWorstSelectionErrorUs,
+                captureSessionSummary.maxEncodeEmaMs,
                 captureSessionSummary.minEncoderSustainFps == std::numeric_limits<double>::max()
                     ? 0.0
                     : captureSessionSummary.minEncoderSustainFps);
@@ -4719,9 +4717,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     auto isExplicitInjectConfig = [&]() -> bool { return IsInjectCaptureMethod(config.captureMethod); };
     auto isExplicitWgcConfig = [&]() -> bool { return IsWgcCaptureMethod(config.captureMethod); };
     auto isAutoCaptureConfig = [&]() -> bool { return IsAutoCaptureMethod(config.captureMethod); };
-    auto setWgcPreferenceAfterFailure = [&]() {
-        SetPreferredScreenGrab(isExplicitWgcConfig());
-    };
+    auto setWgcPreferenceAfterFailure = [&]() { SetPreferredScreenGrab(isExplicitWgcConfig()); };
 
     if (isExplicitWgcConfig()) {
         SetPreferredScreenGrab(true);
@@ -5360,7 +5356,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 }
                 LogInfo("[Media] Hook connected: %s (PID: %u)", procName.c_str(), currentSourcePid);
 
-                const bool forceWGC = !isExplicitInjectConfig() && MatchesProcessEntries(config.overlayWhitelist, procName);
+                const bool forceWGC =
+                    !isExplicitInjectConfig() && MatchesProcessEntries(config.overlayWhitelist, procName);
                 const bool injectWhitelisted =
                     isAutoCaptureConfig() && MatchesProcessEntries(config.gameWhitelist, procName);
                 if (forceWGC) {

@@ -846,8 +846,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         }
         const bool previousInWrapperPresent = g_InWrapperPresent;
         g_InWrapperPresent = false;
-        auto delegateGuard = ::ce::make_scope_guard(
-            [previousInWrapperPresent]() { g_InWrapperPresent = previousInWrapperPresent; });
+        auto delegateGuard =
+            ::ce::make_scope_guard([previousInWrapperPresent]() { g_InWrapperPresent = previousInWrapperPresent; });
         return pRealCached->Present(SyncInterval, Flags);
     }
 
@@ -1215,8 +1215,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         }
         const bool previousInWrapperPresent = g_InWrapperPresent;
         g_InWrapperPresent = false;
-        auto delegateGuard = ::ce::make_scope_guard(
-            [previousInWrapperPresent]() { g_InWrapperPresent = previousInWrapperPresent; });
+        auto delegateGuard =
+            ::ce::make_scope_guard([previousInWrapperPresent]() { g_InWrapperPresent = previousInWrapperPresent; });
         return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     }
 
