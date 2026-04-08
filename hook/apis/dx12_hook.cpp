@@ -1643,6 +1643,9 @@ static ULONGLONG s_startupOverlaySyncInitMs = 0;
 static ULONGLONG s_startupOverlayResourcePrimeMs = 0;
 static ULONGLONG s_startupOverlayFirstDrawProbeMs = 0;
 static std::atomic<ULONGLONG> s_lastStartupBlockingRenderModuleActivityMs{0};
+// Once the GTA startup-overlay path has completed a stable first draw, later
+// swapchain/sync reinitializations should keep the normal allocator pool.
+static std::atomic<bool> s_startupOverlayCompatSettled{false};
 
 static const char* GetStartupOverlayFirstDrawProbeStageName(StartupOverlayFirstDrawProbeStage stage) {
     switch (stage) {
@@ -4533,14 +4536,23 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
 
     size_t allocatorPoolSize = DX12OverlayState::ALLOC_POOL_SIZE;
     const bool startupOverlayPresent = (overlayModule != nullptr);
+    const bool startupOverlayCompatSettled = s_startupOverlayCompatSettled.load(std::memory_order_acquire);
     const bool processNeedsStartupCompatDelay =
         ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
     allocatorPoolSize = ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(
         processNeedsStartupCompatDelay, startupOverlayPresent, IsActualFrameGenerationActive(),
+        startupOverlayCompatSettled,
         DX12OverlayState::ALLOC_POOL_SIZE);
     if (allocatorPoolSize < DX12OverlayState::ALLOC_POOL_SIZE) {
         HookLogImportant("InitOverlaySync: Using minimal %u-slot allocator pool for startup overlay %s",
                          static_cast<unsigned>(allocatorPoolSize), overlayModule ? overlayModule : "module");
+    } else if (startupOverlayPresent && startupOverlayCompatSettled) {
+        static std::atomic<int> s_startupSettledAllocatorLogCount{0};
+        if (s_startupSettledAllocatorLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+            HookLogImportant(
+                "InitOverlaySync: Startup overlay %s already settled - keeping full %u-slot allocator pool",
+                overlayModule ? overlayModule : "module", static_cast<unsigned>(DX12OverlayState::ALLOC_POOL_SIZE));
+        }
     }
 
     g_State.allocators.resize(allocatorPoolSize);
@@ -9909,6 +9921,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             s_startupOverlayFirstDrawProbeStage =
                                                 StartupOverlayFirstDrawProbeStage::kComplete;
                                             s_startupOverlayFirstDrawProbeMs = 0;
+                                            if (!s_startupOverlayCompatSettled.exchange(true, std::memory_order_acq_rel)) {
+                                                HookLogImportant(
+                                                    "DX12: Startup overlay compat settled - future sync reinit will keep "
+                                                    "the full allocator pool");
+                                            }
                                         }
                                     }
                                     // FG-SAFE: Release per-frame backbuffer reference

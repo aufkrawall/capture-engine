@@ -228,11 +228,12 @@ inline bool ShouldDelayDX12OverlayInitAfterStartupResume(bool processNeedsDelay,
 }
 
 inline size_t GetStartupCompatibleDX12AllocatorPoolSize(bool processNeedsDelay, bool startupOverlayPresent,
-                                                        bool actualFGActive, size_t defaultPoolSize) {
-    if (processNeedsDelay && startupOverlayPresent && !actualFGActive) {
-        // Use a reduced pool to minimize D3D12 resource interference during
-        // startup, but keep at least 3 allocators so the overlay can render
-        // every frame without flashing (round-robin across triple-buffered SC).
+                                                        bool actualFGActive, bool startupCompatSettled,
+                                                        size_t defaultPoolSize) {
+    if (processNeedsDelay && startupOverlayPresent && !actualFGActive && !startupCompatSettled) {
+        // Use a reduced pool only during the actual startup compatibility
+        // window. Keeping the reduced pool after startup has already settled can
+        // starve later FG recovery paths under heavy GPU load.
         return 3;
     }
     return defaultPoolSize;
