@@ -173,6 +173,24 @@ inline bool ShouldRealignInactiveCommandQueueToSwapchainQueue(bool actualFGActiv
     return !commandQueueMatchesSwapchainQueue && !commandQueueMatchesOriginalGameQueue;
 }
 
+inline bool ShouldRestoreOriginalSwapchainQueueAfterPostFSRStreamlineTeardown(bool hadFSRFGPhase,
+                                                                              bool hasOriginalGameQueue,
+                                                                              bool hasSwapchainQueue) {
+    // After an FSR->DLSS handoff, Streamline teardown can leave us with no
+    // recaptured non-FG swapchain queue yet even though ProcessFrame must
+    // immediately recover off the stale PostSL wrapper path.
+    return hadFSRFGPhase && hasOriginalGameQueue && !hasSwapchainQueue;
+}
+
+inline bool ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(bool hadFSRFGPhase, bool overlayInit,
+                                                                         bool syncInit) {
+    // The direct Streamline teardown path can invalidate overlay state before
+    // ProcessFrame reaches its own SL transition tracking block. In that case,
+    // ProcessFrame misses the OFF edge and would otherwise rebuild immediately
+    // on the same teardown Present.
+    return hadFSRFGPhase && (!overlayInit || !syncInit);
+}
+
 inline bool ShouldMutatePostSLLockedQueue(bool hasLockedQueue, bool selectedQueueMatchesLockedQueue,
                                           bool shouldReplaceLockedQueue) {
     if (!hasLockedQueue) {

@@ -216,6 +216,11 @@ static std::atomic<bool> g_ResetReinitSubmitCounter{false};
 // this to avoid redundant transition processing (double cooldowns, duplicate drain).
 static std::atomic<uint32_t> g_OuterSLTransitionEpoch{0};
 
+// Last Streamline FG signal observed by the outer ProcessFrame transition block.
+// Kept at file scope so direct Streamline teardown paths can synchronize it when
+// they invalidate overlay state before ProcessFrame reaches the outer tracker.
+static std::atomic<bool> g_OuterTrackedSLFGRunning{false};
+
 // Locked queue for PostSL overlay — stays on the first successful queue
 // (game's render queue) instead of following SL's FG worker queue changes.
 // Reset when PostSL rendering is disabled (FG transition off).
@@ -2885,6 +2890,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
 
     if (g_HadFSRFGPhase) {
         ID3D12CommandQueue* staleScQueue = nullptr;
+        bool restoreOriginalSwapchainQueue = false;
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
 
@@ -2892,8 +2898,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 g_FGRuntimeOwnsSwapchain = false;
                 DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                 g_FGRuntimeOwnsSwapchainSince = 0;
-                HookLogImportant(
-                    "DX12: Streamline FG OFF after FSR history — clearing lingering FG runtime ownership");
+                HookLogImportant("DX12: Streamline FG OFF after FSR history — clearing lingering FG runtime ownership");
             }
 
             if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
@@ -2905,10 +2910,25 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                     "recovery can recapture the live non-FG queue (origGame=%p)",
                     staleScQueue, g_OriginalGameQueue);
             }
+
+            if (ce::dx12_overlay_policy::ShouldRestoreOriginalSwapchainQueueAfterPostFSRStreamlineTeardown(
+                    g_HadFSRFGPhase, g_OriginalGameQueue != nullptr, g_SwapchainQueue != nullptr)) {
+                g_OriginalGameQueue->AddRef();
+                g_SwapchainQueue = g_OriginalGameQueue;
+                g_SwapchainQueueCaptureTime = GetTickCount64();
+                restoreOriginalSwapchainQueue = true;
+            }
         }
 
         if (staleScQueue) {
             staleScQueue->Release();
+        }
+
+        if (restoreOriginalSwapchainQueue) {
+            HookLogImportant(
+                "DX12: Streamline FG OFF after FSR history — restored swapchain queue to origGame %p so non-FG "
+                "recovery does not fall back to the stale PostSL wrapper queue",
+                g_OriginalGameQueue);
         }
 
         // The post-FSR DLSS path rendered through Streamline/PostSL against a
@@ -2920,6 +2940,27 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 "DX12: Streamline FG OFF after FSR history — forcing overlay swapchain reinit for non-FG recovery");
             g_State.overlayInit = false;
             CleanupRTVs();
+        }
+
+        if (ce::dx12_overlay_policy::ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(
+                g_HadFSRFGPhase, g_State.overlayInit, g_State.syncInit)) {
+            g_State.syncInit = false;
+            g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
+            g_OuterTrackedSLFGRunning.store(false, std::memory_order_release);
+            g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
+            g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
+            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            auto* oldRealECL = (void*)g_RealD3D12ECL.load(std::memory_order_acquire);
+            g_RealD3D12ECL.store(nullptr, std::memory_order_release);
+            HookLogImportant(
+                "DX12: Streamline FG OFF after FSR history — deferring non-FG overlay reinit for %d frames so "
+                "Talos/Streamline teardown can settle before pre-SL resources are rebuilt",
+                g_FGTransitionCooldown);
+            HookLogImportant(
+                "DX12: Streamline FG OFF after FSR history — invalidated sync resources for delayed reinit");
+            HookLogImportant(
+                "DX12: Streamline FG OFF after FSR history — cleared realECL %p for delayed non-FG recovery",
+                oldRealECL);
         }
     }
 
@@ -7895,12 +7936,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     // net that ensures state is ALWAYS correct.
     if (!s_insideECL && g_State.overlayInit && g_State.syncInit) {
         bool outerSLFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-        static bool s_outerLastSLFGRunning = false;
+        bool previousOuterSLFGRunning = g_OuterTrackedSLFGRunning.load(std::memory_order_acquire);
 
-        if (outerSLFGRunning != s_outerLastSLFGRunning) {
-            bool slTurnedOff = s_outerLastSLFGRunning && !outerSLFGRunning;
-            bool slTurnedOn = !s_outerLastSLFGRunning && outerSLFGRunning;
-            s_outerLastSLFGRunning = outerSLFGRunning;
+        if (outerSLFGRunning != previousOuterSLFGRunning) {
+            bool slTurnedOff = previousOuterSLFGRunning && !outerSLFGRunning;
+            bool slTurnedOn = !previousOuterSLFGRunning && outerSLFGRunning;
+            g_OuterTrackedSLFGRunning.store(outerSLFGRunning, std::memory_order_release);
 
             HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d)", slTurnedOn ? "ON" : "OFF",
                              allowOverlayRender ? 1 : 0);
@@ -9825,10 +9866,9 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     bool heuristicFSRFG = g_FGCompat.IsHeuristicFSRFGActive();
     bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
-    if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(isInterpolatedFrame, hasDedicatedQueue,
-                                                                         heuristicFSRFG, g_FGRuntimeOwnsSwapchain,
-                                                                         streamlineFGRunning,
-                                                                         recentStreamlineTeardown)) {
+    if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+            isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning,
+            recentStreamlineTeardown)) {
         sc3->Release();
         return;
     }

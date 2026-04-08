@@ -284,6 +284,32 @@ TEST(DXGISharedTest, InactiveCommandQueueRealignsOnlyForDepartedWrapperState) {
                                                                                             true, false, true));
 }
 
+TEST(DXGISharedTest, PostFSRStreamlineTeardownRestoresOrigGameSwapchainQueueOnlyWhenMissing) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldRestoreOriginalSwapchainQueueAfterPostFSRStreamlineTeardown(true, true, false));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldRestoreOriginalSwapchainQueueAfterPostFSRStreamlineTeardown(false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldRestoreOriginalSwapchainQueueAfterPostFSRStreamlineTeardown(true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldRestoreOriginalSwapchainQueueAfterPostFSRStreamlineTeardown(true, true, true));
+}
+
+TEST(DXGISharedTest, DirectPostFSRStreamlineTeardownDefersImmediateOverlayReinitWhenStateWasInvalidated) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(true, false, true));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(true, true, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(true, false, false));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(false, false, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(true, true, true));
+}
+
 TEST(DXGISharedTest, PostSLLockedQueueMutationOnlyHappensForInitialLockOrExplicitPromotion) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldMutatePostSLLockedQueue(false, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldMutatePostSLLockedQueue(true, false, true));
@@ -408,8 +434,8 @@ TEST(DXGISharedTest, PostSLValidatedDirectQueueCandidateRejectsKnownWrapperShape
     EXPECT_FALSE(ce::dx12_overlay_policy::IsUsableValidatedPostSLDirectQueueCandidate(true, false, false, false, true));
 }
 
-TEST(DXGISharedTest, PostSLDoesNotUseWrapperBootstrapQueueAfterFSR) {
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true));
+TEST(DXGISharedTest, PostSLUsesWrapperBootstrapQueueAfterFSROnlyWhenDirectPathIsUnavailable) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(false, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, false, false, true));
