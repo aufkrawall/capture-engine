@@ -423,4 +423,20 @@ inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOw
     return streamlineFGRunning && !streamlineStartupHandoffPending && runtimeOwnershipJustActivated;
 }
 
+inline bool ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(bool streamlineModuleLoaded,
+                                                                      bool streamlineFGRunning,
+                                                                      bool streamlineStartupHandoffPending,
+                                                                      bool callerFromFFXFGModule,
+                                                                      bool ffxFrameGenerationInStack) {
+    if (!streamlineModuleLoaded) {
+        return false;
+    }
+
+    if (callerFromFFXFGModule || ffxFrameGenerationInStack) {
+        return false;
+    }
+
+    return streamlineFGRunning || streamlineStartupHandoffPending;
+}
+
 }  // namespace ce::dx12_overlay_policy

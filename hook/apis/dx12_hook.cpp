@@ -2920,12 +2920,13 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     }
 
     const void* callerAddress = CE_RETURN_ADDRESS();
+    char callerModulePath[MAX_PATH] = {};
+    const bool callerFromFFXFGModule =
+        IsCodeAddressFromFFXFrameGenerationModule(callerAddress, callerModulePath, sizeof(callerModulePath));
+    const bool ffxFrameGenerationInStack = HasFFXFrameGenerationModuleInCurrentStack();
 
     HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
                      pThis, pDevice, hWnd, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1);
-
-    // Suspend overlay rendering during the swapchain transition.
-    StartTransitionCooldown();
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
@@ -2952,6 +2953,13 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     HRESULT hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
     HookLogImportant("DeepHook: Trampoline returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
 
+    if (SUCCEEDED(hr) && ppSC && *ppSC) {
+        // Only start transition cooldown when a swapchain recreation actually
+        // succeeded. Starting it on E_ACCESSDENIED leaves the overlay in a
+        // half-transitioned state while Streamline/game keeps the old chain.
+        StartTransitionCooldown();
+    }
+
     // Reactive recovery: if E_ACCESSDENIED, an old SC still holds the HWND.
     // DON'T force-destroy — that invalidates game-held references and causes
     // delayed UE5 assertion crashes.  Clean up our overlay refs and do a very
@@ -2959,10 +2967,26 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     // (Streamline/game) can manage its own state machine — long blocking here
     // causes DLSS FG activation crashes.
     if (hr == E_ACCESSDENIED && hWnd) {
-        if (IsStreamlineLoaded()) {
-            HookLogImportant("DeepHook: E_ACCESSDENIED for HWND=%p — Streamline present, passing through", hWnd);
+        const bool streamlineModuleLoaded = IsStreamlineLoaded();
+        const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+        const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
+        const bool passThroughForStreamline =
+            ce::dx12_overlay_policy::ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(
+                streamlineModuleLoaded, streamlineFGRunning, streamlineStartupHandoffPending, callerFromFFXFGModule,
+                ffxFrameGenerationInStack);
+        if (passThroughForStreamline) {
+            HookLogImportant(
+                "DeepHook: E_ACCESSDENIED for HWND=%p — Streamline active, passing through "
+                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d)",
+                hWnd, streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0);
         } else {
-            HookLogImportant("DeepHook: E_ACCESSDENIED for HWND=%p — cleaning up overlay refs", hWnd);
+            HookLogImportant(
+                "DeepHook: E_ACCESSDENIED for HWND=%p — cleaning up overlay refs "
+                "(slLoaded=%d slFG=%d startupPending=%d callerFFX=%d stackFFX=%d module=%s)",
+                hWnd, streamlineModuleLoaded ? 1 : 0, streamlineFGRunning ? 1 : 0,
+                streamlineStartupHandoffPending ? 1 : 0, callerFromFFXFGModule ? 1 : 0,
+                ffxFrameGenerationInStack ? 1 : 0, callerModulePath[0] ? callerModulePath : "unknown");
 
             // Clean up our overlay resources so we don't hold stale back-buffer refs
             g_LastSwapChain = nullptr;
@@ -3030,6 +3054,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     }
 
     const void* callerAddress = CE_RETURN_ADDRESS();
+    char callerModulePath[MAX_PATH] = {};
+    const bool callerFromFFXFGModule =
+        IsCodeAddressFromFFXFrameGenerationModule(callerAddress, callerModulePath, sizeof(callerModulePath));
+    const bool ffxFrameGenerationInStack = HasFFXFrameGenerationModuleInCurrentStack();
 
     HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
 
@@ -3061,16 +3089,28 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         // When Streamline is managing swapchain lifecycle, don't interfere.
         // Our CleanupOverlay() flushes the GPU (200ms Signal+Wait) and destroys
         // overlay resources, which disrupts Streamline's internal state machine.
-        if (IsStreamlineLoaded()) {
+        const bool streamlineModuleLoaded = IsStreamlineLoaded();
+        const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+        const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
+        const bool passThroughForStreamline =
+            ce::dx12_overlay_policy::ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(
+                streamlineModuleLoaded, streamlineFGRunning, streamlineStartupHandoffPending, callerFromFFXFGModule,
+                ffxFrameGenerationInStack);
+        if (passThroughForStreamline) {
             HookLogImportant(
                 "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "
-                "Streamline present, passing through without cleanup",
-                hWnd);
+                "Streamline active, passing through without cleanup "
+                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d)",
+                hWnd, streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0);
         } else {
             HookLogImportant(
                 "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "
-                "cleaning up overlay refs",
-                hWnd);
+                "cleaning up overlay refs "
+                "(slLoaded=%d slFG=%d startupPending=%d callerFFX=%d stackFFX=%d module=%s)",
+                hWnd, streamlineModuleLoaded ? 1 : 0, streamlineFGRunning ? 1 : 0,
+                streamlineStartupHandoffPending ? 1 : 0, callerFromFFXFGModule ? 1 : 0,
+                ffxFrameGenerationInStack ? 1 : 0, callerModulePath[0] ? callerModulePath : "unknown");
 
             // Clean up overlay and clear tracking (same as deep hook)
             g_LastSwapChain = nullptr;
@@ -3226,9 +3266,6 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         "hwnd=%p)",
         pThis, pDevice, hWnd);
 
-    // Suspend overlay rendering during the swapchain transition.
-    StartTransitionCooldown();
-
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
@@ -3255,6 +3292,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
     HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
+        StartTransitionCooldown();
+
         // Log swapchain details
         if (pDesc) {
             HookLog("DetourCreateSwapChainForHwndGlobal: Creating swapchain %ux%u", pDesc->Width, pDesc->Height);
