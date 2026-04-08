@@ -35,6 +35,7 @@ enum class SwapchainOverlayRoutingDecision {
     kUseNormalRouting,
     kUsePostFSRStreamlineQueue,
     kUseStreamlineOriginalQueue,
+    kUsePostFSRInactiveLastWorkingQueue,
     kUsePostFSRInactiveOriginalQueue,
     kUseFSRSwapchainQueue,
     kSkipRuntimeOwnedSwapchainWithoutQueue,
@@ -43,8 +44,8 @@ enum class SwapchainOverlayRoutingDecision {
 
 inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtimeOwnsSwapchain, bool streamlineFGActive,
                                                                      bool fsrFGActive, bool hadFSRFGPhase,
-                                                                     bool hasSwapchainQueue,
-                                                                     bool hasOriginalGameQueue) {
+                                                                     bool hasSwapchainQueue, bool hasOriginalGameQueue,
+                                                                     bool hasPostSLLastWorkingQueue) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
                                  : SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
@@ -60,6 +61,10 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     }
 
     if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {
+        if (hasPostSLLastWorkingQueue) {
+            return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue;
+        }
+
         // After FSR->DLSS->off, ProcessFrame intentionally leaves g_SwapchainQueue
         // unset until a fresh non-FG Present path can prove the live swapchain
         // queue again. While that recapture window is open, falling through to the
@@ -166,7 +171,8 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
 
 inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
     bool actualFGActive, bool streamlineFGRunning, bool recentStreamlineTeardown, bool hasSwapchainQueue,
-    bool hasOriginalGameQueue, bool hasCommandQueue, bool commandQueueMatchesSwapchainQueue,
+    bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue, bool hasCommandQueue,
+    bool commandQueueMatchesSwapchainQueue,
     bool commandQueueMatchesOriginalGameQueue, bool commandQueueMatchesPrimaryGameQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
@@ -179,10 +185,11 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
     if (!hasSwapchainQueue) {
         // After the post-FSR DLSS teardown path we intentionally leave
         // g_SwapchainQueue unset until command traffic proves which non-wrapper
-        // queue is actually live again. Fabricating origGame as the swapchain
-        // queue reproduced Talos DEVICE_REMOVED on the first resumed non-FG
-        // overlay submit.
-        return !hasCommandQueue || (!commandQueueMatchesOriginalGameQueue && !commandQueueMatchesPrimaryGameQueue);
+        // queue is actually live again. Both origGame and the primary ECL queue
+        // reproduced Talos DEVICE_REMOVED on the first resumed non-FG overlay
+        // submit. The only safe immediate recovery path is the last PostSL queue
+        // that already proved it could render the live swapchain successfully.
+        return !hasPostSLLastWorkingQueue;
     }
 
     // After the post-FSR DLSS path turns FG off, late Streamline teardown ECLs
@@ -270,6 +277,27 @@ inline bool ShouldMutatePostSLLockedQueue(bool hasLockedQueue, bool selectedQueu
 
 inline bool ShouldRememberPostSLLastWorkingQueue(bool queueIsSLWrapper) {
     return !queueIsSLWrapper;
+}
+
+inline bool ShouldTreatPostSLSelectedQueueAsWrapper(bool queueMatchesOriginalGameQueue,
+                                                    bool queueMatchesDedicatedQueue,
+                                                    bool queueMatchesSwapchainQueue,
+                                                    bool selectedQueueOrigECLMatchesRealECL) {
+    if (queueMatchesOriginalGameQueue || queueMatchesDedicatedQueue || queueMatchesSwapchainQueue) {
+        return false;
+    }
+
+    // A queue whose captured "original" ExecuteCommandLists already matches the
+    // real D3D12 entrypoint has effectively proven it is a direct submission path,
+    // not just a transient Streamline wrapper. Remembering that queue is what
+    // lets the post-FSR FG-off recovery stay on the last queue that actually
+    // worked for the live swapchain.
+    return !selectedQueueOrigECLMatchesRealECL;
+}
+
+inline bool ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(bool hadFSRFGPhase, bool previousWasFG,
+                                                                      bool targetIsFGOff) {
+    return hadFSRFGPhase && previousWasFG && targetIsFGOff;
 }
 
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,

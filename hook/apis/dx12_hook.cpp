@@ -3851,7 +3851,7 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
-            g_OriginalGameQueue != nullptr);
+            g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr);
 
         if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
             // After FSR→DLSS: use scQueue (swapchain creation queue)
@@ -3865,6 +3865,9 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             } else if (g_OriginalGameQueue) {
                 queueForBackend = g_OriginalGameQueue;
             }
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
+            queueForBackend = g_PostSLLastWorkingQueue;
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
             queueForBackend = g_OriginalGameQueue;
@@ -5627,7 +5630,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     bool rendered = false;
 
     const bool selectedQueueIsSwapchainQueue = (queue == scQueue);
-    bool isSLWrapperQ = (queue != g_OriginalGameQueue && queue != g_PostSLDedicatedQueue && queue != scQueue);
+    ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
+    ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
+    ExecuteCommandListsPtr selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
+    const bool selectedQueueOrigECLMatchesRealECL = selectedQueueOrigECL && selectedQueueOrigECL == realECL;
+    bool isSLWrapperQ = ce::dx12_overlay_policy::ShouldTreatPostSLSelectedQueueAsWrapper(
+        queue == g_OriginalGameQueue, queue == g_PostSLDedicatedQueue, selectedQueueIsSwapchainQueue,
+        selectedQueueOrigECLMatchesRealECL);
     const bool useExplicitPostFSRSwapchainTransitions =
         ce::dx12_overlay_policy::ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(
             g_HadFSRFGPhase, cachedSLFGActive, selectedQueueIsSwapchainQueue, isSLWrapperQ);
@@ -5636,10 +5645,6 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     const bool useExplicitPostFSRBackbufferCopyTransitions =
         ce::dx12_overlay_policy::ShouldUseExplicitBackbufferCopyTransitionsForPostFSROffscreenComposite(
             usePostSLOffscreenComposite, useExplicitPostFSRSwapchainTransitions);
-    ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
-    ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
-    ExecuteCommandListsPtr selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
-    const bool selectedQueueOrigECLMatchesRealECL = selectedQueueOrigECL && selectedQueueOrigECL == realECL;
     const bool hasSelectedQueueSubmitPath = selectedQueueOrigECL != nullptr || realECL != nullptr;
     const bool hasWrapperDerivedDirectPath = realQ != nullptr && realECL != nullptr;
     const bool preferSelectedSwapchainQueueSubmitAfterFSR =
@@ -7139,7 +7144,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
-            g_OriginalGameQueue != nullptr);
+            g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr);
 
         if (routingDecision ==
             ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {
@@ -7178,6 +7183,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue) {
             // SL FG (no FSR history): use origGame.
             gameQueue = g_OriginalGameQueue;
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
+            // After FSR->DLSS->off with scQueue intentionally unset, reuse the
+            // last queue that already proved it could render the live swapchain.
+            gameQueue = g_PostSLLastWorkingQueue;
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
             // After FSR->DLSS->off with scQueue intentionally unset, prefer the
@@ -7519,7 +7529,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
             if (ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
                     actualFGActive, streamlineFGRunning, recentStreamlineTeardown, currentSwapchainQueue != nullptr,
-                    g_OriginalGameQueue != nullptr, currentCommandQueue != nullptr,
+                    g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
+                    currentCommandQueue != nullptr,
                     currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
                     currentCommandQueue != nullptr && currentCommandQueue == g_OriginalGameQueue,
                     currentCommandQueue != nullptr && currentCommandQueue == g_PrimaryGameQueue.load(std::memory_order_acquire))) {
@@ -7528,9 +7539,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 if (logCount < 20 || (logCount % 120) == 0) {
                     HookLogImportant(
                         "DX12: Deferring overlay init until command queue settles after recent Streamline teardown "
-                        "(scQ=%p cmdQ=%p origQ=%p primaryQ=%p slOffGrace=%d)",
+                        "(scQ=%p cmdQ=%p origQ=%p primaryQ=%p lastWorkingQ=%p slOffGrace=%d)",
                         currentSwapchainQueue, currentCommandQueue, g_OriginalGameQueue,
-                        g_PrimaryGameQueue.load(std::memory_order_acquire),
+                        g_PrimaryGameQueue.load(std::memory_order_acquire), g_PostSLLastWorkingQueue,
                         g_SLOffHeuristicGrace.load(std::memory_order_acquire));
                 }
                 goto skipOverlayInit;
@@ -8375,11 +8386,21 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 }
             }
             g_PostSLConfirmedRendering.store(false, std::memory_order_release);  // Re-probe needed
-            // Reset lastWorkingQueue too — old SL queues may be destroyed after
-            // an FG mode switch (e.g., the SL queue used during DLSS FG phase 1
-            // is destroyed when switching to FSR FG, then back to DLSS FG phase 2
-            // creates new queues).  g_PreFGGameQueue preserves the game's real queue.
-            SetPostSLLastWorkingQueue(nullptr);
+            const bool previousWasFG = ce::fg_runtime::IsActualGeneratedFrameMode(s_lastRuntimeMode_saved);
+            const bool targetIsFGOff = !ce::fg_runtime::IsActualGeneratedFrameMode(currentRuntimeMode);
+            if (!ce::dx12_overlay_policy::ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(
+                    g_HadFSRFGPhase, previousWasFG, targetIsFGOff)) {
+                // Old SL queues may be destroyed after most FG mode switches
+                // (e.g., DLSS FG phase 1 -> FSR FG -> DLSS FG phase 2). Keep the
+                // last validated queue only for the immediate post-FSR FG-off
+                // recovery window, where it is the only queue that already proved
+                // safe for the live swapchain.
+                SetPostSLLastWorkingQueue(nullptr);
+            } else {
+                HookLogImportant(
+                    "DX12: Preserving PostSL lastWorkingQueue %p for immediate post-FSR FG-off recovery",
+                    g_PostSLLastWorkingQueue);
+            }
 
             // Save the current ProcessFrame gameQueue as a pre-FG snapshot.
             // When PostSL activates after the cooldown, g_CommandQueue may have
@@ -8407,8 +8428,6 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // do NOT invalidate sync.  The existing resources are device-level and
             // work on any DIRECT queue.  Forcing re-init here is unnecessary and
             // causes the "FG→FG" misclassification for what is really "off→on".
-            bool previousWasFG = ce::fg_runtime::IsActualGeneratedFrameMode(s_lastRuntimeMode_saved);
-            bool targetIsFGOff = !ce::fg_runtime::IsActualGeneratedFrameMode(currentRuntimeMode);
             bool actualFGToFG = previousWasFG && !targetIsFGOff;
             if (g_State.syncInit && actualFGToFG) {
                 HookLogImportant("DX12: FG transition (FG→FG: %s→%s) — forcing syncInit=false for fresh resources",
