@@ -2361,11 +2361,41 @@ void DX12_SignalFSR4SwapchainRecreated() {
 static std::atomic<bool> g_DeviceRemoved{false};
 
 static ID3D12CommandQueue* GetFrameClassificationQueue() {
-    ID3D12CommandQueue* queue = g_OriginalGameQueue;
-    if (!queue) {
-        queue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+    ID3D12CommandQueue* primaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+    ID3D12CommandQueue* originalQueue = g_OriginalGameQueue;
+    ID3D12CommandQueue* swapchainQueue = nullptr;
+    bool actualFGActive = false;
+    bool streamlineFGRunning = false;
+    bool recoveringPostFSRNonFG = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        swapchainQueue = g_SwapchainQueue;
+        actualFGActive = IsActualFrameGenerationActive();
+        streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+        recoveringPostFSRNonFG = g_HadFSRFGPhase && g_PostSLLastWorkingQueue != nullptr &&
+                                 g_NeedOffscreenOverlayAfterPostFSRNonFG;
     }
-    return queue;
+
+    if (ce::dx12_overlay_policy::ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
+            recoveringPostFSRNonFG, actualFGActive, streamlineFGRunning, swapchainQueue != nullptr,
+            originalQueue != nullptr, primaryQueue != nullptr, originalQueue == primaryQueue)) {
+        static std::atomic<int> s_postFSRClassificationPrimaryLogCount{0};
+        int logCount = s_postFSRClassificationPrimaryLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Frame classification using primary queue %p during post-FSR non-FG recovery "
+                "(origGame=%p scQ=%p lastWorking=%p offscreen=%d)",
+                primaryQueue, originalQueue, swapchainQueue, g_PostSLLastWorkingQueue,
+                g_NeedOffscreenOverlayAfterPostFSRNonFG ? 1 : 0);
+        }
+        return primaryQueue;
+    }
+
+    if (originalQueue) {
+        return originalQueue;
+    }
+
+    return primaryQueue;
 }
 
 static bool ShouldSuppressLikelyDuplicateTopLevelPresent(IDXGISwapChain3* sc3, UINT backBufferIdx) {

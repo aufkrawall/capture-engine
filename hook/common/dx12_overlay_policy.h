@@ -133,6 +133,26 @@ inline bool ShouldSuppressLikelyDuplicateTopLevelPresent(bool runtimeOwnsSwapcha
     return true;
 }
 
+inline bool ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
+    bool recoveringPostFSRNonFG, bool actualFGActive, bool streamlineFGRunning, bool hasSwapchainQueue,
+    bool hasOriginalGameQueue, bool hasPrimaryGameQueue, bool originalQueueMatchesPrimaryQueue) {
+    if (!recoveringPostFSRNonFG || actualFGActive || streamlineFGRunning || hasSwapchainQueue) {
+        return false;
+    }
+
+    if (!hasOriginalGameQueue || !hasPrimaryGameQueue) {
+        return false;
+    }
+
+    // After FSR->DLSS->off, Talos can resume presenting real non-FG frames while
+    // authoritative ECL traffic settles on the primary DIRECT queue instead of the
+    // original Present queue. If frame classification stays pinned to origGame in
+    // that window, top-level Presents flip back to "zero ECL" as soon as the
+    // recent-Streamline-teardown grace expires, and ProcessFrame stops driving the
+    // recovered overlay even though rendering itself is still healthy.
+    return !originalQueueMatchesPrimaryQueue;
+}
+
 inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive, bool fgRecentlyWasActive,
                                                   bool hasFGTransitionCooldown, bool recentStreamlineTeardown,
                                                   bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
