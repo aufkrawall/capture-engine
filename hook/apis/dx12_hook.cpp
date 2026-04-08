@@ -992,10 +992,33 @@ static void WaitForInFlightPostSLCallbacks(const char* reason) {
     }
 }
 
+static void WaitForOverlayGpuIdle(const char* reason) {
+    if (!g_State.fence || g_State.currentFenceValue == 0) {
+        return;
+    }
+
+    const UINT64 lastVal = g_State.currentFenceValue;
+    HANDLE drainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!drainEvent) {
+        return;
+    }
+
+    HRESULT drainHr = g_State.fence->SetEventOnCompletion(lastVal, drainEvent);
+    if (SUCCEEDED(drainHr)) {
+        DWORD waitResult = WaitForSingleObject(drainEvent, 200);
+        HookLogImportant("%s — drained overlay GPU work (fenceVal=%llu wait=%u)", reason,
+                         (unsigned long long)lastVal, waitResult);
+    } else {
+        HookLogImportant("%s — fence drain failed hr=0x%08X", reason, drainHr);
+    }
+    CloseHandle(drainEvent);
+}
+
 static void CleanupDeferredPostSLQueuesIfSafe(const char* reason);
 static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
 static std::atomic<ID3D12CommandQueue*> g_DeferredCommandQueueRelease{nullptr};
 static std::atomic<ID3D12CommandQueue*> g_DeferredPostSLLockedQueueRelease{nullptr};
+static void WaitForOverlayGpuIdle(const char* reason);
 
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper,
                                               bool deferQueueReleaseUntilCallbacksDrain = false);
@@ -1112,6 +1135,7 @@ static void ResetPostSLLifecycleForTransition(const char* reason, bool clearReal
     if (deferQueueReleaseUntilCallbacksDrain) {
         SetPostSLCallbackInstalled(false, reason);
         WaitForInFlightPostSLCallbacks(reason);
+        WaitForOverlayGpuIdle(reason);
         g_PostSLDeferredQueueCleanupPending.store(true, std::memory_order_release);
     } else {
         g_PostSLDeferredQueueCleanupPending.store(false, std::memory_order_release);
