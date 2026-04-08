@@ -1290,9 +1290,22 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddres
     }
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
+    const bool staleStreamlineOwnershipCandidate =
+        runtimeOwnsSwapchain && streamlineFGRunning && !streamlineStartupHandoffPending &&
+        runtimeOwnershipJustActivated;
     if (!ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(
             runtimeOwnsSwapchain, callerFromFFXFGModule, streamlineFGRunning, streamlineStartupHandoffPending,
             runtimeOwnershipJustActivated)) {
+        if (staleStreamlineOwnershipCandidate && !callerFromFFXFGModule) {
+            static std::atomic<int> s_nonFfxTakeoverPreserveLogCount{0};
+            const int logCount = s_nonFfxTakeoverPreserveLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10) {
+                HookLogImportant(
+                    "DX12: Runtime-owned swapchain transition on %p while Streamline FG is active had no FFX FG "
+                    "module in caller stack (caller=%s) — preserving existing Streamline/PostSL ownership",
+                    capturedQueue, callerModulePath[0] ? callerModulePath : "unknown");
+            }
+        }
         return;
     }
 
@@ -5174,10 +5187,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
     if (!dev || !g_State.overlayInit || !g_State.syncInit || !g_State.cmdList || g_State.allocators.empty()) {
         static int s_stateSkip = 0;
-        if (s_stateSkip++ < 5)
-            HookLog("DX12: PostSL SKIP — state: dev=%p syncDev=%p init=%d sync=%d list=%p alloc=%d",
-                    (void*)g_Device.load(), dev, g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0, g_State.cmdList,
-                    (int)g_State.allocators.size());
+        const int stateSkip = s_stateSkip++;
+        if (stateSkip < 5 || s_callsSinceReactivation <= 20) {
+            HookLogImportant(
+                "DX12: PostSL SKIP — state unavailable (epoch=%d call#=%d dev=%p syncDev=%p init=%d sync=%d "
+                "list=%p alloc=%d)",
+                s_reactivationEpoch, s_callsSinceReactivation, (void*)g_Device.load(), dev,
+                g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0, g_State.cmdList,
+                (int)g_State.allocators.size());
+        }
         return;
     }
 

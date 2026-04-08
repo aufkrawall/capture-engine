@@ -185,24 +185,25 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesOriginalQueueDuringPostFSRIn
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
 }
 
-TEST(DXGISharedTest, FSRSwapchainTakeoverEndsStreamlineOwnershipForRuntimeOwnedFFXTransitions) {
+TEST(DXGISharedTest, FSRSwapchainTakeoverRequiresAuthoritativeFFXTraffic) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, true, false, false,
                                                                                                false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, true, true, false,
+                                                                                               true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(false, true, false,
-                                                                                                false, false));
+                                                                                                 false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, false, false,
-                                                                                                false, false));
+                                                                                                 false, false));
 }
 
-TEST(DXGISharedTest, FSRSwapchainTakeoverAlsoEndsStaleStreamlineOwnershipOnFreshRuntimeQueueTransition) {
-    EXPECT_TRUE(
+TEST(DXGISharedTest, FSRSwapchainTakeoverDoesNotClearStreamlineOwnershipWithoutFFXEvidence) {
+    EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, false, true, false, true));
-
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, false, true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, false, false,
-                                                                                                false, true));
+                                                                                                 false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, false, true,
                                                                                                 false, false));
 }
@@ -767,14 +768,14 @@ TEST(DXGISharedTest, PostSLOnlyLatchesSuspensionForFullyInactiveSignalDrop) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldLatchPostSLSuspensionOnStreamlineSignalDrop(false, false, false, true));
 }
 
-TEST(DXGISharedTest, FFXSwapchainTakeoverForcesEndOfStaleStreamlineOwnership) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, true, false, false,
-                                                                                               false));
+TEST(DXGISharedTest, FFXSwapchainTakeoverStillClearsStaleStreamlineOwnershipWhenFfxIsAuthoritative) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, true, true, false,
+                                                                                               true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, true, true, true,
+                                                                                               true));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(false, true, false,
-                                                                                                false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, false, false,
-                                                                                                false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(false, true, true,
+                                                                                                 false, true));
 }
 
 TEST(DXGISharedTest, CreateSwapchainAccessDeniedPassThroughRequiresActiveStreamlineOwnership) {

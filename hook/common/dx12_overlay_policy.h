@@ -533,11 +533,15 @@ inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOw
         return false;
     }
 
-    if (callerFromFFXFGModule) {
-        return true;
-    }
-
-    return streamlineFGRunning && !streamlineStartupHandoffPending && runtimeOwnershipJustActivated;
+    // Only authoritative FFX FG traffic should tear down Streamline/PostSL
+    // ownership. A fresh runtime-owned swapchain queue by itself is not enough:
+    // GTA V Enhanced can bounce CreateSwapChainForHwnd through our own detours
+    // during DLSS startup, and treating that as an FFX takeover clears the
+    // active PostSL path even though no real FFX FG module is involved.
+    (void)streamlineFGRunning;
+    (void)streamlineStartupHandoffPending;
+    (void)runtimeOwnershipJustActivated;
+    return callerFromFFXFGModule;
 }
 
 inline bool ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(bool streamlineModuleLoaded,
