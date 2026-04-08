@@ -312,6 +312,15 @@ inline bool ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(bool ha
            hasSLWrapperQueue;
 }
 
+inline bool ShouldUseWrapperQueueForPostFSRProbeFallback(bool hadFSRFGPhase,
+                                                         int postFSRProbeLevel,
+                                                         bool hasSLWrapperQueue,
+                                                         bool preferSelectedSwapchainQueueSubmitAfterFSR,
+                                                         bool hasValidatedDirectQueueBehindWrapper) {
+    return !hadFSRFGPhase && postFSRProbeLevel >= 1 && hasSLWrapperQueue && !preferSelectedSwapchainQueueSubmitAfterFSR &&
+           hasValidatedDirectQueueBehindWrapper;
+}
+
 inline bool ShouldPinPostSLWrapperQueueAfterFSR(bool hadFSRFGPhase,
                                                  bool usePostSLOffscreenComposite,
                                                  bool selectedQueueIsSwapchainQueue,

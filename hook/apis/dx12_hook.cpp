@@ -9896,18 +9896,24 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         // DEVICE_REMOVED in logs — at which point re-bootstrap can be triggered.
         static std::atomic<ID3D12CommandQueue*> s_realQueueBehindSL{nullptr};
         ID3D12CommandQueue* realQueue = (ID3D12CommandQueue*)pThis;
-        ID3D12CommandQueue* previousRealQueue = s_realQueueBehindSL.exchange(realQueue, std::memory_order_acq_rel);
-        g_RealQueueBehindSLWrapper.store(realQueue, std::memory_order_release);
-        if (previousRealQueue != realQueue) {
-            HookLogImportant("DX12: ECL captured real queue behind SL wrapper %p during PostSL submit/probe",
-                             realQueue);
+        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+        ExecuteCommandListsPtr real = g_RealD3D12ECL.load(std::memory_order_acquire);
+        const bool queueLooksDirect = original && real && original == real;
+        if (queueLooksDirect) {
+            ID3D12CommandQueue* previousRealQueue = s_realQueueBehindSL.exchange(realQueue, std::memory_order_acq_rel);
+            g_RealQueueBehindSLWrapper.store(realQueue, std::memory_order_release);
+            if (previousRealQueue != realQueue) {
+                HookLogImportant("DX12: ECL captured validated real queue behind SL wrapper %p during PostSL submit/probe",
+                                 realQueue);
+            }
+        } else {
+            HookLogImportant("DX12: ECL ignored wrapper-side PostSL capture candidate %p (origECL=%p realECL=%p)",
+                             realQueue, (void*)original, (void*)real);
         }
 
-        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (original)
             original(pThis, NumCommandLists, ppCommandLists);
         else {
-            ExecuteCommandListsPtr real = g_RealD3D12ECL.load(std::memory_order_acquire);
             if (real)
                 real(pThis, NumCommandLists, ppCommandLists);
         }
