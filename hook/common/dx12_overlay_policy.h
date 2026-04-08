@@ -322,9 +322,10 @@ inline bool ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(bool ha
                                                                           bool streamlineFGActive,
                                                                           int postFSRProbeLevel,
                                                                           bool hasDirectQueueBehindWrapper,
-                                                                          bool hasSLWrapperQueue) {
+                                                                          bool hasSLWrapperQueue,
+                                                                          bool hasSelectedQueueSubmitPath) {
     return hadFSRFGPhase && streamlineFGActive && postFSRProbeLevel == 0 && !hasDirectQueueBehindWrapper &&
-           hasSLWrapperQueue;
+           hasSLWrapperQueue && !hasSelectedQueueSubmitPath;
 }
 
 inline bool ShouldUseWrapperQueueForPostFSRProbeFallback(bool hadFSRFGPhase,
@@ -377,7 +378,10 @@ inline bool ShouldUsePostSLOffscreenCompositeAfterFSR(bool hadFSRFGPhase,
                                                        bool streamlineFGActive,
                                                        bool selectedQueueIsSwapchainQueue,
                                                        bool queueIsSLWrapper) {
-    return hadFSRFGPhase && streamlineFGActive && selectedQueueIsSwapchainQueue && !queueIsSLWrapper;
+    // The direct post-FSR swapchain-queue path already proved that queue can
+    // handle explicit PRESENT<->RT traffic. Reintroducing copy-render-copy on
+    // that same path only adds the copy operations that previously hung Talos.
+    return false;
 }
 
 inline bool ShouldUseExplicitBackbufferCopyTransitionsForPostFSROffscreenComposite(
@@ -387,8 +391,10 @@ inline bool ShouldUseExplicitBackbufferCopyTransitionsForPostFSROffscreenComposi
 
 inline bool ShouldUsePostSLOffscreenCopyOnlyProbeAfterFSR(bool hadFSRFGPhase,
                                                           int postFSRProbeLevel,
-                                                          bool usePostSLOffscreenComposite) {
-    return hadFSRFGPhase && usePostSLOffscreenComposite && postFSRProbeLevel == 2;
+                                                          bool usePostSLOffscreenComposite,
+                                                          bool selectedQueueIsSwapchainQueue) {
+    return hadFSRFGPhase && usePostSLOffscreenComposite && postFSRProbeLevel == 2 &&
+           !selectedQueueIsSwapchainQueue;
 }
 
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {

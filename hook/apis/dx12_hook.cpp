@@ -5560,7 +5560,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 g_HadFSRFGPhase, cachedSLFGActive, realQ != nullptr);
         const bool bootstrapRealQueueCaptureViaWrapperProbe =
             ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
-                g_HadFSRFGPhase, cachedSLFGActive, g_PostFSRProbeLevel, realQ != nullptr, slWrapperQueue != nullptr);
+                g_HadFSRFGPhase, cachedSLFGActive, g_PostFSRProbeLevel, realQ != nullptr, slWrapperQueue != nullptr,
+                hasSelectedQueueSubmitPath);
         if (preferRealQueueBehindWrapperAfterFSR && g_PostFSRProbeLevel >= 2) {
             g_PostFSRProbeLevel = 3;
             g_PostFSRProbeFrames = 0;
@@ -5629,7 +5630,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             list->ResourceBarrier(2, barriers);
         } else if (ce::dx12_overlay_policy::ShouldUsePostSLOffscreenCopyOnlyProbeAfterFSR(
-                       g_HadFSRFGPhase, g_PostFSRProbeLevel, usePostSLOffscreenComposite)) {
+                       g_HadFSRFGPhase, g_PostFSRProbeLevel, usePostSLOffscreenComposite,
+                       selectedQueueIsSwapchainQueue)) {
             if (!EnsureOffscreenRT(dev, g_State.cachedWidth, g_State.cachedHeight, g_State.format)) {
                 HookLogImportant(
                     "DX12: PostSL post-FSR copy-only probe could not create offscreen RT (w=%d h=%d fmt=%d)",
@@ -5756,11 +5758,14 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 // BB barriers cause FATAL DEVICE_REMOVED on queues that don't own the
                 // swapchain's resource state. Level 2 only validates copy traffic on
                 // the swapchain timeline before any real overlay rendering is attempted.
-                int nextLevel = (g_PostFSRProbeLevel == 0) ? 2 : g_PostFSRProbeLevel + 1;
+                int nextLevel = (g_PostFSRProbeLevel == 0)
+                                    ? (selectedQueueIsSwapchainQueue ? 3 : 2)
+                                    : g_PostFSRProbeLevel + 1;
                 g_PostFSRProbeLevel = nextLevel;
                 g_PostFSRProbeFrames = 0;
-                HookLogImportant("DX12: PostSL post-FSR probe PASSED, advancing to level %d (skipped BB barrier probe)",
-                                 g_PostFSRProbeLevel);
+                HookLogImportant(
+                    "DX12: PostSL post-FSR probe PASSED, advancing to level %d (selectedScQueue=%d skipped BB barrier probe)",
+                    g_PostFSRProbeLevel, selectedQueueIsSwapchainQueue ? 1 : 0);
             }
             bb->Release();
             return;
