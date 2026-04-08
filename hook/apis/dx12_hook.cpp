@@ -995,6 +995,7 @@ static void WaitForInFlightPostSLCallbacks(const char* reason) {
 static void CleanupDeferredPostSLQueuesIfSafe(const char* reason);
 static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
 static std::atomic<ID3D12CommandQueue*> g_DeferredCommandQueueRelease{nullptr};
+static std::atomic<ID3D12CommandQueue*> g_DeferredPostSLLockedQueueRelease{nullptr};
 
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper,
                                               bool deferQueueReleaseUntilCallbacksDrain = false);
@@ -1053,6 +1054,13 @@ static void ClearPostSLQueues(const char* reason) {
 }
 
 static void CleanupDeferredPostSLQueuesIfSafe(const char* reason) {
+    ID3D12CommandQueue* deferredLockedQueue =
+        g_DeferredPostSLLockedQueueRelease.exchange(nullptr, std::memory_order_acq_rel);
+    if (deferredLockedQueue) {
+        HookLogImportant("%s - releasing deferred PostSL locked queue %p", reason, deferredLockedQueue);
+        deferredLockedQueue->Release();
+    }
+
     ID3D12CommandQueue* deferredCommandQueue = g_DeferredCommandQueueRelease.exchange(nullptr, std::memory_order_acq_rel);
     if (deferredCommandQueue) {
         HookLogImportant("%s - releasing deferred stale command queue %p", reason, deferredCommandQueue);
@@ -1075,7 +1083,24 @@ static void CleanupDeferredPostSLQueuesIfSafe(const char* reason) {
         return;
     }
 
-    ClearPostSLQueues(reason);
+    ID3D12CommandQueue* oldLockedQueue = nullptr;
+    ID3D12CommandQueue* oldDedicatedQueue = nullptr;
+    DetachPostSLQueuesLocked(&oldLockedQueue, &oldDedicatedQueue);
+
+    if (oldLockedQueue) {
+        ID3D12CommandQueue* previouslyDeferred =
+            g_DeferredPostSLLockedQueueRelease.exchange(oldLockedQueue, std::memory_order_acq_rel);
+        if (previouslyDeferred) {
+            HookLogImportant("%s - releasing superseded deferred PostSL locked queue %p", reason,
+                             previouslyDeferred);
+            previouslyDeferred->Release();
+        }
+        HookLogImportant("%s - deferred PostSL locked queue release %p", reason, oldLockedQueue);
+    }
+    if (oldDedicatedQueue) {
+        HookLogImportant("%s — releasing PostSL dedicated queue %p", reason, oldDedicatedQueue);
+        oldDedicatedQueue->Release();
+    }
 
     RealignInactiveCommandQueueToSwapchainQueue(reason);
 }
@@ -10271,6 +10296,9 @@ void DX12Hook::Shutdown() {
     ClearPostSLQueues("DX12: Shutdown");
     ClearPostSLPinnedSLWrapperQueue("DX12: Shutdown");
     SetPostSLLastWorkingQueue(nullptr);
+    if (auto* deferredLockedQueue = g_DeferredPostSLLockedQueueRelease.exchange(nullptr, std::memory_order_acq_rel)) {
+        deferredLockedQueue->Release();
+    }
     if (g_CommandQueue.load()) {
         g_CommandQueue.load()->Release();
         g_CommandQueue.store(nullptr);
