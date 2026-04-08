@@ -3123,9 +3123,18 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
                 streamlineStartupHandoffPending ? 1 : 0, callerFromFFXFGModule ? 1 : 0,
                 ffxFrameGenerationInStack ? 1 : 0, callerModulePath[0] ? callerModulePath : "unknown");
 
-            // Clean up our overlay resources so we don't hold stale back-buffer refs
-            g_LastSwapChain = nullptr;
-            CleanupOverlay();
+            // Clean up ALL overlay resources so we don't hold stale refs that
+            // prevent DXGI from releasing the HWND association.  Must match the
+            // cleanup sequence in DX12_OnSwapchainResizeBegin which successfully
+            // avoids E_ACCESSDENIED before ResizeBuffers.
+            {
+                std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
+                g_LastSwapChain = nullptr;
+                CleanupOverlay();
+                CleanupRTVs();
+                g_State.overlayInit = false;
+            }
+            HookLogImportant("DeepHook: Released overlay + RTV refs for HWND=%p", hWnd);
 
             // Clear our tracking entries (raw pointers, no Release needed)
             {
@@ -3133,15 +3142,21 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
                 s_hwndSwapchainMap.erase(hWnd);
             }
 
-            // Brief retry: 5 attempts × 10ms = 50ms max (safe for FG state machines)
-            for (int attempt = 1; attempt <= 5 && hr == E_ACCESSDENIED; ++attempt) {
-                Sleep(10);
+            // Retry: 10 attempts × 20ms = 200ms max.  FSR FG activation may
+            // need time for the game to release its own swapchain refs after
+            // we've released ours.
+            for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
+                Sleep(20);
                 hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+                if (SUCCEEDED(hr)) {
+                    HookLogImportant("DeepHook: Retry attempt %d succeeded hr=0x%08X sc=%p", attempt, hr,
+                                     (ppSC ? *ppSC : nullptr));
+                    break;
+                }
             }
-            if (SUCCEEDED(hr)) {
-                HookLogImportant("DeepHook: Retry succeeded hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
-            } else {
-                HookLogImportant("DeepHook: Returning E_ACCESSDENIED to caller (HWND=%p)", hWnd);
+            if (FAILED(hr)) {
+                HookLogImportant("DeepHook: All retries exhausted — returning E_ACCESSDENIED to caller (HWND=%p)",
+                                 hWnd);
             }
         }
     }
@@ -3247,23 +3262,36 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
                 streamlineStartupHandoffPending ? 1 : 0, callerFromFFXFGModule ? 1 : 0,
                 ffxFrameGenerationInStack ? 1 : 0, callerModulePath[0] ? callerModulePath : "unknown");
 
-            // Clean up overlay and clear tracking (same as deep hook)
-            g_LastSwapChain = nullptr;
-            CleanupOverlay();
+            // Clean up ALL overlay resources — same sequence as deep hook and
+            // DX12_OnSwapchainResizeBegin to fully release the HWND association.
+            {
+                std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
+                g_LastSwapChain = nullptr;
+                CleanupOverlay();
+                CleanupRTVs();
+                g_State.overlayInit = false;
+            }
+            HookLogImportant("CreateSwapChainForHwnd INLINE: Released overlay + RTV refs for HWND=%p", hWnd);
             {
                 std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
                 s_hwndSwapchainMap.erase(hWnd);
             }
 
-            // Brief retry: 5 attempts × 10ms = 50ms max
-            for (int attempt = 1; attempt <= 5 && hr == E_ACCESSDENIED; ++attempt) {
-                Sleep(10);
+            // Retry: 10 attempts × 20ms = 200ms max
+            for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
+                Sleep(20);
                 hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+                if (SUCCEEDED(hr)) {
+                    HookLogImportant("CreateSwapChainForHwnd INLINE: Retry attempt %d succeeded hr=0x%08X", attempt,
+                                     hr);
+                    break;
+                }
             }
-            if (SUCCEEDED(hr)) {
-                HookLogImportant("CreateSwapChainForHwnd INLINE: Retry succeeded hr=0x%08X", hr);
-            } else {
-                HookLogImportant("CreateSwapChainForHwnd INLINE: Returning E_ACCESSDENIED to caller (HWND=%p)", hWnd);
+            if (FAILED(hr)) {
+                HookLogImportant(
+                    "CreateSwapChainForHwnd INLINE: All retries exhausted — returning E_ACCESSDENIED to caller "
+                    "(HWND=%p)",
+                    hWnd);
             }
         }
     }
