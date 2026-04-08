@@ -3865,6 +3865,9 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             } else if (g_OriginalGameQueue) {
                 queueForBackend = g_OriginalGameQueue;
             }
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
+            queueForBackend = g_OriginalGameQueue;
         } else if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue) {
             queueForBackend = g_SwapchainQueue;
         } else if (fsrFGNow && g_OriginalGameQueue) {
@@ -7174,6 +7177,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue) {
             // SL FG (no FSR history): use origGame.
+            gameQueue = g_OriginalGameQueue;
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
+            // After FSR->DLSS->off with scQueue intentionally unset, prefer the
+            // known original Present queue over the most recent ECL queue.
+            // Talos uses separate render/present DIRECT queues; falling back to
+            // g_CommandQueue/primary picked the render queue and immediately hit
+            // DEVICE_REMOVED on the first recovered non-FG offscreen composite.
             gameQueue = g_OriginalGameQueue;
         } else if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue) {
             // FSR FG: pSwapChain is FSR's swapchain, backbuffers belong to

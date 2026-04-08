@@ -35,6 +35,7 @@ enum class SwapchainOverlayRoutingDecision {
     kUseNormalRouting,
     kUsePostFSRStreamlineQueue,
     kUseStreamlineOriginalQueue,
+    kUsePostFSRInactiveOriginalQueue,
     kUseFSRSwapchainQueue,
     kSkipRuntimeOwnedSwapchainWithoutQueue,
     kSkipFSRWithoutSwapchainQueue,
@@ -56,6 +57,16 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     if (runtimeOwnsSwapchain) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue
                                  : SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue;
+    }
+
+    if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {
+        // After FSR->DLSS->off, ProcessFrame intentionally leaves g_SwapchainQueue
+        // unset until a fresh non-FG Present path can prove the live swapchain
+        // queue again. While that recapture window is open, falling through to the
+        // last observed command queue can pick a multi-queue game's render queue
+        // instead of its Present queue, which reproduced Talos DEVICE_REMOVED on
+        // the first recovered non-FG overlay submit.
+        return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue;
     }
 
     if (fsrFGActive) {

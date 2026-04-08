@@ -167,6 +167,21 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPreservesPostFSRStreamlineTransi
               SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
 }
 
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesOriginalQueueDuringPostFSRInactiveRecaptureWindow) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, true, true),
+              SwapchainOverlayRoutingDecision::kUseNormalRouting);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, false, false, true),
+              SwapchainOverlayRoutingDecision::kUseNormalRouting);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, false),
+              SwapchainOverlayRoutingDecision::kUseNormalRouting);
+}
+
 TEST(DXGISharedTest, FSRSwapchainTakeoverEndsStreamlineOwnershipForRuntimeOwnedFFXTransitions) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, true, false, false,
                                                                                                false));
