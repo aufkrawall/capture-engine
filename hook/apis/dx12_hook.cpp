@@ -5073,6 +5073,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         bool hasDirectQueueBehindWrapper = directQueueBehindWrapper != nullptr;
         bool preferRealQueueBehindWrapper = ce::dx12_overlay_policy::ShouldUsePostSLRealQueueBehindWrapperAfterFSR(
             g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper);
+        const bool preferValidatedDirectQueueForLock =
+            ce::dx12_overlay_policy::ShouldPreferValidatedDirectQueueForPostFSRLock(
+                g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper);
         bool allowWrapperBootstrapQueue = ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(
             g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper, wrapperBootstrapQueue != nullptr);
         const bool lockedQueueIsSLWrapper =
@@ -5089,7 +5092,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 g_PostSLLockedQueue != nullptr, g_HadFSRFGPhase, slFGNow, lockedQueueIsSLWrapper, scQueue != nullptr,
                 scQueue != g_OriginalGameQueue, hasSwapchainQueueSubmitPath, hasWrapperDerivedDirectPath);
 
-        if (selectDirectQueueInsteadOfLockedWrapper) {
+        if (preferValidatedDirectQueueForLock && directQueueBehindWrapper) {
+            queue = directQueueBehindWrapper;
+            static int s_directQueuePreferredLog = 0;
+            if (s_directQueuePreferredLog++ < 10) {
+                HookLogImportant(
+                    "DX12: PostSL queue candidate — validated direct queue %p preferred over scQueue %p after FSR",
+                    queue, scQueue);
+            }
+        } else if (selectDirectQueueInsteadOfLockedWrapper) {
             queue = directQueueBehindWrapper;
             static int s_promoteSelectionLog = 0;
             if (s_promoteSelectionLog++ < 5) {

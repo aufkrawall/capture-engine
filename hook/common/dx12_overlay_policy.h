@@ -261,6 +261,12 @@ inline bool ShouldUsePostSLRealQueueBehindWrapperAfterFSR(bool hadFSRFGPhase,
     return hadFSRFGPhase && streamlineFGActive && hasDirectQueueBehindWrapper;
 }
 
+inline bool ShouldPreferValidatedDirectQueueForPostFSRLock(bool hadFSRFGPhase,
+                                                           bool streamlineFGActive,
+                                                           bool hasDirectQueueBehindWrapper) {
+    return hadFSRFGPhase && streamlineFGActive && hasDirectQueueBehindWrapper;
+}
+
 inline bool ShouldUsePostSLWrapperBootstrapQueueAfterFSR(bool hadFSRFGPhase,
                                                          bool streamlineFGActive,
                                                          bool hasDirectQueueBehindWrapper,
