@@ -2882,6 +2882,47 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_FGCompat.ClearNvidiaSMState();
     g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
     ResetPostSLLifecycleForTransition("DX12: Streamline FG OFF transition", true, true);
+
+    if (g_HadFSRFGPhase) {
+        ID3D12CommandQueue* staleScQueue = nullptr;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+
+            if (g_FGRuntimeOwnsSwapchain) {
+                g_FGRuntimeOwnsSwapchain = false;
+                DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
+                g_FGRuntimeOwnsSwapchainSince = 0;
+                HookLogImportant(
+                    "DX12: Streamline FG OFF after FSR history — clearing lingering FG runtime ownership");
+            }
+
+            if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
+                staleScQueue = g_SwapchainQueue;
+                g_SwapchainQueue = nullptr;
+                g_SwapchainQueueCaptureTime = 0;
+                HookLogImportant(
+                    "DX12: Streamline FG OFF after FSR history — releasing stale swapchain queue %p so top-level "
+                    "recovery can recapture the live non-FG queue (origGame=%p)",
+                    staleScQueue, g_OriginalGameQueue);
+            }
+        }
+
+        if (staleScQueue) {
+            staleScQueue->Release();
+        }
+
+        // The post-FSR DLSS path rendered through Streamline/PostSL against a
+        // different swapchain topology than the resumed non-FG path. Force a
+        // swapchain-level reinit so the next top-level Present rebuilds RTVs and
+        // overlay state against the live non-FG swapchain/queue pair.
+        if (g_State.overlayInit) {
+            HookLogImportant(
+                "DX12: Streamline FG OFF after FSR history — forcing overlay swapchain reinit for non-FG recovery");
+            g_State.overlayInit = false;
+            CleanupRTVs();
+        }
+    }
+
     HookLogImportant("DX12: Streamline FG OFF — seeded heuristic reset/grace (slOffGrace=600)");
     HookLogImportant("DX12: Streamline FG OFF — cleared PostSL callback state");
 }
@@ -9783,8 +9824,11 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                              g_State.crossQueueFence != nullptr && g_State.crossQueueFenceEvent != nullptr;
     bool heuristicFSRFG = g_FGCompat.IsHeuristicFSRFGActive();
     bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-    if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
-            isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning)) {
+    const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+    if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(isInterpolatedFrame, hasDedicatedQueue,
+                                                                         heuristicFSRFG, g_FGRuntimeOwnsSwapchain,
+                                                                         streamlineFGRunning,
+                                                                         recentStreamlineTeardown)) {
         sc3->Release();
         return;
     }

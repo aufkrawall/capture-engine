@@ -80,7 +80,7 @@ inline OverlayMetricsBindingDecision DecideOverlayMetricsBinding(bool isRealFram
 
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
-                                                    bool streamlineFGRunning) {
+                                                    bool streamlineFGRunning, bool recentStreamlineTeardown) {
     if (!isInterpolatedFrame) {
         return false;
     }
@@ -93,6 +93,14 @@ inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bo
     // authoritative ECL counts even though top-level Presents are still the
     // frames that must drive normal ProcessFrame recovery.
     if (runtimeOwnsSwapchain && !streamlineFGRunning) {
+        return false;
+    }
+
+    // Final Streamline teardown after an FSR->DLSS handoff can also briefly
+    // stop delivering authoritative ECLs on the trusted classification queue
+    // while top-level Presents continue on the live swapchain. Keep ProcessFrame
+    // running through that grace window so the non-FG overlay path can recover.
+    if (recentStreamlineTeardown && !streamlineFGRunning) {
         return false;
     }
 
