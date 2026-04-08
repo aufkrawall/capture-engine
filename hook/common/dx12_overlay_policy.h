@@ -156,7 +156,7 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
 inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
     bool actualFGActive, bool streamlineFGRunning, bool recentStreamlineTeardown, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasCommandQueue, bool commandQueueMatchesSwapchainQueue,
-    bool commandQueueMatchesOriginalGameQueue) {
+    bool commandQueueMatchesOriginalGameQueue, bool commandQueueMatchesPrimaryGameQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
@@ -170,6 +170,16 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
     // after the live non-FG swapchain queue has been restored. Rebuilding the
     // pre-SL overlay path before command tracking settles back onto the live
     // queue reproduces Talos DEVICE_REMOVED on the first non-FG submit.
+    //
+    // However, multi-queue games (e.g. Talos Principle) use separate DIRECT
+    // queues for ECL (render) and Present (swapchain).  The primary game queue
+    // is the first DIRECT queue observed and is always a valid non-wrapper queue.
+    // Treating it as "unsettled" defers overlay reinit for the entire grace
+    // period, which itself causes DEVICE_REMOVED from stale GPU state.
+    if (commandQueueMatchesPrimaryGameQueue) {
+        return false;
+    }
+
     return !hasCommandQueue || (!commandQueueMatchesSwapchainQueue && !commandQueueMatchesOriginalGameQueue);
 }
 
@@ -191,7 +201,8 @@ inline bool ShouldRealignInactiveCommandQueueToSwapchainQueue(bool actualFGActiv
                                                               bool hasSwapchainQueue, bool hasOriginalGameQueue,
                                                               bool hasCommandQueue,
                                                               bool commandQueueMatchesSwapchainQueue,
-                                                              bool commandQueueMatchesOriginalGameQueue) {
+                                                              bool commandQueueMatchesOriginalGameQueue,
+                                                              bool commandQueueMatchesPrimaryGameQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
@@ -204,6 +215,15 @@ inline bool ShouldRealignInactiveCommandQueueToSwapchainQueue(bool actualFGActiv
     // live swapchain queue nor the original game queue is just stale wrapper
     // state. Realign it to the swapchain queue so pre-SL init stops observing a
     // departed wrapper topology.
+    //
+    // However, multi-queue games use separate DIRECT queues for ECL and Present.
+    // The primary game queue (first DIRECT queue seen) is always valid and must
+    // NOT be realigned away from, or the ECL ignore logic loses its anchor and
+    // the game's legitimate ECL queue gets misclassified as departed.
+    if (commandQueueMatchesPrimaryGameQueue) {
+        return false;
+    }
+
     return !commandQueueMatchesSwapchainQueue && !commandQueueMatchesOriginalGameQueue;
 }
 

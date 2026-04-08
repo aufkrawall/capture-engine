@@ -1191,7 +1191,8 @@ static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason) {
         if (ce::dx12_overlay_policy::ShouldRealignInactiveCommandQueueToSwapchainQueue(
                 actualFGActive, streamlineFGRunning, swapchainQueue != nullptr, originalGameQueue != nullptr,
                 currentCommandQueue != nullptr, currentCommandQueue == swapchainQueue,
-                currentCommandQueue == originalGameQueue)) {
+                currentCommandQueue == originalGameQueue,
+                currentCommandQueue == g_PrimaryGameQueue.load(std::memory_order_acquire))) {
             oldCommandQueue = currentCommandQueue;
             g_CommandQueue.store(swapchainQueue, std::memory_order_release);
             swapchainQueue->AddRef();
@@ -7475,14 +7476,16 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     actualFGActive, streamlineFGRunning, recentStreamlineTeardown, currentSwapchainQueue != nullptr,
                     g_OriginalGameQueue != nullptr, currentCommandQueue != nullptr,
                     currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
-                    currentCommandQueue != nullptr && currentCommandQueue == g_OriginalGameQueue)) {
+                    currentCommandQueue != nullptr && currentCommandQueue == g_OriginalGameQueue,
+                    currentCommandQueue != nullptr && currentCommandQueue == g_PrimaryGameQueue.load(std::memory_order_acquire))) {
                 static std::atomic<int> s_recentSLTeardownInitDeferLogCount{0};
                 int logCount = s_recentSLTeardownInitDeferLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 20 || (logCount % 120) == 0) {
                     HookLogImportant(
                         "DX12: Deferring overlay init until command queue settles after recent Streamline teardown "
-                        "(scQ=%p cmdQ=%p origQ=%p slOffGrace=%d)",
+                        "(scQ=%p cmdQ=%p origQ=%p primaryQ=%p slOffGrace=%d)",
                         currentSwapchainQueue, currentCommandQueue, g_OriginalGameQueue,
+                        g_PrimaryGameQueue.load(std::memory_order_acquire),
                         g_SLOffHeuristicGrace.load(std::memory_order_acquire));
                 }
                 goto skipOverlayInit;
