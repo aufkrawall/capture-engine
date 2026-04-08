@@ -9910,7 +9910,12 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         ExecuteCommandListsPtr real = g_RealD3D12ECL.load(std::memory_order_acquire);
         const bool queueLooksDirect = original && real && original == real;
-        if (queueLooksDirect) {
+        ID3D12CommandQueue* capturedSLWrapperQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
+        ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+        const bool usableDirectQueueCandidate = ce::dx12_overlay_policy::IsUsableValidatedPostSLDirectQueueCandidate(
+            queueLooksDirect, realQueue == capturedSLWrapperQueue, realQueue == currentCommandQueue,
+            realQueue == g_OriginalGameQueue, realQueue == g_SwapchainQueue);
+        if (usableDirectQueueCandidate) {
             ID3D12CommandQueue* previousRealQueue = s_realQueueBehindSL.exchange(realQueue, std::memory_order_acq_rel);
             g_RealQueueBehindSLWrapper.store(realQueue, std::memory_order_release);
             if (previousRealQueue != realQueue) {
@@ -9918,8 +9923,11 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                                  realQueue);
             }
         } else {
-            HookLogImportant("DX12: ECL ignored wrapper-side PostSL capture candidate %p (origECL=%p realECL=%p)",
-                             realQueue, (void*)original, (void*)real);
+            HookLogImportant(
+                "DX12: ECL ignored PostSL direct-queue capture candidate %p (origECL=%p realECL=%p matchesWrapper=%d matchesCmdQ=%d matchesOrig=%d matchesScQ=%d)",
+                realQueue, (void*)original, (void*)real, realQueue == capturedSLWrapperQueue ? 1 : 0,
+                realQueue == currentCommandQueue ? 1 : 0, realQueue == g_OriginalGameQueue ? 1 : 0,
+                realQueue == g_SwapchainQueue ? 1 : 0);
         }
 
         if (original)

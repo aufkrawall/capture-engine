@@ -267,6 +267,15 @@ inline bool ShouldPreferValidatedDirectQueueForPostFSRLock(bool hadFSRFGPhase,
     return hadFSRFGPhase && streamlineFGActive && hasDirectQueueBehindWrapper;
 }
 
+inline bool IsUsableValidatedPostSLDirectQueueCandidate(bool queueLooksDirect,
+                                                        bool matchesCapturedSLWrapperQueue,
+                                                        bool matchesCurrentCommandQueue,
+                                                        bool matchesOriginalGameQueue,
+                                                        bool matchesSwapchainQueue) {
+    return queueLooksDirect && !matchesCapturedSLWrapperQueue && !matchesCurrentCommandQueue &&
+           !matchesOriginalGameQueue && !matchesSwapchainQueue;
+}
+
 inline bool ShouldUsePostSLWrapperBootstrapQueueAfterFSR(bool hadFSRFGPhase,
                                                          bool streamlineFGActive,
                                                          bool hasDirectQueueBehindWrapper,
