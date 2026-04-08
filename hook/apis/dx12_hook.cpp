@@ -3914,7 +3914,9 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
             queueForBackend = g_OriginalGameQueue;
-        } else if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue) {
+        } else if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue ||
+                   routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue) {
             queueForBackend = g_SwapchainQueue;
         } else if (fsrFGNow && g_OriginalGameQueue) {
             queueForBackend = g_OriginalGameQueue;  // fallback
@@ -5165,6 +5167,80 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     auto* dev = g_State.syncDevice;
     if (!dev)
         dev = g_Device.load(std::memory_order_acquire);
+
+    if (dev && ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(cachedSLFGActive, active,
+                                                                          g_State.overlayInit,
+                                                                          processFrameRecentlySeen)) {
+        DXGI_SWAP_CHAIN_DESC bootstrapDesc = {};
+        const HRESULT descHr = pSwapChain->GetDesc(&bootstrapDesc);
+        if (SUCCEEDED(descHr)) {
+            IDXGISwapChain3* bootstrapSc3 = nullptr;
+            const HRESULT sc3Hr = pSwapChain->QueryInterface(IID_PPV_ARGS(&bootstrapSc3));
+            if (SUCCEEDED(sc3Hr) && bootstrapSc3) {
+                ID3D12CommandQueue* bootstrapScQueue = nullptr;
+                ID3D12CommandQueue* bootstrapCmdQueue = nullptr;
+                ID3D12CommandQueue* bootstrapOrigQueue = nullptr;
+                {
+                    std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                    bootstrapScQueue = g_SwapchainQueue;
+                    bootstrapCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
+                    bootstrapOrigQueue = g_OriginalGameQueue;
+                }
+
+                g_State.cachedWidth = bootstrapDesc.BufferDesc.Width;
+                g_State.cachedHeight = bootstrapDesc.BufferDesc.Height;
+                g_State.format = bootstrapDesc.BufferDesc.Format;
+
+                HookLogImportant(
+                    "DX12: PostSL bootstrap — rebuilding torn-down overlay state after dormant reactivation "
+                    "(fmt=%d buffers=%u hwnd=%p scQueue=%p cmdQueue=%p origQueue=%p)",
+                    (int)bootstrapDesc.BufferDesc.Format, bootstrapDesc.BufferCount, bootstrapDesc.OutputWindow,
+                    bootstrapScQueue, bootstrapCmdQueue, bootstrapOrigQueue);
+
+                if (InitImGui(dev, (int)bootstrapDesc.BufferCount, bootstrapDesc.BufferDesc.Format,
+                              bootstrapDesc.OutputWindow)) {
+                    int actualBufferCount = (int)bootstrapDesc.BufferCount;
+                    if (actualBufferCount > 8) {
+                        actualBufferCount = 8;
+                    }
+                    CreateRTVs(dev, bootstrapSc3, actualBufferCount);
+
+                    ID3D12CommandQueue* bootstrapQueue = bootstrapScQueue;
+                    if (!bootstrapQueue) {
+                        bootstrapQueue = bootstrapCmdQueue;
+                    }
+                    if (!bootstrapQueue) {
+                        bootstrapQueue = bootstrapOrigQueue;
+                    }
+
+                    if (bootstrapQueue && g_State.rtvDescHeap) {
+                        HookLogImportant(
+                            "DX12: PostSL bootstrap — inline InitOverlaySync (queue=%p overlayInit=%d syncInit=%d)",
+                            bootstrapQueue, g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0);
+                        InitOverlaySync(dev, (int)bootstrapDesc.BufferCount, bootstrapQueue);
+                        dev = g_State.syncDevice;
+                        if (!dev) {
+                            dev = g_Device.load(std::memory_order_acquire);
+                        }
+                    } else {
+                        HookLogImportant(
+                            "DX12: PostSL bootstrap — waiting for missing init prerequisites (queue=%p rtvHeap=%p)",
+                            bootstrapQueue, g_State.rtvDescHeap);
+                    }
+                } else {
+                    HookLogImportant("DX12: PostSL bootstrap — InitImGui failed (fmt=%d buffers=%u hwnd=%p)",
+                                     (int)bootstrapDesc.BufferDesc.Format, bootstrapDesc.BufferCount,
+                                     bootstrapDesc.OutputWindow);
+                }
+
+                bootstrapSc3->Release();
+            } else {
+                HookLogImportant("DX12: PostSL bootstrap — swapchain3 query failed hr=0x%08X", (unsigned)sc3Hr);
+            }
+        } else {
+            HookLogImportant("DX12: PostSL bootstrap — swapchain desc unavailable hr=0x%08X", (unsigned)descHr);
+        }
+    }
 
     // After FG type transitions, syncInit is reset to force fresh sync resources.
     // PostSL re-initializes inline with the current queue (scQueue or g_CommandQueue).
@@ -7255,6 +7331,20 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 g_HadFSRFGPhase = true;
                 HookLogImportant(
                     "DX12: ProcessFrame — FSR FG history confirmed, origGame potentially corrupted for future DLSS FG");
+            }
+        } else if (routingDecision ==
+                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue) {
+            // Runtime-owned swapchain without FSR evidence. This covers DLSS/
+            // Streamline suspend-resume windows where the live swapchain stays on
+            // a non-game queue but must NOT be promoted into post-FSR recovery.
+            gameQueue = g_SwapchainQueue;
+            static int s_runtimeOwnedQueueLogCount = 0;
+            if (s_runtimeOwnedQueueLogCount++ < 10 || (s_runtimeOwnedQueueLogCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: ProcessFrame — runtime-owned swapchain without FSR evidence, using scQueue %p "
+                    "(origGame=%p slFG=%d hadFSR=%d) #%d",
+                    gameQueue, g_OriginalGameQueue, slFGNow ? 1 : 0, g_HadFSRFGPhase ? 1 : 0,
+                    s_runtimeOwnedQueueLogCount);
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue) {

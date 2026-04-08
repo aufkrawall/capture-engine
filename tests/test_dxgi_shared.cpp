@@ -141,10 +141,24 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesFSRSwapchainQueueWhenAvailab
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, true, true, false),
-              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, true, false, true, true, false),
               SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, true, false, true, true, false),
+              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+}
+
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesRuntimeOwnedQueueWithoutTreatingItAsFSR) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, true, true, false),
+              SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue);
+
+    // GTA 5 Enhanced can briefly land here when DLSS FG suspends during loading
+    // screens: the swapchain is runtime-owned, but there is no authoritative FSR
+    // signal and we must not enter the post-FSR recovery path.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, true, true, true),
+              SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue);
 }
 
 TEST(DXGISharedTest, DX12SwapchainOverlayRoutingSkipsOnlyWhenFSRQueueIsUnavailable) {
@@ -508,6 +522,15 @@ TEST(DXGISharedTest, PostSLReactivatesAfterLifecycleResetEvenIfCallbackStateWasS
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(true, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(false, false, true));
+}
+
+TEST(DXGISharedTest, PostSLBootstrapsOverlayStateOnlyWhenDormantReactivationOutrunsProcessFrame) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(false, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, true));
 }
 
 TEST(DXGISharedTest, PostSLUsesSelectedSwapchainQueueDirectSubmitAfterFSRWhenAvailable) {

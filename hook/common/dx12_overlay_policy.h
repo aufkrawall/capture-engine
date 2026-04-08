@@ -38,6 +38,7 @@ enum class SwapchainOverlayRoutingDecision {
     kUsePostFSRInactiveLastWorkingQueue,
     kUsePostFSRInactiveOriginalQueue,
     kUseFSRSwapchainQueue,
+    kUseRuntimeOwnedSwapchainQueue,
     kSkipRuntimeOwnedSwapchainWithoutQueue,
     kSkipFSRWithoutSwapchainQueue,
 };
@@ -53,11 +54,6 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
 
     if (streamlineFGActive && hasOriginalGameQueue) {
         return SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
-    }
-
-    if (runtimeOwnsSwapchain) {
-        return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue
-                                 : SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue;
     }
 
     if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {
@@ -77,6 +73,16 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     if (fsrFGActive) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue
                                  : SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue;
+    }
+
+    if (runtimeOwnsSwapchain) {
+        // A runtime-owned swapchain does not by itself prove FSR FG. GTA 5
+        // Enhanced can temporarily keep DLSS/Streamline's swapchain on a
+        // non-game queue while FG suspends on loading screens. Treating that
+        // generic runtime-owned window as FSR forces the Talos-only post-FSR
+        // recovery path and strands PostSL when DLSS resumes.
+        return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue
+                                 : SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue;
     }
 
     return SwapchainOverlayRoutingDecision::kUseNormalRouting;
@@ -323,6 +329,11 @@ inline bool ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(bool hadFS
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
                                                        bool postSLActive, bool processFrameRecentlySeen) {
     return startupActivationPending && streamlineFGRunning && !postSLActive && !processFrameRecentlySeen;
+}
+
+inline bool ShouldBootstrapPostSLOverlayState(bool streamlineFGRunning, bool postSLActive, bool overlayInit,
+                                              bool processFrameRecentlySeen) {
+    return streamlineFGRunning && postSLActive && !overlayInit && !processFrameRecentlySeen;
 }
 
 inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
