@@ -264,6 +264,51 @@ TEST(DXGISharedTest, InactiveRuntimeOwnedSwapchainInitWaitsForCommandQueueToSett
                                                                                               true, true));
 }
 
+TEST(DXGISharedTest, RecentStreamlineTeardownInitWaitsForCommandQueueToLeaveDepartedWrapperState) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+            false, false, true, true, true, false, false, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+            false, false, true, true, true, true, false, false));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+            true, false, true, true, true, true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+            false, true, true, true, true, true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+            false, false, false, true, true, true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+            false, false, true, false, true, true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+            false, false, true, true, false, true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+            false, false, true, true, true, true, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+            false, false, true, true, true, true, false, true));
+}
+
+TEST(DXGISharedTest, RecentStreamlineTeardownIgnoresOnlyDepartedWrapperQueueRegistration) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+        true, false, false, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+        false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+        true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+        true, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+        true, false, false, true));
+}
+
 TEST(DXGISharedTest, InactiveCommandQueueRealignsOnlyForDepartedWrapperState) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRealignInactiveCommandQueueToSwapchainQueue(false, false, true, true,
                                                                                            true, false, false));

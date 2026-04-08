@@ -153,6 +153,40 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
     return !hasCommandQueue || !commandQueueMatchesSwapchainQueue;
 }
 
+inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+    bool actualFGActive, bool streamlineFGRunning, bool recentStreamlineTeardown, bool hasSwapchainQueue,
+    bool hasOriginalGameQueue, bool hasCommandQueue, bool commandQueueMatchesSwapchainQueue,
+    bool commandQueueMatchesOriginalGameQueue) {
+    if (actualFGActive || streamlineFGRunning) {
+        return false;
+    }
+
+    if (!recentStreamlineTeardown || !hasSwapchainQueue || !hasOriginalGameQueue) {
+        return false;
+    }
+
+    // After the post-FSR DLSS path turns FG off, late Streamline teardown ECLs
+    // can keep repopulating g_CommandQueue with a departed wrapper queue even
+    // after the live non-FG swapchain queue has been restored. Rebuilding the
+    // pre-SL overlay path before command tracking settles back onto the live
+    // queue reproduces Talos DEVICE_REMOVED on the first non-FG submit.
+    return !hasCommandQueue || (!commandQueueMatchesSwapchainQueue && !commandQueueMatchesOriginalGameQueue);
+}
+
+inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+    bool recentStreamlineTeardown, bool queueMatchesPrimaryQueue, bool queueMatchesOriginalGameQueue,
+    bool queueMatchesSwapchainQueue) {
+    if (!recentStreamlineTeardown) {
+        return false;
+    }
+
+    // During final Streamline teardown after a post-FSR DLSS phase, helper ECLs
+    // can keep arriving on a departed wrapper queue for a short time even though
+    // Present has already returned to the non-FG swapchain queue. Do not let
+    // those teardown queues repollute g_CommandQueue.
+    return !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue && !queueMatchesSwapchainQueue;
+}
+
 inline bool ShouldRealignInactiveCommandQueueToSwapchainQueue(bool actualFGActive, bool streamlineFGRunning,
                                                               bool hasSwapchainQueue, bool hasOriginalGameQueue,
                                                               bool hasCommandQueue,

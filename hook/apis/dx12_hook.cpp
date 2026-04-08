@@ -2434,6 +2434,29 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
     if (g_CommandQueue.load(std::memory_order_acquire) == pQueue)
         return;
 
+    ID3D12CommandQueue* primaryQ = g_PrimaryGameQueue.load(std::memory_order_acquire);
+    ID3D12CommandQueue* currentSwapchainQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        currentSwapchainQueue = g_SwapchainQueue;
+    }
+
+    const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+    if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+            recentStreamlineTeardown, pQueue == primaryQ, pQueue == g_OriginalGameQueue,
+            pQueue == currentSwapchainQueue)) {
+        static std::atomic<int> s_recentSLTeardownSetQueueIgnoreLogCount{0};
+        int logCount = s_recentSLTeardownSetQueueIgnoreLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 256) == 0) {
+            HookLogImportant(
+                "DX12: SetCommandQueue ignoring departed queue %p during recent Streamline teardown "
+                "(primary=%p orig=%p scQ=%p current=%p slOffGrace=%d)",
+                pQueue, primaryQ, g_OriginalGameQueue, currentSwapchainQueue,
+                g_CommandQueue.load(std::memory_order_acquire), g_SLOffHeuristicGrace.load(std::memory_order_acquire));
+        }
+        return;
+    }
+
     // CRITICAL FIX: Only allow DIRECT queues for overlay rendering.
     // Strange Brigade and other DX12 games use Async Compute queues.
     // Submitting overlay (Direct) commands to a Compute queue causes a device
@@ -7430,6 +7453,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
             bool actualFGActive = IsActualFrameGenerationActive();
             bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+            const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
             int slOffSwapchainGrace = g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
             if (ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
                     actualFGActive, streamlineFGRunning, g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr,
@@ -7443,6 +7467,23 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         "(slOffGrace=%d scQ=%p cmdQ=%p fgOwned=%d)",
                         slOffSwapchainGrace, currentSwapchainQueue, currentCommandQueue,
                         g_FGRuntimeOwnsSwapchain ? 1 : 0);
+                }
+                goto skipOverlayInit;
+            }
+
+            if (ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+                    actualFGActive, streamlineFGRunning, recentStreamlineTeardown, currentSwapchainQueue != nullptr,
+                    g_OriginalGameQueue != nullptr, currentCommandQueue != nullptr,
+                    currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
+                    currentCommandQueue != nullptr && currentCommandQueue == g_OriginalGameQueue)) {
+                static std::atomic<int> s_recentSLTeardownInitDeferLogCount{0};
+                int logCount = s_recentSLTeardownInitDeferLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 20 || (logCount % 120) == 0) {
+                    HookLogImportant(
+                        "DX12: Deferring overlay init until command queue settles after recent Streamline teardown "
+                        "(scQ=%p cmdQ=%p origQ=%p slOffGrace=%d)",
+                        currentSwapchainQueue, currentCommandQueue, g_OriginalGameQueue,
+                        g_SLOffHeuristicGrace.load(std::memory_order_acquire));
                 }
                 goto skipOverlayInit;
             }
@@ -10203,6 +10244,20 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         ID3D12CommandQueue* currentQ = g_CommandQueue.load(std::memory_order_acquire);
         bool isKnownQueue =
             (pThis == primaryQ || pThis == currentQ || pThis == g_OriginalGameQueue || pThis == g_SwapchainQueue);
+        const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+        if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+                recentStreamlineTeardown, pThis == primaryQ, pThis == g_OriginalGameQueue, pThis == g_SwapchainQueue)) {
+            static std::atomic<int> s_recentSLTeardownQueueIgnoreLogCount{0};
+            int logCount = s_recentSLTeardownQueueIgnoreLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 256) == 0) {
+                HookLogImportant(
+                    "DX12: Ignoring departed queue %p during recent Streamline teardown "
+                    "(primary=%p orig=%p scQ=%p current=%p slOffGrace=%d)",
+                    pThis, primaryQ, g_OriginalGameQueue, g_SwapchainQueue, currentQ,
+                    g_SLOffHeuristicGrace.load(std::memory_order_acquire));
+            }
+            goto skip_command_queue_registration;
+        }
         if (!anyFGActive) {
             // No FG: always register (same as before)
             DX12_SetCommandQueue(pThis);
@@ -10215,6 +10270,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         }
         // else: FG active, known queue — skip registration (fast path)
     }
+skip_command_queue_registration:
 
     // Periodic device-removed check in ECL detour during FG —
     // helps pinpoint when GPU dies relative to our hook activity.
