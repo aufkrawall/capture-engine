@@ -290,6 +290,21 @@ TEST_F(FpsLimiterTest, AutoMode_UsesFGFallbackWhenFGActive) {
     g_FGCompat.SetFSRFGActive(false);
 }
 
+TEST_F(FpsLimiterTest, InactiveLimiterClearsStaleReflexOverride) {
+    g_ReflexLimiter.SetTargetFps(69);
+    EXPECT_NE(g_ReflexLimiter.GetTargetIntervalUs(), 0u);
+
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->runtimeState.isRecording = false;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(false);
+    mockShm->fpsLimiter.SetGeneralEnabled(false);
+    mockShm->fpsLimiter.SetUseVFR(false);
+
+    limiter.Apply();
+
+    EXPECT_EQ(g_ReflexLimiter.GetTargetIntervalUs(), 0u);
+}
+
 TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;

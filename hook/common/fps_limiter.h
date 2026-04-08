@@ -332,9 +332,7 @@ public:
             isActivelyLimiting_.store(false, std::memory_order_relaxed);
             lastActualWaitUs_ = 0;
             loggedNativeFallback_ = false;
-            reflexNativeSleepActive_ = false;
-            reflexSleepBaselineCount_ = 0;
-            reflexRecentPresentGap_ = false;
+            ResetReflexNativePacingState();
             // Release timer resolution if we had it set
             {
                 std::lock_guard<std::mutex> lock(timerStateMutex_);
@@ -351,11 +349,6 @@ public:
                 localFrameCount_ = 0;
                 localStatsIntervalStart_ = 0;
                 localStatsFrameCount_ = 0;
-            }
-            // Clear Reflex override when limiter is inactive
-            if (reflexLimiterActive_) {
-                g_ReflexLimiter.SetTargetFps(0);
-                reflexLimiterActive_ = false;
             }
             if (!loggedInactive_) {
                 TraceLog("Apply: INACTIVE capReq=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d",
@@ -630,14 +623,11 @@ public:
                     loggedNativeFallback_ = true;
                 }
             }
-        } else if (reflexLimiterActive_) {
-            // Clear Reflex override if we were using it but switched away
-            g_ReflexLimiter.SetTargetFps(0);
-            g_ReflexLimiter.DisableHybridPacing();
-            reflexLimiterActive_ = false;
-            reflexNativeSleepActive_ = false;
-            reflexSleepBaselineCount_ = 0;
-            reflexRecentPresentGap_ = false;
+        } else if (reflexLimiterActive_ || reflexNativeSleepActive_ || g_ReflexLimiter.GetTargetIntervalUs() != 0) {
+            // Clear any stale Reflex override even if native pacing never fully
+            // handed off. Otherwise later game-managed Reflex calls can inherit
+            // our old interval after FG turns off.
+            ResetReflexNativePacingState();
         }
 
         // =====================================================================
@@ -990,10 +980,7 @@ public:
         reflexNativeSleepActive_ = false;
         reflexSleepBaselineCount_ = 0;
         reflexRecentPresentGap_ = false;
-        if (reflexLimiterActive_) {
-            g_ReflexLimiter.SetTargetFps(0);
-            reflexLimiterActive_ = false;
-        }
+        ResetReflexNativePacingState();
         g_ReflexLimiter.Shutdown();
         antilag2InitAttempted_ = false;
         g_AntiLag2Limiter.Shutdown();
@@ -1002,6 +989,18 @@ public:
     }
 
 private:
+    void ResetReflexNativePacingState() {
+        if (reflexLimiterActive_ || reflexNativeSleepActive_ || g_ReflexLimiter.GetTargetIntervalUs() != 0) {
+            g_ReflexLimiter.SetTargetFps(0);
+            g_ReflexLimiter.DisableHybridPacing();
+        }
+        reflexLimiterActive_ = false;
+        reflexNativeSleepActive_ = false;
+        reflexSleepBaselineCount_ = 0;
+        reflexRecentPresentGap_ = false;
+        reflexLoggedSuccess_ = false;
+    }
+
     IPCClient* ipc = nullptr;
     SharedMemoryLayout* dbgShm = nullptr;  // Direct injection for testing
     HANDLE releaseEvent = NULL;
