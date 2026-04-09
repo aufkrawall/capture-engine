@@ -112,9 +112,16 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
                 HookLog("FG: Suppressing DLSS FG API activation — heuristic FSR FG is active, SL signal OFF");
                 return;
             }
+
             // SL says FG is running AND heuristic says FSR FG — SL wins.
             heuristicFSRFGActive.store(false, std::memory_order_release);
             HookLog("FG: SL FG signal overrides heuristic FSR FG — clearing heuristic flag");
+        }
+
+        if (fsrFGApiActive.load(std::memory_order_acquire)) {
+            HookLog("FG: Clearing FSR FG API state — DLSS FG API takes priority");
+            fsrFGApiActive.store(false, std::memory_order_release);
+            fsrFGMultiplier.store(0, std::memory_order_release);
         }
     }
 
@@ -140,6 +147,14 @@ void FGCompatibility::SetDLSSFGMultiplier(int multiplier) {
     const int previousMultiplier = dlssFGMultiplier.exchange(normalizedMultiplier, std::memory_order_acq_rel);
     if (previousMultiplier != normalizedMultiplier) {
         HookLog("FG: DLSS FG multiplier %d -> %d", previousMultiplier, normalizedMultiplier);
+    }
+}
+
+void FGCompatibility::SetFSRFGMultiplier(int multiplier) {
+    const int normalizedMultiplier = (multiplier >= 2 && multiplier <= 4) ? multiplier : 0;
+    const int previousMultiplier = fsrFGMultiplier.exchange(normalizedMultiplier, std::memory_order_acq_rel);
+    if (previousMultiplier != normalizedMultiplier) {
+        HookLog("FG: FSR FG multiplier %d -> %d", previousMultiplier, normalizedMultiplier);
     }
 }
 
@@ -173,6 +188,13 @@ void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
 
 void FGCompatibility::SetFSRFGActive(bool active) {
     bool wasActive = fsrFGApiActive.exchange(active, std::memory_order_acq_rel);
+    if (active) {
+        if (fsrFGMultiplier.load(std::memory_order_acquire) < 2) {
+            fsrFGMultiplier.store(2, std::memory_order_release);
+        }
+    } else {
+        fsrFGMultiplier.store(0, std::memory_order_release);
+    }
     if (wasActive != active) {
         HookLog("FG: FSR FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED", dormantMode.load() ? 1 : 0);
 
@@ -180,6 +202,11 @@ void FGCompatibility::SetFSRFGActive(bool active) {
             HookLog("FG: Clearing DLSS FG API state - FSR FG API takes priority");
             dlssFGApiActive.store(false, std::memory_order_release);
             dlssFGMultiplier.store(0, std::memory_order_release);
+        }
+
+        if (active && heuristicFSRFGActive.load(std::memory_order_acquire)) {
+            heuristicFSRFGActive.store(false, std::memory_order_release);
+            HookLog("FG: Clearing heuristic FSR FG state — authoritative FSR FG is active");
         }
 
         if (active && dormantMode.load()) {

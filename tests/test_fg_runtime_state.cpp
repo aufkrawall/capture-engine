@@ -78,6 +78,13 @@ TEST(FGRuntimeStateTest, FsrApiWinsWithoutStreamlineSupport) {
     EXPECT_EQ(RuntimeMode::kFSRFG, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
 }
 
+TEST(FGRuntimeStateTest, FsrApiOverridesStreamlineWithoutConfirmedDlssMultiplier) {
+    DetectionSnapshot snapshot;
+    snapshot.streamlineLoaded = true;
+    snapshot.fsrFGApiActive = true;
+    EXPECT_EQ(RuntimeMode::kFSRFG, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
+}
+
 TEST(FGRuntimeStateTest, RuntimeModeHelpersMatchClassification) {
     EXPECT_FALSE(ce::fg_runtime::IsRuntimeFGActive(RuntimeMode::kOff));
     EXPECT_TRUE(ce::fg_runtime::IsRuntimeFGActive(RuntimeMode::kDLSSFG));

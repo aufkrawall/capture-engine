@@ -1331,6 +1331,8 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddres
     }
 
     g_FGCompat.SetFSRFGSupportPresent(true);
+    g_FGCompat.SetFSRFGMultiplier(2);
+    g_FGCompat.SetFSRFGActive(true);
     if (!g_HadFSRFGPhase) {
         g_HadFSRFGPhase = true;
         HookLogImportant("DX12: FFX swapchain takeover implies FSR FG history — latching post-FSR handoff state");
@@ -1555,6 +1557,13 @@ static bool KnownDLSSFGModuleLoaded() {
 }
 
 static bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr) {
+    if (g_FGCompat.IsFSRFGApiActive()) {
+        if (blockedReason) {
+            *blockedReason = "authoritative FSR FG state is already active";
+        }
+        return false;
+    }
+
     // Block when Streamline FG is running — SL creates internal queues that
     // trigger queue-change heuristics.  Without this check, enabling DLSS FG
     // causes false FSR FG detection (SL's queue ≠ origGame → "queue change"
@@ -2650,6 +2659,12 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
             g_FGRuntimeOwnsSwapchain = false;
             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = 0;
+            if (g_FGCompat.IsFSRFGApiActive()) {
+                HookLogImportant("DX12: Swapchain returned to origGame queue %p — ending authoritative FSR FG state",
+                                 pQueue);
+                g_FGCompat.SetFSRFGActive(false);
+                g_FGCompat.SetFSRFGMultiplier(0);
+            }
             HookLogImportant("DX12: Swapchain returned to origGame queue %p — FG runtime ownership cleared", pQueue);
         }
 
@@ -2960,6 +2975,10 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                     g_SwapchainQueueCaptureTime = 0;
                     g_FGRuntimeOwnsSwapchain = false;
                     DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
+                    if (g_FGCompat.IsFSRFGApiActive()) {
+                        g_FGCompat.SetFSRFGActive(false);
+                        g_FGCompat.SetFSRFGMultiplier(0);
+                    }
                     HookLogImportant(
                         "DX12: Streamline FG ON after FSR — cleared stale FSR swapchain queue %p (origGame=%p) "
                         "to prevent DEVICE_REMOVED on FSR→DLSS transition",
@@ -2997,6 +3016,10 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 g_FGRuntimeOwnsSwapchain = false;
                 DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                 g_FGRuntimeOwnsSwapchainSince = 0;
+                if (g_FGCompat.IsFSRFGApiActive()) {
+                    g_FGCompat.SetFSRFGActive(false);
+                    g_FGCompat.SetFSRFGMultiplier(0);
+                }
                 HookLogImportant("DX12: Streamline FG OFF after FSR history — clearing lingering FG runtime ownership");
             }
 
@@ -7415,10 +7438,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             gameQueue = g_SwapchainQueue;
             static int s_runtimeOwnedQueueLogCount = 0;
             if (s_runtimeOwnedQueueLogCount++ < 10 || (s_runtimeOwnedQueueLogCount % 300) == 0) {
+                const bool authoritativeFSR = g_FGCompat.IsFSRFGApiActive();
                 HookLogImportant(
-                    "DX12: ProcessFrame — runtime-owned swapchain without FSR evidence, using scQueue %p "
-                    "(origGame=%p slFG=%d hadFSR=%d) #%d",
-                    gameQueue, g_OriginalGameQueue, slFGNow ? 1 : 0, g_HadFSRFGPhase ? 1 : 0,
+                    "DX12: ProcessFrame — runtime-owned swapchain %s, using scQueue %p "
+                    "(origGame=%p slFG=%d hadFSR=%d apiFSR=%d) #%d",
+                    authoritativeFSR ? "with authoritative FSR FG state" : "without FSR evidence", gameQueue,
+                    g_OriginalGameQueue, slFGNow ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, authoritativeFSR ? 1 : 0,
                     s_runtimeOwnedQueueLogCount);
             }
         } else if (routingDecision ==
@@ -8763,6 +8788,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             g_FGRuntimeOwnsSwapchain = false;
                             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                             g_FGRuntimeOwnsSwapchainSince = 0;
+                            if (g_FGCompat.IsFSRFGApiActive()) {
+                                g_FGCompat.SetFSRFGActive(false);
+                                g_FGCompat.SetFSRFGMultiplier(0);
+                            }
                             HookLogImportant(
                                 "DX12: FG→off after FSR phase — clearing FG runtime ownership of swapchain queue");
                         }

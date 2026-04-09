@@ -49,6 +49,17 @@ public:
         fsrSupportPresent.store(present, std::memory_order_release);
     }
     int GetFGMultiplier() const {
+        const auto runtimeMode = GetRuntimeMode();
+        if (runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG) {
+            const int fsrMultiplier = fsrFGMultiplier.load(std::memory_order_acquire);
+            if (fsrMultiplier >= 2) {
+                return fsrMultiplier;
+            }
+            if (fsrFGApiActive.load(std::memory_order_acquire)) {
+                return 2;
+            }
+        }
+
         const int apiMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
         return apiMultiplier >= 2 ? apiMultiplier : cachedMultiplier.load(std::memory_order_acquire);
     }
@@ -128,6 +139,7 @@ public:
     void SetDLSSFGActive(bool active);
     void SetDLSSFGMultiplier(int multiplier);
     void SetFSRFGActive(bool active);
+    void SetFSRFGMultiplier(int multiplier);
     void SetHeuristicFSRFGActive(bool active);
     bool IsDLSSFGApiActive() const {
         return dlssFGApiActive.load(std::memory_order_acquire);
@@ -205,6 +217,7 @@ private:
     std::atomic<bool> fsrFGApiActive{false};
     std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<int> dlssFGMultiplier{0};
+    std::atomic<int> fsrFGMultiplier{0};
     std::atomic<bool> streamlineSupportPresent{false};
     std::atomic<bool> fsrSupportPresent{false};
     std::atomic<bool> nvidiaSmoothMotionDetected{false};

@@ -353,6 +353,33 @@ TEST_F(FpsLimiterTest, HeuristicFSRPriorityOverTransientDLSSFG) {
     EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::None);
 }
 
+TEST_F(FpsLimiterTest, AuthoritativeFSRGetsStableDefaultMultiplier) {
+    g_FGCompat.SetFSRFGActive(true);
+
+    EXPECT_TRUE(g_FGCompat.IsFGActive());
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::FSR_FG);
+    EXPECT_EQ(g_FGCompat.GetFGMultiplier(), 2);
+
+    g_FGCompat.SetFSRFGActive(false);
+}
+
+TEST_F(FpsLimiterTest, AuthoritativeFSRCanOverrideTransientDLSSAndYieldBackToConfirmedDLSS) {
+    g_FGCompat.SetDLSSFGMultiplier(2);
+    g_FGCompat.SetDLSSFGActive(true);
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::DLSS_FG);
+
+    g_FGCompat.SetFSRFGActive(true);
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::FSR_FG);
+    EXPECT_EQ(g_FGCompat.GetFGMultiplier(), 2);
+
+    g_FGCompat.SetDLSSFGMultiplier(2);
+    g_FGCompat.SetDLSSFGActive(true);
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::DLSS_FG);
+
+    g_FGCompat.SetDLSSFGActive(false);
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::None);
+}
+
 // Test ParseLimiterMode
 TEST(LimiterModeParseTest, ParsesAllValues) {
     EXPECT_EQ(ParseLimiterMode("basic"), LimiterMode::kBasic);
