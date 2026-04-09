@@ -101,4 +101,15 @@ TEST(StreamlineRuntimePolicyTest, GetStateSuppressionDoesNotDisableAlreadyActive
     EXPECT_EQ(1u, update.generatedFrames);
 }
 
+TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOnlyRunsForFsrOwnedHandoff) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, true));
+
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(false, true, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, false, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, false));
+}
+
 }  // namespace

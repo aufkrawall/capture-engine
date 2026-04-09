@@ -727,6 +727,11 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         }
     }
 
+    if (ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(
+            requestedEnabled, g_FGCompat.IsFSRFGApiActive(), DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration())) {
+        DX12_PrepareForStreamlineEnableTransition();
+    }
+
     const slResult result = g_Original_slDLSSGSetOptions(viewport, adjustedOptions);
 
     // SL may overwrite our vtable hooks during slDLSSGSetOptions (especially

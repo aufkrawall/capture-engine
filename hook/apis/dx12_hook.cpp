@@ -2963,6 +2963,20 @@ void DX12_StartTransitionCooldown() {
     StartTransitionCooldown();
 }
 
+void DX12_PrepareForStreamlineEnableTransition() {
+    if (!g_FGCompat.IsFSRFGApiActive() || !g_FGRuntimeOwnsSwapchain) {
+        return;
+    }
+
+    StartTransitionCooldown();
+    WaitForOverlayGpuIdle("DX12: Streamline enable prep");
+    InvalidateAllOverlayCachedFrames();
+    HookLogImportant(
+        "DX12: Preparing for Streamline FG enable while authoritative FSR owns the swapchain "
+        "(origGame=%p scQueue=%p cmdQ=%p)",
+        g_OriginalGameQueue, g_SwapchainQueue, g_CommandQueue.load(std::memory_order_acquire));
+}
+
 bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() {
     return g_FGRuntimeOwnsSwapchain;
 }

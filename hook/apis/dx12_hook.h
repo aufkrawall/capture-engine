@@ -78,6 +78,7 @@ void DX12_AdjustWrapperResizeDepth(int delta);
 void DX12_StartTransitionCooldown();
 void DX12_OnStreamlineFGStateChanged(bool active);
 bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
+void DX12_PrepareForStreamlineEnableTransition();
 void RemoveGlobalVTableHooks();
 
 extern "C" {

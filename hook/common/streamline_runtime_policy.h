@@ -73,4 +73,9 @@ inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromGetState(
     return update;
 }
 
+inline bool ShouldPrepareForStreamlineEnableBeforeOriginalCall(bool requestedEnabled, bool currentlyAuthoritativeFSRActive,
+                                                               bool runtimeOwnsSwapchain) {
+    return requestedEnabled && currentlyAuthoritativeFSRActive && runtimeOwnsSwapchain;
+}
+
 }  // namespace ce::streamline_runtime_policy
