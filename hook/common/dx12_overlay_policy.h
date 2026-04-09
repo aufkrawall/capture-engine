@@ -44,10 +44,10 @@ enum class SwapchainOverlayRoutingDecision {
 };
 
 inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtimeOwnsSwapchain, bool streamlineFGActive,
-                                                                     bool fsrFGActive, bool hadFSRFGPhase,
-                                                                     bool hasSwapchainQueue, bool hasOriginalGameQueue,
-                                                                     bool hasPostSLLastWorkingQueue,
-                                                                     bool commandQueueMatchesPrimaryGameQueue) {
+                                                                    bool fsrFGActive, bool hadFSRFGPhase,
+                                                                    bool hasSwapchainQueue, bool hasOriginalGameQueue,
+                                                                    bool hasPostSLLastWorkingQueue,
+                                                                    bool commandQueueMatchesPrimaryGameQueue) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
                                  : SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
@@ -58,17 +58,15 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     }
 
     if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {
-        if (hasPostSLLastWorkingQueue && !commandQueueMatchesPrimaryGameQueue) {
+        if (hasPostSLLastWorkingQueue) {
             return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue;
         }
 
         // After FSR->DLSS->off, ProcessFrame intentionally leaves g_SwapchainQueue
         // unset until a fresh non-FG Present path can prove the live swapchain
-        // queue again. While that recapture window is open, falling through to the
-        // last observed command queue can pick a stale PostSL queue or the wrong
-        // game queue. Once command ownership has already settled back to the
-        // primary game queue, route through the dedicated primary/orig recovery
-        // path instead of preserving the old PostSL queue.
+        // queue again. If we no longer have a previously validated PostSL queue,
+        // fall back to the non-PostSL recovery path.
+        (void)commandQueueMatchesPrimaryGameQueue;
         return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue;
     }
 
@@ -95,28 +93,23 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     return SwapchainOverlayRoutingDecision::kUseNormalRouting;
 }
 
-inline bool ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
-    bool hasCommandQueue, bool commandQueueMatchesOriginalGameQueue, bool commandQueueMatchesPrimaryGameQueue,
-    bool lastWorkingQueueStillActiveDuringRecentTeardown) {
-    // Preserve the last validated PostSL queue only while non-FG command
-    // ownership is still unsettled. Once command tracking has returned to the
-    // game's own original or primary queue, reusing the old PostSL queue can
-    // hit a departed runtime queue after teardown.
-    //
-    // However, if that preserved PostSL queue is still seeing immediate
-    // Streamline teardown traffic, switching to origGame too early can collide
-    // with the runtime's final FG-off work on the same swapchain.
-    if (lastWorkingQueueStillActiveDuringRecentTeardown) {
-        return false;
-    }
-
-    return hasCommandQueue && (commandQueueMatchesOriginalGameQueue || commandQueueMatchesPrimaryGameQueue);
-}
-
 inline bool ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
     bool recentStreamlineTeardown, bool hasPostSLLastWorkingQueue,
     bool lastWorkingQueueStillActiveDuringRecentTeardown) {
     return recentStreamlineTeardown && hasPostSLLastWorkingQueue && lastWorkingQueueStillActiveDuringRecentTeardown;
+}
+
+inline int ResolveTransitionCooldownFrames(int existingCooldownFrames, int requestedCooldownFrames,
+                                          bool overrideExistingCooldown) {
+    // When the post-FSR DLSS->off path has already settled command ownership
+    // back to the game's primary queue, the earlier long FG-on cooldown mostly
+    // leaves the last FG-on overlay frame stuck on screen. In that narrow case,
+    // replace the stale long cooldown with the shorter post-FSR recovery delay.
+    if (overrideExistingCooldown) {
+        return requestedCooldownFrames;
+    }
+
+    return existingCooldownFrames > requestedCooldownFrames ? existingCooldownFrames : requestedCooldownFrames;
 }
 
 struct OverlayMetricsBindingDecision {

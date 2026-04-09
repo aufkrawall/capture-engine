@@ -164,6 +164,12 @@ void OverlayAdapter::SetGraphicsAPI(const char* api) {
     layoutDirty = true;
 }
 
+void OverlayAdapter::InvalidateCachedFrame() {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    hasCachedFrame = false;
+    layoutDirty = true;
+}
+
 bool OverlayAdapter::InitializeBackendLocked(CustomOverlay::RendererBackend* newBackend, OverlayBackendType type,
                                              const char* backendName, float dpiScale) {
     if (!newBackend) {

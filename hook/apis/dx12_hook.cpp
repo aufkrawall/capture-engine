@@ -3017,6 +3017,11 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
     g_FGCompat.SetHeuristicFSRFGActive(false);
     g_FGCompat.ClearNvidiaSMState();
+    if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+        perf->SetFGMetrics(0.0f, 0.0f, 1, 0);
+    }
+    g_OverlayAdapter.InvalidateCachedFrame();
+    g_D3D11On12Adapter.InvalidateCachedFrame();
     g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
     ResetPostSLLifecycleForTransition("DX12: Streamline FG OFF transition", true, true);
 
@@ -3085,7 +3090,10 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                                                                                g_HadFSRFGPhase, true)
                     ? 15
                     : 60;
-            g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, cooldownFrames);
+            g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
+                g_FGTransitionCooldown, cooldownFrames,
+                ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(commandQueueSettledToPrimary,
+                                                                               g_HadFSRFGPhase, true));
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — deferring non-FG overlay reinit for %d frames so "
@@ -3974,10 +3982,6 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             g_PostSLLastWorkingQueue != nullptr &&
             GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
-        const bool preferOriginalOverLastWorking =
-            ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
-                currentCommandQueue != nullptr, currentCommandQueue == g_OriginalGameQueue,
-                currentCommandQueue == currentPrimaryQueue, lastWorkingQueueStillActiveDuringRecentTeardown);
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
@@ -3998,14 +4002,14 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
-            if (preferOriginalOverLastWorking && g_OriginalGameQueue) {
+            if (lastWorkingQueueStillActiveDuringRecentTeardown && g_OriginalGameQueue) {
                 queueForBackend = g_OriginalGameQueue;
                 static std::atomic<int> s_postFSRBackendOriginalRouteLogCount{0};
                 int logCount = s_postFSRBackendOriginalRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
-                        "DX12: InitImGui — bypassing preserved PostSL lastWorking queue %p because cmdQ=%p settled to "
-                        "a non-wrapper game queue (origQ=%p primaryQ=%p)",
+                        "DX12: InitImGui — deferring preserved PostSL lastWorking queue %p because teardown traffic is "
+                        "still active (cmdQ=%p origQ=%p primaryQ=%p)",
                         g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
                 }
             } else {
@@ -7370,7 +7374,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                                                                    slOffSwapchainGrace > 0)) {
                     cooldownFrames = 15;
                 }
-                g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, cooldownFrames);
+                g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
+                    g_FGTransitionCooldown, cooldownFrames,
+                    ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(commandQueueSettledToPrimary,
+                                                                                   g_HadFSRFGPhase,
+                                                                                   slOffSwapchainGrace > 0));
                 g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
                 g_PostSLConfirmedRendering.store(false, std::memory_order_release);
@@ -7428,11 +7436,6 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             g_PostSLLastWorkingQueue != nullptr &&
             GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
-        const bool preferOriginalOverLastWorking =
-            ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
-                currentCommandQueue != nullptr, currentCommandQueue == g_OriginalGameQueue,
-                currentCommandQueue == currentPrimaryQueue, lastWorkingQueueStillActiveDuringRecentTeardown);
-
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
             g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
@@ -7479,14 +7482,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
             // After FSR->DLSS->off with scQueue intentionally unset, reuse the
             // last queue that already proved it could render the live swapchain.
-            if (preferOriginalOverLastWorking && g_OriginalGameQueue) {
+            if (lastWorkingQueueStillActiveDuringRecentTeardown && g_OriginalGameQueue) {
                 gameQueue = g_OriginalGameQueue;
                 static std::atomic<int> s_postFSRProcessFrameOriginalRouteLogCount{0};
                 int logCount = s_postFSRProcessFrameOriginalRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
-                        "DX12: ProcessFrame — bypassing preserved PostSL lastWorking queue %p because cmdQ=%p settled "
-                        "to a non-wrapper game queue (origQ=%p primaryQ=%p)",
+                        "DX12: ProcessFrame — deferring preserved PostSL lastWorking queue %p because teardown traffic "
+                        "is still active (cmdQ=%p origQ=%p primaryQ=%p)",
                         g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
                 }
             } else {
@@ -8687,7 +8690,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             s_lastFGActive = currentFGActive;
             s_lastRuntimeMode = currentRuntimeMode;
             s_lastSLFGRunning = currentSLFGRunning;
-            g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, transitionCooldownFrames);
+            g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
+                g_FGTransitionCooldown, transitionCooldownFrames,
+                ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
+                    commandQueueSettledToPrimary, g_HadFSRFGPhase,
+                    previousWasFG && targetIsFGOff && !currentSLFGRunning));
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
 
             // Immediately disable post-SL rendering during FG transitions.

@@ -107,3 +107,16 @@ TEST_F(PerformanceMetricsTest, HighFpsFramesAreNotDebouncedAway) {
     EXPECT_NEAR(metrics.GetHistoryArray()[9], 0.526f, 0.01f);
     EXPECT_GT(metrics.GetCurrentFPS(), 1500.0f);
 }
+
+TEST_F(PerformanceMetricsTest, FGMetricsResetClearsActiveStateAndLabel) {
+    metrics.SetFGMetrics(120.0f, 60.0f, 2, 1);
+
+    EXPECT_TRUE(metrics.IsFGActive());
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "DLSS FG");
+
+    metrics.SetFGMetrics(0.0f, 0.0f, 1, 0);
+
+    EXPECT_FALSE(metrics.IsFGActive());
+    EXPECT_EQ(metrics.GetFGMultiplier(), 1);
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
+}

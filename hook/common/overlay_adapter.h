@@ -77,6 +77,7 @@ public:
         this->hwnd = hwnd;
     }
     void SetGraphicsAPI(const char* api);
+    void InvalidateCachedFrame();
     void SetDroppedFrames(uint32_t count) {
         std::lock_guard<std::mutex> lock(stateMutex);
         droppedFrames = count;

@@ -202,7 +202,7 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesOriginalQueueDuringPostFSRIn
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
 
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, true),
-              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
 
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, true, true, false, false),
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
@@ -212,27 +212,11 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesOriginalQueueDuringPostFSRIn
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
 }
 
-TEST(DXGISharedTest, PostFSRRecoveryOnlyUsesLastWorkingQueueWhileCommandOwnershipIsUnsettled) {
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
-        false, false, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
-        true, false, false, false));
-
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
-        true, true, false, false));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
-        true, false, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
-        true, true, false, true));
-}
-
-TEST(DXGISharedTest, PostFSRInactiveOriginalRouteFallsBackToSettledPrimaryCommandQueue) {
-    using ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery;
-
-    EXPECT_TRUE(
-        ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(true, false, true, false));
-    EXPECT_FALSE(
-        ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(true, false, true, true));
+TEST(DXGISharedTest, TransitionCooldownOverrideReplacesStaleLongCooldownForSettledPrimaryPostFSROff) {
+    EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(90, 15, true), 15);
+    EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(0, 15, true), 15);
+    EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(10, 60, false), 60);
+    EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(90, 15, false), 90);
 }
 
 TEST(DXGISharedTest, SettledPrimaryPostFSROffUsesShorterCooldown) {
