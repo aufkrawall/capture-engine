@@ -948,22 +948,26 @@ bool IsDLSSFGRequestedViaStreamline() {
 }
 
 void OnAuthoritativeFFXTakeover() {
-    size_t clearedViewportCount = 0;
-    size_t clearedCapabilityCount = 0;
+    size_t resetViewportCount = 0;
+    size_t preservedCapabilityCount = 0;
     {
         std::lock_guard<std::mutex> lock(g_StateMutex);
-        clearedViewportCount = g_ViewportStates.size();
-        clearedCapabilityCount = g_ViewportCapabilityMax.size();
-        g_ViewportStates.clear();
-        g_ViewportCapabilityMax.clear();
+        resetViewportCount = g_ViewportStates.size();
+        preservedCapabilityCount = g_ViewportCapabilityMax.size();
+        for (auto& [viewportKey, runtimeState] : g_ViewportStates) {
+            runtimeState.active = false;
+            runtimeState.multiplier = 0;
+            runtimeState.generatedFrames = 0;
+        }
     }
 
     g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
                                                  std::memory_order_release);
     HookLogImportant(
-        "Streamline Hook: Authoritative FFX takeover cleared %zu viewport states and %zu capability caches; "
+        "Streamline Hook: Authoritative FFX takeover reset %zu viewport states and preserved %zu capability caches; "
         "suppressing GetState-only reactivation for %llums",
-        clearedViewportCount, clearedCapabilityCount, (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
+        resetViewportCount, preservedCapabilityCount,
+        (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
 }
 
 void Shutdown() {
