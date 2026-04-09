@@ -2903,13 +2903,23 @@ void DX12Hook::Init() {
     // D3D11On12.
     HookLog("DX12Hook: Initialized (factory hooks installed; Present hooks deferred to D3D12CreateDevice)");
 #else
+    const bool d3d12DeviceCreated = WasD3D12DeviceCreated();
+    const char* startupOverlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
     // Without D3D12 wrapper, D3D12CreateDevice isn't hooked and the deferred
     // trigger never fires.  Install Present inline hooks now via a temp
     // swapchain so pre-existing swapchains (created before injection) are
     // covered.  The temp device/swapchain is destroyed immediately after
     // hooking, so DX11 state corruption is not a concern.
-    HookLog("DX12Hook: Installing Present hooks eagerly (no D3D12 wrapper)");
-    HookSwapchainVTableViaTempSwapchain();
+    if (ce::dx12_overlay_policy::ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(
+            d3d12DeviceCreated, startupOverlayModule != nullptr)) {
+        HookLogImportant(
+            "DX12Hook: Deferring eager temp-swapchain Present hook install because third-party overlay %s is already "
+            "loaded before the first real D3D12 device",
+            startupOverlayModule);
+    } else {
+        HookLog("DX12Hook: Installing Present hooks eagerly (no D3D12 wrapper)");
+        HookSwapchainVTableViaTempSwapchain();
+    }
     HookLog("DX12Hook: Initialized (factory + Present hooks installed)");
 #endif
 

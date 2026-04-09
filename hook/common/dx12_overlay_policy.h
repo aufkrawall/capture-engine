@@ -31,6 +31,17 @@ inline bool ShouldWaitForOverlayCompletion(bool hasFenceEvent, bool usingDedicat
     return runtimeMode == fg_runtime::RuntimeMode::kOff || runtimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
 }
 
+inline bool ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(bool d3d12DeviceCreated,
+                                                                bool thirdPartyOverlayLoaded) {
+    // In no-wrapper builds we normally create a temp D3D12 device/swapchain to
+    // install Present hooks eagerly. If a third-party overlay like Steam is
+    // already hooked before the game's real D3D12 device exists, that temp
+    // swapchain path can recurse through the overlay's startup hook chain and
+    // stack overflow before the game reaches its first real swapchain. Defer to
+    // the real-swapchain hook path in that specific startup window.
+    return !d3d12DeviceCreated && thirdPartyOverlayLoaded;
+}
+
 enum class SwapchainOverlayRoutingDecision {
     kUseNormalRouting,
     kUsePostFSRStreamlineQueue,

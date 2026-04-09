@@ -167,20 +167,23 @@ inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isStea
 }
 
 inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay, bool presentTrampolineInstalled,
-                                                      bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
-                                                      ce::fg_runtime::RuntimeMode runtimeMode,
-                                                      bool streamlineFGRunning) {
+                                                       bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
+                                                       ce::fg_runtime::RuntimeMode runtimeMode,
+                                                       bool streamlineFGRunning) {
     if (!hasThirdPartyOverlay || presentTrampolineInstalled || present1TrampolineInstalled) {
-        return false;
-    }
-    if (steamBypassShouldOwnPath) {
         return false;
     }
 
     const bool actualFrameGenerationActive = streamlineFGRunning ||
                                              runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
                                              runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
-    return !actualFrameGenerationActive;
+
+    // The startup compatibility pass exists to let third-party overlays settle
+    // before we start driving our own DX12 startup routing. Once Steam's
+    // dedicated bypass path already owns the call chain, consuming the first
+    // top-level Presents here just starves HandleDX12ProcessFrame and the
+    // overlay never bootstraps.
+    return !actualFrameGenerationActive && !steamBypassShouldOwnPath;
 }
 
 inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapChain, bool streamlineFGRunning,
