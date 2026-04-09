@@ -8744,6 +8744,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             }
         }
 
+        if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+            const int overlayFGType =
+                ce::dx12_overlay_policy::ResolveOverlayFGMetricType(currentFGActive, currentRuntimeMode);
+            if (overlayFGType != 0) {
+                perf->SetFGMetrics(g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(), g_FGCompat.GetFGMultiplier(),
+                                   overlayFGType);
+            } else {
+                perf->SetFGMetrics(0.0f, 0.0f, 1, 0);
+            }
+        }
+
         // Detect FG on/off changes AND FG type changes (e.g., FSR FG → DLSS FG)
         // Also detect SL FG signal changes (immediate from SL hook)
         bool fgChanged = (currentFGActive != s_lastFGActive);

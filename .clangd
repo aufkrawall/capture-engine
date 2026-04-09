@@ -75,6 +75,7 @@ If:
       - "-Icommon"
       - "-Ihook/common"
       - "-Itests"
+      - "build/msys64/clang64/include"
       - "build/msys64/clang64/include/c++/v1"
       - "build/msys64/clang64/include"
       - "-isystembuild/msys64/clang64/lib/clang/21/include"

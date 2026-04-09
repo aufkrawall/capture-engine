@@ -264,6 +264,18 @@ TEST(DXGISharedTest, DX12OverlayMetricsBindingAlwaysKeepsMetricsBound) {
     EXPECT_FALSE(interpolatedFrameBinding.refreshFrameMetadata);
 }
 
+TEST(DXGISharedTest, OverlayFGMetricTypeFollowsEffectiveRuntimeState) {
+    EXPECT_EQ(1, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true, ce::fg_runtime::RuntimeMode::kDLSSFG));
+    EXPECT_EQ(2, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true, ce::fg_runtime::RuntimeMode::kFSRFG));
+    EXPECT_EQ(3, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true,
+                                                                      ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion));
+
+    EXPECT_EQ(0, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(false, ce::fg_runtime::RuntimeMode::kDLSSFG));
+    EXPECT_EQ(0, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(false,
+                                                                      ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+    EXPECT_EQ(0, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true, ce::fg_runtime::RuntimeMode::kOff));
+}
+
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameForRuntimeOwnedNonStreamlineSwapchains) {
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, true, false, false,

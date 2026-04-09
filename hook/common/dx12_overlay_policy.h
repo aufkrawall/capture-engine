@@ -118,6 +118,26 @@ inline OverlayMetricsBindingDecision DecideOverlayMetricsBinding(bool isRealFram
     };
 }
 
+inline int ResolveOverlayFGMetricType(bool effectiveFGActive, fg_runtime::RuntimeMode effectiveRuntimeMode) {
+    if (!effectiveFGActive) {
+        return 0;
+    }
+
+    switch (effectiveRuntimeMode) {
+        case fg_runtime::RuntimeMode::kDLSSFG:
+            return 1;
+        case fg_runtime::RuntimeMode::kFSRFG:
+            return 2;
+        case fg_runtime::RuntimeMode::kNvidiaSmoothMotion:
+            return 3;
+        case fg_runtime::RuntimeMode::kOff:
+        case fg_runtime::RuntimeMode::kStreamlineNoFG:
+        case fg_runtime::RuntimeMode::kUnknown:
+        default:
+            return 0;
+    }
+}
+
 inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverlayAfterPostFSRNonFG,
                                    bool actualFGActive, bool streamlineFGRunning, bool hasSwapchainQueue) {
     return hadFSRFGPhase && needsOffscreenOverlayAfterPostFSRNonFG && !actualFGActive && !streamlineFGRunning &&

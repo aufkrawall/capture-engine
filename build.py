@@ -2732,6 +2732,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
             "-I" + os.path.join(PROJECT_ROOT, "mediaengine"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
+            "-I" + os.path.join(msys2_dir, "clang64", "include"),
         ]
     )  # Ensure we can include audio_encoder.h and hook headers for stubs
     test_objs = []

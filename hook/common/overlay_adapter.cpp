@@ -726,7 +726,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if ((showFGDetails || reserveFGDetailsSpace) && metrics) {
             int multiplier = metrics->GetFGMultiplier();
             const char* fgLabel = metrics->GetFGTypeLabel();
-            if (reserveFGDetailsSpace && !showFGDetails) {
+            if (reserveInactiveFGSpace && !showFGDetails) {
                 fgLabel = "DLSS FG";
                 multiplier = 4;
             }
