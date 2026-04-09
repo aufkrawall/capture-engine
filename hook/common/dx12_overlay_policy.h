@@ -140,6 +140,17 @@ inline bool ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(bool e
     return endingPostFSRNonFGRecovery;
 }
 
+inline bool ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
+    bool postFSRNonFGRecovery, bool recentStreamlineTeardown,
+    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown) {
+    // After FSR->DLSS->off, the preserved PostSL queue can keep surfacing
+    // teardown-era ECL traffic after the coarse SL-off grace has expired.
+    // Treat that window as unsafe for heuristic FSR reactivation or the overlay
+    // gets stranded on the "FSR active but scQueue=null" skip path.
+    return postFSRNonFGRecovery &&
+           (recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown);
+}
+
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,

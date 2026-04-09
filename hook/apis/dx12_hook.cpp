@@ -1601,6 +1601,26 @@ static bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr) {
         return false;
     }
 
+    ID3D12CommandQueue* currentSwapchainQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        currentSwapchainQueue = g_SwapchainQueue;
+    }
+    const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
+        g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(),
+        streamlineFGRunning, currentSwapchainQueue != nullptr);
+    const bool postSLLastWorkingQueueStillActiveDuringRecentTeardown =
+        g_PostSLLastWorkingQueue != nullptr &&
+        GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+    if (ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
+            postFSRNonFGRecovery, false, postSLLastWorkingQueueStillActiveDuringRecentTeardown)) {
+        if (blockedReason) {
+            *blockedReason = "post-FSR non-FG recovery is still seeing preserved PostSL teardown traffic";
+        }
+        return false;
+    }
+
     // Only block when DLSS FG is confirmed active WITH a known multiplier.
     // When DLSS modules are merely loaded but FG is off (or API state is transiently
     // toggling — common when switching to FSR FG), heuristics are safe.  The
@@ -10435,6 +10455,23 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
 
     UINT currentBackBufferIdx = sc3->GetCurrentBackBufferIndex();
 
+    bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    ID3D12CommandQueue* currentSwapchainQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        currentSwapchainQueue = g_SwapchainQueue;
+    }
+    const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
+        g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(),
+        streamlineFGRunning, currentSwapchainQueue != nullptr);
+    const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+    const bool postSLLastWorkingQueueStillActiveDuringRecentTeardown =
+        g_PostSLLastWorkingQueue != nullptr &&
+        GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+    const bool suppressHeuristicFSRActivationDuringPostFSRNonFGRecovery =
+        ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
+            postFSRNonFGRecovery, recentStreamlineTeardown, postSLLastWorkingQueueStillActiveDuringRecentTeardown);
+
     // ECL-count-based FG activation: detect frame generation via the pattern
     // of alternating real (ECL>0) and interpolated (ECL=0) frames.  This works
     // for UE5 native FSR FG and other implementations that don't use hookable
@@ -10448,15 +10485,35 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             s_eclRealFrames = 0;
             s_eclInterpFrames = 0;
         }
-        if (isInterpolatedFrame)
-            ++s_eclInterpFrames;
-        else
-            ++s_eclRealFrames;
-        if (!s_eclFGDetected && s_eclInterpFrames >= 10 && s_eclRealFrames >= 5) {
-            if (UpdateHeuristicFSRFGState(true, "ecl-pattern")) {
-                s_eclFGDetected = true;
-                HookLogImportant("DX12: FG detected via ECL count pattern (real=%d, interp=%d)", s_eclRealFrames,
-                                 s_eclInterpFrames);
+        if (suppressHeuristicFSRActivationDuringPostFSRNonFGRecovery) {
+            if (g_FGCompat.IsHeuristicFSRFGActive()) {
+                g_FGCompat.SetHeuristicFSRFGActive(false);
+            }
+            if (s_eclFGDetected || s_eclRealFrames != 0 || s_eclInterpFrames != 0) {
+                static std::atomic<int> s_postFSRECLPatternSuppressionLogCount{0};
+                int logCount = s_postFSRECLPatternSuppressionLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: Resetting ECL-pattern FG heuristic during post-FSR non-FG recovery "
+                        "(real=%d interp=%d postSLRecent=%d)",
+                        s_eclRealFrames, s_eclInterpFrames,
+                        postSLLastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0);
+                }
+            }
+            s_eclFGDetected = false;
+            s_eclRealFrames = 0;
+            s_eclInterpFrames = 0;
+        } else {
+            if (isInterpolatedFrame)
+                ++s_eclInterpFrames;
+            else
+                ++s_eclRealFrames;
+            if (!s_eclFGDetected && s_eclInterpFrames >= 10 && s_eclRealFrames >= 5) {
+                if (UpdateHeuristicFSRFGState(true, "ecl-pattern")) {
+                    s_eclFGDetected = true;
+                    HookLogImportant("DX12: FG detected via ECL count pattern (real=%d, interp=%d)", s_eclRealFrames,
+                                     s_eclInterpFrames);
+                }
             }
         }
     }
@@ -10475,16 +10532,6 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     bool hasDedicatedQueue = ShouldUseDedicatedOverlayQueue() && g_State.overlayQueue != nullptr &&
                              g_State.crossQueueFence != nullptr && g_State.crossQueueFenceEvent != nullptr;
     bool heuristicFSRFG = g_FGCompat.IsHeuristicFSRFGActive();
-    bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-    ID3D12CommandQueue* currentSwapchainQueue = nullptr;
-    {
-        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-        currentSwapchainQueue = g_SwapchainQueue;
-    }
-    const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
-        g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(),
-        streamlineFGRunning, currentSwapchainQueue != nullptr);
-    const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
     int authoritativeFSRRealFrameOnlyStreak = 0;
     if (ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(
