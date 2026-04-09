@@ -6,6 +6,7 @@
 #include "../common/ffx_api_parsing.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
+#include "../wrappers/inline_hook.h"
 #include "../wrappers/iat_hook.h"
 
 // ============================================================================
@@ -67,6 +68,45 @@ std::unordered_map<ffxContext, uint32_t> g_ContextTypeMap;
 PfnFfxCreateContext g_Original_ffxCreateContext = nullptr;
 PfnFfxDestroyContext g_Original_ffxDestroyContext = nullptr;
 PfnFfxConfigure g_Original_ffxConfigure = nullptr;
+
+std::atomic<bool> g_ffxCreateContextInlineHooked{false};
+std::atomic<bool> g_ffxDestroyContextInlineHooked{false};
+std::atomic<bool> g_ffxConfigureInlineHooked{false};
+std::atomic<void*> g_ffxCreateContextTarget{nullptr};
+std::atomic<void*> g_ffxDestroyContextTarget{nullptr};
+std::atomic<void*> g_ffxConfigureTarget{nullptr};
+
+template <typename T>
+bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
+                           std::atomic<void*>& targetSlot, const char* hookName) {
+    if (!target) {
+        return false;
+    }
+
+    if (target == detour) {
+        original = nullptr;
+        targetSlot.store(target, std::memory_order_release);
+        installedFlag.store(true, std::memory_order_release);
+        return true;
+    }
+
+    const void* installedTarget = targetSlot.load(std::memory_order_acquire);
+    if (installedFlag.load(std::memory_order_acquire) && installedTarget == target) {
+        return false;
+    }
+
+    void* trampoline = nullptr;
+    if (!InlineHook::Install(target, detour, &trampoline)) {
+        HookLogImportant("FFX Hook: Failed to inline hook %s at %p", hookName, target);
+        return false;
+    }
+
+    original = reinterpret_cast<T>(trampoline);
+    targetSlot.store(target, std::memory_order_release);
+    installedFlag.store(true, std::memory_order_release);
+    HookLogImportant("FFX Hook: Inline hook installed for %s at %p (trampoline=%p)", hookName, target, trampoline);
+    return true;
+}
 
 // Track which module we hooked (for cleanup)
 HMODULE g_HookedModule = nullptr;
@@ -225,6 +265,9 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
 
     void* dummy = nullptr;
     if (createCtx) {
+        InstallInlineHookOnce(reinterpret_cast<void*>(createCtx), reinterpret_cast<void*>(Hooked_ffxCreateContext),
+                              g_Original_ffxCreateContext, g_ffxCreateContextInlineHooked, g_ffxCreateContextTarget,
+                              "ffxCreateContext");
         HookLog("FFX Hook: ffxCreateContext found at %p, hooking via IAT", createCtx);
         // Patch IAT for all modules that import from the FFX DLL
         IATHook::PatchIATAllModules(moduleName, "ffxCreateContext", (void*)Hooked_ffxCreateContext, &dummy);
@@ -234,6 +277,9 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     }
 
     if (destroyCtx) {
+        InstallInlineHookOnce(reinterpret_cast<void*>(destroyCtx), reinterpret_cast<void*>(Hooked_ffxDestroyContext),
+                              g_Original_ffxDestroyContext, g_ffxDestroyContextInlineHooked,
+                              g_ffxDestroyContextTarget, "ffxDestroyContext");
         HookLog("FFX Hook: ffxDestroyContext found at %p, hooking via IAT", destroyCtx);
         IATHook::PatchIATAllModules(moduleName, "ffxDestroyContext", (void*)Hooked_ffxDestroyContext, &dummy);
         IATHook::RegisterDynamicHook("ffxDestroyContext", (void*)Hooked_ffxDestroyContext,
@@ -241,6 +287,9 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     }
 
     if (configureCtx) {
+        InstallInlineHookOnce(reinterpret_cast<void*>(configureCtx), reinterpret_cast<void*>(Hooked_ffxConfigure),
+                              g_Original_ffxConfigure, g_ffxConfigureInlineHooked, g_ffxConfigureTarget,
+                              "ffxConfigure");
         HookLog("FFX Hook: ffxConfigure found at %p, hooking via IAT", configureCtx);
         IATHook::PatchIATAllModules(moduleName, "ffxConfigure", (void*)Hooked_ffxConfigure, &dummy);
         IATHook::RegisterDynamicHook("ffxConfigure", (void*)Hooked_ffxConfigure, (void**)&g_Original_ffxConfigure);

@@ -38,4 +38,9 @@ TEST(FFXApiParsingTest, IgnoresNonFrameGenerationConfigure) {
     EXPECT_EQ(parsed.frameId, 0u);
 }
 
+TEST(FFXApiParsingTest, ConfigureTypeRemainsDistinctFromCreateContextType) {
+    EXPECT_NE(ce::ffx_api::kConfigureDescTypeFrameGeneration,
+              ce::ffx_api::MakeEffectSubId(ce::ffx_api::kEffectIdFrameGeneration, 0x01u));
+}
+
 }  // namespace
