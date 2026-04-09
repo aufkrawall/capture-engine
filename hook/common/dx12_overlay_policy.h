@@ -145,11 +145,18 @@ inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverla
 }
 
 inline bool ShouldReserveInactiveFGOverlaySpace(bool postFSRNonFGRecovery) {
-    // During post-FSR non-FG recovery we may composite the new overlay over a
-    // stale menu backbuffer snapshot while the live non-FG path settles. Keep
-    // the FG rows' background area reserved even after FG turns off so stale
-    // DLSS/FG text from the copied source frame cannot bleed through.
     return postFSRNonFGRecovery;
+}
+
+inline bool ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(bool postFSRNonFGRecovery,
+                                                                           bool recentStreamlineTeardown,
+                                                                           bool postSLRecentTeardownActivity) {
+    // Keep the FG rows' background area reserved only while the recovered non-FG
+    // overlay is still compositing over teardown-era backbuffer content. Once the
+    // immediate teardown traffic settles, continuing to reserve those rows leaves
+    // visible empty gaps after FSR->DLSS->off even though the live overlay text is
+    // already correct.
+    return postFSRNonFGRecovery && (recentStreamlineTeardown || postSLRecentTeardownActivity);
 }
 
 inline bool ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(bool endingPostFSRNonFGRecovery) {

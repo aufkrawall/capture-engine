@@ -2435,6 +2435,24 @@ void DX12_SignalFSR4SwapchainRecreated() {
 // freeze watchdog can detect the stuck state and create a diagnostic dump.
 static std::atomic<bool> g_DeviceRemoved{false};
 
+static bool ShouldReserveInactiveFGOverlaySpaceNow() {
+    const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    ID3D12CommandQueue* currentSwapchainQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        currentSwapchainQueue = g_SwapchainQueue;
+    }
+
+    const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
+        g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(), streamlineFGRunning,
+        currentSwapchainQueue != nullptr);
+    const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+    const bool postSLRecentTeardownActivity =
+        GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+    return ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(
+        postFSRNonFGRecovery, recentStreamlineTeardown, postSLRecentTeardownActivity);
+}
+
 static ID3D12CommandQueue* GetFrameClassificationQueue() {
     ID3D12CommandQueue* primaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
     ID3D12CommandQueue* originalQueue = g_OriginalGameQueue;
@@ -4141,8 +4159,7 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
     // RenderOverlay() guards on ipc being non-null, so if this was only set
     // on real frames, overlay would never render when isRealFrame is false.
     g_OverlayAdapter.SetIPCClient(g_IPC);
-    g_OverlayAdapter.SetReserveInactiveFGSpace(
-        ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpace(g_NeedOffscreenOverlayAfterPostFSRNonFG));
+    g_OverlayAdapter.SetReserveInactiveFGSpace(ShouldReserveInactiveFGOverlaySpaceNow());
     const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
     if (metricsBinding.bindMetrics) {
         g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
@@ -6493,8 +6510,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         // the first frame after an FG-driven reinit is classified as interpolated.
         bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
         g_D3D11On12Adapter.SetIPCClient(g_IPC);
-        g_D3D11On12Adapter.SetReserveInactiveFGSpace(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpace(
-            g_NeedOffscreenOverlayAfterPostFSRNonFG));
+        g_D3D11On12Adapter.SetReserveInactiveFGSpace(ShouldReserveInactiveFGOverlaySpaceNow());
         const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
         if (metricsBinding.bindMetrics) {
             g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
@@ -9752,8 +9768,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         if (g_DescFreeBackend && g_D3D11On12Adapter.IsInitialized()) {
                                             bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
                                             g_D3D11On12Adapter.SetReserveInactiveFGSpace(
-                                                ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpace(
-                                                    g_NeedOffscreenOverlayAfterPostFSRNonFG));
+                                                ShouldReserveInactiveFGOverlaySpaceNow());
 
                                             // After FSR→DLSS: ANY direct backbuffer access (barriers,
                                             // RT, ClearRTV) causes DEVICE_HUNG because SL's FG pipeline
