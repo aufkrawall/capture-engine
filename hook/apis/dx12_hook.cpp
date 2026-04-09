@@ -1168,6 +1168,7 @@ static void MarkPostSLRecentTeardownActivity(const char* reason, ID3D12CommandQu
 static void InvalidateAllOverlayCachedFrames() {
     g_OverlayAdapter.InvalidateCachedFrame();
     g_D3D11On12Adapter.InvalidateCachedFrame();
+    g_SLFGAdapter.InvalidateCachedFrame();
 }
 
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper,
@@ -4117,6 +4118,8 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
     // RenderOverlay() guards on ipc being non-null, so if this was only set
     // on real frames, overlay would never render when isRealFrame is false.
     g_OverlayAdapter.SetIPCClient(g_IPC);
+    g_OverlayAdapter.SetReserveInactiveFGSpace(
+        ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpace(g_NeedOffscreenOverlayAfterPostFSRNonFG));
     const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
     if (metricsBinding.bindMetrics) {
         g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
@@ -4401,6 +4404,7 @@ static bool RenderOverlayViaD3D11On12(int bufferIdx, bool isRealFrame) {
 
     // Feed data to the SL FG overlay adapter
     g_SLFGAdapter.SetIPCClient(g_IPC);
+    g_SLFGAdapter.SetReserveInactiveFGSpace(false);
     const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
     if (metricsBinding.bindMetrics) {
         g_SLFGAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
@@ -6465,6 +6469,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         // the first frame after an FG-driven reinit is classified as interpolated.
         bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
         g_D3D11On12Adapter.SetIPCClient(g_IPC);
+        g_D3D11On12Adapter.SetReserveInactiveFGSpace(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpace(
+            g_NeedOffscreenOverlayAfterPostFSRNonFG));
         const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
         if (metricsBinding.bindMetrics) {
             g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());

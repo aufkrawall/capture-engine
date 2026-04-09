@@ -164,6 +164,15 @@ void OverlayAdapter::SetGraphicsAPI(const char* api) {
     layoutDirty = true;
 }
 
+void OverlayAdapter::SetReserveInactiveFGSpace(bool reserve) {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (reserveInactiveFGSpace != reserve) {
+        reserveInactiveFGSpace = reserve;
+        layoutDirty = true;
+        hasCachedFrame = false;
+    }
+}
+
 void OverlayAdapter::InvalidateCachedFrame() {
     std::lock_guard<std::mutex> lock(stateMutex);
     hasCachedFrame = false;
@@ -235,6 +244,8 @@ void OverlayAdapter::ResetStateLocked() {
     lastViewportHeight = 0;
     lastUpdateTime = 0;
     lastFGActive = false;
+    reserveInactiveFGSpace = false;
+    lastReserveInactiveFGSpace = false;
     lastRecordingActive = false;
     lastShowOverloadWarning = false;
     lastRecordingSeconds = 0;
@@ -509,7 +520,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     bool shouldRefreshGraph = showGraph;
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
-    bool dynamicStateChanged = (fgVisible != lastFGActive) || (isRecording != lastRecordingActive) ||
+    bool dynamicStateChanged = (fgVisible != lastFGActive) ||
+                               (reserveInactiveFGSpace != lastReserveInactiveFGSpace) ||
+                               (isRecording != lastRecordingActive) ||
                                (recordingSeconds != lastRecordingSeconds) ||
                                (showOverloadWarning != lastShowOverloadWarning);
     bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
@@ -575,6 +588,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     lastViewportWidth = viewportWidth;
     lastViewportHeight = viewportHeight;
     lastFGActive = fgVisible;
+    lastReserveInactiveFGSpace = reserveInactiveFGSpace;
     lastRecordingActive = isRecording;
     lastRecordingSeconds = recordingSeconds;
     lastShowOverloadWarning = showOverloadWarning;
@@ -607,6 +621,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // Check dynamic states used by both sizing and rendering
     bool fgActive = metrics && metrics->IsFGActive();
     bool showFGDetails = cfg.showFG && fgActive;
+    const bool reserveFGDetailsSpace = cfg.showFG && reserveInactiveFGSpace;
     bool isRecording = mem.runtimeState.isRecording.load(std::memory_order_acquire);
 
     // Adaptive overlay width: measure visible labels/values and size to content.
@@ -684,7 +699,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(apiLabel));
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
 
-            if (showFGDetails) {
+            if ((showFGDetails || reserveFGDetailsSpace) && metrics) {
                 float baseFPS = metrics->GetFGBaseFPS();
                 float outputFPS = metrics->GetFGOutputFPS();
                 int fgMult = metrics->GetFGMultiplier();
@@ -708,9 +723,13 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
             }
         }
-        if (showFGDetails) {
+        if ((showFGDetails || reserveFGDetailsSpace) && metrics) {
             int multiplier = metrics->GetFGMultiplier();
             const char* fgLabel = metrics->GetFGTypeLabel();
+            if (reserveFGDetailsSpace && !showFGDetails) {
+                fgLabel = "DLSS FG";
+                multiplier = 4;
+            }
             snprintf(measureBuf, sizeof(measureBuf), "%s %dx", fgLabel, multiplier);
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(fgLabel));
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
@@ -760,10 +779,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if (cachedAvgFPS > 0)
             requiredHeight += lineHeight;
         // Base/Display line when FG is active
-        if (showFGDetails)
+        if (showFGDetails || reserveFGDetailsSpace)
             requiredHeight += lineHeight;
     }
-    if (showFGDetails)
+    if (showFGDetails || reserveFGDetailsSpace)
         requiredHeight += lineHeight;
     if (cfg.showRecording && isRecording)
         requiredHeight += lineHeight;
@@ -827,10 +846,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         graphCursorY += lineHeight;
         if (cachedAvgFPS > 0 && cached1PercentLow > 0)
             graphCursorY += lineHeight;
-        if (showFGDetails)
+        if (showFGDetails || reserveFGDetailsSpace)
             graphCursorY += lineHeight;
     }
-    if (showFGDetails)
+    if (showFGDetails || reserveFGDetailsSpace)
         graphCursorY += lineHeight;
     if (cfg.showRecording && isRecording)
         graphCursorY += lineHeight;
@@ -1069,6 +1088,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             renderer->DrawTextWithShadow(labelCol, cursorY, "Base/Display", Colors::LabelYellow, shadowColor);
             renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::ValueYellow, shadowColor);
             cursorY += lineHeight;
+        } else if (reserveFGDetailsSpace) {
+            cursorY += lineHeight;
         }
 
         // Avg/1%/0.1%
@@ -1087,6 +1108,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         snprintf(buf, 64, "%s %dx", fgLabel, multiplier);
         renderer->DrawTextWithShadow(labelCol, cursorY, fgLabel, Colors::LabelCyan, shadowColor);
         renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::LabelCyan, shadowColor);
+        cursorY += lineHeight;
+    } else if (reserveFGDetailsSpace) {
         cursorY += lineHeight;
     }
 

@@ -77,6 +77,7 @@ public:
         this->hwnd = hwnd;
     }
     void SetGraphicsAPI(const char* api);
+    void SetReserveInactiveFGSpace(bool reserve);
     void InvalidateCachedFrame();
     void SetDroppedFrames(uint32_t count) {
         std::lock_guard<std::mutex> lock(stateMutex);
@@ -147,6 +148,8 @@ private:
     bool hasCachedFrame = false;
     bool hasRenderedConfig = false;
     bool lastFGActive = false;
+    bool reserveInactiveFGSpace = false;
+    bool lastReserveInactiveFGSpace = false;
     bool lastRecordingActive = false;
     bool lastShowOverloadWarning = false;
     uint64_t lastRecordingSeconds = 0;

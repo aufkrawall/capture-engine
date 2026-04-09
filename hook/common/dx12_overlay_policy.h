@@ -124,6 +124,14 @@ inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverla
            !hasSwapchainQueue;
 }
 
+inline bool ShouldReserveInactiveFGOverlaySpace(bool postFSRNonFGRecovery) {
+    // During post-FSR non-FG recovery we may composite the new overlay over a
+    // stale menu backbuffer snapshot while the live non-FG path settles. Keep
+    // the FG rows' background area reserved even after FG turns off so stale
+    // DLSS/FG text from the copied source frame cannot bleed through.
+    return postFSRNonFGRecovery;
+}
+
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,
