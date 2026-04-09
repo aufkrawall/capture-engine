@@ -1033,6 +1033,7 @@ static void CleanupDeferredPostSLQueuesIfSafe(const char* reason);
 static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
 static std::atomic<ID3D12CommandQueue*> g_DeferredCommandQueueRelease{nullptr};
 static std::atomic<ID3D12CommandQueue*> g_DeferredPostSLLockedQueueRelease{nullptr};
+static std::atomic<ULONGLONG> g_PostSLRecentTeardownActivityUntilMs{0};
 static void WaitForOverlayGpuIdle(const char* reason);
 
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper,
@@ -1141,6 +1142,22 @@ static void CleanupDeferredPostSLQueuesIfSafe(const char* reason) {
     }
 
     RealignInactiveCommandQueueToSwapchainQueue(reason);
+}
+
+static void MarkPostSLRecentTeardownActivity(const char* reason, ID3D12CommandQueue* queue) {
+    if (!queue) {
+        return;
+    }
+
+    constexpr ULONGLONG kPostSLRecentTeardownActivityMs = 250;
+    g_PostSLRecentTeardownActivityUntilMs.store(GetTickCount64() + kPostSLRecentTeardownActivityMs,
+                                                std::memory_order_release);
+    static std::atomic<int> s_postSLRecentTeardownLogCount{0};
+    const int logCount = s_postSLRecentTeardownLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 10 || (logCount % 128) == 0) {
+        HookLogImportant("%s - marking PostSL queue %p as recently active during Streamline teardown (%llums)", reason,
+                         queue, (unsigned long long)kPostSLRecentTeardownActivityMs);
+    }
 }
 
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper,
@@ -2502,6 +2519,9 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
     if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
             recentStreamlineTeardown, pQueue == primaryQ, pQueue == g_OriginalGameQueue,
             pQueue == currentSwapchainQueue)) {
+        if (g_PostSLLastWorkingQueue && pQueue == g_PostSLLastWorkingQueue) {
+            MarkPostSLRecentTeardownActivity("DX12: SetCommandQueue recent PostSL teardown activity", pQueue);
+        }
         static std::atomic<int> s_recentSLTeardownSetQueueIgnoreLogCount{0};
         int logCount = s_recentSLTeardownSetQueueIgnoreLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 256) == 0) {
@@ -3897,10 +3917,13 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         bool fsrFGNow = IsFSRFrameGenerationActive();
         ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+        const bool lastWorkingQueueStillActiveDuringRecentTeardown =
+            g_PostSLLastWorkingQueue != nullptr &&
+            GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
         const bool preferOriginalOverLastWorking =
             ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
                 currentCommandQueue != nullptr, currentCommandQueue == g_OriginalGameQueue,
-                currentCommandQueue == currentPrimaryQueue);
+                currentCommandQueue == currentPrimaryQueue, lastWorkingQueueStillActiveDuringRecentTeardown);
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
@@ -7297,10 +7320,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         bool fsrFGNow = IsFSRFrameGenerationActive();
         ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+        const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+        const bool lastWorkingQueueStillActiveDuringRecentTeardown =
+            g_PostSLLastWorkingQueue != nullptr &&
+            GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
         const bool preferOriginalOverLastWorking =
             ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
                 currentCommandQueue != nullptr, currentCommandQueue == g_OriginalGameQueue,
-                currentCommandQueue == currentPrimaryQueue);
+                currentCommandQueue == currentPrimaryQueue, lastWorkingQueueStillActiveDuringRecentTeardown);
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
@@ -7711,6 +7738,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             bool actualFGActive = IsActualFrameGenerationActive();
             bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
             const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+            const bool lastWorkingQueueStillActiveDuringRecentTeardown =
+                g_PostSLLastWorkingQueue != nullptr &&
+                GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
             int slOffSwapchainGrace = g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
             if (ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
                     actualFGActive, streamlineFGRunning, g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr,
@@ -7724,6 +7754,22 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         "(slOffGrace=%d scQ=%p cmdQ=%p fgOwned=%d)",
                         slOffSwapchainGrace, currentSwapchainQueue, currentCommandQueue,
                         g_FGRuntimeOwnsSwapchain ? 1 : 0);
+                }
+                goto skipOverlayInit;
+            }
+
+            if (ce::dx12_overlay_policy::ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
+                    recentStreamlineTeardown, g_PostSLLastWorkingQueue != nullptr,
+                    lastWorkingQueueStillActiveDuringRecentTeardown) &&
+                !actualFGActive && !streamlineFGRunning && g_HadFSRFGPhase && currentSwapchainQueue == nullptr) {
+                static std::atomic<int> s_postFSRRecentTeardownDeferLogCount{0};
+                int logCount = s_postFSRRecentTeardownDeferLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 128) == 0) {
+                    HookLogImportant(
+                        "DX12: Deferring post-FSR non-FG overlay init because lastWorking queue %p is still seeing "
+                        "recent Streamline teardown activity (cmdQ=%p origQ=%p primaryQ=%p)",
+                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue,
+                        g_PrimaryGameQueue.load(std::memory_order_acquire));
                 }
                 goto skipOverlayInit;
             }
@@ -10537,6 +10583,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
         if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
                 recentStreamlineTeardown, pThis == primaryQ, pThis == g_OriginalGameQueue, pThis == g_SwapchainQueue)) {
+            if (g_PostSLLastWorkingQueue && pThis == g_PostSLLastWorkingQueue) {
+                MarkPostSLRecentTeardownActivity("DX12: ECL recent PostSL teardown activity", pThis);
+            }
             static std::atomic<int> s_recentSLTeardownQueueIgnoreLogCount{0};
             int logCount = s_recentSLTeardownQueueIgnoreLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 256) == 0) {

@@ -89,12 +89,27 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
 }
 
 inline bool ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
-    bool hasCommandQueue, bool commandQueueMatchesOriginalGameQueue, bool commandQueueMatchesPrimaryGameQueue) {
+    bool hasCommandQueue, bool commandQueueMatchesOriginalGameQueue, bool commandQueueMatchesPrimaryGameQueue,
+    bool lastWorkingQueueStillActiveDuringRecentTeardown) {
     // Preserve the last validated PostSL queue only while non-FG command
     // ownership is still unsettled. Once command tracking has returned to the
     // game's own original or primary queue, reusing the old PostSL queue can
     // hit a departed runtime queue after teardown.
+    //
+    // However, if that preserved PostSL queue is still seeing immediate
+    // Streamline teardown traffic, switching to origGame too early can collide
+    // with the runtime's final FG-off work on the same swapchain.
+    if (lastWorkingQueueStillActiveDuringRecentTeardown) {
+        return false;
+    }
+
     return hasCommandQueue && (commandQueueMatchesOriginalGameQueue || commandQueueMatchesPrimaryGameQueue);
+}
+
+inline bool ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
+    bool recentStreamlineTeardown, bool hasPostSLLastWorkingQueue,
+    bool lastWorkingQueueStillActiveDuringRecentTeardown) {
+    return recentStreamlineTeardown && hasPostSLLastWorkingQueue && lastWorkingQueueStillActiveDuringRecentTeardown;
 }
 
 struct OverlayMetricsBindingDecision {
@@ -207,8 +222,8 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
 inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
     bool actualFGActive, bool streamlineFGRunning, bool recentStreamlineTeardown, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue, bool hasCommandQueue,
-    bool commandQueueMatchesSwapchainQueue,
-    bool commandQueueMatchesOriginalGameQueue, bool commandQueueMatchesPrimaryGameQueue) {
+    bool commandQueueMatchesSwapchainQueue, bool commandQueueMatchesOriginalGameQueue,
+    bool commandQueueMatchesPrimaryGameQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
@@ -245,9 +260,10 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
     return !hasCommandQueue || (!commandQueueMatchesSwapchainQueue && !commandQueueMatchesOriginalGameQueue);
 }
 
-inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-    bool recentStreamlineTeardown, bool queueMatchesPrimaryQueue, bool queueMatchesOriginalGameQueue,
-    bool queueMatchesSwapchainQueue) {
+inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(bool recentStreamlineTeardown,
+                                                                              bool queueMatchesPrimaryQueue,
+                                                                              bool queueMatchesOriginalGameQueue,
+                                                                              bool queueMatchesSwapchainQueue) {
     if (!recentStreamlineTeardown) {
         return false;
     }
@@ -289,7 +305,7 @@ inline bool ShouldRealignInactiveCommandQueueToSwapchainQueue(bool actualFGActiv
     return !commandQueueMatchesSwapchainQueue && !commandQueueMatchesOriginalGameQueue;
 }
 inline bool ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(bool hadFSRFGPhase, bool overlayInit,
-                                                                          bool syncInit) {
+                                                                         bool syncInit) {
     // The direct Streamline teardown path can invalidate overlay state before
     // ProcessFrame reaches its own SL transition tracking block. In that case,
     // ProcessFrame misses the OFF edge and would otherwise rebuild immediately
@@ -314,8 +330,7 @@ inline bool ShouldRememberPostSLLastWorkingQueue(bool queueIsSLWrapper) {
     return !queueIsSLWrapper;
 }
 
-inline bool ShouldTreatPostSLSelectedQueueAsWrapper(bool queueMatchesOriginalGameQueue,
-                                                    bool queueMatchesDedicatedQueue,
+inline bool ShouldTreatPostSLSelectedQueueAsWrapper(bool queueMatchesOriginalGameQueue, bool queueMatchesDedicatedQueue,
                                                     bool queueMatchesSwapchainQueue,
                                                     bool selectedQueueOrigECLMatchesRealECL) {
     if (queueMatchesOriginalGameQueue || queueMatchesDedicatedQueue || queueMatchesSwapchainQueue) {
