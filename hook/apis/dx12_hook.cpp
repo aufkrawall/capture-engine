@@ -3078,16 +3078,28 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
             auto* oldRealECL = (void*)g_RealD3D12ECL.load(std::memory_order_acquire);
-            g_RealD3D12ECL.store(nullptr, std::memory_order_release);
+            const ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+            const ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+            const bool commandQueueSettledToPrimary =
+                currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue;
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — deferring non-FG overlay reinit for %d frames so "
                 "Talos/Streamline teardown can settle before pre-SL resources are rebuilt",
                 g_FGTransitionCooldown);
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — invalidated sync resources for delayed reinit");
-            HookLogImportant(
-                "DX12: Streamline FG OFF after FSR history — cleared realECL %p for delayed non-FG recovery",
-                oldRealECL);
+            if (ce::dx12_overlay_policy::ShouldPreserveRealECLForDelayedPostFSRNonFGRecovery(
+                    commandQueueSettledToPrimary, g_HadFSRFGPhase)) {
+                HookLogImportant(
+                    "DX12: Streamline FG OFF after FSR history — preserving realECL %p for delayed non-FG "
+                    "recovery because cmdQ=%p already settled to primary",
+                    oldRealECL, currentCommandQueue);
+            } else {
+                g_RealD3D12ECL.store(nullptr, std::memory_order_release);
+                HookLogImportant(
+                    "DX12: Streamline FG OFF after FSR history — cleared realECL %p for delayed non-FG recovery",
+                    oldRealECL);
+            }
             g_NeedOffscreenOverlayAfterPostFSRNonFG = true;
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — enabled offscreen overlay compositing for non-FG "

@@ -444,6 +444,11 @@ inline bool ShouldRefreshRecentPostSLTeardownActivity(bool recentStreamlineTeard
     return recentStreamlineTeardown && queueMatchesPostSLLastWorking && (streamlineFGRunning || postSLActive);
 }
 
+inline bool ShouldPreserveRealECLForDelayedPostFSRNonFGRecovery(bool commandQueueSettledToPrimary,
+                                                                bool hadFSRFGPhase) {
+    return commandQueueSettledToPrimary && hadFSRFGPhase;
+}
+
 inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
                                                               bool hasRealD3D12ECL, bool hasSLWrapperQueue) {
     if (!hadFSRFGPhase) {
