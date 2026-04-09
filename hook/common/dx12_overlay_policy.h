@@ -434,6 +434,11 @@ inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(bool streamlin
     return !streamlineFGActive && !hasSLWrapperQueue && !hasRealQueueBehindWrapper && !hasRealD3D12ECL;
 }
 
+inline bool ShouldRefreshRecentPostSLTeardownActivity(bool recentStreamlineTeardown, bool queueMatchesPostSLLastWorking,
+                                                      bool streamlineFGRunning, bool postSLActive) {
+    return recentStreamlineTeardown && queueMatchesPostSLLastWorking && (streamlineFGRunning || postSLActive);
+}
+
 inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
                                                               bool hasRealD3D12ECL, bool hasSLWrapperQueue) {
     if (!hadFSRFGPhase) {

@@ -703,6 +703,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     const int configuredFactor = NormalizeDLSSFGFactor(GetActiveGraphicsConfig().parsed.dlssFGFactor);
     const uint32_t originalGeneratedFrames = options.numFramesToGenerate;
     const bool requestedEnabled = ce::streamline_runtime_policy::IsDLSSGModeEnabled(options.mode);
+    const bool requestedDisabled = !requestedEnabled;
 
     uint32_t capabilityMax = GetCachedCapabilityMax(viewportKey);
     bool overrideApplied = false;
@@ -776,6 +777,16 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                 HookLogImportant(
                     "Streamline Hook: Cleared persistent GetState-only DLSS FG suppression due to explicit "
                     "slDLSSGSetOptions enable request (viewport=%u)",
+                    viewportKey);
+            }
+        } else if (requestedDisabled) {
+            g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
+            const bool wasBlockingGetStateOnlyReactivation =
+                g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.exchange(true, std::memory_order_acq_rel);
+            if (!wasBlockingGetStateOnlyReactivation) {
+                HookLogImportant(
+                    "Streamline Hook: Re-armed persistent GetState-only DLSS FG suppression due to explicit "
+                    "slDLSSGSetOptions disable request (viewport=%u)",
                     viewportKey);
             }
         }

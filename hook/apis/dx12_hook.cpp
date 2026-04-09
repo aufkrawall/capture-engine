@@ -10719,7 +10719,11 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
         if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
                 recentStreamlineTeardown, pThis == primaryQ, pThis == g_OriginalGameQueue, pThis == g_SwapchainQueue)) {
-            if (g_PostSLLastWorkingQueue && pThis == g_PostSLLastWorkingQueue) {
+            const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
+            const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+            if (ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(
+                    recentStreamlineTeardown, g_PostSLLastWorkingQueue && pThis == g_PostSLLastWorkingQueue,
+                    streamlineFGRunning, postSLActive)) {
                 MarkPostSLRecentTeardownActivity("DX12: ECL recent PostSL teardown activity", pThis);
             }
             static std::atomic<int> s_recentSLTeardownQueueIgnoreLogCount{0};
