@@ -163,6 +163,22 @@ inline bool ShouldSuppressLikelyDuplicateTopLevelPresent(bool runtimeOwnsSwapcha
     return true;
 }
 
+inline bool ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,
+                                                             bool authoritativeFSRActive, bool isInterpolatedFrame,
+                                                             int consecutiveRealFrames,
+                                                             bool recentStreamlineTeardown) {
+    if (streamlineFGRunning || !runtimeOwnsSwapchain || !authoritativeFSRActive || isInterpolatedFrame ||
+        recentStreamlineTeardown) {
+        return false;
+    }
+
+    // Native FSR can leave a runtime-owned swapchain alive after FG is turned
+    // off. If we keep seeing only real frames for an extended run, the
+    // authoritative "FSR FG active" latch is stale and should fall back to the
+    // generic runtime-owned non-FG path.
+    return consecutiveRealFrames >= 120;
+}
+
 inline bool ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
     bool recoveringPostFSRNonFG, bool actualFGActive, bool streamlineFGRunning, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPrimaryGameQueue, bool originalQueueMatchesPrimaryQueue) {

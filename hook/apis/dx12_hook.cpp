@@ -910,6 +910,7 @@ static DX12Context GetDX12Context() {
 static std::atomic<uint64_t> g_FrameIndex{0};
 static std::atomic<int> g_CommandListsExecutedThisFrame{0};
 static std::atomic<uint64_t> g_FGDebugFrameCount{0};
+static std::atomic<int> g_AuthoritativeFSRRealFrameOnlyStreak{0};
 
 // Primary game queue — set once from the first ECL call (always the game's queue,
 // since the game creates its queue before any FG runtime).  Used to filter ECL
@@ -10272,6 +10273,25 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     bool heuristicFSRFG = g_FGCompat.IsHeuristicFSRFGActive();
     bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+    const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
+    const bool shouldClearStaleAuthoritativeFSR = ce::dx12_overlay_policy::ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(
+        streamlineFGRunning, g_FGRuntimeOwnsSwapchain, authoritativeFSRActive, isInterpolatedFrame,
+        g_FGCompat.GetConsecutiveRealFrames(), recentStreamlineTeardown);
+    if (shouldClearStaleAuthoritativeFSR) {
+        const int streak = g_AuthoritativeFSRRealFrameOnlyStreak.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (streak == 1 || streak == 120 || (streak % 600) == 0) {
+            HookLogImportant(
+                "DX12: Clearing stale authoritative FSR FG after %d consecutive real frames on runtime-owned "
+                "swapchain (origGame=%p scQueue=%p slFG=%d recentSLTeardown=%d)",
+                g_FGCompat.GetConsecutiveRealFrames(), g_OriginalGameQueue, g_SwapchainQueue,
+                streamlineFGRunning ? 1 : 0, recentStreamlineTeardown ? 1 : 0);
+        }
+        g_FGCompat.SetFSRFGActive(false);
+        g_FGCompat.SetFSRFGMultiplier(0);
+    } else {
+        g_AuthoritativeFSRRealFrameOnlyStreak.store(0, std::memory_order_release);
+    }
+
     if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
             isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning,
             recentStreamlineTeardown)) {
