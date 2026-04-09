@@ -101,6 +101,16 @@ TEST(StreamlineRuntimePolicyTest, GetStateSuppressionDoesNotDisableAlreadyActive
     EXPECT_EQ(1u, update.generatedFrames);
 }
 
+TEST(StreamlineRuntimePolicyTest, EvaluateGetStateSuppressionBlocksFreshActivationEvenWithFenceEvidence) {
+    const auto evaluation =
+        ce::streamline_runtime_policy::EvaluateViewportRuntimeUpdateFromGetState(true, true, false, true, true, 1, 1,
+                                                                                 3);
+
+    EXPECT_FALSE(evaluation.update.shouldUpdate);
+    EXPECT_FALSE(evaluation.update.active);
+    EXPECT_TRUE(evaluation.suppressedFreshActivation);
+}
+
 TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOnlyRunsForFsrOwnedHandoff) {
     EXPECT_TRUE(
         ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, false, true));

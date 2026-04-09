@@ -325,7 +325,7 @@ bool WasViewportRuntimeStateActive(uint32_t viewportKey) {
     return it != g_ViewportStates.end() && it->second.active;
 }
 
-bool ShouldSuppressNewGetStateActivationAfterAuthoritativeFFXTakeover() {
+bool ShouldSuppressNewGetStateActivation() {
     if (g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire)) {
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
         return runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG ||
@@ -653,35 +653,35 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     const uint32_t viewportKey = GetViewportKey(viewport);
     const bool viewportWasActive = WasViewportRuntimeStateActive(viewportKey);
     const bool hasRuntimeFenceEvidence = HasDLSSGRuntimeFenceEvidence(state);
-    const bool suppressNewActivation = ShouldSuppressNewGetStateActivationAfterAuthoritativeFFXTakeover();
-    const bool suppressGetStateActivationWithoutFenceEvidence = suppressNewActivation && !hasRuntimeFenceEvidence;
+    const bool suppressNewActivation = ShouldSuppressNewGetStateActivation();
     if (result == kSlResultOk && state.numFramesToGenerateMax > 0) {
         CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
     }
 
     const uint32_t capabilityMax =
         state.numFramesToGenerateMax > 0 ? state.numFramesToGenerateMax : GetCachedCapabilityMax(viewportKey);
-    const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
-        result == kSlResultOk, options != nullptr, viewportWasActive, hasRuntimeFenceEvidence,
-        suppressGetStateActivationWithoutFenceEvidence, options ? options->mode : 0,
-        options ? options->numFramesToGenerate : 0u, capabilityMax);
-    if (runtimeUpdate.shouldUpdate) {
-        UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
-                                   runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "GetState");
+    const auto runtimeEvaluation = ce::streamline_runtime_policy::EvaluateViewportRuntimeUpdateFromGetState(
+        result == kSlResultOk, options != nullptr, viewportWasActive, hasRuntimeFenceEvidence, suppressNewActivation,
+        options ? options->mode : 0, options ? options->numFramesToGenerate : 0u, capabilityMax);
+    if (runtimeEvaluation.update.shouldUpdate) {
+        UpdateViewportRuntimeState(viewportKey, runtimeEvaluation.update.active, runtimeEvaluation.update.multiplier,
+                                   runtimeEvaluation.update.generatedFrames,
+                                   runtimeEvaluation.update.capabilityMax, "GetState");
     } else if (result == kSlResultOk && options != nullptr &&
-               ce::streamline_runtime_policy::IsDLSSGModeEnabled(options->mode) && !viewportWasActive &&
-               suppressGetStateActivationWithoutFenceEvidence) {
+               runtimeEvaluation.suppressedFreshActivation) {
         static std::atomic<int> s_recentFfxTakeoverSuppressedGetStateLogCount{0};
         const int logCount = s_recentFfxTakeoverSuppressedGetStateLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 128) == 0) {
             const ULONGLONG suppressUntilMs = g_SuppressNewGetStateActivationUntilMs.load(std::memory_order_acquire);
             const ULONGLONG nowMs = GetTickCount64();
             const ULONGLONG remainingMs = suppressUntilMs > nowMs ? (suppressUntilMs - nowMs) : 0;
+            const bool persistentBlock =
+                g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire);
             HookLogImportant(
-                "Streamline Hook: Suppressing GetState FG reactivation during recent authoritative FFX takeover "
-                "(viewport=%u mode=%u generated=%u fence=%p fenceValue=%llu remaining=%llums)",
+                "Streamline Hook: Suppressing fresh GetState DLSS FG reactivation "
+                "(viewport=%u mode=%u generated=%u fence=%p fenceValue=%llu persistentBlock=%d remaining=%llums)",
                 viewportKey, options->mode, options->numFramesToGenerate, state.inputsProcessingCompletionFence,
-                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
+                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue, persistentBlock ? 1 : 0,
                 (unsigned long long)remainingMs);
         }
     }

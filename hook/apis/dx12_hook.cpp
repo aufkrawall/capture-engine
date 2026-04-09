@@ -4061,6 +4061,7 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
             g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
+            lastWorkingQueueStillActiveDuringRecentTeardown,
             currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue);
 
         if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
@@ -7527,6 +7528,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
             g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
+            lastWorkingQueueStillActiveDuringRecentTeardown,
             currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue);
 
         if (routingDecision ==

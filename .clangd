@@ -1,52 +1,13 @@
-# Clangd configuration for CaptureEngine
-# 
-# This project builds both x64 and x86 targets.
-# compile_commands.json contains x64 entries (preferred for LSP).
-# 
-# SETUP:
-# - Windows: clangd from MSYS2 clang64 environment:
-#   pacman -S mingw-w64-clang-x86_64-clang-tools-extra
+# Clangd configuration for CaptureEngine.
 #
-# NOTE: The Compiler, resource-dir and isystem paths below point into the
-# MSYS2 clang64 toolchain that build.py installs under build/msys64.
-# They use a path relative to the project root so they work on any machine.
-# If clangd cannot resolve the relative path, set the MSYS2_ROOT environment
-# variable or replace the paths with absolute paths for your machine.
+# Keep this intentionally minimal. The build already generates authoritative
+# compile commands with the exact compiler path and per-file flags. Extra
+# stdlib/resource/include overrides here caused clangd to mix MSYS2 MinGW and
+# MSVC headers, which produced persistent false diagnostics such as missing
+# `uintptr_t` in `<vcruntime.h>`.
 
-# clangd automatically looks for compile_commands.json in parent directories
-
-# Use the MinGW toolchain explicitly (not MSVC)
-# This prevents clangd from falling back to MSVC headers
-Clangd:
-  Tidy: true
-
-# Query the compiler driver for correct implicit include paths
-# This ensures clangd uses the same libc++ headers and clang resource dir as the build
 CompileFlags:
-  Compiler: build/msys64/clang64/bin/clang++.exe
-  Add:
-    # Skip ODR checks in global module fragments (clang 21 libc++ workaround)
-    - "-fskip-odr-check-in-gmf"
-    # Ensure correct clang resource dir for builtins (mmintrin.h etc.)
-    - "-resource-dir=build/msys64/clang64/lib/clang/21"
-    # Prevent MSVC STL from being picked up; force MinGW libc++
-    - "-nostdinc++"
-    - "-stdlib=libc++"
-    # Add MinGW include paths for Windows headers (system includes)
-    - "build/msys64/clang64/include/c++/v1"
-    - "build/msys64/clang64/include"
-    - "-isystembuild/msys64/clang64/lib/clang/21/include"
-    - "-isystembuild/msys64/clang64/x86_64-w64-mingw32/include"
-    # Vulkan headers via MSYS2
-    - "build/msys64/clang64/include"
-    # Suppress warnings
-    - "-Wno-gnu-zero-variadic-macro-arguments"
-    - "-Wno-microsoft-exception-spec"
-    - "-Wno-language-extension-token"
-    # Prevent windows.h max/min macros from conflicting with std::max/min
-    - "-DNOMINMAX"
   Remove:
-    # Flags clangd doesn't understand or that cause spurious errors
     - "-march=*"
     - "-mtune=*"
     - "-flto*"
@@ -58,54 +19,12 @@ CompileFlags:
     - "-s"
     - "-MMD"
     - "-MF"
-    - "-Wno-microsoft-exception-spec"
     - "-D_FORTIFY_SOURCE=*"
-
-# Additional compile flags for test files (not in compile_commands.json)
-If:
-  PathMatch:
-    - tests/.*
-    - ".*test_.*\\.cpp$"
-  CompileFlags:
-    Compiler: build/msys64/clang64/bin/clang++.exe
-    Add:
-      - "-nostdinc++"
-      - "-stdlib=libc++"
-      - "-std=c++20"
-      - "-Icommon"
-      - "-Ihook/common"
-      - "-Itests"
-      - "build/msys64/clang64/include"
-      - "build/msys64/clang64/include/c++/v1"
-      - "build/msys64/clang64/include"
-      - "-isystembuild/msys64/clang64/lib/clang/21/include"
-      - "-isystembuild/msys64/clang64/x86_64-w64-mingw32/include"
-      - "-DNOMINMAX"
 
 Diagnostics:
   Suppress:
     - "unused-parameter"
-    - "gnu-zero-variadic-macro-arguments"
-    - "microsoft-exception-spec"
-    # False positives from clangd parsing D3D12 COM interface macros
     - "typecheck-invalid-constexpr"
-    # False positives from missing Vulkan headers in LSP (build uses MSYS2 paths)
-    - "pp_file_not_found"
-    # Win32 API type conversion warnings (harmless in hook code)
-    - "microsoft-cast"
-    - "language-extension-token"
-    # MSVC STL attribute warnings when using MinGW headers
-    - "ignored-attributes"
-    - "dll-attribute-on-redeclaration"
-    # Missing type info from MSVC/MinGW mismatch
-    - "unknown-attributes"
-  ClangTidy:
-    Add:
-      - "modernize-use-nullptr"
-      - "modernize-use-override"
-      - "modernize-use-default-member-init"
-      - "readability-const-return-type"
-      - "bugprone-use-after-move"
 
 Index:
   Background: Build

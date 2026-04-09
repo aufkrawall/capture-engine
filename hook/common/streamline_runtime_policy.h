@@ -14,6 +14,11 @@ struct ViewportRuntimeUpdate {
     uint32_t capabilityMax = 0;
 };
 
+struct GetStateRuntimeEvaluation {
+    ViewportRuntimeUpdate update;
+    bool suppressedFreshActivation = false;
+};
+
 inline bool IsDLSSGModeEnabled(uint32_t mode) {
     return mode != 0;
 }
@@ -71,6 +76,21 @@ inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromGetState(
     update.multiplier = ResolveDLSSFGMultiplier(active, requestedGeneratedFrames);
     update.generatedFrames = ResolveDLSSFGGeneratedFrames(active, requestedGeneratedFrames, update.multiplier);
     return update;
+}
+
+inline GetStateRuntimeEvaluation EvaluateViewportRuntimeUpdateFromGetState(
+    bool callSucceeded, bool hasOptions, bool viewportWasActive, bool hasRuntimeFenceEvidence,
+    bool suppressNewActivation, uint32_t mode, uint32_t requestedGeneratedFrames, uint32_t capabilityMax) {
+    GetStateRuntimeEvaluation evaluation;
+    evaluation.update = BuildViewportRuntimeUpdateFromGetState(callSucceeded, hasOptions, viewportWasActive,
+                                                               hasRuntimeFenceEvidence, suppressNewActivation, mode,
+                                                               requestedGeneratedFrames, capabilityMax);
+
+    const bool attemptedFreshActivation =
+        callSucceeded && hasOptions && IsDLSSGModeEnabled(mode) && !viewportWasActive;
+    evaluation.suppressedFreshActivation =
+        attemptedFreshActivation && suppressNewActivation && !evaluation.update.shouldUpdate;
+    return evaluation;
 }
 
 inline bool IsLiveFSRRuntimeHandoffSource(bool currentlyAuthoritativeFSRActive, bool currentRuntimeModeIsFSRFG) {

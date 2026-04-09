@@ -141,9 +141,9 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesFSRSwapchainQueueWhenAvailab
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, true, false, true, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, true, false, true, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
-    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, true, false, true, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, true, false, true, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
 }
 
@@ -151,13 +151,13 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesRuntimeOwnedQueueWithoutTrea
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, true, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, true, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue);
 
     // GTA 5 Enhanced can briefly land here when DLSS FG suspends during loading
     // screens: the swapchain is runtime-owned, but there is no authoritative FSR
     // signal and we must not enter the post-FSR recovery path.
-    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, true, true, true, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, true, true, true, false, false),
               SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue);
 }
 
@@ -165,9 +165,9 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPreservesRuntimeOwnedFSRAfterHis
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, true, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, true, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
-    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, false, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, false, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
 }
 
@@ -175,9 +175,9 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingSkipsOnlyWhenFSRQueueIsUnavailab
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, false, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, false, false, true, false, false, false),
               SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue);
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, true, false, false, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, true, false, false, true, false, false, false),
               SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue);
 }
 
@@ -185,9 +185,9 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPreservesPostFSRStreamlineTransi
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, true, true, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, true, true, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue);
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, true, false, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, true, false, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
 }
 
@@ -195,20 +195,26 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesOriginalQueueDuringPostFSRIn
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false, false),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, true, false),
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, true),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, true, true),
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
 
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, true, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, true, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, false, false, true, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, false, false, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, false, false, false),
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, false, false, false, false),
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
 }
 

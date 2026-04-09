@@ -47,6 +47,7 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
                                                                     bool fsrFGActive, bool hadFSRFGPhase,
                                                                     bool hasSwapchainQueue, bool hasOriginalGameQueue,
                                                                     bool hasPostSLLastWorkingQueue,
+                                                                    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
                                                                     bool commandQueueMatchesPrimaryGameQueue) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
@@ -58,7 +59,11 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     }
 
     if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {
-        if (hasPostSLLastWorkingQueue) {
+        // Only reuse the preserved PostSL queue while teardown traffic is still
+        // actively resurfacing on it. Once that short-lived activity window ends,
+        // the pointer is just stale recovery state and must not keep driving
+        // non-FG routing.
+        if (hasPostSLLastWorkingQueue && postSLLastWorkingQueueStillActiveDuringRecentTeardown) {
             return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue;
         }
 

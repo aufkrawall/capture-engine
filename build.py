@@ -35,6 +35,7 @@ import platform
 import shlex
 import site
 import stat
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
 import re
@@ -2402,6 +2403,148 @@ def normalize_compile_command_arg(arg: str) -> str:
     return arg
 
 
+def _find_first_existing_path(candidates: List[str]) -> Optional[str]:
+    for candidate in candidates:
+        if candidate and os.path.isdir(candidate):
+            return candidate.replace("\\", "/")
+    return None
+
+
+def _append_unique_flag(arguments: List[str], flag: str) -> None:
+    if flag and flag not in arguments:
+        insert_at = len(arguments)
+        if "-c" in arguments:
+            insert_at = arguments.index("-c")
+        arguments.insert(insert_at, flag)
+
+
+def _has_flag_with_prefix(arguments: List[str], prefix: str) -> bool:
+    return any(arg == prefix or arg.startswith(prefix) for arg in arguments)
+
+
+def is_x86_compile_command(arguments: List[str]) -> bool:
+    normalized = [arg.replace("\\", "/") for arg in arguments]
+    return any(
+        arg.startswith("--target=i686-w64")
+        or (arg.startswith("--sysroot=") and "/mingw32" in arg)
+        or "/build/msys64/mingw32/" in arg
+        for arg in normalized
+    )
+
+
+@lru_cache(maxsize=4)
+def _clangd_extra_flags_for_arch(arch: str, compiler: str) -> List[str]:
+    if not IS_WINDOWS:
+        return []
+
+    compiler = compiler.replace("\\", "/")
+    resource_dir = detect_clang_resource_dir(os.environ.copy(), compiler)
+    resource_flag = f"-resource-dir={resource_dir}" if resource_dir else None
+    builtin_include = (
+        _find_first_existing_path([os.path.join(resource_dir, "include")])
+        if resource_dir
+        else None
+    )
+
+    if arch == "x86":
+        sysroot = os.path.join(MSYS2_DIR, "mingw32")
+        sysroot_norm = sysroot.replace("\\", "/")
+        stdlib_root = os.path.join(sysroot, "include", "c++")
+        flags: List[str] = [
+            "--target=i686-w64-windows-gnu",
+            f"--sysroot={sysroot_norm}",
+            "-stdlib=libstdc++",
+        ]
+        if resource_flag:
+            flags.append(resource_flag)
+
+        include_dirs: List[Optional[str]] = []
+        if stdlib_root and os.path.isdir(stdlib_root):
+            stdlib_versions = [
+                os.path.join(stdlib_root, d)
+                for d in os.listdir(stdlib_root)
+                if os.path.isdir(os.path.join(stdlib_root, d))
+            ]
+            stdlib_versions.sort(reverse=True)
+            if stdlib_versions:
+                include_dirs.extend(
+                    [
+                        stdlib_versions[0].replace("\\", "/"),
+                        _find_first_existing_path(
+                            [os.path.join(stdlib_versions[0], "i686-w64-mingw32")]
+                        ),
+                        _find_first_existing_path(
+                            [os.path.join(stdlib_versions[0], "backward")]
+                        ),
+                    ]
+                )
+        include_dirs.extend(
+            [
+                builtin_include,
+                _find_first_existing_path([os.path.join(sysroot, "include")]),
+            ]
+        )
+    else:
+        sysroot = os.path.join(MSYS2_DIR, "clang64")
+        flags = ["--target=x86_64-w64-windows-gnu"]
+        if resource_flag:
+            flags.append(resource_flag)
+
+        include_dirs = [
+            _find_first_existing_path(
+                [
+                    os.path.join(sysroot, "x86_64-w64-mingw32", "include", "c++", "v1"),
+                    os.path.join(sysroot, "include", "c++", "v1"),
+                ]
+            ),
+            builtin_include,
+            _find_first_existing_path(
+                [
+                    os.path.join(sysroot, "x86_64-w64-mingw32", "include"),
+                    os.path.join(sysroot, "include"),
+                ]
+            ),
+        ]
+
+    for include_dir in include_dirs:
+        if include_dir:
+            flags.append(f"-isystem{include_dir}")
+
+    return flags
+
+
+def enrich_compile_command_for_clangd(command: Dict[str, Any]) -> Dict[str, Any]:
+    """Add explicit toolchain context so clangd does not fall back to MSVC headers."""
+    arguments = list(command.get("arguments", []))
+    if not arguments:
+        return command
+
+    compiler = arguments[0].replace("\\", "/")
+    if "clang++" not in os.path.basename(compiler).lower():
+        command["arguments"] = [normalize_compile_command_arg(arg) for arg in arguments]
+        return command
+
+    arch = "x86" if is_x86_compile_command(arguments) else "x64"
+    for flag in _clangd_extra_flags_for_arch(arch, compiler):
+        if flag.startswith("--target="):
+            if not _has_flag_with_prefix(arguments, "--target="):
+                _append_unique_flag(arguments, flag)
+        elif flag.startswith("--sysroot="):
+            if not _has_flag_with_prefix(arguments, "--sysroot="):
+                _append_unique_flag(arguments, flag)
+        elif flag.startswith("-stdlib="):
+            if not _has_flag_with_prefix(arguments, "-stdlib="):
+                _append_unique_flag(arguments, flag)
+        elif flag.startswith("-resource-dir="):
+            if not _has_flag_with_prefix(arguments, "-resource-dir="):
+                _append_unique_flag(arguments, flag)
+        else:
+            _append_unique_flag(arguments, flag)
+
+    command["arguments"] = [normalize_compile_command_arg(arg) for arg in arguments]
+    return command
+
+
 def write_json_atomic(path: str, payload: Any) -> None:
     """Write JSON payload atomically to avoid partial/corrupted files."""
     tmp_path = f"{path}.tmp.{os.getpid()}"
@@ -4320,26 +4463,26 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         + get_linux_mingw_runtime_dirs(arch),
                     )
 
-    # Compile and run tests (using x64 objects) if requested
-    if should_run_tests:
-        x64_common_objs = [
-            os.path.join(
-                OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o")
-            )
-            for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
-        ]
-        # We use x64 obj dir for tests
-        test_exe = compile_tests(
-            env,
-            clang_exe,
-            cflags,
-            x64_common_objs,
-            pkg_config,
-            os.path.join(OBJ_DIR, "x64"),
+    # Always compile unit-test sources so compile_commands.json contains
+    # authoritative entries for tests even on non-test builds. Execute the test
+    # binary only when explicitly requested.
+    x64_common_objs = [
+        os.path.join(
+            OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o")
         )
-        if test_exe:
-            if not run_tests(env, test_exe):
-                sys.exit(1)
+        for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
+    ]
+    test_exe = compile_tests(
+        env,
+        clang_exe,
+        cflags,
+        x64_common_objs,
+        pkg_config,
+        os.path.join(OBJ_DIR, "x64"),
+    )
+    if should_run_tests and test_exe:
+        if not run_tests(env, test_exe):
+            sys.exit(1)
 
     # 5. CaptureEngine (x64 only for now)
     log("Compiling CaptureEngine x64...")
@@ -4884,16 +5027,17 @@ def main():
         for cmd in sorted_commands:
             # Prefer x64 commands over x86 for LSP if both exist for the same file
             # (assuming x64 is usually the primary dev target)
-            is_x86 = "mingw32" in cmd["arguments"][0] or "-m32" in cmd["arguments"]
+            enriched_cmd = enrich_compile_command_for_clangd(dict(cmd))
+            is_x86 = is_x86_compile_command(enriched_cmd["arguments"])
 
-            if cmd["file"] not in seen_files:
-                unique_commands.append(cmd)
-                seen_files.add(cmd["file"])
+            if enriched_cmd["file"] not in seen_files:
+                unique_commands.append(enriched_cmd)
+                seen_files.add(enriched_cmd["file"])
             elif not is_x86:
                 # Replace x86 entry with x64 entry if we encounter it
                 for i, existing in enumerate(unique_commands):
-                    if existing["file"] == cmd["file"]:
-                        unique_commands[i] = cmd
+                    if existing["file"] == enriched_cmd["file"]:
+                        unique_commands[i] = enriched_cmd
                         break
 
         compile_commands_path = os.path.join(PROJECT_ROOT, "compile_commands.json")
@@ -4901,73 +5045,10 @@ def main():
         log(f"Generated compile_commands.json ({len(unique_commands)} entries)")
         log("LSP: normalized compile_commands paths for clangd")
 
-        # Auto-detect clang resource-dir and update .clangd so LSP survives toolchain updates.
-        _clangd_path = os.path.join(PROJECT_ROOT, ".clangd")
-        if os.path.exists(_clangd_path):
-            _clang_hint = ""
-            if unique_commands and unique_commands[0].get("arguments"):
-                _clang_hint = unique_commands[0]["arguments"][0]
-            if not _clang_hint:
-                _clang_hint = os.path.join(
-                    clang_bin, "clang++.exe" if IS_WINDOWS else "clang++"
-                )
-
-            _detected_resource_dir = detect_clang_resource_dir(env, _clang_hint)
-            if _detected_resource_dir:
-                with open(_clangd_path, "r", encoding="utf-8") as _f:
-                    _clangd_content = _f.read()
-                import re as _re
-
-                _normalized_resource_dir = _detected_resource_dir.replace("\\", "/")
-                _project_root_norm = PROJECT_ROOT.replace("\\", "/").rstrip("/")
-                if _normalized_resource_dir.lower().startswith(
-                    _project_root_norm.lower() + "/"
-                ):
-                    _normalized_resource_dir = _normalized_resource_dir[
-                        len(_project_root_norm) + 1 :
-                    ]
-
-                _updated, _resource_subs = _re.subn(
-                    r"(-resource-dir=)(?:[^\"\n]*/)?clang64/lib/clang/[^\"\n]+",
-                    rf"\g<1>{_normalized_resource_dir}",
-                    _clangd_content,
-                )
-                _updated = _re.sub(
-                    r"(^\s*Compiler:\s*).*$",
-                    r"\g<1>build/msys64/clang64/bin/clang++.exe",
-                    _updated,
-                    flags=_re.MULTILINE,
-                )
-                _updated = _re.sub(
-                    r'(^\s*-\s*")[^"\n]*clang64/include/c\+\+/v1(".*$)',
-                    r"\1build/msys64/clang64/include/c++/v1\2",
-                    _updated,
-                    flags=_re.MULTILINE,
-                )
-                _updated = _re.sub(
-                    r'(^\s*-\s*")[^"\n]*clang64/include(?!/c\+\+/v1)(".*$)',
-                    r"\1build/msys64/clang64/include\2",
-                    _updated,
-                    flags=_re.MULTILINE,
-                )
-                if _updated != _clangd_content:
-                    with open(_clangd_path, "w", encoding="utf-8") as _f:
-                        _f.write(_updated)
-                    log(
-                        f"LSP: Updated .clangd compiler/resource/include paths ({_normalized_resource_dir})"
-                    )
-                else:
-                    log(
-                        f"LSP: .clangd compiler/resource/include paths already correct ({_normalized_resource_dir})"
-                    )
-                if _resource_subs == 0:
-                    log(
-                        "LSP: WARNING: .clangd resource-dir pattern not found; please verify .clangd format"
-                    )
-            else:
-                log(
-                    "LSP: WARNING: Could not detect clang resource-dir; .clangd was not updated"
-                )
+        if os.path.exists(os.path.join(PROJECT_ROOT, ".clangd")):
+            log(
+                "LSP: leaving .clangd unchanged; compile_commands.json is authoritative"
+            )
     except Exception as e:
         log(f"Error writing compile_commands.json: {e}")
         sys.exit(1)
