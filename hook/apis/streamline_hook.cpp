@@ -958,10 +958,9 @@ void OnAuthoritativeFFXTakeover() {
 
     g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
                                                  std::memory_order_release);
-    g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(true, std::memory_order_release);
     HookLogImportant(
         "Streamline Hook: Authoritative FFX takeover cleared %zu viewport states and %zu capability caches; "
-        "suppressing GetState-only reactivation for %llums and until explicit SetOptions",
+        "suppressing GetState-only reactivation for %llums",
         clearedViewportCount, clearedCapabilityCount, (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
 }
 
