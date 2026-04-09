@@ -912,6 +912,10 @@ static std::atomic<int> g_CommandListsExecutedThisFrame{0};
 static std::atomic<uint64_t> g_FGDebugFrameCount{0};
 static std::atomic<int> g_AuthoritativeFSRRealFrameOnlyStreak{0};
 
+static void ResetAuthoritativeFSRRealFrameOnlyStreak() {
+    g_AuthoritativeFSRRealFrameOnlyStreak.store(0, std::memory_order_release);
+}
+
 // Primary game queue — set once from the first ECL call (always the game's queue,
 // since the game creates its queue before any FG runtime).  Used to filter ECL
 // counting: only game-queue ECL calls count toward frame classification.
@@ -1334,6 +1338,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddres
     g_FGCompat.SetFSRFGSupportPresent(true);
     g_FGCompat.SetFSRFGMultiplier(2);
     g_FGCompat.SetFSRFGActive(true);
+    ResetAuthoritativeFSRRealFrameOnlyStreak();
     if (!g_HadFSRFGPhase) {
         g_HadFSRFGPhase = true;
         HookLogImportant("DX12: FFX swapchain takeover implies FSR FG history — latching post-FSR handoff state");
@@ -2665,6 +2670,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
                                  pQueue);
                 g_FGCompat.SetFSRFGActive(false);
                 g_FGCompat.SetFSRFGMultiplier(0);
+                ResetAuthoritativeFSRRealFrameOnlyStreak();
             }
             HookLogImportant("DX12: Swapchain returned to origGame queue %p — FG runtime ownership cleared", pQueue);
         }
@@ -2979,6 +2985,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                     if (g_FGCompat.IsFSRFGApiActive()) {
                         g_FGCompat.SetFSRFGActive(false);
                         g_FGCompat.SetFSRFGMultiplier(0);
+                        ResetAuthoritativeFSRRealFrameOnlyStreak();
                     }
                     HookLogImportant(
                         "DX12: Streamline FG ON after FSR — cleared stale FSR swapchain queue %p (origGame=%p) "
@@ -3020,6 +3027,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 if (g_FGCompat.IsFSRFGApiActive()) {
                     g_FGCompat.SetFSRFGActive(false);
                     g_FGCompat.SetFSRFGMultiplier(0);
+                    ResetAuthoritativeFSRRealFrameOnlyStreak();
                 }
                 HookLogImportant("DX12: Streamline FG OFF after FSR history — clearing lingering FG runtime ownership");
             }
@@ -10274,22 +10282,28 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
-    const bool shouldClearStaleAuthoritativeFSR = ce::dx12_overlay_policy::ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(
-        streamlineFGRunning, g_FGRuntimeOwnsSwapchain, authoritativeFSRActive, isInterpolatedFrame,
-        g_FGCompat.GetConsecutiveRealFrames(), recentStreamlineTeardown);
-    if (shouldClearStaleAuthoritativeFSR) {
-        const int streak = g_AuthoritativeFSRRealFrameOnlyStreak.fetch_add(1, std::memory_order_acq_rel) + 1;
-        if (streak == 1 || streak == 120 || (streak % 600) == 0) {
+    int authoritativeFSRRealFrameOnlyStreak = 0;
+    if (ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(
+            streamlineFGRunning, g_FGRuntimeOwnsSwapchain, authoritativeFSRActive, isInterpolatedFrame,
+            recentStreamlineTeardown)) {
+        authoritativeFSRRealFrameOnlyStreak =
+            g_AuthoritativeFSRRealFrameOnlyStreak.fetch_add(1, std::memory_order_acq_rel) + 1;
+    } else {
+        ResetAuthoritativeFSRRealFrameOnlyStreak();
+    }
+
+    if (ce::dx12_overlay_policy::ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(
+            authoritativeFSRRealFrameOnlyStreak)) {
+        if (authoritativeFSRRealFrameOnlyStreak == 120 || (authoritativeFSRRealFrameOnlyStreak % 600) == 0) {
             HookLogImportant(
                 "DX12: Clearing stale authoritative FSR FG after %d consecutive real frames on runtime-owned "
                 "swapchain (origGame=%p scQueue=%p slFG=%d recentSLTeardown=%d)",
-                g_FGCompat.GetConsecutiveRealFrames(), g_OriginalGameQueue, g_SwapchainQueue,
+                authoritativeFSRRealFrameOnlyStreak, g_OriginalGameQueue, g_SwapchainQueue,
                 streamlineFGRunning ? 1 : 0, recentStreamlineTeardown ? 1 : 0);
         }
         g_FGCompat.SetFSRFGActive(false);
         g_FGCompat.SetFSRFGMultiplier(0);
-    } else {
-        g_AuthoritativeFSRRealFrameOnlyStreak.store(0, std::memory_order_release);
+        ResetAuthoritativeFSRRealFrameOnlyStreak();
     }
 
     if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
