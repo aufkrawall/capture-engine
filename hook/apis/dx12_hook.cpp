@@ -3075,13 +3075,18 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
             g_OuterTrackedSLFGRunning.store(false, std::memory_order_release);
             g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
-            g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
-            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
             auto* oldRealECL = (void*)g_RealD3D12ECL.load(std::memory_order_acquire);
             const ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
             const ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
             const bool commandQueueSettledToPrimary =
                 currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue;
+            const int cooldownFrames =
+                ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(commandQueueSettledToPrimary,
+                                                                               g_HadFSRFGPhase, true)
+                    ? 15
+                    : 60;
+            g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, cooldownFrames);
+            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — deferring non-FG overlay reinit for %d frames so "
                 "Talos/Streamline teardown can settle before pre-SL resources are rebuilt",
@@ -3976,7 +3981,8 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
-            g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr);
+            g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
+            currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue);
 
         if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
             // After FSR→DLSS: use scQueue (swapchain creation queue)
@@ -7340,12 +7346,18 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             bool fgRecentlyWasActive = (g_FramesSinceFGActive < kFGRecentWindowFrames);
             ID3D12CommandQueue* currentSwapchainQueue = nullptr;
             ID3D12CommandQueue* currentOriginalGameQueue = nullptr;
+            ID3D12CommandQueue* currentCommandQueue = nullptr;
+            ID3D12CommandQueue* currentPrimaryQueue = nullptr;
             {
                 std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
                 currentSwapchainQueue = g_SwapchainQueue;
                 currentOriginalGameQueue = g_OriginalGameQueue;
+                currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+                currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
             }
             int slOffSwapchainGrace = g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
+            const bool commandQueueSettledToPrimary =
+                currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue;
             bool guardSwapchainReinit = ce::dx12_overlay_policy::ShouldGuardSwapchainReinitAfterChange(
                 fgCurrentlyActive, fgRecentlyWasActive, g_FGTransitionCooldown > 0, slOffSwapchainGrace > 0,
                 g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr, currentOriginalGameQueue != nullptr,
@@ -7353,6 +7365,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     currentSwapchainQueue != currentOriginalGameQueue);
             if (guardSwapchainReinit) {
                 int cooldownFrames = 90;  // ~1.5s at 60fps — longer than normal transition
+                if (ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(commandQueueSettledToPrimary,
+                                                                                   g_HadFSRFGPhase,
+                                                                                   slOffSwapchainGrace > 0)) {
+                    cooldownFrames = 15;
+                }
                 g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, cooldownFrames);
                 g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
@@ -7364,10 +7381,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 HookLogImportant(
                     "DX12: Swapchain change during active FG — cooldown %d frames "
                     "(fgActive=%d, fgRecentFrames=%d, slSignal=%d, prevCooldown=%d, slOffGrace=%d, "
-                    "fgOwned=%d, scQueue=%p, origGame=%p)",
+                    "fgOwned=%d, scQueue=%p, origGame=%p cmdQ=%p primaryQ=%p)",
                     cooldownFrames, fgCurrentlyActive ? 1 : 0, g_FramesSinceFGActive,
                     DXGIShared::g_StreamlineFGRunning.load() ? 1 : 0, g_FGTransitionCooldown, slOffSwapchainGrace,
-                    g_FGRuntimeOwnsSwapchain ? 1 : 0, currentSwapchainQueue, currentOriginalGameQueue);
+                    g_FGRuntimeOwnsSwapchain ? 1 : 0, currentSwapchainQueue, currentOriginalGameQueue,
+                    currentCommandQueue, currentPrimaryQueue);
             } else {
                 HookLogImportant("DX12: Swapchain change (no FG active) — normal reinit");
                 g_NeedOffscreenOverlayAfterPostFSRNonFG = false;
@@ -7417,7 +7435,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
-            g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr);
+            g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
+            currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue);
 
         if (routingDecision ==
             ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {
@@ -8646,17 +8665,29 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         bool slSignalChanged = (currentSLFGRunning != s_lastSLFGRunning);
 
         if (fgChanged || runtimeModeChanged || slSignalChanged) {
+            auto s_lastRuntimeMode_saved = s_lastRuntimeMode;  // save before update for syncInit logic
+            const bool previousWasFG = ce::fg_runtime::IsActualGeneratedFrameMode(s_lastRuntimeMode_saved);
+            const bool targetIsFGOff = !ce::fg_runtime::IsActualGeneratedFrameMode(currentRuntimeMode);
+            const ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+            const ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+            const bool commandQueueSettledToPrimary =
+                currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue;
+            const int transitionCooldownFrames =
+                ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
+                    commandQueueSettledToPrimary, g_HadFSRFGPhase,
+                    previousWasFG && targetIsFGOff && !currentSLFGRunning)
+                    ? 15
+                    : 60;
             HookLogImportant(
-                "DX12: FG %s%s%s: %s(%s) -> %s(%s) slSignal=%d->%d — cooldown 60 frames", fgChanged ? "state " : "",
-                runtimeModeChanged ? "mode " : "", slSignalChanged ? "slSignal " : "",
+                "DX12: FG %s%s%s: %s(%s) -> %s(%s) slSignal=%d->%d — cooldown %d frames",
+                fgChanged ? "state " : "", runtimeModeChanged ? "mode " : "", slSignalChanged ? "slSignal " : "",
                 s_lastFGActive ? "active" : "inactive", ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode),
                 currentFGActive ? "active" : "inactive", ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode),
-                s_lastSLFGRunning ? 1 : 0, currentSLFGRunning ? 1 : 0);
-            auto s_lastRuntimeMode_saved = s_lastRuntimeMode;  // save before update for syncInit logic
+                s_lastSLFGRunning ? 1 : 0, currentSLFGRunning ? 1 : 0, transitionCooldownFrames);
             s_lastFGActive = currentFGActive;
             s_lastRuntimeMode = currentRuntimeMode;
             s_lastSLFGRunning = currentSLFGRunning;
-            g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
+            g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, transitionCooldownFrames);
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
 
             // Immediately disable post-SL rendering during FG transitions.
@@ -8733,8 +8764,6 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 }
             }
             g_PostSLConfirmedRendering.store(false, std::memory_order_release);  // Re-probe needed
-            const bool previousWasFG = ce::fg_runtime::IsActualGeneratedFrameMode(s_lastRuntimeMode_saved);
-            const bool targetIsFGOff = !ce::fg_runtime::IsActualGeneratedFrameMode(currentRuntimeMode);
             if (!ce::dx12_overlay_policy::ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(
                     g_HadFSRFGPhase, previousWasFG, targetIsFGOff)) {
                 // Old SL queues may be destroyed after most FG mode switches

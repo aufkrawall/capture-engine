@@ -46,7 +46,8 @@ enum class SwapchainOverlayRoutingDecision {
 inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtimeOwnsSwapchain, bool streamlineFGActive,
                                                                      bool fsrFGActive, bool hadFSRFGPhase,
                                                                      bool hasSwapchainQueue, bool hasOriginalGameQueue,
-                                                                     bool hasPostSLLastWorkingQueue) {
+                                                                     bool hasPostSLLastWorkingQueue,
+                                                                     bool commandQueueMatchesPrimaryGameQueue) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
                                  : SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
@@ -57,16 +58,17 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     }
 
     if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {
-        if (hasPostSLLastWorkingQueue) {
+        if (hasPostSLLastWorkingQueue && !commandQueueMatchesPrimaryGameQueue) {
             return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue;
         }
 
         // After FSR->DLSS->off, ProcessFrame intentionally leaves g_SwapchainQueue
         // unset until a fresh non-FG Present path can prove the live swapchain
         // queue again. While that recapture window is open, falling through to the
-        // last observed command queue can pick a multi-queue game's render queue
-        // instead of its Present queue, which reproduced Talos DEVICE_REMOVED on
-        // the first recovered non-FG overlay submit.
+        // last observed command queue can pick a stale PostSL queue or the wrong
+        // game queue. Once command ownership has already settled back to the
+        // primary game queue, route through the dedicated primary/orig recovery
+        // path instead of preserving the old PostSL queue.
         return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue;
     }
 
@@ -447,6 +449,16 @@ inline bool ShouldRefreshRecentPostSLTeardownActivity(bool recentStreamlineTeard
 inline bool ShouldPreserveRealECLForDelayedPostFSRNonFGRecovery(bool commandQueueSettledToPrimary,
                                                                 bool hadFSRFGPhase) {
     return commandQueueSettledToPrimary && hadFSRFGPhase;
+}
+
+inline bool ShouldUseShortPostFSRInactiveCooldown(bool commandQueueSettledToPrimary, bool hadFSRFGPhase,
+                                                  bool recentStreamlineTeardown) {
+    // Once command ownership has already returned to the primary game queue,
+    // the long swapchain-change cooldown mainly leaves the last FG-on overlay
+    // frame stuck on screen. The dedicated recent-teardown gates still block the
+    // truly unsafe tail of Streamline teardown, so a shorter cooldown is enough
+    // to let the recovered non-FG overlay redraw promptly.
+    return commandQueueSettledToPrimary && hadFSRFGPhase && recentStreamlineTeardown;
 }
 
 inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
