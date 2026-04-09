@@ -421,6 +421,12 @@ inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQu
     return hasRealQueueBehindWrapper || hasRealD3D12ECL;
 }
 
+inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(bool streamlineFGActive, bool hasSLWrapperQueue,
+                                                                  bool hasRealQueueBehindWrapper,
+                                                                  bool hasRealD3D12ECL) {
+    return !streamlineFGActive && !hasSLWrapperQueue && !hasRealQueueBehindWrapper && !hasRealD3D12ECL;
+}
+
 inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
                                                               bool hasRealD3D12ECL, bool hasSLWrapperQueue) {
     if (!hadFSRFGPhase) {

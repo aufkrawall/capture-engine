@@ -6815,6 +6815,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 HookLogImportant("DX12: PostSL bootstrap via SL wrapper %p (will capture real queue for direct path)",
                                  slQueue);
             } else {
+                if (!ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(
+                        slFGAtDispatch, slQueue != nullptr, realQ != nullptr, realECL != nullptr)) {
+                    HookLogImportant(
+                        "DX12: PostSL refusing no-wrapper virtual bootstrap during Streamline FG "
+                        "(queue=%p scQueue=%p realQ=%p realECL=%p)",
+                        queue, scQueue, realQ, (void*)realECL);
+                    bb->Release();
+                    return;
+                }
                 s_insidePostSLOverlayECL = true;
                 queue->ExecuteCommandLists(1, lists);
                 s_insidePostSLOverlayECL = false;
