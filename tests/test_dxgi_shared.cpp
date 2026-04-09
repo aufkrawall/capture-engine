@@ -108,6 +108,11 @@ TEST(DXGISharedTest, DX12StartupPresentPassStaysDisabledWhenSteamBypassAlreadyOw
                                                                        false));
 }
 
+TEST(DXGISharedTest, GlobalCreateSwapchainPathsCaptureQueueWhenSkippingWrapForStreamline) {
+    EXPECT_TRUE(DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true));
+    EXPECT_FALSE(DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(false));
+}
+
 TEST(DXGISharedTest, StreamlineGeneratedFramePresentUsesSyntheticReentrantRoutingOnlyForDX12FGCallers) {
     EXPECT_TRUE(DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true));
 
@@ -128,6 +133,16 @@ TEST(DXGISharedTest, FFXPresentBypassesNormalRoutingOnlyDuringDX12StreamlineStar
 TEST(DXGISharedTest, PostSLCallbackStaysInstalledOnlyWhileStreamlineStillOwnsPresentPath) {
     EXPECT_TRUE(DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(true));
     EXPECT_FALSE(DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(false));
+}
+
+TEST(DXGISharedTest, EarlyPresentRecursionOnlyShortCircuitsWhenSafeForwardingExists) {
+    EXPECT_FALSE(DXGIShared::ShouldTreatEarlyPresentRecursionAsForwardable(false, false, false, false, false));
+
+    EXPECT_TRUE(DXGIShared::ShouldTreatEarlyPresentRecursionAsForwardable(true, false, false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldTreatEarlyPresentRecursionAsForwardable(false, true, false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldTreatEarlyPresentRecursionAsForwardable(false, false, true, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldTreatEarlyPresentRecursionAsForwardable(false, false, false, true, false));
+    EXPECT_TRUE(DXGIShared::ShouldTreatEarlyPresentRecursionAsForwardable(false, false, false, false, true));
 }
 
 TEST(DXGISharedTest, DX12OverlayWaitPolicySkipsSmoothMotionButKeepsStartupSafety) {
@@ -311,43 +326,54 @@ TEST(DXGISharedTest, OverlayFGMetricTypeFollowsEffectiveRuntimeState) {
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameForRuntimeOwnedNonStreamlineSwapchains) {
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, true, false, false,
-                                                                         false));
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
 
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
-                                                                         false));
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, true, true, false,
-                                                                         false));
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, true, false, false, false, false,
-                                                                         false));
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, true, false, false, false,
-                                                                         false));
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(false, false, false, false, false, false,
-                                                                         false));
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
 }
 
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameDuringRecentStreamlineTeardown) {
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, true,
-                                                                         false));
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
 
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, true, true,
-                                                                         false));
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
 }
 
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameDuringPostFSRNonFGRecovery) {
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
-                                                                         true));
+                                                                         true, ce::fg_runtime::RuntimeMode::kOff));
 
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
-                                                                         false));
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
+}
+
+TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameDuringStreamlineNoFGStartup) {
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
+                                                                         false,
+                                                                         ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
+                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
 }
 
 TEST(DXGISharedTest, DuplicateTopLevelPresentSuppressionBypassesRuntimeOwnedNonStreamlineSwapchains) {

@@ -140,6 +140,29 @@ inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool thirdPartyOver
     return !thirdPartyOverlayLoaded || hasPresentDetourHooks;
 }
 
+inline bool ShouldTreatEarlyPresentRecursionAsForwardable(bool hasPresentTrampoline, bool hasPresentBypass,
+                                                          bool inWrapperPresent, bool isWrappedSwapChain,
+                                                          bool streamlineFGRunning) {
+    // The thread-local fast recursion guard exists to break Steam/overlay
+    // stack-overflow loops before the heavier Present ownership tracking runs.
+    // But during startup on the non-wrapper DX12 path we can legally re-enter
+    // the detour before any inline trampoline exists. In that specific case,
+    // treating the call as already-forwardable starves the first real Present of
+    // normal ProcessFrame/overlay bootstrap. Only take the fast-path when we
+    // already have a safe forwarding target or are in a known nested Present
+    // topology.
+    return hasPresentTrampoline || hasPresentBypass || inWrapperPresent || isWrappedSwapChain || streamlineFGRunning;
+}
+
+inline bool ShouldCaptureQueueWhenSkippingWrapForStreamline(bool streamlineLoaded) {
+    // When Streamline is present we skip swapchain wrapping, but the non-wrapper
+    // DX12 overlay path still needs the swapchain queue/device captured on the
+    // create path that actually fired. Steam can block our inline
+    // CreateSwapChainForHwnd hook, and some games use CreateSwapChain instead of
+    // CreateSwapChainForHwnd entirely.
+    return streamlineLoaded;
+}
+
 // External Present entry hooks can recurse back through our detour. Some paths
 // need a bypass trampoline available at install time so re-entrant Present can
 // still reach the real DXGI implementation.

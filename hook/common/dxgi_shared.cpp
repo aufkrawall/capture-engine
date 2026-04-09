@@ -709,7 +709,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // before reaching the normal IsRecursivePresent() check at line ~530.
     // This caused stack overflow crashes (0xC00000FD) with ~500 recursive frames.
     static thread_local int s_presentRecurseDepth = 0;
-    const bool isReentrant = (s_presentRecurseDepth > 0);
+    const bool wrappedSwapchain = IsWrappedSwapChainObject(pSwapChain);
+    const bool inWrapperPresent = IsInWrapperPresent();
+    const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool isReentrant =
+        (s_presentRecurseDepth > 0) && DXGIShared::ShouldTreatEarlyPresentRecursionAsForwardable(
+                                         oPresentTrampoline != nullptr, oPresentBypass != nullptr, inWrapperPresent,
+                                         wrappedSwapchain, streamlineFGRunning);
     s_presentRecurseDepth++;
     auto depthGuard = ce::make_scope_guard([]() { s_presentRecurseDepth--; });
 
@@ -863,9 +869,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
     ApplySwapChainOverrides(pSwapChain);
 
-    void* pWrapper = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
-        ((IUnknown*)pWrapper)->Release();
+    if (wrappedSwapchain) {
         static int s_wrappedPassCount = 0;
         if (s_wrappedPassCount < 5) {
             s_wrappedPassCount++;
@@ -874,7 +878,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
-    if (IsInWrapperPresent()) {
+    if (inWrapperPresent) {
         static int s_inWrapperPassCount = 0;
         if (s_inWrapperPassCount < 5) {
             s_inWrapperPassCount++;

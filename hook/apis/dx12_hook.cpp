@@ -2751,7 +2751,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
     return runtimeOwnershipJustActivated;
 }
 
-static bool IsDX12Swapchain(IDXGISwapChain1* pSwapChain) {
+static bool IsDX12Swapchain(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain)
         return false;
 
@@ -2764,7 +2764,7 @@ static bool IsDX12Swapchain(IDXGISwapChain1* pSwapChain) {
     return true;
 }
 
-static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain1* pSwapChain, const char* context,
+static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context,
                                                   const void* callerAddress = nullptr) {
     if (!pDevice || !pSwapChain)
         return;
@@ -3582,8 +3582,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
         // lifecycle management.  Inline Present hooks provide the same interception.
         if (IsStreamlineLoaded()) {
             HookLog("DetourCreateSwapChainGlobal: Streamline present, skipping wrap (sc=%p)", *ppSwapChain);
-            // Don't capture queue here — global hooks fire for non-game swapchains
-            // (e.g. Social Club).  The inline hook handles queue capture for the game.
+            if (DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true)) {
+                CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSwapChain,
+                                                      "CreateSwapChain Global Streamline fallback");
+            }
             return hr;
         }
 
@@ -3672,7 +3674,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         // lifecycle management.  Inline Present hooks provide the same interception.
         if (IsStreamlineLoaded()) {
             HookLog("DetourCreateSwapChainForHwndGlobal: Streamline present, skipping wrap (sc=%p)", *ppSC);
-            // Don't capture queue here — inline hook handles it
+            if (DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true)) {
+                CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC,
+                                                      "CreateSwapChainForHwnd Global Streamline fallback");
+            }
             return hr;
         }
 
@@ -10633,7 +10638,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
 
     if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
             isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning,
-            recentStreamlineTeardown, postFSRNonFGRecovery)) {
+            recentStreamlineTeardown, postFSRNonFGRecovery, g_FGCompat.GetRuntimeMode())) {
         sc3->Release();
         return;
     }

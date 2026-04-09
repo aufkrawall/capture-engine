@@ -214,9 +214,10 @@ inline bool ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
 }
 
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
-                                                    bool heuristicFSRFG, bool runtimeOwnsSwapchain,
-                                                    bool streamlineFGRunning, bool recentStreamlineTeardown,
-                                                    bool postFSRNonFGRecovery) {
+                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
+                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,
+                                                     bool postFSRNonFGRecovery,
+                                                     ce::fg_runtime::RuntimeMode runtimeMode) {
     if (!isInterpolatedFrame) {
         return false;
     }
@@ -246,6 +247,14 @@ inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bo
     // while top-level Presents continue on the live swapchain. Keep ProcessFrame
     // running through that grace window so the non-FG overlay path can recover.
     if (recentStreamlineTeardown && !streamlineFGRunning) {
+        return false;
+    }
+
+    // In some Steam + Streamline-no-FG startup paths, top-level Presents are
+    // already stable but authoritative ECL registration never reaches the
+    // trusted queue. If we keep treating those Presents as interpolated-only
+    // zero-ECL noise, ProcessFrame never bootstraps the non-FG overlay.
+    if (runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG && !streamlineFGRunning) {
         return false;
     }
 
