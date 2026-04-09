@@ -156,7 +156,12 @@ inline bool ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(bool 
     // immediate teardown traffic settles, continuing to reserve those rows leaves
     // visible empty gaps after FSR->DLSS->off even though the live overlay text is
     // already correct.
-    return postFSRNonFGRecovery && (recentStreamlineTeardown || postSLRecentTeardownActivity);
+    // The coarse Streamline-off heuristic grace is intentionally much longer and
+    // exists to suppress stale queue/heuristic state. Treating that whole grace
+    // window as a layout reservation keeps two blank FG rows visible long after
+    // the live overlay has already returned to its smaller non-FG shape.
+    (void)recentStreamlineTeardown;
+    return postFSRNonFGRecovery && postSLRecentTeardownActivity;
 }
 
 inline bool ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(bool endingPostFSRNonFGRecovery) {

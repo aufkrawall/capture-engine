@@ -2576,6 +2576,8 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
     }
 
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+    const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
     const bool lastWorkingQueueStillActiveDuringRecentTeardown =
         g_PostSLLastWorkingQueue != nullptr &&
         GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
@@ -2583,7 +2585,9 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
             recentStreamlineTeardown, lastWorkingQueueStillActiveDuringRecentTeardown, pQueue == primaryQ,
             pQueue == g_OriginalGameQueue,
             pQueue == currentSwapchainQueue, pQueue == g_PostSLLastWorkingQueue)) {
-        if (g_PostSLLastWorkingQueue && pQueue == g_PostSLLastWorkingQueue) {
+        if (ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(
+                recentStreamlineTeardown, g_PostSLLastWorkingQueue && pQueue == g_PostSLLastWorkingQueue,
+                streamlineFGRunning, postSLActive)) {
             MarkPostSLRecentTeardownActivity("DX12: SetCommandQueue recent PostSL teardown activity", pQueue);
         }
         static std::atomic<int> s_recentSLTeardownSetQueueIgnoreLogCount{0};
@@ -3082,6 +3086,10 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     g_SLOffHeuristicGrace.store(600, std::memory_order_release);
+    if (g_PostSLLastWorkingQueue) {
+        MarkPostSLRecentTeardownActivity("DX12: Streamline FG OFF seeded recent PostSL teardown activity",
+                                         g_PostSLLastWorkingQueue);
+    }
     g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
     g_FGCompat.SetHeuristicFSRFGActive(false);
     g_FGCompat.ClearNvidiaSMState();
@@ -10887,6 +10895,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool actualFGActive = IsActualFrameGenerationActive();
         const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed);
         const bool anyFGActive = actualFGActive || IsNvidiaSmoothMotionActiveRuntime() || streamlineFGRunning;
+        const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             g_PostSLLastWorkingQueue != nullptr &&
             GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
@@ -10936,7 +10945,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
                 recentStreamlineTeardown, lastWorkingQueueStillActiveDuringRecentTeardown, pThis == primaryQ,
                 pThis == g_OriginalGameQueue, pThis == g_SwapchainQueue, pThis == g_PostSLLastWorkingQueue)) {
-            if (g_PostSLLastWorkingQueue && pThis == g_PostSLLastWorkingQueue) {
+            if (ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(
+                    recentStreamlineTeardown, g_PostSLLastWorkingQueue && pThis == g_PostSLLastWorkingQueue,
+                    streamlineFGRunning, postSLActive)) {
                 MarkPostSLRecentTeardownActivity("DX12: ECL recent PostSL teardown activity", pThis);
             }
             static std::atomic<int> s_recentSLTeardownQueueIgnoreLogCount{0};
