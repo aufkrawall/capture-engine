@@ -93,12 +93,6 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     return SwapchainOverlayRoutingDecision::kUseNormalRouting;
 }
 
-inline bool ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
-    bool recentStreamlineTeardown, bool hasPostSLLastWorkingQueue,
-    bool lastWorkingQueueStillActiveDuringRecentTeardown) {
-    return recentStreamlineTeardown && hasPostSLLastWorkingQueue && lastWorkingQueueStillActiveDuringRecentTeardown;
-}
-
 inline int ResolveTransitionCooldownFrames(int existingCooldownFrames, int requestedCooldownFrames,
                                           bool overrideExistingCooldown) {
     // When the post-FSR DLSS->off path has already settled command ownership

@@ -231,18 +231,6 @@ TEST(DXGISharedTest, SettledPrimaryPostFSROffUsesShorterCooldown) {
         ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(true, true, false));
 }
 
-TEST(DXGISharedTest, PostFSRRecoveryStaysDeferredWhileLastWorkingQueueStillSeesRecentTeardown) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
-        true, true, true));
-
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
-        false, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
-        true, false, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
-        true, true, false));
-}
-
 TEST(DXGISharedTest, FSRSwapchainTakeoverRequiresAuthoritativeFFXTraffic) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, true, false, false,
                                                                                                false));
@@ -484,6 +472,8 @@ TEST(DXGISharedTest, PostFSRStreamlineTeardownWithoutSwapchainQueueRequiresLastW
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
         false, false, true, false, true, true, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+        false, false, true, false, true, true, true, false, false, false));
 }
 
 TEST(DXGISharedTest, PostSLValidatedDirectQueueIsNotTreatedAsWrapper) {

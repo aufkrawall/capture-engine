@@ -4027,18 +4027,16 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
-            if (lastWorkingQueueStillActiveDuringRecentTeardown && g_OriginalGameQueue) {
-                queueForBackend = g_OriginalGameQueue;
-                static std::atomic<int> s_postFSRBackendOriginalRouteLogCount{0};
-                int logCount = s_postFSRBackendOriginalRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+            queueForBackend = g_PostSLLastWorkingQueue;
+            if (lastWorkingQueueStillActiveDuringRecentTeardown) {
+                static std::atomic<int> s_postFSRBackendLastWorkingRouteLogCount{0};
+                int logCount = s_postFSRBackendLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
-                        "DX12: InitImGui — deferring preserved PostSL lastWorking queue %p because teardown traffic is "
-                        "still active (cmdQ=%p origQ=%p primaryQ=%p)",
+                        "DX12: InitImGui — post-FSR inactive recovery keeping preserved PostSL lastWorking queue %p "
+                        "while teardown traffic is still active (cmdQ=%p origQ=%p primaryQ=%p)",
                         g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
                 }
-            } else {
-                queueForBackend = g_PostSLLastWorkingQueue;
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
@@ -7507,18 +7505,16 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
             // After FSR->DLSS->off with scQueue intentionally unset, reuse the
             // last queue that already proved it could render the live swapchain.
-            if (lastWorkingQueueStillActiveDuringRecentTeardown && g_OriginalGameQueue) {
-                gameQueue = g_OriginalGameQueue;
-                static std::atomic<int> s_postFSRProcessFrameOriginalRouteLogCount{0};
-                int logCount = s_postFSRProcessFrameOriginalRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+            gameQueue = g_PostSLLastWorkingQueue;
+            if (lastWorkingQueueStillActiveDuringRecentTeardown) {
+                static std::atomic<int> s_postFSRProcessFrameLastWorkingRouteLogCount{0};
+                int logCount = s_postFSRProcessFrameLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
-                        "DX12: ProcessFrame — deferring preserved PostSL lastWorking queue %p because teardown traffic "
-                        "is still active (cmdQ=%p origQ=%p primaryQ=%p)",
+                        "DX12: ProcessFrame — post-FSR inactive recovery keeping preserved PostSL lastWorking queue %p "
+                        "while teardown traffic is still active (cmdQ=%p origQ=%p primaryQ=%p)",
                         g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
                 }
-            } else {
-                gameQueue = g_PostSLLastWorkingQueue;
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
@@ -7934,22 +7930,6 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         "(slOffGrace=%d scQ=%p cmdQ=%p fgOwned=%d)",
                         slOffSwapchainGrace, currentSwapchainQueue, currentCommandQueue,
                         g_FGRuntimeOwnsSwapchain ? 1 : 0);
-                }
-                goto skipOverlayInit;
-            }
-
-            if (ce::dx12_overlay_policy::ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
-                    recentStreamlineTeardown, g_PostSLLastWorkingQueue != nullptr,
-                    lastWorkingQueueStillActiveDuringRecentTeardown) &&
-                !actualFGActive && !streamlineFGRunning && g_HadFSRFGPhase && currentSwapchainQueue == nullptr) {
-                static std::atomic<int> s_postFSRRecentTeardownDeferLogCount{0};
-                int logCount = s_postFSRRecentTeardownDeferLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logCount < 10 || (logCount % 128) == 0) {
-                    HookLogImportant(
-                        "DX12: Deferring post-FSR non-FG overlay init because lastWorking queue %p is still seeing "
-                        "recent Streamline teardown activity (cmdQ=%p origQ=%p primaryQ=%p)",
-                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue,
-                        g_PrimaryGameQueue.load(std::memory_order_acquire));
                 }
                 goto skipOverlayInit;
             }
