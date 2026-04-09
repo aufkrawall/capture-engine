@@ -199,6 +199,18 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesOriginalQueueDuringPostFSRIn
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
 }
 
+TEST(DXGISharedTest, PostFSRRecoveryOnlyUsesLastWorkingQueueWhileCommandOwnershipIsUnsettled) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
+        false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
+        true, false, false));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
+        true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
+        true, false, true));
+}
+
 TEST(DXGISharedTest, FSRSwapchainTakeoverRequiresAuthoritativeFFXTraffic) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(true, true, false, false,
                                                                                                false));

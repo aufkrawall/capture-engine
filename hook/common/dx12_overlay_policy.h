@@ -88,6 +88,15 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     return SwapchainOverlayRoutingDecision::kUseNormalRouting;
 }
 
+inline bool ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
+    bool hasCommandQueue, bool commandQueueMatchesOriginalGameQueue, bool commandQueueMatchesPrimaryGameQueue) {
+    // Preserve the last validated PostSL queue only while non-FG command
+    // ownership is still unsettled. Once command tracking has returned to the
+    // game's own original or primary queue, reusing the old PostSL queue can
+    // hit a departed runtime queue after teardown.
+    return hasCommandQueue && (commandQueueMatchesOriginalGameQueue || commandQueueMatchesPrimaryGameQueue);
+}
+
 struct OverlayMetricsBindingDecision {
     bool bindMetrics;
     bool refreshFrameMetadata;

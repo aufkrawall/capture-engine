@@ -3894,6 +3894,12 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         bool fsrFGNow = IsFSRFrameGenerationActive();
+        ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+        ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+        const bool preferOriginalOverLastWorking =
+            ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
+                currentCommandQueue != nullptr, currentCommandQueue == g_OriginalGameQueue,
+                currentCommandQueue == currentPrimaryQueue);
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
@@ -3913,7 +3919,19 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
-            queueForBackend = g_PostSLLastWorkingQueue;
+            if (preferOriginalOverLastWorking && g_OriginalGameQueue) {
+                queueForBackend = g_OriginalGameQueue;
+                static std::atomic<int> s_postFSRBackendOriginalRouteLogCount{0};
+                int logCount = s_postFSRBackendOriginalRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: InitImGui — bypassing preserved PostSL lastWorking queue %p because cmdQ=%p settled to "
+                        "a non-wrapper game queue (origQ=%p primaryQ=%p)",
+                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
+                }
+            } else {
+                queueForBackend = g_PostSLLastWorkingQueue;
+            }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
             queueForBackend = g_OriginalGameQueue;
@@ -3930,8 +3948,10 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         }
     }
     HookLogImportant(
-        "[Overlay] DX12: InitImGui backend queue=%p (origQ=%p, scQueue=%p, cmdQueue=%p, slFG=%d, fgCooldown=%d)",
-        queueForBackend, g_OriginalGameQueue, g_SwapchainQueue, (void*)g_CommandQueue.load(),
+        "[Overlay] DX12: InitImGui backend queue=%p (origQ=%p, primaryQ=%p, scQueue=%p, cmdQueue=%p, "
+        "lastWorkingQ=%p, slFG=%d, fgCooldown=%d)",
+        queueForBackend, g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire), g_SwapchainQueue,
+        (void*)g_CommandQueue.load(), g_PostSLLastWorkingQueue,
         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0, g_FGTransitionCooldown);
     g_OverlayAdapter.SetHwnd(hwnd);
     if (!g_OverlayAdapter.InitDX12(device, queueForBackend, format)) {
@@ -7277,6 +7297,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         bool fsrFGNow = IsFSRFrameGenerationActive();
+        ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+        ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+        const bool preferOriginalOverLastWorking =
+            ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(
+                currentCommandQueue != nullptr, currentCommandQueue == g_OriginalGameQueue,
+                currentCommandQueue == currentPrimaryQueue);
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
@@ -7323,7 +7349,19 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
             // After FSR->DLSS->off with scQueue intentionally unset, reuse the
             // last queue that already proved it could render the live swapchain.
-            gameQueue = g_PostSLLastWorkingQueue;
+            if (preferOriginalOverLastWorking && g_OriginalGameQueue) {
+                gameQueue = g_OriginalGameQueue;
+                static std::atomic<int> s_postFSRProcessFrameOriginalRouteLogCount{0};
+                int logCount = s_postFSRProcessFrameOriginalRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: ProcessFrame — bypassing preserved PostSL lastWorking queue %p because cmdQ=%p settled "
+                        "to a non-wrapper game queue (origQ=%p primaryQ=%p)",
+                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
+                }
+            } else {
+                gameQueue = g_PostSLLastWorkingQueue;
+            }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
             // After FSR->DLSS->off with scQueue intentionally unset, prefer the
@@ -7398,13 +7436,28 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 qPath = "scQueue(FSR-FG)";
             else if (fsrFGActive && gameQueue == g_OriginalGameQueue)
                 qPath = "origGame(FSR-FG-fallback)";
+            else if (!slFGNow && !fsrFGActive && g_HadFSRFGPhase && !g_SwapchainQueue &&
+                     g_PostSLLastWorkingQueue && gameQueue == g_PostSLLastWorkingQueue)
+                qPath = "lastWorking(post-FSR)";
+            else if (!slFGNow && !fsrFGActive && g_HadFSRFGPhase && !g_SwapchainQueue &&
+                     g_OriginalGameQueue && gameQueue == g_OriginalGameQueue)
+                qPath = "origGame(post-FSR)";
             else if (gameQueue == g_SwapchainQueue)
                 qPath = "scQueue";
-            else
+            else if (gameQueue == g_OriginalGameQueue)
+                qPath = "origGame";
+            else if (gameQueue == g_PrimaryGameQueue.load(std::memory_order_acquire))
+                qPath = "primaryQ";
+            else if (gameQueue == g_CommandQueue.load(std::memory_order_acquire))
                 qPath = "cmdQueue";
-            HookLogImportant("DX12: ProcessFrame queue=%p (slFG=%d fsrFG=%d origQ=%p scQ=%p cmdQ=%p path=%s) #%d",
-                             gameQueue, slFGNow ? 1 : 0, fsrFGActive ? 1 : 0, g_OriginalGameQueue, g_SwapchainQueue,
-                             (void*)g_CommandQueue.load(), qPath, s_queueLogCount);
+            else
+                qPath = "otherQ";
+            HookLogImportant(
+                "DX12: ProcessFrame queue=%p (slFG=%d fsrFG=%d origQ=%p primaryQ=%p scQ=%p cmdQ=%p lastWorkingQ=%p "
+                "path=%s) #%d",
+                gameQueue, slFGNow ? 1 : 0, fsrFGActive ? 1 : 0, g_OriginalGameQueue,
+                g_PrimaryGameQueue.load(std::memory_order_acquire), g_SwapchainQueue,
+                (void*)g_CommandQueue.load(), g_PostSLLastWorkingQueue, qPath, s_queueLogCount);
         }
     }
 
