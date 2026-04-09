@@ -3995,7 +3995,19 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
-            queueForBackend = g_OriginalGameQueue;
+            if (currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue) {
+                queueForBackend = currentCommandQueue;
+                static std::atomic<int> s_postFSRBackendPrimaryRouteLogCount{0};
+                int logCount = s_postFSRBackendPrimaryRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: InitImGui — post-FSR inactive recovery using settled primary queue %p "
+                        "instead of origGame %p (cmdQ=%p)",
+                        queueForBackend, g_OriginalGameQueue, currentCommandQueue);
+                }
+            } else {
+                queueForBackend = g_OriginalGameQueue;
+            }
         } else if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue ||
                    routingDecision ==
                        ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue) {
