@@ -55,6 +55,7 @@ struct SharedState {
     std::atomic<bool> inPresentHook{false};
     std::atomic<bool> fgRuntimeOwnsSwapchain{false};
     std::atomic<bool> streamlineStartupHandoffPending{false};
+    std::atomic<ULONGLONG> streamlineStartupTransitionUntilMs{0};
 };
 
 extern SharedState g_SharedState;
@@ -83,6 +84,21 @@ inline bool DoesFGRuntimeOwnSwapchain() {
 
 inline bool IsStreamlineStartupHandoffPending() {
     return g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
+}
+
+static constexpr ULONGLONG kStreamlineStartupTransitionGraceMs = 500;
+
+inline void ArmStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
+    g_SharedState.streamlineStartupTransitionUntilMs.store(GetTickCount64() + durationMs, std::memory_order_release);
+}
+
+inline void ClearStreamlineStartupTransitionWindow() {
+    g_SharedState.streamlineStartupTransitionUntilMs.store(0, std::memory_order_release);
+}
+
+inline bool IsStreamlineStartupTransitionWindowActive() {
+    const ULONGLONG untilMs = g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
+    return untilMs != 0 && GetTickCount64() < untilMs;
 }
 
 // Set pending swapchain for lazy hook installation (called from DX12 hook)
@@ -172,10 +188,17 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapCha
     return isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule;
 }
 
-inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool streamlineFGRunning,
-                                                          bool callerFromFFXFGModule,
-                                                          bool streamlineStartupHandoffPending) {
-    return isD3D12SwapChain && streamlineFGRunning && callerFromFFXFGModule && streamlineStartupHandoffPending;
+inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,
+                                                          bool streamlineStartupHandoffPending,
+                                                          bool streamlineStartupTransitionWindowActive) {
+    // During repeated FSR->DLSS handoffs, FFX teardown Presents can arrive
+    // before Streamline publishes its running signal or after an older PostSL
+    // path clears the pending latch for the new epoch. A short explicit
+    // transition window keeps those Presents on the safe bypass route instead
+    // of falling through the generic oPresent path into third-party hook
+    // chains.
+    return isD3D12SwapChain && callerFromFFXFGModule &&
+           (streamlineStartupHandoffPending || streamlineStartupTransitionWindowActive);
 }
 
 inline bool ShouldKeepPostSLCallbackInstalledDuringTransition(bool streamlineFGRunningAfterTransition) {

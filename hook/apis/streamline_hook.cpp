@@ -306,6 +306,9 @@ void ApplyCombinedDLSSFGState(bool active, int multiplier) {
 
 void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char* source) {
     const bool previousSignal = DXGIShared::g_StreamlineFGRunning.exchange(active, std::memory_order_acq_rel);
+    if (active) {
+        DXGIShared::ArmStreamlineStartupTransitionWindow();
+    }
     g_FGCompat.SetStreamlineFGSignal(active);
     ApplyCombinedDLSSFGState(active, multiplier);
 

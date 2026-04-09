@@ -790,9 +790,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // into DetourPresent, not the helper's own return address inside this DLL.
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
     const bool streamlineStartupHandoffPending = (api == APIType::D3D12) && IsStreamlineStartupHandoffPending();
+    const bool streamlineStartupTransitionWindowActive =
+        (api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
-        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
-        IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress), streamlineStartupHandoffPending);
+        api == APIType::D3D12, IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
+        streamlineStartupHandoffPending,
+        streamlineStartupTransitionWindowActive);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
@@ -1123,9 +1126,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const APIType api = DetectAPIType(pSwapChain);
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
     const bool streamlineStartupHandoffPending = (api == APIType::D3D12) && IsStreamlineStartupHandoffPending();
+    const bool streamlineStartupTransitionWindowActive =
+        (api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
-        api == APIType::D3D12, g_StreamlineFGRunning.load(std::memory_order_acquire),
-        IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress), streamlineStartupHandoffPending);
+        api == APIType::D3D12, IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
+        streamlineStartupHandoffPending,
+        streamlineStartupTransitionWindowActive);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();

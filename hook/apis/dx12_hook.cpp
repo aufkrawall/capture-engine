@@ -2995,6 +2995,7 @@ void DX12_PrepareForStreamlineEnableTransition() {
         return;
     }
 
+    DXGIShared::ArmStreamlineStartupTransitionWindow();
     StartTransitionCooldown();
     WaitForOverlayGpuIdle("DX12: Streamline enable prep");
     InvalidateAllOverlayCachedFrames();
@@ -3011,6 +3012,7 @@ bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() {
 
 void DX12_OnStreamlineFGStateChanged(bool active) {
     if (active) {
+        DXGIShared::ArmStreamlineStartupTransitionWindow();
         SetPostSLCallbackInstalled(true, "DX12: Streamline FG ON");
         HookLogImportant("DX12: Streamline FG ON — pre-armed PostSL callback for startup routing");
         int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
@@ -3053,6 +3055,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     }
 
     g_PostSLOverlayActive.store(false, std::memory_order_release);
+    DXGIShared::ClearStreamlineStartupTransitionWindow();
     SetPostSLCallbackInstalled(false, "DX12: Streamline FG OFF");
     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
     g_PostSLStallCounter.store(0, std::memory_order_release);
@@ -5258,6 +5261,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             g_PostSLOverlayActive.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+            DXGIShared::ClearStreamlineStartupTransitionWindow();
             HookLogImportant("DX12: PostSL synthetic startup activation complete — enabling PostSL rendering");
         }
     }
@@ -7911,6 +7915,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     g_PostSLOverlayActive.store(true, std::memory_order_release);
                     g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
                     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+                    DXGIShared::ClearStreamlineStartupTransitionWindow();
                     HookLogImportant(
                         "DX12: FG transition cooldown complete — reactivated PostSL (slFG=1, reinit path)");
                 } else {
@@ -8625,6 +8630,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 if (outerSLFGRunning) {
                     g_PostSLOverlayActive.store(true, std::memory_order_release);
                     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+                    DXGIShared::ClearStreamlineStartupTransitionWindow();
                 }
             }
         }
@@ -8637,6 +8643,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 g_PostSLOverlayActive.store(true, std::memory_order_release);
                 g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
                 DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+                DXGIShared::ClearStreamlineStartupTransitionWindow();
                 HookLogImportant("DX12: [outer] Registered PostSL callback (overlay blocked, SL FG active)");
             }
         } else if (!outerSLFGRunning && g_FGTransitionCooldown == 0) {
@@ -9196,6 +9203,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
                             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false,
                                                                                             std::memory_order_release);
+                            DXGIShared::ClearStreamlineStartupTransitionWindow();
                             HookLogImportant("DX12: SL FG active - activated POST-SL overlay rendering (hadFSR=%d)",
                                              g_HadFSRFGPhase ? 1 : 0);
                         }
