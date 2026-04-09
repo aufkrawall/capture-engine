@@ -33,8 +33,7 @@ inline RuntimeMode ClassifyRuntimeMode(const DetectionSnapshot& snapshot) {
     if (dlssFGConfirmed) {
         return RuntimeMode::kDLSSFG;
     }
-    if (!snapshot.dormant && snapshot.heuristicFSRFGActive &&
-        !(snapshot.streamlineLoaded || snapshot.streamlineFGSignaled || snapshot.dlssFGApiActive)) {
+    if (!snapshot.dormant && snapshot.heuristicFSRFGActive && !snapshot.streamlineFGSignaled && !dlssFGConfirmed) {
         return RuntimeMode::kFSRFG;
     }
     if (snapshot.nvidiaSmoothMotionDetected && snapshot.nvPresentLoaded && !snapshot.streamlineFGSignaled &&

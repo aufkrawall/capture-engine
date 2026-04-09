@@ -51,12 +51,31 @@ TEST(FGRuntimeStateTest, FsrOverridesTransientDlssApiState) {
     EXPECT_EQ(RuntimeMode::kFSRFG, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
 }
 
-TEST(FGRuntimeStateTest, HeuristicFsrBlockedWhileStreamlineIsPresent) {
+TEST(FGRuntimeStateTest, HeuristicFsrAllowedWhileStreamlineModuleIsPresentButFGIsNotSignaled) {
     DetectionSnapshot snapshot;
     snapshot.dormant = false;
     snapshot.heuristicFSRFGActive = true;
     snapshot.streamlineLoaded = true;
+    EXPECT_EQ(RuntimeMode::kFSRFG, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
+}
+
+TEST(FGRuntimeStateTest, HeuristicFsrBlockedWhileStreamlineFGIsSignaled) {
+    DetectionSnapshot snapshot;
+    snapshot.dormant = false;
+    snapshot.heuristicFSRFGActive = true;
+    snapshot.streamlineLoaded = true;
+    snapshot.streamlineFGSignaled = true;
     EXPECT_EQ(RuntimeMode::kStreamlineNoFG, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
+}
+
+TEST(FGRuntimeStateTest, HeuristicFsrBlockedByConfirmedDlssFG) {
+    DetectionSnapshot snapshot;
+    snapshot.dormant = false;
+    snapshot.heuristicFSRFGActive = true;
+    snapshot.streamlineLoaded = true;
+    snapshot.dlssFGApiActive = true;
+    snapshot.dlssFGMultiplier = 2;
+    EXPECT_EQ(RuntimeMode::kDLSSFG, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
 }
 
 TEST(FGRuntimeStateTest, HeuristicFsrAllowedWithoutStreamline) {
