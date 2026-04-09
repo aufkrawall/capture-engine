@@ -1165,6 +1165,11 @@ static void MarkPostSLRecentTeardownActivity(const char* reason, ID3D12CommandQu
     }
 }
 
+static void InvalidateAllOverlayCachedFrames() {
+    g_OverlayAdapter.InvalidateCachedFrame();
+    g_D3D11On12Adapter.InvalidateCachedFrame();
+}
+
 static void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper,
                                               bool deferQueueReleaseUntilCallbacksDrain) {
     g_PostSLLifecycleEpoch.fetch_add(1, std::memory_order_acq_rel);
@@ -2534,7 +2539,7 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
     if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
             recentStreamlineTeardown, pQueue == primaryQ, pQueue == g_OriginalGameQueue,
-            pQueue == currentSwapchainQueue)) {
+            pQueue == currentSwapchainQueue, pQueue == g_PostSLLastWorkingQueue)) {
         if (g_PostSLLastWorkingQueue && pQueue == g_PostSLLastWorkingQueue) {
             MarkPostSLRecentTeardownActivity("DX12: SetCommandQueue recent PostSL teardown activity", pQueue);
         }
@@ -3020,8 +3025,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
         perf->SetFGMetrics(0.0f, 0.0f, 1, 0);
     }
-    g_OverlayAdapter.InvalidateCachedFrame();
-    g_D3D11On12Adapter.InvalidateCachedFrame();
+    InvalidateAllOverlayCachedFrames();
     g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
     ResetPostSLLifecycleForTransition("DX12: Streamline FG OFF transition", true, true);
 
@@ -7707,43 +7711,66 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // Capture initial queue during first 5 frames (before FG activates)
             s_initialQueue = rawQueue;
         } else if (s_initialQueue) {
-            bool isFGQueue = (rawQueue != s_initialQueue);
-            if (isFGQueue) {
-                // Reset consecutive-initial counter — we just saw the FG queue
-                s_consecutiveInitialQueueFrames = 0;
+            const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+            const bool ignoreQueueChangeDuringRecentTeardown =
+                rawQueue && ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
+                                recentStreamlineTeardown,
+                                rawQueue == g_PrimaryGameQueue.load(std::memory_order_acquire),
+                                rawQueue == g_OriginalGameQueue, rawQueue == g_SwapchainQueue,
+                                rawQueue == g_PostSLLastWorkingQueue);
 
-                if (!s_currentFGQueue) {
-                    if (UpdateHeuristicFSRFGState(true, "queue-change")) {
-                        // Queue changed away from initial → FSR FG activated
-                        s_currentFGQueue = rawQueue;
-                        HookLogImportant(
-                            "DX12: FG detected via queue change (initial=%p, current=%p, gameQ=%p, frame=%d)",
-                            s_initialQueue, rawQueue, gameQueue, s_queueFrameCount);
-                    } else {
-                        static std::atomic<int> s_ignoredQueueChangeLogCount{0};
-                        if (s_ignoredQueueChangeLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-                            HookLog("DX12: Ignoring queue change heuristic (initial=%p, current=%p, rawQ=%p, frame=%d)",
+            if (ignoreQueueChangeDuringRecentTeardown) {
+                static std::atomic<int> s_recentTeardownQueueChangeIgnoreLogCount{0};
+                const int logCount = s_recentTeardownQueueChangeIgnoreLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 20 || (logCount % 256) == 0) {
+                    HookLogImportant(
+                        "DX12: Ignoring queue-change heuristic on recent-teardown queue %p "
+                        "(initial=%p orig=%p primary=%p scQ=%p lastWorking=%p slOffGrace=%d frame=%d)",
+                        rawQueue, s_initialQueue, g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire),
+                        g_SwapchainQueue, g_PostSLLastWorkingQueue,
+                        g_SLOffHeuristicGrace.load(std::memory_order_acquire), s_queueFrameCount);
+                }
+                s_consecutiveInitialQueueFrames = 0;
+            } else {
+                bool isFGQueue = (rawQueue != s_initialQueue);
+                if (isFGQueue) {
+                    // Reset consecutive-initial counter — we just saw the FG queue
+                    s_consecutiveInitialQueueFrames = 0;
+
+                    if (!s_currentFGQueue) {
+                        if (UpdateHeuristicFSRFGState(true, "queue-change")) {
+                            // Queue changed away from initial → FSR FG activated
+                            s_currentFGQueue = rawQueue;
+                            HookLogImportant(
+                                "DX12: FG detected via queue change (initial=%p, current=%p, gameQ=%p, frame=%d)",
+                                s_initialQueue, rawQueue, gameQueue, s_queueFrameCount);
+                        } else {
+                            static std::atomic<int> s_ignoredQueueChangeLogCount{0};
+                            if (s_ignoredQueueChangeLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                                HookLog(
+                                    "DX12: Ignoring queue change heuristic (initial=%p, current=%p, rawQ=%p, frame=%d)",
                                     s_initialQueue, rawQueue, gameQueue, s_queueFrameCount);
+                            }
                         }
                     }
-                }
-                // else: FG already active, FG queue seen again — normal FSR FG alternation
-            } else {
-                // Seeing initial queue.  During FSR FG this happens every other frame.
-                // Only deactivate after many CONSECUTIVE initial-queue frames.
-                if (s_currentFGQueue) {
-                    ++s_consecutiveInitialQueueFrames;
-                    if (s_consecutiveInitialQueueFrames >= kDeactivationThreshold) {
-                        HookLogImportant(
-                            "DX12: FG deactivated via queue revert after %d consecutive initial-queue frames "
-                            "(initial=%p, fgQueue=%p, frame=%d)",
-                            s_consecutiveInitialQueueFrames, s_initialQueue, s_currentFGQueue, s_queueFrameCount);
-                        s_currentFGQueue = nullptr;
-                        s_consecutiveInitialQueueFrames = 0;
-                        UpdateHeuristicFSRFGState(false, "queue-change");
-                    } else if (s_consecutiveInitialQueueFrames == 1 || s_consecutiveInitialQueueFrames == 30) {
-                        HookLog("DX12: Seeing initial queue while FG active (consecutive=%d/%d, frame=%d)",
-                                s_consecutiveInitialQueueFrames, kDeactivationThreshold, s_queueFrameCount);
+                    // else: FG already active, FG queue seen again — normal FSR FG alternation
+                } else {
+                    // Seeing initial queue.  During FSR FG this happens every other frame.
+                    // Only deactivate after many CONSECUTIVE initial-queue frames.
+                    if (s_currentFGQueue) {
+                        ++s_consecutiveInitialQueueFrames;
+                        if (s_consecutiveInitialQueueFrames >= kDeactivationThreshold) {
+                            HookLogImportant(
+                                "DX12: FG deactivated via queue revert after %d consecutive initial-queue frames "
+                                "(initial=%p, fgQueue=%p, frame=%d)",
+                                s_consecutiveInitialQueueFrames, s_initialQueue, s_currentFGQueue, s_queueFrameCount);
+                            s_currentFGQueue = nullptr;
+                            s_consecutiveInitialQueueFrames = 0;
+                            UpdateHeuristicFSRFGState(false, "queue-change");
+                        } else if (s_consecutiveInitialQueueFrames == 1 || s_consecutiveInitialQueueFrames == 30) {
+                            HookLog("DX12: Seeing initial queue while FG active (consecutive=%d/%d, frame=%d)",
+                                    s_consecutiveInitialQueueFrames, kDeactivationThreshold, s_queueFrameCount);
+                        }
                     }
                 }
             }
@@ -8479,6 +8506,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // Disable PostSL immediately — SL is tearing down
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
                 SetPostSLCallbackInstalled(false, "DX12: [outer] FG->off");
+                InvalidateAllOverlayCachedFrames();
 
                 // Drain in-flight GPU work
                 if (g_State.fence) {
@@ -10790,7 +10818,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             (pThis == primaryQ || pThis == currentQ || pThis == g_OriginalGameQueue || pThis == g_SwapchainQueue);
         const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
         if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-                recentStreamlineTeardown, pThis == primaryQ, pThis == g_OriginalGameQueue, pThis == g_SwapchainQueue)) {
+                recentStreamlineTeardown, pThis == primaryQ, pThis == g_OriginalGameQueue, pThis == g_SwapchainQueue,
+                pThis == g_PostSLLastWorkingQueue)) {
             const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
             const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
             if (ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(

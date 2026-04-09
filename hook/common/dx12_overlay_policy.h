@@ -315,7 +315,8 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
 inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(bool recentStreamlineTeardown,
                                                                               bool queueMatchesPrimaryQueue,
                                                                               bool queueMatchesOriginalGameQueue,
-                                                                              bool queueMatchesSwapchainQueue) {
+                                                                              bool queueMatchesSwapchainQueue,
+                                                                              bool queueMatchesPostSLLastWorkingQueue) {
     if (!recentStreamlineTeardown) {
         return false;
     }
@@ -324,6 +325,35 @@ inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(bo
     // can keep arriving on a departed wrapper queue for a short time even though
     // Present has already returned to the non-FG swapchain queue. Do not let
     // those teardown queues repollute g_CommandQueue.
+    // The preserved PostSL last-working queue is also teardown-era state in this
+    // window. It stays valuable for immediate non-FG overlay recovery, but it
+    // must not be re-registered as the live game command queue or the queue-change
+    // heuristic will briefly re-detect FSR FG when menus reopen.
+    if (queueMatchesPostSLLastWorkingQueue && !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue &&
+        !queueMatchesSwapchainQueue) {
+        return true;
+    }
+
+    return !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue && !queueMatchesSwapchainQueue;
+}
+
+inline bool ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(bool recentStreamlineTeardown,
+                                                                           bool queueMatchesPrimaryQueue,
+                                                                           bool queueMatchesOriginalGameQueue,
+                                                                           bool queueMatchesSwapchainQueue,
+                                                                           bool queueMatchesPostSLLastWorkingQueue) {
+    if (!recentStreamlineTeardown) {
+        return false;
+    }
+
+    // The preserved PostSL queue can still resurface as teardown traffic after
+    // DLSS FG turns off. Treat it like a departed runtime queue for heuristic
+    // purposes so a late menu transition cannot blip back into heuristic FSR FG.
+    if (queueMatchesPostSLLastWorkingQueue && !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue &&
+        !queueMatchesSwapchainQueue) {
+        return true;
+    }
+
     return !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue && !queueMatchesSwapchainQueue;
 }
 
