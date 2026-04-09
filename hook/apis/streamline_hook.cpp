@@ -651,6 +651,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     const bool viewportWasActive = WasViewportRuntimeStateActive(viewportKey);
     const bool hasRuntimeFenceEvidence = HasDLSSGRuntimeFenceEvidence(state);
     const bool suppressNewActivation = ShouldSuppressNewGetStateActivationAfterAuthoritativeFFXTakeover();
+    const bool suppressGetStateActivationWithoutFenceEvidence = suppressNewActivation && !hasRuntimeFenceEvidence;
     if (result == kSlResultOk && state.numFramesToGenerateMax > 0) {
         CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
     }
@@ -658,14 +659,15 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     const uint32_t capabilityMax =
         state.numFramesToGenerateMax > 0 ? state.numFramesToGenerateMax : GetCachedCapabilityMax(viewportKey);
     const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
-        result == kSlResultOk, options != nullptr, viewportWasActive, hasRuntimeFenceEvidence, suppressNewActivation,
-        options ? options->mode : 0, options ? options->numFramesToGenerate : 0u, capabilityMax);
+        result == kSlResultOk, options != nullptr, viewportWasActive, hasRuntimeFenceEvidence,
+        suppressGetStateActivationWithoutFenceEvidence, options ? options->mode : 0,
+        options ? options->numFramesToGenerate : 0u, capabilityMax);
     if (runtimeUpdate.shouldUpdate) {
         UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
                                    runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "GetState");
     } else if (result == kSlResultOk && options != nullptr &&
                ce::streamline_runtime_policy::IsDLSSGModeEnabled(options->mode) && !viewportWasActive &&
-               suppressNewActivation) {
+               suppressGetStateActivationWithoutFenceEvidence) {
         static std::atomic<int> s_recentFfxTakeoverSuppressedGetStateLogCount{0};
         const int logCount = s_recentFfxTakeoverSuppressedGetStateLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 128) == 0) {

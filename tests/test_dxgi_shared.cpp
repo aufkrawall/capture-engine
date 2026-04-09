@@ -223,6 +223,15 @@ TEST(DXGISharedTest, PostFSRRecoveryOnlyUsesLastWorkingQueueWhileCommandOwnershi
         true, true, false, true));
 }
 
+TEST(DXGISharedTest, PostFSRInactiveOriginalRouteFallsBackToSettledPrimaryCommandQueue) {
+    using ce::dx12_overlay_policy::ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery;
+
+    EXPECT_TRUE(
+        ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(true, false, true, false));
+    EXPECT_FALSE(
+        ShouldPreferOriginalQueueOverPostSLLastWorkingQueueAfterPostFSRRecovery(true, false, true, true));
+}
+
 TEST(DXGISharedTest, PostFSRRecoveryStaysDeferredWhileLastWorkingQueueStillSeesRecentTeardown) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostFSRRecoveryWhileLastWorkingQueueStillSeesRecentTeardown(
         true, true, true));

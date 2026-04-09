@@ -7456,7 +7456,19 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // Talos uses separate render/present DIRECT queues; falling back to
             // g_CommandQueue/primary picked the render queue and immediately hit
             // DEVICE_REMOVED on the first recovered non-FG offscreen composite.
-            gameQueue = g_OriginalGameQueue;
+            if (currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue) {
+                gameQueue = currentCommandQueue;
+                static std::atomic<int> s_postFSRInactivePrimaryRouteLogCount{0};
+                int logCount = s_postFSRInactivePrimaryRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: ProcessFrame — post-FSR inactive recovery using settled primary queue %p "
+                        "instead of origGame %p (cmdQ=%p)",
+                        gameQueue, g_OriginalGameQueue, currentCommandQueue);
+                }
+            } else {
+                gameQueue = g_OriginalGameQueue;
+            }
         } else if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue) {
             // FSR FG: pSwapChain is FSR's swapchain, backbuffers belong to
             // FSR's queue.  Submit on the swapchain queue to avoid cross-queue
