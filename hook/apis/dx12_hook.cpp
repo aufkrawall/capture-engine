@@ -4091,18 +4091,28 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
-            if (currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue) {
-                queueForBackend = currentCommandQueue;
-                static std::atomic<int> s_postFSRBackendPrimaryRouteLogCount{0};
-                int logCount = s_postFSRBackendPrimaryRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+            const auto queueSource = ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource(
+                g_OriginalGameQueue != nullptr);
+            if (queueSource == ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue) {
+                queueForBackend = g_OriginalGameQueue;
+                static std::atomic<int> s_postFSRBackendOrigRouteLogCount{0};
+                int logCount = s_postFSRBackendOrigRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
-                        "DX12: InitImGui — post-FSR inactive recovery using settled primary queue %p "
-                        "instead of origGame %p (cmdQ=%p)",
-                        queueForBackend, g_OriginalGameQueue, currentCommandQueue);
+                        "DX12: InitImGui — post-FSR inactive recovery using original present queue %p "
+                        "(cmdQ=%p primaryQ=%p)",
+                        queueForBackend, currentCommandQueue, currentPrimaryQueue);
                 }
             } else {
-                queueForBackend = g_OriginalGameQueue;
+                queueForBackend = currentCommandQueue ? currentCommandQueue : currentPrimaryQueue;
+                static std::atomic<int> s_postFSRBackendFallbackRouteLogCount{0};
+                int logCount = s_postFSRBackendFallbackRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: InitImGui — post-FSR inactive recovery missing origGame, falling back to current "
+                        "command queue %p (primaryQ=%p)",
+                        queueForBackend, currentPrimaryQueue);
+                }
             }
         } else if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue ||
                    routingDecision ==
@@ -7590,18 +7600,28 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // Talos uses separate render/present DIRECT queues; falling back to
             // g_CommandQueue/primary picked the render queue and immediately hit
             // DEVICE_REMOVED on the first recovered non-FG offscreen composite.
-            if (currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue) {
-                gameQueue = currentCommandQueue;
-                static std::atomic<int> s_postFSRInactivePrimaryRouteLogCount{0};
-                int logCount = s_postFSRInactivePrimaryRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+            const auto queueSource = ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource(
+                g_OriginalGameQueue != nullptr);
+            if (queueSource == ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue) {
+                gameQueue = g_OriginalGameQueue;
+                static std::atomic<int> s_postFSRInactiveOrigRouteLogCount{0};
+                int logCount = s_postFSRInactiveOrigRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
-                        "DX12: ProcessFrame — post-FSR inactive recovery using settled primary queue %p "
-                        "instead of origGame %p (cmdQ=%p)",
-                        gameQueue, g_OriginalGameQueue, currentCommandQueue);
+                        "DX12: ProcessFrame — post-FSR inactive recovery using original present queue %p "
+                        "(cmdQ=%p primaryQ=%p)",
+                        gameQueue, currentCommandQueue, currentPrimaryQueue);
                 }
             } else {
-                gameQueue = g_OriginalGameQueue;
+                gameQueue = currentCommandQueue ? currentCommandQueue : currentPrimaryQueue;
+                static std::atomic<int> s_postFSRInactiveFallbackRouteLogCount{0};
+                int logCount = s_postFSRInactiveFallbackRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: ProcessFrame — post-FSR inactive recovery missing origGame, falling back to current "
+                        "command queue %p (primaryQ=%p)",
+                        gameQueue, currentPrimaryQueue);
+                }
             }
         } else if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue) {
             // FSR FG: pSwapChain is FSR's swapchain, backbuffers belong to

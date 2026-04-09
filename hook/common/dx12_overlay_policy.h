@@ -43,6 +43,11 @@ enum class SwapchainOverlayRoutingDecision {
     kSkipFSRWithoutSwapchainQueue,
 };
 
+enum class PostFSRInactiveRecoveryQueueSource {
+    kOriginalPresentQueue,
+    kCurrentCommandQueueFallback,
+};
+
 inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtimeOwnsSwapchain, bool streamlineFGActive,
                                                                     bool fsrFGActive, bool hadFSRFGPhase,
                                                                     bool hasSwapchainQueue, bool hasOriginalGameQueue,
@@ -98,8 +103,17 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     return SwapchainOverlayRoutingDecision::kUseNormalRouting;
 }
 
+inline PostFSRInactiveRecoveryQueueSource DecidePostFSRInactiveRecoveryQueueSource(bool hasOriginalGameQueue) {
+    // Even after command ownership settles back to the primary/ECL queue, the
+    // recovered non-FG swapchain can still belong to the original Present
+    // queue. Talos device-removed on the first recovered offscreen composite
+    // when we submitted it on the primary queue instead.
+    return hasOriginalGameQueue ? PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue
+                                : PostFSRInactiveRecoveryQueueSource::kCurrentCommandQueueFallback;
+}
+
 inline int ResolveTransitionCooldownFrames(int existingCooldownFrames, int requestedCooldownFrames,
-                                          bool overrideExistingCooldown) {
+                                           bool overrideExistingCooldown) {
     // When the post-FSR DLSS->off path has already settled command ownership
     // back to the game's primary queue, the earlier long FG-on cooldown mostly
     // leaves the last FG-on overlay frame stuck on screen. In that narrow case,

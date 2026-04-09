@@ -218,6 +218,16 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesOriginalQueueDuringPostFSRIn
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
 }
 
+TEST(DXGISharedTest, PostFSRInactiveRecoveryQueueSourcePrefersOriginalPresentQueue) {
+    using ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource;
+    using ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource;
+
+    EXPECT_EQ(DecidePostFSRInactiveRecoveryQueueSource(true),
+              PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue);
+    EXPECT_EQ(DecidePostFSRInactiveRecoveryQueueSource(false),
+              PostFSRInactiveRecoveryQueueSource::kCurrentCommandQueueFallback);
+}
+
 TEST(DXGISharedTest, TransitionCooldownOverrideReplacesStaleLongCooldownForSettledPrimaryPostFSROff) {
     EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(90, 15, true), 15);
     EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(0, 15, true), 15);
