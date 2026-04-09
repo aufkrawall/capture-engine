@@ -25,6 +25,9 @@
 #include <intrin.h>
 #include <atomic>
 #include "hook_common.h"
+#include "fg_detection.h"
+#include "streamline_runtime_policy.h"
+#include "../apis/dx12_hook.h"
 #include "reflex_defs.h"
 
 // IAT hook infrastructure for game activation detection.
@@ -299,6 +302,10 @@ public:
             HookLogImportant(
                 "ReflexLimiter: Game activated Reflex (minimumIntervalUs=%u, override=%u, boost=%u, markers=%u)",
                 pParams->minimumIntervalUs, ourInterval, pParams->bLowLatencyBoost, pParams->bUseMarkersToOptimize);
+            if (ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(
+                    true, g_FGCompat.IsFSRFGApiActive(), DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration())) {
+                DX12_PrepareForStreamlineEnableTransition();
+            }
         } else if (!pParams->bLowLatencyMode && gameActivated_.load(std::memory_order_acquire)) {
             gameActivated_.store(false, std::memory_order_release);
             HookLogImportant("ReflexLimiter: Game deactivated Reflex");

@@ -78,4 +78,10 @@ inline bool ShouldPrepareForStreamlineEnableBeforeOriginalCall(bool requestedEna
     return requestedEnabled && currentlyAuthoritativeFSRActive && runtimeOwnsSwapchain;
 }
 
+inline bool ShouldRequestStreamlineEnablePreparationOnReflexActivation(bool reflexActivating,
+                                                                       bool currentlyAuthoritativeFSRActive,
+                                                                       bool runtimeOwnsSwapchain) {
+    return reflexActivating && currentlyAuthoritativeFSRActive && runtimeOwnsSwapchain;
+}
+
 }  // namespace ce::streamline_runtime_policy

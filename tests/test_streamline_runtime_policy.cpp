@@ -112,4 +112,16 @@ TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOn
         ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, false));
 }
 
+TEST(StreamlineRuntimePolicyTest, ReflexActivationOnlyRequestsPrepareDuringFsrOwnedHandoff) {
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, true));
+
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(false, true, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, false, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, false));
+}
+
 }  // namespace
