@@ -3,6 +3,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include "../common/ffx_api_parsing.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
 #include "../wrappers/iat_hook.h"
@@ -22,6 +23,7 @@ typedef struct ffxApiHeader {
 } ffxApiHeader;
 
 typedef ffxApiHeader ffxCreateContextDescHeader;
+typedef ffxApiHeader ffxConfigureDescHeader;
 
 typedef void* (*ffxAlloc)(void* pUserData, uint64_t size);
 typedef void (*ffxDealloc)(void* pUserData, void* pMem);
@@ -44,6 +46,7 @@ constexpr ffxReturnCode_t FFX_API_RETURN_OK = 0;
 typedef ffxReturnCode_t (*PfnFfxCreateContext)(ffxContext* context, ffxCreateContextDescHeader* desc,
                                                const ffxAllocationCallbacks* memCb);
 typedef ffxReturnCode_t (*PfnFfxDestroyContext)(ffxContext* context, const ffxAllocationCallbacks* memCb);
+typedef ffxReturnCode_t (*PfnFfxConfigure)(ffxContext* context, const ffxConfigureDescHeader* desc);
 
 // ============================================================================
 // Hook State
@@ -63,6 +66,7 @@ std::unordered_map<ffxContext, uint32_t> g_ContextTypeMap;
 // Original function pointers
 PfnFfxCreateContext g_Original_ffxCreateContext = nullptr;
 PfnFfxDestroyContext g_Original_ffxDestroyContext = nullptr;
+PfnFfxConfigure g_Original_ffxConfigure = nullptr;
 
 // Track which module we hooked (for cleanup)
 HMODULE g_HookedModule = nullptr;
@@ -162,6 +166,33 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
     return result;
 }
 
+ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescHeader* desc) {
+    if (!g_Original_ffxConfigure) {
+        HookLog("FFX Hook: ffxConfigure called but original not set!");
+        return 1;  // Error
+    }
+
+    const ffxReturnCode_t result = g_Original_ffxConfigure(context, desc);
+    if (result != FFX_API_RETURN_OK || !desc) {
+        return result;
+    }
+
+    const auto parsed =
+        ce::ffx_api::ParseFrameGenerationConfigureState(reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc));
+    if (!parsed.recognized) {
+        return result;
+    }
+
+    HookLog("FFX Hook: Frame Generation configure %s (context=%p, frameID=%llu, type=0x%llx)",
+            parsed.enabled ? "ENABLED" : "DISABLED", context, (unsigned long long)parsed.frameId,
+            (unsigned long long)desc->type);
+
+    // Native FSR can keep its context alive while toggling FG on/off via
+    // ffxConfigure. Trust that runtime signal over context lifetime.
+    g_FGCompat.SetFSRFGActive(parsed.enabled);
+    return result;
+}
+
 // ============================================================================
 // Hook Installation via GetProcAddress Detour
 // ============================================================================
@@ -176,15 +207,17 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     // Get the original functions
     PfnFfxCreateContext createCtx = (PfnFfxCreateContext)GetProcAddress(hModule, "ffxCreateContext");
     PfnFfxDestroyContext destroyCtx = (PfnFfxDestroyContext)GetProcAddress(hModule, "ffxDestroyContext");
+    PfnFfxConfigure configureCtx = (PfnFfxConfigure)GetProcAddress(hModule, "ffxConfigure");
 
-    if (!createCtx && !destroyCtx) {
-        HookLog("FFX Hook: Neither ffxCreateContext nor ffxDestroyContext found in %s - skipping", moduleName);
+    if (!createCtx && !destroyCtx && !configureCtx) {
+        HookLog("FFX Hook: No supported FFX exports found in %s - skipping", moduleName);
         return false;
     }
 
     // Store originals
     g_Original_ffxCreateContext = createCtx;
     g_Original_ffxDestroyContext = destroyCtx;
+    g_Original_ffxConfigure = configureCtx;
     g_HookedModule = hModule;
 
     // Install IAT hooks in all loaded modules to intercept calls to FFX functions
@@ -205,6 +238,12 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
         IATHook::PatchIATAllModules(moduleName, "ffxDestroyContext", (void*)Hooked_ffxDestroyContext, &dummy);
         IATHook::RegisterDynamicHook("ffxDestroyContext", (void*)Hooked_ffxDestroyContext,
                                      (void**)&g_Original_ffxDestroyContext);
+    }
+
+    if (configureCtx) {
+        HookLog("FFX Hook: ffxConfigure found at %p, hooking via IAT", configureCtx);
+        IATHook::PatchIATAllModules(moduleName, "ffxConfigure", (void*)Hooked_ffxConfigure, &dummy);
+        IATHook::RegisterDynamicHook("ffxConfigure", (void*)Hooked_ffxConfigure, (void**)&g_Original_ffxConfigure);
     }
 
     HookLog("FFX Hook: Hooks installed successfully for %s", moduleName);
@@ -328,6 +367,7 @@ void Shutdown() {
 
     g_Original_ffxCreateContext = nullptr;
     g_Original_ffxDestroyContext = nullptr;
+    g_Original_ffxConfigure = nullptr;
     g_HookedModule = nullptr;
     g_ActiveFGContextCount.store(0, std::memory_order_release);
     g_FGCompat.SetFSRFGActive(false);
