@@ -132,6 +132,14 @@ inline bool ShouldReserveInactiveFGOverlaySpace(bool postFSRNonFGRecovery) {
     return postFSRNonFGRecovery;
 }
 
+inline bool ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(bool endingPostFSRNonFGRecovery) {
+    // Once post-FSR non-FG recovery reaches a clean swapchain transition, the
+    // queue-change heuristic's old initial/current anchors belong to the
+    // departed recovery topology. Force a recapture so the new stable non-FG
+    // menu/present queue cannot be mistaken for fresh FSR FG.
+    return endingPostFSRNonFGRecovery;
+}
+
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,

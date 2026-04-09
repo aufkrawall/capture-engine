@@ -7425,9 +7425,20 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     currentCommandQueue, currentPrimaryQueue);
             } else {
                 HookLogImportant("DX12: Swapchain change (no FG active) — normal reinit");
+                const bool endingPostFSRNonFGRecovery = g_NeedOffscreenOverlayAfterPostFSRNonFG;
                 g_NeedOffscreenOverlayAfterPostFSRNonFG = false;
                 HookLogImportant(
                     "DX12: Cleared offscreen overlay flag — clean swapchain transition, backbuffer state is reliable");
+                if (ce::dx12_overlay_policy::ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(
+                        endingPostFSRNonFGRecovery)) {
+                    g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+                    if (g_FGCompat.IsHeuristicFSRFGActive()) {
+                        g_FGCompat.SetHeuristicFSRFGActive(false);
+                    }
+                    HookLogImportant(
+                        "DX12: Reset queue-change heuristic after clean non-FG swapchain transition ending post-FSR "
+                        "recovery");
+                }
             }
         }
         // Store raw pointer for change detection only - no AddRef to avoid
@@ -9701,6 +9712,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         }
                                         if (g_DescFreeBackend && g_D3D11On12Adapter.IsInitialized()) {
                                             bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
+                                            g_D3D11On12Adapter.SetReserveInactiveFGSpace(
+                                                ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpace(
+                                                    g_NeedOffscreenOverlayAfterPostFSRNonFG));
 
                                             // After FSR→DLSS: ANY direct backbuffer access (barriers,
                                             // RT, ClearRTV) causes DEVICE_HUNG because SL's FG pipeline
