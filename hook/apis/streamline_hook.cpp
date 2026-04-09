@@ -323,14 +323,12 @@ bool WasViewportRuntimeStateActive(uint32_t viewportKey) {
 }
 
 bool ShouldSuppressNewGetStateActivationAfterAuthoritativeFFXTakeover() {
-    if (g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire) &&
-        !DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration()) {
-        return true;
+    if (g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire)) {
+        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+        return runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG ||
+               runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
     }
 
-    if (g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire)) {
-        return false;
-    }
     const ULONGLONG suppressUntilMs = g_SuppressNewGetStateActivationUntilMs.load(std::memory_order_acquire);
     return suppressUntilMs != 0 && GetTickCount64() < suppressUntilMs;
 }
