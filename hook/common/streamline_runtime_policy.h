@@ -52,11 +52,9 @@ inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromRequestedOptions(bool
     return update;
 }
 
-inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromGetState(bool callSucceeded, bool hasOptions,
-                                                                    bool viewportWasActive,
-                                                                    bool hasRuntimeFenceEvidence, uint32_t mode,
-                                                                    uint32_t requestedGeneratedFrames,
-                                                                    uint32_t capabilityMax) {
+inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromGetState(
+    bool callSucceeded, bool hasOptions, bool viewportWasActive, bool hasRuntimeFenceEvidence,
+    bool suppressNewActivation, uint32_t mode, uint32_t requestedGeneratedFrames, uint32_t capabilityMax) {
     ViewportRuntimeUpdate update;
     update.capabilityMax = capabilityMax;
     if (!callSucceeded || !hasOptions) {
@@ -64,7 +62,7 @@ inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromGetState(bool callSuc
     }
 
     const bool active = IsDLSSGModeEnabled(mode);
-    if (active && !viewportWasActive && !hasRuntimeFenceEvidence) {
+    if (active && !viewportWasActive && (suppressNewActivation || !hasRuntimeFenceEvidence)) {
         return update;
     }
 

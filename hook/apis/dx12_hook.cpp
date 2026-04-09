@@ -52,6 +52,7 @@ static bool IsActualFrameGenerationActive();
 #include "ffx_hook.h"
 #include "graphics_hook.h"
 #include "lod_helper.h"
+#include "streamline_hook.h"
 
 #include "../common/custom_overlay.h"
 #include "../common/dx12_overlay_policy.h"
@@ -1290,9 +1291,8 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddres
     }
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
-    const bool staleStreamlineOwnershipCandidate =
-        runtimeOwnsSwapchain && streamlineFGRunning && !streamlineStartupHandoffPending &&
-        runtimeOwnershipJustActivated;
+    const bool staleStreamlineOwnershipCandidate = runtimeOwnsSwapchain && streamlineFGRunning &&
+                                                   !streamlineStartupHandoffPending && runtimeOwnershipJustActivated;
     if (!ce::dx12_overlay_policy::ShouldForceEndStreamlineOwnershipForSwapchainTakeover(
             runtimeOwnsSwapchain, callerFromFFXFGModule, streamlineFGRunning, streamlineStartupHandoffPending,
             runtimeOwnershipJustActivated)) {
@@ -1330,6 +1330,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddres
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
     g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    StreamlineHook::OnAuthoritativeFFXTakeover();
 
     HookLogImportant("DX12: FFX swapchain takeover via %s (queue=%p, staleSL=%d) — cleared Streamline/PostSL ownership",
                      callerModulePath[0] ? callerModulePath : "unknown", capturedQueue, staleStreamlineSignal ? 1 : 0);
@@ -2388,8 +2389,8 @@ static ID3D12CommandQueue* GetFrameClassificationQueue() {
         swapchainQueue = g_SwapchainQueue;
         actualFGActive = IsActualFrameGenerationActive();
         streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-        recoveringPostFSRNonFG = g_HadFSRFGPhase && g_PostSLLastWorkingQueue != nullptr &&
-                                 g_NeedOffscreenOverlayAfterPostFSRNonFG;
+        recoveringPostFSRNonFG =
+            g_HadFSRFGPhase && g_PostSLLastWorkingQueue != nullptr && g_NeedOffscreenOverlayAfterPostFSRNonFG;
     }
 
     if (ce::dx12_overlay_policy::ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
@@ -4561,8 +4562,7 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
     allocatorPoolSize = ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(
         processNeedsStartupCompatDelay, startupOverlayPresent, IsActualFrameGenerationActive(),
-        startupOverlayCompatSettled,
-        DX12OverlayState::ALLOC_POOL_SIZE);
+        startupOverlayCompatSettled, DX12OverlayState::ALLOC_POOL_SIZE);
     if (allocatorPoolSize < DX12OverlayState::ALLOC_POOL_SIZE) {
         HookLogImportant("InitOverlaySync: Using minimal %u-slot allocator pool for startup overlay %s",
                          static_cast<unsigned>(allocatorPoolSize), overlayModule ? overlayModule : "module");
@@ -5200,8 +5200,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     if (!dev)
         dev = g_Device.load(std::memory_order_acquire);
 
-    if (dev && ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(cachedSLFGActive, active,
-                                                                          g_State.overlayInit,
+    if (dev && ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(cachedSLFGActive, active, g_State.overlayInit,
                                                                           processFrameRecentlySeen)) {
         DXGI_SWAP_CHAIN_DESC bootstrapDesc = {};
         const HRESULT descHr = pSwapChain->GetDesc(&bootstrapDesc);
@@ -5300,9 +5299,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             HookLogImportant(
                 "DX12: PostSL SKIP — state unavailable (epoch=%d call#=%d dev=%p syncDev=%p init=%d sync=%d "
                 "list=%p alloc=%d)",
-                s_reactivationEpoch, s_callsSinceReactivation, (void*)g_Device.load(), dev,
-                g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0, g_State.cmdList,
-                (int)g_State.allocators.size());
+                s_reactivationEpoch, s_callsSinceReactivation, (void*)g_Device.load(), dev, g_State.overlayInit ? 1 : 0,
+                g_State.syncInit ? 1 : 0, g_State.cmdList, (int)g_State.allocators.size());
         }
         return;
     }
@@ -7436,11 +7434,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 qPath = "scQueue(FSR-FG)";
             else if (fsrFGActive && gameQueue == g_OriginalGameQueue)
                 qPath = "origGame(FSR-FG-fallback)";
-            else if (!slFGNow && !fsrFGActive && g_HadFSRFGPhase && !g_SwapchainQueue &&
-                     g_PostSLLastWorkingQueue && gameQueue == g_PostSLLastWorkingQueue)
+            else if (!slFGNow && !fsrFGActive && g_HadFSRFGPhase && !g_SwapchainQueue && g_PostSLLastWorkingQueue &&
+                     gameQueue == g_PostSLLastWorkingQueue)
                 qPath = "lastWorking(post-FSR)";
-            else if (!slFGNow && !fsrFGActive && g_HadFSRFGPhase && !g_SwapchainQueue &&
-                     g_OriginalGameQueue && gameQueue == g_OriginalGameQueue)
+            else if (!slFGNow && !fsrFGActive && g_HadFSRFGPhase && !g_SwapchainQueue && g_OriginalGameQueue &&
+                     gameQueue == g_OriginalGameQueue)
                 qPath = "origGame(post-FSR)";
             else if (gameQueue == g_SwapchainQueue)
                 qPath = "scQueue";
@@ -7456,8 +7454,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 "DX12: ProcessFrame queue=%p (slFG=%d fsrFG=%d origQ=%p primaryQ=%p scQ=%p cmdQ=%p lastWorkingQ=%p "
                 "path=%s) #%d",
                 gameQueue, slFGNow ? 1 : 0, fsrFGActive ? 1 : 0, g_OriginalGameQueue,
-                g_PrimaryGameQueue.load(std::memory_order_acquire), g_SwapchainQueue,
-                (void*)g_CommandQueue.load(), g_PostSLLastWorkingQueue, qPath, s_queueLogCount);
+                g_PrimaryGameQueue.load(std::memory_order_acquire), g_SwapchainQueue, (void*)g_CommandQueue.load(),
+                g_PostSLLastWorkingQueue, qPath, s_queueLogCount);
         }
     }
 
@@ -7732,11 +7730,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
             if (ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
                     actualFGActive, streamlineFGRunning, recentStreamlineTeardown, currentSwapchainQueue != nullptr,
-                    g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
-                    currentCommandQueue != nullptr,
+                    g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr, currentCommandQueue != nullptr,
                     currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
                     currentCommandQueue != nullptr && currentCommandQueue == g_OriginalGameQueue,
-                    currentCommandQueue != nullptr && currentCommandQueue == g_PrimaryGameQueue.load(std::memory_order_acquire))) {
+                    currentCommandQueue != nullptr &&
+                        currentCommandQueue == g_PrimaryGameQueue.load(std::memory_order_acquire))) {
                 static std::atomic<int> s_recentSLTeardownInitDeferLogCount{0};
                 int logCount = s_recentSLTeardownInitDeferLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 20 || (logCount % 120) == 0) {
@@ -8600,9 +8598,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // safe for the live swapchain.
                 SetPostSLLastWorkingQueue(nullptr);
             } else {
-                HookLogImportant(
-                    "DX12: Preserving PostSL lastWorkingQueue %p for immediate post-FSR FG-off recovery",
-                    g_PostSLLastWorkingQueue);
+                HookLogImportant("DX12: Preserving PostSL lastWorkingQueue %p for immediate post-FSR FG-off recovery",
+                                 g_PostSLLastWorkingQueue);
             }
 
             // Save the current ProcessFrame gameQueue as a pre-FG snapshot.
@@ -9974,9 +9971,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             s_startupOverlayFirstDrawProbeStage =
                                                 StartupOverlayFirstDrawProbeStage::kComplete;
                                             s_startupOverlayFirstDrawProbeMs = 0;
-                                            if (!s_startupOverlayCompatSettled.exchange(true, std::memory_order_acq_rel)) {
+                                            if (!s_startupOverlayCompatSettled.exchange(true,
+                                                                                        std::memory_order_acq_rel)) {
                                                 HookLogImportant(
-                                                    "DX12: Startup overlay compat settled - future sync reinit will keep "
+                                                    "DX12: Startup overlay compat settled - future sync reinit will "
+                                                    "keep "
                                                     "the full allocator pool");
                                             }
                                         }

@@ -152,6 +152,9 @@ std::atomic<bool> g_ReflexSetConstantsHooked{false};
 std::unordered_map<uint32_t, ViewportFGState> g_ViewportStates;
 std::unordered_map<uint32_t, uint32_t> g_ViewportCapabilityMax;
 
+std::atomic<ULONGLONG> g_SuppressNewGetStateActivationUntilMs{0};
+constexpr ULONGLONG kAuthoritativeFFXTakeoverGetStateSuppressMs = 250;
+
 PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
 PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
@@ -316,6 +319,11 @@ bool WasViewportRuntimeStateActive(uint32_t viewportKey) {
     std::lock_guard<std::mutex> lock(g_StateMutex);
     const auto it = g_ViewportStates.find(viewportKey);
     return it != g_ViewportStates.end() && it->second.active;
+}
+
+bool ShouldSuppressNewGetStateActivationAfterAuthoritativeFFXTakeover() {
+    const ULONGLONG suppressUntilMs = g_SuppressNewGetStateActivationUntilMs.load(std::memory_order_acquire);
+    return suppressUntilMs != 0 && GetTickCount64() < suppressUntilMs;
 }
 
 bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state) {
@@ -633,6 +641,9 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
 
     const slResult result = g_Original_slDLSSGGetState(viewport, state, options);
     const uint32_t viewportKey = GetViewportKey(viewport);
+    const bool viewportWasActive = WasViewportRuntimeStateActive(viewportKey);
+    const bool hasRuntimeFenceEvidence = HasDLSSGRuntimeFenceEvidence(state);
+    const bool suppressNewActivation = ShouldSuppressNewGetStateActivationAfterAuthoritativeFFXTakeover();
     if (result == kSlResultOk && state.numFramesToGenerateMax > 0) {
         CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
     }
@@ -640,12 +651,27 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     const uint32_t capabilityMax =
         state.numFramesToGenerateMax > 0 ? state.numFramesToGenerateMax : GetCachedCapabilityMax(viewportKey);
     const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(
-        result == kSlResultOk, options != nullptr, WasViewportRuntimeStateActive(viewportKey),
-        HasDLSSGRuntimeFenceEvidence(state), options ? options->mode : 0, options ? options->numFramesToGenerate : 0u,
-        capabilityMax);
+        result == kSlResultOk, options != nullptr, viewportWasActive, hasRuntimeFenceEvidence, suppressNewActivation,
+        options ? options->mode : 0, options ? options->numFramesToGenerate : 0u, capabilityMax);
     if (runtimeUpdate.shouldUpdate) {
         UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
                                    runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "GetState");
+    } else if (result == kSlResultOk && options != nullptr &&
+               ce::streamline_runtime_policy::IsDLSSGModeEnabled(options->mode) && !viewportWasActive &&
+               suppressNewActivation) {
+        static std::atomic<int> s_recentFfxTakeoverSuppressedGetStateLogCount{0};
+        const int logCount = s_recentFfxTakeoverSuppressedGetStateLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 128) == 0) {
+            const ULONGLONG suppressUntilMs = g_SuppressNewGetStateActivationUntilMs.load(std::memory_order_acquire);
+            const ULONGLONG nowMs = GetTickCount64();
+            const ULONGLONG remainingMs = suppressUntilMs > nowMs ? (suppressUntilMs - nowMs) : 0;
+            HookLogImportant(
+                "Streamline Hook: Suppressing GetState FG reactivation during recent authoritative FFX takeover "
+                "(viewport=%u mode=%u generated=%u fence=%p fenceValue=%llu remaining=%llums)",
+                viewportKey, options->mode, options->numFramesToGenerate, state.inputsProcessingCompletionFence,
+                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
+                (unsigned long long)remainingMs);
+        }
     }
 
     // SL may overwrite our Present vtable hook asynchronously during FG
@@ -723,6 +749,20 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     }
 
     if (result == kSlResultOk) {
+        if (requestedEnabled) {
+            const ULONGLONG previousSuppressUntilMs =
+                g_SuppressNewGetStateActivationUntilMs.exchange(0, std::memory_order_acq_rel);
+            if (previousSuppressUntilMs != 0) {
+                const ULONGLONG nowMs = GetTickCount64();
+                if (previousSuppressUntilMs > nowMs) {
+                    HookLogImportant(
+                        "Streamline Hook: Cleared recent-authoritative-FFX GetState suppression due to explicit "
+                        "slDLSSGSetOptions enable request (viewport=%u remaining=%llums)",
+                        viewportKey, (unsigned long long)(previousSuppressUntilMs - nowMs));
+                }
+            }
+        }
+
         const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(
             true, true, adjustedOptions.mode, adjustedOptions.numFramesToGenerate, capabilityMax);
         UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
@@ -879,10 +919,30 @@ bool IsDLSSFGRequestedViaStreamline() {
     return DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
 }
 
+void OnAuthoritativeFFXTakeover() {
+    size_t clearedViewportCount = 0;
+    size_t clearedCapabilityCount = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_StateMutex);
+        clearedViewportCount = g_ViewportStates.size();
+        clearedCapabilityCount = g_ViewportCapabilityMax.size();
+        g_ViewportStates.clear();
+        g_ViewportCapabilityMax.clear();
+    }
+
+    g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
+                                                 std::memory_order_release);
+    HookLogImportant(
+        "Streamline Hook: Authoritative FFX takeover cleared %zu viewport states and %zu capability caches; "
+        "suppressing GetState-only reactivation for %llums",
+        clearedViewportCount, clearedCapabilityCount, (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
+}
+
 void Shutdown() {
     std::lock_guard<std::mutex> lock(g_StateMutex);
     g_ViewportStates.clear();
     g_ViewportCapabilityMax.clear();
+    g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
     g_FGCompat.SetStreamlineFGSignal(false);
     g_FGCompat.SetDLSSFGMultiplier(0);
     g_FGCompat.SetDLSSFGActive(false);

@@ -13,4 +13,9 @@ void Shutdown();
 // slDLSSGGetState fallback reconciliation.
 bool IsDLSSFGRequestedViaStreamline();
 
+// Called by the DX12 FFX handoff path when authoritative FFX runtime traffic
+// takes ownership of the swapchain. Clears cached Streamline viewport state so
+// stale slDLSSGGetState polling cannot immediately resurrect DLSS FG.
+void OnAuthoritativeFFXTakeover();
+
 }  // namespace StreamlineHook

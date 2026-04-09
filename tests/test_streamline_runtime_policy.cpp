@@ -37,7 +37,7 @@ TEST(StreamlineRuntimePolicyTest, RequestedOptionsFallbacksToTwoXForInvalidGener
 
 TEST(StreamlineRuntimePolicyTest, GetStateIgnoresEnableRequestsWithoutRuntimeEvidence) {
     const auto update =
-        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, false, false, 1, 1, 3);
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, false, false, false, 1, 1, 3);
 
     EXPECT_FALSE(update.shouldUpdate);
     EXPECT_FALSE(update.active);
@@ -45,7 +45,7 @@ TEST(StreamlineRuntimePolicyTest, GetStateIgnoresEnableRequestsWithoutRuntimeEvi
 
 TEST(StreamlineRuntimePolicyTest, GetStateAllowsEnableWithRuntimeEvidence) {
     const auto update =
-        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, false, true, 1, 3, 3);
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, false, true, false, 1, 3, 3);
 
     EXPECT_TRUE(update.shouldUpdate);
     EXPECT_TRUE(update.active);
@@ -55,7 +55,7 @@ TEST(StreamlineRuntimePolicyTest, GetStateAllowsEnableWithRuntimeEvidence) {
 
 TEST(StreamlineRuntimePolicyTest, GetStateAllowsDisableWithoutRuntimeEvidence) {
     const auto update =
-        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, true, false, 0, 1, 3);
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, true, false, false, 0, 1, 3);
 
     EXPECT_TRUE(update.shouldUpdate);
     EXPECT_FALSE(update.active);
@@ -65,7 +65,7 @@ TEST(StreamlineRuntimePolicyTest, GetStateAllowsDisableWithoutRuntimeEvidence) {
 
 TEST(StreamlineRuntimePolicyTest, GetStateKeepsKnownActiveViewportWithoutFreshFenceEvidence) {
     const auto update =
-        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, true, false, 1, 1, 3);
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, true, false, false, 1, 1, 3);
 
     EXPECT_TRUE(update.shouldUpdate);
     EXPECT_TRUE(update.active);
@@ -77,10 +77,28 @@ TEST(StreamlineRuntimePolicyTest, FailedOrOptionlessCallsDoNotUpdateRuntimeState
     const auto failedUpdate =
         ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(false, true, 1, 1, 3);
     const auto optionlessUpdate =
-        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, false, false, true, 1, 1, 3);
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, false, false, true, false, 1, 1, 3);
 
     EXPECT_FALSE(failedUpdate.shouldUpdate);
     EXPECT_FALSE(optionlessUpdate.shouldUpdate);
+}
+
+TEST(StreamlineRuntimePolicyTest, GetStateSuppressesFreshActivationDuringRecentAuthoritativeTakeover) {
+    const auto update =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, false, true, true, 1, 1, 3);
+
+    EXPECT_FALSE(update.shouldUpdate);
+    EXPECT_FALSE(update.active);
+}
+
+TEST(StreamlineRuntimePolicyTest, GetStateSuppressionDoesNotDisableAlreadyActiveViewport) {
+    const auto update =
+        ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromGetState(true, true, true, true, true, 1, 1, 3);
+
+    EXPECT_TRUE(update.shouldUpdate);
+    EXPECT_TRUE(update.active);
+    EXPECT_EQ(2, update.multiplier);
+    EXPECT_EQ(1u, update.generatedFrames);
 }
 
 }  // namespace
