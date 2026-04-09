@@ -124,9 +124,10 @@ inline OverlayMetricsBindingDecision DecideOverlayMetricsBinding(bool isRealFram
     };
 }
 
-inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool actualFGActive, bool streamlineFGRunning,
-                                   bool hasSwapchainQueue) {
-    return hadFSRFGPhase && !actualFGActive && !streamlineFGRunning && !hasSwapchainQueue;
+inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverlayAfterPostFSRNonFG,
+                                   bool actualFGActive, bool streamlineFGRunning, bool hasSwapchainQueue) {
+    return hadFSRFGPhase && needsOffscreenOverlayAfterPostFSRNonFG && !actualFGActive && !streamlineFGRunning &&
+           !hasSwapchainQueue;
 }
 
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
@@ -191,6 +192,17 @@ inline bool ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(int realFrameOnlyRu
     // authoritative "FSR FG active" latch is stale and should fall back to the
     // generic runtime-owned non-FG path.
     return realFrameOnlyRunLength >= 120;
+}
+
+inline bool ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(bool authoritativeFSRActive,
+                                                                   bool runtimeTargetIsNone,
+                                                                   int fgTransitionCooldown) {
+    // Talos can briefly suspend native FSR FG during startup/menu transitions
+    // while the runtime-owned swapchain and queue topology are still settling.
+    // Treating that transient None edge as a real teardown immediately clears
+    // authoritative FSR and collapses the overlay path before the runtime turns
+    // FSR back on a few frames later.
+    return authoritativeFSRActive && runtimeTargetIsNone && fgTransitionCooldown > 0;
 }
 
 inline bool ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(

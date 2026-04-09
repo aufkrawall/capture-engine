@@ -2422,7 +2422,8 @@ static ID3D12CommandQueue* GetFrameClassificationQueue() {
         actualFGActive = IsActualFrameGenerationActive();
         streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         recoveringPostFSRNonFG = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
-            g_HadFSRFGPhase, actualFGActive, streamlineFGRunning, swapchainQueue != nullptr);
+            g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, actualFGActive, streamlineFGRunning,
+            swapchainQueue != nullptr);
     }
 
     if (ce::dx12_overlay_policy::ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
@@ -8797,7 +8798,18 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             g_FGRuntimeOwnsSwapchain = false;
                             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                             g_FGRuntimeOwnsSwapchainSince = 0;
-                            if (g_FGCompat.IsFSRFGApiActive()) {
+                            const bool preserveAuthoritativeFSRDuringTransition =
+                                ce::dx12_overlay_policy::ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(
+                                    g_FGCompat.IsFSRFGApiActive(), targetIsNone, g_FGTransitionCooldown);
+                            if (preserveAuthoritativeFSRDuringTransition) {
+                                HookLogImportant(
+                                    "DX12: FG→off after FSR phase detected during active transition cooldown — "
+                                    "preserving authoritative FSR state until queue topology settles (cooldown=%d "
+                                    "scQ=%p origGame=%p primary=%p cmdQ=%p)",
+                                    g_FGTransitionCooldown, g_SwapchainQueue, g_OriginalGameQueue,
+                                    g_PrimaryGameQueue.load(std::memory_order_acquire),
+                                    g_CommandQueue.load(std::memory_order_acquire));
+                            } else if (g_FGCompat.IsFSRFGApiActive()) {
                                 g_FGCompat.SetFSRFGActive(false);
                                 g_FGCompat.SetFSRFGMultiplier(0);
                             }
@@ -10286,7 +10298,8 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         currentSwapchainQueue = g_SwapchainQueue;
     }
     const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
-        g_HadFSRFGPhase, IsActualFrameGenerationActive(), streamlineFGRunning, currentSwapchainQueue != nullptr);
+        g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(),
+        streamlineFGRunning, currentSwapchainQueue != nullptr);
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
     int authoritativeFSRRealFrameOnlyStreak = 0;
