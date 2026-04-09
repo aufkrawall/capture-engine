@@ -205,6 +205,16 @@ inline bool ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(bool authorit
     return authoritativeFSRActive && runtimeTargetIsNone && fgTransitionCooldown > 0;
 }
 
+inline bool ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(bool canUseFSRHeuristics, bool runtimeOwnsSwapchain,
+                                                                    bool hadFSRFGPhase) {
+    return !canUseFSRHeuristics && runtimeOwnsSwapchain && hadFSRFGPhase;
+}
+
+inline bool ShouldPreserveRuntimeOwnedFSRTeardown(bool targetIsNone, bool hadFSRFGPhase, bool runtimeOwnsSwapchain,
+                                                  bool streamlineFGRunning) {
+    return targetIsNone && hadFSRFGPhase && runtimeOwnsSwapchain && !streamlineFGRunning;
+}
+
 inline bool ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
     bool recoveringPostFSRNonFG, bool actualFGActive, bool streamlineFGRunning, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPrimaryGameQueue, bool originalQueueMatchesPrimaryQueue) {
