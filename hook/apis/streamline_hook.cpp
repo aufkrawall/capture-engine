@@ -154,6 +154,7 @@ std::unordered_map<uint32_t, uint32_t> g_ViewportCapabilityMax;
 
 std::atomic<ULONGLONG> g_SuppressNewGetStateActivationUntilMs{0};
 constexpr ULONGLONG kAuthoritativeFFXTakeoverGetStateSuppressMs = 250;
+std::atomic<bool> g_BlockGetStateOnlyReactivationUntilExplicitSetOptions{false};
 
 PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
@@ -322,6 +323,9 @@ bool WasViewportRuntimeStateActive(uint32_t viewportKey) {
 }
 
 bool ShouldSuppressNewGetStateActivationAfterAuthoritativeFFXTakeover() {
+    if (g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire)) {
+        return true;
+    }
     const ULONGLONG suppressUntilMs = g_SuppressNewGetStateActivationUntilMs.load(std::memory_order_acquire);
     return suppressUntilMs != 0 && GetTickCount64() < suppressUntilMs;
 }
@@ -752,6 +756,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         if (requestedEnabled) {
             const ULONGLONG previousSuppressUntilMs =
                 g_SuppressNewGetStateActivationUntilMs.exchange(0, std::memory_order_acq_rel);
+            const bool wasBlockingGetStateOnlyReactivation =
+                g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.exchange(false, std::memory_order_acq_rel);
             if (previousSuppressUntilMs != 0) {
                 const ULONGLONG nowMs = GetTickCount64();
                 if (previousSuppressUntilMs > nowMs) {
@@ -760,6 +766,12 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                         "slDLSSGSetOptions enable request (viewport=%u remaining=%llums)",
                         viewportKey, (unsigned long long)(previousSuppressUntilMs - nowMs));
                 }
+            }
+            if (wasBlockingGetStateOnlyReactivation) {
+                HookLogImportant(
+                    "Streamline Hook: Cleared persistent GetState-only DLSS FG suppression due to explicit "
+                    "slDLSSGSetOptions enable request (viewport=%u)",
+                    viewportKey);
             }
         }
 
@@ -932,9 +944,10 @@ void OnAuthoritativeFFXTakeover() {
 
     g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
                                                  std::memory_order_release);
+    g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(true, std::memory_order_release);
     HookLogImportant(
         "Streamline Hook: Authoritative FFX takeover cleared %zu viewport states and %zu capability caches; "
-        "suppressing GetState-only reactivation for %llums",
+        "suppressing GetState-only reactivation for %llums and until explicit SetOptions",
         clearedViewportCount, clearedCapabilityCount, (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
 }
 
@@ -943,6 +956,7 @@ void Shutdown() {
     g_ViewportStates.clear();
     g_ViewportCapabilityMax.clear();
     g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
+    g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(false, std::memory_order_release);
     g_FGCompat.SetStreamlineFGSignal(false);
     g_FGCompat.SetDLSSFGMultiplier(0);
     g_FGCompat.SetDLSSFGActive(false);
