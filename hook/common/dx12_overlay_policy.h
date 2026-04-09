@@ -124,9 +124,15 @@ inline OverlayMetricsBindingDecision DecideOverlayMetricsBinding(bool isRealFram
     };
 }
 
+inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool actualFGActive, bool streamlineFGRunning,
+                                   bool hasSwapchainQueue) {
+    return hadFSRFGPhase && !actualFGActive && !streamlineFGRunning && !hasSwapchainQueue;
+}
+
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
-                                                    bool streamlineFGRunning, bool recentStreamlineTeardown) {
+                                                    bool streamlineFGRunning, bool recentStreamlineTeardown,
+                                                    bool postFSRNonFGRecovery) {
     if (!isInterpolatedFrame) {
         return false;
     }
@@ -139,6 +145,15 @@ inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bo
     // authoritative ECL counts even though top-level Presents are still the
     // frames that must drive normal ProcessFrame recovery.
     if (runtimeOwnsSwapchain && !streamlineFGRunning) {
+        return false;
+    }
+
+    // After FSR turns off, Talos can resume non-FG rendering while the live
+    // Present path is still being recovered and g_SwapchainQueue is
+    // intentionally left null. Top-level Presents in that window still need to
+    // drive ProcessFrame even if authoritative ECLs have not yet landed on the
+    // currently trusted queue.
+    if (postFSRNonFGRecovery) {
         return false;
     }
 
@@ -189,12 +204,12 @@ inline bool ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecover
         return false;
     }
 
-    // After FSR->DLSS->off, Talos can resume presenting real non-FG frames while
-    // authoritative ECL traffic settles on the primary DIRECT queue instead of the
-    // original Present queue. If frame classification stays pinned to origGame in
-    // that window, top-level Presents flip back to "zero ECL" as soon as the
-    // recent-Streamline-teardown grace expires, and ProcessFrame stops driving the
-    // recovered overlay even though rendering itself is still healthy.
+    // After FSR tears down, Talos can resume presenting real non-FG frames while
+    // authoritative ECL traffic settles on the primary DIRECT queue instead of
+    // the original Present queue. If frame classification stays pinned to
+    // origGame in that window, top-level Presents flip back to "zero ECL" and
+    // ProcessFrame stops driving the recovered overlay even though rendering
+    // itself is still healthy.
     return !originalQueueMatchesPrimaryQueue;
 }
 

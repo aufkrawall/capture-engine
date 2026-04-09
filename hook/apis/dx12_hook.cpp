@@ -2421,8 +2421,8 @@ static ID3D12CommandQueue* GetFrameClassificationQueue() {
         swapchainQueue = g_SwapchainQueue;
         actualFGActive = IsActualFrameGenerationActive();
         streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-        recoveringPostFSRNonFG =
-            g_HadFSRFGPhase && g_PostSLLastWorkingQueue != nullptr && g_NeedOffscreenOverlayAfterPostFSRNonFG;
+        recoveringPostFSRNonFG = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
+            g_HadFSRFGPhase, actualFGActive, streamlineFGRunning, swapchainQueue != nullptr);
     }
 
     if (ce::dx12_overlay_policy::ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
@@ -10280,6 +10280,13 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                              g_State.crossQueueFence != nullptr && g_State.crossQueueFenceEvent != nullptr;
     bool heuristicFSRFG = g_FGCompat.IsHeuristicFSRFGActive();
     bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    ID3D12CommandQueue* currentSwapchainQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        currentSwapchainQueue = g_SwapchainQueue;
+    }
+    const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
+        g_HadFSRFGPhase, IsActualFrameGenerationActive(), streamlineFGRunning, currentSwapchainQueue != nullptr);
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
     int authoritativeFSRRealFrameOnlyStreak = 0;
@@ -10308,7 +10315,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
 
     if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
             isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning,
-            recentStreamlineTeardown)) {
+            recentStreamlineTeardown, postFSRNonFGRecovery)) {
         sc3->Release();
         return;
     }

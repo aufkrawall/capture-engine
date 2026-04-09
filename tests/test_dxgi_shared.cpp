@@ -260,26 +260,44 @@ TEST(DXGISharedTest, DX12OverlayMetricsBindingAlwaysKeepsMetricsBound) {
 
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameForRuntimeOwnedNonStreamlineSwapchains) {
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, true, false, false));
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, true, false, false,
+                                                                         false));
 
     EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false));
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
+                                                                         false));
     EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, true, true, false));
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, true, true, false,
+                                                                         false));
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, true, false, false, false, false));
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, true, false, false, false, false,
+                                                                         false));
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, true, false, false, false));
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, true, false, false, false,
+                                                                         false));
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(false, false, false, false, false, false));
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(false, false, false, false, false, false,
+                                                                         false));
 }
 
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameDuringRecentStreamlineTeardown) {
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, true));
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, true,
+                                                                         false));
 
     EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, true, true));
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, true, true,
+                                                                         false));
+}
+
+TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameDuringPostFSRNonFGRecovery) {
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
+                                                                         true));
+
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
+                                                                         false));
 }
 
 TEST(DXGISharedTest, DuplicateTopLevelPresentSuppressionBypassesRuntimeOwnedNonStreamlineSwapchains) {
@@ -329,6 +347,15 @@ TEST(DXGISharedTest, PostFSRNonFGRecoveryUsesPrimaryQueueForFrameClassificationW
         true, false, false, false, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
         true, false, false, false, true, true, true));
+}
+
+TEST(DXGISharedTest, DirectPostFSROffIsTreatedAsPostFSRNonFGRecovery) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(true, false, false, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(true, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(true, false, false, true));
 }
 
 TEST(DXGISharedTest, SwapchainChangeGuardCatchesRecentStreamlineTeardownOnRuntimeOwnedQueue) {
