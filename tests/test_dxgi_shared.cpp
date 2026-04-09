@@ -161,6 +161,16 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesRuntimeOwnedQueueWithoutTrea
               SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue);
 }
 
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPreservesRuntimeOwnedFSRAfterHistoryLatch) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, true, true, false),
+              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, false, true, false),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+}
+
 TEST(DXGISharedTest, DX12SwapchainOverlayRoutingSkipsOnlyWhenFSRQueueIsUnavailable) {
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;

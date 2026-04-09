@@ -75,6 +75,11 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
                                  : SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue;
     }
 
+    if (runtimeOwnsSwapchain && hadFSRFGPhase && !streamlineFGActive) {
+        return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue
+                                 : SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue;
+    }
+
     if (runtimeOwnsSwapchain) {
         // A runtime-owned swapchain does not by itself prove FSR FG. GTA 5
         // Enhanced can temporarily keep DLSS/Streamline's swapchain on a
