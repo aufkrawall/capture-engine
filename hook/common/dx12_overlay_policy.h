@@ -423,7 +423,14 @@ inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQu
 
 inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(bool streamlineFGActive, bool hasSLWrapperQueue,
                                                                   bool hasRealQueueBehindWrapper,
-                                                                  bool hasRealD3D12ECL) {
+                                                                  bool hasRealD3D12ECL,
+                                                                  bool selectedQueueIsSwapchainQueue,
+                                                                  bool selectedQueueOrigECLMatchesRealECL) {
+    if (streamlineFGActive && !hasSLWrapperQueue && !hasRealQueueBehindWrapper && hasRealD3D12ECL &&
+        selectedQueueIsSwapchainQueue && selectedQueueOrigECLMatchesRealECL) {
+        return true;
+    }
+
     return !streamlineFGActive && !hasSLWrapperQueue && !hasRealQueueBehindWrapper && !hasRealD3D12ECL;
 }
 

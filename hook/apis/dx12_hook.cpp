@@ -6816,7 +6816,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                                  slQueue);
             } else {
                 if (!ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(
-                        slFGAtDispatch, slQueue != nullptr, realQ != nullptr, realECL != nullptr)) {
+                        slFGAtDispatch, slQueue != nullptr, realQ != nullptr, realECL != nullptr,
+                        selectedQueueIsSwapchainQueue, selectedQueueOrigECLMatchesRealECL)) {
                     HookLogImportant(
                         "DX12: PostSL refusing no-wrapper virtual bootstrap during Streamline FG "
                         "(queue=%p scQueue=%p realQ=%p realECL=%p)",
@@ -6824,6 +6825,20 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                     bb->Release();
                     return;
                 }
+                if (slFGAtDispatch && selectedQueueIsSwapchainQueue && selectedQueueOrigECLMatchesRealECL &&
+                    selectedQueueOrigECL) {
+                    submittedQueue = queue;
+                    selectedQueueOrigECL(queue, 1, lists);
+                    usedOrigECL = true;
+                    static int s_noWrapperDirectSelectedQueueLog = 0;
+                    if (s_noWrapperDirectSelectedQueueLog < 10 || (s_noWrapperDirectSelectedQueueLog % 200) == 0) {
+                        HookLogImportant(
+                            "DX12: PostSL no-wrapper direct selected-queue submit #%d on %p "
+                            "(scQueue=%p origECL matches realECL)",
+                            s_noWrapperDirectSelectedQueueLog, queue, scQueue);
+                    }
+                    s_noWrapperDirectSelectedQueueLog++;
+                } else {
                 s_insidePostSLOverlayECL = true;
                 queue->ExecuteCommandLists(1, lists);
                 s_insidePostSLOverlayECL = false;
@@ -6831,6 +6846,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 static int s_noSlQ = 0;
                 if (s_noSlQ++ < 3)
                     HookLogImportant("DX12: PostSL no SL wrapper queue, using origGame %p", queue);
+                }
             }
         }
     } else if (isSLWrapperQ) {
