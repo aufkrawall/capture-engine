@@ -102,26 +102,36 @@ TEST(StreamlineRuntimePolicyTest, GetStateSuppressionDoesNotDisableAlreadyActive
 }
 
 TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOnlyRunsForFsrOwnedHandoff) {
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, true));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, false, true));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, false, true, true));
 
     EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(false, true, true));
+        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(false, true, false, true));
     EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, false, true));
+        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, false, false, true));
     EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, false));
+        ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, false, false));
 }
 
 TEST(StreamlineRuntimePolicyTest, ReflexActivationOnlyRequestsPrepareDuringFsrOwnedHandoff) {
     EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, true));
+        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, false,
+                                                                                                  true));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, false, true,
+                                                                                                  true));
 
     EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(false, true, true));
+        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(false, true, false,
+                                                                                                  true));
     EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, false, true));
+        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, false, false,
+                                                                                                  true));
     EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, false));
+        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, false,
+                                                                                                  false));
 }
 
 }  // namespace

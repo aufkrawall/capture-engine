@@ -2964,7 +2964,8 @@ void DX12_StartTransitionCooldown() {
 }
 
 void DX12_PrepareForStreamlineEnableTransition() {
-    if (!g_FGCompat.IsFSRFGApiActive() || !g_FGRuntimeOwnsSwapchain) {
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    if (runtimeMode != ce::fg_runtime::RuntimeMode::kFSRFG || !g_FGRuntimeOwnsSwapchain) {
         return;
     }
 
@@ -2972,8 +2973,9 @@ void DX12_PrepareForStreamlineEnableTransition() {
     WaitForOverlayGpuIdle("DX12: Streamline enable prep");
     InvalidateAllOverlayCachedFrames();
     HookLogImportant(
-        "DX12: Preparing for Streamline FG enable while authoritative FSR owns the swapchain "
-        "(origGame=%p scQueue=%p cmdQ=%p)",
+        "DX12: Preparing for Streamline FG enable while live FSR runtime owns the swapchain "
+        "(runtime=%s apiFSR=%d origGame=%p scQueue=%p cmdQ=%p)",
+        ce::fg_runtime::GetRuntimeModeName(runtimeMode), g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
         g_OriginalGameQueue, g_SwapchainQueue, g_CommandQueue.load(std::memory_order_acquire));
 }
 

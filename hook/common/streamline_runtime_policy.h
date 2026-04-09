@@ -73,15 +73,23 @@ inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromGetState(
     return update;
 }
 
+inline bool IsLiveFSRRuntimeHandoffSource(bool currentlyAuthoritativeFSRActive, bool currentRuntimeModeIsFSRFG) {
+    return currentlyAuthoritativeFSRActive || currentRuntimeModeIsFSRFG;
+}
+
 inline bool ShouldPrepareForStreamlineEnableBeforeOriginalCall(bool requestedEnabled, bool currentlyAuthoritativeFSRActive,
+                                                               bool currentRuntimeModeIsFSRFG,
                                                                bool runtimeOwnsSwapchain) {
-    return requestedEnabled && currentlyAuthoritativeFSRActive && runtimeOwnsSwapchain;
+    return requestedEnabled && runtimeOwnsSwapchain &&
+           IsLiveFSRRuntimeHandoffSource(currentlyAuthoritativeFSRActive, currentRuntimeModeIsFSRFG);
 }
 
 inline bool ShouldRequestStreamlineEnablePreparationOnReflexActivation(bool reflexActivating,
                                                                        bool currentlyAuthoritativeFSRActive,
+                                                                       bool currentRuntimeModeIsFSRFG,
                                                                        bool runtimeOwnsSwapchain) {
-    return reflexActivating && currentlyAuthoritativeFSRActive && runtimeOwnsSwapchain;
+    return reflexActivating && runtimeOwnsSwapchain &&
+           IsLiveFSRRuntimeHandoffSource(currentlyAuthoritativeFSRActive, currentRuntimeModeIsFSRFG);
 }
 
 }  // namespace ce::streamline_runtime_policy

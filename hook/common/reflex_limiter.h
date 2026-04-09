@@ -302,8 +302,16 @@ public:
             HookLogImportant(
                 "ReflexLimiter: Game activated Reflex (minimumIntervalUs=%u, override=%u, boost=%u, markers=%u)",
                 pParams->minimumIntervalUs, ourInterval, pParams->bLowLatencyBoost, pParams->bUseMarkersToOptimize);
+            const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+            const bool runtimeModeIsFSRFG = runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
+            const bool runtimeOwnsSwapchain = DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
             if (ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(
-                    true, g_FGCompat.IsFSRFGApiActive(), DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration())) {
+                    true, g_FGCompat.IsFSRFGApiActive(), runtimeModeIsFSRFG, runtimeOwnsSwapchain)) {
+                HookLogImportant(
+                    "ReflexLimiter: Reflex activation requesting Streamline enable preparation "
+                    "(runtime=%s apiFSR=%d fgOwned=%d)",
+                    ce::fg_runtime::GetRuntimeModeName(runtimeMode), g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
+                    runtimeOwnsSwapchain ? 1 : 0);
                 DX12_PrepareForStreamlineEnableTransition();
             }
         } else if (!pParams->bLowLatencyMode && gameActivated_.load(std::memory_order_acquire)) {

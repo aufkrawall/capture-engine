@@ -727,8 +727,11 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         }
     }
 
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const bool runtimeModeIsFSRFG = runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
     if (ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(
-            requestedEnabled, g_FGCompat.IsFSRFGApiActive(), DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration())) {
+            requestedEnabled, g_FGCompat.IsFSRFGApiActive(), runtimeModeIsFSRFG,
+            DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration())) {
         DX12_PrepareForStreamlineEnableTransition();
     }
 
@@ -882,10 +885,23 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
 
     // Detect game activation: mode is low-latency (enabled, low latency, or boost)
     if (consts.mode >= kSLReflexModeEnabled) {
-        if (!g_ReflexLimiter.IsGameActivated()) {
+        const bool activationEdge = !g_ReflexLimiter.IsGameActivated();
+        if (activationEdge) {
             HookLogImportant(
                 "Streamline Hook: Game ACTIVATED Reflex via slReflexSetConstants (mode=%d, frameLimitUs=%u)",
                 consts.mode, consts.frameLimitUs);
+            const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+            const bool runtimeModeIsFSRFG = runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
+            const bool runtimeOwnsSwapchain = DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
+            if (ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(
+                    true, g_FGCompat.IsFSRFGApiActive(), runtimeModeIsFSRFG, runtimeOwnsSwapchain)) {
+                HookLogImportant(
+                    "Streamline Hook: Reflex activation requesting Streamline enable preparation "
+                    "(runtime=%s apiFSR=%d fgOwned=%d)",
+                    ce::fg_runtime::GetRuntimeModeName(runtimeMode), g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
+                    runtimeOwnsSwapchain ? 1 : 0);
+                DX12_PrepareForStreamlineEnableTransition();
+            }
         }
         g_ReflexLimiter.SetGameActivated(true);
 
