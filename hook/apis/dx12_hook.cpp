@@ -2958,6 +2958,10 @@ void DX12_StartTransitionCooldown() {
     StartTransitionCooldown();
 }
 
+bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() {
+    return g_FGRuntimeOwnsSwapchain;
+}
+
 void DX12_OnStreamlineFGStateChanged(bool active) {
     if (active) {
         SetPostSLCallbackInstalled(true, "DX12: Streamline FG ON");
