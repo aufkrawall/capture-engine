@@ -312,15 +312,12 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
     return !hasCommandQueue || (!commandQueueMatchesSwapchainQueue && !commandQueueMatchesOriginalGameQueue);
 }
 
-inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(bool recentStreamlineTeardown,
+inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+    bool recentStreamlineTeardown, bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
                                                                               bool queueMatchesPrimaryQueue,
                                                                               bool queueMatchesOriginalGameQueue,
                                                                               bool queueMatchesSwapchainQueue,
                                                                               bool queueMatchesPostSLLastWorkingQueue) {
-    if (!recentStreamlineTeardown) {
-        return false;
-    }
-
     // During final Streamline teardown after a post-FSR DLSS phase, helper ECLs
     // can keep arriving on a departed wrapper queue for a short time even though
     // Present has already returned to the non-FG swapchain queue. Do not let
@@ -329,29 +326,43 @@ inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(bo
     // window. It stays valuable for immediate non-FG overlay recovery, but it
     // must not be re-registered as the live game command queue or the queue-change
     // heuristic will briefly re-detect FSR FG when menus reopen.
+    //
+    // The preserved PostSL last-working queue can keep surfacing teardown-era
+    // ECL traffic for a short time after the coarse Streamline-off grace
+    // counter reaches zero. Keep ignoring that exact queue while it is still
+    // actively resurfacing so it cannot repollute command tracking right before
+    // the non-FG overlay resumes.
     if (queueMatchesPostSLLastWorkingQueue && !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue &&
         !queueMatchesSwapchainQueue) {
-        return true;
+        return recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown;
+    }
+
+    if (!recentStreamlineTeardown) {
+        return false;
     }
 
     return !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue && !queueMatchesSwapchainQueue;
 }
 
-inline bool ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(bool recentStreamlineTeardown,
+inline bool ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
+    bool recentStreamlineTeardown, bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
                                                                            bool queueMatchesPrimaryQueue,
                                                                            bool queueMatchesOriginalGameQueue,
                                                                            bool queueMatchesSwapchainQueue,
                                                                            bool queueMatchesPostSLLastWorkingQueue) {
-    if (!recentStreamlineTeardown) {
-        return false;
-    }
-
     // The preserved PostSL queue can still resurface as teardown traffic after
     // DLSS FG turns off. Treat it like a departed runtime queue for heuristic
     // purposes so a late menu transition cannot blip back into heuristic FSR FG.
+    // Keep honoring that rule while that preserved queue is still actively
+    // resurfacing as teardown traffic, not just while the coarse Streamline-off
+    // grace counter is still positive.
     if (queueMatchesPostSLLastWorkingQueue && !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue &&
         !queueMatchesSwapchainQueue) {
-        return true;
+        return recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown;
+    }
+
+    if (!recentStreamlineTeardown) {
+        return false;
     }
 
     return !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue && !queueMatchesSwapchainQueue;
