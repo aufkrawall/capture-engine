@@ -410,9 +410,25 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
     return fsrFGActive || runtimeOwnsSwapchain;
 }
 
+inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool runtimeOwnsSwapchain,
+                                                                            bool streamlineFGRunning,
+                                                                            fg_runtime::RuntimeMode runtimeMode,
+                                                                            bool authoritativeFSRActive) {
+    if (!runtimeOwnsSwapchain || streamlineFGRunning) {
+        return false;
+    }
+
+    // A runtime-owned swapchain alone is not enough to suppress all overlay GPU
+    // work: DLSS/Streamline suspend-resume windows still need top-level Present
+    // processing so queue ownership can recover cleanly. Native/runtime-owned
+    // FSR is different: separate overlay ECL submissions on that live swapchain
+    // have been observed to stall inside ffxQuery.
+    return authoritativeFSRActive || runtimeMode == fg_runtime::RuntimeMode::kFSRFG;
+}
+
 inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,
-                                                        bool authoritativeFSRActive, bool isInterpolatedFrame,
-                                                        bool recentStreamlineTeardown) {
+                                                         bool authoritativeFSRActive, bool isInterpolatedFrame,
+                                                         bool recentStreamlineTeardown) {
     return !streamlineFGRunning && runtimeOwnsSwapchain && authoritativeFSRActive && !isInterpolatedFrame &&
            !recentStreamlineTeardown;
 }

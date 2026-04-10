@@ -1770,6 +1770,29 @@ static bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr) {
     return true;
 }
 
+static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** reason = nullptr) {
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
+    const bool skip = ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, authoritativeFSRActive);
+    if (!skip) {
+        if (reason) {
+            *reason = nullptr;
+        }
+        return false;
+    }
+
+    if (reason) {
+        if (authoritativeFSRActive || runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG) {
+            *reason = "runtime-owned native FSR FG swapchain";
+        } else {
+            *reason = "runtime-owned swapchain";
+        }
+    }
+    return true;
+}
+
 static bool UpdateHeuristicFSRFGState(bool active, const char* source) {
     const char* blockedReason = nullptr;
     if (!CanUseFSRFGHeuristics(&blockedReason)) {
@@ -2909,6 +2932,22 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
                 "DX12: FG runtime now owns swapchain queue %p (origGame=%p) — overlay will skip GPU work on this queue",
                 pQueue, g_OriginalGameQueue);
         } else if (!runtimeOwns && g_FGRuntimeOwnsSwapchain) {
+            const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+            const bool preserveAuthoritativeFSR =
+                ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+                    true, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), runtimeMode,
+                    g_FGCompat.IsFSRFGApiActive());
+            if (preserveAuthoritativeFSR) {
+                HookLogImportant(
+                    "DX12: Swapchain queue returned to origGame %p while authoritative/runtime-owned FSR state is still "
+                    "active (runtime=%s) — preserving FG runtime ownership until a stronger off signal arrives",
+                    pQueue, ce::fg_runtime::GetRuntimeModeName(runtimeMode));
+                HookLogImportant("DX12: Swapchain queue captured (queue=%p, origGame=%p, same=%d, fgOwned=%d)", pQueue,
+                                 g_OriginalGameQueue, (pQueue == g_OriginalGameQueue) ? 1 : 0,
+                                 g_FGRuntimeOwnsSwapchain ? 1 : 0);
+                return runtimeOwnershipJustActivated;
+            }
+
             g_FGRuntimeOwnsSwapchain = false;
             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = 0;
@@ -3329,10 +3368,20 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
 
     if (g_HadFSRFGPhase) {
         ID3D12CommandQueue* staleScQueue = nullptr;
+        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+        const bool preserveRuntimeOwnedFSRTakeover =
+            ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+                g_FGRuntimeOwnsSwapchain, false, runtimeMode, g_FGCompat.IsFSRFGApiActive());
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
 
-            if (g_FGRuntimeOwnsSwapchain) {
+            if (preserveRuntimeOwnedFSRTakeover) {
+                HookLogImportant(
+                    "DX12: Streamline FG OFF overlapped with authoritative/runtime-owned FSR takeover "
+                    "(runtime=%s scQueue=%p origGame=%p) — preserving FSR swapchain ownership until native FSR "
+                    "emits a stronger off signal",
+                    ce::fg_runtime::GetRuntimeModeName(runtimeMode), g_SwapchainQueue, g_OriginalGameQueue);
+            } else if (g_FGRuntimeOwnsSwapchain) {
                 g_FGRuntimeOwnsSwapchain = false;
                 DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                 g_FGRuntimeOwnsSwapchainSince = 0;
@@ -3344,7 +3393,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 HookLogImportant("DX12: Streamline FG OFF after FSR history — clearing lingering FG runtime ownership");
             }
 
-            if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
+            if (!preserveRuntimeOwnedFSRTakeover && g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
                 staleScQueue = g_SwapchainQueue;
                 g_SwapchainQueue = nullptr;
                 g_SwapchainQueueCaptureTime = 0;
@@ -3359,24 +3408,27 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             staleScQueue->Release();
         }
 
-        HookLogImportant(
-            "DX12: Streamline FG OFF after FSR history — leaving swapchain queue uncaptured until a live non-FG "
-            "queue is observed again (origGame=%p primary=%p cmdQ=%p)",
-            g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire),
-            g_CommandQueue.load(std::memory_order_acquire));
+        if (!preserveRuntimeOwnedFSRTakeover) {
+            HookLogImportant(
+                "DX12: Streamline FG OFF after FSR history — leaving swapchain queue uncaptured until a live non-FG "
+                "queue is observed again (origGame=%p primary=%p cmdQ=%p)",
+                g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire),
+                g_CommandQueue.load(std::memory_order_acquire));
+        }
 
         // The post-FSR DLSS path rendered through Streamline/PostSL against a
         // different swapchain topology than the resumed non-FG path. Force a
         // swapchain-level reinit so the next top-level Present rebuilds RTVs and
         // overlay state against the live non-FG swapchain/queue pair.
-        if (g_State.overlayInit) {
+        if (!preserveRuntimeOwnedFSRTakeover && g_State.overlayInit) {
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — forcing overlay swapchain reinit for non-FG recovery");
             g_State.overlayInit = false;
             CleanupRTVs();
         }
 
-        if (ce::dx12_overlay_policy::ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(
+        if (!preserveRuntimeOwnedFSRTakeover &&
+            ce::dx12_overlay_policy::ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(
                 g_HadFSRFGPhase, g_State.overlayInit, g_State.syncInit)) {
             g_State.syncInit = false;
             g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
@@ -5030,8 +5082,16 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
     // WaitImpl Alt+Tab hangs). Third-party overlays can also insert their own
     // queue transitions, so stay on the game queue in that compatibility mode.
     const char* overlayModule = nullptr;
+    const char* skipSeparateOverlayGpuReason = nullptr;
+    const bool skipSeparateOverlayGpuWork =
+        ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason);
     if (!ShouldUseDedicatedOverlayQueue(&overlayModule)) {
-        if (overlayModule) {
+        if (skipSeparateOverlayGpuWork) {
+            HookLogImportant(
+                "InitOverlaySync: Dedicated queue intentionally disabled because %s is active; keeping single-queue "
+                "sync resources idle",
+                skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned FG");
+        } else if (overlayModule) {
             HookLogImportant(
                 "InitOverlaySync: Real FG inactive while external overlay %s is present, using single-queue overlay "
                 "mode",
@@ -8480,6 +8540,22 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             return;
         }
 
+        const char* skipSeparateOverlayGpuReason = nullptr;
+        if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)) {
+            static std::atomic<int> s_runtimeOwnedSeparateWorkSkipLogCount{0};
+            int logCount = s_runtimeOwnedSeparateWorkSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: Deferring overlay init because %s is active and separate overlay GPU work is unsafe "
+                    "(runtime=%s scQueue=%p origGame=%p cmdQ=%p fgOwned=%d apiFSR=%d)",
+                    skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned swapchain",
+                    ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_SwapchainQueue,
+                    g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
+                    g_FGRuntimeOwnsSwapchain ? 1 : 0, g_FGCompat.IsFSRFGApiActive() ? 1 : 0);
+            }
+            return;
+        }
+
         // CRITICAL FIX: Don't initialize ImGui during FG suspension, FSR
         // stabilization, or native FSR FG This prevents initialization with
         // potentially unstable frame generation state and avoids initializing
@@ -8659,6 +8735,21 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && !deferOverlayWorkAfterResume &&
         g_State.overlayInit && !g_State.syncInit &&
         g_FGTransitionCooldown <= 0) {
+        const char* skipSeparateOverlayGpuReason = nullptr;
+        if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)) {
+            static std::atomic<int> s_runtimeOwnedSyncInitSkipLogCount{0};
+            int logCount = s_runtimeOwnedSyncInitSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: Keeping staged sync init deferred because %s is active and separate overlay GPU work "
+                    "remains unsafe (runtime=%s scQueue=%p origGame=%p)",
+                    skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned swapchain",
+                    ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_SwapchainQueue,
+                    g_OriginalGameQueue);
+            }
+            return;
+        }
+
         if (s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit &&
             s_startupOverlayActivationStageMs != 0) {
             const ULONGLONG now = GetTickCount64();
@@ -9818,6 +9909,22 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         }
 
         if (!skipOverlayDraw) {
+            const char* skipSeparateOverlayGpuReason = nullptr;
+            if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)) {
+                static std::atomic<int> s_runtimeOwnedOverlayDrawSkipLogCount{0};
+                int logCount = s_runtimeOwnedOverlayDrawSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 20 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: Skipping separate overlay GPU draw because %s is active "
+                        "(runtime=%s scQueue=%p origGame=%p cmdQ=%p postSL=%d)",
+                        skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned swapchain",
+                        ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_SwapchainQueue,
+                        g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
+                        g_PostSLOverlayActive.load(std::memory_order_acquire) ? 1 : 0);
+                }
+                goto skip_overlay_draw;
+            }
+
             // PRE-SL RENDERING GATE — controls when pre-SL overlay is suppressed during SL FG.
             //
             // Two suppression points, both with stall fallback:
