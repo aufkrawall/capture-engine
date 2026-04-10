@@ -2890,6 +2890,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
             get_linux_msys2_gtest_lib_dir("x64"),
             prefer_static=True,
         )
+        gtest_link_inputs.append("-lwinpthread")
     else:
         # Use local FFmpeg on Windows
         env_ffmpeg = env.copy()

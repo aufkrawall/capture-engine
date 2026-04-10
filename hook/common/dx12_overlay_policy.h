@@ -205,6 +205,18 @@ inline bool ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(bool e
     return endingPostFSRNonFGRecovery;
 }
 
+inline bool ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(bool endingPostFSRNonFGRecovery,
+                                                                       bool hasSwapchainQueue,
+                                                                       bool hasOriginalGameQueue,
+                                                                       bool swapchainQueueMatchesOriginalGameQueue) {
+    // A fresh swapchain recreation captured on the original Present queue is the
+    // strongest non-heuristic signal we have that ownership has returned to the
+    // normal non-FG topology. End the post-FSR recovery immediately in that case
+    // instead of waiting for later cleanup paths to notice indirectly.
+    return endingPostFSRNonFGRecovery && hasSwapchainQueue && hasOriginalGameQueue &&
+           swapchainQueueMatchesOriginalGameQueue;
+}
+
 inline bool ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
     bool postFSRNonFGRecovery, bool recentStreamlineTeardown,
     bool postSLLastWorkingQueueStillActiveDuringRecentTeardown) {

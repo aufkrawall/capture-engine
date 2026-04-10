@@ -7514,9 +7514,21 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             } else {
                 HookLogImportant("DX12: Swapchain change (no FG active) — normal reinit");
                 const bool endingPostFSRNonFGRecovery = g_NeedOffscreenOverlayAfterPostFSRNonFG;
+                const bool explicitSwapchainQueueProof =
+                    ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(
+                        endingPostFSRNonFGRecovery, currentSwapchainQueue != nullptr, currentOriginalGameQueue != nullptr,
+                        currentSwapchainQueue != nullptr && currentOriginalGameQueue != nullptr &&
+                            currentSwapchainQueue == currentOriginalGameQueue);
                 g_NeedOffscreenOverlayAfterPostFSRNonFG = false;
-                HookLogImportant(
-                    "DX12: Cleared offscreen overlay flag — clean swapchain transition, backbuffer state is reliable");
+                if (explicitSwapchainQueueProof) {
+                    HookLogImportant(
+                        "DX12: Ended post-FSR non-FG recovery on explicit swapchain-queue proof "
+                        "(scQueue=%p matches origGame=%p)",
+                        currentSwapchainQueue, currentOriginalGameQueue);
+                } else {
+                    HookLogImportant(
+                        "DX12: Cleared offscreen overlay flag — clean swapchain transition, backbuffer state is reliable");
+                }
                 if (ce::dx12_overlay_policy::ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(
                         endingPostFSRNonFGRecovery)) {
                     g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
