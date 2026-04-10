@@ -363,6 +363,20 @@ TEST_F(FpsLimiterTest, AuthoritativeFSRGetsStableDefaultMultiplier) {
     g_FGCompat.SetFSRFGActive(false);
 }
 
+TEST_F(FpsLimiterTest, DirectFFXConfirmationSurvivesRepeatedAuthoritativeFSRActivationSignals) {
+    g_FGCompat.SetFSRFGActive(true);
+    g_FGCompat.MarkDirectFFXApiConfirmation();
+    EXPECT_TRUE(g_FGCompat.HasDirectFFXApiConfirmation());
+
+    // Repeated authoritative "FG still enabled" updates during the same
+    // activation must not wipe the direct API confirmation latch.
+    g_FGCompat.SetFSRFGActive(true);
+    EXPECT_TRUE(g_FGCompat.HasDirectFFXApiConfirmation());
+
+    g_FGCompat.SetFSRFGActive(false);
+    EXPECT_FALSE(g_FGCompat.HasDirectFFXApiConfirmation());
+}
+
 TEST_F(FpsLimiterTest, AuthoritativeFSRCanOverrideTransientDLSSAndYieldBackToConfirmedDLSS) {
     g_FGCompat.SetDLSSFGMultiplier(2);
     g_FGCompat.SetDLSSFGActive(true);

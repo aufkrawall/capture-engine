@@ -223,10 +223,6 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         return result;
     }
 
-    if (parsed.enabled) {
-        g_FGCompat.MarkDirectFFXApiConfirmation();
-    }
-
     HookLog("FFX Hook: Frame Generation configure %s (context=%p, frameID=%llu, type=0x%llx)",
             parsed.enabled ? "ENABLED" : "DISABLED", context, (unsigned long long)parsed.frameId,
             (unsigned long long)desc->type);
@@ -234,6 +230,9 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // Native FSR can keep its context alive while toggling FG on/off via
     // ffxConfigure. Trust that runtime signal over context lifetime.
     g_FGCompat.SetFSRFGActive(parsed.enabled);
+    if (parsed.enabled) {
+        g_FGCompat.MarkDirectFFXApiConfirmation();
+    }
     return result;
 }
 

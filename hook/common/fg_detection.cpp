@@ -189,7 +189,9 @@ void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
 void FGCompatibility::SetFSRFGActive(bool active) {
     bool wasActive = fsrFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (active) {
-        directFFXApiConfirmed.store(false, std::memory_order_release);
+        if (!wasActive) {
+            directFFXApiConfirmed.store(false, std::memory_order_release);
+        }
         if (fsrFGMultiplier.load(std::memory_order_acquire) < 2) {
             fsrFGMultiplier.store(2, std::memory_order_release);
         }
@@ -225,7 +227,9 @@ void FGCompatibility::MarkDirectFFXApiConfirmation() {
         return;
     }
 
-    directFFXApiConfirmed.store(true, std::memory_order_release);
+    if (!directFFXApiConfirmed.exchange(true, std::memory_order_acq_rel)) {
+        HookLog("FG: Direct FFX API confirmation latched for current FSR FG activation");
+    }
 }
 
 void FGCompatibility::RecordFrame(int commandListsExecuted) {
