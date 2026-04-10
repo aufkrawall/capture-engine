@@ -398,6 +398,7 @@ TEST(LimiterModeParseTest, ParsesAllValues) {
 
 TEST(OverlayCompatTest, DetectsKnownOverlayModulePaths) {
     EXPECT_TRUE(ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\Games\\GTAV\\socialclub.dll"));
+    EXPECT_TRUE(ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\Games\\GTAV\\SocialClubD3D12Renderer.dll"));
     EXPECT_TRUE(ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\Games\\GTAV\\EOSOVH_Win64_Shipping.dll"));
     EXPECT_TRUE(
         ce::overlay_compat::IsThirdPartyOverlayModulePath(L"C:\\Program Files\\Epic\\EOSOVH_Win64_Shipping.dll"));
@@ -413,9 +414,9 @@ TEST(OverlayCompatTest, StartupOverlaySuppressionTracksVisibleWindowAndCooldown)
     EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(false, false, false, 0, 5000, 0, 5000));
 }
 
-TEST(OverlayCompatTest, DetectsProcessesNeedingStartupInitGrace) {
-    EXPECT_TRUE(ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess("GTA5.exe"));
-    EXPECT_TRUE(ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess("GTA5_Enhanced.exe"));
+TEST(OverlayCompatTest, ProcessNameNoLongerDrivesStartupInitGrace) {
+    EXPECT_FALSE(ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess("GTA5.exe"));
+    EXPECT_FALSE(ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess("GTA5_Enhanced.exe"));
     EXPECT_FALSE(ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess("Cyberpunk2077.exe"));
 }
 

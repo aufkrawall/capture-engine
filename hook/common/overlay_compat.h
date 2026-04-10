@@ -210,8 +210,8 @@ inline const char* GetStartupBlockingOverlayRenderModuleName() {
 }
 
 inline bool ShouldPreemptivelyDelayDX12OverlayInitForProcess(const char* processName) {
-    return detail::ContainsInsensitive(processName, "GTA5.exe") ||
-           detail::ContainsInsensitive(processName, "GTA5_Enhanced.exe");
+    (void)processName;
+    return false;
 }
 
 inline bool HasUsableDX12OverlayStartupWindowSize(LONG width, LONG height) {

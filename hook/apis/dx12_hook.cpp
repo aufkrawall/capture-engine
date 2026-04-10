@@ -1256,6 +1256,34 @@ static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason) {
 // Guard flag: skip queue capture during temp swapchain creation
 static std::atomic<bool> g_CreatingTempSwapchain{false};
 
+static bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modulePathOut, size_t modulePathOutCount,
+                                            HMODULE* moduleHandleOut = nullptr) {
+    if (moduleHandleOut) {
+        *moduleHandleOut = nullptr;
+    }
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+    if (!codeAddress) {
+        return false;
+    }
+
+    HMODULE callerModule = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule) ||
+        !callerModule) {
+        return false;
+    }
+
+    if (moduleHandleOut) {
+        *moduleHandleOut = callerModule;
+    }
+    if (modulePathOut && modulePathOutCount > 0) {
+        GetModuleFileNameA(callerModule, modulePathOut, static_cast<DWORD>(modulePathOutCount));
+    }
+    return true;
+}
+
 static bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle) {
     if (!moduleHandle) {
         return false;
@@ -1272,20 +1300,10 @@ static bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle) {
 
 static bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress, char* modulePathOut = nullptr,
                                                       size_t modulePathOutCount = 0) {
-    if (!codeAddress) {
-        return false;
-    }
-
     HMODULE callerModule = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule) ||
+    if (!TryGetModulePathFromCodeAddress(codeAddress, modulePathOut, modulePathOutCount, &callerModule) ||
         !callerModule) {
         return false;
-    }
-
-    if (modulePathOut && modulePathOutCount > 0) {
-        modulePathOut[0] = '\0';
-        GetModuleFileNameA(callerModule, modulePathOut, static_cast<DWORD>(modulePathOutCount));
     }
 
     return IsFFXFrameGenerationModuleHandle(callerModule);
@@ -1702,9 +1720,17 @@ static ULONGLONG s_startupOverlaySyncInitMs = 0;
 static ULONGLONG s_startupOverlayResourcePrimeMs = 0;
 static ULONGLONG s_startupOverlayFirstDrawProbeMs = 0;
 static std::atomic<ULONGLONG> s_lastStartupBlockingRenderModuleActivityMs{0};
-// Once the GTA startup-overlay path has completed a stable first draw, later
-// swapchain/sync reinitializations should keep the normal allocator pool.
+// Once we have observed a stable real-game overlay draw, later Rockstar/EOS
+// popups should be treated as normal coexistence instead of re-entering the
+// fragile startup-only suppression path. Later swapchain/sync reinitializations
+// should also keep the normal allocator pool.
 static std::atomic<bool> s_startupOverlayCompatSettled{false};
+
+static bool IsStartupOverlayCompatibilityActive() {
+    return ce::dx12_overlay_policy::ShouldUseStartupOverlayCompatibilityMode(
+        ce::overlay_compat::GetStartupBlockingOverlayModuleName() != nullptr, IsActualFrameGenerationActive(),
+        s_startupOverlayCompatSettled.load(std::memory_order_acquire));
+}
 
 static const char* GetStartupOverlayFirstDrawProbeStageName(StartupOverlayFirstDrawProbeStage stage) {
     switch (stage) {
@@ -1750,7 +1776,7 @@ static bool IsStreamlineLoaded();
 
 static bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule = nullptr) {
     const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
-    const bool processNeedsDelay = ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+    const bool processNeedsDelay = IsStartupOverlayCompatibilityActive();
     const bool actualFGActive = IsActualFrameGenerationActive();
 
     // When Streamline FG is active, do NOT use a dedicated overlay queue.
@@ -2086,7 +2112,9 @@ static void NoteStartupBlockingRenderModuleActivityFromECL(ID3D12CommandQueue* q
 static bool ShouldSuppressOverlayForStartupCompat(
     HWND gameWindow, const char** overlayModule = nullptr, ULONGLONG* remainingMs = nullptr,
     ce::overlay_compat::AuxiliaryProcessWindowInfo* activeWindow = nullptr) {
-    const char* blockingOverlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
+    const bool startupCompatActive = IsStartupOverlayCompatibilityActive();
+    const char* blockingOverlayModule =
+        startupCompatActive ? ce::overlay_compat::GetStartupBlockingOverlayModuleName() : nullptr;
     const bool actualFGActive = IsActualFrameGenerationActive();
     static ULONGLONG s_firstOverlayDetectedMs = 0;
     static ULONGLONG s_lastPollMs = 0;
@@ -2103,7 +2131,7 @@ static bool ShouldSuppressOverlayForStartupCompat(
         *activeWindow = {};
     }
 
-    if (!blockingOverlayModule || actualFGActive || !IsWindow(gameWindow)) {
+    if (!startupCompatActive || !blockingOverlayModule || actualFGActive || !IsWindow(gameWindow)) {
         s_firstOverlayDetectedMs = 0;
         s_lastPollMs = 0;
         s_lastVisibleMs = 0;
@@ -2157,8 +2185,7 @@ static bool ShouldDeferOverlayInitForStartupCompat(HWND gameWindow, ULONGLONG* r
         *remainingMs = 0;
     }
 
-    if (!ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) ||
-        IsActualFrameGenerationActive() || !IsWindow(gameWindow)) {
+    if (!IsStartupOverlayCompatibilityActive() || !IsWindow(gameWindow)) {
         s_firstDeferredInitEligibleMs = 0;
         return false;
     }
@@ -2193,7 +2220,7 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
         *remainingMs = 0;
     }
 
-    const bool processNeedsDelay = ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+    const bool processNeedsDelay = IsStartupOverlayCompatibilityActive();
     const bool actualFGActive = IsActualFrameGenerationActive();
     if (!processNeedsDelay || actualFGActive) {
         s_hadStartupSuppression = false;
@@ -2788,7 +2815,27 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
     ID3D12CommandQueue* pQueue = nullptr;
     HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
     if (SUCCEEDED(qiHr) && pQueue) {
+        char callerModulePath[MAX_PATH] = {};
+        const bool callerFromThirdPartyOverlay =
+            callerAddress && TryGetModulePathFromCodeAddress(callerAddress, callerModulePath, sizeof(callerModulePath)) &&
+            ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
+        ID3D12CommandQueue* currentOriginalGameQueue = nullptr;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+            currentOriginalGameQueue = g_OriginalGameQueue;
+        }
+        const bool preserveCurrentGameQueue = ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(
+            callerFromThirdPartyOverlay, currentOriginalGameQueue != nullptr, pQueue == currentOriginalGameQueue);
+
         HookLogImportant("%s: QI for queue succeeded (queue=%p)", context, pQueue);
+        if (preserveCurrentGameQueue) {
+            HookLogImportant(
+                "%s: Ignoring foreign swapchain queue %p from third-party overlay caller %s "
+                "(origGame=%p) — preserving live game queue ownership",
+                context, pQueue, callerModulePath[0] ? callerModulePath : "unknown", currentOriginalGameQueue);
+            pQueue->Release();
+            return;
+        }
         const bool runtimeOwnershipJustActivated = DX12_SetSwapchainQueue(pQueue);
         ClearStaleStreamlineOwnershipForFSRTakeover(callerAddress, g_OriginalGameQueue && pQueue != g_OriginalGameQueue,
                                                     runtimeOwnershipJustActivated, pQueue);
@@ -3278,6 +3325,8 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     char callerModulePath[MAX_PATH] = {};
     const bool callerFromFFXFGModule =
         IsCodeAddressFromFFXFrameGenerationModule(callerAddress, callerModulePath, sizeof(callerModulePath));
+    const bool callerFromThirdPartyOverlay =
+        callerModulePath[0] != '\0' && ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
     const bool ffxFrameGenerationInStack = HasFFXFrameGenerationModuleInCurrentStack();
 
     HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
@@ -3286,7 +3335,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
-    if (pDesc) {
+    if (pDesc && !callerFromThirdPartyOverlay) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
@@ -3308,7 +3357,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     HRESULT hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
     HookLogImportant("DeepHook: Trampoline returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
 
-    if (SUCCEEDED(hr) && ppSC && *ppSC) {
+    if (SUCCEEDED(hr) && ppSC && *ppSC && !callerFromThirdPartyOverlay) {
         // Only start transition cooldown when a swapchain recreation actually
         // succeeded. Starting it on E_ACCESSDENIED leaves the overlay in a
         // half-transitioned state while Streamline/game keeps the old chain.
@@ -3329,12 +3378,14 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
             ce::dx12_overlay_policy::ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(
                 streamlineModuleLoaded, streamlineFGRunning, streamlineStartupHandoffPending, callerFromFFXFGModule,
                 ffxFrameGenerationInStack);
-        if (passThroughForStreamline) {
+        if (passThroughForStreamline || callerFromThirdPartyOverlay) {
             HookLogImportant(
-                "DeepHook: E_ACCESSDENIED for HWND=%p — Streamline active, passing through "
-                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d)",
-                hWnd, streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
-                callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0);
+                "DeepHook: E_ACCESSDENIED for HWND=%p — %s, passing through without CE cleanup "
+                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d module=%s)",
+                hWnd, callerFromThirdPartyOverlay ? "third-party overlay caller" : "Streamline active",
+                streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0,
+                callerModulePath[0] ? callerModulePath : "unknown");
         } else {
             HookLogImportant(
                 "DeepHook: E_ACCESSDENIED for HWND=%p — cleaning up overlay refs "
@@ -3383,6 +3434,13 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
 
     // Post-track: record the new swapchain for future reactive recovery
     if (SUCCEEDED(hr) && ppSC && *ppSC && hWnd) {
+        if (callerFromThirdPartyOverlay) {
+            HookLogImportant(
+                "DeepHook: Third-party overlay caller %s created swapchain %p for HWND=%p — leaving CE queue and "
+                "transition state unchanged",
+                callerModulePath[0] ? callerModulePath : "unknown", *ppSC, hWnd);
+            return hr;
+        }
         TrackSwapchainHwnd(*ppSC, hWnd);
         HookLogImportant("DeepHook: Created & tracked swapchain %p for HWND=%p", *ppSC, hWnd);
 
@@ -3427,6 +3485,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     char callerModulePath[MAX_PATH] = {};
     const bool callerFromFFXFGModule =
         IsCodeAddressFromFFXFrameGenerationModule(callerAddress, callerModulePath, sizeof(callerModulePath));
+    const bool callerFromThirdPartyOverlay =
+        callerModulePath[0] != '\0' && ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
     const bool ffxFrameGenerationInStack = HasFFXFrameGenerationModuleInCurrentStack();
 
     HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
@@ -3434,7 +3494,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
-    if (pDesc) {
+    if (pDesc && !callerFromThirdPartyOverlay) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
@@ -3466,13 +3526,14 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
             ce::dx12_overlay_policy::ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(
                 streamlineModuleLoaded, streamlineFGRunning, streamlineStartupHandoffPending, callerFromFFXFGModule,
                 ffxFrameGenerationInStack);
-        if (passThroughForStreamline) {
+        if (passThroughForStreamline || callerFromThirdPartyOverlay) {
             HookLogImportant(
-                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "
-                "Streamline active, passing through without cleanup "
-                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d)",
-                hWnd, streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
-                callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0);
+                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — %s, passing through without CE cleanup "
+                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d module=%s)",
+                hWnd, callerFromThirdPartyOverlay ? "third-party overlay caller" : "Streamline active",
+                streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0,
+                callerModulePath[0] ? callerModulePath : "unknown");
         } else {
             HookLogImportant(
                 "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "
@@ -3517,6 +3578,13 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     }
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
+        if (callerFromThirdPartyOverlay) {
+            HookLogImportant(
+                "CreateSwapChainForHwnd INLINE: Third-party overlay caller %s created swapchain %p for HWND=%p — "
+                "leaving CE queue and transition state unchanged",
+                callerModulePath[0] ? callerModulePath : "unknown", *ppSC, hWnd);
+            return hr;
+        }
         TrackSwapchainHwnd(*ppSC, hWnd);
         HookLogImportant("CreateSwapChainForHwnd INLINE: Created swapchain %p for HWND=%p", *ppSC, hWnd);
 
@@ -3560,10 +3628,16 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
     HookLog("DetourCreateSwapChainGlobal: CALLED (factory=%p, device=%p, swapEffect=%d)", pThis, pDevice,
             pDesc ? (int)pDesc->SwapEffect : -1);
 
+    const void* callerAddress = CE_RETURN_ADDRESS();
+    char callerModulePath[MAX_PATH] = {};
+    const bool callerFromThirdPartyOverlay =
+        callerAddress && TryGetModulePathFromCodeAddress(callerAddress, callerModulePath, sizeof(callerModulePath)) &&
+        ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
+
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC modifiedDesc;
     DXGI_SWAP_CHAIN_DESC* pDescToUse = pDesc;
-    if (pDesc) {
+    if (pDesc && !callerFromThirdPartyOverlay) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
@@ -3586,6 +3660,16 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
     HRESULT hr = oCreateSwapChainGlobal(pThis, pDevice, pDescToUse, ppSwapChain);
 
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        if (callerFromThirdPartyOverlay) {
+            HookLogImportant(
+                "DetourCreateSwapChainGlobal: Third-party overlay caller %s created swapchain %p — bypassing CE "
+                "swapchain side-effects",
+                callerModulePath[0] ? callerModulePath : "unknown", *ppSwapChain);
+            CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSwapChain, "CreateSwapChain Global overlay bypass",
+                                                  callerAddress);
+            return hr;
+        }
+
         // Log swapchain details
         if (pDesc) {
             HookLog("DetourCreateSwapChainGlobal: Creating swapchain %ux%u", pDesc->BufferDesc.Width,
@@ -3651,10 +3735,16 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         "hwnd=%p)",
         pThis, pDevice, hWnd);
 
+    const void* callerAddress = CE_RETURN_ADDRESS();
+    char callerModulePath[MAX_PATH] = {};
+    const bool callerFromThirdPartyOverlay =
+        callerAddress && TryGetModulePathFromCodeAddress(callerAddress, callerModulePath, sizeof(callerModulePath)) &&
+        ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
+
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
-    if (pDesc) {
+    if (pDesc && !callerFromThirdPartyOverlay) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
@@ -3677,6 +3767,16 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
     HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
+        if (callerFromThirdPartyOverlay) {
+            HookLogImportant(
+                "DetourCreateSwapChainForHwndGlobal: Third-party overlay caller %s created swapchain %p for HWND=%p "
+                "— bypassing CE swapchain side-effects",
+                callerModulePath[0] ? callerModulePath : "unknown", *ppSC, hWnd);
+            CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd Global overlay bypass",
+                                                  callerAddress);
+            return hr;
+        }
+
         StartTransitionCooldown();
 
         // Log swapchain details
@@ -7403,15 +7503,19 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     bool allowOverlayRender = ApplyOverlayStartupCompatMode(frameDesc.OutputWindow);
 
     ULONGLONG postResumeSettleRemainingMs = 0;
+    const bool startupOverlayCompatibilityActive = IsStartupOverlayCompatibilityActive();
+    const ULONGLONG runtimeOwnedSwapchainActiveMs =
+        (g_FGRuntimeOwnsSwapchain && g_FGRuntimeOwnsSwapchainSince != 0)
+            ? (GetTickCount64() - g_FGRuntimeOwnsSwapchainSince)
+            : kStartupOverlayPostResumeSettleMs;
     const bool runtimeOwnedSwapchainNeedsExtraResumeSettle =
-        g_FGRuntimeOwnsSwapchain && g_FGRuntimeOwnsSwapchainSince != 0 &&
-        (GetTickCount64() - g_FGRuntimeOwnsSwapchainSince) < kStartupOverlayPostResumeSettleMs;
+        ce::dx12_overlay_policy::ShouldDeferStartupOverlayWorkAfterResume(
+            startupOverlayCompatibilityActive, g_FGRuntimeOwnsSwapchain, runtimeOwnedSwapchainActiveMs,
+            kStartupOverlayPostResumeSettleMs);
     const bool deferOverlayWorkAfterResume = ShouldDelayOverlayInitAfterStartupResumeCompat(
         allowOverlayRender, frameDesc.OutputWindow, runtimeOwnedSwapchainNeedsExtraResumeSettle,
         &postResumeSettleRemainingMs);
-    const bool processNeedsStartupOverlayInitDelay =
-        ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
-        !IsActualFrameGenerationActive();
+    const bool processNeedsStartupOverlayInitDelay = startupOverlayCompatibilityActive;
     if (processNeedsStartupOverlayInitDelay) {
         if ((!allowOverlayRender || deferOverlayWorkAfterResume) &&
             s_startupOverlayActivationStage == StartupOverlayActivationStage::kNone) {
@@ -7958,35 +8062,37 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // queue captured.  GTA5 Enhanced rejects ECL submissions on any queue other than the
     // one the swapchain was created with.  Without g_SwapchainQueue we'd fall back to
     // g_CommandQueue (from ECL hooks) which is often a different queue → ERR_GFX_STATE.
-    const bool startupOverlayPresent =
-        ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
-        ce::overlay_compat::GetStartupBlockingOverlayModuleName() != nullptr && !IsActualFrameGenerationActive();
+    const bool startupOverlayPresent = startupOverlayCompatibilityActive;
     if (startupOverlayPresent) {
         bool hasSwapchainQueue;
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
             hasSwapchainQueue = (g_SwapchainQueue != nullptr);
         }
-        if (!hasSwapchainQueue) {
+        if (!ce::dx12_overlay_policy::ShouldAllowStartupOverlayRendering(startupOverlayPresent, hasSwapchainQueue,
+                                                                          g_FGRuntimeOwnsSwapchain)) {
             allowOverlayRender = false;
             g_PiggybackOverlayActive.store(false, std::memory_order_relaxed);
             static std::atomic<int> s_noQueueBlockLogCount{0};
             if (s_noQueueBlockLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-                HookLogImportant(
-                    "DX12: Overlay blocked for %s - startup-blocking overlay present, "
-                    "FG inactive, swapchain queue not captured (would use wrong queue)",
-                    g_ProcessName);
+                if (!hasSwapchainQueue) {
+                    HookLogImportant(
+                        "DX12: Overlay blocked during startup-overlay compatibility - swapchain queue not captured "
+                        "(would use wrong queue)");
+                } else {
+                    HookLogImportant(
+                        "DX12: Overlay blocked during startup-overlay compatibility - runtime-owned swapchain queue "
+                        "still unstable");
+                }
             }
         } else {
-            // Swapchain queue captured: allow normal overlay rendering.
-            // The rendering block will use barrier-free mode when
-            // startupOverlayPresent is true.
+            // Startup compatibility remains active, but the observed queue
+            // topology is stable enough to allow the barrier-free path.
             static std::atomic<int> s_queueOkLogCount{0};
             if (s_queueOkLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
                 HookLogImportant(
-                    "DX12: Overlay allowed for %s - startup-blocking overlay present "
-                    "but swapchain queue captured, using barrier-free mode",
-                    g_ProcessName);
+                    "DX12: Overlay allowed during startup-overlay compatibility - queue topology stable enough for "
+                    "barrier-free mode");
             }
         }
     } else {
@@ -8453,17 +8559,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     bool delayOverlayRenderAfterResourcePrime = false;
     bool delayOverlayRenderAfterFirstDrawProbe = false;
     bool delayOverlayRenderAfterResume = false;
-    const bool shouldRunStartupOverlayDrawProbe =
-        ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
-        !IsActualFrameGenerationActive();
+    const bool shouldRunStartupOverlayDrawProbe = startupOverlayCompatibilityActive;
 
     if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && !deferOverlayWorkAfterResume &&
         g_State.overlayInit && g_State.syncInit &&
         s_startupOverlaySyncInitMs != 0) {
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG msSinceSyncInit = now - s_startupOverlaySyncInitMs;
-        const bool processNeedsRenderDelay =
-            ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+        const bool processNeedsRenderDelay = startupOverlayCompatibilityActive;
         const bool actualFGActive = IsActualFrameGenerationActive();
         const char* blockingOverlayModule = ce::overlay_compat::GetStartupBlockingOverlayRenderModuleName();
         const ULONGLONG lastBlockingRenderActivityMs =
@@ -8529,8 +8632,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         s_startupOverlayResourcePrimeMs != 0) {
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG msSinceResourcePrime = now - s_startupOverlayResourcePrimeMs;
-        const bool processNeedsRenderDelay =
-            ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+        const bool processNeedsRenderDelay = startupOverlayCompatibilityActive;
         if (processNeedsRenderDelay && !IsActualFrameGenerationActive() &&
             msSinceResourcePrime < kStartupOverlayPostResourcePrimeSettleMs) {
             static std::atomic<int> s_postResourcePrimeLogCount{0};
@@ -9658,8 +9760,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         }
                         if (SUCCEEDED(listResetHr)) {
                             const bool shouldPrimeStartupOverlayResources =
-                                ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
-                                !IsActualFrameGenerationActive() && s_startupOverlayResourcePrimeMs == 0 &&
+                                startupOverlayCompatibilityActive && s_startupOverlayResourcePrimeMs == 0 &&
                                 g_OverlayAdapter.HasPendingDX12Resources();
                             if (shouldPrimeStartupOverlayResources) {
                                 // Check device before priming — after FG teardown the
@@ -10410,6 +10511,20 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 "successfully");
                                         }
 
+                                        if (!s_startupOverlayCompatSettled.exchange(true, std::memory_order_acq_rel)) {
+                                            if (shouldRunStartupOverlayDrawProbe &&
+                                                s_startupOverlayFirstDrawProbeStage ==
+                                                    StartupOverlayFirstDrawProbeStage::kActualRender) {
+                                                HookLogImportant(
+                                                    "DX12: Startup overlay compat settled - future sync reinit will "
+                                                    "keep the full allocator pool");
+                                            } else {
+                                                HookLogImportant(
+                                                    "DX12: Stable DX12 overlay rendering observed - later startup "
+                                                    "overlay popups will stay on the normal coexistence path");
+                                            }
+                                        }
+
                                         // Clear probe state if we were in a probe sequence
                                         if (shouldRunStartupOverlayDrawProbe &&
                                             s_startupOverlayFirstDrawProbeStage ==
@@ -10418,13 +10533,6 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             s_startupOverlayFirstDrawProbeStage =
                                                 StartupOverlayFirstDrawProbeStage::kComplete;
                                             s_startupOverlayFirstDrawProbeMs = 0;
-                                            if (!s_startupOverlayCompatSettled.exchange(true,
-                                                                                        std::memory_order_acq_rel)) {
-                                                HookLogImportant(
-                                                    "DX12: Startup overlay compat settled - future sync reinit will "
-                                                    "keep "
-                                                    "the full allocator pool");
-                                            }
                                         }
                                     }
                                     // FG-SAFE: Release per-frame backbuffer reference

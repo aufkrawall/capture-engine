@@ -1,5 +1,7 @@
 #pragma once
 
+#include <windows.h>
+
 #include "fg_runtime_state.h"
 
 namespace ce::dx12_overlay_policy {
@@ -40,6 +42,60 @@ inline bool ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(bool d3d12Device
     // stack overflow before the game reaches its first real swapchain. Defer to
     // the real-swapchain hook path in that specific startup window.
     return !d3d12DeviceCreated && thirdPartyOverlayLoaded;
+}
+
+inline bool ShouldUseStartupOverlayCompatibilityMode(bool startupBlockingOverlayLoaded,
+                                                     bool actualFrameGenerationActive,
+                                                     bool startupCompatSettled = false) {
+    // Drive startup compatibility from observed startup-overlay/runtime state,
+    // not the executable name. If a startup-blocking overlay is present while
+    // real FG is inactive, keep the DX12 overlay on the conservative path until
+    // queue ownership and render-module activity settle.
+    //
+    // Once we have already observed a stable real-game overlay render, later
+    // third-party overlay popups (for example Rockstar Social Club appearing
+    // mid-session) must not force the DX12 overlay back into its fragile
+    // startup-only suppression path.
+    return startupBlockingOverlayLoaded && !actualFrameGenerationActive && !startupCompatSettled;
+}
+
+inline bool ShouldAllowStartupOverlayRendering(bool startupOverlayCompatibilityActive, bool hasSwapchainQueue,
+                                               bool runtimeOwnsSwapchain) {
+    if (!startupOverlayCompatibilityActive) {
+        return true;
+    }
+
+    // A captured queue is necessary but not sufficient during startup. If the
+    // live swapchain is still runtime-owned, queue ownership is still churning
+    // underneath us and pre-SL overlay work can still trip graphics-state
+    // validation.
+    return hasSwapchainQueue && !runtimeOwnsSwapchain;
+}
+
+inline bool ShouldDeferStartupOverlayWorkAfterResume(bool startupOverlayCompatibilityActive,
+                                                      bool runtimeOwnsSwapchain,
+                                                      ULONGLONG runtimeOwnedSwapchainActiveMs,
+                                                      ULONGLONG settleDelayMs) {
+    if (!startupOverlayCompatibilityActive || !runtimeOwnsSwapchain) {
+        return false;
+    }
+
+    return runtimeOwnedSwapchainActiveMs < settleDelayMs;
+}
+
+inline bool ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(bool callerFromThirdPartyOverlay,
+                                                               bool hasOriginalGameQueue,
+                                                               bool capturedQueueMatchesOriginalGameQueue) {
+    if (!callerFromThirdPartyOverlay) {
+        return false;
+    }
+
+    // A foreign overlay's private DX12 swapchain/queue must not become the
+    // authoritative routing path for the game's overlay. If the real game queue
+    // is already known, only allow the capture when the foreign caller happens
+    // to use that same queue. If the real game queue is not known yet, preserve
+    // the current state and wait for a non-overlay caller to establish it.
+    return !hasOriginalGameQueue || !capturedQueueMatchesOriginalGameQueue;
 }
 
 enum class SwapchainOverlayRoutingDecision {
