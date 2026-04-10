@@ -117,6 +117,38 @@ inline bool IsThirdPartyOverlayModulePath(const wchar_t* path) {
     return false;
 }
 
+inline bool IsStartupBlockingOverlayModulePath(const char* path) {
+    static constexpr const char* kStartupBlockingOverlayTokens[] = {
+        "socialclub",
+        "eosovh",
+        "eossdk_win64_shipping",
+        "eossdk-win64-shipping",
+    };
+
+    for (const char* token : kStartupBlockingOverlayTokens) {
+        if (detail::ContainsInsensitive(path, token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool IsStartupBlockingOverlayModulePath(const wchar_t* path) {
+    static constexpr const wchar_t* kStartupBlockingOverlayTokens[] = {
+        L"socialclub",
+        L"eosovh",
+        L"eossdk_win64_shipping",
+        L"eossdk-win64-shipping",
+    };
+
+    for (const wchar_t* token : kStartupBlockingOverlayTokens) {
+        if (detail::ContainsInsensitive(path, token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 inline const char* GetEffectiveCreateSwapchainCallerModulePath(const char* forwardedCallerModulePath,
                                                                const char* immediateCallerModulePath) {
     if (forwardedCallerModulePath && *forwardedCallerModulePath) {

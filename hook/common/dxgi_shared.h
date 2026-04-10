@@ -254,4 +254,11 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                              const DXGI_PRESENT_PARAMETERS* pParams);
 
+// DX12 marks known foreign overlay swapchains so Present can bypass full
+// ProcessFrame/queue-tracking on those auxiliary chains.
+void DX12_RegisterThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain, const char* creatorModulePath = nullptr);
+void DX12_UnregisterThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain);
+bool DX12_IsThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain);
+bool DX12_IsStartupBlockingOverlayTaggedSwapchain(IDXGISwapChain* pSwapChain);
+
 }  // namespace DXGIShared

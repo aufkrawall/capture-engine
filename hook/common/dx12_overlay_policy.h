@@ -98,6 +98,29 @@ inline bool ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(bool callerFromTh
     return !hasOriginalGameQueue || !capturedQueueMatchesOriginalGameQueue;
 }
 
+inline bool ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(bool swapchainKnownThirdPartyOverlay) {
+    // Third-party overlays can create their own auxiliary swapchains on the
+    // game's HWND. Those Presents are not authoritative game-swapchain traffic
+    // and must not perturb live swapchain, queue, or FG tracking.
+    return swapchainKnownThirdPartyOverlay;
+}
+
+inline bool ShouldKeepStartupBlockingOverlaySwapchainBypass(bool swapchainKnownThirdPartyOverlay,
+                                                            bool swapchainTaggedByStartupBlockingOverlay,
+                                                            bool presentCallerFromTaggedStartupBlockingOverlay) {
+    if (!swapchainKnownThirdPartyOverlay || !swapchainTaggedByStartupBlockingOverlay) {
+        return false;
+    }
+
+    // EOS/Social Club can wrap the game's authoritative CreateSwapChainForHwnd
+    // call, which makes the resulting live swapchain look foreign at creation
+    // time. Keep the bypass only while the same startup-blocking overlay still
+    // owns the live Present stack; once Present traffic is coming from the game
+    // / Streamline instead, this tracked swapchain must be treated as the real
+    // game swapchain again so overlay bootstrap can proceed.
+    return presentCallerFromTaggedStartupBlockingOverlay;
+}
+
 inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThirdPartyOverlay,
                                                               bool hasOriginalGameQueue,
                                                               bool queueMatchesPrimaryQueue,

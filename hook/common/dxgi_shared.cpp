@@ -9,6 +9,7 @@
 #include "freeze_watchdog.h"
 #include "hook_common.h"
 #include "logging.h"
+#include "dx12_overlay_policy.h"
 #include "overlay_compat.h"
 #include "performance_metrics.h"
 
@@ -25,6 +26,7 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <unordered_set>
 
 // Vulkan is handled by VK_LAYER_CE_overlay (ICD layer approach)
 // No global hook pointer needed - extern void* g_VulkanHook;
@@ -105,6 +107,9 @@ namespace DXGIShared {
 
 SharedState g_SharedState;
 std::mutex g_SharedMutex;
+static std::mutex s_thirdPartyOverlaySwapchainMutex;
+static std::unordered_set<IDXGISwapChain*> s_thirdPartyOverlaySwapchains;
+static std::unordered_set<IDXGISwapChain*> s_startupBlockingOverlayTaggedSwapchains;
 
 // Post-SL FG overlay callback (set by dx12_hook.cpp when SL FG is active).
 std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback{nullptr};
@@ -114,6 +119,48 @@ std::atomic<bool> g_StreamlineFGRunning{false};
 
 // Present call counter — incremented by DetourPresent, read by SL hook to detect bypass.
 std::atomic<uint64_t> g_PresentCallCounter{0};
+
+void DX12_RegisterThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain, const char* creatorModulePath) {
+    if (!pSwapChain) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
+    s_thirdPartyOverlaySwapchains.insert(pSwapChain);
+    if (ce::overlay_compat::IsStartupBlockingOverlayModulePath(creatorModulePath)) {
+        s_startupBlockingOverlayTaggedSwapchains.insert(pSwapChain);
+    } else {
+        s_startupBlockingOverlayTaggedSwapchains.erase(pSwapChain);
+    }
+}
+
+void DX12_UnregisterThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
+    s_thirdPartyOverlaySwapchains.erase(pSwapChain);
+    s_startupBlockingOverlayTaggedSwapchains.erase(pSwapChain);
+}
+
+bool DX12_IsThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
+    return s_thirdPartyOverlaySwapchains.find(pSwapChain) != s_thirdPartyOverlaySwapchains.end();
+}
+
+bool DX12_IsStartupBlockingOverlayTaggedSwapchain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
+    return s_startupBlockingOverlayTaggedSwapchains.find(pSwapChain) != s_startupBlockingOverlayTaggedSwapchains.end();
+}
 
 // Global metrics for DXGI-based APIs
 static PerformanceMetrics g_DXGIPerfMetrics;
@@ -299,6 +346,48 @@ static bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress) {
         return false;
     }
     return IsFFXFrameGenerationModuleHandle(callerModule);
+}
+
+static bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modulePathOut, size_t modulePathOutCount,
+                                            HMODULE* moduleOut = nullptr) {
+    if (moduleOut) {
+        *moduleOut = nullptr;
+    }
+    if (!codeAddress || !modulePathOut || modulePathOutCount == 0) {
+        return false;
+    }
+
+    modulePathOut[0] = '\0';
+    HMODULE callerModule = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule) ||
+        !callerModule) {
+        return false;
+    }
+
+    if (GetModuleFileNameA(callerModule, modulePathOut, static_cast<DWORD>(modulePathOutCount)) == 0) {
+        return false;
+    }
+
+    if (moduleOut) {
+        *moduleOut = callerModule;
+    }
+    return true;
+}
+
+static bool HasStartupBlockingOverlayModuleInCurrentStack() {
+    constexpr USHORT kMaxFrames = 16;
+    void* stackFrames[kMaxFrames] = {};
+    const USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        char modulePath[MAX_PATH] = {};
+        if (TryGetModulePathFromCodeAddress(stackFrames[i], modulePath, sizeof(modulePath)) &&
+            ce::overlay_compat::IsStartupBlockingOverlayModulePath(modulePath)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool IsWrappedSwapChainObject(IDXGISwapChain* pSwapChain) {
@@ -795,6 +884,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // Capture the caller here, not in a helper. We need the code that called
     // into DetourPresent, not the helper's own return address inside this DLL.
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
+    char detourCallerModulePath[MAX_PATH] = {};
+    const bool callerFromThirdPartyOverlay =
+        TryGetModulePathFromCodeAddress(detourCallerAddress, detourCallerModulePath, sizeof(detourCallerModulePath)) &&
+        ce::overlay_compat::IsThirdPartyOverlayModulePath(detourCallerModulePath);
     const bool streamlineStartupHandoffPending = (api == APIType::D3D12) && IsStreamlineStartupHandoffPending();
     const bool streamlineStartupTransitionWindowActive =
         (api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
@@ -1039,6 +1132,28 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             ProcessVSyncOverride(SyncInterval, Flags);
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
+        const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
+        const bool startupBlockingOverlaySwapchainStillOwnsPresent =
+            ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(
+                knownThirdPartyOverlaySwapchain,
+                DXGIShared::DX12_IsStartupBlockingOverlayTaggedSwapchain(pSwapChain),
+                HasStartupBlockingOverlayModuleInCurrentStack());
+        if (ce::dx12_overlay_policy::ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(
+                startupBlockingOverlaySwapchainStillOwnsPresent || callerFromThirdPartyOverlay)) {
+            static std::atomic<int> s_overlayPresentBypassLogCount{0};
+            const int logCount = s_overlayPresentBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 256) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Bypassing DX12 ProcessFrame for third-party overlay swapchain %p (caller=%s)",
+                    pSwapChain, detourCallerModulePath[0] ? detourCallerModulePath : "tracked-overlay-swapchain");
+            }
+            if (g_IPC) {
+                g_SharedFpsLimiter.SetIPCClient(g_IPC);
+                g_SharedFpsLimiter.Apply();
+            }
+            ProcessVSyncOverride(SyncInterval, Flags);
+            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        }
     }
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
 
@@ -1129,6 +1244,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     const APIType api = DetectAPIType(pSwapChain);
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
+    char detourCallerModulePath[MAX_PATH] = {};
+    const bool callerFromThirdPartyOverlay =
+        TryGetModulePathFromCodeAddress(detourCallerAddress, detourCallerModulePath, sizeof(detourCallerModulePath)) &&
+        ce::overlay_compat::IsThirdPartyOverlayModulePath(detourCallerModulePath);
     const bool streamlineStartupHandoffPending = (api == APIType::D3D12) && IsStreamlineStartupHandoffPending();
     const bool streamlineStartupTransitionWindowActive =
         (api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
@@ -1277,6 +1396,28 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
             HookLogImportant("DetourPresent1: Startup compatibility pass #%d for third-party overlay %s", startupPass,
                              overlayModule ? overlayModule : "module");
+            if (g_IPC) {
+                g_SharedFpsLimiter.SetIPCClient(g_IPC);
+                g_SharedFpsLimiter.Apply();
+            }
+            ProcessVSyncOverride(SyncInterval, Flags);
+            return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
+        const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
+        const bool startupBlockingOverlaySwapchainStillOwnsPresent =
+            ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(
+                knownThirdPartyOverlaySwapchain,
+                DXGIShared::DX12_IsStartupBlockingOverlayTaggedSwapchain(pSwapChain),
+                HasStartupBlockingOverlayModuleInCurrentStack());
+        if (ce::dx12_overlay_policy::ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(
+                startupBlockingOverlaySwapchainStillOwnsPresent || callerFromThirdPartyOverlay)) {
+            static std::atomic<int> s_overlayPresent1BypassLogCount{0};
+            const int logCount = s_overlayPresent1BypassLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 256) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Bypassing DX12 ProcessFrame for third-party overlay swapchain %p (caller=%s)",
+                    pSwapChain, detourCallerModulePath[0] ? detourCallerModulePath : "tracked-overlay-swapchain");
+            }
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();

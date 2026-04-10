@@ -3383,6 +3383,33 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
 static std::mutex s_hwndSwapchainMutex;
 static std::map<HWND, std::vector<IDXGISwapChain*>> s_hwndSwapchainMap;
 
+static void MarkThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain, const char* creatorModulePath = nullptr) {
+    DXGIShared::DX12_RegisterThirdPartyOverlaySwapchain(pSwapChain, creatorModulePath);
+}
+
+static void MarkThirdPartyOverlaySwapchain(IDXGISwapChain1* pSwapChain, const char* creatorModulePath = nullptr) {
+    MarkThirdPartyOverlaySwapchain(static_cast<IDXGISwapChain*>(pSwapChain), creatorModulePath);
+}
+
+static void ForgetSwapchainFromTracking(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return;
+    }
+
+    DXGIShared::DX12_UnregisterThirdPartyOverlaySwapchain(pSwapChain);
+
+    std::lock_guard<std::mutex> hwndLock(s_hwndSwapchainMutex);
+    for (auto it = s_hwndSwapchainMap.begin(); it != s_hwndSwapchainMap.end();) {
+        auto& vec = it->second;
+        vec.erase(std::remove(vec.begin(), vec.end(), pSwapChain), vec.end());
+        if (vec.empty()) {
+            it = s_hwndSwapchainMap.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 // Track a swapchain's HWND association (called from ProcessFrame and deep hook).
 // NO AddRef — raw pointer tracking only. Pointers may become stale when the
 // game destroys the swapchain, which is fine because we only use them for
@@ -3514,6 +3541,9 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
                 std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
                 s_hwndSwapchainMap.erase(hWnd);
             }
+            if (ppSC && *ppSC) {
+                ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
+            }
 
             // Retry: 10 attempts × 20ms = 200ms max.  FSR FG activation may
             // need time for the game to release its own swapchain refs after
@@ -3537,6 +3567,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     // Post-track: record the new swapchain for future reactive recovery
     if (SUCCEEDED(hr) && ppSC && *ppSC && hWnd) {
         if (callerFromThirdPartyOverlay) {
+            MarkThirdPartyOverlaySwapchain(*ppSC, callerModulePath);
             HookLogImportant(
                 "DeepHook: Third-party overlay caller %s created swapchain %p for HWND=%p — leaving CE queue and "
                 "transition state unchanged",
@@ -3658,6 +3689,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
                 std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
                 s_hwndSwapchainMap.erase(hWnd);
             }
+            if (ppSC && *ppSC) {
+                ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
+            }
 
             // Retry: 10 attempts × 20ms = 200ms max
             for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
@@ -3680,6 +3714,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
         if (callerFromThirdPartyOverlay) {
+            MarkThirdPartyOverlaySwapchain(*ppSC, callerModulePath);
             HookLogImportant(
                 "CreateSwapChainForHwnd INLINE: Third-party overlay caller %s created swapchain %p for HWND=%p — "
                 "leaving CE queue and transition state unchanged",
@@ -3762,6 +3797,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
 
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         if (callerFromThirdPartyOverlay) {
+            MarkThirdPartyOverlaySwapchain(*ppSwapChain, callerModulePath);
             HookLogImportant(
                 "DetourCreateSwapChainGlobal: Third-party overlay caller %s created swapchain %p — bypassing CE "
                 "swapchain side-effects",
@@ -3873,6 +3909,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
         if (callerFromThirdPartyOverlay) {
+            MarkThirdPartyOverlaySwapchain(*ppSC, callerModulePath);
             HookLogImportant(
                 "DetourCreateSwapChainForHwndGlobal: Third-party overlay caller %s created swapchain %p for HWND=%p "
                 "— bypassing CE swapchain side-effects",
@@ -4069,6 +4106,13 @@ void RemoveGlobalVTableHooks() {
     {
         std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
         s_hwndSwapchainMap.clear();
+    }
+    {
+        for (const auto& entry : s_hwndSwapchainMap) {
+            for (IDXGISwapChain* swapchain : entry.second) {
+                DXGIShared::DX12_UnregisterThirdPartyOverlaySwapchain(swapchain);
+            }
+        }
     }
 
     if (!oCreateSwapChainGlobal && !oCreateSwapChainForHwndGlobal) {
