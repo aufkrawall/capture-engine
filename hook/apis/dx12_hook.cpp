@@ -1888,7 +1888,9 @@ static bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule 
     const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
     const bool processNeedsDelay = IsStartupOverlayCompatibilityActive();
     const bool actualFGActive = IsActualFrameGenerationActive();
+    const bool fsrFGActive = IsFSRFrameGenerationActive();
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool runtimeOwnsSwapchain = g_FGRuntimeOwnsSwapchain;
 
     // When Streamline FG is active, do NOT use a dedicated overlay queue.
     // D3D12 rejects cross-queue access to swapchain backbuffers with
@@ -1897,6 +1899,21 @@ static bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule 
     // instead, skipping fence operations to avoid interfering with SL's
     // internal frame synchronization.
     if (streamlineFGRunning) {
+        if (disabledByOverlayModule)
+            *disabledByOverlayModule = nullptr;
+        return false;
+    }
+
+    if (ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
+            actualFGActive, fsrFGActive, streamlineFGRunning, runtimeOwnsSwapchain)) {
+        static std::atomic<int> s_runtimeOwnedDedicatedQueueDisableLogCount{0};
+        int logCount = s_runtimeOwnedDedicatedQueueDisableLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Dedicated overlay queue disabled for native/runtime-owned FG "
+                "(fsrFG=%d runtimeOwns=%d scQueue=%p origGame=%p)",
+                fsrFGActive ? 1 : 0, runtimeOwnsSwapchain ? 1 : 0, g_SwapchainQueue, g_OriginalGameQueue);
+        }
         if (disabledByOverlayModule)
             *disabledByOverlayModule = nullptr;
         return false;

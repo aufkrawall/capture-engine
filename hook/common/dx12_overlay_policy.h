@@ -396,6 +396,20 @@ inline bool ShouldSuppressLikelyDuplicateTopLevelPresent(bool runtimeOwnsSwapcha
     return true;
 }
 
+inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(bool actualFGActive, bool fsrFGActive,
+                                                                             bool streamlineFGRunning,
+                                                                             bool runtimeOwnsSwapchain) {
+    if (!actualFGActive || streamlineFGRunning) {
+        return false;
+    }
+
+    // Native/runtime-owned FG swapchains are already routed through the live
+    // swapchain queue. Spinning up a second overlay queue in that window
+    // reintroduces cross-queue synchronization against the runtime-owned path
+    // and has been observed to stall inside native FFX frame-generation work.
+    return fsrFGActive || runtimeOwnsSwapchain;
+}
+
 inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,
                                                         bool authoritativeFSRActive, bool isInterpolatedFrame,
                                                         bool recentStreamlineTeardown) {
