@@ -418,12 +418,17 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool 
         return false;
     }
 
-    // A runtime-owned swapchain alone is not enough to suppress all overlay GPU
-    // work: DLSS/Streamline suspend-resume windows still need top-level Present
-    // processing so queue ownership can recover cleanly. Native/runtime-owned
-    // FSR is different: separate overlay ECL submissions on that live swapchain
-    // have been observed to stall inside ffxQuery.
-    return authoritativeFSRActive || runtimeMode == fg_runtime::RuntimeMode::kFSRFG;
+    // Keep routing native/runtime-owned FSR through the live swapchain queue,
+    // but do not suppress all overlay rendering. The observed freeze came from
+    // the unsafe dedicated/cross-queue overlay path and from rebuilding on the
+    // wrong queue during the takeover window. Once ProcessFrame is stably
+    // rendering on the runtime-owned swapchain queue, overlay drawing itself is
+    // still required so the HUD survives no-FG <-> DLSS FG <-> FSR FG switches.
+    // The dedicated-queue policy and swapchain-routing policy already keep that
+    // work on the single live queue.
+    (void)runtimeMode;
+    (void)authoritativeFSRActive;
+    return false;
 }
 
 inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,

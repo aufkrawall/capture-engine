@@ -2929,7 +2929,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
             g_FGRuntimeOwnsSwapchainSince = GetTickCount64();
             runtimeOwnershipJustActivated = true;
             HookLogImportant(
-                "DX12: FG runtime now owns swapchain queue %p (origGame=%p) — overlay will skip GPU work on this queue",
+                "DX12: FG runtime now owns swapchain queue %p (origGame=%p) — dedicated/cross-queue overlay work is disabled on this queue",
                 pQueue, g_OriginalGameQueue);
         } else if (!runtimeOwns && g_FGRuntimeOwnsSwapchain) {
             const auto runtimeMode = g_FGCompat.GetRuntimeMode();
@@ -8558,8 +8558,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
         // CRITICAL FIX: Don't initialize ImGui during FG suspension, FSR
         // stabilization, or native FSR FG This prevents initialization with
-        // potentially unstable frame generation state and avoids initializing
-        // overlay resources we'll never use (native FSR FG skips rendering)
+        // potentially unstable frame generation state and avoids rebuilding
+        // overlay state on a queue topology that is still mid-transition
         // CRITICAL FIX: Clean up any existing overlay context from previous
         // swapchain This happens when FSR FG recreates the swapchain and we
         // deferred cleanup MUST hold mutex to prevent race with DrawOverlay
