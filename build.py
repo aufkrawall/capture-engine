@@ -1448,6 +1448,43 @@ def get_host_msys2_dir():
     return get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
 
 
+def resolve_msys2_gtest_link_inputs(lib_dir: str) -> List[str]:
+    """Resolve GoogleTest link inputs from an extracted MSYS2 MinGW lib dir."""
+
+    def pick(candidates: List[str]) -> Optional[str]:
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    gtest_main = pick(
+        [
+            os.path.join(lib_dir, "libgtest_main.dll.a"),
+            os.path.join(lib_dir, "libgtest_main.a"),
+        ]
+    )
+    gtest = pick(
+        [
+            os.path.join(lib_dir, "libgtest.dll.a"),
+            os.path.join(lib_dir, "libgtest.a"),
+        ]
+    )
+
+    if gtest_main and gtest:
+        # Prefer import libraries when available so the link mode matches the
+        # runtime DLLs copied next to unit_tests.exe for Windows and Wine.
+        return [gtest_main, gtest]
+
+    missing = []
+    if not gtest_main:
+        missing.append("libgtest_main(.dll.a/.a)")
+    if not gtest:
+        missing.append("libgtest(.dll.a/.a)")
+    raise RuntimeError(
+        f"Missing MSYS2 GoogleTest libraries in {lib_dir}: {', '.join(missing)}"
+    )
+
+
 # ============================================================================
 # ImGui Setup - REMOVED: No longer using ImGui
 # Custom overlay renderer (custom_overlay) replaces ImGui
@@ -2778,6 +2815,9 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     # 1. Get FFmpeg flags
     if IS_LINUX:
         ffmpeg_cflags, ffmpeg_link_flags = get_linux_ffmpeg_build_flags(env, pkg_config)
+        gtest_link_inputs = resolve_msys2_gtest_link_inputs(
+            get_linux_msys2_lib_dir("x64")
+        )
     else:
         # Use local FFmpeg on Windows
         env_ffmpeg = env.copy()
@@ -2799,6 +2839,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
             os.path.join(ffmpeg_lib_dir, "libswscale.dll.a"),
             os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
         ]
+        gtest_link_inputs = ["-lgtest", "-lgtest_main"]
 
     msys2_dir = get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
     vulkan_lib = os.path.join(msys2_dir, "clang64", "lib", "libvulkan-1.dll.a")
@@ -2806,44 +2847,48 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     # Link against gtest, common, hook/common sources, mediaengine, and FFmpeg.
     # Keep this aligned with the actual hook/mediaengine linker inputs to avoid
     # dragging in stale transitive dependencies that are not shipped in MSYS2.
-    ldflags_test = [
-        "-static-libgcc",
-        "-static-libstdc++",
-        "-Wl,--allow-multiple-definition",
-        "-lgtest",
-        "-lgtest_main",
-        "-ld3d9",
-        "-ld3d10",
-        "-ld3d11",
-        "-ld3d12",
-        "-ld3dcompiler",
-        "-ldxguid",
-        "-lws2_32",
-        "-lole32",
-        "-lwinmm",
-        "-luser32",
-        "-lgdi32",
-        "-lopengl32",
-        vulkan_lib,
-        "-lversion",
-        "-ldxgi",
-        "-lpdh",
-        "-lpsapi",
-        "-lavrt",
-        "-ldbghelp",
-        "-lshlwapi",
-        "-ldwmapi",
-        "-lshcore",
-        "-lmfplat",
-        "-lmfuuid",
-        "-lbcrypt",
-        "-lsecur32",
-        "-lmmdevapi",
-        "-luuid",
-        "-lsetupapi",
-        "-lcfgmgr32",
-        "-ladvapi32",
-    ] + ffmpeg_link_flags
+    ldflags_test = (
+        [
+            "-static-libgcc",
+            "-static-libstdc++",
+            "-Wl,--allow-multiple-definition",
+        ]
+        + gtest_link_inputs
+        + [
+            "-ld3d9",
+            "-ld3d10",
+            "-ld3d11",
+            "-ld3d12",
+            "-ld3dcompiler",
+            "-ldxguid",
+            "-lws2_32",
+            "-lole32",
+            "-lwinmm",
+            "-luser32",
+            "-lgdi32",
+            "-lopengl32",
+            vulkan_lib,
+            "-lversion",
+            "-ldxgi",
+            "-lpdh",
+            "-lpsapi",
+            "-lavrt",
+            "-ldbghelp",
+            "-lshlwapi",
+            "-ldwmapi",
+            "-lshcore",
+            "-lmfplat",
+            "-lmfuuid",
+            "-lbcrypt",
+            "-lsecur32",
+            "-lmmdevapi",
+            "-luuid",
+            "-lsetupapi",
+            "-lcfgmgr32",
+            "-ladvapi32",
+        ]
+        + ffmpeg_link_flags
+    )
     if any(flag.startswith("-fsanitize=") for flag in cflags):
         ldflags_test.append("-fsanitize=address,undefined")
 
