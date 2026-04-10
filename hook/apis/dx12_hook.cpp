@@ -1256,6 +1256,34 @@ static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason) {
 // Guard flag: skip queue capture during temp swapchain creation
 static std::atomic<bool> g_CreatingTempSwapchain{false};
 
+struct ForwardedCreateSwapchainForHwndCallerContext {
+    const void* callerAddress = nullptr;
+    char callerModulePath[MAX_PATH] = {};
+};
+
+static thread_local ForwardedCreateSwapchainForHwndCallerContext s_forwardedCreateSwapchainForHwndCallerContext;
+
+class ScopedForwardedCreateSwapchainForHwndCallerContext {
+public:
+    ScopedForwardedCreateSwapchainForHwndCallerContext(const void* callerAddress, const char* callerModulePath)
+        : previousContext_(s_forwardedCreateSwapchainForHwndCallerContext) {
+        s_forwardedCreateSwapchainForHwndCallerContext = {};
+        s_forwardedCreateSwapchainForHwndCallerContext.callerAddress = callerAddress;
+        if (callerModulePath && *callerModulePath) {
+            strncpy_s(s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath,
+                      sizeof(s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath), callerModulePath,
+                      _TRUNCATE);
+        }
+    }
+
+    ~ScopedForwardedCreateSwapchainForHwndCallerContext() {
+        s_forwardedCreateSwapchainForHwndCallerContext = previousContext_;
+    }
+
+private:
+    ForwardedCreateSwapchainForHwndCallerContext previousContext_;
+};
+
 static bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modulePathOut, size_t modulePathOutCount,
                                             HMODULE* moduleHandleOut = nullptr) {
     if (moduleHandleOut) {
@@ -1284,6 +1312,11 @@ static bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modul
     return true;
 }
 
+static bool IsFFXFrameGenerationModulePath(const char* modulePath) {
+    return ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_dx12") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_vk");
+}
+
 static bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle) {
     if (!moduleHandle) {
         return false;
@@ -1294,8 +1327,7 @@ static bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle) {
         return false;
     }
 
-    return ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_dx12") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_vk");
+    return IsFFXFrameGenerationModulePath(modulePath);
 }
 
 static bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress, char* modulePathOut = nullptr,
@@ -1324,6 +1356,55 @@ static bool HasFFXFrameGenerationModuleInCurrentStack(char* modulePathOut = null
     }
 
     return false;
+}
+
+static bool IsCurrentECLCallerFromThirdPartyOverlay(char* modulePathOut = nullptr, size_t modulePathOutCount = 0) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+
+    const void* callerAddress = CE_RETURN_ADDRESS();
+    if (!callerAddress) {
+        return false;
+    }
+
+    char localModulePath[MAX_PATH] = {};
+    char* targetBuffer = (modulePathOut && modulePathOutCount > 0) ? modulePathOut : localModulePath;
+    const size_t targetCount = (modulePathOut && modulePathOutCount > 0) ? modulePathOutCount : sizeof(localModulePath);
+    if (!TryGetModulePathFromCodeAddress(callerAddress, targetBuffer, targetCount)) {
+        return false;
+    }
+
+    return ce::overlay_compat::IsThirdPartyOverlayModulePath(targetBuffer);
+}
+
+struct CreateSwapchainForHwndCallerContext {
+    const void* callerAddress = nullptr;
+    bool callerFromFFXFGModule = false;
+    bool callerFromThirdPartyOverlay = false;
+    char callerModulePath[MAX_PATH] = {};
+};
+
+static CreateSwapchainForHwndCallerContext ResolveCreateSwapchainForHwndCallerContext() {
+    CreateSwapchainForHwndCallerContext context = {};
+
+    char immediateCallerModulePath[MAX_PATH] = {};
+    const void* immediateCallerAddress = CE_RETURN_ADDRESS();
+    TryGetModulePathFromCodeAddress(immediateCallerAddress, immediateCallerModulePath, sizeof(immediateCallerModulePath));
+
+    const char* effectiveCallerModulePath = ce::overlay_compat::GetEffectiveCreateSwapchainCallerModulePath(
+        s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath, immediateCallerModulePath);
+    if (effectiveCallerModulePath && *effectiveCallerModulePath) {
+        strncpy_s(context.callerModulePath, sizeof(context.callerModulePath), effectiveCallerModulePath, _TRUNCATE);
+    }
+
+    context.callerAddress = s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath[0]
+                                ? s_forwardedCreateSwapchainForHwndCallerContext.callerAddress
+                                : immediateCallerAddress;
+    context.callerFromFFXFGModule = IsFFXFrameGenerationModulePath(context.callerModulePath);
+    context.callerFromThirdPartyOverlay = ce::overlay_compat::IsEffectiveCreateSwapchainCallerFromThirdPartyOverlay(
+        s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath, immediateCallerModulePath);
+    return context;
 }
 
 static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddress, bool runtimeOwnsSwapchain,
@@ -2587,10 +2668,9 @@ static bool ShouldSkipCaptureForTargetCadence() {
 
 // C Linkage Exports for cross-module calls (e.g. from C clients or
 // GetProcAddress)
-extern "C" {
-// NOINLINE: Prevents LTO from inlining into the ECL detour, which would
-// allow the compiler to merge vtable reads and optimize away our safety checks.
-__attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
+static __attribute__((noinline)) void DX12_SetCommandQueueInternal(ID3D12CommandQueue* pQueue,
+                                                                   bool callerFromThirdPartyOverlay,
+                                                                   const char* callerModulePath) {
     if (!pQueue)
         return;
 
@@ -2612,6 +2692,22 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
     {
         std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
         currentSwapchainQueue = g_SwapchainQueue;
+    }
+
+    if (ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(
+            callerFromThirdPartyOverlay, g_OriginalGameQueue != nullptr, pQueue == primaryQ,
+            pQueue == g_OriginalGameQueue, pQueue == currentSwapchainQueue)) {
+        static std::atomic<int> s_overlayQueueIgnoreLogCount{0};
+        int logCount = s_overlayQueueIgnoreLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 256) == 0) {
+            HookLogImportant(
+                "DX12: SetCommandQueue ignoring foreign overlay queue %p from caller %s "
+                "(primary=%p orig=%p scQ=%p current=%p)",
+                pQueue, (callerModulePath && *callerModulePath) ? callerModulePath : "unknown", primaryQ,
+                g_OriginalGameQueue,
+                currentSwapchainQueue, g_CommandQueue.load(std::memory_order_acquire));
+        }
+        return;
     }
 
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
@@ -2707,6 +2803,13 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
     // CRITICAL FIX: Hook queue vtable lazily here instead of during swapchain
     // creation This prevents hangs during DXGI internal operations
     DX12_HookQueueVTable(pQueue);
+}
+
+extern "C" {
+// NOINLINE: Prevents LTO from inlining into the ECL detour, which would
+// allow the compiler to merge vtable reads and optimize away our safety checks.
+__attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
+    DX12_SetCommandQueueInternal(pQueue, false, nullptr);
 }
 
 }  // extern "C" (DX12_SetCommandQueue)
@@ -3321,12 +3424,11 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         return s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     }
 
-    const void* callerAddress = CE_RETURN_ADDRESS();
-    char callerModulePath[MAX_PATH] = {};
-    const bool callerFromFFXFGModule =
-        IsCodeAddressFromFFXFrameGenerationModule(callerAddress, callerModulePath, sizeof(callerModulePath));
-    const bool callerFromThirdPartyOverlay =
-        callerModulePath[0] != '\0' && ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
+    const CreateSwapchainForHwndCallerContext callerContext = ResolveCreateSwapchainForHwndCallerContext();
+    const void* callerAddress = callerContext.callerAddress;
+    const bool callerFromFFXFGModule = callerContext.callerFromFFXFGModule;
+    const bool callerFromThirdPartyOverlay = callerContext.callerFromThirdPartyOverlay;
+    const char* callerModulePath = callerContext.callerModulePath;
     const bool ffxFrameGenerationInStack = HasFFXFrameGenerationModuleInCurrentStack();
 
     HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
@@ -3481,12 +3583,11 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         return s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     }
 
-    const void* callerAddress = CE_RETURN_ADDRESS();
-    char callerModulePath[MAX_PATH] = {};
-    const bool callerFromFFXFGModule =
-        IsCodeAddressFromFFXFrameGenerationModule(callerAddress, callerModulePath, sizeof(callerModulePath));
-    const bool callerFromThirdPartyOverlay =
-        callerModulePath[0] != '\0' && ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
+    const CreateSwapchainForHwndCallerContext callerContext = ResolveCreateSwapchainForHwndCallerContext();
+    const void* callerAddress = callerContext.callerAddress;
+    const bool callerFromFFXFGModule = callerContext.callerFromFFXFGModule;
+    const bool callerFromThirdPartyOverlay = callerContext.callerFromThirdPartyOverlay;
+    const char* callerModulePath = callerContext.callerModulePath;
     const bool ffxFrameGenerationInStack = HasFFXFrameGenerationModuleInCurrentStack();
 
     HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
@@ -3764,6 +3865,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         pDescToUse = &modifiedDesc;
     }
 
+    // Forward the original external caller through the DXGI vtable -> real DXGI
+    // function chain so our inline/deep hooks don't misclassify CE's own detour
+    // frame as the authoritative CreateSwapChainForHwnd caller.
+    ScopedForwardedCreateSwapchainForHwndCallerContext forwardedCallerContext(callerAddress, callerModulePath);
     HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
@@ -11106,8 +11211,18 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // being misclassified as real presents.
     ID3D12CommandQueue* primaryQ = g_PrimaryGameQueue.load(std::memory_order_acquire);
     ID3D12CommandQueue* classificationQueue = GetFrameClassificationQueue();
-    if (!classificationQueue || pThis == classificationQueue) {
+    char eclCallerModulePath[MAX_PATH] = {};
+    const bool callerFromThirdPartyOverlay =
+        IsCurrentECLCallerFromThirdPartyOverlay(eclCallerModulePath, sizeof(eclCallerModulePath));
+    if ((!classificationQueue || pThis == classificationQueue) && !callerFromThirdPartyOverlay) {
         g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
+    } else if (callerFromThirdPartyOverlay) {
+        static std::atomic<int> s_overlayECLCountIgnoreLogCount{0};
+        int logCount = s_overlayECLCountIgnoreLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 256) == 0) {
+            HookLogImportant("DX12: Ignoring command-list count from third-party overlay caller %s on queue %p",
+                             eclCallerModulePath[0] ? eclCallerModulePath : "unknown", pThis);
+        }
     }
 
     // Register game's queue for overlay execution.
@@ -11191,13 +11306,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         }
         if (!anyFGActive) {
             // No FG: always register (same as before)
-            DX12_SetCommandQueue(pThis);
+            DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath);
         } else if (!primaryQ) {
             // FG active but primary queue not yet captured: register to capture it
-            DX12_SetCommandQueue(pThis);
+            DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath);
         } else if (!isKnownQueue) {
             // FG active, unknown queue: register it (new queue from FG runtime)
-            DX12_SetCommandQueue(pThis);
+            DX12_SetCommandQueueInternal(pThis, callerFromThirdPartyOverlay, eclCallerModulePath);
         }
         // else: FG active, known queue — skip registration (fast path)
     }

@@ -98,6 +98,27 @@ inline bool ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(bool callerFromTh
     return !hasOriginalGameQueue || !capturedQueueMatchesOriginalGameQueue;
 }
 
+inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThirdPartyOverlay,
+                                                              bool hasOriginalGameQueue,
+                                                              bool queueMatchesPrimaryQueue,
+                                                              bool queueMatchesOriginalGameQueue,
+                                                              bool queueMatchesSwapchainQueue) {
+    if (!callerFromThirdPartyOverlay) {
+        return false;
+    }
+
+    // Third-party overlays can submit ECL work on private helper queues after
+    // we have already captured the real game queue. Because all ID3D12CommandQueue
+    // instances share the same hooked vtable, those foreign ECLs still reach our
+    // detour. Never let that helper queue become authoritative game tracking
+    // unless it is already one of the known live game queues.
+    if (!hasOriginalGameQueue) {
+        return false;
+    }
+
+    return !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue && !queueMatchesSwapchainQueue;
+}
+
 enum class SwapchainOverlayRoutingDecision {
     kUseNormalRouting,
     kUsePostFSRStreamlineQueue,

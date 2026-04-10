@@ -117,6 +117,21 @@ inline bool IsThirdPartyOverlayModulePath(const wchar_t* path) {
     return false;
 }
 
+inline const char* GetEffectiveCreateSwapchainCallerModulePath(const char* forwardedCallerModulePath,
+                                                               const char* immediateCallerModulePath) {
+    if (forwardedCallerModulePath && *forwardedCallerModulePath) {
+        return forwardedCallerModulePath;
+    }
+
+    return immediateCallerModulePath;
+}
+
+inline bool IsEffectiveCreateSwapchainCallerFromThirdPartyOverlay(const char* forwardedCallerModulePath,
+                                                                  const char* immediateCallerModulePath) {
+    return IsThirdPartyOverlayModulePath(
+        GetEffectiveCreateSwapchainCallerModulePath(forwardedCallerModulePath, immediateCallerModulePath));
+}
+
 inline bool IsThirdPartyOverlayLoaded() {
     static constexpr const char* kOverlayModules[] = {
         "gameoverlayrenderer64.dll",
