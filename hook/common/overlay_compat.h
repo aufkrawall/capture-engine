@@ -218,13 +218,28 @@ inline bool HasUsableDX12OverlayStartupWindowSize(LONG width, LONG height) {
     return width >= 640 && height >= 360;
 }
 
+inline bool ShouldDelayDX12OverlayAfterStartupResume(bool processNeedsDelay, bool hadStartupSuppression,
+                                                     bool actualFGActive, bool runtimeOwnedSwapchainNeedsExtraSettle,
+                                                     bool windowForeground, LONG width, LONG height,
+                                                     ULONGLONG msSinceResumeReady, ULONGLONG settleDelayMs) {
+    // GTA 5 Enhanced can briefly return from the Social Club startup window while
+    // the live swapchain is still in the middle of a non-game runtime queue
+    // handoff. Even with the correct queue captured, drawing during that short
+    // window can still trigger ERR_GFX_STATE, so keep overlay work deferred
+    // until the handoff settles and the main window has been stable again for
+    // long enough.
+    return processNeedsDelay && hadStartupSuppression && !actualFGActive &&
+           (runtimeOwnedSwapchainNeedsExtraSettle || !windowForeground ||
+            !HasUsableDX12OverlayStartupWindowSize(width, height) || msSinceResumeReady < settleDelayMs);
+}
+
 inline bool ShouldDelayDX12OverlayInitAfterStartupResume(bool processNeedsDelay, bool hadStartupSuppression,
                                                          bool actualFGActive, bool windowForeground, LONG width,
                                                          LONG height, ULONGLONG msSinceResumeReady,
                                                          ULONGLONG settleDelayMs) {
-    return processNeedsDelay && hadStartupSuppression && !actualFGActive &&
-           (!windowForeground || !HasUsableDX12OverlayStartupWindowSize(width, height) ||
-            msSinceResumeReady < settleDelayMs);
+    return ShouldDelayDX12OverlayAfterStartupResume(processNeedsDelay, hadStartupSuppression, actualFGActive, false,
+                                                    windowForeground, width, height, msSinceResumeReady,
+                                                    settleDelayMs);
 }
 
 inline size_t GetStartupCompatibleDX12AllocatorPoolSize(bool processNeedsDelay, bool startupOverlayPresent,

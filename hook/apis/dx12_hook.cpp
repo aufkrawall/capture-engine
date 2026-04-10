@@ -2184,6 +2184,7 @@ static bool ShouldDeferOverlayInitForStartupCompat(HWND gameWindow, ULONGLONG* r
 }
 
 static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRender, HWND gameWindow,
+                                                           bool runtimeOwnedSwapchainActive,
                                                            ULONGLONG* remainingMs = nullptr) {
     static bool s_hadStartupSuppression = false;
     static ULONGLONG s_resumeStableSinceMs = 0;
@@ -2212,6 +2213,17 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
         return false;
     }
 
+    if (runtimeOwnedSwapchainActive) {
+        // Require a fresh stable post-startup window after runtime queue
+        // ownership returns to the game. GTA 5 Enhanced can briefly leave the
+        // Social Club startup window while the live swapchain is still bound to
+        // a runtime-owned queue, and drawing in that handoff window trips
+        // ERR_GFX_STATE.
+        s_resumeStableSinceMs = 0;
+        s_resumeWindow = gameWindow;
+        return true;
+    }
+
     RECT clientRect = {};
     LONG width = 0;
     LONG height = 0;
@@ -2234,9 +2246,9 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
     }
 
     const ULONGLONG msSinceResumeReady = now - s_resumeStableSinceMs;
-    if (ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(
-            processNeedsDelay, s_hadStartupSuppression, actualFGActive, windowForeground, width, height,
-            msSinceResumeReady, kStartupOverlayPostResumeSettleMs)) {
+    if (ce::overlay_compat::ShouldDelayDX12OverlayAfterStartupResume(
+            processNeedsDelay, s_hadStartupSuppression, actualFGActive, runtimeOwnedSwapchainActive,
+            windowForeground, width, height, msSinceResumeReady, kStartupOverlayPostResumeSettleMs)) {
         if (remainingMs) {
             *remainingMs =
                 kStartupOverlayPostResumeSettleMs - std::min(msSinceResumeReady, kStartupOverlayPostResumeSettleMs);
@@ -7391,13 +7403,17 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     bool allowOverlayRender = ApplyOverlayStartupCompatMode(frameDesc.OutputWindow);
 
     ULONGLONG postResumeSettleRemainingMs = 0;
-    const bool deferOverlayInitAfterResume = ShouldDelayOverlayInitAfterStartupResumeCompat(
-        allowOverlayRender, frameDesc.OutputWindow, &postResumeSettleRemainingMs);
+    const bool runtimeOwnedSwapchainNeedsExtraResumeSettle =
+        g_FGRuntimeOwnsSwapchain && g_FGRuntimeOwnsSwapchainSince != 0 &&
+        (GetTickCount64() - g_FGRuntimeOwnsSwapchainSince) < kStartupOverlayPostResumeSettleMs;
+    const bool deferOverlayWorkAfterResume = ShouldDelayOverlayInitAfterStartupResumeCompat(
+        allowOverlayRender, frameDesc.OutputWindow, runtimeOwnedSwapchainNeedsExtraResumeSettle,
+        &postResumeSettleRemainingMs);
     const bool processNeedsStartupOverlayInitDelay =
         ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
         !IsActualFrameGenerationActive();
     if (processNeedsStartupOverlayInitDelay) {
-        if ((!allowOverlayRender || deferOverlayInitAfterResume) &&
+        if ((!allowOverlayRender || deferOverlayWorkAfterResume) &&
             s_startupOverlayActivationStage == StartupOverlayActivationStage::kNone) {
             s_startupOverlayActivationStage = StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit;
         }
@@ -8100,12 +8116,19 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             return;
         }
 
-        if (deferOverlayInitAfterResume) {
+        if (deferOverlayWorkAfterResume) {
             static std::atomic<int> s_postResumeSettleLogCount{0};
             if (s_postResumeSettleLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
-                HookLogImportant(
-                    "DX12: Keeping overlay init deferred after startup-overlay resume for %s (remaining=%llums)",
-                    g_ProcessName, postResumeSettleRemainingMs);
+                if (runtimeOwnedSwapchainNeedsExtraResumeSettle) {
+                    HookLogImportant(
+                        "DX12: Keeping overlay work deferred after startup-overlay resume for %s while the "
+                        "runtime-owned swapchain queue is still active",
+                        g_ProcessName);
+                } else {
+                    HookLogImportant(
+                        "DX12: Keeping overlay work deferred after startup-overlay resume for %s (remaining=%llums)",
+                        g_ProcessName, postResumeSettleRemainingMs);
+                }
             }
             return;
         }
@@ -8311,7 +8334,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     // syncInit=false (cleared by the transition), this block would run InitOverlaySync
     // while the FG runtime is mid-initialization.  Destroying and recreating sync
     // resources during the transition corrupts GPU state → DEVICE_REMOVED.
-    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && !g_State.syncInit &&
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && !deferOverlayWorkAfterResume &&
+        g_State.overlayInit && !g_State.syncInit &&
         g_FGTransitionCooldown <= 0) {
         if (s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit &&
             s_startupOverlayActivationStageMs != 0) {
@@ -8428,11 +8452,13 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     bool suppressOverlayRenderForLoadedStartupOverlay = false;
     bool delayOverlayRenderAfterResourcePrime = false;
     bool delayOverlayRenderAfterFirstDrawProbe = false;
+    bool delayOverlayRenderAfterResume = false;
     const bool shouldRunStartupOverlayDrawProbe =
         ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
         !IsActualFrameGenerationActive();
 
-    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && !deferOverlayWorkAfterResume &&
+        g_State.overlayInit && g_State.syncInit &&
         s_startupOverlaySyncInitMs != 0) {
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG msSinceSyncInit = now - s_startupOverlaySyncInitMs;
@@ -8498,7 +8524,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         }
     }
 
-    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && !deferOverlayWorkAfterResume &&
+        g_State.overlayInit && g_State.syncInit &&
         s_startupOverlayResourcePrimeMs != 0) {
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG msSinceResourcePrime = now - s_startupOverlayResourcePrimeMs;
@@ -8520,7 +8547,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         }
     }
 
-    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && !deferOverlayWorkAfterResume &&
+        g_State.overlayInit && g_State.syncInit &&
         s_startupOverlayFirstDrawProbeMs != 0) {
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG msSinceProbe = now - s_startupOverlayFirstDrawProbeMs;
@@ -8538,6 +8566,24 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                              g_ProcessName);
             s_startupOverlayFirstDrawProbeMs = 0;
         }
+    }
+
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
+        deferOverlayWorkAfterResume) {
+        static std::atomic<int> s_postResumeRenderDelayLogCount{0};
+        if (s_postResumeRenderDelayLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+            if (runtimeOwnedSwapchainNeedsExtraResumeSettle) {
+                HookLogImportant(
+                    "DX12: Keeping overlay rendering deferred after startup-overlay resume for %s while the "
+                    "runtime-owned swapchain queue is still active",
+                    g_ProcessName);
+            } else {
+                HookLogImportant(
+                    "DX12: Keeping overlay rendering deferred after startup-overlay resume for %s (remaining=%llums)",
+                    g_ProcessName, postResumeSettleRemainingMs);
+            }
+        }
+        delayOverlayRenderAfterResume = true;
     }
 
     // =========================================================================
@@ -8749,7 +8795,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     }
 
     if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
-        !delayOverlayRenderAfterSyncInit && !suppressOverlayRenderForLoadedStartupOverlay &&
+        !delayOverlayRenderAfterResume && !delayOverlayRenderAfterSyncInit &&
+        !suppressOverlayRenderForLoadedStartupOverlay &&
         !delayOverlayRenderAfterResourcePrime && !delayOverlayRenderAfterFirstDrawProbe) {
         // Single log on first successful overlay render
         static int s_firstOverlayLogged = 0;
