@@ -223,6 +223,10 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         return result;
     }
 
+    if (parsed.enabled) {
+        g_FGCompat.MarkDirectFFXApiConfirmation();
+    }
+
     HookLog("FFX Hook: Frame Generation configure %s (context=%p, frameID=%llu, type=0x%llx)",
             parsed.enabled ? "ENABLED" : "DISABLED", context, (unsigned long long)parsed.frameId,
             (unsigned long long)desc->type);
@@ -321,28 +325,43 @@ void Init() {
         HookLog("FFX Hook: Initializing...");
     }
 
-    // Try to find FFX modules
-    // These are the common DLL names for FSR Frame Generation
-    // Also includes dlssg-to-fsr3 mod DLLs that redirect DLSS FG to FSR FG
-    const wchar_t* ffxModules[] = {// FSR 4 / FSR 3.1 DLLs (UE5 native integration) - CHECK FIRST
-                                   L"amd_fidelityfx_framegeneration_dx12.dll", L"amd_fidelityfx_framegeneration_vk.dll",
-                                   // Standard AMD FSR FG DLLs
-                                   L"amd_fidelityfx_fg.dll", L"ffx_frameinterpolation_x64.dll",
-                                   L"amd_fidelityfx_framegeneration.dll", L"ffx_framegeneration.dll",
-                                   // dlssg-to-fsr3 mod - uses nvngx_dlssg.dll as a proxy that calls FFX API
-                                   L"nvngx_dlssg.dll",
-                                   // FSR3 FG Mod common names
-                                   L"fsr3fg.dll", L"fsr3mod.dll"};
+    // Try to find FFX modules.
+    // These cover both the older explicit FG DLL names and newer generic
+    // FidelityFX runtime DLL names observed in GTA V Enhanced.
+    // Also includes dlssg-to-fsr3 mod DLLs that redirect DLSS FG to FSR FG.
+    const wchar_t* ffxModules[] = {
+        // FSR 4 / FSR 3.1 DLLs (UE5 native integration) - check first.
+        L"amd_fidelityfx_framegeneration_dx12.dll",
+        L"amd_fidelityfx_framegeneration_vk.dll",
+        // GTA V Enhanced can load the generic FidelityFX runtime DLL name while
+        // still routing native frame generation through the FFX API exports.
+        L"amd_fidelityfx_dx12.dll",
+        L"amd_fidelityfx_vk.dll",
+        // Standard AMD FSR FG DLLs.
+        L"amd_fidelityfx_fg.dll",
+        L"ffx_frameinterpolation_x64.dll",
+        L"amd_fidelityfx_framegeneration.dll",
+        L"ffx_framegeneration.dll",
+        // dlssg-to-fsr3 mod - uses nvngx_dlssg.dll as a proxy that calls FFX API.
+        L"nvngx_dlssg.dll",
+        // FSR3 FG mod common names.
+        L"fsr3fg.dll",
+        L"fsr3mod.dll",
+    };
 
-    const char* ffxModuleNames[] = {"amd_fidelityfx_framegeneration_dx12.dll",
-                                    "amd_fidelityfx_framegeneration_vk.dll",
-                                    "amd_fidelityfx_fg.dll",
-                                    "ffx_frameinterpolation_x64.dll",
-                                    "amd_fidelityfx_framegeneration.dll",
-                                    "ffx_framegeneration.dll",
-                                    "nvngx_dlssg.dll",
-                                    "fsr3fg.dll",
-                                    "fsr3mod.dll"};
+    const char* ffxModuleNames[] = {
+        "amd_fidelityfx_framegeneration_dx12.dll",
+        "amd_fidelityfx_framegeneration_vk.dll",
+        "amd_fidelityfx_dx12.dll",
+        "amd_fidelityfx_vk.dll",
+        "amd_fidelityfx_fg.dll",
+        "ffx_frameinterpolation_x64.dll",
+        "amd_fidelityfx_framegeneration.dll",
+        "ffx_framegeneration.dll",
+        "nvngx_dlssg.dll",
+        "fsr3fg.dll",
+        "fsr3mod.dll",
+    };
 
     for (size_t i = 0; i < _countof(ffxModules); ++i) {
         HMODULE hMod = GetModuleHandleW(ffxModules[i]);

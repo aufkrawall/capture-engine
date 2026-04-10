@@ -332,7 +332,14 @@ static bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle) {
     }
 
     return ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_dx12") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_vk");
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_vk") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_dx12") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_vk") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_fg") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "ffx_frameinterpolation") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "ffx_framegeneration") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "fsr3fg") ||
+           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "fsr3mod");
 }
 
 static bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress) {

@@ -141,6 +141,7 @@ public:
     void SetFSRFGActive(bool active);
     void SetFSRFGMultiplier(int multiplier);
     void SetHeuristicFSRFGActive(bool active);
+    void MarkDirectFFXApiConfirmation();
     bool IsDLSSFGApiActive() const {
         return dlssFGApiActive.load(std::memory_order_acquire);
     }
@@ -149,6 +150,9 @@ public:
     }
     bool IsHeuristicFSRFGActive() const {
         return heuristicFSRFGActive.load(std::memory_order_acquire);
+    }
+    bool HasDirectFFXApiConfirmation() const {
+        return directFFXApiConfirmed.load(std::memory_order_acquire);
     }
 
     // Clear NVIDIA Smooth Motion detection state.  Called when SL FG turns OFF
@@ -216,6 +220,7 @@ private:
     std::atomic<bool> dlssFGApiActive{false};
     std::atomic<bool> fsrFGApiActive{false};
     std::atomic<bool> heuristicFSRFGActive{false};
+    std::atomic<bool> directFFXApiConfirmed{false};
     std::atomic<int> dlssFGMultiplier{0};
     std::atomic<int> fsrFGMultiplier{0};
     std::atomic<bool> streamlineSupportPresent{false};

@@ -149,6 +149,50 @@ inline bool IsStartupBlockingOverlayModulePath(const wchar_t* path) {
     return false;
 }
 
+inline bool IsFFXFrameGenerationModulePath(const char* path) {
+    static constexpr const char* kFFXFrameGenerationTokens[] = {
+        "amd_fidelityfx_framegeneration_dx12",
+        "amd_fidelityfx_framegeneration_vk",
+        // GTA V Enhanced currently uses the generic runtime DLL name while
+        // still routing native FSR FG through the FFX API exports.
+        "amd_fidelityfx_dx12",
+        "amd_fidelityfx_vk",
+        "amd_fidelityfx_fg",
+        "ffx_frameinterpolation",
+        "ffx_framegeneration",
+        "fsr3fg",
+        "fsr3mod",
+    };
+
+    for (const char* token : kFFXFrameGenerationTokens) {
+        if (detail::ContainsInsensitive(path, token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool IsFFXFrameGenerationModulePath(const wchar_t* path) {
+    static constexpr const wchar_t* kFFXFrameGenerationTokens[] = {
+        L"amd_fidelityfx_framegeneration_dx12",
+        L"amd_fidelityfx_framegeneration_vk",
+        L"amd_fidelityfx_dx12",
+        L"amd_fidelityfx_vk",
+        L"amd_fidelityfx_fg",
+        L"ffx_frameinterpolation",
+        L"ffx_framegeneration",
+        L"fsr3fg",
+        L"fsr3mod",
+    };
+
+    for (const wchar_t* token : kFFXFrameGenerationTokens) {
+        if (detail::ContainsInsensitive(path, token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 inline const char* GetEffectiveCreateSwapchainCallerModulePath(const char* forwardedCallerModulePath,
                                                                const char* immediateCallerModulePath) {
     if (forwardedCallerModulePath && *forwardedCallerModulePath) {

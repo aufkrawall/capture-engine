@@ -189,11 +189,13 @@ void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
 void FGCompatibility::SetFSRFGActive(bool active) {
     bool wasActive = fsrFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (active) {
+        directFFXApiConfirmed.store(false, std::memory_order_release);
         if (fsrFGMultiplier.load(std::memory_order_acquire) < 2) {
             fsrFGMultiplier.store(2, std::memory_order_release);
         }
     } else {
         fsrFGMultiplier.store(0, std::memory_order_release);
+        directFFXApiConfirmed.store(false, std::memory_order_release);
     }
     if (wasActive != active) {
         HookLog("FG: FSR FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED", dormantMode.load() ? 1 : 0);
@@ -216,6 +218,14 @@ void FGCompatibility::SetFSRFGActive(bool active) {
 
         HookLog("FG: Active type now %s", GetFGTypeName(GetActiveFGType()));
     }
+}
+
+void FGCompatibility::MarkDirectFFXApiConfirmation() {
+    if (!fsrFGApiActive.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    directFFXApiConfirmed.store(true, std::memory_order_release);
 }
 
 void FGCompatibility::RecordFrame(int commandListsExecuted) {

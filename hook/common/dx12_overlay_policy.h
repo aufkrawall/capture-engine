@@ -121,6 +121,16 @@ inline bool ShouldKeepStartupBlockingOverlaySwapchainBypass(bool swapchainKnownT
     return presentCallerFromTaggedStartupBlockingOverlay;
 }
 
+inline bool ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(bool callerFromFFXFGModule,
+                                                               bool ffxFrameGenerationInStack) {
+    // Native FFX FG swapchain creation can be wrapped by EOS / Social Club, so
+    // the immediate return address looks like a third-party overlay even though
+    // the live runtime-owned swapchain really belongs to FFX FG. In that case,
+    // stack evidence must win so we capture the runtime queue and transition into
+    // the guarded FSR path instead of rebuilding on the stale game queue.
+    return callerFromFFXFGModule || ffxFrameGenerationInStack;
+}
+
 inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThirdPartyOverlay,
                                                               bool hasOriginalGameQueue,
                                                               bool queueMatchesPrimaryQueue,
@@ -393,11 +403,20 @@ inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning
            !recentStreamlineTeardown;
 }
 
-inline bool ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(int realFrameOnlyRunLength) {
+inline bool ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(int realFrameOnlyRunLength,
+                                                             bool hasDirectFFXApiConfirmation) {
     // Native FSR can leave a runtime-owned swapchain alive after FG is turned
     // off. If we keep seeing only real frames for an extended run, the
     // authoritative "FSR FG active" latch is stale and should fall back to the
     // generic runtime-owned non-FG path.
+    // Once we have observed direct FFX API traffic for the current activation,
+    // keep trusting that authoritative signal. GTA V Enhanced can continue to
+    // present only real top-level frames while native FSR FG stays live on its
+    // runtime-owned swapchain and worker threads.
+    if (hasDirectFFXApiConfirmation) {
+        return false;
+    }
+
     return realFrameOnlyRunLength >= 120;
 }
 
