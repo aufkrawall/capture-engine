@@ -60,11 +60,11 @@ enum class PostFSRInactiveRecoveryQueueSource {
 };
 
 inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtimeOwnsSwapchain, bool streamlineFGActive,
-                                                                    bool fsrFGActive, bool hadFSRFGPhase,
-                                                                    bool hasSwapchainQueue, bool hasOriginalGameQueue,
-                                                                    bool hasPostSLLastWorkingQueue,
-                                                                    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
-                                                                    bool commandQueueMatchesPrimaryGameQueue) {
+                                                                     bool fsrFGActive, bool hadFSRFGPhase,
+                                                                     bool hasSwapchainQueue, bool hasOriginalGameQueue,
+                                                                     bool hasPostSLLastWorkingQueue,
+                                                                     bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
+                                                                     bool commandQueueMatchesPrimaryGameQueue) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
                                  : SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
@@ -75,11 +75,14 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtim
     }
 
     if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {
-        // Only reuse the preserved PostSL queue while teardown traffic is still
-        // actively resurfacing on it. Once that short-lived activity window ends,
-        // the pointer is just stale recovery state and must not keep driving
-        // non-FG routing.
-        if (hasPostSLLastWorkingQueue && postSLLastWorkingQueueStillActiveDuringRecentTeardown) {
+        // After FSR->DLSS->off, ProcessFrame intentionally leaves g_SwapchainQueue
+        // unset until a future clean non-FG swapchain transition can re-establish
+        // queue ownership. The preserved PostSL last-working queue is the only
+        // queue that already proved it can render the recovered live swapchain,
+        // so keep routing through it for the whole recovery window rather than
+        // falling back to origGame after a short teardown-activity pulse.
+        if (hasPostSLLastWorkingQueue) {
+            (void)postSLLastWorkingQueueStillActiveDuringRecentTeardown;
             return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue;
         }
 
@@ -405,11 +408,12 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
 }
 
 inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-    bool recentStreamlineTeardown, bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
-                                                                              bool queueMatchesPrimaryQueue,
-                                                                              bool queueMatchesOriginalGameQueue,
-                                                                              bool queueMatchesSwapchainQueue,
-                                                                              bool queueMatchesPostSLLastWorkingQueue) {
+    bool recentStreamlineTeardown, bool postFSRNonFGRecovery,
+    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
+                                                                               bool queueMatchesPrimaryQueue,
+                                                                               bool queueMatchesOriginalGameQueue,
+                                                                               bool queueMatchesSwapchainQueue,
+                                                                               bool queueMatchesPostSLLastWorkingQueue) {
     // During final Streamline teardown after a post-FSR DLSS phase, helper ECLs
     // can keep arriving on a departed wrapper queue for a short time even though
     // Present has already returned to the non-FG swapchain queue. Do not let
@@ -424,9 +428,16 @@ inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
     // counter reaches zero. Keep ignoring that exact queue while it is still
     // actively resurfacing so it cannot repollute command tracking right before
     // the non-FG overlay resumes.
+    //
+    // During the longer post-FSR non-FG recovery window, the overlay itself can
+    // continue submitting on that preserved queue because it is the only queue
+    // that already proved safe for the recovered swapchain. Those recovery
+    // submits must not repollute g_CommandQueue, or routing immediately falls
+    // off the only positive-proof queue and back onto unsafe best-guess queues.
     if (queueMatchesPostSLLastWorkingQueue && !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue &&
         !queueMatchesSwapchainQueue) {
-        return recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown;
+        return recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown ||
+               postFSRNonFGRecovery;
     }
 
     if (!recentStreamlineTeardown) {
@@ -437,20 +448,28 @@ inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
 }
 
 inline bool ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-    bool recentStreamlineTeardown, bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
-                                                                           bool queueMatchesPrimaryQueue,
-                                                                           bool queueMatchesOriginalGameQueue,
-                                                                           bool queueMatchesSwapchainQueue,
-                                                                           bool queueMatchesPostSLLastWorkingQueue) {
+    bool recentStreamlineTeardown, bool postFSRNonFGRecovery,
+    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
+                                                                            bool queueMatchesPrimaryQueue,
+                                                                            bool queueMatchesOriginalGameQueue,
+                                                                            bool queueMatchesSwapchainQueue,
+                                                                            bool queueMatchesPostSLLastWorkingQueue) {
     // The preserved PostSL queue can still resurface as teardown traffic after
     // DLSS FG turns off. Treat it like a departed runtime queue for heuristic
     // purposes so a late menu transition cannot blip back into heuristic FSR FG.
     // Keep honoring that rule while that preserved queue is still actively
     // resurfacing as teardown traffic, not just while the coarse Streamline-off
     // grace counter is still positive.
+    //
+    // While the post-FSR non-FG recovery path is still active, keep ignoring
+    // that preserved queue for heuristic purposes as well. The recovered overlay
+    // can legitimately keep using it long after the short teardown pulse ends,
+    // and treating those submits as fresh queue-change evidence would falsely
+    // re-detect FSR FG.
     if (queueMatchesPostSLLastWorkingQueue && !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue &&
         !queueMatchesSwapchainQueue) {
-        return recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown;
+        return recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown ||
+               postFSRNonFGRecovery;
     }
 
     if (!recentStreamlineTeardown) {

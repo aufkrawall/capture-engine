@@ -222,7 +222,7 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPreservesPostFSRStreamlineTransi
               SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
 }
 
-TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesOriginalQueueDuringPostFSRInactiveRecaptureWindow) {
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPrefersValidatedLastWorkingQueueDuringPostFSRInactiveRecovery) {
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
@@ -230,10 +230,10 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesOriginalQueueDuringPostFSRIn
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
 
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false, false),
-              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
 
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false, true),
-              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
 
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, true, false),
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
@@ -589,34 +589,34 @@ TEST(DXGISharedTest, PostFSRFGOffTransitionPreservesLastWorkingQueueOnlyForImmed
 
 TEST(DXGISharedTest, RecentStreamlineTeardownIgnoresOnlyDepartedWrapperQueueRegistration) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-        true, false, false, false, false, false));
+        true, false, false, false, false, false, false));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-        false, false, false, false, false, false));
+        false, false, false, false, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-        true, false, true, false, false, false));
+        true, false, false, true, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-        true, false, false, true, false, false));
+        true, false, false, false, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-        true, false, false, false, true, false));
+        true, false, false, false, false, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-        true, false, false, false, false, true));
+        true, false, false, false, false, false, true));
 }
 
 TEST(DXGISharedTest, RecentStreamlineTeardownQueueChangeHeuristicIgnoresOnlyDepartedRuntimeQueues) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-        true, false, false, false, false, false));
+        true, false, false, false, false, false, false));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-        false, false, false, false, false, false));
+        false, false, false, false, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-        true, false, true, false, false, false));
+        true, false, false, true, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-        true, false, false, true, false, false));
+        true, false, false, false, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-        true, false, false, false, true, false));
+        true, false, false, false, false, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-        true, false, false, false, false, true));
+        true, false, false, false, false, false, true));
 }
 
 TEST(DXGISharedTest, PostFSRNonFGRecoverySuppressesHeuristicFSRActivationWhileTeardownTrafficPersists) {
@@ -633,14 +633,26 @@ TEST(DXGISharedTest, PostFSRNonFGRecoverySuppressesHeuristicFSRActivationWhileTe
 
 TEST(DXGISharedTest, RecentPostSLTeardownActivityStillIgnoresPreservedLastWorkingQueueAfterGraceExpires) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-        false, true, false, false, false, true));
+        false, false, true, false, false, false, true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-        false, true, false, false, false, true));
+        false, false, true, false, false, false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-        false, true, false, false, false, false));
+        false, false, true, false, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-        false, true, false, false, false, false));
+        false, false, true, false, false, false, false));
+}
+
+TEST(DXGISharedTest, PostFSRInactiveRecoveryKeepsIgnoringPreservedLastWorkingQueueUntilRecoveryEnds) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+        false, true, false, false, false, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
+        false, true, false, false, false, false, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
+        false, true, false, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
+        false, true, false, false, false, false, false));
 }
 
 TEST(DXGISharedTest, InactiveCommandQueueRealignsOnlyForDepartedWrapperState) {

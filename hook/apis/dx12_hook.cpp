@@ -2578,11 +2578,15 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
+    const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
+        g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(),
+        streamlineFGRunning, currentSwapchainQueue != nullptr);
     const bool lastWorkingQueueStillActiveDuringRecentTeardown =
         g_PostSLLastWorkingQueue != nullptr &&
         GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
     if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-            recentStreamlineTeardown, lastWorkingQueueStillActiveDuringRecentTeardown, pQueue == primaryQ,
+            recentStreamlineTeardown, postFSRNonFGRecovery, lastWorkingQueueStillActiveDuringRecentTeardown,
+            pQueue == primaryQ,
             pQueue == g_OriginalGameQueue,
             pQueue == currentSwapchainQueue, pQueue == g_PostSLLastWorkingQueue)) {
         if (ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(
@@ -2595,10 +2599,10 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
         if (logCount < 20 || (logCount % 256) == 0) {
             HookLogImportant(
                 "DX12: SetCommandQueue ignoring departed queue %p during Streamline teardown / post-FSR recovery "
-                "(primary=%p orig=%p scQ=%p current=%p slOffGrace=%d postSLRecent=%d)",
+                "(primary=%p orig=%p scQ=%p current=%p slOffGrace=%d postSLRecent=%d postFSR=%d)",
                 pQueue, primaryQ, g_OriginalGameQueue, currentSwapchainQueue,
                 g_CommandQueue.load(std::memory_order_acquire), g_SLOffHeuristicGrace.load(std::memory_order_acquire),
-                lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0);
+                lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0, postFSRNonFGRecovery ? 1 : 0);
         }
         return;
     }
@@ -4101,6 +4105,16 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
                     HookLogImportant(
                         "DX12: InitImGui — post-FSR inactive recovery keeping preserved PostSL lastWorking queue %p "
                         "while teardown traffic is still active (cmdQ=%p origQ=%p primaryQ=%p)",
+                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
+                }
+            } else {
+                static std::atomic<int> s_postFSRBackendValidatedRouteLogCount{0};
+                int logCount = s_postFSRBackendValidatedRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: InitImGui — post-FSR inactive recovery reusing validated PostSL lastWorking queue %p "
+                        "until a clean non-FG swapchain transition re-establishes queue ownership "
+                        "(cmdQ=%p origQ=%p primaryQ=%p)",
                         g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
                 }
             }
@@ -7839,9 +7853,13 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             const bool lastWorkingQueueStillActiveDuringRecentTeardown =
                 g_PostSLLastWorkingQueue != nullptr &&
                 GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+            const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
+                g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(),
+                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), currentSwapchainQueue != nullptr);
             const bool ignoreQueueChangeDuringRecentTeardown =
                 rawQueue && ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-                                recentStreamlineTeardown, lastWorkingQueueStillActiveDuringRecentTeardown,
+                                recentStreamlineTeardown, postFSRNonFGRecovery,
+                                lastWorkingQueueStillActiveDuringRecentTeardown,
                                 rawQueue == g_PrimaryGameQueue.load(std::memory_order_acquire),
                                 rawQueue == g_OriginalGameQueue, rawQueue == currentSwapchainQueue,
                                 rawQueue == g_PostSLLastWorkingQueue);
@@ -7852,11 +7870,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 if (logCount < 20 || (logCount % 256) == 0) {
                     HookLogImportant(
                         "DX12: Ignoring queue-change heuristic on teardown/recovery queue %p "
-                        "(initial=%p orig=%p primary=%p scQ=%p lastWorking=%p slOffGrace=%d postSLRecent=%d frame=%d)",
+                        "(initial=%p orig=%p primary=%p scQ=%p lastWorking=%p slOffGrace=%d postSLRecent=%d "
+                        "postFSR=%d frame=%d)",
                         rawQueue, s_initialQueue, g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire),
                         currentSwapchainQueue, g_PostSLLastWorkingQueue,
                         g_SLOffHeuristicGrace.load(std::memory_order_acquire),
-                        lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0,
+                        lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0, postFSRNonFGRecovery ? 1 : 0,
                         s_queueFrameCount);
                 }
                 s_consecutiveInitialQueueFrames = 0;
@@ -10933,6 +10952,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed);
         const bool anyFGActive = actualFGActive || IsNvidiaSmoothMotionActiveRuntime() || streamlineFGRunning;
         const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
+        const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
+            g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, actualFGActive, streamlineFGRunning,
+            g_SwapchainQueue != nullptr);
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             g_PostSLLastWorkingQueue != nullptr &&
             GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
@@ -10980,7 +11002,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             (pThis == primaryQ || pThis == currentQ || pThis == g_OriginalGameQueue || pThis == g_SwapchainQueue);
         const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
         if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
-                recentStreamlineTeardown, lastWorkingQueueStillActiveDuringRecentTeardown, pThis == primaryQ,
+                recentStreamlineTeardown, postFSRNonFGRecovery, lastWorkingQueueStillActiveDuringRecentTeardown,
+                pThis == primaryQ,
                 pThis == g_OriginalGameQueue, pThis == g_SwapchainQueue, pThis == g_PostSLLastWorkingQueue)) {
             if (ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(
                     recentStreamlineTeardown, g_PostSLLastWorkingQueue && pThis == g_PostSLLastWorkingQueue,
@@ -10992,10 +11015,10 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             if (logCount < 20 || (logCount % 256) == 0) {
                 HookLogImportant(
                     "DX12: Ignoring departed queue %p during Streamline teardown / post-FSR recovery "
-                    "(primary=%p orig=%p scQ=%p current=%p slOffGrace=%d postSLRecent=%d)",
+                    "(primary=%p orig=%p scQ=%p current=%p slOffGrace=%d postSLRecent=%d postFSR=%d)",
                     pThis, primaryQ, g_OriginalGameQueue, g_SwapchainQueue, currentQ,
                     g_SLOffHeuristicGrace.load(std::memory_order_acquire),
-                    lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0);
+                    lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0, postFSRNonFGRecovery ? 1 : 0);
             }
             goto skip_command_queue_registration;
         }

@@ -1303,6 +1303,49 @@ LINUX_MSYS2_REQUIRED_SENTINELS = [
 ]
 
 MSYS2_REPO_URL = "https://repo.msys2.org/mingw/clang64"
+MSYS2_MINGW64_REPO_URL = "https://repo.msys2.org/mingw/mingw64"
+
+
+def get_linux_msys2_gtest_subdir(
+    arch: str = "x64", compiler_exe: Optional[str] = None
+) -> str:
+    if arch == "x86":
+        return "mingw32"
+    compiler = compiler_exe or get_compiler_exe(arch)
+    return "clang64" if is_clang_compiler(compiler) else "mingw64"
+
+
+def get_linux_msys2_gtest_package_name(arch: str = "x64") -> str:
+    subdir = get_linux_msys2_gtest_subdir(arch)
+    if subdir == "clang64":
+        return "mingw-w64-clang-x86_64-gtest"
+    if subdir == "mingw64":
+        return "mingw-w64-x86_64-gtest"
+    return "mingw-w64-i686-gtest"
+
+
+def get_linux_msys2_packages() -> List[str]:
+    return [
+        LINUX_MSYS2_PACKAGES[0],
+        LINUX_MSYS2_PACKAGES[1],
+        LINUX_MSYS2_PACKAGES[2],
+        get_linux_msys2_gtest_package_name(),
+        *LINUX_MSYS2_PACKAGES[3:],
+    ]
+
+
+def get_linux_msys2_required_sentinels() -> List[str]:
+    return LINUX_MSYS2_REQUIRED_SENTINELS + [
+        os.path.join(get_linux_msys2_gtest_subdir("x64"), "lib", "libgtest.a")
+    ]
+
+
+def get_linux_msys2_repo_url_for_package(pkg: str) -> str:
+    if pkg.startswith("mingw-w64-clang-"):
+        return MSYS2_REPO_URL
+    if pkg.startswith("mingw-w64-x86_64-"):
+        return MSYS2_MINGW64_REPO_URL
+    return MSYS2_REPO_URL
 
 
 def extract_linux_msys2_package(pkg_path: str, destination: str) -> None:
@@ -1334,7 +1377,7 @@ def linux_msys2_packages_complete(msys_linux_dir: str) -> bool:
     if not (os.path.isdir(include_dir) and os.listdir(include_dir)):
         return False
 
-    for rel_path in LINUX_MSYS2_REQUIRED_SENTINELS:
+    for rel_path in get_linux_msys2_required_sentinels():
         if not os.path.exists(os.path.join(msys_linux_dir, rel_path)):
             return False
 
@@ -1369,21 +1412,29 @@ def download_msys2_packages_for_linux():
     os.makedirs(os.path.join(clang64_dir, "include"), exist_ok=True)
     os.makedirs(os.path.join(clang64_dir, "lib"), exist_ok=True)
 
-    req = urllib.request.Request(MSYS2_REPO_URL, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        repo_html = response.read().decode("utf-8", errors="replace")
+    repo_html_cache: Dict[str, str] = {}
 
-    for pkg in LINUX_MSYS2_PACKAGES:
+    for pkg in get_linux_msys2_packages():
         try:
+            repo_url = get_linux_msys2_repo_url_for_package(pkg)
+            repo_html = repo_html_cache.get(repo_url)
+            if repo_html is None:
+                req = urllib.request.Request(
+                    repo_url, headers={"User-Agent": "Mozilla/5.0"}
+                )
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    repo_html = response.read().decode("utf-8", errors="replace")
+                repo_html_cache[repo_url] = repo_html
+
             # Find package file in repo (with version)
             log(f"Checking for {pkg} in MSYS2 repo...")
             pattern = rf'href="({re.escape(pkg)}[^"]*\.pkg\.tar\.zst)"'
             match = re.search(pattern, repo_html)
             if not match:
-                raise RuntimeError(f"Could not find package {pkg} in {MSYS2_REPO_URL}")
+                raise RuntimeError(f"Could not find package {pkg} in {repo_url}")
 
             pkg_file = match.group(1)
-            pkg_url = f"{MSYS2_REPO_URL}/{pkg_file}"
+            pkg_url = f"{repo_url}/{pkg_file}"
             pkg_path = os.path.join(msys_linux_dir, pkg_file)
 
             # Download if not exists
@@ -1444,11 +1495,19 @@ def get_linux_msys2_lib_dir(arch: str = "x64") -> str:
     return os.path.join(msys2_dir, "clang64", "lib")
 
 
+def get_linux_msys2_gtest_lib_dir(arch: str = "x64") -> str:
+    return os.path.join(
+        get_linux_msys2_dir(), get_linux_msys2_gtest_subdir(arch), "lib"
+    )
+
+
 def get_host_msys2_dir():
     return get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
 
 
-def resolve_msys2_gtest_link_inputs(lib_dir: str) -> List[str]:
+def resolve_msys2_gtest_link_inputs(
+    lib_dir: str, *, prefer_static: bool = False
+) -> List[str]:
     """Resolve GoogleTest link inputs from an extracted MSYS2 MinGW lib dir."""
 
     def pick(candidates: List[str]) -> Optional[str]:
@@ -1457,22 +1516,34 @@ def resolve_msys2_gtest_link_inputs(lib_dir: str) -> List[str]:
                 return candidate
         return None
 
-    gtest_main = pick(
-        [
-            os.path.join(lib_dir, "libgtest_main.dll.a"),
-            os.path.join(lib_dir, "libgtest_main.a"),
-        ]
-    )
-    gtest = pick(
-        [
-            os.path.join(lib_dir, "libgtest.dll.a"),
-            os.path.join(lib_dir, "libgtest.a"),
-        ]
-    )
+    if prefer_static:
+        gtest_main = pick(
+            [
+                os.path.join(lib_dir, "libgtest_main.a"),
+                os.path.join(lib_dir, "libgtest_main.dll.a"),
+            ]
+        )
+        gtest = pick(
+            [
+                os.path.join(lib_dir, "libgtest.a"),
+                os.path.join(lib_dir, "libgtest.dll.a"),
+            ]
+        )
+    else:
+        gtest_main = pick(
+            [
+                os.path.join(lib_dir, "libgtest_main.dll.a"),
+                os.path.join(lib_dir, "libgtest_main.a"),
+            ]
+        )
+        gtest = pick(
+            [
+                os.path.join(lib_dir, "libgtest.dll.a"),
+                os.path.join(lib_dir, "libgtest.a"),
+            ]
+        )
 
     if gtest_main and gtest:
-        # Prefer import libraries when available so the link mode matches the
-        # runtime DLLs copied next to unit_tests.exe for Windows and Wine.
         return [gtest_main, gtest]
 
     missing = []
@@ -2816,7 +2887,8 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     if IS_LINUX:
         ffmpeg_cflags, ffmpeg_link_flags = get_linux_ffmpeg_build_flags(env, pkg_config)
         gtest_link_inputs = resolve_msys2_gtest_link_inputs(
-            get_linux_msys2_lib_dir("x64")
+            get_linux_msys2_gtest_lib_dir("x64"),
+            prefer_static=True,
         )
     else:
         # Use local FFmpeg on Windows
