@@ -37,6 +37,19 @@ struct Resource {
     uint32_t state;
 };
 
+enum ResourceState : uint32_t {
+    kResourceStateCommon = (1u << 0),
+    kResourceStateUnorderedAccess = (1u << 1),
+    kResourceStateComputeRead = (1u << 2),
+    kResourceStatePixelRead = (1u << 3),
+    kResourceStateCopySrc = (1u << 4),
+    kResourceStateCopyDest = (1u << 5),
+    kResourceStateIndirectArgument = (1u << 6),
+    kResourceStatePresent = (1u << 7),
+    kResourceStateRenderTarget = (1u << 8),
+    kResourceStateDepthAttachment = (1u << 9),
+};
+
 struct Rect2D {
     int32_t left;
     int32_t top;
@@ -45,6 +58,9 @@ struct Rect2D {
 };
 
 using OpaqueCallback = uint32_t (*)(void*, void*);
+
+struct CallbackDescFrameGenerationPresent;
+using PresentCallback = uint32_t (*)(CallbackDescFrameGenerationPresent*, void*);
 
 constexpr uint32_t kEffectMask = 0x00ff0000u;
 constexpr uint32_t kEffectIdFrameGeneration = 0x00020000u;
@@ -55,11 +71,30 @@ constexpr StructType MakeEffectSubId(uint32_t effectId, uint64_t subversion) {
 }
 
 constexpr StructType kConfigureDescTypeFrameGeneration = MakeEffectSubId(kEffectIdFrameGeneration, 0x02u);
+constexpr StructType kCallbackDescTypeFrameGenerationPresent = MakeEffectSubId(kEffectIdFrameGeneration, 0x05u);
+constexpr StructType kCallbackDescTypeFrameGenerationPresentPremulAlpha =
+    MakeEffectSubId(kEffectIdFrameGeneration, 0x0du);
+
+struct CallbackDescFrameGenerationPresent {
+    ApiHeader header;
+    void* device;
+    void* commandList;
+    Resource currentBackBuffer;
+    Resource currentUI;
+    Resource outputSwapChainBuffer;
+    bool isGeneratedFrame;
+    uint64_t frameID;
+};
+
+struct CallbackDescFrameGenerationPresentPremulAlpha {
+    ApiHeader header;
+    bool usePremulAlpha;
+};
 
 struct ConfigureDescFrameGeneration {
     ApiHeader header;
     void* swapChain;
-    OpaqueCallback presentCallback;
+    PresentCallback presentCallback;
     void* presentCallbackUserContext;
     OpaqueCallback frameGenerationCallback;
     void* frameGenerationCallbackUserContext;
@@ -98,6 +133,20 @@ inline ParsedFrameGenerationConfigureState ParseFrameGenerationConfigureState(co
         frameGenerationDesc->frameGenerationEnabled,
         frameGenerationDesc->frameID,
     };
+}
+
+inline bool ResolvePresentCallbackUsePremulAlpha(const CallbackDescFrameGenerationPresent* desc) {
+    if (!desc) {
+        return false;
+    }
+
+    for (const ApiHeader* extra = desc->header.pNext; extra; extra = extra->pNext) {
+        if (extra->type == kCallbackDescTypeFrameGenerationPresentPremulAlpha) {
+            return reinterpret_cast<const CallbackDescFrameGenerationPresentPremulAlpha*>(extra)->usePremulAlpha;
+        }
+    }
+
+    return false;
 }
 
 }  // namespace ce::ffx_api

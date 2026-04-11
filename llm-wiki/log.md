@@ -45,3 +45,16 @@ Update rules:
 - Source files checked: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `hook/common/fg_detection.cpp`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260411_211719/hook_debug.log`, `installed/captureengine/logs/20260411_211719/GTA5_Enhanced.exe_FREEZE_2026-04-11_21-19-25_496.dmp`.
 - Regression coverage: `tests/test_dxgi_shared.cpp` now asserts runtime-owned native FSR suppresses injected overlay GPU work while generic runtime-owned non-FSR windows do not.
 - Stale-risk note: If native FSR support later grows a safe piggyback or runtime-cooperative overlay path, revisit this suppression rule carefully. Until then, absence of injected `FG overlay SUBMIT` traffic during runtime-owned FSR FG is a safety invariant.
+
+### 2026-04-11 - Restore overlay during native FSR FG via FFX present-callback bridge
+- **Root cause**: The previous safety fix correctly stopped the freezing `FG overlay SUBMIT` path on the FFX-owned queue, but it also removed every visible injected DX12 overlay path for native/runtime-owned FSR FG. The transition model still expected a runtime-owned FSR overlay mode, but `ProcessFrame`/`InitOverlaySync` hard-deferred init, sync, and draw work, leaving the overlay permanently invisible whenever native FSR FG was active.
+- **Fix**:
+  1. Extended `hook/common/ffx_api_parsing.h` to model FFX frame-generation present-callback structures and callback state bits that CE can legally observe.
+  2. Hooked `ffxConfigure()` so native FSR FG now installs a CE bridge callback through FFX's own `presentCallback` path.
+  3. The bridge preserves/chains the runtime's original present callback (or FFX's default `ffxFrameInterpolationUiComposition` callback when the game provides none), then renders CE's overlay on the FFX-supplied command list and output surface.
+  4. CE still keeps the old separate injected `FG overlay SUBMIT` path suppressed for runtime-owned FSR FG, so the previous freeze-triggering queue submission path remains disabled.
+- **Behavioral result**: Native FSR FG no longer depends on separate injected queue submits to show the overlay. Overlay composition is moved onto FFX's own present-time composition path, which is the runtime-supported UI handling path described by the upstream SDK.
+- **Verification**: `python build.py` completed successfully and the unit suite passed with 520 tests. Added `tests/test_ffx_api_parsing.cpp` coverage for FFX present callback shape and premultiplied-alpha extension parsing.
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked: `hook/apis/dx12_hook.cpp`, `hook/apis/dx12_hook.h`, `hook/apis/ffx_hook.cpp`, `hook/apis/ffx_hook.h`, `hook/common/ffx_api_parsing.h`, `tests/test_ffx_api_parsing.cpp`, plus upstream FidelityFX SDK headers/docs for `ffxConfigureDescFrameGeneration`, `ffxCallbackDescFrameGenerationPresent`, and DX12 swapchain UI composition.
+- Stale-risk note: This path now depends on FFX callback ABI assumptions remaining correct. Any change to native FFX SDK integration, callback chaining, or CE overlay backend state handling must re-check runtime-owned FSR overlay composition carefully in GTA V Enhanced and Talos validation scenarios.

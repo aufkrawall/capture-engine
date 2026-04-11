@@ -1,11 +1,17 @@
 #pragma once
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <cstdint>
 #include <atomic>
 #include <memory>
 #include <mutex>
 #include <vector>
 #include "graphics_hook.h"
+
+namespace ce::ffx_api {
+struct CallbackDescFrameGenerationPresent;
+using PresentCallback = uint32_t (*)(CallbackDescFrameGenerationPresent*, void*);
+}  // namespace ce::ffx_api
 
 // =============================================================================
 // DX12 Debug Logging Infrastructure
@@ -79,6 +85,11 @@ void DX12_StartTransitionCooldown();
 void DX12_OnStreamlineFGStateChanged(bool active);
 bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 void DX12_PrepareForStreamlineEnableTransition();
+void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallback originalCallback,
+                                      void* originalUserContext);
+void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
+uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* callbackDesc,
+                                                 void* userCtx);
 void RemoveGlobalVTableHooks();
 
 extern "C" {

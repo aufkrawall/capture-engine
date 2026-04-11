@@ -43,4 +43,41 @@ TEST(FFXApiParsingTest, ConfigureTypeRemainsDistinctFromCreateContextType) {
               ce::ffx_api::MakeEffectSubId(ce::ffx_api::kEffectIdFrameGeneration, 0x01u));
 }
 
+TEST(FFXApiParsingTest, PresentCallbackParsingExposesRuntimeCompositionSurface) {
+    ce::ffx_api::CallbackDescFrameGenerationPresent desc{};
+    desc.header.type = ce::ffx_api::kCallbackDescTypeFrameGenerationPresent;
+    desc.device = reinterpret_cast<void*>(0x1234);
+    desc.commandList = reinterpret_cast<void*>(0x5678);
+    desc.outputSwapChainBuffer.resource = reinterpret_cast<void*>(0x9abc);
+    desc.currentBackBuffer.resource = reinterpret_cast<void*>(0xdef0);
+    desc.currentUI.resource = reinterpret_cast<void*>(0x1111);
+    desc.isGeneratedFrame = true;
+    desc.frameID = 99;
+
+    EXPECT_EQ(desc.header.type, ce::ffx_api::kCallbackDescTypeFrameGenerationPresent);
+    EXPECT_EQ(desc.device, reinterpret_cast<void*>(0x1234));
+    EXPECT_EQ(desc.commandList, reinterpret_cast<void*>(0x5678));
+    EXPECT_EQ(desc.outputSwapChainBuffer.resource, reinterpret_cast<void*>(0x9abc));
+    EXPECT_TRUE(desc.isGeneratedFrame);
+    EXPECT_EQ(desc.frameID, 99u);
+}
+
+TEST(FFXApiParsingTest, PresentCallbackPremulAlphaDefaultsFalseWithoutExtension) {
+    ce::ffx_api::CallbackDescFrameGenerationPresent desc{};
+    desc.header.type = ce::ffx_api::kCallbackDescTypeFrameGenerationPresent;
+
+    EXPECT_FALSE(ce::ffx_api::ResolvePresentCallbackUsePremulAlpha(&desc));
+}
+
+TEST(FFXApiParsingTest, PresentCallbackPremulAlphaReadsLinkedExtension) {
+    ce::ffx_api::CallbackDescFrameGenerationPresent desc{};
+    desc.header.type = ce::ffx_api::kCallbackDescTypeFrameGenerationPresent;
+    ce::ffx_api::CallbackDescFrameGenerationPresentPremulAlpha premul{};
+    premul.header.type = ce::ffx_api::kCallbackDescTypeFrameGenerationPresentPremulAlpha;
+    premul.usePremulAlpha = true;
+    desc.header.pNext = &premul.header;
+
+    EXPECT_TRUE(ce::ffx_api::ResolvePresentCallbackUsePremulAlpha(&desc));
+}
+
 }  // namespace

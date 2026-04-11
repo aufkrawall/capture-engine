@@ -19,4 +19,7 @@ bool IsInitialized();
 // Cleanup hooks (called during shutdown)
 void Shutdown();
 
+// FFX present-callback bridge storage uses a stable context key per configure call.
+void* GetPresentCallbackBridgeKey(void* context);
+
 }  // namespace FFXHook

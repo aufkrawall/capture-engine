@@ -1,13 +1,16 @@
 #include "ffx_hook.h"
 #include <psapi.h>
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include "../common/ffx_api_parsing.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
 #include "../wrappers/inline_hook.h"
 #include "../wrappers/iat_hook.h"
+#include "dx12_hook.h"
 
 // ============================================================================
 // FFX API Type Definitions (from FFX SDK)
@@ -63,6 +66,8 @@ std::atomic<bool> g_NoModulesLogged{false};
 // CRITICAL FIX: Track context types to know if destroyed context is FG
 std::mutex g_ContextMapMutex;
 std::unordered_map<ffxContext, uint32_t> g_ContextTypeMap;
+std::mutex g_PresentCallbackBridgeMutex;
+std::unordered_set<void*> g_PresentCallbackBridgeKeys;
 
 // Original function pointers
 PfnFfxCreateContext g_Original_ffxCreateContext = nullptr;
@@ -110,6 +115,20 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
 
 // Track which module we hooked (for cleanup)
 HMODULE g_HookedModule = nullptr;
+ce::ffx_api::PresentCallback g_DefaultPresentCallback = nullptr;
+
+void* GetOrCreatePresentCallbackBridgeKey(ffxContext context) {
+    if (!context) {
+        return nullptr;
+    }
+
+    const uintptr_t raw = reinterpret_cast<uintptr_t>(context);
+    const uintptr_t tagged = raw | static_cast<uintptr_t>(1);
+    void* key = reinterpret_cast<void*>(tagged);
+    std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
+    g_PresentCallbackBridgeKeys.insert(key);
+    return key;
+}
 
 // Extract effect ID from structure type
 inline uint32_t GetEffectId(ffxStructType_t type) {
@@ -178,6 +197,14 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
         }
     }
 
+    {
+        std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
+        g_PresentCallbackBridgeKeys.erase(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(context) |
+                                                                 static_cast<uintptr_t>(1)));
+    }
+    DX12_ClearFFXPresentCallbackBridge(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(context) |
+                                                              static_cast<uintptr_t>(1)));
+
     // Call original
     ffxReturnCode_t result = g_Original_ffxDestroyContext(context, memCb);
 
@@ -212,7 +239,22 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         return 1;  // Error
     }
 
-    const ffxReturnCode_t result = g_Original_ffxConfigure(context, desc);
+    ce::ffx_api::ConfigureDescFrameGeneration localConfig = {};
+    const ffxConfigureDescHeader* descToCall = desc;
+    const auto* parsedDesc = reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc);
+    const bool recognizedFGConfigure = parsedDesc && parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGeneration;
+    if (recognizedFGConfigure) {
+        localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
+        void* bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
+        DX12_SetFFXPresentCallbackBridge(bridgeKey,
+                                         localConfig.presentCallback ? localConfig.presentCallback : g_DefaultPresentCallback,
+                                         localConfig.presentCallback ? localConfig.presentCallbackUserContext : nullptr);
+        localConfig.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
+        localConfig.presentCallbackUserContext = bridgeKey;
+        descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
+    }
+
+    const ffxReturnCode_t result = g_Original_ffxConfigure(context, descToCall);
     if (result != FFX_API_RETURN_OK || !desc) {
         return result;
     }
@@ -221,6 +263,14 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         ce::ffx_api::ParseFrameGenerationConfigureState(reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc));
     if (!parsed.recognized) {
         return result;
+    }
+
+    if (recognizedFGConfigure) {
+        const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
+        HookLogImportant(
+            "FFX Hook: Installed DX12 overlay present-callback bridge for context=%p frameID=%llu enabled=%d originalPresent=%p",
+            context, static_cast<unsigned long long>(originalDesc->frameID), originalDesc->frameGenerationEnabled ? 1 : 0,
+            reinterpret_cast<void*>(originalDesc->presentCallback));
     }
 
     HookLog("FFX Hook: Frame Generation configure %s (context=%p, frameID=%llu, type=0x%llx)",
@@ -255,6 +305,15 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     if (!createCtx && !destroyCtx && !configureCtx) {
         HookLog("FFX Hook: No supported FFX exports found in %s - skipping", moduleName);
         return false;
+    }
+
+    if (!g_DefaultPresentCallback) {
+        g_DefaultPresentCallback = reinterpret_cast<ce::ffx_api::PresentCallback>(
+            GetProcAddress(hModule, "ffxFrameInterpolationUiComposition"));
+        if (g_DefaultPresentCallback) {
+            HookLogImportant("FFX Hook: Resolved default frame-interpolation present callback at %p",
+                             reinterpret_cast<void*>(g_DefaultPresentCallback));
+        }
     }
 
     // Store originals
@@ -309,6 +368,10 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
 // ============================================================================
 
 namespace FFXHook {
+
+void* GetPresentCallbackBridgeKey(void* context) {
+    return GetOrCreatePresentCallbackBridgeKey(context);
+}
 
 void Init() {
     std::lock_guard<std::mutex> lock(g_InitMutex);

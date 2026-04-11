@@ -27,7 +27,9 @@ This page records current guardrails and tested transition families for no-FG, D
 - Current DX12 overlay policy code treats a runtime-owned swapchain alone as insufficient proof of FSR FG. That matters because GTA can keep a runtime-owned swapchain during non-FSR windows, and misclassifying that state can break post-FSR or post-DLSS recovery.
 - Current DX12 overlay policy comments repeatedly preserve queue and recovery choices specifically to avoid Talos device-removed paths and stale-overlay teardown behavior during mixed FSR and DLSS transitions.
 - Effective FSR runtime mode is now also used as the guard for SL routing suppression. That prevents a stale SL hook from re-activating Present routing after FSR takeover.
-- Runtime-owned native FSR FG now also suppresses injected DX12 overlay GPU work entirely. After authoritative FFX takeover, CE keeps publishing FG state but stops rebuilding or submitting injected overlay command lists on the FFX-owned queue until a safe non-FSR topology returns.
+- Runtime-owned native FSR FG must not use the old separate injected DX12 `FG overlay SUBMIT` path on the FFX-owned queue. That path was the one observed freezing in GTA V Enhanced.
+- Native FSR FG now has a runtime-cooperative path: CE chains FFX's own `presentCallback` from `ffxConfigure()` and renders the overlay on the FFX-supplied command list / output surface instead of issuing a separate injected queue submission.
+- The FFX callback bridge preserves the runtime's own default composition callback when the game does not provide one, then renders CE's overlay on top of the callback's output surface.
 
 ## Current Practical Guidance
 - Any FG fix should be reasoned through as a state-transition problem, not as a one-off title quirk.
@@ -43,6 +45,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - `FSR FG <-> DLSS FG` visible overlay label switching
 - `DLSS FG -> off` visible overlay reset
 - `native/runtime-owned FSR FG` must not emit injected `FG overlay SUBMIT` traffic on the FFX-owned queue
+- `native/runtime-owned FSR FG` should render via the chained FFX `presentCallback` path instead of separate injected overlay queue work
 
 ## Regression Families Worth Expanding
 - `off -> FSR -> off`
