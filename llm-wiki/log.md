@@ -58,3 +58,12 @@ Update rules:
 - Pages touched: `frame-generation-switching.md`, `log.md`.
 - Source files checked: `hook/apis/dx12_hook.cpp`, `hook/apis/dx12_hook.h`, `hook/apis/ffx_hook.cpp`, `hook/apis/ffx_hook.h`, `hook/common/ffx_api_parsing.h`, `tests/test_ffx_api_parsing.cpp`, plus upstream FidelityFX SDK headers/docs for `ffxConfigureDescFrameGeneration`, `ffxCallbackDescFrameGenerationPresent`, and DX12 swapchain UI composition.
 - Stale-risk note: This path now depends on FFX callback ABI assumptions remaining correct. Any change to native FFX SDK integration, callback chaining, or CE overlay backend state handling must re-check runtime-owned FSR overlay composition carefully in GTA V Enhanced and Talos validation scenarios.
+
+### 2026-04-11 - Confirm short-run GTA V Enhanced stability with overlay + native FSR FG
+- Reviewed installed log bundle `installed/captureengine/logs/20260411_233821`.
+- **Evidence**: `hook_debug.log` shows authoritative FFX takeover at `23:40:00.742`, `FG publication` switching to `runtime=FSR_FG active=1` at `23:40:00.913`, and repeated `DX12: FFX present callback rendered overlay on runtime-owned FSR path` entries through the short validation window. No non-zero `deviceRemoved` / `devRemoved`, freeze-watchdog fire, crash, or exception markers appear in the bundle. `sensors.log` keeps reporting game PID `16496` alive until controller shutdown at `23:40:52`.
+- **Interpretation**: The current generic FFX present-callback approach is now confirmed to avoid the previous immediate GTA V Enhanced crash in a short manual run with the overlay active and native FSR FG engaged.
+- **Scope limit**: This is a short validation pass, not a long-duration soak. Later in the same session the runtime returns to a non-FG path without crashing, so this bundle proves short-run stability rather than all-session continuous-FSR coverage.
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked: `installed/captureengine/logs/20260411_233821/captureengine.log`, `installed/captureengine/logs/20260411_233821/inject.log`, `installed/captureengine/logs/20260411_233821/hook_debug.log`, `installed/captureengine/logs/20260411_233821/sensors.log`, `installed/captureengine/logs/20260411_233821/nvngx_debug.log`.
+- Stale-risk note: Keep re-validating this path after any change to FFX callback bridging, FG runtime classification, or SL-routing suppression. The current evidence removes the immediate crash regression, but longer GTA soak coverage is still valuable.
