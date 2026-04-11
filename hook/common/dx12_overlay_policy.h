@@ -33,8 +33,7 @@ inline bool ShouldWaitForOverlayCompletion(bool hasFenceEvent, bool usingDedicat
     return runtimeMode == fg_runtime::RuntimeMode::kOff || runtimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
 }
 
-inline bool ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(bool d3d12DeviceCreated,
-                                                                bool thirdPartyOverlayLoaded) {
+inline bool ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(bool d3d12DeviceCreated, bool thirdPartyOverlayLoaded) {
     // In no-wrapper builds we normally create a temp D3D12 device/swapchain to
     // install Present hooks eagerly. If a third-party overlay like Steam is
     // already hooked before the game's real D3D12 device exists, that temp
@@ -72,10 +71,8 @@ inline bool ShouldAllowStartupOverlayRendering(bool startupOverlayCompatibilityA
     return hasSwapchainQueue && !runtimeOwnsSwapchain;
 }
 
-inline bool ShouldDeferStartupOverlayWorkAfterResume(bool startupOverlayCompatibilityActive,
-                                                      bool runtimeOwnsSwapchain,
-                                                      ULONGLONG runtimeOwnedSwapchainActiveMs,
-                                                      ULONGLONG settleDelayMs) {
+inline bool ShouldDeferStartupOverlayWorkAfterResume(bool startupOverlayCompatibilityActive, bool runtimeOwnsSwapchain,
+                                                     ULONGLONG runtimeOwnedSwapchainActiveMs, ULONGLONG settleDelayMs) {
     if (!startupOverlayCompatibilityActive || !runtimeOwnsSwapchain) {
         return false;
     }
@@ -132,8 +129,7 @@ inline bool ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(bool callerFromFF
 }
 
 inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThirdPartyOverlay,
-                                                              bool hasOriginalGameQueue,
-                                                              bool queueMatchesPrimaryQueue,
+                                                              bool hasOriginalGameQueue, bool queueMatchesPrimaryQueue,
                                                               bool queueMatchesOriginalGameQueue,
                                                               bool queueMatchesSwapchainQueue) {
     if (!callerFromThirdPartyOverlay) {
@@ -169,12 +165,10 @@ enum class PostFSRInactiveRecoveryQueueSource {
     kCurrentCommandQueueFallback,
 };
 
-inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(bool runtimeOwnsSwapchain, bool streamlineFGActive,
-                                                                     bool fsrFGActive, bool hadFSRFGPhase,
-                                                                     bool hasSwapchainQueue, bool hasOriginalGameQueue,
-                                                                     bool hasPostSLLastWorkingQueue,
-                                                                     bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
-                                                                     bool commandQueueMatchesPrimaryGameQueue) {
+inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
+    bool runtimeOwnsSwapchain, bool streamlineFGActive, bool fsrFGActive, bool hadFSRFGPhase, bool hasSwapchainQueue,
+    bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue,
+    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown, bool commandQueueMatchesPrimaryGameQueue) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
                                  : SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
@@ -281,8 +275,8 @@ inline int ResolveOverlayFGMetricType(bool effectiveFGActive, fg_runtime::Runtim
     }
 }
 
-inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverlayAfterPostFSRNonFG,
-                                   bool actualFGActive, bool streamlineFGRunning, bool hasSwapchainQueue) {
+inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverlayAfterPostFSRNonFG, bool actualFGActive,
+                                   bool streamlineFGRunning, bool hasSwapchainQueue) {
     return hadFSRFGPhase && needsOffscreenOverlayAfterPostFSRNonFG && !actualFGActive && !streamlineFGRunning &&
            !hasSwapchainQueue;
 }
@@ -334,15 +328,14 @@ inline bool ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
     // teardown-era ECL traffic after the coarse SL-off grace has expired.
     // Treat that window as unsafe for heuristic FSR reactivation or the overlay
     // gets stranded on the "FSR active but scQueue=null" skip path.
-    return postFSRNonFGRecovery &&
-           (recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown);
+    return postFSRNonFGRecovery && (recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown);
 }
 
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
-                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
-                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,
-                                                     bool postFSRNonFGRecovery,
-                                                     ce::fg_runtime::RuntimeMode runtimeMode) {
+                                                    bool heuristicFSRFG, bool runtimeOwnsSwapchain,
+                                                    bool streamlineFGRunning, bool recentStreamlineTeardown,
+                                                    bool postFSRNonFGRecovery,
+                                                    ce::fg_runtime::RuntimeMode runtimeMode) {
     if (!isInterpolatedFrame) {
         return false;
     }
@@ -411,9 +404,9 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
 }
 
 inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool runtimeOwnsSwapchain,
-                                                                            bool streamlineFGRunning,
-                                                                            fg_runtime::RuntimeMode runtimeMode,
-                                                                            bool authoritativeFSRActive) {
+                                                                           bool streamlineFGRunning,
+                                                                           fg_runtime::RuntimeMode runtimeMode,
+                                                                           bool authoritativeFSRActive) {
     if (!runtimeOwnsSwapchain || streamlineFGRunning) {
         return false;
     }
@@ -432,8 +425,8 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool 
 }
 
 inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,
-                                                         bool authoritativeFSRActive, bool isInterpolatedFrame,
-                                                         bool recentStreamlineTeardown) {
+                                                        bool authoritativeFSRActive, bool isInterpolatedFrame,
+                                                        bool recentStreamlineTeardown) {
     return !streamlineFGRunning && runtimeOwnsSwapchain && authoritativeFSRActive && !isInterpolatedFrame &&
            !recentStreamlineTeardown;
 }
@@ -456,8 +449,7 @@ inline bool ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(int realFrameOnlyRu
 }
 
 inline bool ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(bool authoritativeFSRActive,
-                                                                   bool runtimeTargetIsNone,
-                                                                   int fgTransitionCooldown) {
+                                                                   bool runtimeTargetIsNone, int fgTransitionCooldown) {
     // Talos can briefly suspend native FSR FG during startup/menu transitions
     // while the runtime-owned swapchain and queue topology are still settling.
     // Treating that transient None edge as a real teardown immediately clears
@@ -575,11 +567,8 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
 
 inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
     bool recentStreamlineTeardown, bool postFSRNonFGRecovery,
-    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
-                                                                               bool queueMatchesPrimaryQueue,
-                                                                               bool queueMatchesOriginalGameQueue,
-                                                                               bool queueMatchesSwapchainQueue,
-                                                                               bool queueMatchesPostSLLastWorkingQueue) {
+    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown, bool queueMatchesPrimaryQueue,
+    bool queueMatchesOriginalGameQueue, bool queueMatchesSwapchainQueue, bool queueMatchesPostSLLastWorkingQueue) {
     // During final Streamline teardown after a post-FSR DLSS phase, helper ECLs
     // can keep arriving on a departed wrapper queue for a short time even though
     // Present has already returned to the non-FG swapchain queue. Do not let
@@ -615,11 +604,8 @@ inline bool ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
 
 inline bool ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
     bool recentStreamlineTeardown, bool postFSRNonFGRecovery,
-    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown,
-                                                                            bool queueMatchesPrimaryQueue,
-                                                                            bool queueMatchesOriginalGameQueue,
-                                                                            bool queueMatchesSwapchainQueue,
-                                                                            bool queueMatchesPostSLLastWorkingQueue) {
+    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown, bool queueMatchesPrimaryQueue,
+    bool queueMatchesOriginalGameQueue, bool queueMatchesSwapchainQueue, bool queueMatchesPostSLLastWorkingQueue) {
     // The preserved PostSL queue can still resurface as teardown traffic after
     // DLSS FG turns off. Treat it like a departed runtime queue for heuristic
     // purposes so a late menu transition cannot blip back into heuristic FSR FG.
@@ -740,8 +726,7 @@ inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQu
 }
 
 inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(bool streamlineFGActive, bool hasSLWrapperQueue,
-                                                                  bool hasRealQueueBehindWrapper,
-                                                                  bool hasRealD3D12ECL,
+                                                                  bool hasRealQueueBehindWrapper, bool hasRealD3D12ECL,
                                                                   bool selectedQueueIsSwapchainQueue,
                                                                   bool selectedQueueOrigECLMatchesRealECL) {
     if (streamlineFGActive && !hasSLWrapperQueue && !hasRealQueueBehindWrapper && hasRealD3D12ECL &&
@@ -757,8 +742,7 @@ inline bool ShouldRefreshRecentPostSLTeardownActivity(bool recentStreamlineTeard
     return recentStreamlineTeardown && queueMatchesPostSLLastWorking && (streamlineFGRunning || postSLActive);
 }
 
-inline bool ShouldPreserveRealECLForDelayedPostFSRNonFGRecovery(bool commandQueueSettledToPrimary,
-                                                                bool hadFSRFGPhase) {
+inline bool ShouldPreserveRealECLForDelayedPostFSRNonFGRecovery(bool commandQueueSettledToPrimary, bool hadFSRFGPhase) {
     return commandQueueSettledToPrimary && hadFSRFGPhase;
 }
 
@@ -901,12 +885,27 @@ inline bool ShouldPinPostSLWrapperQueueAfterFSR(bool hadFSRFGPhase, bool usePost
                                                 bool selectedQueueIsSwapchainQueue, bool hasPinnedWrapperQueue,
                                                 bool hasCapturedSLWrapperQueue,
                                                 bool preferSelectedSwapchainQueueSubmitAfterFSR) {
+    // Intentionally retired: the current post-FSR path keeps queue ownership on
+    // the selected live queue instead of pinning the legacy wrapper queue.
+    (void)hadFSRFGPhase;
+    (void)usePostSLOffscreenComposite;
+    (void)selectedQueueIsSwapchainQueue;
+    (void)hasPinnedWrapperQueue;
+    (void)hasCapturedSLWrapperQueue;
+    (void)preferSelectedSwapchainQueueSubmitAfterFSR;
     return false;
 }
 
 inline bool ShouldUsePostSLWrapperSubmitAfterFSR(bool hadFSRFGPhase, bool usePostSLOffscreenComposite,
                                                  bool selectedQueueIsSwapchainQueue, bool hasSLWrapperQueue,
                                                  bool preferSelectedSwapchainQueueSubmitAfterFSR) {
+    // Intentionally retired: post-FSR submissions should use the selected queue
+    // or validated direct path, not route back through the legacy wrapper.
+    (void)hadFSRFGPhase;
+    (void)usePostSLOffscreenComposite;
+    (void)selectedQueueIsSwapchainQueue;
+    (void)hasSLWrapperQueue;
+    (void)preferSelectedSwapchainQueueSubmitAfterFSR;
     return false;
 }
 
@@ -935,6 +934,10 @@ inline bool ShouldUsePostSLOffscreenCompositeAfterFSR(bool hadFSRFGPhase, bool s
     // The direct post-FSR swapchain-queue path already proved that queue can
     // handle explicit PRESENT<->RT traffic. Reintroducing copy-render-copy on
     // that same path only adds the copy operations that previously hung Talos.
+    (void)hadFSRFGPhase;
+    (void)streamlineFGActive;
+    (void)selectedQueueIsSwapchainQueue;
+    (void)queueIsSLWrapper;
     return false;
 }
 

@@ -4,13 +4,14 @@
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
 #include "config.h"
+#include "dx12_overlay_policy.h"
 #include "fg_detection.h"
 #include "fps_limiter.h"
 #include "freeze_watchdog.h"
 #include "hook_common.h"
 #include "logging.h"
-#include "dx12_overlay_policy.h"
 #include "overlay_compat.h"
+#include "overlay_metrics_publisher.h"
 #include "performance_metrics.h"
 
 #include <d3d10.h>
@@ -321,65 +322,10 @@ static bool IsCodeAddressFromStreamlineModule(const void* codeAddress) {
     return IsStreamlineModuleHandle(callerModule);
 }
 
-static bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle) {
-    if (!moduleHandle) {
-        return false;
-    }
-
-    char modulePath[MAX_PATH] = {};
-    if (GetModuleFileNameA(moduleHandle, modulePath, MAX_PATH) == 0) {
-        return false;
-    }
-
-    return ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_dx12") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_framegeneration_vk") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_dx12") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_vk") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "amd_fidelityfx_fg") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "ffx_frameinterpolation") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "ffx_framegeneration") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "fsr3fg") ||
-           ce::overlay_compat::detail::ContainsInsensitive(modulePath, "fsr3mod");
-}
-
-static bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress) {
-    if (!codeAddress) {
-        return false;
-    }
-
-    HMODULE callerModule = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule)) {
-        return false;
-    }
-    return IsFFXFrameGenerationModuleHandle(callerModule);
-}
-
 static bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modulePathOut, size_t modulePathOutCount,
                                             HMODULE* moduleOut = nullptr) {
-    if (moduleOut) {
-        *moduleOut = nullptr;
-    }
-    if (!codeAddress || !modulePathOut || modulePathOutCount == 0) {
-        return false;
-    }
-
-    modulePathOut[0] = '\0';
-    HMODULE callerModule = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule) ||
-        !callerModule) {
-        return false;
-    }
-
-    if (GetModuleFileNameA(callerModule, modulePathOut, static_cast<DWORD>(modulePathOutCount)) == 0) {
-        return false;
-    }
-
-    if (moduleOut) {
-        *moduleOut = callerModule;
-    }
-    return true;
+    return ce::overlay_compat::TryGetModulePathFromCodeAddress(codeAddress, modulePathOut, modulePathOutCount,
+                                                               moduleOut);
 }
 
 static bool HasStartupBlockingOverlayModuleInCurrentStack() {
@@ -810,8 +756,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool isReentrant =
         (s_presentRecurseDepth > 0) && DXGIShared::ShouldTreatEarlyPresentRecursionAsForwardable(
-                                         oPresentTrampoline != nullptr, oPresentBypass != nullptr, inWrapperPresent,
-                                         wrappedSwapchain, streamlineFGRunning);
+                                           oPresentTrampoline != nullptr, oPresentBypass != nullptr, inWrapperPresent,
+                                           wrappedSwapchain, streamlineFGRunning);
     s_presentRecurseDepth++;
     auto depthGuard = ce::make_scope_guard([]() { s_presentRecurseDepth--; });
 
@@ -899,9 +845,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool streamlineStartupTransitionWindowActive =
         (api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
-        api == APIType::D3D12, IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
-        streamlineStartupHandoffPending,
-        streamlineStartupTransitionWindowActive);
+        api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
+        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
@@ -1142,8 +1087,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
         const bool startupBlockingOverlaySwapchainStillOwnsPresent =
             ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(
-                knownThirdPartyOverlaySwapchain,
-                DXGIShared::DX12_IsStartupBlockingOverlayTaggedSwapchain(pSwapChain),
+                knownThirdPartyOverlaySwapchain, DXGIShared::DX12_IsStartupBlockingOverlayTaggedSwapchain(pSwapChain),
                 HasStartupBlockingOverlayModuleInCurrentStack());
         if (ce::dx12_overlay_policy::ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(
                 startupBlockingOverlaySwapchainStillOwnsPresent || callerFromThirdPartyOverlay)) {
@@ -1175,20 +1119,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
     if (isFirstHook) {
         g_DXGIPerfMetrics.Update(us);
-        if (g_FGCompat.IsFGActive()) {
-            auto fgType = g_FGCompat.GetActiveFGType();
-            int typeInt = 0;
-            if (fgType == FGCompatibility::FGType::DLSS_FG || fgType == FGCompatibility::FGType::DLSS_MSFG)
-                typeInt = 1;
-            else if (fgType == FGCompatibility::FGType::FSR_FG)
-                typeInt = 2;
-            else if (fgType == FGCompatibility::FGType::NVIDIA_SM)
-                typeInt = 3;
-            g_DXGIPerfMetrics.SetFGMetrics(g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(),
-                                           g_FGCompat.GetFGMultiplier(), typeInt);
-        } else {
-            g_DXGIPerfMetrics.SetFGMetrics(0.0f, 0.0f, 1, 0);
-        }
+        ce::overlay_metrics::PublishOverlayFGMetrics(&g_DXGIPerfMetrics,
+                                                     {
+                                                         .effectiveFGActive = g_FGCompat.IsFGActive(),
+                                                         .runtimeMode = g_FGCompat.GetRuntimeMode(),
+                                                         .outputFPS = g_FGCompat.GetOutputFPS(),
+                                                         .baseFPS = g_FGCompat.GetBaseFPS(),
+                                                         .multiplier = g_FGCompat.GetFGMultiplier(),
+                                                         .publicationSource = "DXGIShared::DetourPresent",
+                                                     });
     }
 
     if (!IsShuttingDown() && (oPresentTrampoline || oPresent)) {
@@ -1259,9 +1198,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool streamlineStartupTransitionWindowActive =
         (api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
-        api == APIType::D3D12, IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
-        streamlineStartupHandoffPending,
-        streamlineStartupTransitionWindowActive);
+        api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
+        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
@@ -1413,8 +1351,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
         const bool startupBlockingOverlaySwapchainStillOwnsPresent =
             ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(
-                knownThirdPartyOverlaySwapchain,
-                DXGIShared::DX12_IsStartupBlockingOverlayTaggedSwapchain(pSwapChain),
+                knownThirdPartyOverlaySwapchain, DXGIShared::DX12_IsStartupBlockingOverlayTaggedSwapchain(pSwapChain),
                 HasStartupBlockingOverlayModuleInCurrentStack());
         if (ce::dx12_overlay_policy::ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(
                 startupBlockingOverlaySwapchainStillOwnsPresent || callerFromThirdPartyOverlay)) {

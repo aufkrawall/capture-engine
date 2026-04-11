@@ -4,6 +4,7 @@
 
 #include <cctype>
 #include <cstddef>
+#include <cstring>
 #include <cwctype>
 
 namespace ce::overlay_compat {
@@ -193,6 +194,90 @@ inline bool IsFFXFrameGenerationModulePath(const wchar_t* path) {
     return false;
 }
 
+inline bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modulePathOut, size_t modulePathOutCount,
+                                            HMODULE* moduleOut = nullptr) {
+    if (moduleOut) {
+        *moduleOut = nullptr;
+    }
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+    if (!codeAddress) {
+        return false;
+    }
+
+    HMODULE callerModule = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule) ||
+        !callerModule) {
+        return false;
+    }
+
+    if (moduleOut) {
+        *moduleOut = callerModule;
+    }
+    if (modulePathOut && modulePathOutCount > 0) {
+        if (GetModuleFileNameA(callerModule, modulePathOut, static_cast<DWORD>(modulePathOutCount)) == 0) {
+            modulePathOut[0] = '\0';
+            return false;
+        }
+    }
+
+    return true;
+}
+
+inline bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle, char* modulePathOut = nullptr,
+                                             size_t modulePathOutCount = 0) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+    if (!moduleHandle) {
+        return false;
+    }
+
+    char modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(moduleHandle, modulePath, MAX_PATH) == 0) {
+        return false;
+    }
+
+    if (modulePathOut && modulePathOutCount > 0) {
+        strncpy_s(modulePathOut, modulePathOutCount, modulePath, _TRUNCATE);
+    }
+    return IsFFXFrameGenerationModulePath(modulePath);
+}
+
+inline bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress, char* modulePathOut = nullptr,
+                                                      size_t modulePathOutCount = 0) {
+    HMODULE callerModule = nullptr;
+    if (!TryGetModulePathFromCodeAddress(codeAddress, modulePathOut, modulePathOutCount, &callerModule) ||
+        !callerModule) {
+        return false;
+    }
+
+    return IsFFXFrameGenerationModuleHandle(callerModule, modulePathOut, modulePathOutCount);
+}
+
+inline bool HasFFXFrameGenerationModuleInStack(char* modulePathOut = nullptr, size_t modulePathOutCount = 0) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+
+    constexpr USHORT kMaxFrames = 16;
+    void* stackFrames[kMaxFrames] = {};
+    const USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        char candidatePath[MAX_PATH] = {};
+        if (IsCodeAddressFromFFXFrameGenerationModule(stackFrames[i], candidatePath, sizeof(candidatePath))) {
+            if (modulePathOut && modulePathOutCount > 0) {
+                strncpy_s(modulePathOut, modulePathOutCount, candidatePath, _TRUNCATE);
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
 inline const char* GetEffectiveCreateSwapchainCallerModulePath(const char* forwardedCallerModulePath,
                                                                const char* immediateCallerModulePath) {
     if (forwardedCallerModulePath && *forwardedCallerModulePath) {
@@ -329,8 +414,7 @@ inline bool ShouldDelayDX12OverlayInitAfterStartupResume(bool processNeedsDelay,
                                                          LONG height, ULONGLONG msSinceResumeReady,
                                                          ULONGLONG settleDelayMs) {
     return ShouldDelayDX12OverlayAfterStartupResume(processNeedsDelay, hadStartupSuppression, actualFGActive, false,
-                                                    windowForeground, width, height, msSinceResumeReady,
-                                                    settleDelayMs);
+                                                    windowForeground, width, height, msSinceResumeReady, settleDelayMs);
 }
 
 inline size_t GetStartupCompatibleDX12AllocatorPoolSize(bool processNeedsDelay, bool startupOverlayPresent,

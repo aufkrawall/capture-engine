@@ -2,6 +2,8 @@
 
 #include <cwchar>
 
+#include "../common/config.h"
+#include "../common/inject_overlay_policy.h"
 #include "../common/shared_defs.h"
 
 TEST(CaptureStateTest, RuntimeFlagsRoundTrip) {
@@ -138,4 +140,70 @@ TEST(SharedDefsTest, ValidateSharedMemoryRejectsBadHeaderAndAcceptsDefaultLayout
 
     sharedMemory.structSize.store(sizeof(SharedMemoryLayout) - 1, std::memory_order_relaxed);
     EXPECT_FALSE(ValidateSharedMemory(&sharedMemory));
+}
+
+TEST(InjectOverlayPolicyTest, WgcWithoutOverlayTargetsDisablesInjection) {
+    AppConfig config;
+    config.captureMethod = "wgc";
+    config.gameWhitelist.push_back({.pattern = "game.exe"});
+
+    const InjectorConfigState state = BuildInjectorConfigState(config);
+
+    EXPECT_FALSE(state.allowInjection);
+    EXPECT_TRUE(state.config.gameWhitelist.empty());
+    EXPECT_TRUE(state.config.overlayWhitelist.empty());
+}
+
+TEST(InjectOverlayPolicyTest, WgcOverlayOnlyInjectionKeepsOverlayTargetsOnly) {
+    AppConfig config;
+    config.captureMethod = "wgc";
+    config.gameWhitelist.push_back({.pattern = "game.exe"});
+    config.overlayWhitelist.push_back({.pattern = "SocialClubD3D12Renderer.dll"});
+
+    const InjectorConfigState state = BuildInjectorConfigState(config);
+
+    EXPECT_TRUE(state.allowInjection);
+    EXPECT_TRUE(state.config.gameWhitelist.empty());
+    ASSERT_EQ(state.config.overlayWhitelist.size(), 1u);
+    EXPECT_EQ(state.config.overlayWhitelist[0].pattern, "SocialClubD3D12Renderer.dll");
+}
+
+TEST(InjectOverlayPolicyTest, StandardInjectionKeepsGameWhitelist) {
+    AppConfig config;
+    config.captureMethod = "inject";
+    config.gameWhitelist.push_back({.pattern = "game.exe"});
+
+    const InjectorConfigState state = BuildInjectorConfigState(config);
+
+    EXPECT_TRUE(state.allowInjection);
+    ASSERT_EQ(state.config.gameWhitelist.size(), 1u);
+    EXPECT_EQ(state.config.gameWhitelist[0].pattern, "game.exe");
+}
+
+TEST(InjectOverlayPolicyTest, RescanTracksWhitelistAndLoggingChanges) {
+    AppConfig oldConfig;
+    oldConfig.captureMethod = "inject";
+    oldConfig.debugLogging = false;
+    oldConfig.gameWhitelist.push_back({.pattern = "game.exe"});
+
+    AppConfig sameConfig = oldConfig;
+    EXPECT_FALSE(ShouldRescanForConfigChange(oldConfig, BuildInjectorConfigState(oldConfig), sameConfig,
+                                             BuildInjectorConfigState(sameConfig)));
+
+    AppConfig newConfig = oldConfig;
+    newConfig.debugLogging = true;
+    EXPECT_TRUE(ShouldRescanForConfigChange(oldConfig, BuildInjectorConfigState(oldConfig), newConfig,
+                                            BuildInjectorConfigState(newConfig)));
+
+    newConfig = oldConfig;
+    newConfig.overlayWhitelist.push_back({.pattern = "overlay.dll"});
+    EXPECT_TRUE(ShouldRescanForConfigChange(oldConfig, BuildInjectorConfigState(oldConfig), newConfig,
+                                            BuildInjectorConfigState(newConfig)));
+}
+
+TEST(InjectOverlayPolicyTest, PseudoOverlaySuppressionMatchesPendingAndActiveFlags) {
+    EXPECT_FALSE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(false, false));
+    EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(true, false));
+    EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(false, true));
+    EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(true, true));
 }

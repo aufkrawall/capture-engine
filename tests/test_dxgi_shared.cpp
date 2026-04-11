@@ -103,9 +103,8 @@ TEST(DXGISharedTest, DX12StartupPresentPassDisablesWhenRealFGOrBypassOwnsPath) {
 TEST(DXGISharedTest, DX12StartupPresentPassStaysDisabledWhenSteamBypassAlreadyOwnsStartupPath) {
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, true,
                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, true,
-                                                                       ce::fg_runtime::RuntimeMode::kStreamlineNoFG,
-                                                                       false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
 }
 
 TEST(DXGISharedTest, GlobalCreateSwapchainPathsCaptureQueueWhenSkippingWrapForStreamline) {
@@ -218,24 +217,24 @@ TEST(DXGISharedTest, WrappedFFXCreateSwapchainTrafficOverridesOverlayClassificat
 
     const bool effectiveOverlayCaller =
         true && !ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(false, true);
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(effectiveOverlayCaller, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(effectiveOverlayCaller,
+                                                                                             true, false));
 }
 
 TEST(DXGISharedTest, ThirdPartyOverlayECLQueueDoesNotOverrideKnownGameTrackingQueues) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, false, false,
-                                                                                           false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, false, false, false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(false, true, false, false,
-                                                                                            false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, false, false, false,
-                                                                                            false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, true, false,
-                                                                                            false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, false, true,
-                                                                                            false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, false, false,
-                                                                                            true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(false, true, false, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, false, false, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, false, false, true));
 }
 
 TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesFSRSwapchainQueueWhenAvailable) {
@@ -337,15 +336,11 @@ TEST(DXGISharedTest, TransitionCooldownOverrideReplacesStaleLongCooldownForSettl
 }
 
 TEST(DXGISharedTest, SettledPrimaryPostFSROffUsesShorterCooldown) {
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(true, true, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(true, true, true));
 
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(false, true, true));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(true, false, true));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(true, true, false));
 }
 
 TEST(DXGISharedTest, FSRSwapchainTakeoverRequiresAuthoritativeFFXTraffic) {
@@ -384,66 +379,55 @@ TEST(DXGISharedTest, DX12OverlayMetricsBindingAlwaysKeepsMetricsBound) {
 TEST(DXGISharedTest, OverlayFGMetricTypeFollowsEffectiveRuntimeState) {
     EXPECT_EQ(1, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true, ce::fg_runtime::RuntimeMode::kDLSSFG));
     EXPECT_EQ(2, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true, ce::fg_runtime::RuntimeMode::kFSRFG));
-    EXPECT_EQ(3, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true,
-                                                                      ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion));
+    EXPECT_EQ(
+        3, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion));
 
     EXPECT_EQ(0, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(false, ce::fg_runtime::RuntimeMode::kDLSSFG));
-    EXPECT_EQ(0, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(false,
-                                                                      ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+    EXPECT_EQ(0,
+              ce::dx12_overlay_policy::ResolveOverlayFGMetricType(false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
     EXPECT_EQ(0, ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_EQ(0,
+              ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
 }
 
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameForRuntimeOwnedNonStreamlineSwapchains) {
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, true, false, false,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, false, true, false, false, false, ce::fg_runtime::RuntimeMode::kOff));
 
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, true, true, false,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, true, false, false, false, false,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, true, false, false, false,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(false, false, false, false, false, false,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, false, false, false, false, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, false, true, true, false, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, true, false, false, false, false, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, true, false, false, false, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        false, false, false, false, false, false, false, ce::fg_runtime::RuntimeMode::kOff));
 }
 
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameDuringRecentStreamlineTeardown) {
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, true,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, false, false, false, true, false, ce::fg_runtime::RuntimeMode::kOff));
 
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, true, true,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, false, false, true, true, false, ce::fg_runtime::RuntimeMode::kOff));
 }
 
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameDuringPostFSRNonFGRecovery) {
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
-                                                                         true, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, false, false, false, false, true, ce::fg_runtime::RuntimeMode::kOff));
 
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, false, false, false, false, false, ce::fg_runtime::RuntimeMode::kOff));
 }
 
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameDuringStreamlineNoFGStartup) {
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
-                                                                         false,
-                                                                         ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, false, false, false, false, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
 
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false,
-                                                                         false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+        true, false, false, false, false, false, false, ce::fg_runtime::RuntimeMode::kOff));
 }
 
 TEST(DXGISharedTest, DuplicateTopLevelPresentSuppressionBypassesRuntimeOwnedNonStreamlineSwapchains) {
@@ -454,15 +438,15 @@ TEST(DXGISharedTest, DuplicateTopLevelPresentSuppressionBypassesRuntimeOwnedNonS
 }
 
 TEST(DXGISharedTest, DedicatedOverlayQueueStaysDisabledForRuntimeOwnedNativeFG) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
-        true, true, false, true));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
-        true, false, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(true, true,
+                                                                                                          false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(true, false,
+                                                                                                          false, true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
         true, true, false, false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
-        true, false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(true, false,
+                                                                                                           true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
         false, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
@@ -486,19 +470,15 @@ TEST(DXGISharedTest, RuntimeOwnedNativeFSRDoesNotGloballySuppressOverlayGpuWork)
 }
 
 TEST(DXGISharedTest, AuthoritativeFSRRealFrameOnlyRunTracksOnlyQualifiedFrames) {
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(false, true, true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(false, true, true, false, false));
 
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(true, true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(true, true, true, false, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(false, false, true, false, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(false, true, false, false, false));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(false, true, true, true, false));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(false, true, true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(false, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(false, true, true, false, true));
 }
 
 TEST(DXGISharedTest, StaleAuthoritativeFSRRequiresLongFreshRealFrameOnlyRunBeforeClearing) {
@@ -525,10 +505,8 @@ TEST(DXGISharedTest, HeuristicFSRIsPreservedDuringTransientBlocksOnRuntimeOwnedP
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(true, true, true));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, false, true));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, false));
 }
 
 TEST(DXGISharedTest, RuntimeOwnedPostFSRTeardownRequiresStrongerOffSignalThanTransientNoneEdge) {
@@ -576,17 +554,17 @@ TEST(DXGISharedTest, PostFSRNonFGRecoveryReservesInactiveFGOverlaySpace) {
 }
 
 TEST(DXGISharedTest, InactiveFGOverlaySpaceReservationRequiresShortPostSLTeardownActivity) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, true,
-                                                                                                          true));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, true,
-                                                                                                          true));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, true, true));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, true, true));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, true,
-                                                                                                           false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(false, true,
-                                                                                                           true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, false,
-                                                                                                           false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(false, true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, false, false));
 }
 
 TEST(DXGISharedTest, CleanNonFGSwapchainChangeResetsQueueHeuristicOnlyWhenEndingPostFSRRecovery) {
@@ -741,15 +719,15 @@ TEST(DXGISharedTest, RecentStreamlineTeardownQueueChangeHeuristicIgnoresOnlyDepa
 }
 
 TEST(DXGISharedTest, PostFSRNonFGRecoverySuppressesHeuristicFSRActivationWhileTeardownTrafficPersists) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
-        true, true, false));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
-        true, false, true));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(true, true, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(true, false, true));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
-        false, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
-        true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(false, true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(true, false, false));
 }
 
 TEST(DXGISharedTest, RecentPostSLTeardownActivityStillIgnoresPreservedLastWorkingQueueAfterGraceExpires) {
@@ -848,40 +826,29 @@ TEST(DXGISharedTest, PostSLWrapperBootstrapRequiresDirectPathAndStaysBlockedAfte
 }
 
 TEST(DXGISharedTest, PostSLNoWrapperVirtualBootstrapBlockedDuringActiveStreamlineFG) {
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, false, false,
-                                                                                       false, false));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, true, false,
-                                                                                       false, false));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, false, true,
-                                                                                       false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, false,
+                                                                                                false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, true,
+                                                                                                false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, false,
+                                                                                                true, false, false));
 
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, false, true, true,
-                                                                                       true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, false, true,
+                                                                                               true, true));
 
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(false, false, false, false,
-                                                                                       false, false));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(false, true, false, false,
-                                                                                       false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(false, false, false,
+                                                                                               false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(false, true, false,
+                                                                                                false, false, false));
 }
 
 TEST(DXGISharedTest, RecentPostSLTeardownActivityRefreshRequiresLiveStreamlineOrPostSLState) {
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, true, true, false));
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, true, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, true, false, true));
 
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(false, true, true, true));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, false, true, true));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(false, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, true, false, false));
 }
 
 TEST(DXGISharedTest, DelayedPostFSRNonFGRecoveryPreservesRealECLOnlyAfterPrimarySettles) {

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "../hook/common/overlay_metrics_publisher.h"
 #include "../hook/common/performance_metrics.h"
 
 // Test fixture
@@ -117,6 +118,80 @@ TEST_F(PerformanceMetricsTest, FGMetricsResetClearsActiveStateAndLabel) {
     metrics.SetFGMetrics(0.0f, 0.0f, 1, 0);
 
     EXPECT_FALSE(metrics.IsFGActive());
+    EXPECT_EQ(metrics.GetFGMultiplier(), 1);
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
+}
+
+TEST_F(PerformanceMetricsTest, OverlayPublisherPublishesDLSSMetricsThroughCanonicalMapping) {
+    ce::overlay_metrics::PublishOverlayFGMetrics(&metrics, {
+                                                               .effectiveFGActive = true,
+                                                               .runtimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG,
+                                                               .outputFPS = 180.0f,
+                                                               .baseFPS = 60.0f,
+                                                               .multiplier = 3,
+                                                               .publicationSource = "test",
+                                                           });
+
+    EXPECT_TRUE(metrics.IsFGActive());
+    EXPECT_FLOAT_EQ(metrics.GetFGOutputFPS(), 180.0f);
+    EXPECT_FLOAT_EQ(metrics.GetFGBaseFPS(), 60.0f);
+    EXPECT_EQ(metrics.GetFGMultiplier(), 3);
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "DLSS FG");
+}
+
+TEST_F(PerformanceMetricsTest, OverlayPublisherPublishesFSRMetricsThroughCanonicalMapping) {
+    ce::overlay_metrics::PublishOverlayFGMetrics(&metrics, {
+                                                               .effectiveFGActive = true,
+                                                               .runtimeMode = ce::fg_runtime::RuntimeMode::kFSRFG,
+                                                               .outputFPS = 144.0f,
+                                                               .baseFPS = 72.0f,
+                                                               .multiplier = 2,
+                                                               .publicationSource = "test",
+                                                           });
+
+    EXPECT_TRUE(metrics.IsFGActive());
+    EXPECT_EQ(metrics.GetFGMultiplier(), 2);
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "FSR FG");
+}
+
+TEST_F(PerformanceMetricsTest, OverlayPublisherPublishesSmoothMotionMetricsThroughCanonicalMapping) {
+    ce::overlay_metrics::PublishOverlayFGMetrics(&metrics,
+                                                 {
+                                                     .effectiveFGActive = true,
+                                                     .runtimeMode = ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion,
+                                                     .outputFPS = 240.0f,
+                                                     .baseFPS = 120.0f,
+                                                     .multiplier = 2,
+                                                     .publicationSource = "test",
+                                                 });
+
+    EXPECT_TRUE(metrics.IsFGActive());
+    EXPECT_EQ(metrics.GetFGMultiplier(), 2);
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "NVIDIA SM");
+}
+
+TEST_F(PerformanceMetricsTest, OverlayPublisherResetsInactiveStateToBaseline) {
+    ce::overlay_metrics::PublishOverlayFGMetrics(&metrics, {
+                                                               .effectiveFGActive = true,
+                                                               .runtimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG,
+                                                               .outputFPS = 120.0f,
+                                                               .baseFPS = 60.0f,
+                                                               .multiplier = 2,
+                                                               .publicationSource = "test",
+                                                           });
+
+    ce::overlay_metrics::PublishOverlayFGMetrics(&metrics, {
+                                                               .effectiveFGActive = false,
+                                                               .runtimeMode = ce::fg_runtime::RuntimeMode::kOff,
+                                                               .outputFPS = 999.0f,
+                                                               .baseFPS = 999.0f,
+                                                               .multiplier = 4,
+                                                               .publicationSource = "test",
+                                                           });
+
+    EXPECT_FALSE(metrics.IsFGActive());
+    EXPECT_FLOAT_EQ(metrics.GetFGOutputFPS(), 0.0f);
+    EXPECT_FLOAT_EQ(metrics.GetFGBaseFPS(), 0.0f);
     EXPECT_EQ(metrics.GetFGMultiplier(), 1);
     EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
 }

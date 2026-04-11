@@ -3,6 +3,7 @@
 // Runs entirely in the captureengine controller process.
 
 #include "pseudo_overlay.h"
+#include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
 
 #include <algorithm>
@@ -578,7 +579,8 @@ void PseudoOverlay::UpdateOverlay() {
     }
 
     // Suppress when inject overlay is active in a hooked game
-    const bool suppressOverlay = IsInjectOverlayPending() || IsInjectOverlayActive();
+    const bool suppressOverlay =
+        ShouldSuppressPseudoOverlayForInjectOverlayHandoff(IsInjectOverlayPending(), IsInjectOverlayActive());
     if (suppressOverlay) {
         if (!lastOverlaySuppressed_) {
             LogInfo("[PseudoOverlay] Suppressed while inject overlay handoff is active");

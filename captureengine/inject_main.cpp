@@ -8,6 +8,7 @@
 #include <filesystem>
 #include "../common/config.h"
 #include "../common/crash_handler.h"
+#include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
@@ -17,6 +18,37 @@
 namespace fs = std::filesystem;
 
 static std::atomic<bool> g_Running{true};
+
+static const char* InjectOverlayRuntimeFlagName(CaptureRuntimeFlags flag) {
+    switch (flag) {
+        case kCaptureRuntimeFlagInjectOverlayActive:
+            return "InjectOverlayActive";
+        case kCaptureRuntimeFlagInjectOverlayPending:
+            return "InjectOverlayPending";
+        default:
+            return "Unknown";
+    }
+}
+
+static void SetInjectOverlayRuntimeFlag(SharedMemoryLayout* sharedMemory, CaptureRuntimeFlags flag, bool value,
+                                        const char* source) {
+    if (!sharedMemory) {
+        return;
+    }
+
+    const bool previous = sharedMemory->runtimeState.HasRuntimeFlag(flag);
+    sharedMemory->runtimeState.SetRuntimeFlag(flag, value);
+    if (previous != value) {
+        LogInfo("[InjectHandoff] flag=%s prev=%d next=%d source=%s", InjectOverlayRuntimeFlagName(flag),
+                previous ? 1 : 0, value ? 1 : 0, source ? source : "unknown");
+    }
+}
+
+static void SetInjectOverlayRuntimeState(SharedMemoryLayout* sharedMemory, bool pending, bool active,
+                                         const char* source) {
+    SetInjectOverlayRuntimeFlag(sharedMemory, kCaptureRuntimeFlagInjectOverlayPending, pending, source);
+    SetInjectOverlayRuntimeFlag(sharedMemory, kCaptureRuntimeFlagInjectOverlayActive, active, source);
+}
 
 // Console control handler for graceful cleanup
 BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
@@ -46,38 +78,6 @@ std::string GetProcessNameFromPID(DWORD pid) {
         name = name.substr(lastSlash + 1);
     }
     return name;
-}
-
-struct InjectorConfigState {
-    AppConfig config;
-    bool allowInjection = false;
-};
-
-static InjectorConfigState BuildInjectorConfigState(const AppConfig& config) {
-    const bool wgcMode = IsWgcCaptureMethod(config.captureMethod);
-    const bool overlayOnlyInjection = wgcMode && !config.overlayWhitelist.empty();
-    const bool hasInjectionTargets = !config.gameWhitelist.empty() || !config.overlayWhitelist.empty();
-
-    InjectorConfigState state;
-    state.config = config;
-    state.allowInjection = hasInjectionTargets && (!wgcMode || overlayOnlyInjection);
-
-    if (!state.allowInjection) {
-        state.config.gameWhitelist.clear();
-        state.config.overlayWhitelist.clear();
-    } else if (overlayOnlyInjection) {
-        state.config.gameWhitelist.clear();
-    }
-
-    return state;
-}
-
-static bool ShouldRescanForConfigChange(const AppConfig& oldBaseConfig, const InjectorConfigState& oldState,
-                                        const AppConfig& newBaseConfig, const InjectorConfigState& newState) {
-    return oldState.allowInjection != newState.allowInjection ||
-           oldBaseConfig.debugLogging != newBaseConfig.debugLogging ||
-           oldState.config.gameWhitelist != newState.config.gameWhitelist ||
-           oldState.config.overlayWhitelist != newState.config.overlayWhitelist;
 }
 
 static AppConfig ResolveActiveTargetConfig(const std::string& configPath, SharedMemoryLayout* pSharedMem,
@@ -403,7 +403,8 @@ int InjectProcessMain(const AppConfig& config) {
 
             // Suppress the controller-side layered pseudo overlay immediately
             // while the injected overlay handoff settles.
-            pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending, true);
+            SetInjectOverlayRuntimeFlag(pSharedMem, kCaptureRuntimeFlagInjectOverlayPending, true,
+                                        "configureInjector:onInject");
 
             // Load fresh config with process-specific overrides
             AppConfig targetConfig;
@@ -528,7 +529,8 @@ int InjectProcessMain(const AppConfig& config) {
 
             // The hook is live now, so hide the controller-side layered pseudo
             // overlay immediately before the regular injector state poll runs.
-            pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending, true);
+            SetInjectOverlayRuntimeFlag(pSharedMem, kCaptureRuntimeFlagInjectOverlayPending, true,
+                                        "sourcePid:hook-detected");
 
             // Update Shared Memory
             UpdateSharedMemoryFromConfig(pSharedMem, targetConfig);
@@ -545,8 +547,7 @@ int InjectProcessMain(const AppConfig& config) {
             // Track inject overlay state for pseudo-overlay suppression.
             const bool hasPending = injector->HasPendingInjections();
             const bool hasActive = injector->HasActiveInjections();
-            pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending, hasPending);
-            pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive, hasActive);
+            SetInjectOverlayRuntimeState(pSharedMem, hasPending, hasActive, "injector:update");
         }
 
         Sleep(injector ? 100 : 250);
@@ -554,8 +555,7 @@ int InjectProcessMain(const AppConfig& config) {
 
     // Signal hook to exit
     LogInfo("[Inject] Signaling hook to exit...");
-    pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending, false);
-    pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive, false);
+    SetInjectOverlayRuntimeState(pSharedMem, false, false, "injector:shutdown");
     pSharedMem->SetRequestExit(true);
     Sleep(200);  // Give hook time to unload
 
