@@ -631,6 +631,113 @@ static void WriteJump(uint8_t* dest, void* target) {
 #endif
 }
 
+enum class ShortControlRelocationResult {
+    kNotHandled,
+    kHandled,
+    kFailed,
+};
+
+static bool IsShortConditionalJumpOpcode(uint8_t opcode) {
+    return opcode >= 0x70 && opcode <= 0x7F;
+}
+
+static bool IsShortUnconditionalJumpOpcode(uint8_t opcode) {
+    return opcode == 0xEB;
+}
+
+static bool IsShortLoopControlOpcode(uint8_t opcode) {
+    return opcode >= 0xE0 && opcode <= 0xE3;
+}
+
+static ShortControlRelocationResult TryRelocateExternalShortControlTransfer(
+    const uint8_t* instrBytes, uintptr_t instrAddr, int instrLen, uintptr_t copiedBlockBase, size_t copiedBlockSize,
+    uint8_t* trampoline, int* trampolineOffset, bool is64bit, const char* ownerTag) {
+    if (!instrBytes || instrLen < 2 || !trampoline || !trampolineOffset) {
+        return ShortControlRelocationResult::kNotHandled;
+    }
+
+    const uint8_t opcode = instrBytes[0];
+    if (!IsShortConditionalJumpOpcode(opcode) && !IsShortUnconditionalJumpOpcode(opcode) &&
+        !IsShortLoopControlOpcode(opcode)) {
+        return ShortControlRelocationResult::kNotHandled;
+    }
+
+    const int8_t origDisp = static_cast<int8_t>(instrBytes[1]);
+    const uintptr_t absTarget = instrAddr + instrLen + origDisp;
+    const uintptr_t copiedBlockEnd = copiedBlockBase + copiedBlockSize;
+
+    // The GTA FSR->DLSS crash came from a short branch that escaped the copied
+    // prologue and then landed inside the trampoline's appended jump stub.
+    // Keep intra-block short hops on the byte-for-byte path and rewrite only
+    // branches that leave the copied block.
+    if (absTarget >= copiedBlockBase && absTarget < copiedBlockEnd) {
+        return ShortControlRelocationResult::kNotHandled;
+    }
+
+    if (IsShortLoopControlOpcode(opcode)) {
+        HookLog("%s: Cannot relocate external short loop/control opcode 0x%02X at %p (target=%p)",
+                ownerTag ? ownerTag : "InlineHook", opcode, reinterpret_cast<void*>(instrAddr),
+                reinterpret_cast<void*>(absTarget));
+        return ShortControlRelocationResult::kFailed;
+    }
+
+    if (IsShortUnconditionalJumpOpcode(opcode)) {
+        const int64_t newDisp = static_cast<int64_t>(absTarget) -
+                                static_cast<int64_t>(reinterpret_cast<uintptr_t>(trampoline + *trampolineOffset + 5));
+        if (newDisp >= INT32_MIN && newDisp <= INT32_MAX) {
+            trampoline[*trampolineOffset] = 0xE9;
+            const int32_t newDisp32 = static_cast<int32_t>(newDisp);
+            memcpy(trampoline + *trampolineOffset + 1, &newDisp32, 4);
+            *trampolineOffset += 5;
+        }
+#ifdef _WIN64
+        else if (is64bit) {
+            WriteJump(trampoline + *trampolineOffset, reinterpret_cast<void*>(absTarget));
+            *trampolineOffset += PATCH_SIZE;
+        }
+#endif
+        else {
+            HookLog("%s: Cannot relocate external short JMP at %p (target=%p, x64=%d)",
+                    ownerTag ? ownerTag : "InlineHook", reinterpret_cast<void*>(instrAddr),
+                    reinterpret_cast<void*>(absTarget), is64bit ? 1 : 0);
+            return ShortControlRelocationResult::kFailed;
+        }
+
+        HookLog("%s: Rewrote external short JMP at %p to target %p", ownerTag ? ownerTag : "InlineHook",
+                reinterpret_cast<void*>(instrAddr), reinterpret_cast<void*>(absTarget));
+        return ShortControlRelocationResult::kHandled;
+    }
+
+    const uint8_t condCode = static_cast<uint8_t>(opcode & 0x0F);
+    const int64_t newDisp = static_cast<int64_t>(absTarget) -
+                            static_cast<int64_t>(reinterpret_cast<uintptr_t>(trampoline + *trampolineOffset + 6));
+    if (newDisp >= INT32_MIN && newDisp <= INT32_MAX) {
+        trampoline[*trampolineOffset] = 0x0F;
+        trampoline[*trampolineOffset + 1] = static_cast<uint8_t>(0x80 | condCode);
+        const int32_t newDisp32 = static_cast<int32_t>(newDisp);
+        memcpy(trampoline + *trampolineOffset + 2, &newDisp32, 4);
+        *trampolineOffset += 6;
+    }
+#ifdef _WIN64
+    else if (is64bit) {
+        trampoline[*trampolineOffset] = static_cast<uint8_t>(0x70 | (condCode ^ 1u));
+        trampoline[*trampolineOffset + 1] = static_cast<uint8_t>(PATCH_SIZE);
+        WriteJump(trampoline + *trampolineOffset + 2, reinterpret_cast<void*>(absTarget));
+        *trampolineOffset += 2 + PATCH_SIZE;
+    }
+#endif
+    else {
+        HookLog("%s: Cannot relocate external short Jcc opcode 0x%02X at %p (target=%p, x64=%d)",
+                ownerTag ? ownerTag : "InlineHook", opcode, reinterpret_cast<void*>(instrAddr),
+                reinterpret_cast<void*>(absTarget), is64bit ? 1 : 0);
+        return ShortControlRelocationResult::kFailed;
+    }
+
+    HookLog("%s: Rewrote external short Jcc opcode 0x%02X at %p to target %p", ownerTag ? ownerTag : "InlineHook",
+            opcode, reinterpret_cast<void*>(instrAddr), reinterpret_cast<void*>(absTarget));
+    return ShortControlRelocationResult::kHandled;
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -981,6 +1088,21 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                             int chainPendingCallInstrOff = -1;
                             while (srcOff < chainCopySize) {
                                 int instrLen = GetInstructionLength(chainCode + srcOff, is64bit);
+
+                                const auto shortBranchResult = TryRelocateExternalShortControlTransfer(
+                                    chainCode + srcOff, reinterpret_cast<uintptr_t>(chainCode + srcOff), instrLen,
+                                    reinterpret_cast<uintptr_t>(chainCode), chainCopySize, chainTrampoline,
+                                    &trampolineOff, is64bit, "InlineHook(chain)");
+                                if (shortBranchResult == ShortControlRelocationResult::kFailed) {
+                                    LogDirect("Chain hook: short control relocation failed at srcOff=%d", srcOff);
+                                    fixupFailed = true;
+                                    break;
+                                }
+                                if (shortBranchResult == ShortControlRelocationResult::kHandled) {
+                                    srcOff += instrLen;
+                                    continue;
+                                }
+
                                 memcpy(chainTrampoline + trampolineOff, chainCode + srcOff, instrLen);
 
                                 int dispOff = GetRipRelativeDispOffset(chainCode + srcOff, instrLen, is64bit);
@@ -1180,6 +1302,17 @@ bool Install(void* target, void* detour, void** outTrampoline) {
         HookLog("InlineHook: Copying instruction at offset %d, len=%d:", srcOffset, instrLen);
         for (int i = 0; i < instrLen && i < 8; i++) {
             HookLog("  [%02d] 0x%02X", i, code[srcOffset + i]);
+        }
+
+        const auto shortBranchResult = TryRelocateExternalShortControlTransfer(
+            code + srcOffset, reinterpret_cast<uintptr_t>(code + srcOffset), instrLen,
+            reinterpret_cast<uintptr_t>(code), copySize, trampoline, &trampolineOffset, is64bit, "InlineHook");
+        if (shortBranchResult == ShortControlRelocationResult::kFailed) {
+            return false;
+        }
+        if (shortBranchResult == ShortControlRelocationResult::kHandled) {
+            srcOffset += instrLen;
+            continue;
         }
 
         memcpy(trampoline + trampolineOffset, code + srcOffset, instrLen);
@@ -1681,6 +1814,19 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
     int deepPendingCallInstrOff = -1;
     while (srcOff < displaceSize) {
         int instrLen = GetInstructionLength(resumeCode + srcOff, true);
+
+        const auto shortBranchResult = TryRelocateExternalShortControlTransfer(
+            resumeCode + srcOff, reinterpret_cast<uintptr_t>(resumeCode + srcOff), instrLen,
+            reinterpret_cast<uintptr_t>(resumeCode), displaceSize, trampoline, &tOff, true, "DeepHook");
+        if (shortBranchResult == ShortControlRelocationResult::kFailed) {
+            VirtualFree(trampoline, 0, MEM_RELEASE);
+            return nullptr;
+        }
+        if (shortBranchResult == ShortControlRelocationResult::kHandled) {
+            srcOff += instrLen;
+            continue;
+        }
+
         memcpy(trampoline + tOff, resumeCode + srcOff, instrLen);
 
         int dispOff = GetRipRelativeDispOffset(resumeCode + srcOff, instrLen, true);
@@ -1955,6 +2101,18 @@ void* CreateBypassTrampoline(void* target) {
         if (instrLen == 0) {
             HookLog("BypassTrampoline: Instruction decode failed at offset %d", srcOffset);
             return nullptr;
+        }
+
+        const auto shortBranchResult = TryRelocateExternalShortControlTransfer(
+            origDiskBytes + srcOffset, reinterpret_cast<uintptr_t>(reinterpret_cast<uint8_t*>(target) + srcOffset),
+            instrLen, reinterpret_cast<uintptr_t>(target), resumeOffset, trampoline, &trampolineOffset, kIs64Bit,
+            "BypassTrampoline");
+        if (shortBranchResult == ShortControlRelocationResult::kFailed) {
+            return nullptr;
+        }
+        if (shortBranchResult == ShortControlRelocationResult::kHandled) {
+            srcOffset += instrLen;
+            continue;
         }
 
         memcpy(trampoline + trampolineOffset, origDiskBytes + srcOffset, instrLen);

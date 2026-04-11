@@ -14,6 +14,16 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-12 - Fix GTA FSR->DLSS crash caused by unrelocated short branch in FFX destroy trampoline
+- **Root cause**: In log bundle `installed/captureengine/logs/20260412_011505`, GTA V Enhanced crashed immediately after switching from native FSR FG to DLSS FG. The dump showed a null write at `00007FF8011D031B`, inside CE's inline-hook trampoline pool rather than inside GTA or the GPU driver. Hook logs mapped that address to the `ffxDestroyContext` trampoline (`trampoline=00007FF8011D0300`). That trampoline had copied `test rcx, rcx; jne +0x0B` from `amd_fidelityfx_dx12.dll` byte-for-byte; when the branch was taken during FFX teardown, it jumped into the trampoline's appended `FF 25` jump stub payload instead of the original function body and faulted.
+- **Fix**: `hook/wrappers/inline_hook.cpp` now relocates short control transfers that leave the copied block instead of blindly memcpying them. The helper handles short `JMP` and short `Jcc` in the standard inline-hook trampoline path, the external-chain trampoline path, the deep-hook displaced-block trampoline path, and bypass trampolines built from on-disk bytes. Short loop-family opcodes that cannot be generically widened are now rejected explicitly instead of producing a corrupt trampoline.
+- **Why this is generic**: The crash surfaced in GTA's `FSR -> DLSS` handoff because that path exercised `ffxDestroyContext()`, but the actual bug was a generic inline-hook trampoline correctness issue. Any hooked function with an external short branch leaving the copied prologue could have crashed similarly.
+- **Verification**: Ran `python build.py --incremental --run-tests --skip-updates` after the code change, then reran it after formatting the edited file with the bundled formatter. Both runs completed successfully with `Build Complete.` and `[  PASSED  ] 520 tests.`
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked: `installed/captureengine/logs/20260412_011505/hook_debug.log`, `installed/captureengine/logs/20260412_011505/crash.log`, `installed/captureengine/logs/20260412_011505/cdb_analysis.log`, `hook/wrappers/inline_hook.cpp`, `hook/apis/dx12_hook.cpp`, `hook/apis/ffx_hook.cpp`, `tests/test_stubs.cpp`.
+- Regression coverage note: no new focused unit test was added because current unit binaries stub out `InlineHook` in `tests/test_stubs.cpp`, so the real trampoline relocation code is not presently unit-testable through the existing harness. Verification therefore relied on full build + existing unit suite plus crash-log/root-cause analysis.
+- Stale-risk note: Any later change to trampoline relocation, slot size assumptions, or FFX hook installation should re-check this crash family, especially if a dump lands in the `00007FF8011D....` trampoline pool again.
+
 ### 2026-04-11 - Initial bootstrap
 - Created `index.md`, `log.md`, `codestyle.md`, `build.py.md`, `repo-map.md`, `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `frame-generation-switching.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 - Slimmed `AGENTS.md` so it now focuses on agent workflow, project constraints, and `llm-wiki` governance instead of carrying the full factual repo reference.
