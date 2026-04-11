@@ -33,3 +33,15 @@ Update rules:
 - Source files checked: `hook/common/dxgi_shared.cpp` (lines 698-742 DetectSLPresentHook, 981-991 Present SL check, 1173-1204 Present routing, 1303-1304 Present1 SL check, 1431-1439 Present1 routing, 2234-2242 DisableSLPresentRouting), `hook/apis/dx12_hook.cpp` (line 1445 DisableSLPresentRouting call site), `hook/common/fg_detection.h`, `hook/common/fg_runtime_state.h`.
 - Regression coverage: `tests/test_fg_runtime_state.cpp` now asserts heuristic FSR classification is treated as FSR for routing guards.
 - Stale-risk note: SL routing suppression during FSR FG is now a critical invariant. Any change to SL routing logic or FG runtime classification must verify this invariant holds.
+
+### 2026-04-11 - Suppress injected DX12 overlay GPU work during native FSR FG
+- **Root cause**: The earlier SL-routing fix stopped stale Streamline Present routing, but CE still resumed injected DX12 overlay work after authoritative FFX swapchain takeover. In the `20260411_211719` GTA V Enhanced log, CE reinitialized the overlay on the FFX-owned queue and emitted `FG overlay SUBMIT #1..20` on that queue immediately before the render thread later hung again in `amd_fidelityfx_dx12!ffxQuery`.
+- **Fix**:
+  1. `ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration()` now returns true for runtime-owned native FSR states instead of allowing the injected DX12 overlay GPU path to resume on the FFX-owned queue.
+  2. `InitOverlaySync()` now honors that policy by returning before creating new fences / allocators / command lists, truly keeping sync resources idle during native FSR ownership.
+- **Behavioral result**: CE still tracks/publishes FSR FG state, but it intentionally does not rebuild or submit injected DX12 overlay GPU work while native/runtime-owned FSR owns the swapchain queue. Generic runtime-owned non-FSR windows still stay on the normal recovery path.
+- **Evidence**: Freeze dump `GTA5_Enhanced.exe_FREEZE_2026-04-11_21-19-25_496.dmp` shows the render thread stuck in `amd_fidelityfx_dx12!ffxQuery`. Hook log shows FFX takeover at 21:18:52.194, followed by `InitOverlaySync` on queue `000001FEF108CDA0` and `FG overlay SUBMIT #1..20` on that same queue before the freeze watchdog fires.
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `hook/common/fg_detection.cpp`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260411_211719/hook_debug.log`, `installed/captureengine/logs/20260411_211719/GTA5_Enhanced.exe_FREEZE_2026-04-11_21-19-25_496.dmp`.
+- Regression coverage: `tests/test_dxgi_shared.cpp` now asserts runtime-owned native FSR suppresses injected overlay GPU work while generic runtime-owned non-FSR windows do not.
+- Stale-risk note: If native FSR support later grows a safe piggyback or runtime-cooperative overlay path, revisit this suppression rule carefully. Until then, absence of injected `FG overlay SUBMIT` traffic during runtime-owned FSR FG is a safety invariant.

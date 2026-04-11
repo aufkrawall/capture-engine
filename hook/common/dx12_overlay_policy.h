@@ -411,17 +411,17 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool 
         return false;
     }
 
-    // Keep routing native/runtime-owned FSR through the live swapchain queue,
-    // but do not suppress all overlay rendering. The observed freeze came from
-    // the unsafe dedicated/cross-queue overlay path and from rebuilding on the
-    // wrong queue during the takeover window. Once ProcessFrame is stably
-    // rendering on the runtime-owned swapchain queue, overlay drawing itself is
-    // still required so the HUD survives no-FG <-> DLSS FG <-> FSR FG switches.
-    // The dedicated-queue policy and swapchain-routing policy already keep that
-    // work on the single live queue.
-    (void)runtimeMode;
-    (void)authoritativeFSRActive;
-    return false;
+    // Native/runtime-owned FSR is stricter than the generic runtime-owned
+    // non-FSR windows. Once FFX owns the live swapchain queue, any injected
+    // DX12 GPU work we submit on that queue can deadlock inside the native FFX
+    // runtime (observed in amd_fidelityfx_dx12!ffxQuery after takeover).
+    // Suppress the injected overlay GPU path until a non-FSR topology returns.
+    //
+    // Keep the generic runtime-owned non-FSR path alive though. DLSS /
+    // Streamline suspension windows can keep the swapchain runtime-owned
+    // without native FSR ownership, and those windows still need normal
+    // ProcessFrame recovery instead of blanket overlay suppression.
+    return authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode);
 }
 
 inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,

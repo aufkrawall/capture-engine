@@ -27,6 +27,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - Current DX12 overlay policy code treats a runtime-owned swapchain alone as insufficient proof of FSR FG. That matters because GTA can keep a runtime-owned swapchain during non-FSR windows, and misclassifying that state can break post-FSR or post-DLSS recovery.
 - Current DX12 overlay policy comments repeatedly preserve queue and recovery choices specifically to avoid Talos device-removed paths and stale-overlay teardown behavior during mixed FSR and DLSS transitions.
 - Effective FSR runtime mode is now also used as the guard for SL routing suppression. That prevents a stale SL hook from re-activating Present routing after FSR takeover.
+- Runtime-owned native FSR FG now also suppresses injected DX12 overlay GPU work entirely. After authoritative FFX takeover, CE keeps publishing FG state but stops rebuilding or submitting injected overlay command lists on the FFX-owned queue until a safe non-FSR topology returns.
 
 ## Current Practical Guidance
 - Any FG fix should be reasoned through as a state-transition problem, not as a one-off title quirk.
@@ -41,6 +42,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - `startup bypass -> normal routing`
 - `FSR FG <-> DLSS FG` visible overlay label switching
 - `DLSS FG -> off` visible overlay reset
+- `native/runtime-owned FSR FG` must not emit injected `FG overlay SUBMIT` traffic on the FFX-owned queue
 
 ## Regression Families Worth Expanding
 - `off -> FSR -> off`

@@ -5070,6 +5070,15 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
                 "InitOverlaySync: Dedicated queue intentionally disabled because %s is active; keeping single-queue "
                 "sync resources idle",
                 skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned FG");
+            g_State.currentFenceValue = 0;
+            g_State.allocIndex = 0;
+            g_State.syncInit = false;
+            g_State.syncDevice = nullptr;
+            if (queueDevice) {
+                queueDevice->Release();
+                queueDevice = nullptr;
+            }
+            return;
         } else if (IsActualFrameGenerationActive()) {
             HookLogImportant(
                 "InitOverlaySync: FG active (dedicated queue disabled for runtime-owned/native FG), using "
