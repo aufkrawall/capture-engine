@@ -1,0 +1,53 @@
+# llm-wiki Index
+
+Last cross-checked: 2026-04-11
+
+Primary sources:
+- `AGENTS.md`
+- `build.py`
+- `.clang-format`
+- `.flake8`
+- `pyrightconfig.json`
+- `captureengine/*`
+- `hook/*`
+- `tests/*`
+
+## Purpose
+`llm-wiki` is the derived documentation layer for agents and maintainers. It collects repo knowledge that is useful to consult quickly, but it is not the concrete implementation.
+
+## Trust Model
+- Always consult `llm-wiki` before non-trivial work.
+- Do not blindly trust it, especially after many changes or during active DX12 / FG churn.
+- Cross-check important claims against code, tests, build scripts, config files, and current behavior.
+- Update the relevant page and `log.md` whenever you confirm drift, fill a gap, or change project behavior.
+- Do not conflate the wiki with the project code. If the wiki and the code disagree, the code/tests/build scripts win.
+
+## Recommended Read Order
+- Start here to find the right page.
+- Read `log.md` next if the area has been changing recently.
+- For build and tooling questions, read `build.py.md` and `codestyle.md`.
+- For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `frame-generation-switching.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
+
+## Content Catalog
+- `codestyle.md`
+  - Formatter-backed style rules, Python tooling config, and common tree conventions.
+- `build.py.md`
+  - Supported `build.py` flags, interactions, environment variables, and operational notes.
+- `repo-map.md`
+  - Top-level repo layout and subsystem ownership.
+- `dx12-injection-bootstrap.md`
+  - Current DX12 injection timing, hook bootstrap, and pseudo-overlay handoff behavior.
+- `dx12-overlay-third-party-coexistence.md`
+  - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS.
+- `frame-generation-switching.md`
+  - Generic guardrails and current tested transition families for no-FG, DLSS FG, and FSR FG switching.
+- `overlay-fg-status.md`
+  - Current visible FG status publication rules for the overlay.
+- `regression-testing-and-logging.md`
+  - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
+- `log.md`
+  - Wiki changelog and activity timeline.
+
+## Page Maintenance
+- Each page should keep `Last cross-checked`, `Primary sources`, `Facts`, and `Open questions / stale-risk` current.
+- Plan docs and old comments may be useful context, but they are secondary sources. Prefer live code, tests, config, and build scripts.

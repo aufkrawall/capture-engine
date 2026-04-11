@@ -1,13 +1,13 @@
 # CaptureEngine Clang-Format Configuration
 # Based on Google Style with project-specific modifications
-# See AGENTS.md for coding standards
+# See llm-wiki/codestyle.md for coding standards
 
 BasedOnStyle: Google
 
-# Line width (documented in AGENTS.md)
+# Line width (documented in llm-wiki/codestyle.md)
 ColumnLimit: 120
 
-# Indentation (documented in AGENTS.md: 4 spaces, no tabs)
+# Indentation (documented in llm-wiki/codestyle.md: 4 spaces, no tabs)
 IndentWidth: 4
 TabWidth: 4
 UseTab: Never
@@ -23,7 +23,7 @@ BreakBeforeBraces: Attach
 PointerAlignment: Left
 ReferenceAlignment: Left
 
-# Include sorting (matches AGENTS.md order: system headers first, then project)
+# Include sorting (matches llm-wiki/codestyle.md guidance: preserve blocks, keep project-local patterns)
 IncludeBlocks: Preserve
 SortIncludes: CaseSensitive
 
