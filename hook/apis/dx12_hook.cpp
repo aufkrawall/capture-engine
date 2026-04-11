@@ -1442,6 +1442,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddres
     g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     StreamlineHook::OnAuthoritativeFFXTakeover();
+    DXGIShared::DisableSLPresentRouting();
 
     HookLogImportant("DX12: FFX swapchain takeover via %s (queue=%p, staleSL=%d) — cleared Streamline/PostSL ownership",
                      callerModulePath[0] ? callerModulePath : "unknown", capturedQueue, staleStreamlineSignal ? 1 : 0);
@@ -5069,6 +5070,11 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
                 "InitOverlaySync: Dedicated queue intentionally disabled because %s is active; keeping single-queue "
                 "sync resources idle",
                 skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned FG");
+        } else if (IsActualFrameGenerationActive()) {
+            HookLogImportant(
+                "InitOverlaySync: FG active (dedicated queue disabled for runtime-owned/native FG), using "
+                "single-queue overlay mode on game queue (fsrFG=%d, runtimeOwns=%d)",
+                IsFSRFrameGenerationActive() ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0);
         } else if (overlayModule) {
             HookLogImportant(
                 "InitOverlaySync: Real FG inactive while external overlay %s is present, using single-queue overlay "
@@ -11423,8 +11429,18 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     ID3D12CommandQueue* primaryQ = g_PrimaryGameQueue.load(std::memory_order_acquire);
     ID3D12CommandQueue* classificationQueue = GetFrameClassificationQueue();
     char eclCallerModulePath[MAX_PATH] = {};
-    const bool callerFromThirdPartyOverlay =
-        IsCurrentECLCallerFromThirdPartyOverlay(eclCallerModulePath, sizeof(eclCallerModulePath));
+    const bool anyFGActiveEarly = IsActualFrameGenerationActive() ||
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed) ||
+        IsNvidiaSmoothMotionActiveRuntime();
+    ID3D12CommandQueue* currentQEarly = g_CommandQueue.load(std::memory_order_acquire);
+    const bool isKnownQueueEarly =
+        primaryQ && (pThis == primaryQ || pThis == currentQEarly ||
+                     pThis == g_OriginalGameQueue || pThis == g_SwapchainQueue);
+    bool callerFromThirdPartyOverlay = false;
+    if (!anyFGActiveEarly || !isKnownQueueEarly) {
+        callerFromThirdPartyOverlay =
+            IsCurrentECLCallerFromThirdPartyOverlay(eclCallerModulePath, sizeof(eclCallerModulePath));
+    }
     if ((!classificationQueue || pThis == classificationQueue) && !callerFromThirdPartyOverlay) {
         g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
     } else if (callerFromThirdPartyOverlay) {

@@ -125,6 +125,11 @@ void HandleDX11ResizeBegin();
 // Remove Present/Present1 vtable hooks (called when COM wrapper takes over)
 void RemovePresentHooks();
 
+// Disable SL Present routing so Present calls go through the trampoline
+// directly instead of through SL's hook chain. Called when FSR FG takes over
+// to avoid SL/FSR Present chain conflicts.
+void DisableSLPresentRouting();
+
 // Remove all swapchain vtable hooks (Present, Present1, ResizeBuffers,
 // ResizeBuffers1)
 void RemoveSwapchainVTableHooks();

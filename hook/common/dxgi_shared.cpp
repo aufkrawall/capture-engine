@@ -2231,4 +2231,14 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
 }
 
+void DisableSLPresentRouting() {
+    bool wasActive = s_slRoutingActive.exchange(false, std::memory_order_acq_rel);
+    if (wasActive) {
+        HookLogImportant(
+            "SL routing DISABLED: Present calls will bypass SL hook chain and "
+            "go through trampoline=%p directly (FSR FG or runtime-owned FG takeover)",
+            oPresentTrampoline);
+    }
+}
+
 }  // namespace DXGIShared
