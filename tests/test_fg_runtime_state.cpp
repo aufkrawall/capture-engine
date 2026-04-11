@@ -104,6 +104,14 @@ TEST(FGRuntimeStateTest, FsrApiOverridesStreamlineWithoutConfirmedDlssMultiplier
     EXPECT_EQ(RuntimeMode::kFSRFG, ce::fg_runtime::ClassifyRuntimeMode(snapshot));
 }
 
+TEST(FGRuntimeStateTest, HeuristicFsrRuntimeModeIsConsideredFsrForRoutingGuards) {
+    DetectionSnapshot snapshot;
+    snapshot.dormant = false;
+    snapshot.heuristicFSRFGActive = true;
+    snapshot.streamlineLoaded = true;
+    EXPECT_TRUE(ce::fg_runtime::RuntimeModeUsesFSR(ce::fg_runtime::ClassifyRuntimeMode(snapshot)));
+}
+
 TEST(FGRuntimeStateTest, RuntimeModeHelpersMatchClassification) {
     EXPECT_FALSE(ce::fg_runtime::IsRuntimeFGActive(RuntimeMode::kOff));
     EXPECT_TRUE(ce::fg_runtime::IsRuntimeFGActive(RuntimeMode::kDLSSFG));

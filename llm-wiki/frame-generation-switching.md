@@ -26,6 +26,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - Current overlay status tests explicitly cover visible label switching between `FSR FG` and `DLSS FG`, plus clearing back to `FG` when frame generation turns off.
 - Current DX12 overlay policy code treats a runtime-owned swapchain alone as insufficient proof of FSR FG. That matters because GTA can keep a runtime-owned swapchain during non-FSR windows, and misclassifying that state can break post-FSR or post-DLSS recovery.
 - Current DX12 overlay policy comments repeatedly preserve queue and recovery choices specifically to avoid Talos device-removed paths and stale-overlay teardown behavior during mixed FSR and DLSS transitions.
+- Effective FSR runtime mode is now also used as the guard for SL routing suppression. That prevents a stale SL hook from re-activating Present routing after FSR takeover.
 
 ## Current Practical Guidance
 - Any FG fix should be reasoned through as a state-transition problem, not as a one-off title quirk.
@@ -48,6 +49,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - `DLSS -> FSR -> off`
 - `FSR -> DLSS -> FSR`
 - `FSR off while third-party startup overlay windows are still active`
+- `heuristic FSR takeover while SL hook remains present`
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because FG switching behavior is spread across runtime classification, queue routing, startup coexistence, and visible metrics publication.

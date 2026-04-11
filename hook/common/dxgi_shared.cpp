@@ -734,6 +734,23 @@ static void DetectSLPresentHook() {
                      trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3], trampolineBytes[4],
                      trampolineBytes[5]);
 
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+
+    // Don't re-enable SL routing if an effective FSR runtime has taken over.
+    // Heuristic FSR can be latched before the raw FFX API flag, so the
+    // effective runtime mode is the authoritative guard here.
+    if (ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode)) {
+        static int s_suppressedCount = 0;
+        int suppressedNum = ++s_suppressedCount;
+        if (suppressedNum <= 5 || (suppressedNum % 500) == 0) {
+            HookLogImportant(
+                "DetectSLPresentHook: SL %s JMP detected at oPresent=%p but SL routing NOT re-enabled "
+                "(FSR runtime active, suppressed #%d, runtime=%s)",
+                isE9 ? "E9" : "FF25", oPresent, suppressedNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode));
+        }
+        return;
+    }
+
     s_slRoutingActive.store(true, std::memory_order_release);
     HookLogImportant(
         "SL routing ACTIVE: Present calls will go through oPresent=%p "
@@ -978,7 +995,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
 
     // Detect SL's E9 JMP on Present if not already detected.
-    if (!s_slRoutingActive.load(std::memory_order_relaxed)) {
+    // Skip when FSR FG is active — SL routing must stay disabled to avoid
+    // conflicting with FSR FG's own Present interception (freeze in ffxQuery).
+    if (!s_slRoutingActive.load(std::memory_order_relaxed) &&
+        !ce::fg_runtime::RuntimeModeUsesFSR(g_FGCompat.GetRuntimeMode())) {
         static int s_slCheckCount = 0;
         bool slLoaded = IsSLInterposerLoaded();
         if (s_slCheckCount++ < 10) {
@@ -1152,16 +1172,33 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     HRESULT hr;
     if (s_slRoutingActive.load(std::memory_order_acquire)) {
-        // Route through oPresent which has SL's JMP (E9 or FF 25).  This
-        // lets SL process FG.  SL's trampoline will re-enter DetourPresent
-        // (handled above — forwarded to oPresentTrampoline for real Present).
-        static int s_slCallCount = 0;
-        if (s_slCallCount++ < 20) {
-            HookLog("DetourPresent: Calling oPresent=%p (SL route, call #%d)", oPresent, s_slCallCount);
-        }
-        hr = oPresent(pSwapChain, SyncInterval, Flags);
-        if (s_slCallCount <= 20) {
-            HookLog("DetourPresent: oPresent returned hr=0x%08X", hr);
+        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+        // Safety: if SL routing is active but FSR FG has taken over, force-disable
+        // SL routing. This prevents a conflict between SL's Present hook chain and
+        // FSR FG's own Present interception that deadlocks in ffxQuery/ffxPresent.
+        if (ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode)) {
+            static int s_fsrlatchCount = 0;
+            int latchNum = ++s_fsrlatchCount;
+            if (latchNum <= 5) {
+                HookLogImportant(
+                    "DetourPresent: SL routing was active while FSR FG is active — force-disabling SL routing "
+                    "(latch #%d, runtime=%s). Present will go through trampoline directly.",
+                    latchNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode));
+            }
+            s_slRoutingActive.store(false, std::memory_order_release);
+            hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        } else {
+            // Route through oPresent which has SL's JMP (E9 or FF 25).  This
+            // lets SL process FG.  SL's trampoline will re-enter DetourPresent
+            // (handled above — forwarded to oPresentTrampoline for real Present).
+            static int s_slCallCount = 0;
+            if (s_slCallCount++ < 20) {
+                HookLog("DetourPresent: Calling oPresent=%p (SL route, call #%d)", oPresent, s_slCallCount);
+            }
+            hr = oPresent(pSwapChain, SyncInterval, Flags);
+            if (s_slCallCount <= 20) {
+                HookLog("DetourPresent: oPresent returned hr=0x%08X", hr);
+            }
         }
     } else {
         hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
@@ -1300,7 +1337,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
 
     // Detect SL's E9 JMP if not yet done (same as DetourPresent).
-    if (!s_slRoutingActive.load(std::memory_order_relaxed) && IsSLInterposerLoaded()) {
+    // Skip when FSR FG is active — SL routing must stay disabled.
+    if (!s_slRoutingActive.load(std::memory_order_relaxed) && IsSLInterposerLoaded() &&
+        !ce::fg_runtime::RuntimeModeUsesFSR(g_FGCompat.GetRuntimeMode())) {
         DetectSLPresentHook();
     }
 
@@ -1392,7 +1431,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     HRESULT hr;
     if (s_slRoutingActive.load(std::memory_order_acquire) && oPresent1) {
-        hr = oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+        if (ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode)) {
+            s_slRoutingActive.store(false, std::memory_order_release);
+            hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        } else {
+            hr = oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
     } else {
         hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
