@@ -14,6 +14,22 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-12 - Suppress premature GetState-only DLSS activation during authoritative Streamline startup handoff
+- **Root cause**: In log bundle `installed/captureengine/logs/20260412_133431`, GTA V Enhanced no longer died on the earlier EOS-wrapped create-swapchain classification issue, but DLSS FG startup still churned `OFF->ON->OFF->ON` and then froze. The hook log shows a new authoritative Streamline runtime-owned swapchain handoff on queue `0000018E0CB31730`, then an immediate `Streamline Hook: FG state transition OFF->ON via GetState`, a synthetic Streamline re-entrant Present, `ON->OFF via GetState`, and finally the explicit `OFF->ON via SetOptions` activation. The dump `GTA5_Enhanced.exe_FREEZE_2026-04-12_13-36-13_500.dmp` captured the target thread down inside `sl_dlss_g` throwing a C++ exception, which fits a bad startup activation race rather than another self-targeted watchdog freeze.
+- **Fix**:
+  1. `hook/apis/dx12_hook.cpp` now arms the existing Streamline startup transition window whenever CE observes a fresh authoritative Streamline runtime-owned swapchain handoff on a new non-game queue.
+  2. `hook/common/streamline_runtime_policy.h` now exposes a helper for suppressing fresh `GetState`-only DLSS activation while the runtime still reports `Off` / `StreamlineNoFG` and either the explicit SetOptions block or the startup transition window is active.
+  3. `hook/apis/streamline_hook.cpp` now uses that helper in `ShouldSuppressNewGetStateActivation()` and logs whether a suppressed fresh activation is being blocked by the startup transition window, the persistent SetOptions block, or both.
+  4. `tests/test_streamline_runtime_policy.cpp` now covers the new startup-transition suppression rule so future changes do not silently re-allow `GetState` to win the race during startup handoff.
+- **Why this is generic**: This is not a GTA-only special case. Any Streamline startup path that first exposes a new runtime-owned swapchain/queue and only later issues the explicit `slDLSSGSetOptions` enable can transiently report enough `GetState` evidence to look active too early. CE should key suppression off the observed startup handoff and runtime state, not off executable names.
+- **Verification**:
+  - Ran `& ".\tests\unit_tests.exe" --gtest_filter=StreamlineRuntimePolicyTest.*`. All 14 tests passed.
+  - Ran `& ".\tests\unit_tests.exe"`. All 531 tests passed.
+  - Ran `python build.py --incremental --run-tests --skip-updates`. Build completed successfully and all 531 tests passed.
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked: `installed/captureengine/logs/20260412_133431/hook_debug.log`, `installed/captureengine/logs/20260412_133431/GTA5_Enhanced.exe_FREEZE_2026-04-12_13-36-13_500.dmp`, `hook/apis/dx12_hook.cpp`, `hook/apis/streamline_hook.cpp`, `hook/common/streamline_runtime_policy.h`, `tests/test_streamline_runtime_policy.cpp`.
+- Stale-risk note: Re-check this family whenever Streamline startup handoff timing, `slDLSSGGetState` reconciliation, or explicit `slDLSSGSetOptions` activation ordering changes. If a future log again shows `OFF->ON via GetState` before the real `SetOptions` enable on a fresh runtime-owned startup queue, revisit this suppression window first.
+
 ### 2026-04-12 - Archive session-local CE symbols and upgrade direct dump richness with compatibility fallbacks
 - **Gap addressed**: Even after adding native PDB emission, later dump analysis still depended on the current installed binaries matching the original crash session. Also, CE's direct `MiniDumpWriteDump` paths were still using relatively lean dump flag sets compared with what is useful for real crash and hang diagnosis.
 - **Change**:

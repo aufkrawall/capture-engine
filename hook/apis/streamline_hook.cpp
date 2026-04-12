@@ -327,10 +327,11 @@ bool WasViewportRuntimeStateActive(uint32_t viewportKey) {
 }
 
 bool ShouldSuppressNewGetStateActivation() {
-    if (g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire)) {
-        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
-        return runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG ||
-               runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    if (ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(
+            g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire),
+            DXGIShared::IsStreamlineStartupTransitionWindowActive(), runtimeMode)) {
+        return true;
     }
 
     const ULONGLONG suppressUntilMs = g_SuppressNewGetStateActivationUntilMs.load(std::memory_order_acquire);
@@ -678,11 +679,17 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
             const ULONGLONG remainingMs = suppressUntilMs > nowMs ? (suppressUntilMs - nowMs) : 0;
             const bool persistentBlock =
                 g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire);
+            const ULONGLONG startupTransitionUntilMs =
+                DXGIShared::g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
+            const bool startupWindowActive = startupTransitionUntilMs != 0 && startupTransitionUntilMs > nowMs;
+            const ULONGLONG startupRemainingMs = startupWindowActive ? (startupTransitionUntilMs - nowMs) : 0;
             HookLogImportant(
                 "Streamline Hook: Suppressing fresh GetState DLSS FG reactivation "
-                "(viewport=%u mode=%u generated=%u fence=%p fenceValue=%llu persistentBlock=%d remaining=%llums)",
+                "(viewport=%u mode=%u generated=%u fence=%p fenceValue=%llu persistentBlock=%d startupWindow=%d "
+                "startupRemaining=%llums remaining=%llums)",
                 viewportKey, options->mode, options->numFramesToGenerate, state.inputsProcessingCompletionFence,
                 (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue, persistentBlock ? 1 : 0,
+                startupWindowActive ? 1 : 0, (unsigned long long)startupRemainingMs,
                 (unsigned long long)remainingMs);
         }
     }

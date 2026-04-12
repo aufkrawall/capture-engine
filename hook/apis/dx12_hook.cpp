@@ -3298,13 +3298,18 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             context, rawCallerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
             callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
         ID3D12CommandQueue* currentOriginalGameQueue = nullptr;
+        ID3D12CommandQueue* currentSwapchainQueue = nullptr;
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
             currentOriginalGameQueue = g_OriginalGameQueue;
+            currentSwapchainQueue = g_SwapchainQueue;
         }
         const bool preserveCurrentGameQueue =
             ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(
                 callerFromThirdPartyOverlay, currentOriginalGameQueue != nullptr, pQueue == currentOriginalGameQueue);
+        const bool authoritativeStreamlineSwapchainHandoff =
+            (callerFromStreamlineFGModule || streamlineFrameGenerationInStack) && currentOriginalGameQueue != nullptr &&
+            pQueue != currentOriginalGameQueue && pQueue != currentSwapchainQueue;
 
         HookLogImportant("%s: QI for queue succeeded (queue=%p)", context, pQueue);
         if (preserveCurrentGameQueue) {
@@ -3316,6 +3321,14 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             return;
         }
         const bool runtimeOwnershipJustActivated = DX12_SetSwapchainQueue(pQueue);
+        if (authoritativeStreamlineSwapchainHandoff) {
+            DXGIShared::ArmStreamlineStartupTransitionWindow();
+            HookLogImportant(
+                "%s: Armed Streamline startup transition window after authoritative runtime-owned swapchain handoff "
+                "(queue=%p prevScQueue=%p origGame=%p caller=%s)",
+                context, pQueue, currentSwapchainQueue, currentOriginalGameQueue,
+                callerModulePath[0] ? callerModulePath : "stack");
+        }
         ClearStaleStreamlineOwnershipForFSRTakeover(callerAddress, g_OriginalGameQueue && pQueue != g_OriginalGameQueue,
                                                     runtimeOwnershipJustActivated, pQueue);
         pQueue->Release();

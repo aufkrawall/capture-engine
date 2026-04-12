@@ -111,6 +111,22 @@ TEST(StreamlineRuntimePolicyTest, EvaluateGetStateSuppressionBlocksFreshActivati
     EXPECT_TRUE(evaluation.suppressedFreshActivation);
 }
 
+TEST(StreamlineRuntimePolicyTest, FreshGetStateActivationSuppressedWhileRuntimeStillInactive) {
+    using ce::fg_runtime::RuntimeMode;
+
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(
+        false, true, RuntimeMode::kOff));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(
+        true, false, RuntimeMode::kOff));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(
+        false, true, RuntimeMode::kStreamlineNoFG));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(
+        false, false, RuntimeMode::kOff));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(
+        false, true, RuntimeMode::kDLSSFG));
+}
+
 TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOnlyRunsForFsrOwnedHandoff) {
     EXPECT_TRUE(
         ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, false, true));

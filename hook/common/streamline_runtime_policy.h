@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "../../common/shared_defs.h"
+#include "fg_runtime_state.h"
 
 namespace ce::streamline_runtime_policy {
 
@@ -91,6 +92,14 @@ inline GetStateRuntimeEvaluation EvaluateViewportRuntimeUpdateFromGetState(
     evaluation.suppressedFreshActivation =
         attemptedFreshActivation && suppressNewActivation && !evaluation.update.shouldUpdate;
     return evaluation;
+}
+
+inline bool ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(bool persistentSetOptionsBlock,
+                                                                     bool startupTransitionWindowActive,
+                                                                     ce::fg_runtime::RuntimeMode runtimeMode) {
+    const bool runtimeStillInactive = runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG ||
+                                      runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
+    return runtimeStillInactive && (persistentSetOptionsBlock || startupTransitionWindowActive);
 }
 
 inline bool IsLiveFSRRuntimeHandoffSource(bool currentlyAuthoritativeFSRActive, bool currentRuntimeModeIsFSRFG) {
