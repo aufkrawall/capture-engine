@@ -6949,6 +6949,14 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
     bool rendered = false;
 
+    if (s_callsSinceReactivation <= 1 || s_postSLRenders.load(std::memory_order_relaxed) == 0) {
+        HookLogImportant(
+            "DX12: PostSL first ECL submit approaching (epoch=%d call#=%d queue=%p slFG=%d "
+            "runtimeMode=%d hadFSR=%d)",
+            s_reactivationEpoch, s_callsSinceReactivation, queue, cachedSLFGActive ? 1 : 0,
+            (int)g_FGCompat.GetRuntimeMode(), g_HadFSRFGPhase ? 1 : 0);
+    }
+
     const bool selectedQueueIsSwapchainQueue = (queue == scQueue);
     ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
     ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);

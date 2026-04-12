@@ -135,6 +135,24 @@ TEST(StreamlineRuntimePolicyTest, StartupTransitionWindowOnlyRearmsOnFreshActive
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(false, true));
 }
 
+TEST(StreamlineRuntimePolicyTest, DeferredStartupWindowOffKeepsEffectiveDlssSignalAndMultiplier) {
+    const auto update =
+        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, true, 2);
+
+    EXPECT_TRUE(update.deferredOffDuringStartupWindow);
+    EXPECT_TRUE(update.effectiveActive);
+    EXPECT_EQ(2, update.effectiveMultiplier);
+}
+
+TEST(StreamlineRuntimePolicyTest, NonDeferredOffClearsEffectiveDlssSignalAndMultiplier) {
+    const auto update =
+        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, false, true, 2);
+
+    EXPECT_FALSE(update.deferredOffDuringStartupWindow);
+    EXPECT_FALSE(update.effectiveActive);
+    EXPECT_EQ(0, update.effectiveMultiplier);
+}
+
 TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOnlyRunsForFsrOwnedHandoff) {
     EXPECT_TRUE(
         ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, false, true));

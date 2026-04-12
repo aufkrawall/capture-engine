@@ -20,6 +20,12 @@ struct GetStateRuntimeEvaluation {
     bool suppressedFreshActivation = false;
 };
 
+struct CombinedRuntimeSignalUpdate {
+    bool effectiveActive = false;
+    int effectiveMultiplier = 0;
+    bool deferredOffDuringStartupWindow = false;
+};
+
 inline bool IsDLSSGModeEnabled(uint32_t mode) {
     return mode != 0;
 }
@@ -108,6 +114,17 @@ inline bool ShouldArmStartupTransitionWindowOnFreshActiveSignal(bool active, boo
     // GetState/SetOptions poll causes startup-only OFF deferral to leak into
     // normal steady-state DLSS FG runtime operation.
     return active && !previousSignal;
+}
+
+inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool requestedActive,
+                                                                     bool startupTransitionWindowActive,
+                                                                     bool previousSignal,
+                                                                     int requestedMultiplier) {
+    CombinedRuntimeSignalUpdate update;
+    update.deferredOffDuringStartupWindow = !requestedActive && startupTransitionWindowActive;
+    update.effectiveActive = update.deferredOffDuringStartupWindow ? previousSignal : requestedActive;
+    update.effectiveMultiplier = update.effectiveActive ? requestedMultiplier : 0;
+    return update;
 }
 
 inline bool IsLiveFSRRuntimeHandoffSource(bool currentlyAuthoritativeFSRActive, bool currentRuntimeModeIsFSRFG) {

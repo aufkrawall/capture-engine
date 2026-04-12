@@ -940,8 +940,8 @@ TEST(DXGISharedTest, SyntheticPostSLStartupCanUseWrapperProgressAfterTopLevelHan
         false, true, false));
 }
 
-TEST(DXGISharedTest, PostSLReactivationWarmupCanBeBypassedAfterWrapperBackedTopLevelHandoffForPureDLSS) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(
+TEST(DXGISharedTest, PostSLReactivationWarmupIsNotBypassedEvenAfterWrapperBackedTopLevelHandoffForPureDLSS) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(
         false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(

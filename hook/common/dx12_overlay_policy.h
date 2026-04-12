@@ -1077,7 +1077,15 @@ inline bool ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
 
 inline bool ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(
     bool hadFSRFGPhase, bool useTopLevelHandoffWrapperProgress) {
-    return !hadFSRFGPhase && useTopLevelHandoffWrapperProgress;
+    // Never bypass warm-up for pure DLSS cold start.  DLSS FG's multi-device
+    // initialization is fragile: submitting overlay ECL on the FG queue during
+    // the first few callbacks can corrupt DLSS FG's internal mutex/fence state
+    // and crash sl_dlss_g.  The warm-up period lets DLSS FG stabilize before
+    // our first GPU work lands on its queue.  PostSL still activates and logs
+    // progress during warm-up — only the ECL submit is deferred.
+    (void)hadFSRFGPhase;
+    (void)useTopLevelHandoffWrapperProgress;
+    return false;
 }
 
 inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(

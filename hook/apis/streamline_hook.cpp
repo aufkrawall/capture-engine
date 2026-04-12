@@ -306,29 +306,30 @@ void ApplyCombinedDLSSFGState(bool active, int multiplier) {
 }
 
 void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char* source) {
-    const bool inStartupWindow =
-        !active && DXGIShared::IsStreamlineStartupTransitionWindowActive();
-    const bool effectiveActive =
-        inStartupWindow ? DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) : active;
+    const bool inStartupWindow = !active && DXGIShared::IsStreamlineStartupTransitionWindowActive();
+    const bool previousSignal = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const auto signalUpdate = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(
+        active, inStartupWindow, previousSignal, multiplier);
 
-    const bool previousSignal =
-        DXGIShared::g_StreamlineFGRunning.exchange(effectiveActive, std::memory_order_acq_rel);
+    const bool previousSignalObserved =
+        DXGIShared::g_StreamlineFGRunning.exchange(signalUpdate.effectiveActive, std::memory_order_acq_rel);
     if (ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(active, previousSignal)) {
         DXGIShared::ArmStreamlineStartupTransitionWindow();
     }
-    g_FGCompat.SetStreamlineFGSignal(active);
-    ApplyCombinedDLSSFGState(active, multiplier);
+    g_FGCompat.SetStreamlineFGSignal(signalUpdate.effectiveActive);
+    ApplyCombinedDLSSFGState(signalUpdate.effectiveActive, signalUpdate.effectiveMultiplier);
 
-    if (previousSignal != effectiveActive) {
-        DX12_OnStreamlineFGStateChanged(effectiveActive);
-        HookLogImportant("Streamline Hook: FG state transition %s->%s via %s", previousSignal ? "ON" : "OFF",
-                         effectiveActive ? "ON" : "OFF", source ? source : "runtime-state");
+    if (previousSignalObserved != signalUpdate.effectiveActive) {
+        DX12_OnStreamlineFGStateChanged(signalUpdate.effectiveActive);
+        HookLogImportant("Streamline Hook: FG state transition %s->%s via %s",
+                         previousSignalObserved ? "ON" : "OFF", signalUpdate.effectiveActive ? "ON" : "OFF",
+                         source ? source : "runtime-state");
     }
-    if (inStartupWindow) {
+    if (signalUpdate.deferredOffDuringStartupWindow) {
         HookLogImportant(
             "Streamline Hook: Deferring OFF signal during startup transition window "
-            "(g_StreamlineFGRunning stays ON, source=%s)",
-            source ? source : "unknown");
+            "(g_StreamlineFGRunning stays ON, multiplier=%d source=%s)",
+            signalUpdate.effectiveMultiplier, source ? source : "unknown");
     }
 }
 
