@@ -14,6 +14,19 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-12 - Bypass the old PostSL cold-start warm-up for the already-proven top-level-handoff + wrapper-progress family
+- **Root cause refinement**: In the next GTA V Enhanced freeze bundle `installed/captureengine/logs/20260412_195512`, the previous wrapper-progress and `ProcessFrame recently seen` fixes were finally both working. The hook log now showed `DX12: PostSL synthetic startup using wrapper ECL progress after top-level handoff`, `DX12: PostSL synthetic startup activation complete`, and `DX12: PostSL REACTIVATED`. But it still never logged any `Post-SL overlay SUBMIT`. The very next line after reactivation was `DX12: PostSL warm-up after reactivation epoch=1 frame=1/15 (coldStart=1)`, and then no further PostSL callback arrived before `Present STALLED`. That showed the old cold-start reactivation warm-up had become the new blocker: activation itself is now already delayed until the stronger top-level-handoff + wrapper-progress proof exists, so spending the only decisive callback on another generic 15-frame warm-up just strands PostSL again.
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now exposes `ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress()`.
+  2. `hook/apis/dx12_hook.cpp` now uses that policy seam so pure-DLSS PostSL reactivation can bypass the old reactivation warm-up only when it came through the already-proven one-shot top-level handoff + authoritative wrapper-progress family.
+  3. `tests/test_dxgi_shared.cpp` now covers the new warm-up bypass seam so post-FSR and the other non-handoff families still keep their old warm-up behavior.
+- **Why this is generic**: This is not GTA-specific. Once CE has already waited for a late top-level startup-handoff Present, observed authoritative wrapper queue progress, and used the first synthetic Present to finish activation, that family already has much stronger proof than the old generic cold-start warm-up was designed around. Keeping the same blind 15-frame warm-up on top of that can strand any Streamline runtime that only emits one decisive synthetic callback in this phase.
+- **Verification**:
+  - Ran `python build.py --incremental --run-tests --skip-updates`. Build completed successfully and all 545 tests passed.
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked: `installed/captureengine/logs/20260412_195512/hook_debug.log`, `installed/captureengine/logs/20260412_195512/GTA5_Enhanced.exe_FREEZE_2026-04-12_19-56-55_556.dmp`, `hook/apis/dx12_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Re-check this family whenever PostSL reactivation warm-up or startup activation timing changes. If a future trace again reaches `PostSL REACTIVATED` but still never reaches `Post-SL overlay SUBMIT`, verify first whether the decisive callback is still being spent on an obsolete warm-up phase.
+
 ### 2026-04-12 - Let wrapper-backed pure-DLSS startup advance even while the old top-level frame path is still recent
 - **Root cause refinement**: In the next GTA V Enhanced freeze bundle `installed/captureengine/logs/20260412_194601`, the previous wrapper-progress fix was clearly wired up: the hook log now showed `DX12: PostSL synthetic startup observed wrapper ECL progress #1..#8 after top-level handoff` before the first `Treating Streamline-originated Present as synthetic re-entrant #1`. But the trace still never logged `DX12: PostSL synthetic startup using wrapper ECL progress after top-level handoff` or `DX12: PostSL synthetic startup activation complete`, and it still stalled afterward. Source inspection showed why: `hook/common/dx12_overlay_policy.h` still required `!processFrameRecentlySeen` before dormant synthetic startup could advance at all, so the first synthetic callback in this GTA handoff never entered the activation block despite already having the new wrapper-progress proof.
 - **Fix**:

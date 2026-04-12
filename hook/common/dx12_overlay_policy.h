@@ -1075,6 +1075,11 @@ inline bool ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
     return !hadFSRFGPhase && startupTopLevelPresentConsumed && wrapperProgressObserved;
 }
 
+inline bool ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(
+    bool hadFSRFGPhase, bool useTopLevelHandoffWrapperProgress) {
+    return !hadFSRFGPhase && useTopLevelHandoffWrapperProgress;
+}
+
 inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
     bool streamlineStartupTransitionWindowActive, int stablePostSLFrameCount) {
     // Keep the startup churn window alive until the freshly activated PostSL path

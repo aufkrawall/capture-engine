@@ -940,6 +940,16 @@ TEST(DXGISharedTest, SyntheticPostSLStartupCanUseWrapperProgressAfterTopLevelHan
         false, true, false));
 }
 
+TEST(DXGISharedTest, PostSLReactivationWarmupCanBeBypassedAfterWrapperBackedTopLevelHandoffForPureDLSS) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(
+        false, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(
+        true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(
+        false, false));
+}
+
 TEST(DXGISharedTest, StreamlineStartupHandoffPresentUsesTopLevelPathAfterLargeGapWithoutPresentOwner) {
     EXPECT_FALSE(
         DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, true, false));
