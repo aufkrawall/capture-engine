@@ -804,7 +804,7 @@ void PseudoOverlay::UpdateOverlay() {
                         POINT ptDst = {winX, winY};
                         SIZE szWnd = {fullS, fullS};
                         POINT ptSrc = {0, 0};
-                        BLENDFUNCTION blend = {AC_SRC_ALPHA, 0, indAlpha, 0};
+                        BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
                         UpdateLayeredWindow(hOv_, hdcScreen, &ptDst, &szWnd, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
 
                         SelectObject(hdcMem, hOldBm);
@@ -868,7 +868,6 @@ void PseudoOverlay::UpdateOverlay() {
             }
         }
 
-        // Check if cached bitmap needs refresh
         bool cacheStale = (msg != lastWarnMsg_) || (bmWarn_ == NULL);
 
         int warnW = 0;
@@ -897,12 +896,11 @@ void PseudoOverlay::UpdateOverlay() {
                 SelectObject(hdcWarn_, oldBmWarn_);
                 DeleteObject(bmWarn_);
                 bmWarn_ = NULL;
+                oldBmWarn_ = NULL;
             }
 
-            void* pBitsWarn = nullptr;
-            bmWarn_ = CreateArgbDibSection(warnW, warnH, &pBitsWarn);
-            if (!bmWarn_ || !pBitsWarn) {
-                bmWarn_ = NULL;
+            bmWarn_ = CreateCompatibleBitmap(hdcScreen, warnW, warnH);
+            if (!bmWarn_) {
                 ReleaseDC(NULL, hdcScreen);
                 return;
             }
@@ -910,7 +908,12 @@ void PseudoOverlay::UpdateOverlay() {
             HBITMAP prevBm = (HBITMAP)SelectObject(hdcWarn_, bmWarn_);
             if (oldBmWarn_ == NULL)
                 oldBmWarn_ = prevBm;
-            memset(pBitsWarn, 0, warnW * warnH * 4);
+
+            HBRUSH hK = CreateSolidBrush(RGB(0, 0, 0));
+            RECT rFill = {0, 0, warnW, warnH};
+            FillRect(hdcWarn_, &rFill, hK);
+            DeleteObject(hK);
+
             SelectObject(hdcWarn_, fontWarn_);
             SetTextColor(hdcWarn_, isScreenshotMsg ? kColScreenshotText : kColWarnText);
             SetBkMode(hdcWarn_, TRANSPARENT);
@@ -918,15 +921,12 @@ void PseudoOverlay::UpdateOverlay() {
             RECT rT = {S(10), S(5), warnW, warnH};
             DrawTextA(hdcWarn_, msg, -1, &rT, DT_LEFT | DT_TOP | DT_NOCLIP);
 
-            ApplyPremultipliedAlpha(pBitsWarn, warnW, warnH);
-
             ReleaseDC(NULL, hdcScreen);
 
             sizeWarn_ = {warnW, warnH};
             lastWarnMsg_ = msg;
         }
 
-        // Calculate position based on corner
         int wx = 0, wy = 0;
         int off = s + p + S(10);
         int wW = sizeWarn_.cx;
@@ -952,8 +952,9 @@ void PseudoOverlay::UpdateOverlay() {
         POINT ptDst = {wx, wy};
         SIZE szWnd = {wW, wH};
         POINT ptSrc = {0, 0};
-        BLENDFUNCTION blend = {AC_SRC_ALPHA, 0, warnAlpha, 0};
-        UpdateLayeredWindow(hWarn_, NULL, &ptDst, &szWnd, hdcWarn_, &ptSrc, 0, &blend, ULW_ALPHA);
+        BLENDFUNCTION blend = {AC_SRC_OVER, 0, warnAlpha, 0};
+        UpdateLayeredWindow(hWarn_, NULL, &ptDst, &szWnd, hdcWarn_, &ptSrc, RGB(0, 0, 0), &blend,
+                            ULW_COLORKEY | ULW_ALPHA);
 
         lastWarnVis_ = warnAlpha > 0;
     }
