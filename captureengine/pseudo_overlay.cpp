@@ -771,7 +771,7 @@ void PseudoOverlay::UpdateOverlay() {
             ShowWindow(hOv_, SW_HIDE);
         }
 
-        if (indAlpha > 0) {
+        if (indAlpha > 1) {
             HDC hdcScreen = GetDC(NULL);
             if (hdcScreen) {
                 HDC hdcMem = CreateCompatibleDC(hdcScreen);
@@ -781,27 +781,48 @@ void PseudoOverlay::UpdateOverlay() {
                     if (hBm && pBits) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
 
-                        if (indAlpha == 1) {
-                        } else {
-                            memset(pBits, 0, fullS * fullS * 4);
+                        memset(pBits, 0, fullS * fullS * 4);
 
-                            HPEN hPen = CreatePen(PS_SOLID, S(2), RGB(255, 255, 255));
-                            HBRUSH hBrush = CreateSolidBrush(curCol);
-                            HPEN hOldPen = (HPEN)SelectObject(hdcMem, hPen);
-                            HBRUSH hOldBrush = (HBRUSH)SelectObject(hdcMem, hBrush);
-                            Ellipse(hdcMem, indX + S(1), indY + S(1), indX + s - S(1), indY + s - S(1));
-                            SelectObject(hdcMem, hOldPen);
-                            SelectObject(hdcMem, hOldBrush);
-                            DeleteObject(hBrush);
-                            DeleteObject(hPen);
+                        HPEN hPen = CreatePen(PS_SOLID, S(2), RGB(255, 255, 255));
+                        HBRUSH hBrush = CreateSolidBrush(curCol);
+                        HPEN hOldPen = (HPEN)SelectObject(hdcMem, hPen);
+                        HBRUSH hOldBrush = (HBRUSH)SelectObject(hdcMem, hBrush);
+                        Ellipse(hdcMem, indX + S(1), indY + S(1), indX + s - S(1), indY + s - S(1));
+                        SelectObject(hdcMem, hOldPen);
+                        SelectObject(hdcMem, hOldBrush);
+                        DeleteObject(hBrush);
+                        DeleteObject(hPen);
 
-                            ApplyPremultipliedAlpha(pBits, fullS, fullS);
-                        }
+                        ApplyPremultipliedAlpha(pBits, fullS, fullS);
 
                         POINT ptDst = {winX, winY};
                         SIZE szWnd = {fullS, fullS};
                         POINT ptSrc = {0, 0};
                         BLENDFUNCTION blend = {AC_SRC_OVER, 0, indAlpha, AC_SRC_ALPHA};
+                        UpdateLayeredWindow(hOv_, hdcScreen, &ptDst, &szWnd, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
+
+                        SelectObject(hdcMem, hOldBm);
+                        DeleteObject(hBm);
+                    }
+                    DeleteDC(hdcMem);
+                }
+                ReleaseDC(NULL, hdcScreen);
+            }
+        } else if (indAlpha == 1) {
+            HDC hdcScreen = GetDC(NULL);
+            if (hdcScreen) {
+                HDC hdcMem = CreateCompatibleDC(hdcScreen);
+                if (hdcMem) {
+                    void* pBits = nullptr;
+                    HBITMAP hBm = CreateArgbDibSection(fullS, fullS, &pBits);
+                    if (hBm && pBits) {
+                        HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
+                        memset(pBits, 0, fullS * fullS * 4);
+
+                        POINT ptDst = {winX, winY};
+                        SIZE szWnd = {fullS, fullS};
+                        POINT ptSrc = {0, 0};
+                        BLENDFUNCTION blend = {AC_SRC_OVER, 0, 1, AC_SRC_ALPHA};
                         UpdateLayeredWindow(hOv_, hdcScreen, &ptDst, &szWnd, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
 
                         SelectObject(hdcMem, hOldBm);
