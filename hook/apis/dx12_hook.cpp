@@ -3162,7 +3162,7 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
 // Capture the queue that was passed to CreateSwapChain* so we can prefer it
 // for overlay submission.  Only accepts DIRECT queues (same rule as
 // DX12_SetCommandQueue).  Also hooks the queue vtable for ECL interception.
-static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
+static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeHandoff) {
     if (!pQueue)
         return false;
 
@@ -3252,7 +3252,15 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
     // This cumulative overhead breaks FSR FG's internal fence synchronization,
     // causing ffxQuery to spin-wait or WaitForSingleObject indefinitely.
     // We already hook origGame's queue for watchdog/heartbeat — that's sufficient.
-    if (pQueue == g_OriginalGameQueue || !g_OriginalGameQueue) {
+    const bool shouldHookQueueVTable = ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(
+        g_OriginalGameQueue != nullptr, pQueue == g_OriginalGameQueue, authoritativeStreamlineRuntimeHandoff);
+    if (shouldHookQueueVTable) {
+        if (authoritativeStreamlineRuntimeHandoff && g_OriginalGameQueue && pQueue != g_OriginalGameQueue) {
+            HookLogImportant(
+                "DX12: Hooking authoritative Streamline runtime queue vtable %p (origGame=%p) to keep runtime-owned "
+                "ECL tracking visible",
+                pQueue, g_OriginalGameQueue);
+        }
         DX12_HookQueueVTable(pQueue);
     } else {
         HookLogImportant("DX12: Skipping vtable hook for FG runtime queue %p (origGame=%p) — preserving FSR timing",
@@ -3320,7 +3328,8 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             pQueue->Release();
             return;
         }
-        const bool runtimeOwnershipJustActivated = DX12_SetSwapchainQueue(pQueue);
+        const bool runtimeOwnershipJustActivated =
+            DX12_SetSwapchainQueue(pQueue, authoritativeStreamlineSwapchainHandoff);
         if (authoritativeStreamlineSwapchainHandoff) {
             DXGIShared::ArmStreamlineStartupTransitionWindow();
             HookLogImportant(
@@ -3533,6 +3542,16 @@ static void EnsurePresentInlineHooksForRealSwapchain(IDXGISwapChain* pSwapChain,
     }
 }
 
+static void RefreshPresentHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source) {
+    if (!pSwapChain) {
+        return;
+    }
+
+    EnsurePresentInlineHooksForRealSwapchain(pSwapChain, source);
+    DXGIShared::InstallHooks(pSwapChain, /*presentOnly=*/true);
+    DXGIShared::RepairVTableHooksIfNeeded();
+}
+
 // Function pointers for global factory vtable hooks
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChain)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*,
                                                         IDXGISwapChain**);
@@ -3616,8 +3635,6 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
 
         const bool callbackAlreadyInstalled =
             DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr;
-
-        DXGIShared::ArmStreamlineStartupTransitionWindow();
 
         if (callbackAlreadyInstalled) {
             g_PostSLCallbackExecutionEnabled.store(true, std::memory_order_release);
@@ -4055,12 +4072,11 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         TrackSwapchainHwnd(*ppSC, hWnd);
         HookLogImportant("DeepHook: Created & tracked swapchain %p for HWND=%p", *ppSC, hWnd);
 
-        // SL (or game) just created a new swapchain.  Install our Present
-        // hook on it — the new swapchain may have a different vtable than
-        // the one we initially hooked.
+        // SL (or game) just created a new swapchain. Refresh the full Present
+        // hook path on it — the new swapchain may expose a different Present
+        // implementation or vtable than the one we initially hooked.
         IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
-        DXGIShared::InstallHooks(newSC, /*presentOnly=*/true);
-        DXGIShared::RepairVTableHooksIfNeeded();
+        RefreshPresentHooksForRealSwapchain(newSC, "DeepHook");
 
         CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "DeepHook", callerAddress);
     } else if (FAILED(hr)) {
@@ -4209,11 +4225,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
 
         // A later runtime-created DX12 swapchain can expose a different Present
         // implementation than the one we patched during startup. Refresh the
-        // per-swapchain Present detour path here so top-level Present traffic
+        // full per-swapchain Present hook path here so top-level Present traffic
         // stays visible after a Streamline handoff.
         IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
-        DXGIShared::InstallHooks(newSC, /*presentOnly=*/true);
-        DXGIShared::RepairVTableHooksIfNeeded();
+        RefreshPresentHooksForRealSwapchain(newSC, "CreateSwapChainForHwnd INLINE");
 
         CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd INLINE", callerAddress);
     }
@@ -4313,7 +4328,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
                     pDesc->BufferDesc.Height);
         }
 
-        EnsurePresentInlineHooksForRealSwapchain(*ppSwapChain, "CreateSwapChain");
+        RefreshPresentHooksForRealSwapchain(*ppSwapChain, "CreateSwapChain");
 
         // When Streamline is loaded, skip wrapping to avoid blocking FG swapchain
         // lifecycle management.  Inline Present hooks provide the same interception.
@@ -4435,7 +4450,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
             HookLog("DetourCreateSwapChainForHwndGlobal: Creating swapchain %ux%u", pDesc->Width, pDesc->Height);
         }
 
-        EnsurePresentInlineHooksForRealSwapchain(*ppSC, "CreateSwapChainForHwnd");
+        RefreshPresentHooksForRealSwapchain(*ppSC, "CreateSwapChainForHwnd");
 
         // When Streamline is loaded, skip wrapping to avoid blocking FG swapchain
         // lifecycle management.  Inline Present hooks provide the same interception.

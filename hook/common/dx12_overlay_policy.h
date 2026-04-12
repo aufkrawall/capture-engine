@@ -206,6 +206,21 @@ inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThi
     return !queueMatchesPrimaryQueue && !queueMatchesOriginalGameQueue && !queueMatchesSwapchainQueue;
 }
 
+inline bool ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(bool hasOriginalGameQueue,
+                                                                    bool queueMatchesOriginalGameQueue,
+                                                                    bool authoritativeStreamlineRuntimeHandoff) {
+    if (!hasOriginalGameQueue || queueMatchesOriginalGameQueue) {
+        return true;
+    }
+
+    // Native FSR runtime queues stay unhooked to preserve the timing-sensitive
+    // path that previously froze inside ffxQuery. Authoritative Streamline
+    // runtime handoffs are different: later DLSS activation can migrate the
+    // live swapchain onto a new queue/device, and without ECL visibility on that
+    // queue CE can get stranded on wrapper-only state.
+    return authoritativeStreamlineRuntimeHandoff;
+}
+
 enum class SwapchainOverlayRoutingDecision {
     kUseNormalRouting,
     kUsePostFSRStreamlineQueue,

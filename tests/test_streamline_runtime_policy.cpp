@@ -127,6 +127,14 @@ TEST(StreamlineRuntimePolicyTest, FreshGetStateActivationSuppressedWhileRuntimeS
         false, true, RuntimeMode::kDLSSFG));
 }
 
+TEST(StreamlineRuntimePolicyTest, StartupTransitionWindowOnlyRearmsOnFreshActiveSignal) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(true, false));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(true, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(false, true));
+}
+
 TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOnlyRunsForFsrOwnedHandoff) {
     EXPECT_TRUE(
         ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(true, true, false, true));

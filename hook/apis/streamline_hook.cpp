@@ -313,7 +313,7 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
 
     const bool previousSignal =
         DXGIShared::g_StreamlineFGRunning.exchange(effectiveActive, std::memory_order_acq_rel);
-    if (active) {
+    if (ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(active, previousSignal)) {
         DXGIShared::ArmStreamlineStartupTransitionWindow();
     }
     g_FGCompat.SetStreamlineFGSignal(active);

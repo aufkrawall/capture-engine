@@ -95,11 +95,19 @@ inline GetStateRuntimeEvaluation EvaluateViewportRuntimeUpdateFromGetState(
 }
 
 inline bool ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(bool persistentSetOptionsBlock,
-                                                                     bool startupTransitionWindowActive,
-                                                                     ce::fg_runtime::RuntimeMode runtimeMode) {
+                                                                      bool startupTransitionWindowActive,
+                                                                      ce::fg_runtime::RuntimeMode runtimeMode) {
     const bool runtimeStillInactive = runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG ||
                                       runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
     return runtimeStillInactive && (persistentSetOptionsBlock || startupTransitionWindowActive);
+}
+
+inline bool ShouldArmStartupTransitionWindowOnFreshActiveSignal(bool active, bool previousSignal) {
+    // The startup transition window is only for fresh activation churn around a
+    // real handoff/enable edge. Keeping it refreshed by every later active
+    // GetState/SetOptions poll causes startup-only OFF deferral to leak into
+    // normal steady-state DLSS FG runtime operation.
+    return active && !previousSignal;
 }
 
 inline bool IsLiveFSRRuntimeHandoffSource(bool currentlyAuthoritativeFSRActive, bool currentRuntimeModeIsFSRFG) {
