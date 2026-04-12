@@ -70,6 +70,12 @@ struct PresentDebugSample {
     char api[8] = "";
 };
 
+inline bool ShouldFlushPerfMetricsCsvAfterFrame(uint64_t frameNum) {
+    // Keep early crash / hang sessions durable without forcing a flush on every
+    // frame. Early frames are flushed aggressively; later runs flush periodically.
+    return frameNum <= 8 || (frameNum % 32) == 0;
+}
+
 class PerfLogger {
 public:
     static PerfLogger& Get();

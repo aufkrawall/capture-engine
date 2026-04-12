@@ -103,6 +103,10 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
             metrics.sourceOverloadFlags, metrics.source1PctLowTimes100, metrics.sourcePoint1PctLowTimes100,
             metrics.sourceFrameTimeStdDevUs, metrics.sourceCurrentFpsTimes100, metrics.api);
 
+    if (ShouldFlushPerfMetricsCsvAfterFrame(frameNum)) {
+        fflush(file_);
+    }
+
     if (g_ActivePresentDebugSample) {
         g_ActivePresentDebugSample->csvWriteUs = static_cast<int32_t>(GetQpcUs() - writeStartUs);
     }

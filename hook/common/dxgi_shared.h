@@ -145,6 +145,17 @@ inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool thirdPartyOver
     return !thirdPartyOverlayLoaded || hasPresentDetourHooks;
 }
 
+inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable,
+                                                          bool trackedVtableMatchesCurrent,
+                                                          bool presentHookInstalled,
+                                                          bool present1HookInstalled) {
+    if (!hasReadableVtable) {
+        return false;
+    }
+
+    return !trackedVtableMatchesCurrent || !presentHookInstalled || !present1HookInstalled;
+}
+
 inline bool ShouldTreatEarlyPresentRecursionAsForwardable(bool hasPresentTrampoline, bool hasPresentBypass,
                                                           bool inWrapperPresent, bool isWrappedSwapChain,
                                                           bool streamlineFGRunning) {

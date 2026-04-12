@@ -46,12 +46,15 @@ Primary sources:
 - If you touch watchdog ownership or dump-trigger conditions, also verify that an immediate dump request targeting the current render/present thread is handled asynchronously instead of trying to suspend/capture that same thread inline.
 - If you touch Streamline stall detection, verify that top-level `Present1` traffic counts as forward progress alongside `Present`; otherwise `Present STALLED` can become a false positive on games/runtimes that switch entrypoints during DLSS activation.
 - If you touch Streamline startup-window or state-signal logic, verify that the startup transition window is only armed by fresh activation/handoff edges and cannot be kept alive indefinitely by steady-state active `GetState` / `SetOptions` polls.
+- If you touch dormant PostSL startup activation, verify both startup families explicitly: pure DLSS startup must be able to promote PostSL even when Streamline only emits a very short synthetic Present burst, while post-FSR DLSS startup still waits for the safer wrapper/direct bootstrap path before PostSL fully activates.
 - If you touch runtime-owned queue hook policy, verify both sides explicitly: native/runtime-owned FSR queues still avoid the old timing-sensitive hook path, while authoritative Streamline runtime-owned swapchain queues still expose enough ECL tracking for later DLSS handoffs.
 - If you touch create-swapchain queue capture or caller classification, verify that duplicate deep/inline/global capture of the same authoritative Streamline queue does not drop its hookable/runtime-owned identity, and also does not falsely re-arm the startup handoff window once the queue is already known.
+- If you touch DXGI Present-hook refresh or repair logic, verify that later runtime-created live swapchains can still re-anchor Present/Present1 interception when the active Present path moves to a different vtable after startup.
 - If you change how FG mode transitions are interpreted, verify both routing behavior and visible overlay status behavior.
 - If you change injection or overlay handoff behavior, verify the runtime flags and pseudo-overlay suppression path.
 - Prefer fast focused unit tests while iterating, then run broader coverage before considering the work complete.
 - After build or test infrastructure changes, verify both direct `unit_tests.exe` execution and the `python build.py --run-tests` path.
+- If you touch perf CSV durability, verify that `perf_metrics_*.csv` gains rows during long-running and hang/crash sessions instead of relying on a clean-process shutdown to flush buffered data.
 
 ## Useful Commands
 ```powershell

@@ -914,6 +914,21 @@ TEST(DXGISharedTest, SyntheticPostSLAdvancesDormantStartupOnlyWhenNormalFramePat
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, true));
 }
 
+TEST(DXGISharedTest, SyntheticPostSLStartupOnlyUsesRepeatedCallbackCountdownAfterFSRPhase) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(false));
+}
+
+TEST(DXGISharedTest, LivePresentHookPathRefreshesWhenCurrentSwapchainPathDiffersOrLostHooks) {
+    EXPECT_FALSE(DXGIShared::ShouldRefreshLivePresentHooksForSwapchainPath(false, true, true, true));
+
+    EXPECT_TRUE(DXGIShared::ShouldRefreshLivePresentHooksForSwapchainPath(true, false, true, true));
+    EXPECT_TRUE(DXGIShared::ShouldRefreshLivePresentHooksForSwapchainPath(true, true, false, true));
+    EXPECT_TRUE(DXGIShared::ShouldRefreshLivePresentHooksForSwapchainPath(true, true, true, false));
+
+    EXPECT_FALSE(DXGIShared::ShouldRefreshLivePresentHooksForSwapchainPath(true, true, true, true));
+}
+
 TEST(DXGISharedTest, PostSLWrapperBootstrapRequiresDirectPathAndStaysBlockedAfterFSRPhase) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(false, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(false, true, false));

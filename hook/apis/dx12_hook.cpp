@@ -6139,10 +6139,23 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
             int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
             if (cooldownLeft > 0) {
-                g_PostSLCooldownRemaining.store(cooldownLeft - 1, std::memory_order_release);
-                if (cooldownLeft > 1) {
-                    s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
-                    return;
+                if (ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(
+                        g_HadFSRFGPhase)) {
+                    g_PostSLCooldownRemaining.store(cooldownLeft - 1, std::memory_order_release);
+                    if (cooldownLeft > 1) {
+                        s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+                        return;
+                    }
+                } else {
+                    g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+                    static int s_immediateSyntheticStartupLogCount = 0;
+                    if (s_immediateSyntheticStartupLogCount < 10) {
+                        HookLogImportant(
+                            "DX12: PostSL synthetic startup bypassing callback countdown for pure DLSS runtime handoff "
+                            "(cooldown=%d)",
+                            cooldownLeft);
+                    }
+                    s_immediateSyntheticStartupLogCount++;
                 }
             }
 

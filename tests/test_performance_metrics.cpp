@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "../hook/common/overlay_metrics_publisher.h"
+#include "../hook/common/perf_logger.h"
 #include "../hook/common/performance_metrics.h"
 
 // Test fixture
@@ -194,4 +195,15 @@ TEST_F(PerformanceMetricsTest, OverlayPublisherResetsInactiveStateToBaseline) {
     EXPECT_FLOAT_EQ(metrics.GetFGBaseFPS(), 0.0f);
     EXPECT_EQ(metrics.GetFGMultiplier(), 1);
     EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
+}
+
+TEST(PerfLoggerTest, PerfMetricsCsvFlushPolicyKeepsEarlyAndPeriodicFramesDurable) {
+    EXPECT_TRUE(ShouldFlushPerfMetricsCsvAfterFrame(1));
+    EXPECT_TRUE(ShouldFlushPerfMetricsCsvAfterFrame(8));
+    EXPECT_TRUE(ShouldFlushPerfMetricsCsvAfterFrame(32));
+    EXPECT_TRUE(ShouldFlushPerfMetricsCsvAfterFrame(64));
+
+    EXPECT_FALSE(ShouldFlushPerfMetricsCsvAfterFrame(9));
+    EXPECT_FALSE(ShouldFlushPerfMetricsCsvAfterFrame(31));
+    EXPECT_FALSE(ShouldFlushPerfMetricsCsvAfterFrame(63));
 }

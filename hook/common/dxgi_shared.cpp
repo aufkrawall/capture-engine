@@ -758,6 +758,63 @@ static void DetectSLPresentHook() {
         "(%s JMP) instead of trampoline=%p.  SL FG chain will execute.",
         oPresent, isE9 ? "E9" : "FF25", oPresentTrampoline);
 }
+
+static void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* publicationSource) {
+    if (!isFirstHook) {
+        return;
+    }
+
+    static int64_t qpcFreq = 0;
+    if (qpcFreq == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        qpcFreq = f.QuadPart;
+    }
+
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    const int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+    g_DXGIPerfMetrics.Update(us);
+    ce::overlay_metrics::PublishOverlayFGMetrics(&g_DXGIPerfMetrics,
+                                                 {
+                                                     .effectiveFGActive = g_FGCompat.IsFGActive(),
+                                                     .runtimeMode = g_FGCompat.GetRuntimeMode(),
+                                                     .outputFPS = g_FGCompat.GetOutputFPS(),
+                                                     .baseFPS = g_FGCompat.GetBaseFPS(),
+                                                     .multiplier = g_FGCompat.GetFGMultiplier(),
+                                                     .publicationSource = publicationSource,
+                                                 });
+}
+
+static void RefreshLivePresentHooksForSwapchainIfNeeded(IDXGISwapChain* pSwapChain, const char* source) {
+    if (!pSwapChain || !IsReadableMemory(pSwapChain, sizeof(void*))) {
+        return;
+    }
+
+    void** vtable = *(void***)pSwapChain;
+    const bool hasReadableVtable = vtable && IsReadableMemory(vtable, 23 * sizeof(void*));
+    const bool trackedVtableMatchesCurrent = hasReadableVtable && s_hookedVTable == vtable;
+    const bool presentHookInstalled = hasReadableVtable && vtable[8] == (void*)DetourPresent;
+    const bool present1HookInstalled = hasReadableVtable && vtable[22] == (void*)DetourPresent1;
+
+    if (!DXGIShared::ShouldRefreshLivePresentHooksForSwapchainPath(hasReadableVtable, trackedVtableMatchesCurrent,
+                                                                   presentHookInstalled, present1HookInstalled)) {
+        return;
+    }
+
+    HookLogImportant(
+        "DXGIShared: Refreshing live Present hook path via %s swapchain %p (oldVtable=%p newVtable=%p hooked8=%d "
+        "hooked22=%d)",
+        source ? source : "runtime", pSwapChain, s_hookedVTable, vtable, presentHookInstalled ? 1 : 0,
+        present1HookInstalled ? 1 : 0);
+
+    InstallHooks(pSwapChain, true);
+    RepairVTableHooksIfNeeded();
+
+    if (IsSLInterposerLoaded() && !ce::fg_runtime::RuntimeModeUsesFSR(g_FGCompat.GetRuntimeMode())) {
+        DetectSLPresentHook();
+    }
+}
 }  // namespace
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
@@ -889,6 +946,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             postSLCallback(pSwapChain);
         }
 
+        if (api == APIType::D3D12) {
+            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline synthetic Present");
+        }
+
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
         if (presentBypass) {
             static std::atomic<int> s_streamlineSyntheticPresentLogCount{0};
@@ -974,6 +1035,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
             postSLCallback(pSwapChain);
+        }
+        if (api == APIType::D3D12) {
+            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "re-entrant Present");
         }
         static std::atomic<int> s_reentrantLogCount{0};
         int reentrantNum = s_reentrantLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1128,28 +1192,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
     }
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
-
-    static int64_t qpcFreq = 0;
-    if (qpcFreq == 0) {
-        LARGE_INTEGER f;
-        QueryPerformanceFrequency(&f);
-        qpcFreq = f.QuadPart;
-    }
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
-    int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-    if (isFirstHook) {
-        g_DXGIPerfMetrics.Update(us);
-        ce::overlay_metrics::PublishOverlayFGMetrics(&g_DXGIPerfMetrics,
-                                                     {
-                                                         .effectiveFGActive = g_FGCompat.IsFGActive(),
-                                                         .runtimeMode = g_FGCompat.GetRuntimeMode(),
-                                                         .outputFPS = g_FGCompat.GetOutputFPS(),
-                                                         .baseFPS = g_FGCompat.GetBaseFPS(),
-                                                         .multiplier = g_FGCompat.GetFGMultiplier(),
-                                                         .publicationSource = "DXGIShared::DetourPresent",
-                                                     });
-    }
+    UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent");
 
     if (!IsShuttingDown() && (oPresentTrampoline || oPresent)) {
         if (api == APIType::D3D12) {
@@ -1264,6 +1307,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             postSLCallback(pSwapChain);
         }
 
+        if (api == APIType::D3D12) {
+            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline synthetic Present1");
+        }
+
         PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
         if (present1Bypass) {
             static std::atomic<int> s_streamlineSyntheticPresent1LogCount{0};
@@ -1319,6 +1366,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
             postSLCallback(pSwapChain);
+        }
+        if (api == APIType::D3D12) {
+            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "re-entrant Present1");
         }
         static std::atomic<int> s_reentrantLogCount1{0};
         int reentrantNum1 = s_reentrantLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1413,6 +1463,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         }
     }
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
+    UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent1");
 
     if (api == APIType::D3D12) {
         HandleDX12ProcessFrame(pSwapChain, true);

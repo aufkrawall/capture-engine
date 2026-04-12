@@ -1045,6 +1045,15 @@ inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool p
     return streamlineFGRunning && !processFrameRecentlySeen;
 }
 
+inline bool ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(bool hadFSRFGPhase) {
+    // Post-FSR recovery still benefits from letting Streamline's recovered queue
+    // path stabilize across multiple runtime callbacks. Pure DLSS startup does
+    // not: some runtimes only emit a very short synthetic Present burst before
+    // switching to their live Present path, and counting down by callback can
+    // strand PostSL permanently inactive.
+    return hadFSRFGPhase;
+}
+
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
     return streamlineFGRunning && postSLConfirmedRendering;
 }
