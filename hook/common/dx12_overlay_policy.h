@@ -796,8 +796,10 @@ inline bool ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(bool hadFS
 }
 
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
-                                                       bool postSLActive, bool processFrameRecentlySeen) {
-    return startupActivationPending && streamlineFGRunning && !postSLActive && !processFrameRecentlySeen;
+                                                       bool postSLActive, bool processFrameRecentlySeen,
+                                                       bool useTopLevelHandoffWrapperProgress) {
+    return startupActivationPending && streamlineFGRunning && !postSLActive &&
+           (!processFrameRecentlySeen || useTopLevelHandoffWrapperProgress);
 }
 
 inline bool ShouldBootstrapPostSLOverlayState(bool streamlineFGRunning, bool postSLActive, bool overlayInit,
@@ -1066,6 +1068,11 @@ inline bool ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(bool had
     // switching to their live Present path, and counting down by callback can
     // strand PostSL permanently inactive.
     return hadFSRFGPhase;
+}
+
+inline bool ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
+    bool hadFSRFGPhase, bool startupTopLevelPresentConsumed, bool wrapperProgressObserved) {
+    return !hadFSRFGPhase && startupTopLevelPresentConsumed && wrapperProgressObserved;
 }
 
 inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(

@@ -55,6 +55,7 @@ struct SharedState {
     std::atomic<bool> inPresentHook{false};
     std::atomic<bool> fgRuntimeOwnsSwapchain{false};
     std::atomic<bool> streamlineStartupHandoffPending{false};
+    std::atomic<bool> streamlineStartupTopLevelPresentConsumed{false};
     std::atomic<ULONGLONG> streamlineStartupTransitionUntilMs{0};
 };
 
@@ -89,10 +90,12 @@ inline bool IsStreamlineStartupHandoffPending() {
 static constexpr ULONGLONG kStreamlineStartupTransitionGraceMs = 500;
 
 inline void ArmStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
+    g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
     g_SharedState.streamlineStartupTransitionUntilMs.store(GetTickCount64() + durationMs, std::memory_order_release);
 }
 
 inline void ClearStreamlineStartupTransitionWindow() {
+    g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
     g_SharedState.streamlineStartupTransitionUntilMs.store(0, std::memory_order_release);
 }
 
@@ -230,7 +233,8 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapCha
                                                              bool streamlineStartupHandoffInProgress,
                                                              bool presentOwnershipActive,
                                                              bool recentLargePresentGap,
-                                                             bool matchesExpectedPresentThread) {
+                                                             bool matchesExpectedPresentThread,
+                                                             bool startupTopLevelPresentAlreadyConsumed) {
     if (!(isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule)) {
         return false;
     }
@@ -241,10 +245,11 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapCha
     // synthetic bypass starves the normal Present path and PostSL never
     // bootstraps. Keep the synthetic route for true recursive/worker-thread
     // cases, but let large-gap startup-handoff Presents run as top-level
-    // Presents when no other Present currently owns the path and the call is
-    // still arriving on the expected game-present thread.
+    // Presents when no other Present currently owns the path, the call is still
+    // arriving on the expected game-present thread, and we have not already
+    // consumed that one-time startup bootstrap Present for the current handoff.
     if (streamlineStartupHandoffInProgress && recentLargePresentGap && !presentOwnershipActive &&
-        matchesExpectedPresentThread) {
+        matchesExpectedPresentThread && !startupTopLevelPresentAlreadyConsumed) {
         return false;
     }
 

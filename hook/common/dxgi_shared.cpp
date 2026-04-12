@@ -929,6 +929,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool matchesExpectedPresentThread = expectedPresentThreadId == 0 || expectedPresentThreadId == currentThreadId;
     const bool callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress);
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
+    const bool startupTopLevelPresentAlreadyConsumed =
+        g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
         streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive);
@@ -947,13 +949,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
     }
-    const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
+    bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
-        matchesExpectedPresentThread);
-    if (!streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 &&
-        streamlineFGRunning && streamlineStartupHandoffInProgress && recentLargePresentGap &&
-        matchesExpectedPresentThread) {
+        matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
+    const bool startupTopLevelCandidate = !streamlineSyntheticReentrant && callerFromStreamlineModule &&
+        api == APIType::D3D12 && streamlineFGRunning && streamlineStartupHandoffInProgress &&
+        recentLargePresentGap && matchesExpectedPresentThread;
+    bool allowTopLevelStartupPresent = false;
+    if (startupTopLevelCandidate) {
+        bool expected = false;
+        if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            allowTopLevelStartupPresent = true;
+        } else {
+            streamlineSyntheticReentrant = true;
+        }
+    }
+    if (allowTopLevelStartupPresent) {
         static std::atomic<int> s_streamlineStartupTopLevelLogCount{0};
         int logCount = s_streamlineStartupTopLevelLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
@@ -1314,6 +1327,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool matchesExpectedPresentThread = expectedPresentThreadId == 0 || expectedPresentThreadId == currentThreadId;
     const bool callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress);
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
+    const bool startupTopLevelPresentAlreadyConsumed =
+        g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
         streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive);
@@ -1332,13 +1347,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     }
-    const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
+    bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
-        matchesExpectedPresentThread);
-    if (!streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 &&
-        streamlineFGRunning && streamlineStartupHandoffInProgress && recentLargePresentGap &&
-        matchesExpectedPresentThread) {
+        matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
+    const bool startupTopLevelCandidate = !streamlineSyntheticReentrant && callerFromStreamlineModule &&
+        api == APIType::D3D12 && streamlineFGRunning && streamlineStartupHandoffInProgress &&
+        recentLargePresentGap && matchesExpectedPresentThread;
+    bool allowTopLevelStartupPresent = false;
+    if (startupTopLevelCandidate) {
+        bool expected = false;
+        if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            allowTopLevelStartupPresent = true;
+        } else {
+            streamlineSyntheticReentrant = true;
+        }
+    }
+    if (allowTopLevelStartupPresent) {
         static std::atomic<int> s_streamlineStartupTopLevelLogCount1{0};
         int logCount = s_streamlineStartupTopLevelLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {

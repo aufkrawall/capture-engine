@@ -147,14 +147,18 @@ TEST(DXGISharedTest, StreamlineRuntimeQueueAuthorityIsSeparateFromFreshHandoffSt
 
 TEST(DXGISharedTest, StreamlineGeneratedFramePresentUsesSyntheticReentrantRoutingOnlyForDX12FGCallers) {
     EXPECT_TRUE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, false, false, false, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, false, false, false, true,
+                                                                     false));
 
     EXPECT_FALSE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(false, true, true, false, false, false, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(false, true, true, false, false, false, true,
+                                                                     false));
     EXPECT_FALSE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, false, true, false, false, false, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, false, true, false, false, false, true,
+                                                                     false));
     EXPECT_FALSE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, false, false, false, false, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, false, false, false, false, true,
+                                                                     false));
 }
 
 TEST(DXGISharedTest, FFXPresentBypassesNormalRoutingOnlyDuringDX12StreamlineStartup) {
@@ -909,13 +913,14 @@ TEST(DXGISharedTest, PostSLLastWorkingQueueIgnoresTransientWrapperQueues) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRememberPostSLLastWorkingQueue(true));
 }
 
-TEST(DXGISharedTest, SyntheticPostSLAdvancesDormantStartupOnlyWhenNormalFramePathStops) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, false));
+TEST(DXGISharedTest, SyntheticPostSLAdvancesDormantStartupOnlyWhenFramePathStopsUnlessWrapperProgressProvesHandoff) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, true, true));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(false, true, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, false, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(false, true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, true, false));
 }
 
 TEST(DXGISharedTest, SyntheticPostSLStartupOnlyUsesRepeatedCallbackCountdownAfterFSRPhase) {
@@ -923,25 +928,44 @@ TEST(DXGISharedTest, SyntheticPostSLStartupOnlyUsesRepeatedCallbackCountdownAfte
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(false));
 }
 
+TEST(DXGISharedTest, SyntheticPostSLStartupCanUseWrapperProgressAfterTopLevelHandoffForPureDLSS) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
+        false, true, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
+        true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
+        false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
+        false, true, false));
+}
+
 TEST(DXGISharedTest, StreamlineStartupHandoffPresentUsesTopLevelPathAfterLargeGapWithoutPresentOwner) {
     EXPECT_FALSE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, true, false));
 
     EXPECT_TRUE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, true, true, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, true, true, true, false));
     EXPECT_TRUE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, false, false, true, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, false, false, true, true,
+                                                                     false));
     EXPECT_TRUE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, false, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, false, true,
+                                                                     false));
     EXPECT_TRUE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, false));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, false,
+                                                                     false));
+    EXPECT_TRUE(
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, true, true));
 
     EXPECT_FALSE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(false, true, true, true, false, true, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(false, true, true, true, false, true, true, false));
     EXPECT_FALSE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, false, true, true, false, true, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, false, true, true, false, true, true,
+                                                                     false));
     EXPECT_FALSE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, false, true, false, true, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, false, true, false, true, true,
+                                                                     false));
 }
 
 TEST(DXGISharedTest, StartupTransitionWindowClearsOnlyAfterConfirmedStablePostSLRendering) {

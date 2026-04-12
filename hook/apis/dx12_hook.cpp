@@ -153,6 +153,7 @@ static std::atomic<int> g_PostSLCooldownRemaining{0};
 static std::atomic<ULONGLONG> g_LastProcessFrameTickMs{0};
 static std::atomic<bool> g_PostSLSyntheticStartupActivationPending{false};
 static std::atomic<bool> g_PostSLSyntheticStartupTakeoverLogged{false};
+static std::atomic<int> g_PostSLSyntheticStartupWrapperProgressCount{0};
 static std::atomic<uint32_t> g_PostSLLifecycleEpoch{0};
 
 // Set to true when PostSLOverlayRender has confirmed it can render (i.e., re-entrant
@@ -3666,6 +3667,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_PostSLStallCounter.store(0, std::memory_order_release);
             g_PostSLStableFrameCount.store(0, std::memory_order_release);
             g_PostSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
+            g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
             int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
@@ -3695,6 +3697,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_PostSLStallCounter.store(0, std::memory_order_release);
             g_PostSLStableFrameCount.store(0, std::memory_order_release);
             g_PostSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
+            g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
             ResetPostSLLifecycleForTransition("DX12: Streamline FG ON transition", true);
@@ -3760,6 +3763,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_PostSLStallCounter.store(0, std::memory_order_release);
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
     g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     g_SLOffHeuristicGrace.store(600, std::memory_order_release);
@@ -6075,6 +6079,12 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     const ULONGLONG lastProcessFrameTickMs = g_LastProcessFrameTickMs.load(std::memory_order_acquire);
     const bool processFrameRecentlySeen = lastProcessFrameTickMs != 0 && nowMs >= lastProcessFrameTickMs &&
                                           (nowMs - lastProcessFrameTickMs) < kDormantProcessFrameThresholdMs;
+    const bool startupTopLevelPresentConsumed =
+        DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
+    const int startupWrapperProgressCount = g_PostSLSyntheticStartupWrapperProgressCount.load(std::memory_order_acquire);
+    const bool useTopLevelHandoffWrapperProgress =
+        ce::dx12_overlay_policy::ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
+            g_HadFSRFGPhase, startupTopLevelPresentConsumed, startupWrapperProgressCount > 0);
 
     // --- PostSL periodic stats logging ---
     int callNum = s_postSLCalls.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -6135,7 +6145,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     {
         if (ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
                 g_PostSLSyntheticStartupActivationPending.load(std::memory_order_acquire), cachedSLFGActive,
-                g_PostSLOverlayActive.load(std::memory_order_acquire), processFrameRecentlySeen)) {
+                g_PostSLOverlayActive.load(std::memory_order_acquire), processFrameRecentlySeen,
+                useTopLevelHandoffWrapperProgress)) {
             if (!g_PostSLSyntheticStartupTakeoverLogged.exchange(true, std::memory_order_acq_rel)) {
                 HookLogImportant(
                     "DX12: PostSL synthetic startup takeover — ProcessFrame dormant for %llums (cooldown=%d)",
@@ -6153,6 +6164,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
                         return;
                     }
+                } else if (useTopLevelHandoffWrapperProgress) {
+                    static int s_wrapperProgressActivationLogCount = 0;
+                    if (s_wrapperProgressActivationLogCount < 10) {
+                        HookLogImportant(
+                            "DX12: PostSL synthetic startup using wrapper ECL progress after top-level handoff "
+                            "(cooldown=%d progress=%d)",
+                            cooldownLeft, startupWrapperProgressCount);
+                    }
+                    s_wrapperProgressActivationLogCount++;
+                    g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 } else {
                     // Pure DLSS cold start: use a shorter stabilization period
                     // instead of bypassing entirely.  DLSS FG needs a few callbacks
@@ -6205,6 +6226,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
             g_PostSLOverlayActive.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+            g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
             HookLogImportant("DX12: PostSL synthetic startup activation complete — enabling PostSL rendering");
         }
@@ -12068,6 +12090,21 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                     if (s_wrapperLog++ < 10)
                         HookLogImportant("DX12: ECL captured SL wrapper queue %p (origGame=%p scQ=%p primaryQ=%p)",
                                          pThis, g_OriginalGameQueue, g_SwapchainQueue, primaryQ);
+                }
+            }
+
+            const bool pureDLSSStartupWrapperProgressCandidate =
+                g_PostSLSyntheticStartupActivationPending.load(std::memory_order_acquire) &&
+                !g_HadFSRFGPhase &&
+                DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire) &&
+                DXGIShared::IsStreamlineStartupTransitionWindowActive();
+            if (pureDLSSStartupWrapperProgressCandidate) {
+                int progressCount = g_PostSLSyntheticStartupWrapperProgressCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (progressCount <= 10 || progressCount == 50 || (progressCount % 500) == 0) {
+                    HookLogImportant(
+                        "DX12: PostSL synthetic startup observed wrapper ECL progress #%d after top-level handoff "
+                        "(queue=%p)",
+                        progressCount, pThis);
                 }
             }
         }
