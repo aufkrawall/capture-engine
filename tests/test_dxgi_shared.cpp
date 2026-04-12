@@ -145,6 +145,26 @@ TEST(DXGISharedTest, StreamlineRuntimeQueueAuthorityIsSeparateFromFreshHandoffSt
         ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(true, true, true));
 }
 
+TEST(DXGISharedTest, ExtendingStartupTransitionWindowDoesNotResetConsumedTopLevelBootstrap) {
+    DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
+    DXGIShared::g_SharedState.streamlineStartupTransitionUntilMs.store(0, std::memory_order_release);
+
+    DXGIShared::ArmStreamlineStartupTransitionWindow(10);
+    EXPECT_FALSE(DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire));
+
+    DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.store(true, std::memory_order_release);
+    const ULONGLONG beforeExtend =
+        DXGIShared::g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
+
+    DXGIShared::ExtendStreamlineStartupTransitionWindow();
+
+    EXPECT_TRUE(DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire));
+    EXPECT_GE(DXGIShared::g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire),
+              beforeExtend);
+
+    DXGIShared::ClearStreamlineStartupTransitionWindow();
+}
+
 TEST(DXGISharedTest, StreamlineGeneratedFramePresentUsesSyntheticReentrantRoutingOnlyForDX12FGCallers) {
     EXPECT_TRUE(
         DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, false, false, false, true,
@@ -1391,10 +1411,10 @@ TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilCo
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, true, false));
 
-    // The pure-DLSS top-level handoff + wrapper-progress family has stronger
-    // proof than the generic startup-window guard and must not spend its only
-    // decisive callback on this deferral.
-    EXPECT_FALSE(
+    // Wrapper queue progress alone does not prove Streamline's internal startup
+    // pipeline is settled. Even the pure-DLSS top-level handoff family must
+    // keep deferring real PostSL rendering until the startup window expires.
+    EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, true));
 
     // Outside startup window - never defer
@@ -1402,4 +1422,26 @@ TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilCo
         ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, false, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, true, false));
+}
+
+TEST(DXGISharedTest, PureDLSSStartupWrapperOnlyStallDumpRequiresStrongHalfArmedSignal) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+        false, true, 4, true, false, false, 1000, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+        false, true, 8, false, true, false, 1500, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+        true, true, 8, true, false, false, 1500, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+        false, false, 8, true, false, false, 1500, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+        false, true, 3, true, false, false, 1500, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+        false, true, 8, false, false, true, 1500, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+        false, true, 8, false, false, false, 1500, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+        false, true, 8, true, false, false, 999, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+        false, true, 8, true, false, false, 1500, true));
 }

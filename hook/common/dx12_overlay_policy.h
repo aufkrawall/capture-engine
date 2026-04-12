@@ -1118,6 +1118,30 @@ inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startup
     return startupTransitionWindowActive && !postSLConfirmedRendering;
 }
 
+inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(bool hadFSRFGPhase,
+                                                                         bool startupTopLevelPresentConsumed,
+                                                                         int wrapperProgressCount,
+                                                                         bool startupActivationPending,
+                                                                         bool postSLActive,
+                                                                         bool postSLConfirmedRendering,
+                                                                         ULONGLONG processFrameDormantMs,
+                                                                         bool dumpAlreadyRequested) {
+    if (dumpAlreadyRequested || hadFSRFGPhase || !startupTopLevelPresentConsumed) {
+        return false;
+    }
+
+    if (wrapperProgressCount < 4) {
+        return false;
+    }
+
+    const bool startupStillHalfArmed = startupActivationPending || (postSLActive && !postSLConfirmedRendering);
+    if (!startupStillHalfArmed) {
+        return false;
+    }
+
+    return processFrameDormantMs >= 1000;
+}
+
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
     return streamlineFGRunning && postSLConfirmedRendering;
 }

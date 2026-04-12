@@ -94,6 +94,17 @@ inline void ArmStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreaml
     g_SharedState.streamlineStartupTransitionUntilMs.store(GetTickCount64() + durationMs, std::memory_order_release);
 }
 
+inline void ExtendStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
+    const ULONGLONG extendedUntilMs = GetTickCount64() + durationMs;
+    ULONGLONG currentUntilMs =
+        g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
+
+    while (currentUntilMs < extendedUntilMs &&
+           !g_SharedState.streamlineStartupTransitionUntilMs.compare_exchange_weak(
+               currentUntilMs, extendedUntilMs, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    }
+}
+
 inline void ClearStreamlineStartupTransitionWindow() {
     g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
     g_SharedState.streamlineStartupTransitionUntilMs.store(0, std::memory_order_release);
