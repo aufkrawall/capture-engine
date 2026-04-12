@@ -18,4 +18,10 @@ bool IsDLSSFGRequestedViaStreamline();
 // stale slDLSSGGetState polling cannot immediately resurrect DLSS FG.
 void OnAuthoritativeFFXTakeover();
 
+// Forward any suppressed slDLSSGSetOptions(OFF) call that was buffered during
+// the startup transition window, now that the window has expired.  Called from
+// periodic check points (DetourPresent, GetState, etc.) to ensure deferred OFF
+// signals eventually reach Streamline.
+void FlushSuppressedSetOptionsOffIfNeeded();
+
 }  // namespace StreamlineHook

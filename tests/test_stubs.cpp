@@ -63,3 +63,8 @@ AppConfig* g_pLocalConfig = &g_LocalConfigInstance;
 bool IsProcessTerminating() {
     return false;
 }
+
+// Stubs for streamline_hook.cpp (StreamlineHook namespace)
+namespace StreamlineHook {
+void FlushSuppressedSetOptionsOffIfNeeded() {}
+}  // namespace StreamlineHook

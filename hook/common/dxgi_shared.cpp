@@ -1,5 +1,6 @@
 #include "dxgi_shared.h"
 #include "../../common/raii_helpers.h"
+#include "../apis/streamline_hook.h"
 #include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
@@ -1125,6 +1126,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (!g_SharedState.deviceRemovedFatal.load(std::memory_order_relaxed))
         g_RenderWatchdog.HeartbeatFromHelperThread();
 
+    // Periodic flush: forward any suppressed slDLSSGSetOptions(OFF) call that was
+    // buffered during the DLSS FG startup transition window now that the window
+    // has expired.  This ensures the real Streamline runtime eventually receives
+    // the OFF signal even if slDLSSGGetState/SetOptions calls are infrequent.
+    StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded();
+
     if (IsVulkanActive()) {
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
@@ -1498,6 +1505,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     // suppressing heartbeats lets the freeze watchdog fire and create a dump.
     if (!g_SharedState.deviceRemovedFatal.load(std::memory_order_relaxed))
         g_RenderWatchdog.HeartbeatFromHelperThread();
+
+    // Periodic flush: forward any suppressed slDLSSGSetOptions(OFF) call that was
+    // buffered during the DLSS FG startup transition window now that the window
+    // has expired.
+    StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded();
 
     if (IsVulkanActive()) {
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);

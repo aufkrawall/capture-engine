@@ -1,6 +1,6 @@
 # Frame Generation Switching
 
-Last cross-checked: 2026-04-12
+Last cross-checked: 2026-04-13
 
 Primary sources:
 - `AGENTS.md`

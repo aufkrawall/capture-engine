@@ -170,20 +170,32 @@ TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOn
 TEST(StreamlineRuntimePolicyTest, ReflexActivationOnlyRequestsPrepareDuringFsrOwnedHandoff) {
     EXPECT_TRUE(
         ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, false,
-                                                                                                  true));
+                                                                                                   true));
     EXPECT_TRUE(
         ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, false, true,
-                                                                                                  true));
+                                                                                                   true));
 
     EXPECT_FALSE(
         ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(false, true, false,
-                                                                                                  true));
+                                                                                                   true));
     EXPECT_FALSE(
         ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, false, false,
-                                                                                                  true));
+                                                                                                   true));
     EXPECT_FALSE(
         ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, false,
-                                                                                                  false));
+                                                                                                   false));
+}
+
+TEST(StreamlineRuntimePolicyTest, SuppressSetOptionsOffDuringStartupTransitionWindow) {
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(true, true));
+
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(true, false));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(false, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(false, false));
 }
 
 }  // namespace

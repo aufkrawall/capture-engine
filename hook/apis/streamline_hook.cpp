@@ -157,6 +157,12 @@ std::atomic<ULONGLONG> g_SuppressNewGetStateActivationUntilMs{0};
 constexpr ULONGLONG kAuthoritativeFFXTakeoverGetStateSuppressMs = 250;
 std::atomic<bool> g_BlockGetStateOnlyReactivationUntilExplicitSetOptions{false};
 
+std::mutex g_SuppressedOffMutex;
+bool g_SuppressedSetOptionsOffDuringStartup = false;
+slViewportHandle g_SuppressedOffViewport = {};
+slDLSSGOptions g_SuppressedOffOptions = {};
+uint32_t g_SuppressedOffViewportKey = 0;
+
 PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
 PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
@@ -708,6 +714,23 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         }
     }
 
+    {
+        std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
+        if (g_SuppressedSetOptionsOffDuringStartup && !DXGIShared::IsStreamlineStartupTransitionWindowActive() &&
+            g_Original_slDLSSGSetOptions) {
+            HookLogImportant(
+                "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via GetState — startup window expired "
+                "(viewport=%u)",
+                g_SuppressedOffViewportKey);
+            const slResult offResult = g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
+            if (offResult != kSlResultOk) {
+                HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via GetState returned %d",
+                                  offResult);
+            }
+            g_SuppressedSetOptionsOffDuringStartup = false;
+        }
+    }
+
     // SL may overwrite our Present vtable hook asynchronously during FG
     // activation (not necessarily inside slDLSSGSetOptions).  This check
     // runs every frame the game polls FG state and will re-patch if needed.
@@ -752,6 +775,35 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         }
     }
 
+    if (requestedEnabled) {
+        std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
+        if (g_SuppressedSetOptionsOffDuringStartup) {
+            HookLogImportant(
+                "Streamline Hook: Clearing suppressed slDLSSGSetOptions(OFF) due to explicit re-enable request "
+                "(viewport=%u) — Streamline never received the OFF, re-enable is consistent",
+                viewportKey);
+            g_SuppressedSetOptionsOffDuringStartup = false;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
+        if (g_SuppressedSetOptionsOffDuringStartup && !DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
+            if (g_Original_slDLSSGSetOptions) {
+                HookLogImportant(
+                    "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) — startup window expired "
+                    "(viewport=%u)",
+                    g_SuppressedOffViewportKey);
+                const slResult offResult =
+                    g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
+                if (offResult != kSlResultOk) {
+                    HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) returned %d", offResult);
+                }
+            }
+            g_SuppressedSetOptionsOffDuringStartup = false;
+        }
+    }
+
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     const bool runtimeModeIsFSRFG = runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
     if (ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(
@@ -760,7 +812,26 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         DX12_PrepareForStreamlineEnableTransition();
     }
 
-    const slResult result = g_Original_slDLSSGSetOptions(viewport, adjustedOptions);
+    const bool suppressOffCall = ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(
+        requestedDisabled, DXGIShared::IsStreamlineStartupTransitionWindowActive());
+
+    slResult result;
+    if (suppressOffCall) {
+        HookLogImportant(
+            "Streamline Hook: Suppressing slDLSSGSetOptions(OFF) during startup transition window (viewport=%u "
+            "mode=%u) — preventing Streamline FG de-initialization while startup handoff is fragile",
+            viewportKey, options.mode);
+        {
+            std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
+            g_SuppressedSetOptionsOffDuringStartup = true;
+            g_SuppressedOffViewport = viewport;
+            g_SuppressedOffOptions = adjustedOptions;
+            g_SuppressedOffViewportKey = viewportKey;
+        }
+        result = kSlResultOk;
+    } else {
+        result = g_Original_slDLSSGSetOptions(viewport, adjustedOptions);
+    }
 
     // SL may overwrite our vtable hooks during slDLSSGSetOptions (especially
     // when re-activating FG).  Verify and repair immediately.
@@ -1011,6 +1082,15 @@ void OnAuthoritativeFFXTakeover() {
         }
     }
 
+    {
+        std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
+        if (g_SuppressedSetOptionsOffDuringStartup) {
+            HookLogImportant(
+                "Streamline Hook: Clearing suppressed slDLSSGSetOptions(OFF) due to authoritative FFX takeover");
+            g_SuppressedSetOptionsOffDuringStartup = false;
+        }
+    }
+
     g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
                                                  std::memory_order_release);
     HookLogImportant(
@@ -1026,11 +1106,38 @@ void Shutdown() {
     g_ViewportCapabilityMax.clear();
     g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
     g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
+        g_SuppressedSetOptionsOffDuringStartup = false;
+    }
     g_FGCompat.SetStreamlineFGSignal(false);
     g_FGCompat.SetDLSSFGMultiplier(0);
     g_FGCompat.SetDLSSFGActive(false);
     g_FGCompat.SetStreamlineSupportPresent(false);
     DXGIShared::g_StreamlineFGRunning.store(false, std::memory_order_release);
+}
+
+void FlushSuppressedSetOptionsOffIfNeeded() {
+    std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
+    if (!g_SuppressedSetOptionsOffDuringStartup) {
+        return;
+    }
+    if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
+        return;
+    }
+    if (!g_Original_slDLSSGSetOptions) {
+        return;
+    }
+    HookLogImportant(
+        "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via periodic flush — startup window expired "
+        "(viewport=%u)",
+        g_SuppressedOffViewportKey);
+    const slResult offResult = g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
+    if (offResult != kSlResultOk) {
+        HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via periodic flush returned %d",
+                          offResult);
+    }
+    g_SuppressedSetOptionsOffDuringStartup = false;
 }
 
 }  // namespace StreamlineHook

@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-Last cross-checked: 2026-04-12
+Last cross-checked: 2026-04-13
 
 Purpose:
 - Track wiki edits.
@@ -13,6 +13,22 @@ Update rules:
 - If an area is churning, call that out explicitly so the next reader knows to re-check the code.
 
 ## Activity Timeline
+
+### 2026-04-13 - Suppress slDLSSGSetOptions(OFF) forwarding to Streamline during DLSS FG startup transition window
+
+- **Root cause**: In GTA V Enhanced bundle `installed/captureengine/logs/20260412_233910`, DLSS FG still froze (black window, watchdog dump) when the game later enabled DLSS FG. The crash dump placed the game's present thread inside `sl_dlss_g` throwing `std::_Throw_C_error` (threading/mutex family). The hook log showed a rapid `OFF->ON` activation at 23:40:50.408, the startup-handoff Present at 23:40:50.525, then `GetState(OFF)` and `SetOptions(OFF)` at 23:40:50.834 — both deferred internally by CE to keep `g_StreamlineFGRunning=ON`, but both also **forwarded to the real Streamline runtime via `g_Original_slDLSSGSetOptions`**. The real `sl_dlss_g` module received the OFF signal while its FG initialization was still in progress, entered a threading race, and threw the exception that froze the present thread. CE's internal deferral was correct, but the real Streamline call was not suppressed; Streamline started de-initializing FG while CE still routed Presents through the SL chain, creating a fatal inconsistent state.
+- **Fix**:
+  1. `hook/apis/streamline_hook.cpp` now suppresses the real `g_Original_slDLSSGSetOptions(viewport, adjustedOptions)` call when mode is OFF and the DLSS FG startup transition window is active. Instead of forwarding the OFF command to Streamline, the hook returns `kSlResultOk` immediately and buffers the suppressed OFF request (viewport + options) for later forwarding.
+  2. When a subsequent `slDLSSGSetOptions(mode=ON)` arrives (the re-enable during churn), the buffered OFF is cleared because Streamline never received the OFF — the ON call is consistent with Streamline's current state.
+  3. When the startup transition window expires while a buffered OFF is still pending (no re-enable arrived), the buffered OFF is forwarded to Streamline on the next `slDLSSGGetState` or `slDLSSGSetOptions` call, and also via a periodic flush in `DetourPresent`/`DetourPresent1`.
+  4. `hook/common/streamline_runtime_policy.h` now exposes `ShouldSuppressSetOptionsOffDuringStartupTransitionWindow()` so the suppression policy is explicit and testable.
+  5. `tests/test_streamline_runtime_policy.cpp` now covers the new policy seam.
+- **Why this is generic**: This is not GTA-specific. Any Streamline DLSS FG runtime can emit rapid `OFF->ON` churn during startup initialization. If CE forwards the OFF signal to Streamline during this fragile window, `sl_dlss_g` can enter a threading race and throw an exception while the present thread is still inside Streamline's Present hook. Suppressing the real OFF call during the startup window prevents Streamline from starting de-initialization while its FG pipeline is still fragile, which is the correct generic behavior.
+- **Verification**:
+  - Ran `python build.py --incremental --skip-updates --run-tests`. Build completed successfully and all 552 tests passed (1 new `StreamlineRuntimePolicyTest.SuppressSetOptionsOffDuringStartupTransitionWindow` test added).
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `hook/apis/streamline_hook.cpp`, `hook/apis/streamline_hook.h`, `hook/common/streamline_runtime_policy.h`, `hook/common/dxgi_shared.cpp`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_stubs.cpp`, `installed/captureengine/logs/20260412_233910/hook_debug.log`, `installed/captureengine/logs/20260412_233910/GTA5_Enhanced.exe_FREEZE_2026-04-12_23-40-51_899.dmp`.
+- Stale-risk note: Re-check this family whenever `slDLSSGSetOptions` hook handling changes or when the startup transition window duration or deferral semantics change. If a future trace again shows `sl_dlss_g` throwing `_Throw_C_error` right after a startup OFF signal, verify first that the real OFF call is still being suppressed during the startup window.
 
 ### 2026-04-12 - Return promoted Streamline startup-handoff Presents through the bypass/original DXGI Present path
 - **Root cause refinement**: In the GTA V Enhanced bundle `installed/captureengine/logs/20260412_225856`, the previous callback-dormancy fix was clearly in effect: CE promoted only one startup-handoff Present, `DX12: PostSL gated callback deferred until startup transition window expires` fired on the first synthetic callback, wrapper ECL progress kept advancing, and the new early startup-stall dump again captured the same `sl_dlss_g` / `std::_Throw_C_error` family. That narrowed the remaining bug to the top-level handoff Present itself. Source inspection showed why: `hook/common/dxgi_shared.cpp` intentionally let that one Streamline-originated Present escape the synthetic route so CE could run the normal top-level `ProcessFrame` path, but after that processing `DetourPresent` still used the normal `s_slRoutingActive` fast-path and called `oPresent` again. Because the promoted call had already entered from Streamline's external Present chain, CE was feeding the same handoff Present back through Streamline a second time instead of returning through the bypass/original DXGI Present path.

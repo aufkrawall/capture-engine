@@ -146,4 +146,9 @@ inline bool ShouldRequestStreamlineEnablePreparationOnReflexActivation(bool refl
            IsLiveFSRRuntimeHandoffSource(currentlyAuthoritativeFSRActive, currentRuntimeModeIsFSRFG);
 }
 
+inline bool ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(bool requestedDisabled,
+                                                                        bool startupTransitionWindowActive) {
+    return requestedDisabled && startupTransitionWindowActive;
+}
+
 }  // namespace ce::streamline_runtime_policy

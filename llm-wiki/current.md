@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-04-12
+Last cross-checked: 2026-04-13
 
 Primary sources:
 - `llm-wiki/log.md`
@@ -41,6 +41,7 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 - DX12 / FG startup churn and queue ownership remain high-risk and change frequently.
 - Inline hook correctness is still a sensitive subsystem; use `trace` when debugging trampoline relocation or byte-level hook installs.
 - Session bundles under `installed/captureengine/logs/<session>` now benefit from a compact `session_manifest.txt` entrypoint.
+- The real `slDLSSGSetOptions(mode=OFF)` call is now suppressed during the DLSS FG startup transition window to prevent Streamline from de-initializing FG during fragile initialization. This is the newest and most important fix for the GTA V Enhanced DLSS FG freeze.
 
 ## Open Questions / Stale-Risk
 - Re-check this page whenever logging controls, session bundle layout, or the wiki read-order guidance changes.
