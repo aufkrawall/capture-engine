@@ -14,6 +14,23 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-12 - Archive session-local CE symbols and upgrade direct dump richness with compatibility fallbacks
+- **Gap addressed**: Even after adding native PDB emission, later dump analysis still depended on the current installed binaries matching the original crash session. Also, CE's direct `MiniDumpWriteDump` paths were still using relatively lean dump flag sets compared with what is useful for real crash and hang diagnosis.
+- **Change**:
+  1. `common/crash_handler.cpp` now archives the current CE runtime PE/PDB set into `<dump-dir>\symbols\captureengine\` whenever the crash dump directory is set, so session dumps can be analyzed against a stable local symbol snapshot later.
+  2. `common/crash_dump_policy.h` now centralizes richer direct-dump flag sets for crash, assert, and freeze paths while explicitly keeping `MiniDumpWithFullMemory` out of the always-on direct dump path.
+  3. `common/crash_handler.cpp` now tries a richer primary dump first, then a compatibility dump, then normal fallback forms if the richer combination is rejected in a particular target process.
+  4. `hook/common/freeze_watchdog.cpp` now uses the same richer-first / compatibility-fallback pattern for watchdog-triggered freeze dumps instead of a single fixed lean dump type.
+  5. `analysis/analyze_dump.ps1` now prefers dump-local archived symbols under the dump directory before falling back to the repo's current installed outputs.
+- **Why this is generic**: The need to preserve exact matching symbols and to capture more thread/module/process metadata is not game-specific. Any later rebuild can invalidate repo-local symbol matching for an older dump, and any crash or hang investigation benefits from thread info, unloaded modules, handle data, and full-memory metadata even when full raw process memory is intentionally not captured.
+- **Verification**:
+  - Ran `python build.py --incremental --run-tests --skip-updates`. Build completed successfully and all 530 tests passed.
+  - Added `tests/test_crash_dump_policy.cpp` coverage for the new richer dump flag sets and the runtime-artifact archive filter.
+  - Verified `analysis/analyze_dump.ps1` now includes `<dump-dir>\symbols\captureengine` ahead of repo-local symbol directories.
+- Pages touched: `regression-testing-and-logging.md`, `log.md`.
+- Source files checked: `common/crash_handler.cpp`, `common/crash_handler.h`, `common/crash_dump_policy.h`, `hook/common/freeze_watchdog.cpp`, `analysis/analyze_dump.ps1`, `tests/test_crash_dump_policy.cpp`.
+- Stale-risk note: Re-check this area whenever dump flag policy, session log directory routing, or archived-symbol layout changes. If a future dump no longer resolves against its own session-local symbols, revisit the `SetCrashDumpDirectory()` archive path and analyzer symbol-search order first.
+
 ### 2026-04-12 - Add native clang/lld PDB emission for Windows builds and a repo-local CDB dump helper
 - **Gap addressed**: Windows builds already carried embedded debug metadata, but they did not emit real `.pdb` files. That left `cdb.exe`, WinDbg, and Visual Studio with weaker symbol resolution than the existing clang/lld toolchain can provide.
 - **Change**:

@@ -1,11 +1,11 @@
 #include "crash_handler.h"
-#include <dbghelp.h>
+#include "crash_dump_policy.h"
 #include <direct.h>
 #include <errno.h>
-#include <windows.h>
 #include <atomic>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,11 +24,108 @@ static std::atomic<int> g_RPCDisconnectedExceptionCount{0};
 static std::atomic<int> g_RPCServerUnavailableExceptionCount{0};
 static std::atomic<int> g_ENoInterfaceExceptionCount{0};
 static std::atomic<int> g_BreakpointExceptionCount{0};
+static std::mutex g_SymbolArchiveMutex;
 typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
-                                        PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
-                                        PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
-                                        PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
+                                         PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
+                                         PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
+                                         PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
 static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
+
+namespace {
+
+std::filesystem::path GetCurrentCrashHandlerModulePath() {
+    HMODULE hModule = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(&SetCrashDumpDirectory), &hModule) ||
+        !hModule) {
+        return {};
+    }
+
+    char modulePath[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameA(hModule, modulePath, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return {};
+    }
+
+    return std::filesystem::path(modulePath);
+}
+
+std::filesystem::path BuildCrashSymbolArchiveDir(const std::string& dumpDir) {
+    return std::filesystem::path(dumpDir) / ce::crash_dump_policy::kSymbolArchiveDirName /
+           ce::crash_dump_policy::kCaptureEngineArchiveDirName;
+}
+
+void WriteCrashSymbolArchiveManifestIfMissing(const std::filesystem::path& archiveDir,
+                                              const std::filesystem::path& sourceDir,
+                                              const std::filesystem::path& modulePath) {
+    const std::filesystem::path manifestPath = archiveDir / ce::crash_dump_policy::kSymbolArchiveManifestFileName;
+    if (std::filesystem::exists(manifestPath)) {
+        return;
+    }
+
+    FILE* manifest = fopen(manifestPath.string().c_str(), "w");
+    if (!manifest) {
+        return;
+    }
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    fprintf(manifest,
+            "archived_at=%04u-%02u-%02u %02u:%02u:%02u.%03u\nprocess_name=%s\npid=%lu\nmodule_path=%s\n"
+            "source_dir=%s\n",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, g_ProcessName,
+            GetCurrentProcessId(), modulePath.string().c_str(), sourceDir.string().c_str());
+    fclose(manifest);
+}
+
+void ArchiveInstalledCrashArtifactsForDumpDirectory(const std::string& dumpDir) {
+    if (dumpDir.empty()) {
+        return;
+    }
+
+    const std::filesystem::path modulePath = GetCurrentCrashHandlerModulePath();
+    const std::filesystem::path sourceDir = modulePath.parent_path();
+    if (sourceDir.empty() || !std::filesystem::exists(sourceDir)) {
+        return;
+    }
+
+    const std::filesystem::path archiveDir = BuildCrashSymbolArchiveDir(dumpDir);
+    std::error_code ec;
+    std::lock_guard<std::mutex> lock(g_SymbolArchiveMutex);
+    std::filesystem::create_directories(archiveDir, ec);
+    if (ec) {
+        return;
+    }
+
+    WriteCrashSymbolArchiveManifestIfMissing(archiveDir, sourceDir, modulePath);
+
+    for (const auto& entry : std::filesystem::directory_iterator(sourceDir, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || ec) {
+            ec.clear();
+            continue;
+        }
+
+        const std::string fileName = entry.path().filename().string();
+        if (!ce::crash_dump_policy::ShouldArchiveInstalledCrashArtifactFileName(fileName.c_str())) {
+            continue;
+        }
+
+        const std::filesystem::path destinationPath = archiveDir / entry.path().filename();
+        if (std::filesystem::exists(destinationPath)) {
+            continue;
+        }
+
+        std::filesystem::copy_file(entry.path(), destinationPath, std::filesystem::copy_options::none, ec);
+        if (ec) {
+            ec.clear();
+        }
+    }
+}
+
+}  // namespace
 
 static int IncrementExceptionCount(std::atomic<int>& counter) {
     return counter.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -124,8 +221,11 @@ static void RegisterWithWER() {
 }
 
 void SetCrashDumpDirectory(const std::string& dir) {
-    std::lock_guard<std::mutex> lock(g_DumpDirMutex);
-    g_DumpDir = dir;
+    {
+        std::lock_guard<std::mutex> lock(g_DumpDirMutex);
+        g_DumpDir = dir;
+    }
+    ArchiveInstalledCrashArtifactsForDumpDirectory(dir);
 }
 
 void SetCrashProcessName(const char* name) {
@@ -221,8 +321,7 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
         mdei.ExceptionPointers = params->pExceptionPointers;
         mdei.ClientPointers = FALSE;
 
-        MINIDUMP_TYPE primaryType =
-            (MINIDUMP_TYPE)(MiniDumpNormal | MiniDumpWithDataSegs | MiniDumpWithIndirectlyReferencedMemory);
+        const MINIDUMP_TYPE primaryType = ce::crash_dump_policy::kRichCrashDumpType;
 
         struct DumpAttempt {
             MINIDUMP_TYPE type;
@@ -231,9 +330,10 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
         };
 
         const DumpAttempt attempts[] = {
-            {primaryType, true, "primary"},
-            {(MINIDUMP_TYPE)MiniDumpNormal, true, "fallback-normal"},
-            {(MINIDUMP_TYPE)MiniDumpNormal, false, "fallback-no-exception"},
+            {primaryType, true, "rich-primary"},
+            {ce::crash_dump_policy::kCompatibilityCrashDumpType, true, "compat-primary"},
+            {ce::crash_dump_policy::kMinimalDumpType, true, "fallback-normal"},
+            {ce::crash_dump_policy::kMinimalDumpType, false, "fallback-no-exception"},
         };
         const size_t attemptCount = sizeof(attempts) / sizeof(attempts[0]);
 
@@ -443,7 +543,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             TraceCrash(loc);
         }
 
-        // Quick inline dump — MiniDumpNormal only, no worker thread / timeout.
+        // Quick inline dump: richer than MiniDumpNormal, but still synchronous and
+        // lightweight enough for assert/terminate paths.
         if (g_pMiniDumpWriteDump) {
             SYSTEMTIME st;
             GetLocalTime(&st);
@@ -460,8 +561,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
                 mdei.ExceptionPointers = pExceptionPointers;
                 mdei.ClientPointers = FALSE;
 
-                if (g_pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mdei, NULL,
-                                         NULL)) {
+                if (g_pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
+                                         ce::crash_dump_policy::kQuickAssertDumpType, &mdei, NULL, NULL)) {
                     TraceCrash("Quick assert dump written");
                     char msg[256];
                     snprintf(msg, sizeof(msg), "Assert dump: %s", dumpPath);

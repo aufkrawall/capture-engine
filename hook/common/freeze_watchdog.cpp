@@ -6,7 +6,10 @@
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
+#include "crash_handler.h"
+#include "crash_dump_policy.h"
 #include "dxgi_shared.h"
 #include "fg_detection.h"
 #include "hook_common.h"
@@ -633,13 +636,35 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
     mei.ExceptionPointers = hasContext ? &exceptionPointers : nullptr;
     mei.ClientPointers = FALSE;
 
-    // Include thread info and handle data for debugging freezes
-    MINIDUMP_TYPE dumpType =
-        static_cast<MINIDUMP_TYPE>(MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
-                                   MiniDumpWithIndirectlyReferencedMemory);
+    struct DumpAttempt {
+        MINIDUMP_TYPE type;
+        const char* label;
+    };
 
-    BOOL success = pMiniDumpWriteDump_(hProcess, processId, hFile, dumpType, mei.ExceptionPointers ? &mei : nullptr,
-                                       nullptr, nullptr);
+    const DumpAttempt attempts[] = {
+        {ce::crash_dump_policy::kRichFreezeDumpType, "rich-primary"},
+        {ce::crash_dump_policy::kCompatibilityFreezeDumpType, "compat-primary"},
+        {ce::crash_dump_policy::kMinimalDumpType, "fallback-normal"},
+    };
+
+    BOOL success = FALSE;
+    DWORD err = ERROR_SUCCESS;
+    for (size_t i = 0; i < std::size(attempts); ++i) {
+        HookLogImportant("FreezeWatchdog: Dump attempt %zu/%zu (%s)", i + 1, std::size(attempts),
+                         attempts[i].label);
+        success = pMiniDumpWriteDump_(hProcess, processId, hFile, attempts[i].type,
+                                      mei.ExceptionPointers ? &mei : nullptr, nullptr, nullptr);
+        if (success) {
+            break;
+        }
+
+        err = GetLastError();
+        HookLogImportant("FreezeWatchdog: Dump attempt failed (%s, error=%lu)", attempts[i].label, err);
+        if (i + 1 < std::size(attempts)) {
+            SetFilePointer(hFile, 0, nullptr, FILE_BEGIN);
+            SetEndOfFile(hFile);
+        }
+    }
 
     CloseHandle(hFile);
 
@@ -648,7 +673,6 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
         OutputDebugStringA(logMsg);
         HookLogImportant("FreezeWatchdog: Dump created at %s", dumpPath.c_str());
     } else {
-        DWORD err = GetLastError();
         snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] FAILED to write dump, error=%lu\n", err);
         OutputDebugStringA(logMsg);
         HookLogImportant("FreezeWatchdog: Dump creation failed at %s (error=%lu)", dumpPath.c_str(), err);

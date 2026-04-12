@@ -70,8 +70,10 @@ powershell -ExecutionPolicy Bypass -File .\analysis\analyze_dump.ps1 .\installed
 
 ## Dump Analysis Notes
 - Windows-host builds now emit sidecar `.pdb` files via clang CodeView debug info plus `lld` PDB emission, so `cdb.exe`, WinDbg, and Visual Studio can load native symbols without switching the build to MSVC.
-- `analysis/analyze_dump.ps1` points `cdb.exe` at repo-local symbol locations first: `installed/captureengine`, `tests`, and `installed/testapp`.
+- `analysis/analyze_dump.ps1` now prefers dump-local archived symbols under `<dump-dir>\symbols\captureengine` first, then falls back to repo-local symbol locations in `installed/captureengine`, `tests`, and `installed/testapp`.
 - The helper also adds a Microsoft symbol-server cache under `build/symbols-cache` by default so system DLL frames resolve more reliably.
+- `SetCrashDumpDirectory()` now snapshots the current CE runtime PE/PDB set into `<session-log-dir>\symbols\captureengine\` so later dump analysis is not tied to whatever binaries happen to be installed after future rebuilds.
+- Direct CE crash dumps now use richer `MiniDumpWriteDump` flag sets first, including thread info, unloaded modules, handle data, process-thread data, and full-memory metadata, with compatibility fallbacks if a target process rejects the richer combination.
 - Legacy standalone `.dbg` files are not produced; `.pdb` is now the intended Windows symbol format in this repo.
 
 ## Logging Guidance
