@@ -7700,6 +7700,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
         const bool allowScQueueVirtualSubmit =
             ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(g_HadFSRFGPhase, scQueueDiffers);
+        const bool preferSelectedSwapchainQueueDirectSubmitForPureDLSS =
+            ce::dx12_overlay_policy::ShouldUseSelectedSwapchainQueueDirectSubmitForPureDLSS(
+                g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, selectedQueueOrigECL != nullptr,
+                selectedQueueOrigECLMatchesRealECL);
 
         const bool useWrapperSubmitAfterFSR = ce::dx12_overlay_policy::ShouldUsePostSLWrapperSubmitAfterFSR(
             g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue, slQueue != nullptr,
@@ -7764,6 +7768,22 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                     s_postFSRDirectSelectedQueueLog, queue, scQueue, liveSLWrapperQueue);
             }
             s_postFSRDirectSelectedQueueLog++;
+        } else if (preferSelectedSwapchainQueueDirectSubmitForPureDLSS) {
+            // Pure-DLSS startup/runtime path: when the live swapchain queue already
+            // resolves to the real/original D3D12 ECL entrypoint, avoid bouncing
+            // back through the queue's current virtual dispatch.
+            submittedQueue = queue;
+            selectedQueueOrigECL(queue, 1, lists);
+            usedOrigECL = true;
+
+            static int s_pureDLSSDirectScQueueLog = 0;
+            if (s_pureDLSSDirectScQueueLog < 10 || (s_pureDLSSDirectScQueueLog % 200) == 0) {
+                HookLogImportant(
+                    "DX12: PostSL pure-DLSS direct scQueue submit #%d on %p "
+                    "(origECL matches realECL, latestWrapper=%p)",
+                    s_pureDLSSDirectScQueueLog, queue, liveSLWrapperQueue);
+            }
+            s_pureDLSSDirectScQueueLog++;
         } else if (allowScQueueVirtualSubmit) {
             // Direct submission on scQueue — backbuffers belong to this queue.
             // Bypass SL's wrapper entirely (routes to origGame → wrong queue).

@@ -862,6 +862,20 @@ inline bool ShouldUsePostSLScQueueVirtualSubmit(bool hadFSRFGPhase, bool scQueue
     return scQueueDiffers && !hadFSRFGPhase;
 }
 
+inline bool ShouldUseSelectedSwapchainQueueDirectSubmitForPureDLSS(bool hadFSRFGPhase,
+                                                                   bool selectedQueueIsSwapchainQueue,
+                                                                   bool hasSelectedQueueOrigECL,
+                                                                   bool selectedQueueOrigECLMatchesRealECL) {
+    // Pure-DLSS startup can reach a state where the selected live swapchain queue
+    // already exposes the real/original D3D12 ECL entrypoint directly. In that
+    // case, routing PostSL through the queue's current virtual dispatch needlessly
+    // re-enters the hooked path and can perturb Streamline's startup Present path.
+    // Prefer the direct/original ECL submit instead. Post-FSR has its own more
+    // conservative routing/probe logic and is handled elsewhere.
+    return !hadFSRFGPhase && selectedQueueIsSwapchainQueue && hasSelectedQueueOrigECL &&
+           selectedQueueOrigECLMatchesRealECL;
+}
+
 inline bool ShouldLatchFSRFGHistory(bool fsrFGApiActive, bool sawAuthoritativeFSRRuntimeTraffic) {
     return fsrFGApiActive || sawAuthoritativeFSRRuntimeTraffic;
 }
