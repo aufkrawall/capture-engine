@@ -3676,6 +3676,13 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 "DX12: Streamline FG ON — re-enabling dormant PostSL callback for startup routing "
                 "(churn re-activation, cooldown=%d)",
                 g_PostSLCooldownRemaining.load(std::memory_order_relaxed));
+            // Re-arm the startup transition window: churn re-activation means
+            // DLSS FG is still in its initialization dance (game bouncing
+            // ON/OFF/ON).  The original window from the first ON may have expired,
+            // leaving no protection for OFF signals during this new cycle.
+            DXGIShared::ArmStreamlineStartupTransitionWindow();
+            HookLogImportant("DX12: Streamline FG ON churn — re-armed startup transition window");
+            ResetPostSLLifecycleForTransition("DX12: Streamline FG ON churn re-activation", true);
         } else {
             SetPostSLCallbackInstalled(true, "DX12: Streamline FG ON");
             HookLogImportant("DX12: Streamline FG ON — pre-armed PostSL callback for startup routing");
@@ -6147,15 +6154,28 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                         return;
                     }
                 } else {
-                    g_PostSLCooldownRemaining.store(0, std::memory_order_release);
-                    static int s_immediateSyntheticStartupLogCount = 0;
-                    if (s_immediateSyntheticStartupLogCount < 10) {
+                    // Pure DLSS cold start: use a shorter stabilization period
+                    // instead of bypassing entirely.  DLSS FG needs a few callbacks
+                    // to initialize its internal pipeline (queue setup, mutex state,
+                    // fence tracking) before our ECL can safely land on its queue.
+                    // Without this, the very first PostSL render can corrupt DLSS FG
+                    // state and cause a hang (observed in GTA V Enhanced).
+                    constexpr int kPureDLSSMinCooldown = 8;
+                    int clamped = std::min(cooldownLeft, kPureDLSSMinCooldown);
+                    int remaining = clamped > 0 ? clamped - 1 : 0;
+                    g_PostSLCooldownRemaining.store(remaining, std::memory_order_release);
+                    static int s_pureDLSSCooldownLogCount = 0;
+                    if (s_pureDLSSCooldownLogCount < 10) {
                         HookLogImportant(
-                            "DX12: PostSL synthetic startup bypassing callback countdown for pure DLSS runtime handoff "
-                            "(cooldown=%d)",
-                            cooldownLeft);
+                            "DX12: PostSL synthetic startup reduced cooldown for pure DLSS cold start "
+                            "(original=%d clamped=%d remaining=%d)",
+                            cooldownLeft, clamped, remaining);
                     }
-                    s_immediateSyntheticStartupLogCount++;
+                    s_pureDLSSCooldownLogCount++;
+                    if (clamped > 1) {
+                        s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+                        return;
+                    }
                 }
             }
 
@@ -6251,13 +6271,43 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Observed: first ECL on origGame queue after FSR→DLSS switch causes
     // DEVICE_REMOVED, even with correct queue and no cross-queue sync.
     // Waiting ~30 frames lets SL's FG pipeline establish its internal state.
+    //
+    // Cold-start DLSS (epoch 1): a shorter warmup gives DLSS FG time to initialize
+    // its internal pipeline (queue setup, mutex state, fence tracking) before our
+    // first ECL submission.  Without this, the very first PostSL render can corrupt
+    // DLSS FG's state and cause a hang/crash (observed in GTA V Enhanced).
     constexpr int kPostSLReactivationWarmup = 30;
-    if (s_reactivationEpoch > 1 && s_callsSinceReactivation <= kPostSLReactivationWarmup) {
+    constexpr int kPostSLColdStartWarmup = 15;
+    const int warmupThreshold = (s_reactivationEpoch > 1) ? kPostSLReactivationWarmup : kPostSLColdStartWarmup;
+    if (s_callsSinceReactivation <= warmupThreshold) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
-        if (s_callsSinceReactivation <= 5 || s_callsSinceReactivation == kPostSLReactivationWarmup) {
-            HookLogImportant("DX12: PostSL warm-up after reactivation epoch=%d frame=%d/%d", s_reactivationEpoch,
-                             s_callsSinceReactivation, kPostSLReactivationWarmup);
+        if (s_callsSinceReactivation <= 5 || s_callsSinceReactivation == warmupThreshold) {
+            HookLogImportant("DX12: PostSL warm-up after reactivation epoch=%d frame=%d/%d (coldStart=%d)",
+                             s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold,
+                             s_reactivationEpoch <= 1 ? 1 : 0);
         }
+        return;
+    }
+
+    // Startup transition window rendering gate: while the startup transition
+    // window is active, DLSS FG is still initializing its internal pipeline.
+    // Submitting ECL on the SL-owned swapchain queue during this phase can
+    // corrupt DLSS FG's internal state (mutex tracking, fence state), leading
+    // to hangs/crashes.  Wait for the window to expire before submitting GPU work.
+    // Once PostSL has confirmed stable rendering (from a previous cycle), this
+    // gate no longer applies — the pipeline is proven stable.
+    if (ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(
+            DXGIShared::IsStreamlineStartupTransitionWindowActive(),
+            g_PostSLConfirmedRendering.load(std::memory_order_acquire))) {
+        s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+        static int s_startupWindowGuardLog = 0;
+        if (s_startupWindowGuardLog < 10 || (s_startupWindowGuardLog % 200) == 0) {
+            HookLogImportant(
+                "DX12: PostSL SKIP — startup transition window active, deferring ECL until DLSS FG stabilizes "
+                "(epoch=%d call#=%d)",
+                s_reactivationEpoch, s_callsSinceReactivation);
+        }
+        s_startupWindowGuardLog++;
         return;
     }
 

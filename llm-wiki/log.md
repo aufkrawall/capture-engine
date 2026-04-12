@@ -14,6 +14,18 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-12 - Pure DLSS cold-start layered stabilization for PostSL activation timing
+- **Root cause**: In `installed/captureengine/logs/20260412_181616`, GTA V Enhanced DLSS FG froze when activating from cold start (no prior FSR FG). The crash dump lands inside `sl_dlss_g` throwing `std::_Throw_C_error` (threading/mutex). PostSL rendered its first ECL on the SL-owned swapchain queue just 149ms after DLSS FG activation. Four layered timing gaps: (1) `ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(hadFSR=false)` returned false, bypassing 60-frame cooldown to 0; (2) `s_reactivationEpoch > 1` gate skipped first-epoch warmup; (3) startup transition window not re-armed on churn re-activation; (4) no rendering gate during startup window.
+- **Fix**: Four layered corrections in `dx12_hook.cpp` and `dx12_overlay_policy.h`:
+  1. 15-frame cold-start warmup for first activation epoch (`kPostSLColdStartWarmup`).
+  2. Reduced minimum cooldown of 8 for pure DLSS instead of bypass to 0 (`kPureDLSSMinCooldown`).
+  3. Re-arm startup transition window + lifecycle reset on FG churn re-activation (ON when callback already installed).
+  4. New policy `ShouldDeferPostSLRenderingDuringStartupTransitionWindow` gates ECL submission until window expires or PostSL confirmed rendering.
+- **Verification**: Build succeeded, 542 tests passed (new test `DXGISharedTest.PostSLRenderingDeferredDuringStartupTransitionWindowUntilConfirmed` added).
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `hook/apis/dx12_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260412_181616/hook_debug.log`, `installed/captureengine/logs/20260412_181616/GTA5_Enhanced.exe_FREEZE_2026-04-12_18-17-55_609.dmp`.
+- Stale-risk note: Re-check if a future trace shows PostSL submitting ECL during the startup transition window, or if the 8-callback / 15-frame delays prove too short or too long for other games.
+
 ### 2026-04-12 - Prefer direct/original ECL submission on pure-DLSS PostSL swapchain queues once that path is proven
 - **Root cause refinement**: In the next GTA V Enhanced bundle `installed/captureengine/logs/20260412_180513`, the earlier startup-window lifetime fix was clearly doing its job: CE again reached `PostSL synthetic startup activation complete`, `PostSL REACTIVATED`, and `Post-SL overlay SUBMIT #1`, and this time the immediate transient OFF right after that first submit was correctly deferred by the startup transition window instead of triggering a full OFF teardown. But the session still froze anyway. The remaining signature was: one successful PostSL frame on the live swapchain queue `000002A68BE59550`, continuing wrapper-queue `ECL captured` traffic, then `Present STALLED for 10/30 frames` while the dump again landed in the same Streamline/`sl_dlss_g` threading-mutex family. The important source-level clue was already in CE's own PostSL diagnostic log for that first frame: `queue=... scQueue=... origECL=... realECL=... match=1 sameQueue=1 slWrapper=0 hadFSR=0`, followed immediately by `DX12: PostSL scQueue submit #0 ... virtualCall=1`. In other words, the selected live pure-DLSS swapchain queue had already resolved to the real/original D3D12 ECL entrypoint, but CE still chose the older virtual `scQueue->ExecuteCommandLists(...)` path instead of using the already-proven direct/original ECL submit path.
 - **Fix**:

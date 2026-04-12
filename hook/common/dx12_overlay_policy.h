@@ -1078,6 +1078,17 @@ inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRend
     return streamlineStartupTransitionWindowActive && stablePostSLFrameCount >= 2;
 }
 
+inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,
+                                                                    bool postSLConfirmedRendering) {
+    // While the startup transition window is active, DLSS FG is still initializing
+    // its internal pipeline (queue setup, mutex tracking, fence state).  Our ECL
+    // submission on the SL-owned swapchain queue during this phase can corrupt DLSS
+    // FG's internal state.  Defer until the window expires.  Once PostSL has already
+    // confirmed stable rendering (from a previous activation cycle), the guard is
+    // unnecessary — the pipeline is proven safe.
+    return startupTransitionWindowActive && !postSLConfirmedRendering;
+}
+
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
     return streamlineFGRunning && postSLConfirmedRendering;
 }

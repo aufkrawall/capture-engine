@@ -1322,3 +1322,15 @@ TEST(DXGISharedTest, CreateSwapchainAccessDeniedPassThroughRequiresActiveStreaml
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(true, true, false,
                                                                                                     false, true));
 }
+
+TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilConfirmed) {
+    // During startup transition window with no confirmed rendering - defer
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false));
+
+    // Once PostSL has confirmed stable rendering - don't defer even during window
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, true));
+
+    // Outside startup window - never defer
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, true));
+}

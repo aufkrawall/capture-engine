@@ -103,6 +103,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - `synthetic/re-entrant Streamline Present paths refresh the live swapchain Present hook anchor when runtime activation moves onto a different vtable path`
 - `startup transition window survives the first successful PostSL startup submit so an immediate transient ON->OFF->ON bounce does not trigger a full PostSL teardown`
 - `pure DLSS PostSL prefers direct/original ECL submission on the selected live swapchain queue once that queue already resolves to the real D3D12 ECL path`
+- `pure DLSS cold-start uses layered stabilization (reduced cooldown + first-epoch warmup + startup window rendering gate + churn re-arm) before first PostSL ECL submission`
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because FG switching behavior is spread across runtime classification, queue routing, startup coexistence, and visible metrics publication.
