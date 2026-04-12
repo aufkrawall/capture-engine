@@ -6331,9 +6331,21 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // to hangs/crashes.  Wait for the window to expire before submitting GPU work.
     // Once PostSL has confirmed stable rendering (from a previous cycle), this
     // gate no longer applies — the pipeline is proven stable.
+    const bool startupTransitionWindowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
+    if (startupTransitionWindowActive && !g_PostSLConfirmedRendering.load(std::memory_order_acquire) &&
+        useTopLevelHandoffWrapperProgress) {
+        static int s_bypassStartupWindowGuardLog = 0;
+        if (s_bypassStartupWindowGuardLog < 10) {
+            HookLogImportant(
+                "DX12: PostSL bypassing startup transition window deferral after top-level handoff wrapper progress "
+                "(epoch=%d call#=%d)",
+                s_reactivationEpoch, s_callsSinceReactivation);
+        }
+        s_bypassStartupWindowGuardLog++;
+    }
     if (ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(
-            DXGIShared::IsStreamlineStartupTransitionWindowActive(),
-            g_PostSLConfirmedRendering.load(std::memory_order_acquire))) {
+            startupTransitionWindowActive, g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+            useTopLevelHandoffWrapperProgress)) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         static int s_startupWindowGuardLog = 0;
         if (s_startupWindowGuardLog < 10 || (s_startupWindowGuardLog % 200) == 0) {

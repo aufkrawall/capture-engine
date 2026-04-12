@@ -14,6 +14,19 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-12 - Stop spending the decisive wrapper-backed startup callback on the old startup-window ECL deferral
+- **Root cause refinement**: In the next GTA V Enhanced freeze bundle `installed/captureengine/logs/20260412_200315`, the earlier fixes finally got CE all the way through wrapper-progress consumption, synthetic startup activation, reactivation, and the reactivation warm-up bypass. But the session still never reached `Post-SL overlay SUBMIT`. The very next line after the warm-up bypass was `DX12: PostSL SKIP — startup transition window active, deferring ECL until DLSS FG stabilizes (epoch=1 call#=1)`, and again there was no second PostSL callback before `Present STALLED`. That showed the old startup-window ECL guard had become the new blocker: it was still consuming the only decisive callback in a family where CE already had stronger proof than that generic guard assumed.
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now extends `ShouldDeferPostSLRenderingDuringStartupTransitionWindow()` with the pure-DLSS top-level-handoff wrapper-progress proof signal.
+  2. `hook/apis/dx12_hook.cpp` now uses that extended policy seam so the decisive callback can bypass the startup-window ECL deferral once CE already has the one-shot top-level bootstrap plus authoritative wrapper progress, and it logs that bypass explicitly.
+  3. `tests/test_dxgi_shared.cpp` now covers the stronger-proof case so the generic startup-window deferral still applies everywhere else.
+- **Why this is generic**: This is not GTA-specific. A Streamline runtime can legitimately require a startup-window deferral in the weaker early families, but once CE already waited for a late top-level startup-handoff Present, observed authoritative wrapper progress, finished synthetic startup activation, and explicitly bypassed the now-obsolete reactivation warm-up, spending that same callback on the old startup-window deferral is too strict for any such runtime.
+- **Verification**:
+  - Ran `python build.py --incremental --run-tests --skip-updates`. Build completed successfully and all 545 tests passed.
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked: `installed/captureengine/logs/20260412_200315/hook_debug.log`, `installed/captureengine/logs/20260412_200315/GTA5_Enhanced.exe_FREEZE_2026-04-12_20-04-53_710.dmp`, `hook/apis/dx12_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Re-check this family whenever the startup transition window or PostSL startup gating changes. If a future trace again reaches activation, reactivation, and warm-up bypass but still never submits the first PostSL frame, verify first whether the startup-window ECL deferral is still incorrectly consuming the decisive callback.
+
 ### 2026-04-12 - Bypass the old PostSL cold-start warm-up for the already-proven top-level-handoff + wrapper-progress family
 - **Root cause refinement**: In the next GTA V Enhanced freeze bundle `installed/captureengine/logs/20260412_195512`, the previous wrapper-progress and `ProcessFrame recently seen` fixes were finally both working. The hook log now showed `DX12: PostSL synthetic startup using wrapper ECL progress after top-level handoff`, `DX12: PostSL synthetic startup activation complete`, and `DX12: PostSL REACTIVATED`. But it still never logged any `Post-SL overlay SUBMIT`. The very next line after reactivation was `DX12: PostSL warm-up after reactivation epoch=1 frame=1/15 (coldStart=1)`, and then no further PostSL callback arrived before `Present STALLED`. That showed the old cold-start reactivation warm-up had become the new blocker: activation itself is now already delayed until the stronger top-level-handoff + wrapper-progress proof exists, so spending the only decisive callback on another generic 15-frame warm-up just strands PostSL again.
 - **Fix**:

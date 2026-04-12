@@ -1384,12 +1384,22 @@ TEST(DXGISharedTest, CreateSwapchainAccessDeniedPassThroughRequiresActiveStreaml
 
 TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilConfirmed) {
     // During startup transition window with no confirmed rendering - defer
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, false));
 
     // Once PostSL has confirmed stable rendering - don't defer even during window
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, true, false));
+
+    // The pure-DLSS top-level handoff + wrapper-progress family has stronger
+    // proof than the generic startup-window guard and must not spend its only
+    // decisive callback on this deferral.
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, true));
 
     // Outside startup window - never defer
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, true, false));
 }

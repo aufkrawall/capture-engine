@@ -1091,14 +1091,18 @@ inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRend
 }
 
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,
-                                                                    bool postSLConfirmedRendering) {
+                                                                    bool postSLConfirmedRendering,
+                                                                    bool useTopLevelHandoffWrapperProgress) {
     // While the startup transition window is active, DLSS FG is still initializing
     // its internal pipeline (queue setup, mutex tracking, fence state).  Our ECL
     // submission on the SL-owned swapchain queue during this phase can corrupt DLSS
     // FG's internal state.  Defer until the window expires.  Once PostSL has already
     // confirmed stable rendering (from a previous activation cycle), the guard is
-    // unnecessary — the pipeline is proven safe.
-    return startupTransitionWindowActive && !postSLConfirmedRendering;
+    // unnecessary — the pipeline is proven safe. The same is true for the
+    // stronger pure-DLSS startup family where CE already saw the one-shot
+    // top-level handoff bootstrap plus authoritative wrapper progress and used
+    // that evidence to activate PostSL on the decisive synthetic callback.
+    return startupTransitionWindowActive && !postSLConfirmedRendering && !useTopLevelHandoffWrapperProgress;
 }
 
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
