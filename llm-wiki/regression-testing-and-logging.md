@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-04-11
+Last cross-checked: 2026-04-12
 
 Primary sources:
 - `AGENTS.md`
@@ -35,11 +35,14 @@ Primary sources:
   - Logs pseudo-overlay suppression and resume during injected-overlay handoff.
 - `hook/common/dxgi_shared.cpp`
   - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths.
+- `hook/common/freeze_watchdog.cpp`
+  - Logs watchdog startup, monitored thread selection, dialog-triggered dumps, freeze-triggered dumps, and explicit immediate dump requests.
 - `hook/common/overlay_metrics_publisher.cpp`
   - Logs FG publication state changes and invariant violations.
 
 ## Practical Regression Checklist
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.
+- If you touch watchdog ownership or dump-trigger conditions, verify that helper heartbeats do not silently retarget the monitored thread and that explicit stall conditions still produce an automatic dump.
 - If you change how FG mode transitions are interpreted, verify both routing behavior and visible overlay status behavior.
 - If you change injection or overlay handoff behavior, verify the runtime flags and pseudo-overlay suppression path.
 - Prefer fast focused unit tests while iterating, then run broader coverage before considering the work complete.

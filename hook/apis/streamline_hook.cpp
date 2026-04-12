@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include "../common/dxgi_shared.h"
 #include "../common/fg_detection.h"
+#include "../common/freeze_watchdog.h"
 #include "../common/hook_common.h"
 #include "../common/reflex_limiter.h"
 #include "../common/streamline_runtime_policy.h"
@@ -758,6 +759,10 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                     "Streamline Hook: Present STALLED for %u frames (counter=%llu) — "
                     "vtable hook bypassed?",
                     s_stallFrames, (unsigned long long)currentPresentCount);
+            }
+            if (s_stallFrames == 30) {
+                g_RenderWatchdog.RequestImmediateDump("Streamline Present stalled for 30 frames",
+                                                      DX12_GetGamePresentThreadId());
             }
         } else {
             if (s_stallFrames > 0) {

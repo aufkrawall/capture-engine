@@ -19,6 +19,7 @@
 class FreezeWatchdog {
 public:
     using FreezeCallback = std::function<void(const std::string& reason)>;
+    using PreferredThreadProvider = DWORD (*)();
 
     FreezeWatchdog();
     ~FreezeWatchdog();
@@ -36,6 +37,11 @@ public:
 
     // Call this from the monitored thread to indicate it's alive
     void Heartbeat();
+
+    // Call this from helper threads that prove the render pipeline is still
+    // making forward progress without changing which thread the watchdog should
+    // capture when a hang is detected.
+    void HeartbeatFromHelperThread();
 
     // Set a custom callback for freeze handling (optional)
     void SetFreezeCallback(FreezeCallback callback);
@@ -67,6 +73,12 @@ public:
         forceMonitor_.store(force, std::memory_order_release);
     }
 
+    void SetPreferredThreadProvider(PreferredThreadProvider provider) {
+        preferredThreadProvider_.store(provider, std::memory_order_release);
+    }
+
+    void RequestImmediateDump(const std::string& reason, DWORD preferredThreadId = 0);
+
 private:
     void WatchdogThread();
     void CreateMinidumpWithThreadContext(const std::string& reason, DWORD preferredThreadId = 0);
@@ -84,6 +96,8 @@ private:
     std::atomic<double> timeoutSeconds_{5.0};
     std::atomic<DWORD> monitoredThreadId_{0};
     std::atomic<bool> forceMonitor_{false};
+    std::atomic<uint64_t> lastDumpRequestMicros_{0};
+    std::atomic<PreferredThreadProvider> preferredThreadProvider_{nullptr};
 
     static constexpr double STARTUP_GRACE_PERIOD = 10.0;
     static constexpr double DEFAULT_TIMEOUT = 30.0;

@@ -1,6 +1,6 @@
 # Frame Generation Switching
 
-Last cross-checked: 2026-04-11
+Last cross-checked: 2026-04-12
 
 Primary sources:
 - `AGENTS.md`
@@ -35,6 +35,10 @@ This page records current guardrails and tested transition families for no-FG, D
 - GTA V Enhanced `FSR -> DLSS` can drive native FFX teardown through `ffxDestroyContext()` while the inline-hook trampoline is still in use. The `20260412_011505` crash bundle showed the destroy trampoline at `00007FF8011D0300` copying `test rcx, rcx; jne +0x0B` from `amd_fidelityfx_dx12.dll` without relocating that short branch. When GTA destroyed the FFX context during the handoff, the taken `jne` landed inside the trampoline's appended `FF 25` jump stub data and crashed with a null write at `00007FF8011D031B`.
 - Inline-hook trampolines must therefore treat short control transfers that leave the copied block as relocations, not raw memcpy. This is a generic trampoline correctness invariant, not a GTA-specific rule.
 - GTA V Enhanced DLSS FG startup can route `CreateSwapChainForHwnd` through EOS startup-overlay frames even when the live swapchain/queue actually belongs to Streamline. In `installed/captureengine/logs/20260412_014238`, CE classified the new DLSS startup swapchain for the game HWND as an EOS third-party overlay swapchain and skipped normal swapchain side-effects, then later saw `OFF->ON->OFF->ON` DLSS FG churn followed by `Present STALLED` warnings. The generic fix is to let Streamline frame-generation stack evidence override startup-overlay caller identity during create-swapchain classification, just as native FFX stack evidence already does for FSR.
+- GTA V Enhanced can also perform a later pre-FG runtime-owned swapchain handoff after CE has already observed a few stable startup overlay draws on the original game queue. In `installed/captureengine/logs/20260412_022704`, CE marked startup compatibility as settled on the first successful overlay submit, then EOS/Streamline handed the live swapchain to a non-game queue before any real FG activation occurred. CE no longer considered startup compatibility active at that point, immediately ran the normal overlay path on the new runtime-owned queue, and GTA raised `ERR_GFX_STATE`.
+- The generic fix is to let startup compatibility re-arm when a startup-blocking overlay is still present, the session has not yet observed any real FG activity, startup had previously been marked settled, and a later runtime-owned swapchain handoff appears. That keeps the conservative single-queue startup suppression active through the full startup handoff without re-entering startup-only behavior for later normal post-startup popups or FG suspension windows.
+- In the later `installed/captureengine/logs/20260412_023846` bundle, the same late pre-FG runtime-owned handoff did not crash immediately after the re-arm, but the overlay still disappeared before DLSS FG became active. The log shows CE resuming after startup-overlay warm-up while `ProcessFrame` continues routing on the runtime-owned non-FSR queue for almost a minute without any further overlay submit logs. The generic correction is to keep startup compatibility logically active through that whole late pre-FG runtime-owned window while allowing rendering again once the handoff queue has actually settled, instead of requiring runtime ownership to disappear entirely.
+- The same `20260412_023846` bundle also showed `OFF->ON->OFF->ON` Streamline churn followed by repeated `Present STALLED` warnings. Fresh DLSS reactivation now clears stale Streamline-off teardown grace before the new activation, so CE no longer keeps ignoring newly resurfacing wrapper/direct queues from the old OFF transition during the next ON transition.
 
 ## Current Practical Guidance
 - Any FG fix should be reasoned through as a state-transition problem, not as a one-off title quirk.
@@ -62,6 +66,8 @@ This page records current guardrails and tested transition families for no-FG, D
 - `heuristic FSR takeover while SL hook remains present`
 - `FSR -> DLSS` with native FFX context destruction while CE inline hooks are active
 - `startup-blocking overlay wraps DLSS FG swapchain creation`
+- `startup overlay appears settled, then runtime-owned swapchain handoff arrives before first real FG activation`
+- `startup overlay re-arms for a late pre-FG runtime-owned handoff, then must resume visible overlay before DLSS FG actually turns on`
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because FG switching behavior is spread across runtime classification, queue routing, startup coexistence, and visible metrics publication.

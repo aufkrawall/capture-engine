@@ -45,7 +45,9 @@ inline bool ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(bool d3d12Device
 
 inline bool ShouldUseStartupOverlayCompatibilityMode(bool startupBlockingOverlayLoaded,
                                                      bool actualFrameGenerationActive,
-                                                     bool startupCompatSettled = false) {
+                                                     bool startupCompatSettled = false,
+                                                     bool observedAnyFrameGenerationActivity = false,
+                                                     bool runtimeOwnsSwapchain = false) {
     // Drive startup compatibility from observed startup-overlay/runtime state,
     // not the executable name. If a startup-blocking overlay is present while
     // real FG is inactive, keep the DX12 overlay on the conservative path until
@@ -55,11 +57,46 @@ inline bool ShouldUseStartupOverlayCompatibilityMode(bool startupBlockingOverlay
     // third-party overlay popups (for example Rockstar Social Club appearing
     // mid-session) must not force the DX12 overlay back into its fragile
     // startup-only suppression path.
-    return startupBlockingOverlayLoaded && !actualFrameGenerationActive && !startupCompatSettled;
+    //
+    // Seeing real FG activity is also a one-way signal that the special startup
+    // coexistence phase is over. Even if a late pre-FG runtime-owned handoff
+    // cleared the settled latch earlier, later inactive windows after real FG
+    // has already appeared are normal coexistence, not startup bootstrap.
+    if (!startupBlockingOverlayLoaded || actualFrameGenerationActive || observedAnyFrameGenerationActivity) {
+        return false;
+    }
+
+    // After a late pre-FG runtime-owned handoff, keep the conservative startup
+    // compatibility path active until the live queue topology has fully exited
+    // the runtime-owned bootstrap window. Otherwise a single successful draw on
+    // that handoff queue immediately drops us back to the normal coexistence path
+    // on the very next frame even though startup has not actually finished yet.
+    return !startupCompatSettled || runtimeOwnsSwapchain;
+}
+
+inline bool ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
+    bool startupBlockingOverlayLoaded, bool actualFrameGenerationActive, bool startupCompatSettled,
+    bool runtimeOwnsSwapchain, bool observedAnyFrameGenerationActivity) {
+    if (!startupBlockingOverlayLoaded || actualFrameGenerationActive) {
+        return false;
+    }
+
+    if (!startupCompatSettled || !runtimeOwnsSwapchain) {
+        return false;
+    }
+
+    // GTA/EOS-style startup can briefly look settled on the original game queue,
+    // then still hand ownership to a runtime-owned queue before any real FG has
+    // been observed. That later topology change is still startup bootstrap, so
+    // let it re-arm the conservative startup path. Once any real FG activity has
+    // happened, do not re-enter the startup-only suppression path.
+    return !observedAnyFrameGenerationActivity;
 }
 
 inline bool ShouldAllowStartupOverlayRendering(bool startupOverlayCompatibilityActive, bool hasSwapchainQueue,
-                                               bool runtimeOwnsSwapchain) {
+                                                bool runtimeOwnsSwapchain,
+                                                ULONGLONG runtimeOwnedSwapchainActiveMs = 0,
+                                                ULONGLONG runtimeOwnedSwapchainSettleMs = 0) {
     if (!startupOverlayCompatibilityActive) {
         return true;
     }
@@ -68,7 +105,20 @@ inline bool ShouldAllowStartupOverlayRendering(bool startupOverlayCompatibilityA
     // live swapchain is still runtime-owned, queue ownership is still churning
     // underneath us and pre-SL overlay work can still trip graphics-state
     // validation.
-    return hasSwapchainQueue && !runtimeOwnsSwapchain;
+    if (!hasSwapchainQueue) {
+        return false;
+    }
+
+    if (!runtimeOwnsSwapchain) {
+        return true;
+    }
+
+    // Some startup overlay stacks temporarily hand the live swapchain to a
+    // runtime-owned queue before actual FG activates. Once that runtime-owned
+    // queue has stayed stable long enough, continuing to block all overlay work
+    // strands the non-FG overlay indefinitely even though the startup handoff is
+    // already complete.
+    return runtimeOwnedSwapchainSettleMs != 0 && runtimeOwnedSwapchainActiveMs >= runtimeOwnedSwapchainSettleMs;
 }
 
 inline bool ShouldDeferStartupOverlayWorkAfterResume(bool startupOverlayCompatibilityActive, bool runtimeOwnsSwapchain,
@@ -513,9 +563,9 @@ inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive, bool f
 }
 
 inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGActive, bool streamlineFGRunning,
-                                                                bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
-                                                                bool hasCommandQueue,
-                                                                bool commandQueueMatchesSwapchainQueue) {
+                                                                 bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
+                                                                 bool hasCommandQueue,
+                                                                 bool commandQueueMatchesSwapchainQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
@@ -529,6 +579,11 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
     // Reinitializing pre-SL overlay resources before command traffic settles
     // onto the live swapchain queue reproduces the Talos crash path.
     return !hasCommandQueue || !commandQueueMatchesSwapchainQueue;
+}
+
+inline bool ShouldClearRecentStreamlineTeardownGraceOnFreshActivation(bool active, bool hadRecentHeuristicGrace,
+                                                                      bool hadRecentSwapchainReinitGrace) {
+    return active && (hadRecentHeuristicGrace || hadRecentSwapchainReinitGrace);
 }
 
 inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(

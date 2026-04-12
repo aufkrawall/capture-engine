@@ -2083,11 +2083,38 @@ static std::atomic<ULONGLONG> s_lastStartupBlockingRenderModuleActivityMs{0};
 // fragile startup-only suppression path. Later swapchain/sync reinitializations
 // should also keep the normal allocator pool.
 static std::atomic<bool> s_startupOverlayCompatSettled{false};
+static std::atomic<bool> s_startupOverlayObservedAnyFG{false};
+
+static void ResetStartupOverlayBackendActivationStage();
 
 static bool IsStartupOverlayCompatibilityActive() {
     return ce::dx12_overlay_policy::ShouldUseStartupOverlayCompatibilityMode(
         ce::overlay_compat::GetStartupBlockingOverlayModuleName() != nullptr, IsActualFrameGenerationActive(),
-        s_startupOverlayCompatSettled.load(std::memory_order_acquire));
+        s_startupOverlayCompatSettled.load(std::memory_order_acquire),
+        s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), g_FGRuntimeOwnsSwapchain);
+}
+
+static void UpdateStartupOverlayCompatibilityState() {
+    const bool actualFGActive = IsActualFrameGenerationActive();
+    if (actualFGActive) {
+        s_startupOverlayObservedAnyFG.store(true, std::memory_order_release);
+        return;
+    }
+
+    const bool startupBlockingOverlayLoaded = ce::overlay_compat::GetStartupBlockingOverlayModuleName() != nullptr;
+    const bool observedAnyFrameGenerationActivity = s_startupOverlayObservedAnyFG.load(std::memory_order_acquire);
+    const bool startupCompatSettled = s_startupOverlayCompatSettled.load(std::memory_order_acquire);
+    if (!ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
+            startupBlockingOverlayLoaded, actualFGActive, startupCompatSettled, g_FGRuntimeOwnsSwapchain,
+            observedAnyFrameGenerationActivity)) {
+        return;
+    }
+
+    if (s_startupOverlayCompatSettled.exchange(false, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "DX12: Re-arming startup overlay compatibility after late runtime-owned swapchain handoff before any real FG activity");
+        ResetStartupOverlayBackendActivationStage();
+    }
 }
 
 static const char* GetStartupOverlayFirstDrawProbeStageName(StartupOverlayFirstDrawProbeStage stage) {
@@ -3393,6 +3420,7 @@ void DX12Hook::Init() {
     // The watchdog auto-detects UE5, DLSS FG and uses extended timeouts
     double timeout = g_RenderWatchdog.GetRecommendedTimeout();
     g_RenderWatchdog.SetMonitoredThread(GetCurrentThreadId());
+    g_RenderWatchdog.SetPreferredThreadProvider(&DX12_GetGamePresentThreadId);
     g_RenderWatchdog.Start(timeout);
     HookLog("DX12: Freeze watchdog started (%.0f second timeout)", timeout);
 
@@ -3547,8 +3575,21 @@ bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() {
     return g_FGRuntimeOwnsSwapchain;
 }
 
+DWORD DX12_GetGamePresentThreadId() {
+    return g_GamePresentThreadId.load(std::memory_order_acquire);
+}
+
 void DX12_OnStreamlineFGStateChanged(bool active) {
     if (active) {
+        const int previousHeuristicGrace = g_SLOffHeuristicGrace.exchange(0, std::memory_order_acq_rel);
+        const int previousSwapchainGrace = g_SLOffSwapchainReinitGrace.exchange(0, std::memory_order_acq_rel);
+        if (ce::dx12_overlay_policy::ShouldClearRecentStreamlineTeardownGraceOnFreshActivation(
+                true, previousHeuristicGrace > 0, previousSwapchainGrace > 0)) {
+            HookLogImportant(
+                "DX12: Streamline FG ON — cleared stale teardown grace before fresh activation "
+                "(slOffGrace=%d swapchainGrace=%d)",
+                previousHeuristicGrace, previousSwapchainGrace);
+        }
         DXGIShared::ArmStreamlineStartupTransitionWindow();
         SetPostSLCallbackInstalled(true, "DX12: Streamline FG ON");
         HookLogImportant("DX12: Streamline FG ON — pre-armed PostSL callback for startup routing");
@@ -8055,6 +8096,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         return;
     }
 
+    UpdateStartupOverlayCompatibilityState();
     bool allowOverlayRender = ApplyOverlayStartupCompatMode(frameDesc.OutputWindow);
 
     ULONGLONG postResumeSettleRemainingMs = 0;
@@ -8355,15 +8397,23 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // Runtime-owned swapchain without FSR evidence. This covers DLSS/
             // Streamline suspend-resume windows where the live swapchain stays on
             // a non-game queue but must NOT be promoted into post-FSR recovery.
-            gameQueue = g_SwapchainQueue;
+            const bool startupCompatCanUseSettledRuntimeOwnedQueue =
+                startupOverlayCompatibilityActive &&
+                ce::dx12_overlay_policy::ShouldAllowStartupOverlayRendering(
+                    true, g_SwapchainQueue != nullptr, g_FGRuntimeOwnsSwapchain, runtimeOwnedSwapchainActiveMs,
+                    kStartupOverlayPostResumeSettleMs);
+            gameQueue = startupCompatCanUseSettledRuntimeOwnedQueue && g_OriginalGameQueue ? g_OriginalGameQueue
+                                                                                           : g_SwapchainQueue;
             static int s_runtimeOwnedQueueLogCount = 0;
             if (s_runtimeOwnedQueueLogCount++ < 10 || (s_runtimeOwnedQueueLogCount % 300) == 0) {
                 const bool authoritativeFSR = g_FGCompat.IsFSRFGApiActive();
                 HookLogImportant(
-                    "DX12: ProcessFrame — runtime-owned swapchain %s, using scQueue %p "
-                    "(origGame=%p slFG=%d hadFSR=%d apiFSR=%d) #%d",
-                    authoritativeFSR ? "with authoritative FSR FG state" : "without FSR evidence", gameQueue,
-                    g_OriginalGameQueue, slFGNow ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, authoritativeFSR ? 1 : 0,
+                    "DX12: ProcessFrame — runtime-owned swapchain %s, using %s %p "
+                    "(origGame=%p slFG=%d hadFSR=%d apiFSR=%d startupCompatSettled=%d) #%d",
+                    authoritativeFSR ? "with authoritative FSR FG state" : "without FSR evidence",
+                    startupCompatCanUseSettledRuntimeOwnedQueue && g_OriginalGameQueue ? "origGame" : "scQueue",
+                    gameQueue, g_OriginalGameQueue, slFGNow ? 1 : 0, g_HadFSRFGPhase ? 1 : 0,
+                    authoritativeFSR ? 1 : 0, startupCompatCanUseSettledRuntimeOwnedQueue ? 1 : 0,
                     s_runtimeOwnedQueueLogCount);
             }
         } else if (routingDecision ==
@@ -8623,7 +8673,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             hasSwapchainQueue = (g_SwapchainQueue != nullptr);
         }
         if (!ce::dx12_overlay_policy::ShouldAllowStartupOverlayRendering(startupOverlayPresent, hasSwapchainQueue,
-                                                                         g_FGRuntimeOwnsSwapchain)) {
+                                                                         g_FGRuntimeOwnsSwapchain,
+                                                                         runtimeOwnedSwapchainActiveMs,
+                                                                         kStartupOverlayPostResumeSettleMs)) {
             allowOverlayRender = false;
             g_PiggybackOverlayActive.store(false, std::memory_order_relaxed);
             static std::atomic<int> s_noQueueBlockLogCount{0};
@@ -11221,7 +11273,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // Heartbeat for freeze watchdog — skip when device is removed so the
     // watchdog can detect the stuck state and create a diagnostic dump.
     if (!g_DeviceRemoved.load(std::memory_order_relaxed)) {
-        g_RenderWatchdog.Heartbeat();
+        g_RenderWatchdog.HeartbeatFromHelperThread();
     }
 
     // Retry FFX hook initialization periodically for late-loading FSR FG modules.
@@ -11612,7 +11664,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 
     // Heartbeat for freeze watchdog — skip when device is removed
     if (!g_DeviceRemoved.load(std::memory_order_relaxed)) {
-        g_RenderWatchdog.Heartbeat();
+        g_RenderWatchdog.HeartbeatFromHelperThread();
     }
 
     // CRITICAL: Recursion depth guard.  If an FG engine (FSR FG, DLSS FG)

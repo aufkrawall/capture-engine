@@ -28,6 +28,20 @@ static uint64_t GetCurrentMicros() {
     return std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
 }
 
+static bool ShouldAllowImmediateDumpRequest(std::atomic<uint64_t>& lastDumpRequestMicros, uint64_t nowMicros,
+                                           uint64_t dedupWindowMicros = 10'000'000) {
+    uint64_t previousRequest = lastDumpRequestMicros.load(std::memory_order_acquire);
+    while (true) {
+        if (previousRequest != 0 && nowMicros > previousRequest && (nowMicros - previousRequest) < dedupWindowMicros) {
+            return false;
+        }
+        if (lastDumpRequestMicros.compare_exchange_weak(previousRequest, nowMicros, std::memory_order_acq_rel,
+                                                        std::memory_order_acquire)) {
+            return true;
+        }
+    }
+}
+
 static bool IsProcessInForeground(DWORD processId) {
     HWND fgWindow = GetForegroundWindow();
     if (!fgWindow) {
@@ -197,14 +211,19 @@ void FreezeWatchdog::Stop() {
 }
 
 void FreezeWatchdog::Heartbeat() {
-    DWORD heartbeatTid = GetCurrentThreadId();
-    DWORD previousTid = monitoredThreadId_.exchange(heartbeatTid, std::memory_order_acq_rel);
-    if (previousTid != 0 && previousTid != heartbeatTid) {
+    const DWORD heartbeatTid = GetCurrentThreadId();
+    const DWORD monitoredTid = monitoredThreadId_.load(std::memory_order_acquire);
+    if (monitoredTid != 0 && monitoredTid != heartbeatTid) {
         static std::atomic<int> s_threadSwitchLogCount{0};
         if (s_threadSwitchLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
-            HookLog("FreezeWatchdog: Monitored thread switched %lu -> %lu", previousTid, heartbeatTid);
+            HookLog("FreezeWatchdog: Helper heartbeat from tid=%lu while monitoring tid=%lu", heartbeatTid,
+                    monitoredTid);
         }
     }
+    lastHeartbeat_.store(GetCurrentMicros(), std::memory_order_release);
+}
+
+void FreezeWatchdog::HeartbeatFromHelperThread() {
     lastHeartbeat_.store(GetCurrentMicros(), std::memory_order_release);
 }
 
@@ -289,6 +308,38 @@ double FreezeWatchdog::GetRecommendedTimeout() const {
     if (IsDLSSFGActive())
         return DLSS_FG_TIMEOUT;
     return DEFAULT_TIMEOUT;
+}
+
+void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD preferredThreadId) {
+    if (!running_.load(std::memory_order_acquire) || reason.empty()) {
+        return;
+    }
+
+    const uint64_t nowMicros = GetCurrentMicros();
+    if (!ShouldAllowImmediateDumpRequest(lastDumpRequestMicros_, nowMicros)) {
+        HookLog("FreezeWatchdog: Suppressing duplicate immediate dump request for '%s'", reason.c_str());
+        return;
+    }
+
+    DWORD targetTid = preferredThreadId;
+    if (targetTid == 0) {
+        if (FreezeWatchdog::PreferredThreadProvider provider =
+                preferredThreadProvider_.load(std::memory_order_acquire)) {
+            const DWORD preferredRenderTid = provider();
+            if (preferredRenderTid != 0) {
+                targetTid = preferredRenderTid;
+            }
+        }
+    }
+    if (targetTid == 0) {
+        targetTid = monitoredThreadId_.load(std::memory_order_acquire);
+    }
+
+    HookLogImportant("FreezeWatchdog: Immediate dump requested (%s, targetTid=%lu)", reason.c_str(), targetTid);
+    if (freezeCallback_) {
+        freezeCallback_(reason);
+    }
+    CreateMinidumpWithThreadContext(reason, targetTid);
 }
 
 bool FreezeWatchdog::CaptureThreadContext(DWORD threadId, CONTEXT& ctx) {
@@ -438,10 +489,7 @@ void FreezeWatchdog::WatchdogThread() {
                     HookLogImportant("FreezeWatchdog: Persistent dialog detected after %.1fs - capturing dump",
                                      dialogElapsed);
                 }
-                if (freezeCallback_) {
-                    freezeCallback_(reason);
-                }
-                CreateMinidumpWithThreadContext(reason, dialogThreadId);
+                RequestImmediateDump(reason, dialogThreadId);
                 dialogDumpWritten = true;
                 lastDialogDumpTime = now;
                 lastDialogDumpIdentity = dialogIdentity;
@@ -468,11 +516,7 @@ void FreezeWatchdog::WatchdogThread() {
             OutputDebugStringA("\n");
             HookLogImportant("FreezeWatchdog: Freeze detected (%s)", reason.c_str());
 
-            if (freezeCallback_) {
-                freezeCallback_(reason);
-            }
-
-            CreateMinidumpWithThreadContext(reason);
+            RequestImmediateDump(reason, monitoredThreadId_.load(std::memory_order_acquire));
 
             // Do NOT terminate the process: the game may recover on its own,
             // and forcefully killing it loses unsaved data and prevents the

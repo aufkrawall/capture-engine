@@ -85,6 +85,7 @@ void DX12_StartTransitionCooldown();
 void DX12_OnStreamlineFGStateChanged(bool active);
 bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 void DX12_PrepareForStreamlineEnableTransition();
+DWORD DX12_GetGamePresentThreadId();
 void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallback originalCallback,
                                       void* originalUserContext);
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
