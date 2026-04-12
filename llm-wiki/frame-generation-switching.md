@@ -129,6 +129,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - `late Streamline startup-handoff Presents that arrive after a recent large top-level Present gap must not all be forced down the synthetic bypass path; but only the expected game-present thread should be allowed to consume a one-shot top-level live Present bootstrap during that startup window`
 - `startup transition window is extended on each deferred OFF signal so it stays active through the entire OFF->ON->OFF->ON churn; window duration increased from 500ms to 1500ms for multi-device DLSS FG configurations; wrapper ECL progress bypass removed from startup-window ECL deferral because queue topology stability does not prove SL internal pipeline stability`
 - `a promoted Streamline startup-handoff Present may use the top-level CE processing path, but must return through the bypass/original DXGI Present path instead of being fed back into Streamline's external Present hook again`
+- `when a promoted startup-handoff Present bypasses the synthetic PostSL activation path and no synthetic Presents arrive to drive PostSL, the suppressed OFF flush must call the PostSL callback directly so CE can attempt activation before Streamline receives the OFF signal`
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because FG switching behavior is spread across runtime classification, queue routing, startup coexistence, and visible metrics publication.

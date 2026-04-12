@@ -57,6 +57,7 @@ struct SharedState {
     std::atomic<bool> streamlineStartupHandoffPending{false};
     std::atomic<bool> streamlineStartupTopLevelPresentConsumed{false};
     std::atomic<ULONGLONG> streamlineStartupTransitionUntilMs{0};
+    std::atomic<bool> postSLSyntheticStartupActivationPending{false};
 };
 
 extern SharedState g_SharedState;

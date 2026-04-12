@@ -20,8 +20,14 @@ void OnAuthoritativeFFXTakeover();
 
 // Forward any suppressed slDLSSGSetOptions(OFF) call that was buffered during
 // the startup transition window, now that the window has expired.  Called from
-// periodic check points (DetourPresent, GetState, etc.) to ensure deferred OFF
-// signals eventually reach Streamline.
+// periodic check points (DetourPresent, DetourPresent1, GetState, etc.) to
+// ensure deferred OFF signals eventually reach Streamline.
+//
+// When the startup-handoff Present never triggered PostSL activation (because
+// it was promoted to top-level and bypassed the synthetic Present path), this
+// function also calls the PostSL callback to complete activation before
+// forwarding the suppressed OFF.  This ensures Streamline receives ON before
+// OFF even when no synthetic Presents arrive to drive PostSL.
 void FlushSuppressedSetOptionsOffIfNeeded();
 
 }  // namespace StreamlineHook

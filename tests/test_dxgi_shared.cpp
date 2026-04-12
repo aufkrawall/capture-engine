@@ -1458,6 +1458,8 @@ TEST(DXGISharedTest, PureDLSSStartupCallbackStaysDormantUntilStartupWindowExpire
         true, false, false, true, true, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
         true, false, false, true, true, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
+        true, false, false, true, true, true, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
         false, false, false, true, true, true, false));
@@ -1471,4 +1473,39 @@ TEST(DXGISharedTest, PureDLSSStartupCallbackStaysDormantUntilStartupWindowExpire
         true, false, false, true, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
         true, false, false, true, true, false, false));
+}
+
+TEST(DXGISharedTest, PostSLSyntheticStartupActivationPendingTracksStartupleHandoffBypassState) {
+    EXPECT_FALSE(DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire));
+
+    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
+    EXPECT_TRUE(DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire));
+
+    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+    EXPECT_FALSE(DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire));
+}
+
+TEST(DXGISharedTest, PostSLActivationPendingAndPostSLActiveBothTrueRequiresDirectCallbackOnFlush) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
+        true, false, false, true, true, true, true));
+
+    bool activationPending = true;
+    bool postSLActive = true;
+    bool shouldTriggerDirectCallback = activationPending && postSLActive;
+    EXPECT_TRUE(shouldTriggerDirectCallback);
+
+    activationPending = true;
+    postSLActive = false;
+    shouldTriggerDirectCallback = activationPending && postSLActive;
+    EXPECT_FALSE(shouldTriggerDirectCallback);
+
+    activationPending = false;
+    postSLActive = true;
+    shouldTriggerDirectCallback = activationPending && postSLActive;
+    EXPECT_FALSE(shouldTriggerDirectCallback);
+
+    activationPending = false;
+    postSLActive = false;
+    shouldTriggerDirectCallback = activationPending && postSLActive;
+    EXPECT_FALSE(shouldTriggerDirectCallback);
 }

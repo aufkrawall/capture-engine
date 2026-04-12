@@ -970,14 +970,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool preferBypassReturnPathForPromotedTopLevelPresent =
         DXGIShared::ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(allowTopLevelStartupPresent,
                                                                                      callerFromStreamlineModule);
-    if (allowTopLevelStartupPresent) {
+if (allowTopLevelStartupPresent) {
         static std::atomic<int> s_streamlineStartupTopLevelLogCount{0};
         int logCount = s_streamlineStartupTopLevelLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent: Treating Streamline startup-handoff Present as top-level live Present #%d "
-                "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1)",
-                logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId);
+                "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1 "
+                "activationPending=%d postSLActive=%d bypass=%d)",
+                logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId,
+                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_relaxed) ? 1 : 0,
+                g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr ? 1 : 0,
+                preferBypassReturnPathForPromotedTopLevelPresent ? 1 : 0);
         }
     }
     if (streamlineSyntheticReentrant) {
@@ -1396,14 +1400,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool preferBypassReturnPathForPromotedTopLevelPresent =
         DXGIShared::ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(allowTopLevelStartupPresent,
                                                                                      callerFromStreamlineModule);
-    if (allowTopLevelStartupPresent) {
+if (allowTopLevelStartupPresent) {
         static std::atomic<int> s_streamlineStartupTopLevelLogCount1{0};
         int logCount = s_streamlineStartupTopLevelLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent1: Treating Streamline startup-handoff Present1 as top-level live Present #%d "
-                "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1)",
-                logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId);
+                "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1 "
+                "activationPending=%d postSLActive=%d bypass=%d)",
+                logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId,
+                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_relaxed) ? 1 : 0,
+                g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr ? 1 : 0,
+                preferBypassReturnPathForPromotedTopLevelPresent ? 1 : 0);
         }
     }
     if (streamlineSyntheticReentrant) {
