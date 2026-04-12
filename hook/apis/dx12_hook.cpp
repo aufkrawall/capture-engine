@@ -6186,7 +6186,6 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             g_PostSLOverlayActive.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
-            DXGIShared::ClearStreamlineStartupTransitionWindow();
             HookLogImportant("DX12: PostSL synthetic startup activation complete — enabling PostSL rendering");
         }
     }
@@ -7952,7 +7951,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     g_PostSLStallCounter.store(0, std::memory_order_release);
     // Track PostSL warmup — stable frame count since last FG transition.
     // Stall fallback is only enabled after this exceeds warmup threshold.
-    g_PostSLStableFrameCount.fetch_add(1, std::memory_order_release);
+    const int stableFrameCount = g_PostSLStableFrameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (ce::dx12_overlay_policy::ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
+            DXGIShared::IsStreamlineStartupTransitionWindowActive(), stableFrameCount)) {
+        DXGIShared::ClearStreamlineStartupTransitionWindow();
+        HookLogImportant(
+            "DX12: PostSL confirmed stable startup rendering — cleared startup transition window "
+            "(stableFrames=%d epoch=%d)",
+            stableFrameCount, s_reactivationEpoch);
+    }
 
     // Track last working queue — survives FG transitions so we can prefer
     // a proven-safe queue when PostSL re-activates after FSR→DLSS switch.

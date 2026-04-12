@@ -1054,6 +1054,16 @@ inline bool ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(bool had
     return hadFSRFGPhase;
 }
 
+inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
+    bool streamlineStartupTransitionWindowActive, int stablePostSLFrameCount) {
+    // Keep the startup churn window alive until the freshly activated PostSL path
+    // has proved it is stable for more than the very first re-entrant frame.
+    // Some pure-DLSS startups still bounce ON->OFF->ON immediately after the
+    // first successful PostSL submit, and clearing the window too early turns
+    // that transient OFF into a full teardown.
+    return streamlineStartupTransitionWindowActive && stablePostSLFrameCount >= 2;
+}
+
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
     return streamlineFGRunning && postSLConfirmedRendering;
 }
