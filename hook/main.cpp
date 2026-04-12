@@ -1401,7 +1401,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
     // perf_metrics_logging now folds into debug_logging so a single switch
     // controls all hook-side diagnostics.
-    if (g_pLocalConfig && g_pLocalConfig->debugLogging) {
+    if (g_pLocalConfig && IsTraceLoggingEnabled(g_pLocalConfig->logLevel)) {
       // Read session-specific logs path from DiscoveryInfo (set by inject process)
       std::string sessionLogsDir;
       HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);

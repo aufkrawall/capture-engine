@@ -10,6 +10,7 @@
 // clang-format on
 #include <algorithm>
 #include <atomic>
+#include <fstream>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -124,11 +125,39 @@ bool ShouldKeepLimiterProcessRunning(const AppConfig& config) {
 }
 
 bool ShouldStartLoggerProcess(const AppConfig& config) {
-    return config.debugLogging;
+    return IsAnyLoggingEnabled(config.logLevel);
 }
 
 bool ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
+}
+
+void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, ProcessMode mode) {
+    std::ofstream manifest(logsDir + "\\session_manifest.txt", std::ios::out | std::ios::trunc);
+    if (!manifest.is_open()) {
+        return;
+    }
+
+    manifest << "build_version=" << CAPTURE_VERSION << "\n";
+    manifest << "build_timestamp=" << BUILD_TIMESTAMP << "\n";
+    manifest << "session_dir=" << logsDir << "\n";
+    manifest << "process_mode="
+             << (mode == ProcessMode::Controller ? "Controller"
+                 : mode == ProcessMode::Inject   ? "Inject"
+                 : mode == ProcessMode::Media    ? "Media"
+                 : mode == ProcessMode::Limiter  ? "Limiter"
+                 : mode == ProcessMode::Logger   ? "Logger"
+                 : mode == ProcessMode::Sensors  ? "Sensors"
+                                                 : "Unknown")
+             << "\n";
+    manifest << "log_level=" << LogLevelToConfigString(config.logLevel) << "\n";
+    manifest << "capture_method=" << config.captureMethod << "\n";
+    manifest << "logger_enabled=" << (ShouldStartLoggerProcess(config) ? 1 : 0) << "\n";
+    manifest << "sensor_enabled=" << (ShouldStartSensorProcess(config) ? 1 : 0) << "\n";
+    manifest << "game_whitelist_entries=" << config.gameWhitelist.size() << "\n";
+    manifest << "overlay_whitelist_entries=" << config.overlayWhitelist.size() << "\n";
+    manifest << "logs=" << GetLogFileName(mode) << "\n";
+    manifest << "notes=Use this file as the compact session entrypoint before reading detailed logs.\n";
 }
 
 DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
@@ -1105,6 +1134,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
                     AppConfig oldConfig = g_Config;
                     LoadConfig(g_ConfigPath, g_Config);
+                    Log_SetLevel(g_Config.logLevel);
 
                     if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, g_Config.hotkeyStartStop)) {
                         UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
@@ -1280,8 +1310,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             // Game launch will happen in ControllerMain AFTER child processes are
             // ready
-            if (g_Config.debugLogging) {
-                Log_Init(earlyLogsDir + "\\launcher.log");
+            if (IsAnyLoggingEnabled(g_Config.logLevel)) {
+                Log_Init(earlyLogsDir + "\\launcher.log", g_Config.logLevel);
                 LogInfo("[Launcher] Deferred launch path: %s", g_DeferredLaunchPath.c_str());
             }
 
@@ -1295,9 +1325,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     CreateDirectoryA(logsDir.c_str(), NULL);
     std::string logPath = logsDir + "\\" + GetLogFileName(mode);
     g_Config.logFilePath = logPath;
+    WriteSessionManifest(logsDir, g_Config, mode);
 
-    if (g_Config.debugLogging) {
-        Log_Init(logPath);
+    if (IsAnyLoggingEnabled(g_Config.logLevel)) {
+        Log_Init(logPath, g_Config.logLevel);
         LogInfo("CaptureEngine Starting... Version: %s (Built: %s)", CAPTURE_VERSION, BUILD_TIMESTAMP);
         LogInfo("Process Mode: %s", mode == ProcessMode::Controller ? "Controller"
                                     : mode == ProcessMode::Inject   ? "Inject"

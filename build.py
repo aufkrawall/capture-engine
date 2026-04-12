@@ -4877,7 +4877,7 @@ def backup_sources(script_dir):
 
 
 def ensure_debug_logging():
-    """Ensure debug_logging=true in bin/config.ini."""
+    """Ensure at least log_level=debug in bin/config.ini."""
     config_path = os.path.join(BIN_DIR, "config.ini")
     if not os.path.exists(config_path):
         log("config.ini missing, skipping debug_logging check.")
@@ -4889,9 +4889,19 @@ def ensure_debug_logging():
 
         changed = False
         new_lines = []
+        saw_log_level = False
         for line in lines:
-            if line.strip().startswith("debug_logging="):
-                if "true" not in line:
+            stripped = line.strip()
+            if stripped.startswith("log_level="):
+                saw_log_level = True
+                level = stripped.split("=", 1)[1].strip().lower()
+                if level in {"off", "error", "warn", "info"}:
+                    new_lines.append("log_level=debug\n")
+                    changed = True
+                else:
+                    new_lines.append(line)
+            elif stripped.startswith("debug_logging="):
+                if "true" not in stripped.lower():
                     new_lines.append("debug_logging=true\n")
                     changed = True
                 else:
@@ -4899,10 +4909,28 @@ def ensure_debug_logging():
             else:
                 new_lines.append(line)
 
+        if not saw_log_level:
+            inserted = False
+            for i, line in enumerate(new_lines):
+                if line.strip() == "[General]":
+                    new_lines.insert(i + 1, "log_level=debug\n")
+                    inserted = True
+                    changed = True
+                    break
+            if not inserted:
+                new_lines = [
+                    "[General]\n",
+                    "log_level=debug\n",
+                    "debug_logging=true\n",
+                    "\n",
+                    *new_lines,
+                ]
+                changed = True
+
         if changed:
             with open(config_path, "w") as f:
                 f.writelines(new_lines)
-            log("Forced debug_logging=true in config.ini for testing.")
+            log("Forced log_level=debug in config.ini for testing.")
     except Exception as e:
         log(f"Warning: Failed to update config.ini: {e}")
 

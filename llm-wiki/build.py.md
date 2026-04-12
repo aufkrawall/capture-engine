@@ -28,7 +28,7 @@ Default quality mode currently:
 | --- | --- | --- | --- |
 | `--skip-updates` | user-facing | Skip FFmpeg source update work when possible | On Windows, if FFmpeg is already built and `installed/captureengine/ffmpeg` exists, the script can skip the FFmpeg rebuild and just sync runtime DLLs. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
 | `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build anyway so `compile_commands.json` stays useful. This flag controls execution. |
-| `--run-integration-tests` | user-facing | Run smoke integration tests after the build | Also implies `--run-tests`. Before running, the script forces `debug_logging=true` in `installed/captureengine/config.ini` if that file exists. |
+| `--run-integration-tests` | user-facing | Run smoke integration tests after the build | Also implies `--run-tests`. Before running, the script forces at least `log_level=debug` in `installed/captureengine/config.ini` if that file exists. |
 | `--full-integration` | user-facing | Run the full integration matrix | Implies `--run-integration-tests`, which also implies `--run-tests`. |
 | `--lint` | user-facing | Run `clang-format --dry-run -Werror`, `flake8`, and `pyright` | If passed alone, the script exits after linting. |
 | `--format` | user-facing | Run `clang-format -i` and `black` | If passed alone, the script exits after formatting. |

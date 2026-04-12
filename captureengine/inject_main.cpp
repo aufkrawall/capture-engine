@@ -105,8 +105,10 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     if (!pSharedMem)
         return;
 
-    pSharedMem->SetDebugLogging(config.debugLogging);
-    pSharedMem->SetLogLevel(LogLevel::Info);
+    static uint64_t s_ConfigSummaryHash = 0;
+
+    pSharedMem->SetDebugLogging(IsDebugLoggingEnabled(config.logLevel));
+    pSharedMem->SetLogLevel(config.logLevel);
     strncpy(pSharedMem->logFilePath, config.logFilePath.c_str(), sizeof(pSharedMem->logFilePath) - 1);
     pSharedMem->logFilePath[sizeof(pSharedMem->logFilePath) - 1] = '\0';
 
@@ -181,17 +183,31 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
     pSharedMem->fpsLimiter.SetUseVFR(config.video.useVFR);
 
-    LogInfo(
-        "[Inject] Updated SharedMem Config: VSync=%s, AF=%s, MipBias=%s "
-        "(Mode=%s), CPUPrerender=%.2f, BackBuffer=%d, FPS Limit=%d (%s), "
-        "CaptureOverlay=%d, ScreenshotOverlay=%d, DLSS[AutoExp=%s Sharpening=%.2f SRPreset=%u]",
-        pSharedMem->graphicsConfig.vsyncMode, pSharedMem->graphicsConfig.anisotropicFiltering,
-        pSharedMem->graphicsConfig.mipBias, pSharedMem->graphicsConfig.mipBiasMode,
-        pSharedMem->graphicsConfig.prerenderLimit, pSharedMem->graphicsConfig.backbufferCount,
-        pSharedMem->fpsLimiter.GetGeneralFps(), pSharedMem->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF",
-        pSharedMem->overlayConfig.captureIncludeOverlay, pSharedMem->overlayConfig.screenshotIncludeOverlay,
-        pSharedMem->graphicsConfig.dlssAutoExposure, pSharedMem->graphicsConfig.dlssSharpening,
-        pSharedMem->graphicsConfig.dlssSRPreset);
+    const uint64_t summaryHash = std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.vsyncMode)) ^
+                                 (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.anisotropicFiltering))
+                                  << 1) ^
+                                 (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.mipBias)) << 2) ^
+                                 (static_cast<uint64_t>(pSharedMem->graphicsConfig.backbufferCount) << 3) ^
+                                 (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralFps()) << 4) ^
+                                 (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralEnabled()) << 5) ^
+                                 (static_cast<uint64_t>(pSharedMem->graphicsConfig.dlssSRPreset) << 6) ^
+                                 (static_cast<uint64_t>(config.logLevel) << 7);
+
+    if (summaryHash != s_ConfigSummaryHash) {
+        LogInfo(
+            "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s mipBias=%s mode=%s cpuPrerender=%.2f "
+            "backBuffer=%d fpsLimit=%d(%s) captureOverlay=%d screenshotOverlay=%d dlssAutoExp=%s sharpen=%.2f "
+            "srPreset=%u",
+            LogLevelToConfigString(config.logLevel), pSharedMem->graphicsConfig.vsyncMode,
+            pSharedMem->graphicsConfig.anisotropicFiltering, pSharedMem->graphicsConfig.mipBias,
+            pSharedMem->graphicsConfig.mipBiasMode, pSharedMem->graphicsConfig.prerenderLimit,
+            pSharedMem->graphicsConfig.backbufferCount, pSharedMem->fpsLimiter.GetGeneralFps(),
+            pSharedMem->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF",
+            pSharedMem->overlayConfig.captureIncludeOverlay, pSharedMem->overlayConfig.screenshotIncludeOverlay,
+            pSharedMem->graphicsConfig.dlssAutoExposure, pSharedMem->graphicsConfig.dlssSharpening,
+            pSharedMem->graphicsConfig.dlssSRPreset);
+        s_ConfigSummaryHash = summaryHash;
+    }
 }
 
 static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config) {
@@ -215,28 +231,40 @@ static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config
         }
     };
 
+    size_t gameCount = 0;
+    size_t overlayCount = 0;
+
     for (const auto& entry : config.gameWhitelist) {
         addName(entry.pattern);
-        LogInfo("[Inject] Added game to whitelist cache: %s", entry.pattern.c_str());
+        gameCount++;
+        if (IsTraceLoggingEnabled(config.logLevel)) {
+            LogInfo("[Inject] Added game to whitelist cache: %s", entry.pattern.c_str());
+        }
     }
     for (const auto& entry : config.overlayWhitelist) {
         addName(entry.pattern);
-        LogInfo("[Inject] Added overlay target to whitelist cache: %s", entry.pattern.c_str());
+        overlayCount++;
+        if (IsTraceLoggingEnabled(config.logLevel)) {
+            LogInfo("[Inject] Added overlay target to whitelist cache: %s", entry.pattern.c_str());
+        }
     }
 
     // Always whitelist our test processes too
-    if (config.debugLogging) {
+    if (IsTraceLoggingEnabled(config.logLevel)) {
         addName("dx12_test.exe");
         addName("dx11_test.exe");
         addName("vulkan_test.exe");
     }
 
     *p = '\0';  // Double null terminator
+    LogInfo("[Inject] Whitelist cache prepared: games=%zu overlayTargets=%zu traceExtras=%d", gameCount, overlayCount,
+            IsTraceLoggingEnabled(config.logLevel) ? 1 : 0);
 }
 
 int InjectProcessMain(const AppConfig& config) {
     // Install crash handler for this process
     InstallCrashHandler();
+    Log_SetLevel(config.logLevel);
 
     // Register console control handler
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
@@ -305,8 +333,8 @@ int InjectProcessMain(const AppConfig& config) {
     // Initialize shared memory
     ZeroMemory(pSharedMem, sizeof(SharedMemoryLayout));
     pSharedMem->SetHostPID(GetCurrentProcessId());
-    pSharedMem->SetDebugLogging(currentConfig.debugLogging);
-    pSharedMem->SetLogLevel(LogLevel::Info);
+    pSharedMem->SetDebugLogging(IsDebugLoggingEnabled(currentConfig.logLevel));
+    pSharedMem->SetLogLevel(currentConfig.logLevel);
 
     // Copy log path
     std::string logPath = currentConfig.logFilePath;
@@ -474,6 +502,7 @@ int InjectProcessMain(const AppConfig& config) {
                         ShouldRescanForConfigChange(currentConfig, injectorState, reloadedConfig, newInjectorState);
 
                     currentConfig = reloadedConfig;
+                    Log_SetLevel(currentConfig.logLevel);
                     injectorState = newInjectorState;
 
                     if (pDiscovery) {

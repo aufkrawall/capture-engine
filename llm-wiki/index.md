@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-04-11
+Last cross-checked: 2026-04-12
 
 Primary sources:
 - `AGENTS.md`
@@ -24,11 +24,14 @@ Primary sources:
 
 ## Recommended Read Order
 - Start here to find the right page.
-- Read `log.md` next if the area has been changing recently.
+- Read `current.md` next for a compact current-state summary and routing.
+- Read `log.md` after that when you need the recent historical genesis for a changing area.
 - For build and tooling questions, read `build.py.md` and `codestyle.md`.
 - For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `frame-generation-switching.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog
+- `current.md`
+  - Compact current-state summary, current logging model, and token-efficient routing into the longer wiki pages.
 - `codestyle.md`
   - Formatter-backed style rules, Python tooling config, and common tree conventions.
 - `build.py.md`
@@ -51,3 +54,4 @@ Primary sources:
 ## Page Maintenance
 - Each page should keep `Last cross-checked`, `Primary sources`, `Facts`, and `Open questions / stale-risk` current.
 - Plan docs and old comments may be useful context, but they are secondary sources. Prefer live code, tests, config, and build scripts.
+- Keep `current.md` compact and current. Move detailed history into the topical pages and `log.md` instead of expanding the compact entrypoint indefinitely.

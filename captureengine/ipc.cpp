@@ -115,8 +115,8 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
     pSharedMem->BeginWriteOverlayConfig();
     pSharedMem->overlayConfig = newConfig.overlay;
     pSharedMem->EndWriteOverlayConfig();
-    pSharedMem->SetDebugLogging(newConfig.debugLogging);
-    pSharedMem->SetLogLevel(LogLevel::Info);
+    pSharedMem->SetDebugLogging(IsDebugLoggingEnabled(newConfig.logLevel));
+    pSharedMem->SetLogLevel(newConfig.logLevel);
 
     // Copy log file path for hook logging
     strncpy(pSharedMem->logFilePath, newConfig.logFilePath.c_str(), sizeof(pSharedMem->logFilePath) - 1);

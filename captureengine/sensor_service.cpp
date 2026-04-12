@@ -12,9 +12,13 @@ struct SensorSession {
     HANDLE hMap;
     SharedMemoryLayout* shm;
     int64_t cachedLuid = 0;  // Cache valid LUID once discovered
+    uint32_t lastSourcePid = 0;
+    int64_t lastEffectiveLuid = 0;
+    uint32_t updatesSinceSummary = 0;
 };
 
 int SensorProcessMain(const AppConfig& config) {
+    Log_SetLevel(config.logLevel);
     LogInfo("[Sensors] Dedicated sensor service started");
 
     // Handle Windows shutdown/logoff when controller may already be gone
@@ -117,8 +121,18 @@ int SensorProcessMain(const AppConfig& config) {
             // Use cached LUID if current is 0
             int64_t effectiveLuid = (luid != 0) ? luid : s.cachedLuid;
 
-            if (s.shm->GetDebugLogging() && effectiveLuid != 0) {
-                LogInfo("[Sensors] Updating PID %u (Game: %u), LUID: 0x%llX", it->first, sourcePid, effectiveLuid);
+            if (sourcePid != s.lastSourcePid || effectiveLuid != s.lastEffectiveLuid) {
+                LogInfo("[Sensors] Session update: injectPid=%u gamePid=%u luid=0x%llX", it->first, sourcePid,
+                        effectiveLuid);
+                s.lastSourcePid = sourcePid;
+                s.lastEffectiveLuid = effectiveLuid;
+            }
+
+            s.updatesSinceSummary++;
+            if (IsDebugLoggingEnabled(config.logLevel) && s.updatesSinceSummary >= 30) {
+                LogInfo("[Sensors] Summary: injectPid=%u gamePid=%u luid=0x%llX updates=%u", it->first, sourcePid,
+                        effectiveLuid, s.updatesSinceSummary);
+                s.updatesSinceSummary = 0;
             }
 
             // Update metrics using the existing host_metrics logic

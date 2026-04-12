@@ -17,9 +17,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
-
-// Forward declaration for HookLog (defined in hook_common.cpp)
-void HookLog(const char* fmt, ...);
+#include "../common/hook_common.h"
 
 namespace InlineHook {
 
@@ -929,6 +927,21 @@ bool Install(void* target, void* detour, void** outTrampoline) {
         HookLog("%s", buf);
     };
 
+    auto TraceDirect = [](const char* fmt, ...) {
+        if (!HookTraceLoggingEnabled()) {
+            return;
+        }
+        va_list args;
+        va_start(args, fmt);
+        char buf[1024];
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+        vsnprintf(buf, sizeof(buf), fmt, args);
+#pragma GCC diagnostic pop
+        va_end(args);
+        HookLog("%s", buf);
+    };
+
     LogDirect("=== Install called: target=%p, detour=%p", target, detour);
 
     if (!target || !detour || !outTrampoline) {
@@ -953,7 +966,7 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     bool is64bit = false;
 #endif
 
-    LogDirect("is64bit=%d, checking if externally hooked...", is64bit ? 1 : 0);
+    TraceDirect("is64bit=%d, checking if externally hooked...", is64bit ? 1 : 0);
 
     // CRITICAL: Check if the target function appears to already be hooked
     // by another component (another DLL, another process, overlay, etc.)
@@ -1270,11 +1283,13 @@ bool Install(void* target, void* detour, void** outTrampoline) {
             bytesRemaining -= written;
         }
     }
-    LogDirect("Original bytes: %s", bytesStr);
+    TraceDirect("Original bytes: %s", bytesStr);
 
-    HookLog("InlineHook: Original bytes at %p:", target);
-    for (int i = 0; i < copySize && i < 16; i++) {
-        HookLog("  [%02d] 0x%02X", i, code[i]);
+    if (HookTraceLoggingEnabled()) {
+        HookLog("InlineHook: Original bytes at %p:", target);
+        for (int i = 0; i < copySize && i < 16; i++) {
+            HookLog("  [%02d] 0x%02X", i, code[i]);
+        }
     }
 
     // Allocate trampoline
@@ -1299,9 +1314,11 @@ bool Install(void* target, void* detour, void** outTrampoline) {
         int instrLen = GetInstructionLength(code + srcOffset, is64bit);
 
         // Log instruction being copied
-        HookLog("InlineHook: Copying instruction at offset %d, len=%d:", srcOffset, instrLen);
-        for (int i = 0; i < instrLen && i < 8; i++) {
-            HookLog("  [%02d] 0x%02X", i, code[srcOffset + i]);
+        if (HookTraceLoggingEnabled()) {
+            HookLog("InlineHook: Copying instruction at offset %d, len=%d:", srcOffset, instrLen);
+            for (int i = 0; i < instrLen && i < 8; i++) {
+                HookLog("  [%02d] 0x%02X", i, code[srcOffset + i]);
+            }
         }
 
         const auto shortBranchResult = TryRelocateExternalShortControlTransfer(
@@ -1332,10 +1349,13 @@ bool Install(void* target, void* detour, void** outTrampoline) {
             uintptr_t newInstrEnd = (uintptr_t)(trampoline + trampolineOffset + instrLen);
             int64_t newDisp = (int64_t)absTarget - (int64_t)newInstrEnd;
 
-            HookLog(
-                "InlineHook: PC-relative fixup at srcOff=%d, dispOff=%d, "
-                "origDisp=0x%08X, absTarget=%p, newInstrEnd=%p, newDisp=0x%08llX",
-                srcOffset, dispOff, (unsigned)origDisp, (void*)absTarget, (void*)newInstrEnd, (long long)newDisp);
+                if (HookTraceLoggingEnabled()) {
+                    HookLog(
+                        "InlineHook: PC-relative fixup at srcOff=%d, dispOff=%d, "
+                        "origDisp=0x%08X, absTarget=%p, newInstrEnd=%p, newDisp=0x%08llX",
+                        srcOffset, dispOff, (unsigned)origDisp, (void*)absTarget, (void*)newInstrEnd,
+                        (long long)newDisp);
+                }
 
             if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
                 // Check if this is a JMP rel32 (0xE9) or CALL rel32 (0xE8) that we can convert to absolute
@@ -1383,10 +1403,12 @@ bool Install(void* target, void* detour, void** outTrampoline) {
             int32_t newDisp32 = (int32_t)newDisp;
             memcpy(trampoline + trampolineOffset + dispOff, &newDisp32, 4);
         } else {
-            HookLog(
-                "InlineHook: No PC-relative fixup needed for instruction at "
-                "offset %d",
-                srcOffset);
+            if (HookTraceLoggingEnabled()) {
+                HookLog(
+                    "InlineHook: No PC-relative fixup needed for instruction at "
+                    "offset %d",
+                    srcOffset);
+            }
         }
 
         trampolineOffset += instrLen;
@@ -1415,9 +1437,11 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     }
 
     // Dump trampoline bytes for diagnosis
-    HookLog("InlineHook: Trampoline bytes (%d bytes total):", trampolineOffset);
-    for (int i = 0; i < trampolineOffset && i < 32; i++) {
-        HookLog("  [%02d] 0x%02X", i, trampoline[i]);
+    if (HookTraceLoggingEnabled()) {
+        HookLog("InlineHook: Trampoline bytes (%d bytes total):", trampolineOffset);
+        for (int i = 0; i < trampolineOffset && i < 32; i++) {
+            HookLog("  [%02d] 0x%02X", i, trampoline[i]);
+        }
     }
 
     // Save original bytes

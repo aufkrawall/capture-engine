@@ -228,7 +228,11 @@ void CreateDefaultConfig(const std::string& path) {
 ; =============================================================================
 
 [General]
-; debug_logging - Values: true, false (also enables the per-frame CSV profiler)
+; log_level - Values: off, error, warn, info, debug, trace
+;   debug = normal debugging logs
+;   trace = debug plus forensic / very verbose traces (hook byte dumps, CSV perf logs)
+log_level=debug
+; debug_logging - Legacy compatibility alias. Prefer log_level above.
 debug_logging=true
 ; capture_method - Values: inject, wgc, auto
 ;   inject = injected shared-memory capture only
@@ -664,11 +668,18 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     };
 
     // General
-    config.debugLogging = GetBool("General", "debug_logging", true);
+    const std::string logLevelRaw = GetStr("General", "log_level", "");
+    config.logLevel = ParseLogLevelString(logLevelRaw, LogLevel::Debug);
+
+    const std::string debugLoggingRaw = GetStr("General", "debug_logging", "");
+    if (!debugLoggingRaw.empty()) {
+        config.logLevel = ParseBool(debugLoggingRaw) ? LogLevel::Debug : LogLevel::Off;
+    }
     std::string legacyPerfMetricsLogging = GetStr("General", "perf_metrics_logging", "");
     if (!legacyPerfMetricsLogging.empty() && ParseBool(legacyPerfMetricsLogging)) {
-        config.debugLogging = true;
+        config.logLevel = LogLevel::Trace;
     }
+    config.debugLogging = IsDebugLoggingEnabled(config.logLevel);
     config.captureMethod = NormalizeCaptureMethod(GetStr("General", "capture_method", "auto"));
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
 
@@ -761,7 +772,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
 
     // Log parsed presets for debugging
-    if (config.debugLogging) {
+    if (IsDebugLoggingEnabled(config.logLevel)) {
         LogInfo("Config: Parsed dlss_sr_preset='%s' -> ID %u", config.graphics.dlssSRPreset.c_str(),
                 config.graphics.parsed.srPreset);
         if (config.graphics.parsed.srPreset > 0) {

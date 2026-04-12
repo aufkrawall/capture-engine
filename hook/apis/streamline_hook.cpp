@@ -306,17 +306,29 @@ void ApplyCombinedDLSSFGState(bool active, int multiplier) {
 }
 
 void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char* source) {
-    const bool previousSignal = DXGIShared::g_StreamlineFGRunning.exchange(active, std::memory_order_acq_rel);
+    const bool inStartupWindow =
+        !active && DXGIShared::IsStreamlineStartupTransitionWindowActive();
+    const bool effectiveActive =
+        inStartupWindow ? DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) : active;
+
+    const bool previousSignal =
+        DXGIShared::g_StreamlineFGRunning.exchange(effectiveActive, std::memory_order_acq_rel);
     if (active) {
         DXGIShared::ArmStreamlineStartupTransitionWindow();
     }
     g_FGCompat.SetStreamlineFGSignal(active);
     ApplyCombinedDLSSFGState(active, multiplier);
 
-    if (previousSignal != active) {
-        DX12_OnStreamlineFGStateChanged(active);
+    if (previousSignal != effectiveActive) {
+        DX12_OnStreamlineFGStateChanged(effectiveActive);
         HookLogImportant("Streamline Hook: FG state transition %s->%s via %s", previousSignal ? "ON" : "OFF",
-                         active ? "ON" : "OFF", source ? source : "runtime-state");
+                         effectiveActive ? "ON" : "OFF", source ? source : "runtime-state");
+    }
+    if (inStartupWindow) {
+        HookLogImportant(
+            "Streamline Hook: Deferring OFF signal during startup transition window "
+            "(g_StreamlineFGRunning stays ON, source=%s)",
+            source ? source : "unknown");
     }
 }
 

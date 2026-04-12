@@ -83,7 +83,19 @@ inline bool HookDebugLoggingEnabled() {
     if (g_pSharedMem)
         return g_pSharedMem->GetDebugLogging();
     if (g_pLocalConfig)
-        return g_pLocalConfig->debugLogging;
+        return IsDebugLoggingEnabled(g_pLocalConfig->logLevel);
+#endif
+    return false;
+}
+
+inline bool HookTraceLoggingEnabled() {
+    if (g_IPC && g_IPC->GetSharedMem())
+        return static_cast<int>(g_IPC->GetSharedMem()->GetLogLevel()) >= static_cast<int>(LogLevel::Trace);
+#ifndef VK_LAYER_CE_OVERLAY
+    if (g_pSharedMem)
+        return static_cast<int>(g_pSharedMem->GetLogLevel()) >= static_cast<int>(LogLevel::Trace);
+    if (g_pLocalConfig)
+        return IsTraceLoggingEnabled(g_pLocalConfig->logLevel);
 #endif
     return false;
 }

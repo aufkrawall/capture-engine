@@ -164,7 +164,7 @@ bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
 }
 
 bool MediaEngineConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
-    if (lhs.debugLogging != rhs.debugLogging || lhs.captureMethod != rhs.captureMethod ||
+    if (lhs.logLevel != rhs.logLevel || lhs.captureMethod != rhs.captureMethod ||
         !MediaVideoConfigEquals(lhs.video, rhs.video) || lhs.audioSources.size() != rhs.audioSources.size()) {
         return false;
     }
@@ -4639,6 +4639,7 @@ void StopRecording() {
 
 int MediaProcessMain(const AppConfig& initialConfig) {
     AppConfig config = initialConfig;
+    Log_SetLevel(config.logLevel);
     timeBeginPeriod(1);
     SetConsoleCtrlHandler(MediaConsoleHandler, TRUE);
 
@@ -4669,7 +4670,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
 
-        MediaEngine_SetLogCallback(config.debugLogging ? MediaLogCallback : nullptr);
+        MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
         if (!MediaEngine_Init(&config)) {
             LogError("[Media] Failed to initialize MediaEngine");
             if (MediaEngine_Shutdown) {
@@ -4945,6 +4946,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         const bool mediaConfigChanged = !MediaEngineConfigEquals(config, resolvedConfig);
 
         config = std::move(resolvedConfig);
+        Log_SetLevel(config.logLevel);
         activeConfigSourcePid = sourcePid;
         activeConfigProcessName = processName;
 
@@ -4953,7 +4955,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
         }
         if (mediaEngineReady) {
-            MediaEngine_SetLogCallback(config.debugLogging ? MediaLogCallback : nullptr);
+            MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
             if (forceReload || mediaConfigChanged) {
                 MediaEngine_ReloadConfig(&config);
             }

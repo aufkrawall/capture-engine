@@ -42,6 +42,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
 
     // Default is TRUE in config.cpp
     EXPECT_TRUE(config.debugLogging);
+    EXPECT_EQ(config.logLevel, LogLevel::Debug);
     EXPECT_EQ(config.captureMethod, "auto");
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
@@ -63,6 +64,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("capture_include_overlay=true"), std::string::npos);
     EXPECT_NE(generatedText.find("screenshot_include_overlay=true"), std::string::npos);
     EXPECT_EQ(generatedText.find("perf_metrics_logging="), std::string::npos);
+    EXPECT_NE(generatedText.find("log_level=debug"), std::string::npos);
     EXPECT_EQ(generatedText.find("nvidia_smooth_motion_compat="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr_audio_sync="), std::string::npos);
@@ -92,6 +94,30 @@ TEST_F(ConfigTest, ParseValues) {
     EXPECT_EQ(config.video.encoder, "av1_nvenc");
     EXPECT_EQ(config.video.fps, 60);
     EXPECT_EQ(config.video.bitrate, "50Mbps");
+}
+
+TEST_F(ConfigTest, ParseLogLevelValues) {
+    WriteConfig(
+        "[General]\n"
+        "log_level=trace\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.logLevel, LogLevel::Trace);
+    EXPECT_TRUE(config.debugLogging);
+}
+
+TEST_F(ConfigTest, DebugLoggingFalseMapsToOff) {
+    WriteConfig(
+        "[General]\n"
+        "debug_logging=false\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.logLevel, LogLevel::Off);
+    EXPECT_FALSE(config.debugLogging);
 }
 
 TEST_F(ConfigTest, ParseExplicitWgcCaptureMethod) {
@@ -162,6 +188,7 @@ TEST_F(ConfigTest, LegacyPerfMetricsLoggingEnablesUnifiedDebugLogging) {
     LoadConfig(tempConfigFile, config);
 
     EXPECT_TRUE(config.debugLogging);
+    EXPECT_EQ(config.logLevel, LogLevel::Trace);
 }
 
 TEST_F(ConfigTest, WhitelistParsing) {

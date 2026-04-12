@@ -10,8 +10,9 @@
 static FILE* g_LogFile = nullptr;
 static std::mutex g_LogMutex;
 static std::atomic<bool> g_LoggingEnabled{false};
+static std::atomic<LogLevel> g_LogLevel{LogLevel::Debug};
 
-void Log_Init(const std::string& filename) {
+void Log_Init(const std::string& filename, LogLevel level) {
     std::lock_guard<std::mutex> lock(g_LogMutex);
     if (g_LogFile)
         fclose(g_LogFile);
@@ -24,6 +25,7 @@ void Log_Init(const std::string& filename) {
         setvbuf(g_LogFile, nullptr, _IOLBF, 4096);
         fprintf(g_LogFile, "[BUILD] Version=%s Built=%s\n", CAPTURE_VERSION, BUILD_TIMESTAMP);
     }
+    g_LogLevel.store(level, std::memory_order_release);
     g_LoggingEnabled.store(g_LogFile != nullptr, std::memory_order_release);
 }
 
@@ -36,9 +38,24 @@ void Log_Shutdown() {
     }
 }
 
+void Log_SetLevel(LogLevel level) {
+    g_LogLevel.store(level, std::memory_order_release);
+}
+
+LogLevel Log_GetLevel() {
+    return g_LogLevel.load(std::memory_order_acquire);
+}
+
+bool Log_IsEnabled(LogLevel level) {
+    return g_LoggingEnabled.load(std::memory_order_acquire) &&
+           static_cast<int>(level) <= static_cast<int>(g_LogLevel.load(std::memory_order_acquire));
+}
+
 void Log(LogLevel level, const char* format, ...) {
     std::lock_guard<std::mutex> lock(g_LogMutex);
     if (!g_LogFile)
+        return;
+    if (static_cast<int>(level) > static_cast<int>(g_LogLevel.load(std::memory_order_relaxed)))
         return;
 
     va_list args;
@@ -51,7 +68,9 @@ void Log(LogLevel level, const char* format, ...) {
              localTime.wDay, localTime.wHour, localTime.wMinute, localTime.wSecond, localTime.wMilliseconds);
 
     const char* levelStr = "[INFO]";
-    if (level == LogLevel::Debug)
+    if (level == LogLevel::Trace)
+        levelStr = "[TRACE]";
+    else if (level == LogLevel::Debug)
         levelStr = "[DEBUG]";
     else if (level == LogLevel::Error)
         levelStr = "[ERROR]";
@@ -69,7 +88,7 @@ void Log(LogLevel level, const char* format, ...) {
 }
 
 void LogInfo(const char* format, ...) {
-    if (!g_LoggingEnabled.load(std::memory_order_acquire))
+    if (!Log_IsEnabled(LogLevel::Info))
         return;
     va_list args;
     va_start(args, format);
@@ -83,7 +102,7 @@ void LogInfo(const char* format, ...) {
 }
 
 void LogError(const char* format, ...) {
-    if (!g_LoggingEnabled.load(std::memory_order_acquire))
+    if (!Log_IsEnabled(LogLevel::Error))
         return;
     va_list args;
     va_start(args, format);
@@ -94,7 +113,7 @@ void LogError(const char* format, ...) {
 }
 
 void LogDebug(const char* format, ...) {
-    if (!g_LoggingEnabled.load(std::memory_order_acquire))
+    if (!Log_IsEnabled(LogLevel::Debug))
         return;
     va_list args;
     va_start(args, format);
@@ -105,7 +124,7 @@ void LogDebug(const char* format, ...) {
 }
 
 void LogWarn(const char* format, ...) {
-    if (!g_LoggingEnabled.load(std::memory_order_acquire))
+    if (!Log_IsEnabled(LogLevel::Warn))
         return;
     va_list args;
     va_start(args, format);

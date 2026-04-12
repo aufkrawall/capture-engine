@@ -14,6 +14,30 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-12 - Add selectable logging levels, compact session manifests, and token-efficient wiki routing
+- **Change**:
+  1. `config.ini` now supports `log_level=off|error|warn|info|debug|trace` as the primary logging control, while keeping `debug_logging` and `perf_metrics_logging` as compatibility inputs.
+  2. `debug` remains the intended normal debugging level. `trace` is now the explicitly more verbose forensic tier for byte dumps, per-instruction hook traces, and the per-frame perf CSV logger.
+  3. Session bundles now gain a compact `session_manifest.txt` entrypoint so readers and agents can orient themselves before opening the detailed logs.
+  4. `captureengine/sensor_service.cpp` now logs change events plus periodic summaries instead of a repeated every-second steady-state update line.
+  5. `hook/wrappers/inline_hook.cpp` now keeps the byte-dump / per-instruction tracing on the new `trace` tier while leaving the higher-value install/failure lines in normal debug logs.
+  6. Added `llm-wiki/current.md` and updated `index.md` to route readers through a compact current-state page before the long historical archive in `log.md`.
+- **Why this helps without losing debuggability**: The new split keeps the routine state-transition and failure logs easy to read in `debug`, while still preserving the forensic detail under `trace` when deeper hook or timing analysis is needed. The wiki routing change preserves historical genesis in `log.md` and the topical pages instead of deleting it, but reduces the need to re-read the full archive for every task.
+- Pages touched: `current.md`, `index.md`, `build.py.md`, `log.md`.
+- Source files checked: `common/config.h`, `common/config.cpp`, `common/logging.cpp`, `captureengine/main.cpp`, `captureengine/inject_main.cpp`, `captureengine/sensor_service.cpp`, `hook/common/hook_common.h`, `hook/wrappers/inline_hook.cpp`, `build.py`.
+- Stale-risk note: Re-check this area whenever logging levels, session bundle contents, or the wiki read-order guidance changes. If `debug` starts accumulating trace-only byte dumps again, revisit the split immediately.
+
+### 2026-04-12 - Defer g_StreamlineFGRunning OFF signal during startup transition window to prevent multi-device DLSS FG threading race
+- **Root cause**: In log bundle `installed/captureengine/logs/20260412_151606`, GTA V Enhanced DLSS FG still froze after the dormant-callback fix from `20260412_142710`. The freeze dump shows the same pattern: game's present thread stuck inside `sl_dlss_g` throwing `std::_Throw_C_error` (C++ threading/mutex error). The key sequence was: DLSS FG activates via SetOptions (first ON), then GetState reports OFF during initialization (transient signal drop), and `g_StreamlineFGRunning` is immediately set to `false`, toggling CE's Present routing. DLSS FG re-activates via SetOptions (second ON), `g_StreamlineFGRunning` goes back to `true`. This toggling during SL's fragile multi-device initialization (third swapchain on a different D3D12 device) changes timing enough to expose a threading race in `sl_dlss_g`. Present traffic stopped permanently after the first synthetic re-entrant Present, and the game thread eventually crashed inside SL.
+- **Fix**:
+  1. `hook/apis/streamline_hook.cpp` `ApplyCombinedStreamlineRuntimeState(false)` now checks `IsStreamlineStartupTransitionWindowActive()`. When the startup window is active and the signal is OFF, `g_StreamlineFGRunning` keeps its current value (true) instead of being set to false. The `DX12_OnStreamlineFGStateChanged` callback is also suppressed during this deferral. After the window expires, the next GetState or SetOptions call processes the real state normally.
+- **Why this is generic**: Any DX12 game that uses DLSS FG through Streamline on a multi-device configuration can experience transient GetState signal drops during initialization. The fix keeps CE's Present routing stable throughout the churn, avoiding timing changes that can trigger threading races in SL's internal state machine.
+- **Verification**:
+  - Ran `python build.py --incremental --run-tests --skip-updates`. Build completed successfully and all 531 tests passed.
+- Pages touched: `frame-generation-switching.md`, `log.md`.
+- Source files checked: `installed/captureengine/logs/20260412_151606/hook_debug.log`, `installed/captureengine/logs/20260412_151606/GTA5_Enhanced.exe_FREEZE_2026-04-12_15-17-46_638.dmp`, `hook/apis/streamline_hook.cpp`, `hook/common/dxgi_shared.cpp`, `hook/apis/dx12_hook.cpp`.
+- Stale-risk note: Re-check this family whenever DLSS FG startup timing, `g_StreamlineFGRunning` signal propagation, or multi-device overlay initialization changes. If a future bundle again shows `OFF->ON` churn followed by `sl_dlss_g` threading crash, check whether the startup-window deferral is still working correctly.
+
 ### 2026-04-12 - Keep PostSL callback dormant during DLSS FG startup churn to prevent freeze
 - **Root cause**: In log bundle `installed/captureengine/logs/20260412_142710`, GTA V Enhanced DLSS FG still froze after the earlier fixes. The freeze dump shows the game's present thread stuck inside `sl_dlss_g` throwing `std::_Throw_Cpp_error` (a C++ standard library threading/mutex error). The key sequence was: DLSS FG activates via SetOptions (first ON), GetState reports OFF (transient signal drop during initialization), CE fully tears down the PostSL callback and lifecycle state, then DLSS FG re-activates via SetOptions (second ON), CE re-installs and re-initializes everything from scratch. This repeated full teardown/re-init cycle on every OFF/ON transition during the startup transition window — including clearing the callback pointer, waiting for in-flight callbacks to drain, resetting the lifecycle epoch, and clearing cached queue state — interfered with DLSS FG's fragile multi-device initialization (new swapchain on a different D3D12 device `0000019D3E6D7670` vs the game's original `0000019A02992040`).
 - **Fix**:

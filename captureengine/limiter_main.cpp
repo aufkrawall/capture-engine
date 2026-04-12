@@ -222,6 +222,7 @@ void ApplyFramePacing(SharedMemoryLayout* shm) {
 }
 
 int LimiterProcessMain(const AppConfig& config) {
+    Log_SetLevel(config.logLevel);
     SetConsoleCtrlHandler(LimiterConsoleHandler, TRUE);
 
     // Set realtime priority for minimal jitter

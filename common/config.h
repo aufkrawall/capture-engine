@@ -4,6 +4,8 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <cctype>
 #include "shared_defs.h"
 
 #include "build_version.h"
@@ -269,7 +271,8 @@ struct PseudoOverlayConfig {
 
 struct AppConfig {
     // General
-    bool debugLogging = true;   // Default to true, matches LoadConfig default
+    bool debugLogging = true;   // Legacy compatibility view: true when logLevel >= Debug
+    LogLevel logLevel = LogLevel::Debug;
     std::string captureMethod;  // "inject", "wgc", "auto"
     std::string logFilePath;    // Path to captureengine.log
 
@@ -333,6 +336,73 @@ struct AppConfig {
     // Audio
     std::vector<AudioConfig> audioSources;  // System, Mic, etc.
 };
+
+inline bool IsDebugLoggingEnabled(LogLevel level) {
+    return static_cast<int>(level) >= static_cast<int>(LogLevel::Debug);
+}
+
+inline bool IsTraceLoggingEnabled(LogLevel level) {
+    return static_cast<int>(level) >= static_cast<int>(LogLevel::Trace);
+}
+
+inline bool IsAnyLoggingEnabled(LogLevel level) {
+    return static_cast<int>(level) > static_cast<int>(LogLevel::Off);
+}
+
+inline const char* LogLevelToConfigString(LogLevel level) {
+    switch (level) {
+        case LogLevel::Off:
+            return "off";
+        case LogLevel::Error:
+            return "error";
+        case LogLevel::Warn:
+            return "warn";
+        case LogLevel::Info:
+            return "info";
+        case LogLevel::Debug:
+            return "debug";
+        case LogLevel::Trace:
+            return "trace";
+        default:
+            return "debug";
+    }
+}
+
+inline std::string NormalizeConfigToken(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaultLevel = LogLevel::Debug) {
+    const std::string value = NormalizeConfigToken(rawValue);
+    if (value.empty()) {
+        return defaultLevel;
+    }
+    if (value == "off" || value == "none") {
+        return LogLevel::Off;
+    }
+    if (value == "error") {
+        return LogLevel::Error;
+    }
+    if (value == "warn" || value == "warning") {
+        return LogLevel::Warn;
+    }
+    if (value == "info") {
+        return LogLevel::Info;
+    }
+    if (value == "debug" || value == "on" || value == "true") {
+        return LogLevel::Debug;
+    }
+    if (value == "trace" || value == "verbose") {
+        return LogLevel::Trace;
+    }
+    if (value == "false") {
+        return LogLevel::Off;
+    }
+    return defaultLevel;
+}
 
 // Global Config Instance Access
 // overrideProcessName: Optional process name (e.g. "game.exe") to force

@@ -169,7 +169,7 @@ inline void StoreSeqCst(std::atomic<T>& atomic, T value) {
 // Overlay Corners
 enum class OverlayPosition : int { TopLeft = 0, TopRight = 1, BottomLeft = 2, BottomRight = 3 };
 
-enum class LogLevel : int { Error = 0, Warn = 1, Info = 2, Debug = 3 };
+enum class LogLevel : int { Off = 0, Error = 1, Warn = 2, Info = 3, Debug = 4, Trace = 5 };
 
 struct OverlayConfig {
     // Master toggle

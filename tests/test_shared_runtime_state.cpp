@@ -183,6 +183,7 @@ TEST(InjectOverlayPolicyTest, StandardInjectionKeepsGameWhitelist) {
 TEST(InjectOverlayPolicyTest, RescanTracksWhitelistAndLoggingChanges) {
     AppConfig oldConfig;
     oldConfig.captureMethod = "inject";
+    oldConfig.logLevel = LogLevel::Off;
     oldConfig.debugLogging = false;
     oldConfig.gameWhitelist.push_back({.pattern = "game.exe"});
 
@@ -191,6 +192,7 @@ TEST(InjectOverlayPolicyTest, RescanTracksWhitelistAndLoggingChanges) {
                                              BuildInjectorConfigState(sameConfig)));
 
     AppConfig newConfig = oldConfig;
+    newConfig.logLevel = LogLevel::Debug;
     newConfig.debugLogging = true;
     EXPECT_TRUE(ShouldRescanForConfigChange(oldConfig, BuildInjectorConfigState(oldConfig), newConfig,
                                             BuildInjectorConfigState(newConfig)));
