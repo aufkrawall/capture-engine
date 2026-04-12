@@ -2084,6 +2084,7 @@ static std::atomic<ULONGLONG> s_lastStartupBlockingRenderModuleActivityMs{0};
 // should also keep the normal allocator pool.
 static std::atomic<bool> s_startupOverlayCompatSettled{false};
 static std::atomic<bool> s_startupOverlayObservedAnyFG{false};
+static std::atomic<bool> s_pendingLateRuntimeOwnedStartupHandoff{false};
 
 static void ResetStartupOverlayBackendActivationStage();
 
@@ -2098,15 +2099,22 @@ static void UpdateStartupOverlayCompatibilityState() {
     const bool actualFGActive = IsActualFrameGenerationActive();
     if (actualFGActive) {
         s_startupOverlayObservedAnyFG.store(true, std::memory_order_release);
+        s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
         return;
     }
 
     const bool startupBlockingOverlayLoaded = ce::overlay_compat::GetStartupBlockingOverlayModuleName() != nullptr;
+    if (!startupBlockingOverlayLoaded || !g_FGRuntimeOwnsSwapchain) {
+        s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
+    }
+
     const bool observedAnyFrameGenerationActivity = s_startupOverlayObservedAnyFG.load(std::memory_order_acquire);
     const bool startupCompatSettled = s_startupOverlayCompatSettled.load(std::memory_order_acquire);
+    const bool lateRuntimeOwnedHandoffJustObserved =
+        s_pendingLateRuntimeOwnedStartupHandoff.exchange(false, std::memory_order_acq_rel);
     if (!ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
             startupBlockingOverlayLoaded, actualFGActive, startupCompatSettled, g_FGRuntimeOwnsSwapchain,
-            observedAnyFrameGenerationActivity)) {
+            observedAnyFrameGenerationActivity, lateRuntimeOwnedHandoffJustObserved)) {
         return;
     }
 
@@ -3195,6 +3203,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(true, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = GetTickCount64();
             runtimeOwnershipJustActivated = true;
+            s_pendingLateRuntimeOwnedStartupHandoff.store(true, std::memory_order_release);
             HookLogImportant(
                 "DX12: FG runtime now owns swapchain queue %p (origGame=%p) — dedicated/cross-queue overlay work is "
                 "disabled on this queue",
@@ -3220,6 +3229,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
             g_FGRuntimeOwnsSwapchain = false;
             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = 0;
+            s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
             if (g_FGCompat.IsFSRFGApiActive()) {
                 HookLogImportant("DX12: Swapchain returned to origGame queue %p — ending authoritative FSR FG state",
                                  pQueue);
@@ -8492,6 +8502,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // When SL FG is NOT active, the current thread IS the game thread.
             // Update the tracked ID (game might switch render threads).
             g_GamePresentThreadId.store(currentTid, std::memory_order_release);
+            g_RenderWatchdog.SetMonitoredThread(currentTid);
         }
     }
 

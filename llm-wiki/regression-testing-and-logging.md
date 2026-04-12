@@ -43,6 +43,8 @@ Primary sources:
 ## Practical Regression Checklist
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.
 - If you touch watchdog ownership or dump-trigger conditions, verify that helper heartbeats do not silently retarget the monitored thread and that explicit stall conditions still produce an automatic dump.
+- If you touch watchdog ownership or dump-trigger conditions, also verify that an immediate dump request targeting the current render/present thread is handled asynchronously instead of trying to suspend/capture that same thread inline.
+- If you touch Streamline stall detection, verify that top-level `Present1` traffic counts as forward progress alongside `Present`; otherwise `Present STALLED` can become a false positive on games/runtimes that switch entrypoints during DLSS activation.
 - If you change how FG mode transitions are interpreted, verify both routing behavior and visible overlay status behavior.
 - If you change injection or overlay handoff behavior, verify the runtime flags and pseudo-overlay suppression path.
 - Prefer fast focused unit tests while iterating, then run broader coverage before considering the work complete.
@@ -62,7 +64,15 @@ python build.py --full-integration --skip-updates
 
 python .\testapp\run_tests.py --api dx9 --arch both --tests 1 --duration 5 --min-frames 60
 python .\testapp\run_tests.py --api all --arch both --tests 1 --duration 5 --min-frames 60
+
+powershell -ExecutionPolicy Bypass -File .\analysis\analyze_dump.ps1 .\installed\captureengine\logs\<session>\<dump>.dmp
 ```
+
+## Dump Analysis Notes
+- Windows-host builds now emit sidecar `.pdb` files via clang CodeView debug info plus `lld` PDB emission, so `cdb.exe`, WinDbg, and Visual Studio can load native symbols without switching the build to MSVC.
+- `analysis/analyze_dump.ps1` points `cdb.exe` at repo-local symbol locations first: `installed/captureengine`, `tests`, and `installed/testapp`.
+- The helper also adds a Microsoft symbol-server cache under `build/symbols-cache` by default so system DLL frames resolve more reliably.
+- Legacy standalone `.dbg` files are not produced; `.pdb` is now the intended Windows symbol format in this repo.
 
 ## Logging Guidance
 - Prefer logs that make transition and ownership changes reconstructible later.

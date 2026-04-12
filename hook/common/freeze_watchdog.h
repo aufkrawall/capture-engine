@@ -10,6 +10,14 @@
 #include <string>
 #include <thread>
 
+namespace ce::freeze_watchdog_policy {
+
+inline bool ShouldDeferImmediateDumpToWatchdogThread(DWORD callerThreadId, DWORD targetThreadId) {
+    return targetThreadId != 0 && callerThreadId == targetThreadId;
+}
+
+}  // namespace ce::freeze_watchdog_policy
+
 // Freeze detection watchdog - monitors thread heartbeats and creates dumps on freeze
 // Design principles:
 // 1. Pre-load DbgHelp.dll to avoid loader lock during crash
@@ -98,6 +106,10 @@ private:
     std::atomic<bool> forceMonitor_{false};
     std::atomic<uint64_t> lastDumpRequestMicros_{0};
     std::atomic<PreferredThreadProvider> preferredThreadProvider_{nullptr};
+    std::atomic<bool> pendingImmediateDump_{false};
+    std::mutex pendingImmediateDumpMutex_;
+    std::string pendingImmediateDumpReason_;
+    DWORD pendingImmediateDumpTargetTid_{0};
 
     static constexpr double STARTUP_GRACE_PERIOD = 10.0;
     static constexpr double DEFAULT_TIMEOUT = 30.0;

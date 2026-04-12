@@ -118,7 +118,8 @@ std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback{nullptr};
 // Direct Streamline FG running signal (set by streamline_hook.cpp).
 std::atomic<bool> g_StreamlineFGRunning{false};
 
-// Present call counter — incremented by DetourPresent, read by SL hook to detect bypass.
+// Present call counter — incremented by DetourPresent and DetourPresent1, read by
+// SL hook to detect bypass.
 std::atomic<uint64_t> g_PresentCallCounter{0};
 
 void DX12_RegisterThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain, const char* creatorModulePath) {
@@ -1221,6 +1222,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
+    g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
+
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }

@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-04-11
+Last cross-checked: 2026-04-12
 
 Primary sources:
 - `build.py`
@@ -106,6 +106,7 @@ Default quality mode currently:
 ## Operational Notes
 - The script always rewrites `compile_commands.json` at the end of a successful build.
 - On Windows, the script bootstraps MSYS2 and manages a custom FFmpeg build path.
+- On Windows hosts, the build now emits CodeView debug info plus sidecar `.pdb` files for the built PE outputs while staying on the existing clang/lld toolchain.
 - On Linux and WSL, the script uses cross-compilers and downloaded MSYS2 packages for dependencies.
 - There is no strict unknown-flag validator. Flags that the script does not inspect are not automatically rejected.
 
@@ -126,4 +127,4 @@ python build.py --production --skip-updates
 
 ## Open Questions / Stale-Risk
 - Stale risk is medium because the CLI is manual and easy to change without a single declarative schema.
-- Re-check this page after any `sys.argv` parsing, integration defaults, sanitizer flow, or FFmpeg bootstrap change.
+- Re-check this page after any `sys.argv` parsing, debug-info/PDB emission change, integration defaults, sanitizer flow, or FFmpeg bootstrap change.

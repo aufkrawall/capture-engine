@@ -66,9 +66,14 @@ COMMON_WARNING_FLAGS = [
     "-Wno-unused-parameter",
 ]
 COMMON_WINDOWS_COMPILE_FLAGS = ["-D_WIN32_WINNT=0x0A00", "-DNOMINMAX"]
-COMMON_DEBUG_INFO_FLAGS = [
-    "-g1"
-]  # Minimal debug info for crash symbolication with low size impact
+if IS_WINDOWS:
+    # Emit native CodeView info so clang/lld can write PDBs that CDB, WinDbg,
+    # and Visual Studio understand without switching away from the clang toolchain.
+    COMMON_DEBUG_INFO_FLAGS = ["-gcodeview"]
+else:
+    COMMON_DEBUG_INFO_FLAGS = [
+        "-g1"
+    ]  # Minimal DWARF info for crash symbolication with low size impact
 
 # x86-64-v3 requires AVX2 (Haswell 2013+), provides ~10-20% performance boost
 # Used only for the host process (captureengine.exe) where CPU is controlled.
@@ -126,8 +131,9 @@ HOOK_OPT_FLAGS_X86 = [
 ] + COMMON_HARDENING_FLAGS
 
 # Linker optimization flags
-# Keep minimal DWARF info in shipped binaries for crash dumps and post-mortem
-# analysis. This has a small size cost but no meaningful runtime cost.
+# Keep debug info enabled for crash dumps and post-mortem analysis. On Windows
+# this pairs with sidecar PDB emission; on non-Windows hosts we keep minimal
+# DWARF info in the PE outputs.
 LD_OPT_FLAGS = [
     "-Wl,--gc-sections",
     "-Wl,--dynamicbase",  # ASLR
@@ -171,6 +177,18 @@ def append_linux_msys2_include(flags: List[str]) -> None:
         # This avoids mixing Debian MinGW's CRT with MSYS2 clang64's UCRT headers
         # while still allowing missing packages like cppwinrt/vulkan to resolve.
         flags.extend(["-idirafter", msys2_include])
+
+
+def pdb_path_for_binary(binary_path: str) -> str:
+    return os.path.splitext(os.path.abspath(binary_path))[0].replace("\\", "/") + ".pdb"
+
+
+def append_windows_pdb_linker_flag(ldflags: List[str], binary_path: str) -> None:
+    if not IS_WINDOWS:
+        return
+    pdb_flag = f"-Wl,--pdb={pdb_path_for_binary(binary_path)}"
+    if pdb_flag not in ldflags:
+        ldflags.append(pdb_flag)
 
 
 def make_cpp_cflags(
@@ -2964,6 +2982,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     )
     if any(flag.startswith("-fsanitize=") for flag in cflags):
         ldflags_test.append("-fsanitize=address,undefined")
+    append_windows_pdb_linker_flag(ldflags_test, test_exe)
 
     # 2. Compile MediaEngine objects for tests
     me_src = glob.glob(os.path.join(PROJECT_ROOT, "mediaengine", "*.cpp"))
@@ -3396,13 +3415,17 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         tasks.append((desc, cmd, cwd, task_env))
 
     def make_cmd(compiler, flags, source, linker_flags, output):
-        cmd_base = [compiler] + flags + [source] + linker_flags + ["-o", output]
+        effective_linker_flags = list(linker_flags)
+        append_windows_pdb_linker_flag(effective_linker_flags, output)
+        cmd_base = (
+            [compiler] + flags + [source] + effective_linker_flags + ["-o", output]
+        )
         if ccache_exe:
             return (
                 [ccache_exe, os.path.basename(compiler)]
                 + flags
                 + [source]
-                + linker_flags
+                + effective_linker_flags
                 + ["-o", output]
             )
         return cmd_base
@@ -3999,9 +4022,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         layer_dll,
     ]
 
-    ldflags.extend(
-        LD_OPT_FLAGS
-    )  # Keep hardening and minimal symbol info for crash dumps
+    ldflags.extend(LD_OPT_FLAGS)  # Keep hardening and debug info for crash dumps
     if arch == "x86" and IS_LINUX:
         ldflags.append("-Wl,--allow-multiple-definition")
     if arch == "x64":
@@ -4024,6 +4045,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         # Re-add -static for proper linking
         if "-static" not in ldflags:
             ldflags.insert(0, "-static")
+
+    append_windows_pdb_linker_flag(ldflags, layer_dll)
 
     # Use ccache for linking too if available
     ccache_exe = shutil.which("ccache", path=env["PATH"])
@@ -4327,6 +4350,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     ]
                 )
 
+        append_windows_pdb_linker_flag(ldflags_hook, hk_dll)
+
         # Hook DLL must use conservative arch flags (injected into game processes
         # with unknown CPU support). Replace curr_cflags march/ffast-math flags.
         if arch == "x64":
@@ -4529,6 +4554,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 # --gc-sections strips .eh_frame/.gcc_except_table, preventing catch(...) from working
                 me_ldflags.append("-Wl,--no-gc-sections")
                 me_ldflags.append(f"-Wl,--out-implib,{me_lib}")
+                append_windows_pdb_linker_flag(me_ldflags, me_dll)
 
                 me_cflags = curr_cflags + ["-DMEDIAENGINE_EXPORTS"] + ffmpeg_flags
                 # Remove LTO from mediaengine: on MinGW/clang, LTO strips exception handling
@@ -4719,6 +4745,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         if not IS_LINUX:
             ce_ldflags.append("-Wl,--delayload,mediaengine.dll")
             ce_ldflags.append("-ldelayimp")
+        append_windows_pdb_linker_flag(ce_ldflags, ce_exe)
         # x64 common objects
         x64_common_objs = [
             os.path.join(

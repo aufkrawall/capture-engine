@@ -69,7 +69,7 @@ extern std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback;
 // FG type detection.  Used by DX12 hook for pre-SL vs post-SL routing.
 extern std::atomic<bool> g_StreamlineFGRunning;
 
-// Present call counter for bypass detection by SL hook.
+// Present/Present1 call counter for bypass detection by SL hook.
 extern std::atomic<uint64_t> g_PresentCallCounter;
 
 // Initialization

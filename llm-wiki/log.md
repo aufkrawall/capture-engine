@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-Last cross-checked: 2026-04-11
+Last cross-checked: 2026-04-12
 
 Purpose:
 - Track wiki edits.
@@ -13,6 +13,34 @@ Update rules:
 - If an area is churning, call that out explicitly so the next reader knows to re-check the code.
 
 ## Activity Timeline
+
+### 2026-04-12 - Add native clang/lld PDB emission for Windows builds and a repo-local CDB dump helper
+- **Gap addressed**: Windows builds already carried embedded debug metadata, but they did not emit real `.pdb` files. That left `cdb.exe`, WinDbg, and Visual Studio with weaker symbol resolution than the existing clang/lld toolchain can provide.
+- **Change**:
+  1. `build.py` now emits CodeView debug info on Windows-host builds and asks `lld` to write sidecar `.pdb` files for the main PE outputs.
+  2. The PDB path wiring covers `installed/captureengine/*`, `tests/unit_tests.exe`, and the built test apps under `installed/testapp/`.
+  3. `analysis/analyze_dump.ps1` now provides a repo-local `cdb.exe` entry point that prefers local symbol directories and then falls back to the Microsoft public symbol server with a cache under `build/symbols-cache`.
+- **Why this stays clang-centric**: No MSVC project files or `cl.exe` build path were added. Symbol generation stays in clang CodeView plus `lld` PDB emission, which is directly compatible with CDB/WinDbg/Visual Studio.
+- **Verification**:
+  - Ran `python build.py --incremental --run-tests --skip-updates`. Build completed successfully and all 527 tests passed.
+  - Verified sibling `.pdb` outputs now exist for `captureengine.exe`, both hook DLLs, `mediaengine.dll`, both Vulkan layer DLLs, `tests/unit_tests.exe`, and the generated test apps.
+  - Verified `llvm-readobj --coff-debug-directory` now shows populated `PDBFileName` entries for `installed/captureengine/captureengine.exe`, `installed/captureengine/capture_hook_x64.dll`, and `tests/unit_tests.exe`.
+- Pages touched: `build.py.md`, `regression-testing-and-logging.md`, `log.md`.
+- Source files checked: `build.py`, `analysis/analyze_dump.ps1`, `installed/captureengine/captureengine.exe`, `installed/captureengine/captureengine.pdb`, `installed/captureengine/capture_hook_x64.dll`, `installed/captureengine/capture_hook_x64.pdb`, `tests/unit_tests.exe`, `tests/unit_tests.pdb`.
+- Stale-risk note: Re-check this area whenever debug-info flags, linker selection, or dump-analysis workflow changes. If future dumps again show empty `PDBFileName` records or missing local symbol resolution in CDB, revisit the Windows symbol-emission path first.
+
+### 2026-04-12 - Fix self-targeted automatic stall dumps and repeated late-startup re-arm churn in GTA DLSS FG freeze path
+- **Root cause**: In log bundle `installed/captureengine/logs/20260412_034953`, GTA V Enhanced again reached a late pre-FG runtime-owned Streamline handoff, but CE's startup-compat re-arm logic was still level-triggered on `runtimeOwnsSwapchain && startupCompatSettled` rather than edge-triggered on the new handoff itself. Once the original game queue path resumed, `ProcessFrame` immediately re-armed startup compatibility again on the next frame because the runtime-owned swapchain still existed, producing thousands of repeated `Re-arming startup overlay compatibility...` / `Startup overlay probe complete - rendering stably` cycles all the way until DLSS activation. When DLSS finally turned on at `03:51:24`, CE saw `OFF->ON->OFF->ON` churn and then `Streamline Hook: Present STALLED` warnings. The later automatic dump `GTA5_Enhanced.exe_FREEZE_2026-04-12_03-52-09_514.dmp` showed the supposedly stalled present thread `T:4784` sitting inside CE (`capture_hook_x64!DX12_WaitForOverlayCompletion`) while dump capture was in progress. That happened because the 30-frame stall path requested an immediate dump targeting the current thread and executed it synchronously on that same thread. Separately, stall detection was only watching `DetourPresent` traffic, so any top-level `Present1` traffic during DLSS activation would look like a false stall even if the runtime was still making progress.
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` and `hook/apis/dx12_hook.cpp` now treat late pre-FG startup re-arm as a one-shot per newly observed runtime-owned handoff instead of re-triggering on every later frame while the runtime-owned swapchain remains present.
+  2. `hook/common/dxgi_shared.cpp/.h` now count both `DetourPresent` and `DetourPresent1` as top-level present progress for Streamline stall detection.
+  3. `hook/common/freeze_watchdog.h/.cpp` now defer immediate dump requests to the watchdog thread when the caller thread already matches the requested dump target, avoiding self-suspension/self-capture on the render/present thread.
+  4. `hook/apis/dx12_hook.cpp` now aligns the watchdog's monitored thread with the live non-DLSS game present thread once that thread is known, so later freeze-triggered dumps target the actual render thread instead of the startup hook thread.
+- **Why this is generic**: None of these failures are GTA-specific. Any startup-blocking overlay stack can leave a runtime-owned swapchain live long enough for a level-triggered startup re-arm condition to flap indefinitely. Any DXGI runtime can switch between `Present` and `Present1`. Any synchronous dump path that targets the current render thread can freeze the game while trying to diagnose a suspected stall.
+- **Verification**: Ran `python build.py --incremental --run-tests --skip-updates`. Build completed successfully and all 527 tests passed.
+- Pages touched: `dx12-overlay-third-party-coexistence.md`, `frame-generation-switching.md`, `regression-testing-and-logging.md`, `log.md`.
+- Source files checked: `installed/captureengine/logs/20260412_034953/hook_debug.log`, `installed/captureengine/logs/20260412_034953/GTA5_Enhanced.exe_FREEZE_2026-04-12_03-52-09_514.dmp`, `hook/common/freeze_watchdog.cpp`, `hook/common/freeze_watchdog.h`, `hook/common/dx12_overlay_policy.h`, `hook/common/dxgi_shared.cpp`, `hook/common/dxgi_shared.h`, `hook/apis/dx12_hook.cpp`, `hook/apis/streamline_hook.cpp`, `tests/test_dxgi_shared.cpp`, `tests/test_fps_limiter.cpp`.
+- Stale-risk note: Re-check this family whenever startup re-arm triggering, DXGI `Present`/`Present1` accounting, or watchdog immediate-dump behavior changes. If a future bundle again shows `Present STALLED` followed by an automatic dump that lands inside CE's own dump/wait path, revisit the self-targeted dump deferral first.
 
 ### 2026-04-12 - Fix late pre-DLSS runtime-owned startup handoff leaving overlay invisible and tighten automatic hang dump targeting
 - **Root cause**: In log bundle `installed/captureengine/logs/20260412_023846`, CE correctly re-armed startup compatibility after a late pre-FG runtime-owned handoff (`CreateSwapChain Global Streamline fallback` captured queue `000001C698D8F900` at `02:39:23.981`), but it still treated startup compatibility as requiring runtime ownership to disappear entirely before overlay rendering could resume. The runtime-owned non-FSR queue remained live and stable for nearly a minute before DLSS FG activation, so the overlay never came back even though the handoff had already settled enough to render safely. Later, DLSS activation churned `OFF->ON->OFF->ON`, `Present STALLED` warnings appeared, and the manual dump captured at `02:40:46` showed that the automatic dump path had not fired early enough to preserve the pre-dump hang state. Separately, the watchdog design was vulnerable to helper Present/ECL heartbeats rewriting the monitored thread ID, so an automatic dump could easily target the wrong thread once helper traffic took over.

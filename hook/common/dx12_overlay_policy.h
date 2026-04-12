@@ -76,20 +76,21 @@ inline bool ShouldUseStartupOverlayCompatibilityMode(bool startupBlockingOverlay
 
 inline bool ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
     bool startupBlockingOverlayLoaded, bool actualFrameGenerationActive, bool startupCompatSettled,
-    bool runtimeOwnsSwapchain, bool observedAnyFrameGenerationActivity) {
+    bool runtimeOwnsSwapchain, bool observedAnyFrameGenerationActivity, bool runtimeOwnershipJustActivated) {
     if (!startupBlockingOverlayLoaded || actualFrameGenerationActive) {
         return false;
     }
 
-    if (!startupCompatSettled || !runtimeOwnsSwapchain) {
+    if (!startupCompatSettled || !runtimeOwnsSwapchain || !runtimeOwnershipJustActivated) {
         return false;
     }
 
     // GTA/EOS-style startup can briefly look settled on the original game queue,
     // then still hand ownership to a runtime-owned queue before any real FG has
-    // been observed. That later topology change is still startup bootstrap, so
-    // let it re-arm the conservative startup path. Once any real FG activity has
-    // happened, do not re-enter the startup-only suppression path.
+    // been observed. That handoff edge is still startup bootstrap, so let it
+    // re-arm the conservative startup path once per newly observed runtime-owned
+    // takeover. Once any real FG activity has happened, do not re-enter the
+    // startup-only suppression path.
     return !observedAnyFrameGenerationActivity;
 }
 

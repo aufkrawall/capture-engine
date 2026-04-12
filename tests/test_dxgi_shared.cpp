@@ -183,18 +183,21 @@ TEST(DXGISharedTest, StartupOverlayCompatibilityStaysActiveThroughLatePreFGRunti
 
 TEST(DXGISharedTest, StartupOverlayCompatibilityCanRearmForLateRuntimeOwnedStartupHandoffBeforeAnyFG) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
-        true, false, true, true, false));
+        true, false, true, true, false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
-        false, false, true, true, false));
+        true, false, true, true, false, false));
+
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
-        true, true, true, true, false));
+        false, false, true, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
-        true, false, false, true, false));
+        true, true, true, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
-        true, false, true, false, false));
+        true, false, false, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
-        true, false, true, true, true));
+        true, false, true, false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
+        true, false, true, true, true, true));
 }
 
 TEST(DXGISharedTest, StartupOverlayRenderingRequiresStableNonRuntimeQueue) {

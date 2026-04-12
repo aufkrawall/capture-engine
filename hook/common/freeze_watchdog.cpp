@@ -339,6 +339,20 @@ void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD prefe
     if (freezeCallback_) {
         freezeCallback_(reason);
     }
+
+    if (ce::freeze_watchdog_policy::ShouldDeferImmediateDumpToWatchdogThread(GetCurrentThreadId(), targetTid)) {
+        {
+            std::lock_guard<std::mutex> lock(pendingImmediateDumpMutex_);
+            pendingImmediateDumpReason_ = reason;
+            pendingImmediateDumpTargetTid_ = targetTid;
+        }
+        pendingImmediateDump_.store(true, std::memory_order_release);
+        HookLogImportant(
+            "FreezeWatchdog: Deferring immediate dump to watchdog thread because caller matches targetTid=%lu",
+            targetTid);
+        return;
+    }
+
     CreateMinidumpWithThreadContext(reason, targetTid);
 }
 
@@ -416,6 +430,26 @@ void FreezeWatchdog::WatchdogThread() {
         if (!running_.load(std::memory_order_acquire)) {
             OutputDebugStringA("[FreezeWatchdog] Watchdog stopping\n");
             break;
+        }
+
+        if (pendingImmediateDump_.exchange(false, std::memory_order_acq_rel)) {
+            std::string pendingReason;
+            DWORD pendingTargetTid = 0;
+            {
+                std::lock_guard<std::mutex> lock(pendingImmediateDumpMutex_);
+                pendingReason = pendingImmediateDumpReason_;
+                pendingTargetTid = pendingImmediateDumpTargetTid_;
+                pendingImmediateDumpReason_.clear();
+                pendingImmediateDumpTargetTid_ = 0;
+            }
+
+            if (!pendingReason.empty()) {
+                HookLogImportant(
+                    "FreezeWatchdog: Processing deferred immediate dump request (%s, targetTid=%lu)",
+                    pendingReason.c_str(), pendingTargetTid);
+                CreateMinidumpWithThreadContext(pendingReason, pendingTargetTid);
+                continue;
+            }
         }
 
         uint64_t now = GetCurrentMicros();
@@ -516,7 +550,7 @@ void FreezeWatchdog::WatchdogThread() {
             OutputDebugStringA("\n");
             HookLogImportant("FreezeWatchdog: Freeze detected (%s)", reason.c_str());
 
-            RequestImmediateDump(reason, monitoredThreadId_.load(std::memory_order_acquire));
+            RequestImmediateDump(reason);
 
             // Do NOT terminate the process: the game may recover on its own,
             // and forcefully killing it loses unsaved data and prevents the
