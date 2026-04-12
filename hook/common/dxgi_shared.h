@@ -229,7 +229,8 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapCha
                                                              bool callerFromStreamlineModule,
                                                              bool streamlineStartupHandoffInProgress,
                                                              bool presentOwnershipActive,
-                                                             bool recentLargePresentGap) {
+                                                             bool recentLargePresentGap,
+                                                             bool matchesExpectedPresentThread) {
     if (!(isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule)) {
         return false;
     }
@@ -240,8 +241,10 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapCha
     // synthetic bypass starves the normal Present path and PostSL never
     // bootstraps. Keep the synthetic route for true recursive/worker-thread
     // cases, but let large-gap startup-handoff Presents run as top-level
-    // Presents when no other Present currently owns the path.
-    if (streamlineStartupHandoffInProgress && recentLargePresentGap && !presentOwnershipActive) {
+    // Presents when no other Present currently owns the path and the call is
+    // still arriving on the expected game-present thread.
+    if (streamlineStartupHandoffInProgress && recentLargePresentGap && !presentOwnershipActive &&
+        matchesExpectedPresentThread) {
         return false;
     }
 

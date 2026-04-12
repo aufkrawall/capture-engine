@@ -155,12 +155,13 @@ static void RegisterWithWER() {
         }
     }
 
-    // Also register our dump directory with WER so dumps go to our logs folder
-    HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
-    if (hKernel) {
+    // Also register our dump directory with WER so dumps go to our logs folder.
+    // These APIs live in wer.dll; looking them up on kernel32 leaves the
+    // programmatic WER fallback path inert.
+    if (hWer) {
         // WerRegisterFile - registers a file with WER to include in crash reports
         typedef HRESULT(WINAPI * PFN_WerRegisterFile)(PCWSTR, DWORD, DWORD);
-        auto pfnWerRegisterFile = (PFN_WerRegisterFile)GetProcAddress(hKernel, "WerRegisterFile");
+        auto pfnWerRegisterFile = (PFN_WerRegisterFile)GetProcAddress(hWer, "WerRegisterFile");
         if (pfnWerRegisterFile) {
             // Register our dump directory as a file to include in WER reports
             wchar_t dumpDirW[MAX_PATH];
@@ -171,7 +172,7 @@ static void RegisterWithWER() {
         // Enable WER local dumps programmatically (creates dumps in %LOCALAPPDATA%\CrashDumps)
         // This is a fallback in case our VEH/UEF crash handlers don't catch the exception
         typedef HRESULT(WINAPI * PFN_WerAddNamedDumpStore)(PCWSTR, PCWSTR);
-        auto pfnWerAddNamedDumpStore = (PFN_WerAddNamedDumpStore)GetProcAddress(hKernel, "WerAddNamedDumpStore");
+        auto pfnWerAddNamedDumpStore = (PFN_WerAddNamedDumpStore)GetProcAddress(hWer, "WerAddNamedDumpStore");
         if (pfnWerAddNamedDumpStore) {
             wchar_t dumpDirW[MAX_PATH];
             MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW, MAX_PATH);

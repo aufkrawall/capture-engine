@@ -921,9 +921,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         (api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
     const bool streamlineStartupHandoffInProgress =
         streamlineStartupHandoffPending || streamlineStartupTransitionWindowActive;
+    const DWORD currentThreadId = GetCurrentThreadId();
     const DWORD presentOwner = g_presentThreadId.load(std::memory_order_relaxed);
     const int presentDepthVal = g_presentDepth.load(std::memory_order_relaxed);
     const bool presentOwnershipActive = presentOwner != 0 || presentDepthVal > 0;
+    const DWORD expectedPresentThreadId = g_RenderWatchdog.GetMonitoredThreadId();
+    const bool matchesExpectedPresentThread = expectedPresentThreadId == 0 || expectedPresentThreadId == currentThreadId;
     const bool callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress);
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -946,16 +949,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
     const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
-        streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap);
+        streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
+        matchesExpectedPresentThread);
     if (!streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 &&
-        streamlineFGRunning && streamlineStartupHandoffInProgress && recentLargePresentGap) {
+        streamlineFGRunning && streamlineStartupHandoffInProgress && recentLargePresentGap &&
+        matchesExpectedPresentThread) {
         static std::atomic<int> s_streamlineStartupTopLevelLogCount{0};
         int logCount = s_streamlineStartupTopLevelLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent: Treating Streamline startup-handoff Present as top-level live Present #%d "
-                "(owner=0x%04X depth=%d recentGap=1)",
-                logCount, presentOwner, presentDepthVal);
+                "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1)",
+                logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId);
         }
     }
     if (streamlineSyntheticReentrant) {
@@ -1300,10 +1305,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         (api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
     const bool streamlineStartupHandoffInProgress =
         streamlineStartupHandoffPending || streamlineStartupTransitionWindowActive;
+    const DWORD currentThreadId = GetCurrentThreadId();
     const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
     const DWORD presentOwner = g_presentThreadId.load(std::memory_order_relaxed);
     const int presentDepthVal = g_presentDepth.load(std::memory_order_relaxed);
     const bool presentOwnershipActive = presentOwner != 0 || presentDepthVal > 0;
+    const DWORD expectedPresentThreadId = g_RenderWatchdog.GetMonitoredThreadId();
+    const bool matchesExpectedPresentThread = expectedPresentThreadId == 0 || expectedPresentThreadId == currentThreadId;
     const bool callerFromStreamlineModule = IsCodeAddressFromStreamlineModule(detourCallerAddress);
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -1326,16 +1334,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
     const bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
-        streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap);
+        streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
+        matchesExpectedPresentThread);
     if (!streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 &&
-        streamlineFGRunning && streamlineStartupHandoffInProgress && recentLargePresentGap) {
+        streamlineFGRunning && streamlineStartupHandoffInProgress && recentLargePresentGap &&
+        matchesExpectedPresentThread) {
         static std::atomic<int> s_streamlineStartupTopLevelLogCount1{0};
         int logCount = s_streamlineStartupTopLevelLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent1: Treating Streamline startup-handoff Present1 as top-level live Present #%d "
-                "(owner=0x%04X depth=%d recentGap=1)",
-                logCount, presentOwner, presentDepthVal);
+                "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1)",
+                logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId);
         }
     }
     if (streamlineSyntheticReentrant) {
