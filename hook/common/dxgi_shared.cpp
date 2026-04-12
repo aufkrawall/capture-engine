@@ -966,6 +966,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             streamlineSyntheticReentrant = true;
         }
     }
+    const bool preferBypassReturnPathForPromotedTopLevelPresent =
+        DXGIShared::ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(allowTopLevelStartupPresent,
+                                                                                     callerFromStreamlineModule);
     if (allowTopLevelStartupPresent) {
         static std::atomic<int> s_streamlineStartupTopLevelLogCount{0};
         int logCount = s_streamlineStartupTopLevelLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1251,7 +1254,26 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     HRESULT hr;
-    if (s_slRoutingActive.load(std::memory_order_acquire)) {
+    if (preferBypassReturnPathForPromotedTopLevelPresent) {
+        PFN_Present presentBypass = EnsurePresentBypassTrampoline();
+        if (presentBypass) {
+            static std::atomic<int> s_promotedStartupBypassLogCount{0};
+            const int logCount = s_promotedStartupBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (logCount <= 10 || (logCount % 100) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Promoted Streamline startup-handoff Present using bypass return path #%d "
+                    "(bypass=%p oPresent=%p)",
+                    logCount, (void*)presentBypass, (void*)oPresent);
+            }
+            hr = presentBypass(pSwapChain, SyncInterval, Flags);
+        } else {
+            HookLogImportant(
+                "DetourPresent: Promoted Streamline startup-handoff Present has no bypass trampoline; falling back "
+                "to normal original path (oPresent=%p)",
+                (void*)oPresent);
+            hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        }
+    } else if (s_slRoutingActive.load(std::memory_order_acquire)) {
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
         // Safety: if SL routing is active but FSR FG has taken over, force-disable
         // SL routing. This prevents a conflict between SL's Present hook chain and
@@ -1364,6 +1386,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             streamlineSyntheticReentrant = true;
         }
     }
+    const bool preferBypassReturnPathForPromotedTopLevelPresent =
+        DXGIShared::ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(allowTopLevelStartupPresent,
+                                                                                     callerFromStreamlineModule);
     if (allowTopLevelStartupPresent) {
         static std::atomic<int> s_streamlineStartupTopLevelLogCount1{0};
         int logCount = s_streamlineStartupTopLevelLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1557,7 +1582,26 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     HRESULT hr;
-    if (s_slRoutingActive.load(std::memory_order_acquire) && oPresent1) {
+    if (preferBypassReturnPathForPromotedTopLevelPresent) {
+        PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
+        if (present1Bypass) {
+            static std::atomic<int> s_promotedStartupBypassLogCount1{0};
+            const int logCount = s_promotedStartupBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (logCount <= 10 || (logCount % 100) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Promoted Streamline startup-handoff Present1 using bypass return path #%d "
+                    "(bypass=%p oPresent1=%p)",
+                    logCount, (void*)present1Bypass, (void*)oPresent1);
+            }
+            hr = present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        } else {
+            HookLogImportant(
+                "DetourPresent1: Promoted Streamline startup-handoff Present1 has no bypass trampoline; falling back "
+                "to normal original path (oPresent1=%p)",
+                (void*)oPresent1);
+            hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
+    } else if (s_slRoutingActive.load(std::memory_order_acquire) && oPresent1) {
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
         if (ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode)) {
             s_slRoutingActive.store(false, std::memory_order_release);

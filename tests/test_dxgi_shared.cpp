@@ -998,6 +998,13 @@ TEST(DXGISharedTest, StreamlineStartupHandoffPresentUsesTopLevelPathAfterLargeGa
                                                                      false));
 }
 
+TEST(DXGISharedTest, PromotedStreamlineStartupHandoffPresentPrefersBypassReturnPath) {
+    EXPECT_TRUE(DXGIShared::ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(true, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(false, true));
+    EXPECT_FALSE(DXGIShared::ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(true, false));
+}
+
 TEST(DXGISharedTest, StartupTransitionWindowClearsOnlyAfterConfirmedStablePostSLRendering) {
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(false, 2));

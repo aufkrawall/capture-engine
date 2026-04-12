@@ -267,6 +267,17 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapCha
     return true;
 }
 
+inline bool ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(bool promotedTopLevelStartupPresent,
+                                                                             bool callerFromStreamlineModule) {
+    // A late Streamline startup-handoff Present can legitimately need the normal
+    // top-level path so CE runs ProcessFrame and reconnects live state tracking.
+    // But the call already arrived from Streamline's Present chain, so routing
+    // the final Present back through the external hook again would just nest
+    // Streamline inside itself. Prefer the bypass/original DXGI Present return
+    // path instead when that exact promoted-handoff family is active.
+    return promotedTopLevelStartupPresent && callerFromStreamlineModule;
+}
+
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,
                                                           bool streamlineStartupHandoffPending,
                                                           bool streamlineStartupTransitionWindowActive) {
