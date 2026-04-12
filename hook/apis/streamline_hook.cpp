@@ -326,9 +326,10 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
                          source ? source : "runtime-state");
     }
     if (signalUpdate.deferredOffDuringStartupWindow) {
+        DXGIShared::ArmStreamlineStartupTransitionWindow();
         HookLogImportant(
             "Streamline Hook: Deferring OFF signal during startup transition window "
-            "(g_StreamlineFGRunning stays ON, multiplier=%d source=%s)",
+            "(g_StreamlineFGRunning stays ON, multiplier=%d source=%s) — re-armed startup window",
             signalUpdate.effectiveMultiplier, source ? source : "unknown");
     }
 }

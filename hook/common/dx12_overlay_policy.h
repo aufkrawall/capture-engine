@@ -1106,11 +1106,16 @@ inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startup
     // submission on the SL-owned swapchain queue during this phase can corrupt DLSS
     // FG's internal state.  Defer until the window expires.  Once PostSL has already
     // confirmed stable rendering (from a previous activation cycle), the guard is
-    // unnecessary — the pipeline is proven safe. The same is true for the
-    // stronger pure-DLSS startup family where CE already saw the one-shot
-    // top-level handoff bootstrap plus authoritative wrapper progress and used
-    // that evidence to activate PostSL on the decisive synthetic callback.
-    return startupTransitionWindowActive && !postSLConfirmedRendering && !useTopLevelHandoffWrapperProgress;
+    // unnecessary — the pipeline is proven safe.
+    //
+    // Previously the pure-DLSS wrapper-progress family bypassed this deferral, but
+    // multi-device DLSS FG startup (e.g. GTA V Enhanced) can exhibit
+    // OFF->ON->OFF->ON churn that corrupts sl_dlss_g's internal threading/mutex
+    // state.  Wrapper ECL progress only proves queue topology stability, not that
+    // SL's internal pipeline has settled.  Defer rendering for ALL families until
+    // the startup transition window expires or PostSL has confirmed stable rendering.
+    (void)useTopLevelHandoffWrapperProgress;
+    return startupTransitionWindowActive && !postSLConfirmedRendering;
 }
 
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
