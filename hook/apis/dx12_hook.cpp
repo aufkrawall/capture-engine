@@ -3613,20 +3613,45 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 "(slOffGrace=%d swapchainGrace=%d)",
                 previousHeuristicGrace, previousSwapchainGrace);
         }
+
+        const bool callbackAlreadyInstalled =
+            DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr;
+
         DXGIShared::ArmStreamlineStartupTransitionWindow();
-        SetPostSLCallbackInstalled(true, "DX12: Streamline FG ON");
-        HookLogImportant("DX12: Streamline FG ON — pre-armed PostSL callback for startup routing");
-        int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
-        while (cooldownLeft < 60 && !g_PostSLCooldownRemaining.compare_exchange_weak(
-                                        cooldownLeft, 60, std::memory_order_acq_rel, std::memory_order_acquire)) {}
-        g_PostSLOverlayActive.store(false, std::memory_order_release);
-        g_PostSLConfirmedRendering.store(false, std::memory_order_release);
-        g_PostSLStallCounter.store(0, std::memory_order_release);
-        g_PostSLStableFrameCount.store(0, std::memory_order_release);
-        g_PostSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
-        DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
-        g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
-        ResetPostSLLifecycleForTransition("DX12: Streamline FG ON transition", true);
+
+        if (callbackAlreadyInstalled) {
+            g_PostSLCallbackExecutionEnabled.store(true, std::memory_order_release);
+            g_PostSLOverlayActive.store(false, std::memory_order_release);
+            g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+            g_PostSLStallCounter.store(0, std::memory_order_release);
+            g_PostSLStableFrameCount.store(0, std::memory_order_release);
+            g_PostSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
+            DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
+            g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+            int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
+            while (cooldownLeft < 60 && !g_PostSLCooldownRemaining.compare_exchange_weak(
+                                            cooldownLeft, 60, std::memory_order_acq_rel,
+                                            std::memory_order_acquire)) {}
+            HookLogImportant(
+                "DX12: Streamline FG ON — re-enabling dormant PostSL callback for startup routing "
+                "(churn re-activation, cooldown=%d)",
+                g_PostSLCooldownRemaining.load(std::memory_order_relaxed));
+        } else {
+            SetPostSLCallbackInstalled(true, "DX12: Streamline FG ON");
+            HookLogImportant("DX12: Streamline FG ON — pre-armed PostSL callback for startup routing");
+            int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
+            while (cooldownLeft < 60 && !g_PostSLCooldownRemaining.compare_exchange_weak(
+                                            cooldownLeft, 60, std::memory_order_acq_rel,
+                                            std::memory_order_acquire)) {}
+            g_PostSLOverlayActive.store(false, std::memory_order_release);
+            g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+            g_PostSLStallCounter.store(0, std::memory_order_release);
+            g_PostSLStableFrameCount.store(0, std::memory_order_release);
+            g_PostSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
+            DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
+            g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+            ResetPostSLLifecycleForTransition("DX12: Streamline FG ON transition", true);
+        }
         if (g_HadFSRFGPhase) {
             ID3D12CommandQueue* staleScQueue = nullptr;
             {
@@ -3656,6 +3681,32 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     }
 
     g_PostSLOverlayActive.store(false, std::memory_order_release);
+
+    const bool inStartupChurnWindow = DXGIShared::IsStreamlineStartupTransitionWindowActive();
+
+    if (inStartupChurnWindow) {
+        g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
+        HookLogImportant(
+            "DX12: Streamline FG OFF during startup transition — keeping PostSL callback dormant "
+            "(churn suppression, epoch=%u)",
+            g_PostSLLifecycleEpoch.load(std::memory_order_acquire));
+        g_SLOffHeuristicGrace.store(600, std::memory_order_release);
+        g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+        g_FGCompat.SetHeuristicFSRFGActive(false);
+        if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+            ce::overlay_metrics::PublishOverlayFGMetrics(perf, {
+                                                                   .effectiveFGActive = false,
+                                                                   .runtimeMode = g_FGCompat.GetRuntimeMode(),
+                                                                   .outputFPS = 0.0f,
+                                                                   .baseFPS = 0.0f,
+                                                                   .multiplier = 1,
+                                                                   .publicationSource =
+                                                                       "DX12_OnStreamlineFGStateChanged",
+                                                               });
+        }
+        return;
+    }
+
     DXGIShared::ClearStreamlineStartupTransitionWindow();
     SetPostSLCallbackInstalled(false, "DX12: Streamline FG OFF");
     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
@@ -4155,6 +4206,14 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         }
         TrackSwapchainHwnd(*ppSC, hWnd);
         HookLogImportant("CreateSwapChainForHwnd INLINE: Created swapchain %p for HWND=%p", *ppSC, hWnd);
+
+        // A later runtime-created DX12 swapchain can expose a different Present
+        // implementation than the one we patched during startup. Refresh the
+        // per-swapchain Present detour path here so top-level Present traffic
+        // stays visible after a Streamline handoff.
+        IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
+        DXGIShared::InstallHooks(newSC, /*presentOnly=*/true);
+        DXGIShared::RepairVTableHooksIfNeeded();
 
         CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd INLINE", callerAddress);
     }
