@@ -782,9 +782,6 @@ void PseudoOverlay::UpdateOverlay() {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
 
                         if (indAlpha == 1) {
-                            memset(pBits, 0, fullS * fullS * 4);
-                            DWORD* px = static_cast<DWORD*>(pBits);
-                            px[pixY * fullS + pixX] = 0x01000000u;
                         } else {
                             memset(pBits, 0, fullS * fullS * 4);
 
@@ -804,7 +801,7 @@ void PseudoOverlay::UpdateOverlay() {
                         POINT ptDst = {winX, winY};
                         SIZE szWnd = {fullS, fullS};
                         POINT ptSrc = {0, 0};
-                        BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+                        BLENDFUNCTION blend = {AC_SRC_OVER, 0, indAlpha, AC_SRC_ALPHA};
                         UpdateLayeredWindow(hOv_, hdcScreen, &ptDst, &szWnd, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
 
                         SelectObject(hdcMem, hOldBm);
