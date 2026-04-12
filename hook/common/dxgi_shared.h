@@ -226,8 +226,26 @@ inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay,
 }
 
 inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapChain, bool streamlineFGRunning,
-                                                             bool callerFromStreamlineModule) {
-    return isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule;
+                                                             bool callerFromStreamlineModule,
+                                                             bool streamlineStartupHandoffInProgress,
+                                                             bool presentOwnershipActive,
+                                                             bool recentLargePresentGap) {
+    if (!(isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule)) {
+        return false;
+    }
+
+    // Late DLSS runtime-owned handoffs can surface the first live Present only
+    // after the game already stopped issuing top-level Presents for a few
+    // hundred milliseconds. Treating that first startup-window Present as a
+    // synthetic bypass starves the normal Present path and PostSL never
+    // bootstraps. Keep the synthetic route for true recursive/worker-thread
+    // cases, but let large-gap startup-handoff Presents run as top-level
+    // Presents when no other Present currently owns the path.
+    if (streamlineStartupHandoffInProgress && recentLargePresentGap && !presentOwnershipActive) {
+        return false;
+    }
+
+    return true;
 }
 
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,
