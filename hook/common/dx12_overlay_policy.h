@@ -128,6 +128,13 @@ inline bool ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(bool callerFromFF
     return callerFromFFXFGModule || ffxFrameGenerationInStack;
 }
 
+inline bool ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntime(
+    bool callerFromFFXFGModule, bool ffxFrameGenerationInStack, bool callerFromStreamlineFGModule,
+    bool streamlineFrameGenerationInStack) {
+    return ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(callerFromFFXFGModule, ffxFrameGenerationInStack) ||
+           callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
+}
+
 inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThirdPartyOverlay,
                                                               bool hasOriginalGameQueue, bool queueMatchesPrimaryQueue,
                                                               bool queueMatchesOriginalGameQueue,

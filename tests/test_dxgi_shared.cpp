@@ -218,7 +218,24 @@ TEST(DXGISharedTest, WrappedFFXCreateSwapchainTrafficOverridesOverlayClassificat
     const bool effectiveOverlayCaller =
         true && !ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(false, true);
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(effectiveOverlayCaller,
-                                                                                             true, false));
+                                                                                              true, false));
+}
+
+TEST(DXGISharedTest, WrappedStreamlineCreateSwapchainTrafficOverridesOverlayClassification) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntime(
+        false, false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntime(
+        false, false, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntime(
+        true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntime(
+        false, false, false, false));
+
+    const bool effectiveOverlayCaller =
+        true && !ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntime(
+                    false, false, true, false);
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(effectiveOverlayCaller,
+                                                                                              true, false));
 }
 
 TEST(DXGISharedTest, ThirdPartyOverlayECLQueueDoesNotOverrideKnownGameTrackingQueues) {

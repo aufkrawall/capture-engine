@@ -34,6 +34,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - That confirmation is still scoped to a short manual run. It proves the current approach survives the previously failing GTA V Enhanced overlay + FSR FG case, but it is not yet a long-soak guarantee.
 - GTA V Enhanced `FSR -> DLSS` can drive native FFX teardown through `ffxDestroyContext()` while the inline-hook trampoline is still in use. The `20260412_011505` crash bundle showed the destroy trampoline at `00007FF8011D0300` copying `test rcx, rcx; jne +0x0B` from `amd_fidelityfx_dx12.dll` without relocating that short branch. When GTA destroyed the FFX context during the handoff, the taken `jne` landed inside the trampoline's appended `FF 25` jump stub data and crashed with a null write at `00007FF8011D031B`.
 - Inline-hook trampolines must therefore treat short control transfers that leave the copied block as relocations, not raw memcpy. This is a generic trampoline correctness invariant, not a GTA-specific rule.
+- GTA V Enhanced DLSS FG startup can route `CreateSwapChainForHwnd` through EOS startup-overlay frames even when the live swapchain/queue actually belongs to Streamline. In `installed/captureengine/logs/20260412_014238`, CE classified the new DLSS startup swapchain for the game HWND as an EOS third-party overlay swapchain and skipped normal swapchain side-effects, then later saw `OFF->ON->OFF->ON` DLSS FG churn followed by `Present STALLED` warnings. The generic fix is to let Streamline frame-generation stack evidence override startup-overlay caller identity during create-swapchain classification, just as native FFX stack evidence already does for FSR.
 
 ## Current Practical Guidance
 - Any FG fix should be reasoned through as a state-transition problem, not as a one-off title quirk.
@@ -60,6 +61,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - `FSR off while third-party startup overlay windows are still active`
 - `heuristic FSR takeover while SL hook remains present`
 - `FSR -> DLSS` with native FFX context destruction while CE inline hooks are active
+- `startup-blocking overlay wraps DLSS FG swapchain creation`
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because FG switching behavior is spread across runtime classification, queue routing, startup coexistence, and visible metrics publication.

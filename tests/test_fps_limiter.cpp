@@ -453,6 +453,19 @@ TEST(OverlayCompatTest, FFXFrameGenerationModulePathsCoverLegacyAndGenericAMDNam
     EXPECT_FALSE(ce::overlay_compat::IsFFXFrameGenerationModulePath("C:\\capture\\capture_hook_x64.dll"));
 }
 
+TEST(OverlayCompatTest, StreamlineFrameGenerationModulePathsCoverInterposerAndNVNGXNames) {
+    EXPECT_TRUE(ce::overlay_compat::IsStreamlineFrameGenerationModulePath(
+        "C:\\Program Files\\Epic Games\\GTAVEnhanced\\sl.interposer.dll"));
+    EXPECT_TRUE(ce::overlay_compat::IsStreamlineFrameGenerationModulePath(
+        "C:\\Program Files\\Epic Games\\GTAVEnhanced\\sl.dlss_g.dll"));
+    EXPECT_TRUE(ce::overlay_compat::IsStreamlineFrameGenerationModulePath(
+        L"C:\\Windows\\System32\\nvngx_dlssg.dll"));
+
+    EXPECT_FALSE(ce::overlay_compat::IsStreamlineFrameGenerationModulePath(
+        "C:\\Games\\GTAV\\EOSOVH_Win64_Shipping.dll"));
+    EXPECT_FALSE(ce::overlay_compat::IsStreamlineFrameGenerationModulePath("C:\\capture\\capture_hook_x64.dll"));
+}
+
 TEST(OverlayCompatTest, NullAndInvalidFFXModuleInputsStayRejected) {
     EXPECT_FALSE(ce::overlay_compat::IsFFXFrameGenerationModuleHandle(nullptr));
     EXPECT_FALSE(ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(nullptr));

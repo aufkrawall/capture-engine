@@ -173,6 +173,42 @@ inline bool IsFFXFrameGenerationModulePath(const char* path) {
     return false;
 }
 
+inline bool IsStreamlineFrameGenerationModulePath(const char* path) {
+    static constexpr const char* kStreamlineFrameGenerationTokens[] = {
+        "sl.interposer",
+        "sl.common",
+        "sl.dlss",
+        "sl.dlss_g",
+        "nvngx_dlssg",
+        "nvngx_dlss",
+    };
+
+    for (const char* token : kStreamlineFrameGenerationTokens) {
+        if (detail::ContainsInsensitive(path, token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool IsStreamlineFrameGenerationModulePath(const wchar_t* path) {
+    static constexpr const wchar_t* kStreamlineFrameGenerationTokens[] = {
+        L"sl.interposer",
+        L"sl.common",
+        L"sl.dlss",
+        L"sl.dlss_g",
+        L"nvngx_dlssg",
+        L"nvngx_dlss",
+    };
+
+    for (const wchar_t* token : kStreamlineFrameGenerationTokens) {
+        if (detail::ContainsInsensitive(path, token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 inline bool IsFFXFrameGenerationModulePath(const wchar_t* path) {
     static constexpr const wchar_t* kFFXFrameGenerationTokens[] = {
         L"amd_fidelityfx_framegeneration_dx12",
@@ -268,6 +304,38 @@ inline bool HasFFXFrameGenerationModuleInStack(char* modulePathOut = nullptr, si
     for (USHORT i = 0; i < frameCount; ++i) {
         char candidatePath[MAX_PATH] = {};
         if (IsCodeAddressFromFFXFrameGenerationModule(stackFrames[i], candidatePath, sizeof(candidatePath))) {
+            if (modulePathOut && modulePathOutCount > 0) {
+                strncpy_s(modulePathOut, modulePathOutCount, candidatePath, _TRUNCATE);
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+inline bool IsCodeAddressFromStreamlineFrameGenerationModule(const void* codeAddress, char* modulePathOut = nullptr,
+                                                             size_t modulePathOutCount = 0) {
+    HMODULE callerModule = nullptr;
+    if (!TryGetModulePathFromCodeAddress(codeAddress, modulePathOut, modulePathOutCount, &callerModule) ||
+        !callerModule) {
+        return false;
+    }
+
+    return IsStreamlineFrameGenerationModulePath(modulePathOut);
+}
+
+inline bool HasStreamlineFrameGenerationModuleInStack(char* modulePathOut = nullptr, size_t modulePathOutCount = 0) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+
+    constexpr USHORT kMaxFrames = 16;
+    void* stackFrames[kMaxFrames] = {};
+    const USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        char candidatePath[MAX_PATH] = {};
+        if (IsCodeAddressFromStreamlineFrameGenerationModule(stackFrames[i], candidatePath, sizeof(candidatePath))) {
             if (modulePathOut && modulePathOutCount > 0) {
                 strncpy_s(modulePathOut, modulePathOutCount, candidatePath, _TRUNCATE);
             }

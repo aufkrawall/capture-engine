@@ -1370,23 +1370,28 @@ static bool ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(const char* cont
                                                                 bool rawCallerFromThirdPartyOverlay,
                                                                 bool callerFromFFXFGModule,
                                                                 bool ffxFrameGenerationInStack,
+                                                                bool callerFromStreamlineFGModule,
+                                                                bool streamlineFrameGenerationInStack,
                                                                 const char* callerModulePath) {
-    const bool authoritativeFFXSwapchainCreator =
-        ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(callerFromFFXFGModule,
-                                                                                    ffxFrameGenerationInStack);
-    if (rawCallerFromThirdPartyOverlay && authoritativeFFXSwapchainCreator) {
-        static std::atomic<int> s_wrappedFFXCreateCallerLogCount{0};
-        const int logCount = s_wrappedFFXCreateCallerLogCount.fetch_add(1, std::memory_order_relaxed);
+    const bool authoritativeFGRuntimeSwapchainCreator =
+        ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntime(
+            callerFromFFXFGModule, ffxFrameGenerationInStack, callerFromStreamlineFGModule,
+            streamlineFrameGenerationInStack);
+    if (rawCallerFromThirdPartyOverlay && authoritativeFGRuntimeSwapchainCreator) {
+        static std::atomic<int> s_wrappedFGCreateCallerLogCount{0};
+        const int logCount = s_wrappedFGCreateCallerLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20) {
+            const char* runtimeKind = (callerFromFFXFGModule || ffxFrameGenerationInStack) ? "FFX" : "Streamline";
             HookLogImportant(
-                "%s: FFX frame-generation stack detected behind third-party overlay caller %s — treating swapchain "
+                "%s: %s frame-generation stack detected behind third-party overlay caller %s — treating swapchain "
                 "as authoritative runtime takeover",
                 context ? context : "CreateSwapChain",
+                runtimeKind,
                 callerModulePath && *callerModulePath ? callerModulePath : "unknown");
         }
     }
 
-    return rawCallerFromThirdPartyOverlay && !authoritativeFFXSwapchainCreator;
+    return rawCallerFromThirdPartyOverlay && !authoritativeFGRuntimeSwapchainCreator;
 }
 
 static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddress, bool runtimeOwnsSwapchain,
@@ -3249,9 +3254,12 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         const bool callerFromFFXFGModule =
             callerAddress && ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(callerAddress);
         const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
+        const bool callerFromStreamlineFGModule =
+            callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
+        const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
         const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
             context, rawCallerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
-            callerModulePath);
+            callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
         ID3D12CommandQueue* currentOriginalGameQueue = nullptr;
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
@@ -3807,8 +3815,12 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     const bool rawCallerFromThirdPartyOverlay = callerContext.callerFromThirdPartyOverlay;
     const char* callerModulePath = callerContext.callerModulePath;
     const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
+    const bool callerFromStreamlineFGModule =
+        callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
+    const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
     const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
-        "DeepHook", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack, callerModulePath);
+        "DeepHook", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
+        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
 
     HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
                      pThis, pDevice, hWnd, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1);
@@ -3971,9 +3983,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     const bool rawCallerFromThirdPartyOverlay = callerContext.callerFromThirdPartyOverlay;
     const char* callerModulePath = callerContext.callerModulePath;
     const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
+    const bool callerFromStreamlineFGModule =
+        callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
+    const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
     const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
         "CreateSwapChainForHwnd INLINE", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule,
-        ffxFrameGenerationInStack, callerModulePath);
+        ffxFrameGenerationInStack, callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
 
     HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
 
@@ -4125,9 +4140,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
     const bool callerFromFFXFGModule =
         callerAddress && ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(callerAddress);
     const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
+    const bool callerFromStreamlineFGModule =
+        callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
+    const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
     const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
-        "DetourCreateSwapChainGlobal", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
-        callerModulePath);
+        "DetourCreateSwapChainGlobal", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule,
+        ffxFrameGenerationInStack, callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC modifiedDesc;
@@ -4239,9 +4257,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
     const bool callerFromFFXFGModule =
         callerAddress && ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(callerAddress);
     const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
+    const bool callerFromStreamlineFGModule =
+        callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
+    const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
     const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
         "DetourCreateSwapChainForHwndGlobal", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule,
-        ffxFrameGenerationInStack, callerModulePath);
+        ffxFrameGenerationInStack, callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
