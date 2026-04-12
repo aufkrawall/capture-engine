@@ -6,6 +6,25 @@
 #include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
 
+#include <dwmapi.h>
+
+namespace {
+typedef HRESULT(WINAPI * DwmSetWindowAttributeFn)(HWND, DWORD, LPCVOID, DWORD);
+DwmSetWindowAttributeFn g_DwmSetWindowAttribute = nullptr;
+bool g_DwmApiInitialized = false;
+
+void EnsureDwmApi() {
+    if (g_DwmApiInitialized)
+        return;
+    g_DwmApiInitialized = true;
+    HMODULE mod = LoadLibraryA("dwmapi.dll");
+    if (mod) {
+        g_DwmSetWindowAttribute =
+            (DwmSetWindowAttributeFn)GetProcAddress(mod, "DwmSetWindowAttribute");
+    }
+}
+}
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -117,6 +136,31 @@ bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance) {
 
     return absDiff(lhs.left, rhs.left) <= tolerance && absDiff(lhs.top, rhs.top) <= tolerance &&
            absDiff(lhs.right, rhs.right) <= tolerance && absDiff(lhs.bottom, rhs.bottom) <= tolerance;
+}
+
+static HBITMAP CreateArgbDibSection(int width, int height, void** ppBits) {
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    return CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, ppBits, NULL, 0);
+}
+
+static void ApplyPremultipliedAlpha(void* pBits, int width, int height) {
+    DWORD* px = static_cast<DWORD*>(pBits);
+    for (int i = 0, n = width * height; i < n; ++i) {
+        DWORD v = px[i];
+        BYTE r = static_cast<BYTE>(v & 0xFF);
+        BYTE g = static_cast<BYTE>((v >> 8) & 0xFF);
+        BYTE b = static_cast<BYTE>((v >> 16) & 0xFF);
+        BYTE a = r;
+        if (g > a) a = g;
+        if (b > a) a = b;
+        px[i] = (a << 24) | (v & 0x00FFFFFF);
+    }
 }
 
 // Keep the pseudo-overlay fullscreen-like heuristic aligned with media_main's
@@ -238,7 +282,7 @@ void PseudoOverlay::UpdateScaleForDpi(UINT dpi) {
         fontWarn_ = NULL;
     }
 
-    fontWarn_ = CreateFontA(-S(40), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, 0, 0, "Segoe UI");
+    fontWarn_ = CreateFontA(-S(40), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, ANTIALIASED_QUALITY, 0, 0, 0, "Segoe UI");
 }
 
 // ---- Foreground process detection (ported from OBSIndicator) ----
@@ -536,7 +580,11 @@ void PseudoOverlay::OnTimerTick() {
     }
 
     if (config_.mode == 0) {
-        UpdateOverlay();
+        static ULONGLONG lastMode0Check = 0;
+        if (now - lastMode0Check >= 500) {
+            lastMode0Check = now;
+            UpdateOverlay();
+        }
     }
 }
 
@@ -728,20 +776,17 @@ void PseudoOverlay::UpdateOverlay() {
             if (hdcScreen) {
                 HDC hdcMem = CreateCompatibleDC(hdcScreen);
                 if (hdcMem) {
-                    HBITMAP hBm = CreateCompatibleBitmap(hdcScreen, fullS, fullS);
-                    if (hBm) {
+                    void* pBits = nullptr;
+                    HBITMAP hBm = CreateArgbDibSection(fullS, fullS, &pBits);
+                    if (hBm && pBits) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
 
                         if (indAlpha == 1) {
-                            HBRUSH hInv = CreateSolidBrush(RGB(0, 0, 1));
-                            RECT rPixel = {pixX, pixY, pixX + 1, pixY + 1};
-                            FillRect(hdcMem, &rPixel, hInv);
-                            DeleteObject(hInv);
+                            memset(pBits, 0, fullS * fullS * 4);
+                            DWORD* px = static_cast<DWORD*>(pBits);
+                            px[pixY * fullS + pixX] = 0x01000000u;
                         } else {
-                            HBRUSH hBlack = CreateSolidBrush(RGB(0, 0, 0));
-                            RECT r = {0, 0, fullS, fullS};
-                            FillRect(hdcMem, &r, hBlack);
-                            DeleteObject(hBlack);
+                            memset(pBits, 0, fullS * fullS * 4);
 
                             HPEN hPen = CreatePen(PS_SOLID, S(2), RGB(255, 255, 255));
                             HBRUSH hBrush = CreateSolidBrush(curCol);
@@ -752,15 +797,15 @@ void PseudoOverlay::UpdateOverlay() {
                             SelectObject(hdcMem, hOldBrush);
                             DeleteObject(hBrush);
                             DeleteObject(hPen);
+
+                            ApplyPremultipliedAlpha(pBits, fullS, fullS);
                         }
 
                         POINT ptDst = {winX, winY};
                         SIZE szWnd = {fullS, fullS};
                         POINT ptSrc = {0, 0};
-                        BLENDFUNCTION blend = {AC_SRC_OVER, 0, indAlpha, 0};
-                        DWORD flags = ULW_COLORKEY | ULW_ALPHA;
-                        UpdateLayeredWindow(hOv_, hdcScreen, &ptDst, &szWnd, hdcMem, &ptSrc, RGB(0, 0, 0), &blend,
-                                            flags);
+                        BLENDFUNCTION blend = {AC_SRC_ALPHA, 0, indAlpha, 0};
+                        UpdateLayeredWindow(hOv_, hdcScreen, &ptDst, &szWnd, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
 
                         SelectObject(hdcMem, hOldBm);
                         DeleteObject(hBm);
@@ -826,6 +871,9 @@ void PseudoOverlay::UpdateOverlay() {
         // Check if cached bitmap needs refresh
         bool cacheStale = (msg != lastWarnMsg_) || (bmWarn_ == NULL);
 
+        int warnW = 0;
+        int warnH = 0;
+
         if (cacheStale) {
             HDC hdcScreen = GetDC(NULL);
             if (!hdcScreen)
@@ -837,49 +885,44 @@ void PseudoOverlay::UpdateOverlay() {
                 return;
             }
 
-            // Measure text
             HFONT oldFont = (HFONT)SelectObject(dc, fontWarn_);
             RECT rText = {0, 0, 0, 0};
             DrawTextA(dc, msg, -1, &rText, DT_CALCRECT);
-            int wW = rText.right - rText.left + S(20);
-            int wH = rText.bottom - rText.top + S(10);
+            warnW = rText.right - rText.left + S(20);
+            warnH = rText.bottom - rText.top + S(10);
             SelectObject(dc, oldFont);
             DeleteDC(dc);
 
-            // Re-allocate bitmap
             if (bmWarn_) {
-                if (oldBmWarn_)
-                    SelectObject(hdcWarn_, oldBmWarn_);
+                SelectObject(hdcWarn_, oldBmWarn_);
                 DeleteObject(bmWarn_);
                 bmWarn_ = NULL;
             }
-            bmWarn_ = CreateCompatibleBitmap(hdcScreen, wW, wH);
-            if (!bmWarn_) {
+
+            void* pBitsWarn = nullptr;
+            bmWarn_ = CreateArgbDibSection(warnW, warnH, &pBitsWarn);
+            if (!bmWarn_ || !pBitsWarn) {
+                bmWarn_ = NULL;
                 ReleaseDC(NULL, hdcScreen);
                 return;
             }
 
-            // Draw into cached bitmap
-            HBITMAP oldWarnBm = (HBITMAP)SelectObject(hdcWarn_, bmWarn_);
-            if (!oldBmWarn_)
-                oldBmWarn_ = oldWarnBm;
+            HBITMAP prevBm = (HBITMAP)SelectObject(hdcWarn_, bmWarn_);
+            if (oldBmWarn_ == NULL)
+                oldBmWarn_ = prevBm;
+            memset(pBitsWarn, 0, warnW * warnH * 4);
             SelectObject(hdcWarn_, fontWarn_);
             SetTextColor(hdcWarn_, isScreenshotMsg ? kColScreenshotText : kColWarnText);
             SetBkMode(hdcWarn_, TRANSPARENT);
 
-            // Fill black (color key)
-            RECT rFill = {0, 0, wW, wH};
-            HBRUSH hK = CreateSolidBrush(RGB(0, 0, 0));
-            FillRect(hdcWarn_, &rFill, hK);
-            DeleteObject(hK);
-
-            // Draw text
-            RECT rT = {S(10), S(5), wW, wH};
+            RECT rT = {S(10), S(5), warnW, warnH};
             DrawTextA(hdcWarn_, msg, -1, &rT, DT_LEFT | DT_TOP | DT_NOCLIP);
+
+            ApplyPremultipliedAlpha(pBitsWarn, warnW, warnH);
 
             ReleaseDC(NULL, hdcScreen);
 
-            sizeWarn_ = {wW, wH};
+            sizeWarn_ = {warnW, warnH};
             lastWarnMsg_ = msg;
         }
 
@@ -909,9 +952,8 @@ void PseudoOverlay::UpdateOverlay() {
         POINT ptDst = {wx, wy};
         SIZE szWnd = {wW, wH};
         POINT ptSrc = {0, 0};
-        DWORD flags = ULW_COLORKEY | ULW_ALPHA;
-        BLENDFUNCTION blend = {AC_SRC_OVER, 0, warnAlpha, 0};
-        UpdateLayeredWindow(hWarn_, NULL, &ptDst, &szWnd, hdcWarn_, &ptSrc, RGB(0, 0, 0), &blend, flags);
+        BLENDFUNCTION blend = {AC_SRC_ALPHA, 0, warnAlpha, 0};
+        UpdateLayeredWindow(hWarn_, NULL, &ptDst, &szWnd, hdcWarn_, &ptSrc, 0, &blend, ULW_ALPHA);
 
         lastWarnVis_ = warnAlpha > 0;
     }
@@ -1151,6 +1193,13 @@ bool PseudoOverlay::EnsureOverlayWindows() {
             hOv_ = NULL;
             return false;
         }
+    }
+
+    EnsureDwmApi();
+    if (g_DwmSetWindowAttribute) {
+        BOOL peekExclude = TRUE;
+        g_DwmSetWindowAttribute(hOv_, DWMWA_EXCLUDED_FROM_PEEK, &peekExclude, sizeof(peekExclude));
+        g_DwmSetWindowAttribute(hWarn_, DWMWA_EXCLUDED_FROM_PEEK, &peekExclude, sizeof(peekExclude));
     }
 
     return true;
