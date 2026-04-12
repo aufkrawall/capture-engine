@@ -1142,6 +1142,31 @@ inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(bool ha
     return processFrameDormantMs >= 1000;
 }
 
+inline bool ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(bool startupTransitionWindowActive,
+                                                                         bool postSLConfirmedRendering,
+                                                                         bool hadFSRFGPhase,
+                                                                         bool startupTopLevelPresentConsumed,
+                                                                         bool wrapperProgressObserved,
+                                                                         bool startupActivationPending,
+                                                                         bool postSLActive) {
+    if (!startupTransitionWindowActive || postSLConfirmedRendering || hadFSRFGPhase) {
+        return false;
+    }
+
+    if (!startupTopLevelPresentConsumed || !wrapperProgressObserved) {
+        return false;
+    }
+
+    // The pure-DLSS top-level-handoff wrapper-progress family can expose only one
+    // decisive synthetic Present while Streamline is still inside its fragile
+    // startup window. Even if CE ultimately defers warm-up / rendering inside
+    // PostSL, simply entering the callback through SL's Present chain at that
+    // point can still perturb the runtime. Keep the callback fully dormant until
+    // the startup window expires; wrapper progress is still tracked separately so
+    // activation can resume on a later safe callback.
+    return startupActivationPending || postSLActive;
+}
+
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
     return streamlineFGRunning && postSLConfirmedRendering;
 }

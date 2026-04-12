@@ -8123,6 +8123,30 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
         return;
     }
 
+    const bool startupTransitionWindowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
+    const bool postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    const bool startupTopLevelPresentConsumed =
+        DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
+    const bool wrapperProgressObserved =
+        g_PostSLSyntheticStartupWrapperProgressCount.load(std::memory_order_acquire) > 0;
+    const bool startupActivationPending = g_PostSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
+    if (ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
+            startupTransitionWindowActive, postSLConfirmedRendering, g_HadFSRFGPhase, startupTopLevelPresentConsumed,
+            wrapperProgressObserved, startupActivationPending, postSLActive)) {
+        static std::atomic<int> s_postSLStartupWindowCallbackDeferralLogCount{0};
+        const int logCount = s_postSLStartupWindowCallbackDeferralLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 200) == 0) {
+            HookLogImportant(
+                "DX12: PostSL gated callback deferred until startup transition window expires "
+                "(startupPending=%d active=%d progress=%d consumed=%d)",
+                startupActivationPending ? 1 : 0, postSLActive ? 1 : 0,
+                g_PostSLSyntheticStartupWrapperProgressCount.load(std::memory_order_relaxed),
+                startupTopLevelPresentConsumed ? 1 : 0);
+        }
+        return;
+    }
+
     g_PostSLCallbackInFlight.fetch_add(1, std::memory_order_acq_rel);
     auto inFlightGuard =
         ce::make_scope_guard([]() { g_PostSLCallbackInFlight.fetch_sub(1, std::memory_order_acq_rel); });
