@@ -1343,6 +1343,31 @@ struct CreateSwapchainForHwndCallerContext {
     char callerModulePath[MAX_PATH] = {};
 };
 
+struct CreateSwapchainQueueCaptureEvidence {
+    const void* callerAddress = nullptr;
+    bool callerFromThirdPartyOverlay = false;
+    bool authoritativeFFXRuntimeCreator = false;
+    bool authoritativeStreamlineRuntimeCreator = false;
+    char callerModulePath[MAX_PATH] = {};
+};
+
+static CreateSwapchainQueueCaptureEvidence BuildCreateSwapchainQueueCaptureEvidence(
+    const void* callerAddress, bool callerFromThirdPartyOverlay, bool callerFromFFXFGModule,
+    bool ffxFrameGenerationInStack, bool callerFromStreamlineFGModule, bool streamlineFrameGenerationInStack,
+    const char* callerModulePath) {
+    CreateSwapchainQueueCaptureEvidence evidence = {};
+    evidence.callerAddress = callerAddress;
+    evidence.callerFromThirdPartyOverlay = callerFromThirdPartyOverlay;
+    evidence.authoritativeFFXRuntimeCreator =
+        ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(callerFromFFXFGModule,
+                                                                                    ffxFrameGenerationInStack);
+    evidence.authoritativeStreamlineRuntimeCreator = callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
+    if (callerModulePath && *callerModulePath) {
+        strncpy_s(evidence.callerModulePath, sizeof(evidence.callerModulePath), callerModulePath, _TRUNCATE);
+    }
+    return evidence;
+}
+
 static CreateSwapchainForHwndCallerContext ResolveCreateSwapchainForHwndCallerContext() {
     CreateSwapchainForHwndCallerContext context = {};
 
@@ -1394,15 +1419,18 @@ static bool ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(const char* cont
     return rawCallerFromThirdPartyOverlay && !authoritativeFGRuntimeSwapchainCreator;
 }
 
-static void ClearStaleStreamlineOwnershipForFSRTakeover(const void* callerAddress, bool runtimeOwnsSwapchain,
-                                                        bool runtimeOwnershipJustActivated,
+static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQueueCaptureEvidence& captureEvidence,
+                                                        bool runtimeOwnsSwapchain, bool runtimeOwnershipJustActivated,
                                                         ID3D12CommandQueue* capturedQueue) {
     char callerModulePath[MAX_PATH] = {};
-    bool callerFromFFXFGModule = ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(
-        callerAddress, callerModulePath, sizeof(callerModulePath));
-    if (!callerFromFFXFGModule && runtimeOwnsSwapchain) {
-        callerFromFFXFGModule =
-            ce::overlay_compat::HasFFXFrameGenerationModuleInStack(callerModulePath, sizeof(callerModulePath));
+    if (captureEvidence.callerModulePath[0]) {
+        strncpy_s(callerModulePath, sizeof(callerModulePath), captureEvidence.callerModulePath, _TRUNCATE);
+    }
+
+    const bool callerFromFFXFGModule = captureEvidence.authoritativeFFXRuntimeCreator;
+    if (callerFromFFXFGModule &&
+        (!callerModulePath[0] || ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath))) {
+        strncpy_s(callerModulePath, sizeof(callerModulePath), "FFX frame-generation runtime", _TRUNCATE);
     }
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
@@ -3162,7 +3190,7 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
 // Capture the queue that was passed to CreateSwapChain* so we can prefer it
 // for overlay submission.  Only accepts DIRECT queues (same rule as
 // DX12_SetCommandQueue).  Also hooks the queue vtable for ECL interception.
-static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeHandoff) {
+static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue) {
     if (!pQueue)
         return false;
 
@@ -3253,9 +3281,9 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
     // causing ffxQuery to spin-wait or WaitForSingleObject indefinitely.
     // We already hook origGame's queue for watchdog/heartbeat — that's sufficient.
     const bool shouldHookQueueVTable = ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(
-        g_OriginalGameQueue != nullptr, pQueue == g_OriginalGameQueue, authoritativeStreamlineRuntimeHandoff);
+        g_OriginalGameQueue != nullptr, pQueue == g_OriginalGameQueue, authoritativeStreamlineRuntimeQueue);
     if (shouldHookQueueVTable) {
-        if (authoritativeStreamlineRuntimeHandoff && g_OriginalGameQueue && pQueue != g_OriginalGameQueue) {
+        if (authoritativeStreamlineRuntimeQueue && g_OriginalGameQueue && pQueue != g_OriginalGameQueue) {
             HookLogImportant(
                 "DX12: Hooking authoritative Streamline runtime queue vtable %p (origGame=%p) to keep runtime-owned "
                 "ECL tracking visible",
@@ -3284,27 +3312,13 @@ static bool IsDX12Swapchain(IDXGISwapChain* pSwapChain) {
 }
 
 static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context,
-                                                  const void* callerAddress = nullptr) {
+                                                  const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
     if (!pDevice || !pSwapChain)
         return;
 
     ID3D12CommandQueue* pQueue = nullptr;
     HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
     if (SUCCEEDED(qiHr) && pQueue) {
-        char callerModulePath[MAX_PATH] = {};
-        const bool rawCallerFromThirdPartyOverlay =
-            callerAddress &&
-            TryGetModulePathFromCodeAddress(callerAddress, callerModulePath, sizeof(callerModulePath)) &&
-            ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
-        const bool callerFromFFXFGModule =
-            callerAddress && ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(callerAddress);
-        const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
-        const bool callerFromStreamlineFGModule =
-            callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
-        const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
-        const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
-            context, rawCallerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
-            callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
         ID3D12CommandQueue* currentOriginalGameQueue = nullptr;
         ID3D12CommandQueue* currentSwapchainQueue = nullptr;
         {
@@ -3314,31 +3328,39 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         }
         const bool preserveCurrentGameQueue =
             ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(
-                callerFromThirdPartyOverlay, currentOriginalGameQueue != nullptr, pQueue == currentOriginalGameQueue);
-        const bool authoritativeStreamlineSwapchainHandoff =
-            (callerFromStreamlineFGModule || streamlineFrameGenerationInStack) && currentOriginalGameQueue != nullptr &&
-            pQueue != currentOriginalGameQueue && pQueue != currentSwapchainQueue;
+                captureEvidence.callerFromThirdPartyOverlay, currentOriginalGameQueue != nullptr,
+                pQueue == currentOriginalGameQueue);
+        const bool authoritativeStreamlineRuntimeQueue =
+            ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(
+                captureEvidence.authoritativeStreamlineRuntimeCreator, currentOriginalGameQueue != nullptr,
+                pQueue == currentOriginalGameQueue);
+        const bool freshAuthoritativeStreamlineHandoff =
+            ce::dx12_overlay_policy::ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
+                authoritativeStreamlineRuntimeQueue, pQueue == currentSwapchainQueue);
 
         HookLogImportant("%s: QI for queue succeeded (queue=%p)", context, pQueue);
         if (preserveCurrentGameQueue) {
             HookLogImportant(
                 "%s: Ignoring foreign swapchain queue %p from third-party overlay caller %s "
                 "(origGame=%p) — preserving live game queue ownership",
-                context, pQueue, callerModulePath[0] ? callerModulePath : "unknown", currentOriginalGameQueue);
+                context, pQueue, captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "unknown",
+                currentOriginalGameQueue);
             pQueue->Release();
             return;
         }
         const bool runtimeOwnershipJustActivated =
-            DX12_SetSwapchainQueue(pQueue, authoritativeStreamlineSwapchainHandoff);
-        if (authoritativeStreamlineSwapchainHandoff) {
+            DX12_SetSwapchainQueue(pQueue, authoritativeStreamlineRuntimeQueue);
+        if (freshAuthoritativeStreamlineHandoff) {
             DXGIShared::ArmStreamlineStartupTransitionWindow();
             HookLogImportant(
                 "%s: Armed Streamline startup transition window after authoritative runtime-owned swapchain handoff "
                 "(queue=%p prevScQueue=%p origGame=%p caller=%s)",
                 context, pQueue, currentSwapchainQueue, currentOriginalGameQueue,
-                callerModulePath[0] ? callerModulePath : "stack");
+                captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "stack");
         }
-        ClearStaleStreamlineOwnershipForFSRTakeover(callerAddress, g_OriginalGameQueue && pQueue != g_OriginalGameQueue,
+        ClearStaleStreamlineOwnershipForFSRTakeover(captureEvidence,
+                                                    currentOriginalGameQueue != nullptr &&
+                                                        pQueue != currentOriginalGameQueue,
                                                     runtimeOwnershipJustActivated, pQueue);
         pQueue->Release();
         return;
@@ -3547,6 +3569,7 @@ static void RefreshPresentHooksForRealSwapchain(IDXGISwapChain* pSwapChain, cons
         return;
     }
 
+    HookLogImportant("DX12: Refreshing Present hook path via %s swapchain %p", source ? source : "real", pSwapChain);
     EnsurePresentInlineHooksForRealSwapchain(pSwapChain, source);
     DXGIShared::InstallHooks(pSwapChain, /*presentOnly=*/true);
     DXGIShared::RepairVTableHooksIfNeeded();
@@ -3953,6 +3976,9 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
         "DeepHook", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
         callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
+    const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
+        callerAddress, callerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
+        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
 
     HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
                      pThis, pDevice, hWnd, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1);
@@ -4078,7 +4104,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
         RefreshPresentHooksForRealSwapchain(newSC, "DeepHook");
 
-        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "DeepHook", callerAddress);
+        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "DeepHook", captureEvidence);
     } else if (FAILED(hr)) {
         HookLogImportant("DeepHook: CreateSwapChainForHwnd FAILED hr=0x%08X hwnd=%p", hr, hWnd);
     }
@@ -4120,6 +4146,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
         "CreateSwapChainForHwnd INLINE", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule,
         ffxFrameGenerationInStack, callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
+    const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
+        callerAddress, callerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
+        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
 
     HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
 
@@ -4230,7 +4259,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
         RefreshPresentHooksForRealSwapchain(newSC, "CreateSwapChainForHwnd INLINE");
 
-        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd INLINE", callerAddress);
+        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd INLINE", captureEvidence);
     }
 
     return hr;
@@ -4284,6 +4313,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
     const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
         "DetourCreateSwapChainGlobal", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule,
         ffxFrameGenerationInStack, callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
+    const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
+        callerAddress, callerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
+        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC modifiedDesc;
@@ -4318,7 +4350,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
                 "swapchain side-effects",
                 callerModulePath[0] ? callerModulePath : "unknown", *ppSwapChain);
             CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSwapChain, "CreateSwapChain Global overlay bypass",
-                                                  callerAddress);
+                                                  captureEvidence);
             return hr;
         }
 
@@ -4336,7 +4368,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
             HookLog("DetourCreateSwapChainGlobal: Streamline present, skipping wrap (sc=%p)", *ppSwapChain);
             if (DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true)) {
                 CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSwapChain,
-                                                      "CreateSwapChain Global Streamline fallback");
+                                                      "CreateSwapChain Global Streamline fallback", captureEvidence);
             }
             return hr;
         }
@@ -4401,6 +4433,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
     const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
         "DetourCreateSwapChainForHwndGlobal", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule,
         ffxFrameGenerationInStack, callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
+    const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
+        callerAddress, callerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
+        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
@@ -4439,7 +4474,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
                 "— bypassing CE swapchain side-effects",
                 callerModulePath[0] ? callerModulePath : "unknown", *ppSC, hWnd);
             CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd Global overlay bypass",
-                                                  callerAddress);
+                                                  captureEvidence);
             return hr;
         }
 
@@ -4458,7 +4493,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
             HookLog("DetourCreateSwapChainForHwndGlobal: Streamline present, skipping wrap (sc=%p)", *ppSC);
             if (DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true)) {
                 CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC,
-                                                      "CreateSwapChainForHwnd Global Streamline fallback");
+                                                      "CreateSwapChainForHwnd Global Streamline fallback",
+                                                      captureEvidence);
             }
             return hr;
         }

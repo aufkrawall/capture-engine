@@ -186,6 +186,17 @@ inline bool ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntim
            callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
 }
 
+inline bool ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(bool authoritativeStreamlineRuntimeCreator,
+                                                                      bool hasOriginalGameQueue,
+                                                                      bool queueMatchesOriginalGameQueue) {
+    return authoritativeStreamlineRuntimeCreator && hasOriginalGameQueue && !queueMatchesOriginalGameQueue;
+}
+
+inline bool ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
+    bool authoritativeStreamlineRuntimeQueue, bool queueMatchesCurrentSwapchainQueue) {
+    return authoritativeStreamlineRuntimeQueue && !queueMatchesCurrentSwapchainQueue;
+}
+
 inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThirdPartyOverlay,
                                                               bool hasOriginalGameQueue, bool queueMatchesPrimaryQueue,
                                                               bool queueMatchesOriginalGameQueue,
@@ -208,7 +219,7 @@ inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThi
 
 inline bool ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(bool hasOriginalGameQueue,
                                                                     bool queueMatchesOriginalGameQueue,
-                                                                    bool authoritativeStreamlineRuntimeHandoff) {
+                                                                    bool authoritativeStreamlineRuntimeQueue) {
     if (!hasOriginalGameQueue || queueMatchesOriginalGameQueue) {
         return true;
     }
@@ -218,7 +229,7 @@ inline bool ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(bool hasOrig
     // runtime handoffs are different: later DLSS activation can migrate the
     // live swapchain onto a new queue/device, and without ECL visibility on that
     // queue CE can get stranded on wrapper-only state.
-    return authoritativeStreamlineRuntimeHandoff;
+    return authoritativeStreamlineRuntimeQueue;
 }
 
 enum class SwapchainOverlayRoutingDecision {

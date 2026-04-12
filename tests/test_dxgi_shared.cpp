@@ -124,6 +124,27 @@ TEST(DXGISharedTest, AuthoritativeStreamlineRuntimeQueuesStayHookableWhileGeneri
         ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(true, false, false));
 }
 
+TEST(DXGISharedTest, StreamlineRuntimeQueueAuthorityIsSeparateFromFreshHandoffState) {
+    const bool authoritativeRuntimeQueue =
+        ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(true, true, false);
+    EXPECT_TRUE(authoritativeRuntimeQueue);
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(true, false,
+                                                                                         authoritativeRuntimeQueue));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
+        authoritativeRuntimeQueue, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
+        authoritativeRuntimeQueue, true));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(true, true, true));
+}
+
 TEST(DXGISharedTest, StreamlineGeneratedFramePresentUsesSyntheticReentrantRoutingOnlyForDX12FGCallers) {
     EXPECT_TRUE(DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true));
 
