@@ -27,10 +27,12 @@ TEST_F(ConfigOverrideTest, SimpleOverride) {
     std::string iniContent =
         "[Overlay]\n"
         "enabled=true\n"
+        "observer_only=false\n"
         "\n"
         "[App.1]\n"
         "Process=game.exe\n"
-        "Overlay.enabled=false\n";
+        "Overlay.enabled=false\n"
+        "Overlay.observer_only=true\n";
 
     WriteConfig(iniContent);
 
@@ -43,6 +45,7 @@ TEST_F(ConfigOverrideTest, SimpleOverride) {
     // 2. Load with override
     LoadConfig(tempConfigFile, config, "game.exe");
     EXPECT_FALSE(config.overlay.showOverlay);
+    EXPECT_TRUE(config.overlay.observerOnly);
 }
 
 TEST_F(ConfigOverrideTest, CaseInsensitiveProcessMatch) {

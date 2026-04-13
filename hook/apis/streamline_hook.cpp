@@ -19,6 +19,10 @@
 
 namespace {
 
+bool IsObserverOnlyModeActive() {
+    return HookOverlayObserverOnlyEnabled();
+}
+
 using slResult = int;
 
 constexpr slResult kSlResultOk = 0;
@@ -312,6 +316,19 @@ void ApplyCombinedDLSSFGState(bool active, int multiplier) {
 }
 
 void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char* source) {
+    if (IsObserverOnlyModeActive()) {
+        const bool previousSignalObserved = DXGIShared::g_StreamlineFGRunning.exchange(active, std::memory_order_acq_rel);
+        g_FGCompat.SetStreamlineFGSignal(active);
+        ApplyCombinedDLSSFGState(active, active ? std::clamp(multiplier, 2, 4) : 0);
+        if (previousSignalObserved != active) {
+            DX12_OnStreamlineFGStateChanged(active);
+            HookLogImportant("Streamline Hook: FG state transition %s->%s via %s (observer-only pass-through)",
+                             previousSignalObserved ? "ON" : "OFF", active ? "ON" : "OFF",
+                             source ? source : "runtime-state");
+        }
+        return;
+    }
+
     const bool inStartupWindow = !active && DXGIShared::IsStreamlineStartupTransitionWindowActive();
     const bool previousSignal = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const auto signalUpdate = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(
@@ -347,6 +364,10 @@ bool WasViewportRuntimeStateActive(uint32_t viewportKey) {
 }
 
 bool ShouldSuppressNewGetStateActivation() {
+    if (IsObserverOnlyModeActive()) {
+        return false;
+    }
+
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     if (ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(
             g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire),
@@ -714,7 +735,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         }
     }
 
-    {
+    if (!IsObserverOnlyModeActive()) {
         std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
         if (g_SuppressedSetOptionsOffDuringStartup && !DXGIShared::IsStreamlineStartupTransitionWindowActive() &&
             g_Original_slDLSSGSetOptions) {
@@ -775,7 +796,9 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         }
     }
 
-    if (requestedEnabled) {
+    const bool observerOnly = IsObserverOnlyModeActive();
+
+    if (!observerOnly && requestedEnabled) {
         std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
         if (g_SuppressedSetOptionsOffDuringStartup) {
             const bool activationPending = DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
@@ -789,7 +812,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         }
     }
 
-    {
+    if (!observerOnly) {
         std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
         if (g_SuppressedSetOptionsOffDuringStartup && !DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
             if (g_Original_slDLSSGSetOptions) {
@@ -809,13 +832,14 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
 
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     const bool runtimeModeIsFSRFG = runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
-    if (ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(
+    if (!observerOnly && ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(
             requestedEnabled, g_FGCompat.IsFSRFGApiActive(), runtimeModeIsFSRFG,
             DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration())) {
         DX12_PrepareForStreamlineEnableTransition();
     }
 
-    const bool suppressOffCall = ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(
+    const bool suppressOffCall = !observerOnly &&
+        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(
         requestedDisabled, DXGIShared::IsStreamlineStartupTransitionWindowActive());
 
     slResult result;
@@ -870,7 +894,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     }
 
     if (result == kSlResultOk) {
-        if (requestedEnabled) {
+        if (!observerOnly && requestedEnabled) {
             const ULONGLONG previousSuppressUntilMs =
                 g_SuppressNewGetStateActivationUntilMs.exchange(0, std::memory_order_acq_rel);
             const bool wasBlockingGetStateOnlyReactivation =
@@ -890,7 +914,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                     "slDLSSGSetOptions enable request (viewport=%u)",
                     viewportKey);
             }
-        } else if (requestedDisabled) {
+        } else if (!observerOnly && requestedDisabled) {
             g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
             const bool wasBlockingGetStateOnlyReactivation =
                 g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.exchange(true, std::memory_order_acq_rel);
@@ -1121,6 +1145,10 @@ void Shutdown() {
 }
 
 void FlushSuppressedSetOptionsOffIfNeeded() {
+    if (IsObserverOnlyModeActive()) {
+        return;
+    }
+
     std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
 
     const bool windowStillActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();

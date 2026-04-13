@@ -198,4 +198,26 @@ TEST(StreamlineRuntimePolicyTest, SuppressSetOptionsOffDuringStartupTransitionWi
         ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(false, false));
 }
 
+TEST(StreamlineRuntimePolicyTest, ObserverOnlyActivationClearsRecentTeardownGraceAndResetsHeuristics) {
+    const auto cleanup =
+        ce::streamline_runtime_policy::ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(true);
+
+    EXPECT_TRUE(cleanup.clearRecentTeardownGrace);
+    EXPECT_FALSE(cleanup.seedRecentTeardownGrace);
+    EXPECT_TRUE(cleanup.resetQueueChangeHeuristic);
+    EXPECT_TRUE(cleanup.clearHeuristicFSR);
+    EXPECT_TRUE(cleanup.clearNvidiaSmoothMotion);
+}
+
+TEST(StreamlineRuntimePolicyTest, ObserverOnlyDeactivationSeedsRecentTeardownGraceAndResetsHeuristics) {
+    const auto cleanup =
+        ce::streamline_runtime_policy::ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(false);
+
+    EXPECT_FALSE(cleanup.clearRecentTeardownGrace);
+    EXPECT_TRUE(cleanup.seedRecentTeardownGrace);
+    EXPECT_TRUE(cleanup.resetQueueChangeHeuristic);
+    EXPECT_TRUE(cleanup.clearHeuristicFSR);
+    EXPECT_TRUE(cleanup.clearNvidiaSmoothMotion);
+}
+
 }  // namespace

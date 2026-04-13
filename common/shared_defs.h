@@ -34,7 +34,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 17: Added WGC-specific source cadence/jitter/throttle telemetry
 // Version 20: Added OverlayConfig::screenshotIncludeOverlay
 // Version 22: Added encoder sustainable FPS telemetry for overload UI
-static constexpr uint32_t SHARED_MEMORY_VERSION = 22;
+// Version 23: Added OverlayConfig::observerOnly passive DX12/FG observation mode
+static constexpr uint32_t SHARED_MEMORY_VERSION = 23;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -174,6 +175,7 @@ enum class LogLevel : int { Off = 0, Error = 1, Warn = 2, Info = 3, Debug = 4, T
 struct OverlayConfig {
     // Master toggle
     bool showOverlay;
+    bool observerOnly;  // Observe DX12/FG state without overlay/PostSL interference
     bool captureIncludeOverlay;     // Include overlay in video recordings
     bool screenshotIncludeOverlay;  // Include overlay in screenshots
     // Display Elements

@@ -100,6 +100,25 @@ inline bool HookTraceLoggingEnabled() {
     return false;
 }
 
+inline OverlayConfig GetHookOverlayConfig() {
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        return g_IPC->GetSharedMem()->ReadOverlayConfig();
+    }
+#ifndef VK_LAYER_CE_OVERLAY
+    if (g_pSharedMem) {
+        return g_pSharedMem->ReadOverlayConfig();
+    }
+    if (g_pLocalConfig) {
+        return g_pLocalConfig->overlay;
+    }
+#endif
+    return OverlayConfig{};
+}
+
+inline bool HookOverlayObserverOnlyEnabled() {
+    return IsOverlayObserverOnly(GetHookOverlayConfig());
+}
+
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
 float GetActivePrerenderLimit();

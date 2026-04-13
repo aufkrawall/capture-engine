@@ -26,6 +26,14 @@ struct CombinedRuntimeSignalUpdate {
     bool deferredOffDuringStartupWindow = false;
 };
 
+struct ObserverOnlyHeuristicCleanup {
+    bool clearRecentTeardownGrace = false;
+    bool seedRecentTeardownGrace = false;
+    bool resetQueueChangeHeuristic = false;
+    bool clearHeuristicFSR = false;
+    bool clearNvidiaSmoothMotion = false;
+};
+
 inline bool IsDLSSGModeEnabled(uint32_t mode) {
     return mode != 0;
 }
@@ -147,8 +155,18 @@ inline bool ShouldRequestStreamlineEnablePreparationOnReflexActivation(bool refl
 }
 
 inline bool ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(bool requestedDisabled,
-                                                                        bool startupTransitionWindowActive) {
+                                                                         bool startupTransitionWindowActive) {
     return requestedDisabled && startupTransitionWindowActive;
+}
+
+inline ObserverOnlyHeuristicCleanup ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(bool active) {
+    ObserverOnlyHeuristicCleanup cleanup;
+    cleanup.clearRecentTeardownGrace = active;
+    cleanup.seedRecentTeardownGrace = !active;
+    cleanup.resetQueueChangeHeuristic = true;
+    cleanup.clearHeuristicFSR = true;
+    cleanup.clearNvidiaSmoothMotion = true;
+    return cleanup;
 }
 
 }  // namespace ce::streamline_runtime_policy

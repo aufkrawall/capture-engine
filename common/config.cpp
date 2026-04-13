@@ -278,6 +278,10 @@ overlay_whitelist=(
 [Overlay]
 ; enabled - Values: true, false
 enabled=true
+; observer_only - Values: true, false
+;   true = keep injection/hooks/logging active, but do not render the overlay,
+;          do not install/use PostSL, and do not mutate Streamline startup state.
+observer_only=false
 ; capture_include_overlay - Values: true, false
 capture_include_overlay=true
 ; screenshot_include_overlay - Values: true, false
@@ -954,6 +958,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // Overlay
     config.overlay.showOverlay = GetBool("Overlay", "enabled", true);
+    config.overlay.observerOnly = GetBool("Overlay", "observer_only", false);
     config.overlay.captureIncludeOverlay = GetBool("Overlay", "capture_include_overlay", true);
     config.overlay.screenshotIncludeOverlay = GetBool("Overlay", "screenshot_include_overlay", true);
 

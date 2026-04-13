@@ -7,10 +7,14 @@ Primary sources:
 - `build.py`
 - `common/config.h`
 - `common/config.cpp`
+- `common/shared_defs.h`
 - `common/logging.cpp`
 - `captureengine/main.cpp`
 - `captureengine/inject_main.cpp`
 - `captureengine/sensor_service.cpp`
+- `hook/apis/dx12_hook.cpp`
+- `hook/apis/streamline_hook.cpp`
+- `hook/common/dxgi_shared.cpp`
 - `hook/common/hook_common.h`
 - `hook/common/hook_common.cpp`
 - `hook/wrappers/inline_hook.cpp`
@@ -40,9 +44,11 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 ## Current Hot Areas
 - DX12 / FG startup churn and queue ownership remain high-risk and change frequently.
 - Inline hook correctness is still a sensitive subsystem; use `trace` when debugging trampoline relocation or byte-level hook installs.
-- Session bundles under `installed/captureengine/logs/<session>` now benefit from a compact `session_manifest.txt` entrypoint.
-- The real `slDLSSGSetOptions(mode=OFF)` call is now suppressed during the DLSS FG startup transition window to prevent Streamline from de-initializing FG during fragile initialization. This is the newest and most important fix for the GTA V Enhanced DLSS FG freeze.
+- Session bundles under `installed/captureengine/logs/<session>` now benefit from a compact `session_manifest.txt` entrypoint, including `overlay_enabled` and `overlay_observer_only`.
+- `Overlay.enabled=false` alone is not a strict DX12 non-interference baseline; older GTA DLSS FG runs still performed pre-FG overlay setup and PostSL/startup routing with the visible overlay hidden.
+- `Overlay.observer_only=true` is now the preferred injected passive baseline for DLSS FG debugging. It keeps hooks, logging, and runtime FG telemetry alive while suppressing DX12 overlay rendering, PostSL callback install/use, special startup Present routing, and CE's Streamline startup-policy mutation. It still preserves Streamline transition heuristic cleanup (queue-change reset, teardown grace, false-heuristic clearing) so transient `GetState` OFF churn does not get misclassified as `FSR_FG`.
+- The real `slDLSSGSetOptions(mode=OFF)` call is still suppressed during the active-mode DLSS FG startup transition window to prevent Streamline from de-initializing FG during fragile initialization.
 
 ## Open Questions / Stale-Risk
-- Re-check this page whenever logging controls, session bundle layout, or the wiki read-order guidance changes.
-- Re-check after any future split of hook diagnostics into additional sidecar logs.
+- Re-check this page whenever logging controls, session bundle layout, or `Overlay.observer_only` semantics change.
+- Re-check after any future split of hook diagnostics into additional sidecar logs or passive-baseline workflow changes.

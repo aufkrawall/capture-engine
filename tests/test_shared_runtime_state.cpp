@@ -111,6 +111,7 @@ TEST(SharedDefsTest, OverlayConfigSeqlockPublishesStableSnapshot) {
     const uint32_t lockedSeq = sharedMemory.overlayConfigSeq.load(std::memory_order_relaxed);
     EXPECT_EQ(lockedSeq & 1u, 1u);
     sharedMemory.overlayConfig.showOverlay = true;
+    sharedMemory.overlayConfig.observerOnly = true;
     sharedMemory.overlayConfig.padding = 18;
     sharedMemory.overlayConfig.fontSize = 22.5f;
     sharedMemory.EndWriteOverlayConfig();
@@ -120,6 +121,7 @@ TEST(SharedDefsTest, OverlayConfigSeqlockPublishesStableSnapshot) {
 
     const OverlayConfig snapshot = sharedMemory.ReadOverlayConfig();
     EXPECT_TRUE(snapshot.showOverlay);
+    EXPECT_TRUE(snapshot.observerOnly);
     EXPECT_EQ(snapshot.padding, 18);
     EXPECT_FLOAT_EQ(snapshot.fontSize, 22.5f);
 }

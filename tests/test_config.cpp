@@ -148,6 +148,7 @@ TEST_F(ConfigTest, ParseOverlayInclusionOptions) {
     std::string iniContent =
         "[Overlay]\n"
         "enabled=true\n"
+        "observer_only=true\n"
         "capture_include_overlay=false\n"
         "screenshot_include_overlay=false\n";
 
@@ -157,6 +158,7 @@ TEST_F(ConfigTest, ParseOverlayInclusionOptions) {
     LoadConfig(tempConfigFile, config);
 
     EXPECT_TRUE(config.overlay.showOverlay);
+    EXPECT_TRUE(config.overlay.observerOnly);
     EXPECT_FALSE(config.overlay.captureIncludeOverlay);
     EXPECT_FALSE(config.overlay.screenshotIncludeOverlay);
 }

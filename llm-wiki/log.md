@@ -14,6 +14,44 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-13 - Preserve Streamline heuristic cleanup in observer-only mode
+
+- **Root cause**: The good observer-only GTA V Enhanced run `installed/captureengine/logs/20260413_200023` no longer froze, which confirmed the active DX12/PostSL/startup policy family as the likely crash trigger. But the same passive run exposed a separate correctness bug: after transient `Streamline Hook: FG state transition ON->OFF via GetState (observer-only pass-through)` churn at lines 714-716 and again 823-825, observer-only mode skipped the normal Streamline transition cleanup that active mode performs. That left the queue-change / ECL heuristics free to reclassify the still-Streamline-owned runtime as heuristic `FSR_FG`, producing `DX12: FG detected via queue change`, `DetourPresent: SL routing was active while FSR FG is active`, `DX12: Preparing for Streamline FG enable while live FSR runtime owns the swapchain`, and later `FG publication ... runtime=FSR_FG` even though the same session had already logged `FFX Hook: No FFX modules found` and `No AMD/FFX/FSR modules among 163 loaded`.
+
+- **Fix**:
+  1. `hook/common/streamline_runtime_policy.h` now exposes `ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition()` so the passive cleanup behavior is explicit and unit-testable.
+  2. `hook/apis/dx12_hook.cpp` now applies that cleanup even in observer-only mode: fresh Streamline ON clears stale teardown grace, Streamline OFF seeds teardown grace, both edges reset the queue-change heuristic, and false heuristic `FSR_FG` / `NVIDIA_SM` state is cleared before observer-only returns to its passive PostSL-disabled path.
+  3. `tests/test_streamline_runtime_policy.cpp` now covers both observer-only cleanup directions.
+
+- **Why this is generic**: Observer-only is meant to suppress CE's active overlay/PostSL/startup-policy interference, not to disable runtime-state hygiene. Any Streamline runtime that emits transient `ON->OFF->ON` churn can otherwise be misclassified as heuristic FSR purely because passive mode stopped doing the same heuristic cleanup that active mode already relies on.
+
+- **Verification**:
+  - Ran `python build.py --incremental --skip-updates --run-tests`.
+  - All 557 tests passed.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `hook/apis/dx12_hook.cpp`, `hook/common/streamline_runtime_policy.h`, `tests/test_streamline_runtime_policy.cpp`, `installed/captureengine/logs/20260413_200023/hook_debug.log`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`.
+- Stale-risk note: Re-check observer-only semantics if future runs again show heuristic `FSR_FG` activation immediately after observer-only `Streamline ... ON->OFF via GetState` churn, especially if Streamline remains loaded and no FFX module evidence exists.
+
+### 2026-04-13 - Documented observer-only passive baseline for injected DX12 / Streamline diagnosis
+
+- **Root cause / diagnostic correction**: In the GTA V Enhanced bundle `installed/captureengine/logs/20260413_192027`, `[Overlay] enabled=false` was not a true no-overlay baseline. `installed/captureengine/config.ini` had the visible overlay disabled, but `hook_debug.log` still showed `DX12: ProcessFrame - first overlay render attempt` at line 576 plus `DX12: Streamline FG ON — installed gated PostSL callback` and `DX12: Streamline FG ON — pre-armed PostSL callback for startup routing` at lines 857-858 before the usual promoted startup-handoff Present and `Present STALLED`. Previous "overlay disabled" reproductions therefore still included CE DX12/PostSL/startup-policy interference.
+
+- **Behavior now documented as current state**:
+  1. `Overlay.observer_only=true` is the strict injected passive baseline. It keeps hooks, logging, and runtime FG telemetry alive while suppressing DX12 overlay rendering, early/PostSL callback install/use, special Streamline synthetic/startup Present routing, and CE startup-window Streamline policy mutation.
+  2. `captureengine/main.cpp` and `captureengine/inject_main.cpp` now make passive-vs-active sessions self-describing through `overlay_enabled`, `overlay_observer_only`, and the inject config summary log.
+  3. The older active-mode startup-window OFF-suppression fix remains important, but it is no longer the right "no CE interference" baseline for GTA DLSS FG diagnosis.
+
+- **Why this is generic**: We need a true injected passive baseline to separate "hook presence alone causes the problem" from "overlay/PostSL/startup policy causes the problem" without disabling injection, logging, and runtime telemetry entirely. This is a generic FG-diagnosis tool, not a GTA-specific workaround.
+
+- **Verification checked while updating docs**:
+  - Re-checked the current observer-only implementation in `common/shared_defs.h`, `common/config.cpp`, `hook/common/hook_common.h`, `hook/apis/dx12_hook.cpp`, `hook/apis/streamline_hook.cpp`, `hook/common/dxgi_shared.cpp`, `captureengine/main.cpp`, and `captureengine/inject_main.cpp`.
+  - Re-checked the motivating session evidence in `installed/captureengine/config.ini` and `installed/captureengine/logs/20260413_192027/hook_debug.log`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `regression-testing-and-logging.md`, `log.md`.
+- Source files checked: `common/shared_defs.h`, `common/config.cpp`, `common/config.h`, `hook/common/hook_common.h`, `hook/apis/dx12_hook.cpp`, `hook/apis/streamline_hook.cpp`, `hook/common/dxgi_shared.cpp`, `captureengine/main.cpp`, `captureengine/inject_main.cpp`, `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`, `installed/captureengine/config.ini`, `installed/captureengine/logs/20260413_192027/hook_debug.log`.
+- Stale-risk note: Fresh runtime validation with `Overlay.observer_only=true` is still needed. Re-check these docs if the logs ever show pre-FG overlay submits, PostSL callback install/use, special startup Present routing, or startup-window Streamline policy mutation while observer-only is active.
+
 ### 2026-04-13 - Dump Thread Analysis: Present thread waiting on fence, Streamline thread deadlocked
 
 - **Thread analysis of crash 172647**: Used cdb to enumerate all threads and analyze stacks of key threads.

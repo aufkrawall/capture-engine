@@ -33,6 +33,7 @@
 #include "../common/overlay_compat.h"
 #include "../common/overlay_metrics_publisher.h"
 #include "../common/performance_metrics.h"
+#include "../common/streamline_runtime_policy.h"
 #include "../common/streamline_compat.h"
 
 #include "../common/fps_limiter.h"
@@ -1504,6 +1505,25 @@ static OverlayConfig GetActiveDX12OverlayConfig(SharedMemoryLayout* shm) {
         cfg = shm->ReadOverlayConfig();
     }
     return cfg;
+}
+
+static bool IsDX12ObserverOnlyModeActive(SharedMemoryLayout* shm) {
+    return IsOverlayObserverOnly(GetActiveDX12OverlayConfig(shm));
+}
+
+static void EnsurePostSLDisabledForObserverOnly(const char* reason) {
+    g_PostSLOverlayActive.store(false, std::memory_order_release);
+    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
+    g_PostSLStallCounter.store(0, std::memory_order_release);
+    g_PostSLStableFrameCount.store(0, std::memory_order_release);
+    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
+    DXGIShared::ClearStreamlineStartupTransitionWindow();
+    if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr) {
+        SetPostSLCallbackInstalled(false, reason);
+    }
 }
 
 static bool ShouldUseConfirmedPostSLForOverlayIncludedWork(const OverlayConfig& cfg) {
@@ -3648,6 +3668,47 @@ DWORD DX12_GetGamePresentThreadId() {
 }
 
 void DX12_OnStreamlineFGStateChanged(bool active) {
+    const bool observerOnly = HookOverlayObserverOnlyEnabled();
+    if (observerOnly) {
+        const auto cleanup = ce::streamline_runtime_policy::ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(
+            active);
+        if (cleanup.clearRecentTeardownGrace) {
+            const int previousHeuristicGrace = g_SLOffHeuristicGrace.exchange(0, std::memory_order_acq_rel);
+            const int previousSwapchainGrace = g_SLOffSwapchainReinitGrace.exchange(0, std::memory_order_acq_rel);
+            if (ce::dx12_overlay_policy::ShouldClearRecentStreamlineTeardownGraceOnFreshActivation(
+                    true, previousHeuristicGrace > 0, previousSwapchainGrace > 0)) {
+                HookLogImportant(
+                    "DX12: Observer-only Streamline FG ON - cleared stale teardown grace before fresh activation "
+                    "(slOffGrace=%d swapchainGrace=%d)",
+                    previousHeuristicGrace, previousSwapchainGrace);
+            }
+        }
+        if (cleanup.seedRecentTeardownGrace) {
+            g_SLOffHeuristicGrace.store(600, std::memory_order_release);
+            g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
+        }
+        if (cleanup.resetQueueChangeHeuristic) {
+            g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+        }
+        if (cleanup.clearHeuristicFSR && g_FGCompat.IsHeuristicFSRFGActive()) {
+            g_FGCompat.SetHeuristicFSRFGActive(false);
+            HookLogImportant("DX12: Observer-only cleared heuristic FSR FG during Streamline %s transition",
+                             active ? "ON" : "OFF");
+        }
+        if (cleanup.clearNvidiaSmoothMotion) {
+            g_FGCompat.ClearNvidiaSMState();
+        }
+        if (active) {
+            HookLogImportant(
+                "DX12: Streamline FG ON observed in observer-only mode - skipping PostSL startup routing/state mutation");
+        } else {
+            HookLogImportant(
+                "DX12: Streamline FG OFF observed in observer-only mode - keeping PostSL disabled and clearing startup state");
+        }
+        EnsurePostSLDisabledForObserverOnly("DX12: observer-only mode");
+        return;
+    }
+
     if (active) {
         const int previousHeuristicGrace = g_SLOffHeuristicGrace.exchange(0, std::memory_order_acq_rel);
         const int previousSwapchainGrace = g_SLOffSwapchainReinitGrace.exchange(0, std::memory_order_acq_rel);
@@ -8152,6 +8213,18 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
         return;
     }
 
+    if (HookOverlayObserverOnlyEnabled()) {
+        static std::atomic<int> s_observerOnlyPostSLSkipLogCount{0};
+        const int logCount = s_observerOnlyPostSLSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "DX12: PostSL callback SKIPPED - observer-only mode active (swapchain=%p)",
+                (void*)pSwapChain);
+        }
+        EnsurePostSLDisabledForObserverOnly("DX12: observer-only PostSL callback");
+        return;
+    }
+
     if (g_DeviceRemoved.load(std::memory_order_relaxed)) {
         static std::atomic<int> s_deviceRemovedSkipLogCount{0};
         const int logCount = s_deviceRemovedSkipLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -8476,6 +8549,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
     UpdateStartupOverlayCompatibilityState();
     bool allowOverlayRender = ApplyOverlayStartupCompatMode(frameDesc.OutputWindow);
+    SharedMemoryLayout* observerModeShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    const bool observerOnlyMode = IsDX12ObserverOnlyModeActive(observerModeShm);
+    if (observerOnlyMode) {
+        allowOverlayRender = false;
+        EnsurePostSLDisabledForObserverOnly("DX12: ProcessFrame observer-only mode");
+    }
 
     ULONGLONG postResumeSettleRemainingMs = 0;
     const bool startupOverlayCompatibilityActive = IsStartupOverlayCompatibilityActive();
@@ -8499,7 +8578,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         ResetStartupOverlayBackendActivationStage();
     }
     DisableDedicatedOverlayQueueForOverlayCompat();
-    EnsureDedicatedOverlayQueueForFGCompat();
+    if (!observerOnlyMode) {
+        EnsureDedicatedOverlayQueueForFGCompat();
+    }
 
     // Dedicated overlay queue architecture: when FG is active, overlay commands
     // execute on the overlay queue with CPU-side fence sync to avoid interfering
@@ -9709,7 +9790,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     // Fix: register PostSL BEFORE the outer block, regardless of overlayInit.
     // The PostSL callback safely handles !overlayInit (returns early at line 4026).
     // =========================================================================
-    {
+    if (!observerOnlyMode) {
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         if (slFGNow && g_FGTransitionCooldown == 0) {
             if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) !=
@@ -9718,6 +9799,13 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 HookLogImportant("DX12: Early PostSL registration (overlayInit=%d syncInit=%d)",
                                  g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0);
             }
+        }
+    } else {
+        static std::atomic<int> s_observerOnlyEarlyPostSLLogCount{0};
+        const int logCount = s_observerOnlyEarlyPostSLLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) && (logCount < 10 || (logCount % 200) == 0)) {
+            HookLogImportant(
+                "DX12: Observer-only mode active - suppressing early PostSL registration while Streamline FG is running");
         }
     }
 
@@ -9735,7 +9823,16 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     // The inner block (inside allowOverlayRender gate) also handles transitions
     // but only runs when rendering is allowed.  This outer block is the safety
     // net that ensures state is ALWAYS correct.
-    if (!s_insideECL && g_State.overlayInit && g_State.syncInit) {
+    if (observerOnlyMode && g_State.overlayInit && g_State.syncInit) {
+        static std::atomic<int> s_observerOnlyDx12StateLogCount{0};
+        const int logCount = s_observerOnlyDx12StateLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) && (logCount < 10 || (logCount % 200) == 0)) {
+            HookLogImportant(
+                "DX12: Observer-only mode active - suppressing DX12 overlay/PostSL transition management while Streamline FG is running");
+        }
+    }
+
+    if (!observerOnlyMode && !s_insideECL && g_State.overlayInit && g_State.syncInit) {
         bool outerSLFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         bool previousOuterSLFGRunning = g_OuterTrackedSLFGRunning.load(std::memory_order_acquire);
 

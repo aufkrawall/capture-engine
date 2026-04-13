@@ -932,6 +932,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
+    const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
         streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive);
@@ -950,11 +951,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
     }
-    bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
+    bool streamlineSyntheticReentrant = !observerOnlyMode && ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
         matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
-    const bool startupTopLevelCandidate = !streamlineSyntheticReentrant && callerFromStreamlineModule &&
+    const bool startupTopLevelCandidate = !observerOnlyMode && !streamlineSyntheticReentrant && callerFromStreamlineModule &&
         api == APIType::D3D12 && streamlineFGRunning && streamlineStartupHandoffInProgress &&
         recentLargePresentGap && matchesExpectedPresentThread;
     bool allowTopLevelStartupPresent = false;
@@ -985,7 +986,7 @@ if (allowTopLevelStartupPresent) {
         }
     }
     if (streamlineSyntheticReentrant) {
-        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        auto postSLCallback = observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
             postSLCallback(pSwapChain);
         }
@@ -1076,7 +1077,7 @@ if (allowTopLevelStartupPresent) {
         // (which runs before SL).  This matches RTSS's approach — overlay
         // appears on both real and interpolated frames without interfering
         // with SL's FG pipeline.
-        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        auto postSLCallback = observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
             postSLCallback(pSwapChain);
         }
@@ -1362,6 +1363,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
+    const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
         streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive);
@@ -1380,11 +1382,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     }
-    bool streamlineSyntheticReentrant = ShouldTreatStreamlinePresentAsSyntheticReentrant(
+    bool streamlineSyntheticReentrant = !observerOnlyMode && ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
         matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
-    const bool startupTopLevelCandidate = !streamlineSyntheticReentrant && callerFromStreamlineModule &&
+    const bool startupTopLevelCandidate = !observerOnlyMode && !streamlineSyntheticReentrant && callerFromStreamlineModule &&
         api == APIType::D3D12 && streamlineFGRunning && streamlineStartupHandoffInProgress &&
         recentLargePresentGap && matchesExpectedPresentThread;
     bool allowTopLevelStartupPresent = false;
@@ -1415,7 +1417,7 @@ if (allowTopLevelStartupPresent) {
         }
     }
     if (streamlineSyntheticReentrant) {
-        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        auto postSLCallback = observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
             postSLCallback(pSwapChain);
         }
@@ -1476,7 +1478,7 @@ if (allowTopLevelStartupPresent) {
     // Re-entrant Present1 call — same logic as DetourPresent.
     if (IsRecursivePresent()) {
         // Post-SL overlay rendering (same as DetourPresent).
-        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        auto postSLCallback = observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
             postSLCallback(pSwapChain);
         }
