@@ -18,6 +18,9 @@ Primary sources:
 - `hook/common/hook_common.h`
 - `hook/common/hook_common.cpp`
 - `hook/wrappers/inline_hook.cpp`
+- `hook/main.cpp`
+- `common/crash_handler.cpp`
+- `common/crash_dump_policy.h`
 
 ## Purpose
 This page is the compact LLM entrypoint for current repo state. Read it before diving into long historical pages or `log.md`.
@@ -50,7 +53,9 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 - `Overlay.observer_policy_only=true` is a staged probe that only applies with `Overlay.observer_only=true`. It keeps DX12 overlay rendering, PostSL callback install/use, and special Streamline synthetic/startup Present routing passive, but lets the Streamline hook keep the startup-policy family alive: startup transition window arming/extension, startup-window OFF suppression/flush, fresh-activation suppression, and FSR-owned enable preparation. This isolates startup-policy mutation from PostSL/startup-Present behavior.
 - `Overlay.observer_startup_present_only=true` is a narrower staged probe that only applies with both `Overlay.observer_only=true` and `Overlay.observer_policy_only=true`. It still keeps PostSL callback install/use and rendering passive. The first version of that seam re-enabled the special Streamline startup Present routing family and was enough to reintroduce the GTA V Enhanced freeze in `installed/captureengine/logs/20260413_222933` even though PostSL never reactivated. The follow-up refinement still froze in `installed/captureengine/logs/20260413_224823` even after skipping `HandleDX12ProcessFrame()` and `DX12_WaitForOverlayCompletion()` on the promoted startup-handoff Present. The current staged meaning is therefore narrower again: keep Streamline startup-policy mutation plus the remaining non-Streamline startup-Present probe pieces such as the FFX startup bypass, but keep Streamline-originated startup-handoff Presents synthetic instead of promoting them to the top-level live Present path in observer mode.
 - The real `slDLSSGSetOptions(mode=OFF)` call is still suppressed during the active-mode DLSS FG startup transition window to prevent Streamline from de-initializing FG during fragile initialization.
+- Fast-crash GTA V Enhanced runs can bypass CE's VEH/UEF dump path and still produce an external dump through `dbghelp!MiniDumpWriteDump`. The narrowed observer run produced `C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp` at `2026-04-13 23:11:47.519`, and that dump still points into the same `sl_dlss_g` / `capture_hook_x64` / `dxgi!CDXGISwapChain::Present` crash family.
+- `hook/main.cpp` now installs a generic inline hook on `dbghelp.dll!MiniDumpWriteDump` when `dbghelp.dll` is already loaded or loads later. When the current process successfully writes a dump outside the active CE session directory, CE re-emits the same dump into the session folder as `external_<original-name>.dmp`, so externally handled crash paths still leave session-local artifacts.
 
 ## Open Questions / Stale-Risk
-- Re-check this page whenever logging controls, session bundle layout, or `Overlay.observer_only` / `Overlay.observer_policy_only` / `Overlay.observer_startup_present_only` semantics change.
-- Re-check after any future split of hook diagnostics into additional sidecar logs or passive-baseline workflow changes.
+- Re-check this page whenever logging controls, session bundle layout, external-dump mirroring, or `Overlay.observer_only` / `Overlay.observer_policy_only` / `Overlay.observer_startup_present_only` semantics change.
+- Re-check after any future split of hook diagnostics into additional sidecar logs, passive-baseline workflow changes, or DbgHelp hook ownership changes.

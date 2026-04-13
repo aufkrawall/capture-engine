@@ -56,6 +56,8 @@ Primary sources:
   - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths.
 - `hook/common/freeze_watchdog.cpp`
   - Logs watchdog startup, monitored thread selection, dialog-triggered dumps, freeze-triggered dumps, and explicit immediate dump requests.
+- `hook/main.cpp`
+  - Logs installation of the `dbghelp.dll!MiniDumpWriteDump` mirror hook and successful/failed re-emission of externally handled dumps into the active session folder.
 - `hook/common/overlay_metrics_publisher.cpp`
   - Logs FG publication state changes and invariant violations.
 
@@ -65,6 +67,7 @@ Primary sources:
 - If you touch `Overlay.observer_only`, `Overlay.observer_policy_only`, or `Overlay.observer_startup_present_only`, verify the intended split explicitly: pure observer-only still has no pre-FG overlay submits, no early/PostSL callback install/use, no special Streamline synthetic/startup Present routing, and no startup-window Streamline mutation; observer-policy-only may restore only the Streamline startup-policy family while DX12/PostSL/startup-Present behavior stays passive; observer-startup-present-only may further restore only the remaining non-Streamline startup-Present probe pieces while PostSL callback install/use and rendering still stay passive, and Streamline-originated startup-handoff Presents must stay synthetic in observer mode.
 - If you touch watchdog ownership or dump-trigger conditions, verify that helper heartbeats do not silently retarget the monitored thread and that explicit stall conditions still produce an automatic dump.
 - If you touch watchdog ownership or dump-trigger conditions, also verify that an immediate dump request targeting the current render/present thread is handled asynchronously instead of trying to suspend/capture that same thread inline.
+- If you touch external crash capture or `MiniDumpWriteDump` interception, verify both dump families explicitly: CE's own VEH/watchdog dumps still write to the session folder, and externally handled dumps (for example Rockstar / Streamline crash paths) get mirrored into the same session folder as `external_<original-name>.dmp` instead of being stranded only in an external crash directory.
 - If you touch Streamline stall detection, verify that top-level `Present1` traffic counts as forward progress alongside `Present`; otherwise `Present STALLED` can become a false positive on games/runtimes that switch entrypoints during DLSS activation.
 - If you touch Streamline startup-window or state-signal logic, verify that the startup transition window is only armed by fresh activation/handoff edges and cannot be kept alive indefinitely by steady-state active `GetState` / `SetOptions` polls.
 - If you touch startup-window extension or deferred-OFF churn handling, verify separately that extending the window does not reset the one-shot top-level startup-handoff Present latch; a later deferred OFF must not reopen a second promoted top-level Present in the same handoff.
@@ -108,6 +111,7 @@ powershell -ExecutionPolicy Bypass -File .\analysis\analyze_dump.ps1 .\installed
 - The helper also adds a Microsoft symbol-server cache under `build/symbols-cache` by default so system DLL frames resolve more reliably.
 - `SetCrashDumpDirectory()` now snapshots the current CE runtime PE/PDB set into `<session-log-dir>\symbols\captureengine\` so later dump analysis is not tied to whatever binaries happen to be installed after future rebuilds.
 - Direct CE crash dumps now use richer `MiniDumpWriteDump` flag sets first, including thread info, unloaded modules, handle data, process-thread data, and full-memory metadata, with compatibility fallbacks if a target process rejects the richer combination.
+- The injected hook now also mirrors successful in-process external `MiniDumpWriteDump` calls into the active CE session folder when the original dump path lives elsewhere. This is intended for fast-crash families that are handled by the game/runtime rather than CE's own unhandled-exception path.
 - Legacy standalone `.dbg` files are not produced; `.pdb` is now the intended Windows symbol format in this repo.
 
 ## Logging Guidance

@@ -51,3 +51,25 @@ TEST(CrashDumpPolicyTest, ArtifactArchiverKeepsRuntimeImagesAndPdbsOnly) {
     EXPECT_FALSE(policy::ShouldArchiveInstalledCrashArtifactFileName("capture_hook_x64.dll.old.1234"));
     EXPECT_FALSE(policy::ShouldArchiveInstalledCrashArtifactFileName("notes.pdb.txt"));
 }
+
+TEST(CrashDumpPolicyTest, ExternalDumpMirrorSkipsSessionLocalTargets) {
+    EXPECT_FALSE(policy::ShouldMirrorExternalDumpToSessionDirectory(
+        R"(C:\captureengine\logs\20260413_231005\crash_foo.dmp)",
+        R"(C:\captureengine\logs\20260413_231005)"));
+    EXPECT_FALSE(policy::ShouldMirrorExternalDumpToSessionDirectory(
+        R"(C:/captureengine/logs/20260413_231005/external_bar.dmp)",
+        R"(C:\captureengine\logs\20260413_231005\)"));
+    EXPECT_TRUE(policy::ShouldMirrorExternalDumpToSessionDirectory(
+        R"(C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp)",
+        R"(C:\captureengine\logs\20260413_231005)"));
+    EXPECT_TRUE(policy::ShouldMirrorExternalDumpToSessionDirectory(nullptr,
+                                                                   R"(C:\captureengine\logs\20260413_231005)"));
+}
+
+TEST(CrashDumpPolicyTest, ExternalDumpMirrorBuildsStableDestinationFileNames) {
+    EXPECT_EQ(policy::BuildMirroredExternalDumpFileName(
+                  R"(C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp)"),
+              "external_51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp");
+    EXPECT_EQ(policy::BuildMirroredExternalDumpFileName("crashcontext"), "external_crashcontext.dmp");
+    EXPECT_EQ(policy::BuildMirroredExternalDumpFileName(nullptr), "external_dump.dmp");
+}

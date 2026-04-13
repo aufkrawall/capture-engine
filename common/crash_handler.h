@@ -9,6 +9,9 @@ void InstallCrashHandler();
 // Sets the directory where crash dumps will be written
 void SetCrashDumpDirectory(const std::string& dir);
 
+// Returns the current directory where crash dumps should be written.
+std::string GetCrashDumpDirectory();
+
 // Sets the process name for crash logging
 void SetCrashProcessName(const char* name);
 

@@ -229,6 +229,11 @@ void SetCrashDumpDirectory(const std::string& dir) {
     ArchiveInstalledCrashArtifactsForDumpDirectory(dir);
 }
 
+std::string GetCrashDumpDirectory() {
+    std::lock_guard<std::mutex> lock(g_DumpDirMutex);
+    return g_DumpDir;
+}
+
 void SetCrashProcessName(const char* name) {
     if (name) {
         strncpy(g_ProcessName, name, sizeof(g_ProcessName) - 1);

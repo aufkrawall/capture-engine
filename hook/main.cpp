@@ -13,6 +13,7 @@
 #include <intrin.h> // For __builtin_return_address
 #include <psapi.h>
 // Vulkan hook removed - using VK_LAYER_CE_overlay (ICD layer approach) instead
+#include "../common/crash_dump_policy.h"
 #include "../common/crash_handler.h"
 #include "apis/ffx_hook.h" // FSR Frame Generation hook
 #include "apis/nvngx_hook.h"
@@ -37,6 +38,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstring>
+#include <dbghelp.h>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -49,6 +51,169 @@ HMODULE g_hModule = NULL;
 // Note: g_ShuttingDown is declared in hook/common/hook_common.h
 
 static std::atomic<bool> g_ProcessTerminating{false};
+
+namespace {
+
+using MiniDumpWriteDump_t = decltype(&MiniDumpWriteDump);
+
+BOOL WINAPI HookedMiniDumpWriteDump(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
+                                    PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
+                                    PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
+                                    PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
+
+std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
+std::atomic<bool> g_MiniDumpWriteDumpHookInstalled{false};
+std::once_flag g_MiniDumpWriteDumpHookOnce;
+
+thread_local bool t_InMiniDumpWriteDumpHook = false;
+
+std::string BuildExternalDumpMirrorPath(const char* sourcePath) {
+  const std::string dumpDir = GetCrashDumpDirectory();
+  if (dumpDir.empty()) {
+    return {};
+  }
+
+  std::filesystem::path mirrorPath(dumpDir);
+  mirrorPath /= ce::crash_dump_policy::BuildMirroredExternalDumpFileName(sourcePath);
+  return mirrorPath.string();
+}
+
+void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess, DWORD processId, MINIDUMP_TYPE dumpType,
+                                       PMINIDUMP_EXCEPTION_INFORMATION exceptionParam,
+                                       PMINIDUMP_USER_STREAM_INFORMATION userStreamParam,
+                                       PMINIDUMP_CALLBACK_INFORMATION callbackParam) {
+  if (!sourcePath || sourcePath[0] == '\0') {
+    return;
+  }
+
+  const std::string dumpDir = GetCrashDumpDirectory();
+  if (!ce::crash_dump_policy::ShouldMirrorExternalDumpToSessionDirectory(sourcePath, dumpDir.c_str())) {
+    return;
+  }
+
+  const std::string mirrorPath = BuildExternalDumpMirrorPath(sourcePath);
+  if (mirrorPath.empty()) {
+    return;
+  }
+
+  const std::filesystem::path destination(mirrorPath);
+  std::error_code ec;
+  std::filesystem::create_directories(destination.parent_path(), ec);
+  if (ec) {
+    HookLog("CrashMirror: Failed to create mirror directory for %s (err=%d)", mirrorPath.c_str(),
+            static_cast<int>(ec.value()));
+    return;
+  }
+
+  const auto original = g_OriginalMiniDumpWriteDump.load(std::memory_order_acquire);
+  if (!original) {
+    HookLog("CrashMirror: Missing MiniDumpWriteDump trampoline while mirroring %s", sourcePath);
+    return;
+  }
+
+  HANDLE mirrorFile = CreateFileA(mirrorPath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+  if (mirrorFile == INVALID_HANDLE_VALUE) {
+    HookLog("CrashMirror: Failed to create mirror dump %s (err=%lu)", mirrorPath.c_str(), GetLastError());
+    return;
+  }
+
+  const BOOL mirrorResult = original(hProcess, processId, mirrorFile, dumpType, exceptionParam, userStreamParam,
+                                     callbackParam);
+  const DWORD mirrorError = mirrorResult ? ERROR_SUCCESS : GetLastError();
+  if (mirrorResult) {
+    FlushFileBuffers(mirrorFile);
+  }
+  CloseHandle(mirrorFile);
+
+  if (!mirrorResult) {
+    DeleteFileA(mirrorPath.c_str());
+    HookLog("CrashMirror: Failed to re-emit external dump %s -> %s (err=%lu)", sourcePath, mirrorPath.c_str(),
+            mirrorError);
+    return;
+  }
+
+  HookLogImportant("CrashMirror: Mirrored external dump %s -> %s", sourcePath, mirrorPath.c_str());
+}
+
+void TryInstallMiniDumpWriteDumpHookForModule(HMODULE module, const char* moduleNameOrPath) {
+  if (g_MiniDumpWriteDumpHookInstalled.load(std::memory_order_acquire) || !module || !moduleNameOrPath) {
+    return;
+  }
+
+  const char* baseName = std::strrchr(moduleNameOrPath, '\\');
+  baseName = baseName ? baseName + 1 : moduleNameOrPath;
+  const char* slash = std::strrchr(baseName, '/');
+  baseName = slash ? slash + 1 : baseName;
+  if (_stricmp(baseName, "dbghelp.dll") != 0) {
+    return;
+  }
+
+  std::call_once(g_MiniDumpWriteDumpHookOnce, [module]() {
+    auto target = reinterpret_cast<void*>(GetProcAddress(module, "MiniDumpWriteDump"));
+    if (!target) {
+      HookLog("CrashMirror: dbghelp.dll loaded but MiniDumpWriteDump export was not found");
+      return;
+    }
+
+    void* trampoline = nullptr;
+    if (!InlineHook::Install(target, reinterpret_cast<void*>(&HookedMiniDumpWriteDump), &trampoline)) {
+      HookLog("CrashMirror: Failed to install MiniDumpWriteDump inline hook at %p", target);
+      return;
+    }
+
+    g_OriginalMiniDumpWriteDump.store(reinterpret_cast<MiniDumpWriteDump_t>(trampoline), std::memory_order_release);
+    g_MiniDumpWriteDumpHookInstalled.store(true, std::memory_order_release);
+    HookLogImportant("CrashMirror: Installed MiniDumpWriteDump hook at %p (trampoline=%p)", target, trampoline);
+  });
+}
+
+BOOL WINAPI HookedMiniDumpWriteDump(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
+                                    PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
+                                    PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
+                                    PMINIDUMP_CALLBACK_INFORMATION CallbackParam) {
+  const auto original = g_OriginalMiniDumpWriteDump.load(std::memory_order_acquire);
+  if (!original) {
+    SetLastError(ERROR_PROC_NOT_FOUND);
+    return FALSE;
+  }
+
+  if (t_InMiniDumpWriteDumpHook) {
+    return original(hProcess, ProcessId, hFile, DumpType, ExceptionParam, UserStreamParam, CallbackParam);
+  }
+
+  t_InMiniDumpWriteDumpHook = true;
+
+  char targetPath[MAX_PATH * 4] = {};
+  bool hasTargetPath = false;
+  if (hFile && hFile != INVALID_HANDLE_VALUE) {
+    const DWORD pathLength = GetFinalPathNameByHandleA(hFile, targetPath, static_cast<DWORD>(sizeof(targetPath)),
+                                                       FILE_NAME_NORMALIZED);
+    if (pathLength > 0 && pathLength < sizeof(targetPath)) {
+      constexpr const char* kLongPathPrefix = "\\\\?\\";
+      if (std::strncmp(targetPath, kLongPathPrefix, 4) == 0) {
+        std::memmove(targetPath, targetPath + 4, std::strlen(targetPath + 4) + 1);
+      }
+      hasTargetPath = true;
+    }
+  }
+
+  const BOOL result = original(hProcess, ProcessId, hFile, DumpType, ExceptionParam, UserStreamParam, CallbackParam);
+  const DWORD lastError = result ? ERROR_SUCCESS : GetLastError();
+
+  if (result && ProcessId == GetCurrentProcessId() && hasTargetPath) {
+    MirrorExternalDumpArtifactIfNeeded(targetPath, hProcess, ProcessId, DumpType, ExceptionParam, UserStreamParam,
+                                       CallbackParam);
+  }
+
+  t_InMiniDumpWriteDumpHook = false;
+  if (!result) {
+    SetLastError(lastError);
+  }
+  return result;
+}
+
+} // namespace
 
 bool IsProcessTerminating() { return g_ProcessTerminating.load(std::memory_order_acquire); }
 
@@ -612,6 +777,8 @@ static std::wstring g_SpoofedCmdLineW;
 void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   if (!module)
     return;
+
+  TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
 
   // Detect nvapi64.dll loading — trigger Reflex limiter initialization immediately
   // so our dynamic hook is registered before the game calls GetProcAddress.
@@ -1884,6 +2051,10 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     }
     CreateDirectoryA(crashDir.c_str(), NULL);
     SetCrashDumpDirectory(crashDir);
+
+    if (HMODULE hDbgHelp = GetModuleHandleA("dbghelp.dll")) {
+      TryInstallMiniDumpWriteDumpHookForModule(hDbgHelp, "dbghelp.dll");
+    }
 
     // CRITICAL FIX: Install crash handler IMMEDIATELY for all non-service
     // processes Don't wait for whitelist check or graphics DLL detection -

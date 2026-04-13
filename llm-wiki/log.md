@@ -14,6 +14,28 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-13 - Mirror externally handled crash dumps into the active CE session folder
+
+- **Motivation**: The narrowed observer-startup-present-only runtime validation in `installed/captureengine/logs/20260413_231005` changed the failure family from a watchdog-captured freeze to a fast crash with no CE session-local `.dmp`, `crash.log`, or `crash_error.txt`. Investigation showed CE's VEH/UEF handler can miss crash paths that are handled internally by the runtime/game, while Rockstar was in fact writing an external dump under `C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\`. The newest external artifact, `51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp` at `2026-04-13 23:11:47.519`, still lands in the same family: `sl_dlss_g` on a worker thread calling through `capture_hook_x64` into `dxgi!CDXGISwapChain::Present`, followed by the game's own unhandled-exception path. That confirmed the crash did not disappear; only CE's session-local dump capture path was being bypassed.
+
+- **Fix**:
+  1. `hook/main.cpp` now installs a generic inline hook on `dbghelp.dll!MiniDumpWriteDump` when `dbghelp.dll` is already loaded at inject time or when it loads later through the normal module-notification path.
+  2. When the current process successfully writes a dump outside the active CE session directory, the hook now re-emits the same dump contents into the CE session folder as `external_<original-name>.dmp` by calling the original `MiniDumpWriteDump` trampoline on a CE-owned file handle. This avoids racing the original writer over file-copy semantics and keeps the hook generic instead of relying on Rockstar-specific paths.
+  3. `common/crash_handler.h` / `.cpp` now expose `GetCrashDumpDirectory()` so the injected hook can safely resolve the current session dump directory without duplicating that state.
+  4. `common/crash_dump_policy.h` now centralizes the small policy helpers for external dump mirroring: session-local path exclusion and stable mirrored dump naming.
+  5. `tests/test_crash_dump_policy.cpp` now covers the new mirroring policy helpers.
+
+- **Why this is generic**: The problem is not specific to GTA or Rockstar. Any runtime, middleware layer, or game can catch an internal failure and call `MiniDumpWriteDump` itself, bypassing CE's VEH/watchdog path. Mirroring successful in-process external dump writes back into the active CE session folder preserves CE's session bundle diagnostics without depending on who handled the exception.
+
+- **Verification**:
+  - Analyzed `C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp` with `analysis/analyze_dump.ps1`; the dump still points into the same `sl_dlss_g` / `capture_hook_x64` / `dxgi!CDXGISwapChain::Present` crash family.
+  - Ran `& ".\tests\unit_tests.exe" --gtest_filter=CrashDumpPolicyTest.*` after the change; all 5 crash-dump policy tests passed.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 564 tests passed.
+
+- Pages touched: `current.md`, `regression-testing-and-logging.md`, `log.md`.
+- Source files checked/modified: `C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp`, `C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\crashcontext.log`, `hook/main.cpp`, `common/crash_handler.h`, `common/crash_handler.cpp`, `common/crash_dump_policy.h`, `tests/test_crash_dump_policy.cpp`.
+- Stale-risk note: Fresh runtime validation is still required. Re-check this path if a future fast-crash run still produces only an external dump, if no `CrashMirror:` log lines appear after `dbghelp.dll` loads, or if another component starts writing dumps out-of-process instead of via in-process `MiniDumpWriteDump`.
+
 ### 2026-04-13 - Narrow observer-startup-present-only again after refined handoff probe still froze
 
 - **Motivation**: The refined runtime validation in `installed/captureengine/logs/20260413_224823` still froze even though the staged observer probe now logged `Observer-startup-present-only probe skipping full DX12 promoted-handoff processing (HandleDX12ProcessFrame + WaitForOverlayCompletion)`. The hook trace still showed no PostSL registration/reactivation/submits, but it did show exactly one promoted Streamline startup-handoff Present followed by wrapper-only `ECL captured SL wrapper queue ...` progress and then `Present STALLED`. The new dump again landed in the same `sl_dlss_g` / `sl.interposer` threading-exception family. That proves the one promoted Streamline-originated startup-handoff Present is still toxic by itself in observer mode, even after removing CE's top-level DX12 frame-processing work from that call.
