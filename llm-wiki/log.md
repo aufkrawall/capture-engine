@@ -14,6 +14,27 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-13 - Narrow observer-startup-present-only again after refined handoff probe still froze
+
+- **Motivation**: The refined runtime validation in `installed/captureengine/logs/20260413_224823` still froze even though the staged observer probe now logged `Observer-startup-present-only probe skipping full DX12 promoted-handoff processing (HandleDX12ProcessFrame + WaitForOverlayCompletion)`. The hook trace still showed no PostSL registration/reactivation/submits, but it did show exactly one promoted Streamline startup-handoff Present followed by wrapper-only `ECL captured SL wrapper queue ...` progress and then `Present STALLED`. The new dump again landed in the same `sl_dlss_g` / `sl.interposer` threading-exception family. That proves the one promoted Streamline-originated startup-handoff Present is still toxic by itself in observer mode, even after removing CE's top-level DX12 frame-processing work from that call.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.cpp` no longer lets observer mode promote a Streamline-originated startup-handoff Present to the top-level live Present path. In observer mode, that would-be handoff Present stays on the synthetic/bypass route again.
+  2. `hook/common/dxgi_shared.h` drops the old observer-only helper that explicitly re-enabled that top-level handoff promotion path, because the staged seam has been narrowed back away from that call entirely.
+  3. `common/shared_defs.h`, `common/config.cpp`, and `hook/apis/dx12_hook.cpp` now describe `observer_startup_present_only` more precisely as preserving startup-policy plus the remaining non-Streamline startup-Present probe pieces, not the Streamline-originated promoted top-level handoff itself.
+  4. `tests/test_dxgi_shared.cpp` removes the old observer-mode unit that expected a top-level startup-handoff promotion in this staged seam; the FFX startup-bypass coverage remains, since that is still part of the narrowed probe.
+  5. `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, and this log now record the new runtime evidence from `20260413_224823` and the narrower staged meaning.
+
+- **Why this is generic**: The staged observer seams are a diagnostic ladder, not a commitment that every active-mode bootstrap behavior must stay re-enabled in observer mode. Once runtime evidence shows that a single promoted Streamline-originated startup-handoff Present is already enough to reintroduce the freeze family even with PostSL and all top-level DX12 work removed, the correct generic next split is to take that call back out of the observer seam and keep only the remaining startup-Present pieces that have not yet been ruled out.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260413_224823/session_manifest.txt`, `inject.log`, `hook_debug.log`, `captureengine.log`, and `cdb_analysis.log`.
+  - Confirmed the refined run still logged the new skip marker but froze with the same `APPLICATION_FAULT_e0000001_sl.interposer.dll!Unknown` dump family.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `regression-testing-and-logging.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260413_224823/session_manifest.txt`, `installed/captureengine/logs/20260413_224823/inject.log`, `installed/captureengine/logs/20260413_224823/hook_debug.log`, `installed/captureengine/logs/20260413_224823/captureengine.log`, `installed/captureengine/logs/20260413_224823/cdb_analysis.log`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `common/shared_defs.h`, `common/config.cpp`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on the newest build is required. If the next observer-startup-present-only run still freezes, the remaining suspect is no longer CE's promoted top-level Streamline startup-handoff Present path, because observer mode now keeps that exact call synthetic again.
+
 ### 2026-04-13 - Refine observer-startup-present-only probe after GTA freeze reproduction
 
 - **Motivation**: The first staged `Overlay.observer_startup_present_only=true` runtime validation in `installed/captureengine/logs/20260413_222933` reproduced the GTA V Enhanced DLSS FG freeze even though PostSL never reactivated. The hook log showed exactly one promoted startup-handoff Present, no early/PostSL callback install or use, no `Post-SL overlay SUBMIT`, then `Present STALLED`; the dump again landed in the same `sl_dlss_g` / `sl.interposer` threading-exception family. That proved the startup-handoff Present / top-level bootstrap path itself was still too broad for this staged seam.

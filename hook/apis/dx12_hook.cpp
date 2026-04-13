@@ -3713,13 +3713,13 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         if (active) {
             HookLogImportant(observerPolicyOnly
                                  ? (observerStartupPresentOnly
-                                        ? "DX12: Streamline FG ON observed in observer-startup-present-only mode - keeping PostSL passive while preserving Streamline startup-policy and startup Present routing state"
+                                         ? "DX12: Streamline FG ON observed in observer-startup-present-only mode - keeping PostSL passive while preserving startup-policy and non-Streamline startup-Present probe state"
                                         : "DX12: Streamline FG ON observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state")
                                  : "DX12: Streamline FG ON observed in observer-only mode - skipping PostSL startup routing/state mutation");
         } else {
             HookLogImportant(observerPolicyOnly
                                  ? (observerStartupPresentOnly
-                                        ? "DX12: Streamline FG OFF observed in observer-startup-present-only mode - keeping PostSL passive while preserving Streamline startup-policy and startup Present routing state"
+                                         ? "DX12: Streamline FG OFF observed in observer-startup-present-only mode - keeping PostSL passive while preserving startup-policy and non-Streamline startup-Present probe state"
                                         : "DX12: Streamline FG OFF observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state")
                                  : "DX12: Streamline FG OFF observed in observer-only mode - keeping PostSL disabled and clearing startup state");
         }

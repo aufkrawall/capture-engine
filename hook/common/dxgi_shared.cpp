@@ -953,16 +953,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
     }
-    const bool allowObserverStartupPresentRouting = ShouldAllowObserverStartupPresentRouting(
-        observerOnlyMode, observerStartupPresentOnlyMode, api == APIType::D3D12, streamlineFGRunning,
-        callerFromStreamlineModule, streamlineStartupHandoffInProgress, recentLargePresentGap,
-        matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
     bool streamlineSyntheticReentrant = (!observerOnlyMode || observerStartupPresentOnlyMode) &&
         ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
         matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
-    const bool startupTopLevelCandidate = (allowObserverStartupPresentRouting || !observerOnlyMode) &&
+    const bool startupTopLevelCandidate = !observerOnlyMode &&
         !streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&
         streamlineStartupHandoffInProgress && recentLargePresentGap && matchesExpectedPresentThread;
     bool allowTopLevelStartupPresent = false;
@@ -1400,16 +1396,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     }
-    const bool allowObserverStartupPresentRouting = ShouldAllowObserverStartupPresentRouting(
-        observerOnlyMode, observerStartupPresentOnlyMode, api == APIType::D3D12, streamlineFGRunning,
-        callerFromStreamlineModule, streamlineStartupHandoffInProgress, recentLargePresentGap,
-        matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
     bool streamlineSyntheticReentrant = (!observerOnlyMode || observerStartupPresentOnlyMode) &&
         ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
         matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
-    const bool startupTopLevelCandidate = (allowObserverStartupPresentRouting || !observerOnlyMode) &&
+    const bool startupTopLevelCandidate = !observerOnlyMode &&
         !streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&
         streamlineStartupHandoffInProgress && recentLargePresentGap && matchesExpectedPresentThread;
     bool allowTopLevelStartupPresent = false;

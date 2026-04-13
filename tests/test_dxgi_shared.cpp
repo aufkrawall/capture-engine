@@ -1010,18 +1010,6 @@ TEST(DXGISharedTest, StreamlineStartupHandoffPresentUsesTopLevelPathAfterLargeGa
                                                                      false));
 }
 
-TEST(DXGISharedTest, ObserverStartupPresentOnlyAllowsOneTopLevelStartupHandoffPresent) {
-    EXPECT_TRUE(DXGIShared::ShouldAllowObserverStartupPresentRouting(true, true, true, true, true, true, true, true,
-                                                                     false));
-
-    EXPECT_FALSE(DXGIShared::ShouldAllowObserverStartupPresentRouting(true, false, true, true, true, true, true, true,
-                                                                      false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowObserverStartupPresentRouting(false, true, true, true, true, true, true, true,
-                                                                      false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowObserverStartupPresentRouting(true, true, true, true, true, true, true, true,
-                                                                      true));
-}
-
 TEST(DXGISharedTest, ObserverStartupPresentOnlySkipsFullDX12ProcessFrameOnPromotedHandoffPresent) {
     EXPECT_TRUE(DXGIShared::ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(
         true, true, DXGIShared::APIType::D3D12));

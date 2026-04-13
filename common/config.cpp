@@ -289,8 +289,9 @@ observer_only=false
 observer_policy_only=false
 ; observer_startup_present_only - Values: true, false
 ;   true = only meaningful with observer_only=true and observer_policy_only=true.
-;          Keeps PostSL passive, but allows special Streamline startup Present routing
-;          for staged active-path bisecting.
+;          Keeps PostSL passive, leaves Streamline-originated startup-handoff Presents
+;          synthetic, but still allows the remaining startup-Present probe pieces
+;          (such as the FFX startup bypass) for staged active-path bisecting.
 observer_startup_present_only=false
 ; capture_include_overlay - Values: true, false
 capture_include_overlay=true

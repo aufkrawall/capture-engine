@@ -179,7 +179,7 @@ struct OverlayConfig {
     bool showOverlay;
     bool observerOnly;  // Observe DX12/FG state without overlay/PostSL interference
     bool observerPolicyOnly;  // In observer-only mode, still allow Streamline startup-policy mutation
-    bool observerStartupPresentOnly;  // In observer-only policy mode, allow special Streamline startup Present routing
+    bool observerStartupPresentOnly;  // In observer-only policy mode, allow only the non-Streamline startup-Present probe pieces
     bool captureIncludeOverlay;     // Include overlay in video recordings
     bool screenshotIncludeOverlay;  // Include overlay in screenshots
     // Display Elements

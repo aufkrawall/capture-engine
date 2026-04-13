@@ -294,18 +294,6 @@ inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain,
            (streamlineStartupHandoffPending || streamlineStartupTransitionWindowActive);
 }
 
-inline bool ShouldAllowObserverStartupPresentRouting(bool observerOnlyMode, bool observerStartupPresentOnlyMode,
-                                                     bool isD3D12SwapChain, bool streamlineFGRunning,
-                                                     bool callerFromStreamlineModule,
-                                                     bool streamlineStartupHandoffInProgress,
-                                                     bool recentLargePresentGap,
-                                                     bool matchesExpectedPresentThread,
-                                                     bool startupTopLevelPresentAlreadyConsumed) {
-    return observerOnlyMode && observerStartupPresentOnlyMode && isD3D12SwapChain && streamlineFGRunning &&
-           callerFromStreamlineModule && streamlineStartupHandoffInProgress && recentLargePresentGap &&
-           matchesExpectedPresentThread && !startupTopLevelPresentAlreadyConsumed;
-}
-
 inline bool ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(bool observerStartupPresentOnlyMode,
                                                                      bool promotedTopLevelStartupPresent,
                                                                      APIType api) {
