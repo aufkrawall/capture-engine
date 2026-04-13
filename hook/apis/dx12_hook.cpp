@@ -3659,6 +3659,18 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 previousHeuristicGrace, previousSwapchainGrace);
         }
 
+        const bool startupWindowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
+        const ULONGLONG startupWindowRemainingMs = startupWindowActive 
+            ? (DXGIShared::g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire) - GetTickCount64()) 
+            : 0;
+        const bool startupTopLevelPresentConsumed = DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
+        const bool wrapperProgressObserved = g_PostSLSyntheticStartupWrapperProgressCount.load(std::memory_order_acquire) > 0;
+        HookLogImportant(
+            "DX12: Streamline FG ON — GetState transition STARTING "
+            "(startupWindowActive=%d startupRemaining=%lldms consumed=%d wrapperProgress=%d)",
+            startupWindowActive ? 1 : 0, (long long)startupWindowRemainingMs,
+            startupTopLevelPresentConsumed ? 1 : 0, wrapperProgressObserved ? 1 : 0);
+
         const bool callbackAlreadyInstalled =
             DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr;
 
@@ -8140,6 +8152,17 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
         return;
     }
 
+    if (g_DeviceRemoved.load(std::memory_order_relaxed)) {
+        static std::atomic<int> s_deviceRemovedSkipLogCount{0};
+        const int logCount = s_deviceRemovedSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "DX12: PostSL callback SKIPPED — device already removed (ERR_GFX_STATE detected). "
+                "Skipping callback to avoid crash during unstable FG transition.");
+        }
+        return;
+    }
+
     const bool startupTransitionWindowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
     const bool postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
     const bool startupTopLevelPresentConsumed =
@@ -8189,7 +8212,7 @@ if (ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWind
                 "(startupPending=%d active=%d progress=%d consumed=%d windowActive=%d confirmed=%d)",
                 startupActivationPending ? 1 : 0, postSLActive ? 1 : 0,
                 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_relaxed) ? 1 : 0,
-startupTopLevelPresentConsumed ? 1 : 0,
+                startupTopLevelPresentConsumed ? 1 : 0,
                 startupTransitionWindowActive ? 1 : 0, postSLConfirmedRendering ? 1 : 0);
         }
         return;

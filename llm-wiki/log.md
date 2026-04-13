@@ -14,6 +14,20 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-13 - Restore FRESH activation fix in ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires
+
+- **Root cause**: An uncommitted local modification changed `hook/common/dx12_overlay_policy.h` line 1167 from `return startupActivationPending || postSLActive;` to `return postSLActive;`. This effectively removed the `startupActivationPending` check from the callback deferral logic. Analysis of crash bundle `installed/captureengine/logs/20260413_170236` (debug build with detailed PostSL logging) showed that the callback entered and PostSLOverlayRender returned successfully, yet ERR_GFX_STATE still appeared ~455ms later. Analysis of crash `20260413_155527` showed PostSLOverlayRender was not called (callback deferred), but ERR_GFX_STATE still appeared ~553ms after GetState ON. This suggests the crash is not caused by PostSLOverlayRender entering per se, but by something deeper in Streamline's internal multi-device initialization timing after GetState returns ON.
+
+- **Fix**: Reverted the uncommitted modification in `hook/common/dx12_overlay_policy.h` to restore `return startupActivationPending || postSLActive;` at line 1167. This ensures the callback is deferred when `startupActivationPending=true` (synthetic startup activation pending but PostSL not yet active), regardless of `postSLActive` state.
+
+- **Additional changes retained**: The working directory had useful debug logging changes in `hook/apis/dx12_hook.cpp` that were retained: (1) Enhanced logging for GetState transition showing startup window state, consumed top-level bootstrap, and wrapper progress at the moment of GetState ON; (2) A `g_DeviceRemoved` safety check that skips PostSL callback if ERR_GFX_STATE has already been detected, preventing further rendering attempts on an unstable device.
+
+- **Verification**: Build completed successfully, version bumped to 0.1.2258.
+
+- Pages touched: `log.md`.
+- Source files checked/modified: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`.
+- Stale-risk note: The uncommitted modification to `return postSLActive` suggests someone was testing whether removing the `startupActivationPending` check would help. It did not. The crash in 170236 still happened despite the callback entering. The crash appears to be a Streamline internal timing issue that occurs ~500ms after GetState ON regardless of whether our callback runs. The `startupActivationPending` check is still meaningful because it prevents the callback from running when CE is still waiting for synthetic startup activation to complete. If future tests still crash with `startupActivationPending || postSLActive`, the issue is deeper than callback deferral logic.
+
 ### 2026-04-13 - Null swapchain guard and startup window clearing: Fix PostSL stall when ECL hook triggers callback directly
 
 - **Root cause**: In GTA V Enhanced bundle `installed/captureengine/logs/20260413_023052`, even the two-pronged PostSL activation trigger fix (ECL hook + FlushSuppressedSetOptionsOffIfNeeded) still caused a freeze. The freeze timeline: (1) at 02:32:24.026, startup transition window armed; (2) at 02:32:24.159, DLSS FG ON via SetOptions; (3) at 02:32:25.576, Pure-DLSS startup stall detected (dormant=1312ms); (4) at 02:32:26.262, ECL hook detected window expiry and triggered PostSL callback directly with `postSLCallback(nullptr)`; (5) at 02:32:26.423, PostSL REACTIVATED with warm-up frame 1/15; (6) at 02:32:28.766, Present STALLED for 10 frames.
