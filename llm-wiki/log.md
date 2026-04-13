@@ -14,6 +14,36 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-13 - Null swapchain guard and startup window clearing: Fix PostSL stall when ECL hook triggers callback directly
+
+- **Root cause**: In GTA V Enhanced bundle `installed/captureengine/logs/20260413_023052`, even the two-pronged PostSL activation trigger fix (ECL hook + FlushSuppressedSetOptionsOffIfNeeded) still caused a freeze. The freeze timeline: (1) at 02:32:24.026, startup transition window armed; (2) at 02:32:24.159, DLSS FG ON via SetOptions; (3) at 02:32:25.576, Pure-DLSS startup stall detected (dormant=1312ms); (4) at 02:32:26.262, ECL hook detected window expiry and triggered PostSL callback directly with `postSLCallback(nullptr)`; (5) at 02:32:26.423, PostSL REACTIVATED with warm-up frame 1/15; (6) at 02:32:28.766, Present STALLED for 10 frames.
+
+  The problem was that when ECL hook triggered `postSLCallback(nullptr)`, this called `PostSLOverlayRenderGated(nullptr)` → `PostSLOverlayRender(nullptr)`. In `PostSLOverlayRender`, the bootstrap section at line 6378 calls `pSwapChain->GetDesc()` with nullptr, which would crash. Even if guarded, the overlay state was never properly initialized with a null swapchain, causing PostSL to enter warm-up but never actually render (since the bootstrap/initialization failed silently). The "Present STALLED" occurred because PostSL was stuck in a state where it thought it was active but had never successfully rendered.
+
+  Additionally, the startup transition window was not being explicitly cleared when the ECL hook triggered the callback, causing potential race conditions between threads about whether the window was still "active".
+
+- **Fix**:
+  1. `hook/apis/dx12_hook.cpp` ECL hook section now clears the startup transition window immediately when it triggers the PostSL callback directly (`DXGIShared::ClearStreamlineStartupTransitionWindow()`). This ensures the window is definitively cleared and won't cause deferred rendering on subsequent calls.
+  
+  2. `hook/apis/dx12_hook.cpp` `PostSLOverlayRenderGated()` now has a null swapchain guard: if `pSwapChain == nullptr`, it skips calling `PostSLOverlayRender(nullptr)` (which would cause bootstrap failure) and logs a message indicating it's waiting for the normal ProcessFrame path with a valid swapchain. This prevents the broken bootstrap/initialization that was causing the stall.
+  
+  3. `hook/apis/dx12_hook.cpp` adds comprehensive debug logging at key points:
+     - When ECL hook detects window expiry and triggers callback (with window state info)
+     - When PostSL callback is skipped due to null swapchain
+     - When warmup completes and we're about to proceed to render submission (shows swapchain validity, overlayInit, syncInit state)
+  
+  4. `hook/apis/streamline_hook.cpp` `FlushSuppressedSetOptionsOffIfNeeded()` now also clears the startup transition window before triggering the PostSL callback (in both Case 1 and Case 2), matching the ECL hook behavior.
+
+- **Why this is generic**: The null swapchain issue can occur whenever the PostSL callback is triggered outside the normal ProcessFrame path. The startup window must be explicitly cleared in all callback trigger paths to prevent race conditions. The debug logging improvements help diagnose future issues by providing visibility into swapchain validity and overlay state at critical transition points.
+
+- **Verification**:
+  - Build completed successfully (`python build.py --skip-updates`).
+  - Build version bumped to 0.1.2251.
+
+- Pages touched: `log.md`.
+- Source files modified: `hook/apis/dx12_hook.cpp`, `hook/apis/streamline_hook.cpp`.
+- Stale-risk note: The null swapchain guard prevents crashes but also means the ECL hook callback trigger is now essentially a no-op for activation completion — the actual activation will complete on the next normal ProcessFrame call. Verify this behavior is correct for all scenarios where the callback is triggered with nullptr. If future traces show the callback being triggered but no subsequent PostSL activation, check if the normal ProcessFrame path is being reached after the ECL hook trigger.
+
 ### 2026-04-13 - Two-pronged PostSL activation trigger: ECL hook catches window expiry even when ProcessFrame stalls
 
 - **Root cause**: In GTA V Enhanced bundle `installed/captureengine/logs/20260413_015250` and `installed/captureengine/logs/20260413_021310`, the previous one-pronged fix (`FlushSuppressedSetOptionsOffIfNeeded` calling PostSL callback when suppressed OFF was flushed with activation pending) failed because the suppressed OFF was cleared by an ON re-arrival before the startup window expired. The specific failure sequence: (1) at 02:14:51.388, new authoritative swapchain handoff armed startup window; (2) at 02:14:51.522, OFF->ON via SetOptions arrived; (3) at 02:14:51.618, promoted handoff Present with `activationPending=1, postSLActive=1, bypass=1`; (4) at 02:14:51.919, OFF suppressed during startup window; (5) at 02:14:52.212, ON re-arrived and **cleared** the suppressed OFF (since Streamline never received the OFF); (6) ProcessFrame stopped running on T:5778 at ~02:14:50 (last ProcessFrame at 02:14:50.310); (7) startup window expired ~500ms after being armed; (8) `FlushSuppressedSetOptionsOffIfNeeded` was never called again (no more Present calls), so the callback was never triggered; (9) Streamline eventually timed out and sent ON->OFF via GetState at 02:15:04.485, 13 seconds after the promoted handoff.

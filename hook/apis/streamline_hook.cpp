@@ -1175,9 +1175,22 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 "Streamline Hook: Activation still pending after OFF flush — "
                 "PostSL callback never entered (deferred or bypassed); trigger direct "
                 "callback to attempt activation before Streamline processes OFF");
+            
+            // CRITICAL: Clear the startup transition window so that when the PostSL
+            // callback is skipped (due to null swapchain), the next ProcessFrame call
+            // won't see the window as still active and defer again.
+            DXGIShared::ClearStreamlineStartupTransitionWindow();
+            HookLogImportant(
+                "Streamline Hook: Cleared startup transition window after OFF flush trigger");
+            
             auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
             if (postSLCallback) {
+                // Note: PostSLOverlayRenderGated now handles nullptr swapchain by returning early.
+                // The startup window has been cleared, so the next normal ProcessFrame call
+                // will properly complete activation with a valid swapchain.
                 postSLCallback(nullptr);
+                HookLogImportant(
+                    "Streamline Hook: PostSL callback (via nullptr) completed after OFF flush");
             }
         }
         return;
@@ -1193,9 +1206,22 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             "Streamline Hook: Startup window expired with activation pending but no "
             "suppressed OFF — triggering PostSL callback directly to complete "
             "activation before Streamline times out");
+        
+        // CRITICAL: Clear the startup transition window so that when the PostSL
+        // callback is skipped (due to null swapchain), the next ProcessFrame call
+        // won't see the window as still active and defer again.
+        DXGIShared::ClearStreamlineStartupTransitionWindow();
+        HookLogImportant(
+            "Streamline Hook: Cleared startup transition window before direct callback trigger");
+        
         auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
+            // Note: PostSLOverlayRenderGated now handles nullptr swapchain by returning early.
+            // The startup window has been cleared, so the next normal ProcessFrame call
+            // will properly complete activation with a valid swapchain.
             postSLCallback(nullptr);
+            HookLogImportant(
+                "Streamline Hook: PostSL callback (via nullptr) completed");
         }
     }
 }
