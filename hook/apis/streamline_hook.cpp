@@ -1122,49 +1122,77 @@ void Shutdown() {
 
 void FlushSuppressedSetOptionsOffIfNeeded() {
     std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
-    if (!g_SuppressedSetOptionsOffDuringStartup) {
-        return;
-    }
-    if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
-        return;
-    }
-    if (!g_Original_slDLSSGSetOptions) {
+
+    const bool windowStillActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
+    if (windowStillActive) {
         return;
     }
 
     const bool activationPending = DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
         std::memory_order_acquire);
-    const bool postSLActive = DXGIShared::g_PostSLOverlayRenderCallback.load(
+    const bool callbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(
         std::memory_order_acquire) != nullptr;
 
-    HookLogImportant(
-        "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via periodic flush — startup window expired "
-        "(viewport=%u, activationPending=%d, postSLActive=%d)",
-        g_SuppressedOffViewportKey, activationPending ? 1 : 0, postSLActive ? 1 : 0);
-    const slResult offResult = g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
-    if (offResult != kSlResultOk) {
-        HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via periodic flush returned %d",
-                          offResult);
-    }
-    g_SuppressedSetOptionsOffDuringStartup = false;
-
-    // When the startup-handoff Present was promoted to top-level and bypassed
-    // the synthetic Present path, the PostSL callback never fires through
-    // DetourPresent/DetourPresent1.  If activation is still pending, the
-    // suppressed OFF we just forwarded to Streamline will tear down FG without
-    // PostSL ever completing.  Trigger the PostSL callback directly so CE can
-    // at least attempt to complete activation before Streamline receives the
-    // OFF signal and potentially destabilizes its FG pipeline.
-    //
-    // This is critical for GTA V Enhanced DLSS FG startup, where only one
-    // startup-handoff Present arrives via the top-level path (bypassing the
-    // synthetic route), and then the game's present thread stalls inside Streamline
-    // before any synthetic Presents can drive PostSL activation.
-    if (activationPending && postSLActive) {
+    // Case 1: Suppressed OFF exists — forward it to Streamline
+    if (g_SuppressedSetOptionsOffDuringStartup) {
+        if (!g_Original_slDLSSGSetOptions) {
+            return;
+        }
         HookLogImportant(
-            "Streamline Hook: Activation still pending after OFF flush — "
-            "PostSL never completed through Present path; trigger direct callback "
-            "to attempt activation before Streamline processes OFF");
+            "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via periodic flush — startup window expired "
+            "(viewport=%u, activationPending=%d)",
+            g_SuppressedOffViewportKey, activationPending ? 1 : 0);
+        const slResult offResult = g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
+        if (offResult != kSlResultOk) {
+            HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via periodic flush returned %d",
+                              offResult);
+        }
+        g_SuppressedSetOptionsOffDuringStartup = false;
+
+        // When the startup-handoff Present was promoted to top-level and bypassed
+        // the synthetic Present path, the PostSL callback may never fire through
+        // DetourPresent/DetourPresent1 — or it may be deferred by the startup
+        // transition window guard.  In either case, activation remains pending.
+        //
+        // If activation is still pending, the suppressed OFF we just forwarded to
+        // Streamline will tear down FG without PostSL ever completing.  Trigger the
+        // PostSL callback directly so CE can at least attempt to complete activation
+        // before Streamline receives the OFF signal and potentially destabilizes its
+        // FG pipeline.
+        //
+        // We check activationPending alone (not postSLActive).  The callback being
+        // installed does not mean PostSL is rendering-active — if the startup window
+        // is still active, the callback is deferred and g_PostSLOverlayActive stays
+        // false.  activationPending is the ground truth for "PostSL activation has
+        // not yet completed."
+        //
+        // This is critical for GTA V Enhanced DLSS FG startup, where only one
+        // startup-handoff Present arrives via the top-level path (bypassing the
+        // synthetic route), and then the game's present thread stalls inside Streamline
+        // before any synthetic Presents can drive PostSL activation.
+        if (activationPending && callbackInstalled) {
+            HookLogImportant(
+                "Streamline Hook: Activation still pending after OFF flush — "
+                "PostSL callback never entered (deferred or bypassed); trigger direct "
+                "callback to attempt activation before Streamline processes OFF");
+            auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+            if (postSLCallback) {
+                postSLCallback(nullptr);
+            }
+        }
+        return;
+    }
+
+    // Case 2: No suppressed OFF, but startup window just expired and activation
+    // is still pending.  This covers the scenario where ON re-arrived and cleared
+    // the suppressed OFF before the window expired — ProcessFrame has stalled,
+    // so the deferred PostSL callback in ProcessFrame will never fire.  Trigger
+    // it here to complete activation before Streamline times out.
+    if (activationPending && callbackInstalled) {
+        HookLogImportant(
+            "Streamline Hook: Startup window expired with activation pending but no "
+            "suppressed OFF — triggering PostSL callback directly to complete "
+            "activation before Streamline times out");
         auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
             postSLCallback(nullptr);

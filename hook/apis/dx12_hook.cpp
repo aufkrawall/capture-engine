@@ -12081,6 +12081,32 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 
     NoteStartupBlockingRenderModuleActivityFromECL(pThis, CE_RETURN_ADDRESS());
 
+    // Critical fix for GTA V Enhanced DLSS FG startup freeze:
+    // When the startup-handoff Present bypasses the synthetic Present path, PostSL
+    // activation is deferred until the startup transition window expires.  If
+    // ProcessFrame stops running (freeze), the deferred callback never fires.
+    // Detect window expiry from the ECL hook (present thread) and trigger the
+    // PostSL callback directly to complete activation before Streamline times out.
+    {
+        static bool s_startupWindowWasActive = false;
+        const bool activationPending =
+            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+        const bool callbackInstalled =
+            DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
+        const bool windowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
+        if (s_startupWindowWasActive && !windowActive && activationPending && callbackInstalled) {
+            HookLogImportant(
+                "DX12: ECL hook detected startup window expiry with pending PostSL activation — "
+                "triggering PostSL callback directly from ECL context to complete activation "
+                "(callback will enter ProcessFrame path through PostSLOverlayRenderGated)");
+            auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+            if (postSLCallback) {
+                postSLCallback(nullptr);
+            }
+        }
+        s_startupWindowWasActive = windowActive;
+    }
+
     // Debug: Log first few calls to verify hook is working
     int count = g_ECLCallCount.load(std::memory_order_relaxed);
     if (count < 5) {

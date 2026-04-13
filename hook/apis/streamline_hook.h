@@ -23,11 +23,13 @@ void OnAuthoritativeFFXTakeover();
 // periodic check points (DetourPresent, DetourPresent1, GetState, etc.) to
 // ensure deferred OFF signals eventually reach Streamline.
 //
-// When the startup-handoff Present never triggered PostSL activation (because
-// it was promoted to top-level and bypassed the synthetic Present path), this
-// function also calls the PostSL callback to complete activation before
-// forwarding the suppressed OFF.  This ensures Streamline receives ON before
-// OFF even when no synthetic Presents arrive to drive PostSL.
+// When PostSL activation is still pending (startup-handoff Present bypassed the
+// synthetic Present path, or the callback is deferred by the startup transition
+// window guard), this function also triggers the PostSL callback directly before
+// forwarding the suppressed OFF.  This ensures PostSL activation is attempted
+// before Streamline receives OFF and potentially destabilizes its FG pipeline.
+// The activationPending flag alone is the ground truth — the callback may be
+// installed but deferred (postSLActive=false) while still needing activation.
 void FlushSuppressedSetOptionsOffIfNeeded();
 
 }  // namespace StreamlineHook
