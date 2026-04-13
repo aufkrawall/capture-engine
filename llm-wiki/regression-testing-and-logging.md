@@ -37,15 +37,15 @@ Primary sources:
 - `tests/test_fps_limiter.cpp`
   - Despite the name, this currently includes important overlay compatibility policy tests.
 - `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`
-  - Config, override, and shared-memory coverage for `Overlay.observer_only`, `Overlay.observer_policy_only`, and other runtime-visible overlay config fields.
+  - Config, override, and shared-memory coverage for `Overlay.observer_only`, `Overlay.observer_policy_only`, `Overlay.observer_startup_present_only`, and other runtime-visible overlay config fields.
 
 ## Useful Existing Logging Points
 - `captureengine/injection.cpp`
   - Detailed delayed-injection logs for wait-loop start, D3D12 detection, fallback path, and injection attempt.
 - `captureengine/main.cpp`
-  - `session_manifest.txt` records `overlay_enabled`, `overlay_observer_only`, and `overlay_observer_policy_only` so passive-vs-staged-vs-active sessions are self-describing.
+  - `session_manifest.txt` records `overlay_enabled`, `overlay_observer_only`, `overlay_observer_policy_only`, and `overlay_observer_startup_present_only` so passive-vs-staged-vs-active sessions are self-describing.
 - `captureengine/inject_main.cpp`
-  - Shared-memory config summary logs overlay enabled vs `observerOnly` / `observerPolicyOnly` alongside graphics override state.
+  - Shared-memory config summary logs overlay enabled vs `observerOnly` / `observerPolicyOnly` / `observerStartupPresentOnly` alongside graphics override state.
 - `captureengine/pseudo_overlay.cpp`
   - Logs pseudo-overlay suppression and resume during injected-overlay handoff.
 - `hook/apis/dx12_hook.cpp`
@@ -62,7 +62,7 @@ Primary sources:
 ## Practical Regression Checklist
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.
 - If you use `Overlay.enabled=false` as a diagnosis baseline, verify from the logs that there is actually no DX12 overlay/PostSL/startup-policy activity. Hidden overlay and passive observer-only are not equivalent.
-- If you touch `Overlay.observer_only` or `Overlay.observer_policy_only`, verify the intended split explicitly: pure observer-only still has no pre-FG overlay submits, no early/PostSL callback install/use, no special Streamline synthetic/startup Present routing, and no startup-window Streamline mutation; observer-policy-only may restore only the Streamline startup-policy family while DX12/PostSL/startup-Present behavior stays passive.
+- If you touch `Overlay.observer_only`, `Overlay.observer_policy_only`, or `Overlay.observer_startup_present_only`, verify the intended split explicitly: pure observer-only still has no pre-FG overlay submits, no early/PostSL callback install/use, no special Streamline synthetic/startup Present routing, and no startup-window Streamline mutation; observer-policy-only may restore only the Streamline startup-policy family while DX12/PostSL/startup-Present behavior stays passive; observer-startup-present-only may further restore only the special DXGI startup-Present routing family while PostSL callback install/use and rendering still stay passive.
 - If you touch watchdog ownership or dump-trigger conditions, verify that helper heartbeats do not silently retarget the monitored thread and that explicit stall conditions still produce an automatic dump.
 - If you touch watchdog ownership or dump-trigger conditions, also verify that an immediate dump request targeting the current render/present thread is handled asynchronously instead of trying to suspend/capture that same thread inline.
 - If you touch Streamline stall detection, verify that top-level `Present1` traffic counts as forward progress alongside `Present`; otherwise `Present STALLED` can become a false positive on games/runtimes that switch entrypoints during DLSS activation.

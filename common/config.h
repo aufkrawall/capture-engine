@@ -345,6 +345,10 @@ inline bool IsOverlayObserverPolicyOnly(const OverlayConfig& cfg) {
     return cfg.observerOnly && cfg.observerPolicyOnly;
 }
 
+inline bool IsOverlayObserverStartupPresentOnly(const OverlayConfig& cfg) {
+    return cfg.observerOnly && cfg.observerPolicyOnly && cfg.observerStartupPresentOnly;
+}
+
 inline bool IsDebugLoggingEnabled(LogLevel level) {
     return static_cast<int>(level) >= static_cast<int>(LogLevel::Debug);
 }

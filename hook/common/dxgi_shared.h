@@ -280,17 +280,42 @@ inline bool ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(boo
 }
 
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,
-                                                          bool streamlineStartupHandoffPending,
-                                                          bool streamlineStartupTransitionWindowActive,
-                                                          bool observerOnlyMode) {
+                                                           bool streamlineStartupHandoffPending,
+                                                           bool streamlineStartupTransitionWindowActive,
+                                                           bool observerOnlyMode,
+                                                           bool observerStartupPresentOnlyMode) {
     // During repeated FSR->DLSS handoffs, FFX teardown Presents can arrive
     // before Streamline publishes its running signal or after an older PostSL
     // path clears the pending latch for the new epoch. A short explicit
     // transition window keeps those Presents on the safe bypass route instead
     // of falling through the generic oPresent path into third-party hook
     // chains.
-    return !observerOnlyMode && isD3D12SwapChain && callerFromFFXFGModule &&
+    return !(observerOnlyMode && !observerStartupPresentOnlyMode) && isD3D12SwapChain && callerFromFFXFGModule &&
            (streamlineStartupHandoffPending || streamlineStartupTransitionWindowActive);
+}
+
+inline bool ShouldAllowObserverStartupPresentRouting(bool observerOnlyMode, bool observerStartupPresentOnlyMode,
+                                                     bool isD3D12SwapChain, bool streamlineFGRunning,
+                                                     bool callerFromStreamlineModule,
+                                                     bool streamlineStartupHandoffInProgress,
+                                                     bool recentLargePresentGap,
+                                                     bool matchesExpectedPresentThread,
+                                                     bool startupTopLevelPresentAlreadyConsumed) {
+    return observerOnlyMode && observerStartupPresentOnlyMode && isD3D12SwapChain && streamlineFGRunning &&
+           callerFromStreamlineModule && streamlineStartupHandoffInProgress && recentLargePresentGap &&
+           matchesExpectedPresentThread && !startupTopLevelPresentAlreadyConsumed;
+}
+
+inline bool ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(bool observerStartupPresentOnlyMode,
+                                                                     bool promotedTopLevelStartupPresent,
+                                                                     APIType api) {
+    // The observer-startup-present-only probe is meant to isolate DXGI startup
+    // Present routing from the heavier top-level DX12 frame-processing path.
+    // Once the staged mode has proven that a promoted startup-handoff Present
+    // can reintroduce the freeze family even with PostSL dormant, the next
+    // refinement is to keep the routing decision itself but skip the full
+    // HandleDX12ProcessFrame path on that one promoted Present.
+    return observerStartupPresentOnlyMode && promotedTopLevelStartupPresent && api == APIType::D3D12;
 }
 
 inline bool ShouldKeepPostSLCallbackInstalledDuringTransition(bool streamlineFGRunningAfterTransition) {

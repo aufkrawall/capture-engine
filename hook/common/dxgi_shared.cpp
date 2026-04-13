@@ -933,9 +933,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
+    const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
-        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive, observerOnlyMode);
+        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive, observerOnlyMode,
+        observerStartupPresentOnlyMode);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
@@ -951,13 +953,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
     }
-    bool streamlineSyntheticReentrant = !observerOnlyMode && ShouldTreatStreamlinePresentAsSyntheticReentrant(
+    const bool allowObserverStartupPresentRouting = ShouldAllowObserverStartupPresentRouting(
+        observerOnlyMode, observerStartupPresentOnlyMode, api == APIType::D3D12, streamlineFGRunning,
+        callerFromStreamlineModule, streamlineStartupHandoffInProgress, recentLargePresentGap,
+        matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
+    bool streamlineSyntheticReentrant = (!observerOnlyMode || observerStartupPresentOnlyMode) &&
+        ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
         matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
-    const bool startupTopLevelCandidate = !observerOnlyMode && !streamlineSyntheticReentrant && callerFromStreamlineModule &&
-        api == APIType::D3D12 && streamlineFGRunning && streamlineStartupHandoffInProgress &&
-        recentLargePresentGap && matchesExpectedPresentThread;
+    const bool startupTopLevelCandidate = (allowObserverStartupPresentRouting || !observerOnlyMode) &&
+        !streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&
+        streamlineStartupHandoffInProgress && recentLargePresentGap && matchesExpectedPresentThread;
     bool allowTopLevelStartupPresent = false;
     if (startupTopLevelCandidate) {
         bool expected = false;
@@ -1245,9 +1252,18 @@ if (allowTopLevelStartupPresent) {
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
     UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent");
 
+    const bool skipDX12ProcessFrameForObserverStartupPresentProbe =
+        ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(observerStartupPresentOnlyMode,
+                                                                 allowTopLevelStartupPresent, api);
     if (!IsShuttingDown() && (oPresentTrampoline || oPresent)) {
         if (api == APIType::D3D12) {
-            HandleDX12ProcessFrame(pSwapChain, true);
+            if (skipDX12ProcessFrameForObserverStartupPresentProbe) {
+                HookLogImportant(
+                    "DetourPresent: Observer-startup-present-only probe skipping full DX12 promoted-handoff processing "
+                    "(HandleDX12ProcessFrame + WaitForOverlayCompletion)");
+            } else {
+                HandleDX12ProcessFrame(pSwapChain, true);
+            }
         } else if (api == APIType::D3D11) {
             HandleDX11ProcessFrame(pSwapChain, true);
         }
@@ -1261,7 +1277,7 @@ if (allowTopLevelStartupPresent) {
 
     ProcessVSyncOverride(SyncInterval, Flags);
 
-    if (api == APIType::D3D12) {
+    if (api == APIType::D3D12 && !skipDX12ProcessFrameForObserverStartupPresentProbe) {
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
@@ -1364,9 +1380,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
+    const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
-        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive, observerOnlyMode);
+        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive, observerOnlyMode,
+        observerStartupPresentOnlyMode);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
@@ -1382,13 +1400,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     }
-    bool streamlineSyntheticReentrant = !observerOnlyMode && ShouldTreatStreamlinePresentAsSyntheticReentrant(
+    const bool allowObserverStartupPresentRouting = ShouldAllowObserverStartupPresentRouting(
+        observerOnlyMode, observerStartupPresentOnlyMode, api == APIType::D3D12, streamlineFGRunning,
+        callerFromStreamlineModule, streamlineStartupHandoffInProgress, recentLargePresentGap,
+        matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
+    bool streamlineSyntheticReentrant = (!observerOnlyMode || observerStartupPresentOnlyMode) &&
+        ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
         matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
-    const bool startupTopLevelCandidate = !observerOnlyMode && !streamlineSyntheticReentrant && callerFromStreamlineModule &&
-        api == APIType::D3D12 && streamlineFGRunning && streamlineStartupHandoffInProgress &&
-        recentLargePresentGap && matchesExpectedPresentThread;
+    const bool startupTopLevelCandidate = (allowObserverStartupPresentRouting || !observerOnlyMode) &&
+        !streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&
+        streamlineStartupHandoffInProgress && recentLargePresentGap && matchesExpectedPresentThread;
     bool allowTopLevelStartupPresent = false;
     if (startupTopLevelCandidate) {
         bool expected = false;
@@ -1585,8 +1608,17 @@ if (allowTopLevelStartupPresent) {
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
     UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent1");
 
+    const bool skipDX12ProcessFrameForObserverStartupPresentProbe =
+        ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(observerStartupPresentOnlyMode,
+                                                                 allowTopLevelStartupPresent, api);
     if (api == APIType::D3D12) {
-        HandleDX12ProcessFrame(pSwapChain, true);
+        if (skipDX12ProcessFrameForObserverStartupPresentProbe) {
+            HookLogImportant(
+                "DetourPresent1: Observer-startup-present-only probe skipping full DX12 promoted-handoff processing "
+                "(HandleDX12ProcessFrame + WaitForOverlayCompletion)");
+        } else {
+            HandleDX12ProcessFrame(pSwapChain, true);
+        }
     } else if (api == APIType::D3D11) {
         HandleDX11ProcessFrame(pSwapChain, true);
     }
@@ -1599,7 +1631,7 @@ if (allowTopLevelStartupPresent) {
 
     ProcessVSyncOverride(SyncInterval, Flags);
 
-    if (api == APIType::D3D12) {
+    if (api == APIType::D3D12 && !skipDX12ProcessFrameForObserverStartupPresentProbe) {
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 

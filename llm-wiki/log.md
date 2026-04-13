@@ -14,6 +14,49 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-13 - Refine observer-startup-present-only probe after GTA freeze reproduction
+
+- **Motivation**: The first staged `Overlay.observer_startup_present_only=true` runtime validation in `installed/captureengine/logs/20260413_222933` reproduced the GTA V Enhanced DLSS FG freeze even though PostSL never reactivated. The hook log showed exactly one promoted startup-handoff Present, no early/PostSL callback install or use, no `Post-SL overlay SUBMIT`, then `Present STALLED`; the dump again landed in the same `sl_dlss_g` / `sl.interposer` threading-exception family. That proved the startup-handoff Present / top-level bootstrap path itself was still too broad for this staged seam.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now makes the next refinement explicit through `ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe()`: while `observer_startup_present_only` is active, the one promoted Streamline startup-handoff Present still re-establishes the top-level DXGI routing/bootstrap decision, but CE skips the full promoted-handoff DX12 processing path on that one call.
+  2. `hook/common/dxgi_shared.cpp` now applies that refinement in both `DetourPresent` and `DetourPresent1`: the promoted startup-handoff Present still uses the staged top-level routing decision and the bypass/original DXGI return path, but it skips both `HandleDX12ProcessFrame()` and `DX12_WaitForOverlayCompletion()` on that one promoted Present while the staged probe is active.
+  3. `tests/test_dxgi_shared.cpp` now covers the refined seam with `DXGISharedTest.ObserverStartupPresentOnlySkipsFullDX12ProcessFrameOnPromotedHandoffPresent`.
+  4. `llm-wiki/current.md` and `llm-wiki/frame-generation-switching.md` now describe the refined seam precisely as skipping both `HandleDX12ProcessFrame()` and `DX12_WaitForOverlayCompletion()` on the promoted startup-handoff Present.
+
+- **Why this is generic**: The staged observer seams are a reusable way to bisect startup instability without jumping straight from passive mode back to full active CE behavior. This refinement asks a narrower generic question than the earlier seam: is the crash triggered by the startup-handoff routing/bootstrap decision itself, or by the heavier top-level DX12 frame-processing work that CE previously performed on that one promoted Present? That is a generic diagnostic split for Streamline DLSS FG startup issues, not a GTA-specific workaround.
+
+- **Verification**:
+  - Re-checked the failing runtime evidence in `installed/captureengine/logs/20260413_222933/session_manifest.txt`, `inject.log`, `captureengine.log`, `hook_debug.log`, and `cdb_analysis.log`.
+  - Ran `python build.py --incremental --skip-updates --run-tests` after the refinement.
+  - All 563 tests passed.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260413_222933/session_manifest.txt`, `installed/captureengine/logs/20260413_222933/inject.log`, `installed/captureengine/logs/20260413_222933/captureengine.log`, `installed/captureengine/logs/20260413_222933/hook_debug.log`, `installed/captureengine/logs/20260413_222933/cdb_analysis.log`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on the latest build is still required. Re-check this seam first if the next trace still freezes, or if the log shows the promoted startup-handoff Present reappearing without the new `skipping full DX12 promoted-handoff processing` marker while `observer_startup_present_only` is active.
+
+### 2026-04-13 - Add staged observer-startup-present-only DXGI startup-routing probe
+
+- **Motivation**: The staged `Overlay.observer_policy_only=true` seam re-enabled Streamline startup-policy mutation while keeping DX12/PostSL/startup-Present behavior passive. The next bisect seam is narrower than full active mode: re-enable only the special DXGI startup Present routing family while PostSL callback install/use and rendering still stay dormant. That lets us test whether GTA V Enhanced's remaining DLSS FG freeze family lives in startup Present routing itself or only in the later PostSL callback/rendering path.
+
+- **Fix**:
+  1. `common/shared_defs.h`, `common/config.cpp`, `common/config.h`, `hook/common/hook_common.h`, `captureengine/main.cpp`, and `captureengine/inject_main.cpp` now expose `Overlay.observer_startup_present_only=true` as a new staged probe. It is only meaningful with `observer_only=true` and `observer_policy_only=true`, bumps the shared-memory version to 25, is parsed from config/overrides, is visible in the shared-memory/inject summary log, and is recorded in `session_manifest.txt` as `overlay_observer_startup_present_only`.
+  2. `hook/common/dxgi_shared.h` now makes the new staged split explicit and testable: pure observer-only still suppresses special startup Present routing, while observer-startup-present-only can restore only the DXGI startup-routing family.
+  3. `hook/common/dxgi_shared.cpp` now re-enables only the special startup Present routing family in that staged mode: the one-shot promoted Streamline startup-handoff Present can re-establish the top-level Present path again, and the FFX startup Present bypass can run again during the Streamline startup handoff window. The PostSL callback pointer remains null in observer modes, so the synthetic/re-entrant path still stays callback-dormant.
+  4. `hook/apis/dx12_hook.cpp` still keeps observer modes passive for DX12/PostSL state management, but now logs the narrower observer-startup-present-only mode distinctly so traces show when startup Present routing is being probed while PostSL remains suppressed.
+  5. Tests now cover the new split in `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`, `tests/test_streamline_runtime_policy.cpp`, and `tests/test_dxgi_shared.cpp`.
+
+- **Why this is generic**: We still need to isolate the remaining active families without jumping straight from passive policy probing back to full active CE behavior. `observer_startup_present_only` lets us ask a precise generic question: does special startup Present routing alone destabilize the runtime even while PostSL callback install/use and rendering remain absent? That is a reusable staged-debug seam for future Streamline DLSS FG startup issues, not a GTA-specific hack.
+
+- **Verification**:
+  - Ran focused unit tests for config/shared-state and DXGI staged-routing seams.
+  - Ran `python build.py --incremental --skip-updates --run-tests`.
+  - All 562 tests passed.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `regression-testing-and-logging.md`, `log.md`.
+- Source files checked/modified: `common/shared_defs.h`, `common/config.cpp`, `common/config.h`, `captureengine/main.cpp`, `captureengine/inject_main.cpp`, `hook/common/hook_common.h`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `hook/apis/dx12_hook.cpp`, `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation with `[Overlay] observer_only=true`, `[Overlay] observer_policy_only=true`, and `[Overlay] observer_startup_present_only=true` is now needed. Re-check this staged seam first if logs unexpectedly show early/PostSL callback install/use, PostSL rendering/submits, or broad Streamline Present routing instead of only the one-shot startup-handoff / startup-bypass family while the new flag is active.
+
 ### 2026-04-13 - Add staged observer-policy-only Streamline startup-policy probe
 
 - **Motivation**: The clean observer-only GTA V Enhanced session `installed/captureengine/logs/20260413_203815` confirmed that the strict passive injected baseline no longer froze and no longer misclassified transient Streamline churn as heuristic `FSR_FG`. That established the next bisect seam: re-enable only Streamline startup-policy mutation while keeping DX12 overlay rendering, PostSL, and special startup Present routing passive, so we can determine whether the remaining GTA DLSS FG freeze family lives inside startup-policy mutation itself or only in the later PostSL/startup-Present path.

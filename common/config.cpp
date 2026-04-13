@@ -287,6 +287,11 @@ observer_only=false
 ;          behavior passive, but allows Streamline startup-policy mutation for staged
 ;          active-path bisecting.
 observer_policy_only=false
+; observer_startup_present_only - Values: true, false
+;   true = only meaningful with observer_only=true and observer_policy_only=true.
+;          Keeps PostSL passive, but allows special Streamline startup Present routing
+;          for staged active-path bisecting.
+observer_startup_present_only=false
 ; capture_include_overlay - Values: true, false
 capture_include_overlay=true
 ; screenshot_include_overlay - Values: true, false
@@ -965,6 +970,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.overlay.showOverlay = GetBool("Overlay", "enabled", true);
     config.overlay.observerOnly = GetBool("Overlay", "observer_only", false);
     config.overlay.observerPolicyOnly = GetBool("Overlay", "observer_policy_only", false);
+    config.overlay.observerStartupPresentOnly = GetBool("Overlay", "observer_startup_present_only", false);
     config.overlay.captureIncludeOverlay = GetBool("Overlay", "capture_include_overlay", true);
     config.overlay.screenshotIncludeOverlay = GetBool("Overlay", "screenshot_include_overlay", true);
 

@@ -182,13 +182,20 @@ TEST(DXGISharedTest, StreamlineGeneratedFramePresentUsesSyntheticReentrantRoutin
 }
 
 TEST(DXGISharedTest, FFXPresentBypassesNormalRoutingOnlyDuringDX12StreamlineStartup) {
-    EXPECT_TRUE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, true, false, false));
-    EXPECT_TRUE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, false, true, false));
+    EXPECT_TRUE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, true, false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, false, true, false, false));
 
-    EXPECT_FALSE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(false, true, true, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, false, true, true, false));
-    EXPECT_FALSE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, false, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, true, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(false, true, true, false, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, false, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, false, false, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, true, true, true, false));
+}
+
+TEST(DXGISharedTest, ObserverStartupPresentOnlyReenablesFfxStartupBypassWithoutFullPostSLPath) {
+    EXPECT_TRUE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, true, false, true, true));
+    EXPECT_TRUE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, false, true, true, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldBypassFFXPresentDuringStreamlineStartup(true, true, true, false, true, false));
 }
 
 TEST(DXGISharedTest, PostSLCallbackStaysInstalledOnlyWhileStreamlineStillOwnsPresentPath) {
@@ -973,10 +980,12 @@ TEST(DXGISharedTest, PostSLReactivationWarmupIsNotBypassedEvenAfterWrapperBacked
 
 TEST(DXGISharedTest, StreamlineStartupHandoffPresentUsesTopLevelPathAfterLargeGapWithoutPresentOwner) {
     EXPECT_FALSE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, true, false));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, true,
+                                                                     false));
 
     EXPECT_TRUE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, true, true, true, false));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, true, true, true,
+                                                                     false));
     EXPECT_TRUE(
         DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, false, false, true, true,
                                                                      false));
@@ -987,16 +996,42 @@ TEST(DXGISharedTest, StreamlineStartupHandoffPresentUsesTopLevelPathAfterLargeGa
         DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, false,
                                                                      false));
     EXPECT_TRUE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, true, true));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, true, true,
+                                                                     true));
 
     EXPECT_FALSE(
-        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(false, true, true, true, false, true, true, false));
+        DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(false, true, true, true, false, true, true,
+                                                                     false));
     EXPECT_FALSE(
         DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, false, true, true, false, true, true,
                                                                      false));
     EXPECT_FALSE(
         DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, false, true, false, true, true,
                                                                      false));
+}
+
+TEST(DXGISharedTest, ObserverStartupPresentOnlyAllowsOneTopLevelStartupHandoffPresent) {
+    EXPECT_TRUE(DXGIShared::ShouldAllowObserverStartupPresentRouting(true, true, true, true, true, true, true, true,
+                                                                     false));
+
+    EXPECT_FALSE(DXGIShared::ShouldAllowObserverStartupPresentRouting(true, false, true, true, true, true, true, true,
+                                                                      false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowObserverStartupPresentRouting(false, true, true, true, true, true, true, true,
+                                                                      false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowObserverStartupPresentRouting(true, true, true, true, true, true, true, true,
+                                                                      true));
+}
+
+TEST(DXGISharedTest, ObserverStartupPresentOnlySkipsFullDX12ProcessFrameOnPromotedHandoffPresent) {
+    EXPECT_TRUE(DXGIShared::ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(
+        true, true, DXGIShared::APIType::D3D12));
+
+    EXPECT_FALSE(DXGIShared::ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(
+        false, true, DXGIShared::APIType::D3D12));
+    EXPECT_FALSE(DXGIShared::ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(
+        true, false, DXGIShared::APIType::D3D12));
+    EXPECT_FALSE(DXGIShared::ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(
+        true, true, DXGIShared::APIType::D3D11));
 }
 
 TEST(DXGISharedTest, PromotedStreamlineStartupHandoffPresentPrefersBypassReturnPath) {

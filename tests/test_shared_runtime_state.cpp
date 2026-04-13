@@ -113,6 +113,7 @@ TEST(SharedDefsTest, OverlayConfigSeqlockPublishesStableSnapshot) {
     sharedMemory.overlayConfig.showOverlay = true;
     sharedMemory.overlayConfig.observerOnly = true;
     sharedMemory.overlayConfig.observerPolicyOnly = true;
+    sharedMemory.overlayConfig.observerStartupPresentOnly = true;
     sharedMemory.overlayConfig.padding = 18;
     sharedMemory.overlayConfig.fontSize = 22.5f;
     sharedMemory.EndWriteOverlayConfig();
@@ -124,6 +125,7 @@ TEST(SharedDefsTest, OverlayConfigSeqlockPublishesStableSnapshot) {
     EXPECT_TRUE(snapshot.showOverlay);
     EXPECT_TRUE(snapshot.observerOnly);
     EXPECT_TRUE(snapshot.observerPolicyOnly);
+    EXPECT_TRUE(snapshot.observerStartupPresentOnly);
     EXPECT_EQ(snapshot.padding, 18);
     EXPECT_FLOAT_EQ(snapshot.fontSize, 22.5f);
 }

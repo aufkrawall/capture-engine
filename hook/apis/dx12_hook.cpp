@@ -1515,6 +1515,10 @@ static bool IsDX12ObserverPolicyOnlyModeActive(SharedMemoryLayout* shm) {
     return IsOverlayObserverPolicyOnly(GetActiveDX12OverlayConfig(shm));
 }
 
+static bool IsDX12ObserverStartupPresentOnlyModeActive(SharedMemoryLayout* shm) {
+    return IsOverlayObserverStartupPresentOnly(GetActiveDX12OverlayConfig(shm));
+}
+
 static void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserveStartupTransitionWindow = false) {
     g_PostSLOverlayActive.store(false, std::memory_order_release);
     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
@@ -3676,6 +3680,7 @@ DWORD DX12_GetGamePresentThreadId() {
 void DX12_OnStreamlineFGStateChanged(bool active) {
     const bool observerOnly = HookOverlayObserverOnlyEnabled();
     const bool observerPolicyOnly = HookOverlayObserverPolicyOnlyEnabled();
+    const bool observerStartupPresentOnly = HookOverlayObserverStartupPresentOnlyEnabled();
     if (observerOnly) {
         const auto cleanup = ce::streamline_runtime_policy::ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(
             active);
@@ -3707,11 +3712,15 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         }
         if (active) {
             HookLogImportant(observerPolicyOnly
-                                 ? "DX12: Streamline FG ON observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state"
+                                 ? (observerStartupPresentOnly
+                                        ? "DX12: Streamline FG ON observed in observer-startup-present-only mode - keeping PostSL passive while preserving Streamline startup-policy and startup Present routing state"
+                                        : "DX12: Streamline FG ON observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state")
                                  : "DX12: Streamline FG ON observed in observer-only mode - skipping PostSL startup routing/state mutation");
         } else {
             HookLogImportant(observerPolicyOnly
-                                 ? "DX12: Streamline FG OFF observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state"
+                                 ? (observerStartupPresentOnly
+                                        ? "DX12: Streamline FG OFF observed in observer-startup-present-only mode - keeping PostSL passive while preserving Streamline startup-policy and startup Present routing state"
+                                        : "DX12: Streamline FG OFF observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state")
                                  : "DX12: Streamline FG OFF observed in observer-only mode - keeping PostSL disabled and clearing startup state");
         }
         EnsurePostSLDisabledForObserverOnly(
@@ -8569,6 +8578,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     SharedMemoryLayout* observerModeShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     const bool observerOnlyMode = IsDX12ObserverOnlyModeActive(observerModeShm);
     const bool observerPolicyOnlyMode = IsDX12ObserverPolicyOnlyModeActive(observerModeShm);
+    const bool observerStartupPresentOnlyMode = IsDX12ObserverStartupPresentOnlyModeActive(observerModeShm);
     if (observerOnlyMode) {
         allowOverlayRender = false;
         EnsurePostSLDisabledForObserverOnly(
@@ -9826,7 +9836,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         const int logCount = s_observerOnlyEarlyPostSLLogCount.fetch_add(1, std::memory_order_relaxed);
         if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) && (logCount < 10 || (logCount % 200) == 0)) {
             HookLogImportant(
-                "DX12: Observer-only mode active - suppressing early PostSL registration while Streamline FG is running");
+                observerStartupPresentOnlyMode
+                    ? "DX12: Observer-startup-present-only mode active - suppressing early PostSL registration while Streamline FG is running"
+                    : "DX12: Observer-only mode active - suppressing early PostSL registration while Streamline FG is running");
         }
     }
 
@@ -9849,7 +9861,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         const int logCount = s_observerOnlyDx12StateLogCount.fetch_add(1, std::memory_order_relaxed);
         if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) && (logCount < 10 || (logCount % 200) == 0)) {
             HookLogImportant(
-                "DX12: Observer-only mode active - suppressing DX12 overlay/PostSL transition management while Streamline FG is running");
+                observerStartupPresentOnlyMode
+                    ? "DX12: Observer-startup-present-only mode active - suppressing DX12 overlay/PostSL transition management while Streamline FG is running"
+                    : "DX12: Observer-only mode active - suppressing DX12 overlay/PostSL transition management while Streamline FG is running");
         }
     }
 

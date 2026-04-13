@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "../common/config.h"
 #include "../hook/common/streamline_runtime_policy.h"
 
 namespace {
@@ -218,6 +219,22 @@ TEST(StreamlineRuntimePolicyTest, ObserverOnlyDeactivationSeedsRecentTeardownGra
     EXPECT_TRUE(cleanup.resetQueueChangeHeuristic);
     EXPECT_TRUE(cleanup.clearHeuristicFSR);
     EXPECT_TRUE(cleanup.clearNvidiaSmoothMotion);
+}
+
+TEST(StreamlineRuntimePolicyTest, ObserverStartupPresentOnlyRequiresObserverPolicyOnlyMode) {
+    OverlayConfig cfg{};
+
+    cfg.observerOnly = true;
+    cfg.observerPolicyOnly = true;
+    cfg.observerStartupPresentOnly = true;
+    EXPECT_TRUE(IsOverlayObserverStartupPresentOnly(cfg));
+
+    cfg.observerPolicyOnly = false;
+    EXPECT_FALSE(IsOverlayObserverStartupPresentOnly(cfg));
+
+    cfg.observerOnly = false;
+    cfg.observerPolicyOnly = true;
+    EXPECT_FALSE(IsOverlayObserverStartupPresentOnly(cfg));
 }
 
 TEST(StreamlineRuntimePolicyTest, PureObserverOnlyBehaviorRequiresPolicyProbeToStayDisabled) {

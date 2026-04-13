@@ -150,6 +150,7 @@ TEST_F(ConfigTest, ParseOverlayInclusionOptions) {
         "enabled=true\n"
         "observer_only=true\n"
         "observer_policy_only=true\n"
+        "observer_startup_present_only=true\n"
         "capture_include_overlay=false\n"
         "screenshot_include_overlay=false\n";
 
@@ -161,6 +162,7 @@ TEST_F(ConfigTest, ParseOverlayInclusionOptions) {
     EXPECT_TRUE(config.overlay.showOverlay);
     EXPECT_TRUE(config.overlay.observerOnly);
     EXPECT_TRUE(config.overlay.observerPolicyOnly);
+    EXPECT_TRUE(config.overlay.observerStartupPresentOnly);
     EXPECT_FALSE(config.overlay.captureIncludeOverlay);
     EXPECT_FALSE(config.overlay.screenshotIncludeOverlay);
 }
