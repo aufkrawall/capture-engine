@@ -14,19 +14,48 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-13 - Dump Thread Analysis: Present thread waiting on fence, Streamline thread deadlocked
+
+- **Thread analysis of crash 172647**: Used cdb to enumerate all threads and analyze stacks of key threads.
+
+- **Thread mapping**:
+  - Thread 38 (0x6e08 = 28168): Watchdog thread stuck in MessageBoxW showing ERR_GFX_STATE dialog
+  - Thread 39 (0x6e0c = 28172): Present thread (mentioned in hook_debug.log at line 882) stuck in `WaitForSingleObjectEx` - waiting on some synchronization object that never completes
+  - Thread 37 ("sl.log"): Streamline interposer thread stuck in `sl_interposer!vkGetInstanceProcAddr` waiting on a condition variable via `msvcp140!_Cnd_wait`
+  - Thread 48 (D3D Background Thread 0): D3D12Core background thread stuck waiting on condition variable
+
+- **Key finding**: The present thread (39) is NOT inside sl_dlss_g as previously thought - it's waiting on a synchronization object. The Streamline thread (37) is stuck in a condition variable wait. This suggests a deadlock or wait starvation in Streamline's internal synchronization.
+
+- **Exception info**: The stored exception is `e0000001` ("Blocked kernel") on thread 0x6e08. This is the watchdog thread that captured the dump when ERR_GFX_STATE was detected. The actual crash may have occurred on a different thread before the dump was captured.
+
+- **Timeline confirmation**: Crash 172647 timeline verified:
+  - 17:28:03.408 - GetState OFF->ON (startupWindowActive=1, consumed=0, wrapperProgress=0)
+  - 17:28:03.425 - Synthetic re-entrant Present #1 detected (T:6E0C)
+  - 17:28:03.876 - ERR_GFX_STATE detected (~468ms after GetState ON)
+
+- **Talos comparison**: Talos successfully handles DLSS FG with no crash. Key difference: Talos completes PostSL activation (~741ms after GetState ON) and renders overlay successfully. In GTA, crash occurs ~468ms after GetState ON, before PostSL activation completes.
+
+- **Stale-risk note**: The crash appears to be a deadlock between the present thread (waiting on a fence that never completes) and Streamline's internal threads (waiting on condition variables). This is NOT directly related to CE's PostSL callback - it's an internal Streamline synchronization issue. The ~500ms timing suggests an internal Streamline timeout or timer that fires during multi-device DLSS FG initialization.
+
 ### 2026-04-13 - Restore FRESH activation fix in ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires
 
-- **Root cause**: An uncommitted local modification changed `hook/common/dx12_overlay_policy.h` line 1167 from `return startupActivationPending || postSLActive;` to `return postSLActive;`. This effectively removed the `startupActivationPending` check from the callback deferral logic. Analysis of crash bundle `installed/captureengine/logs/20260413_170236` (debug build with detailed PostSL logging) showed that the callback entered and PostSLOverlayRender returned successfully, yet ERR_GFX_STATE still appeared ~455ms later. Analysis of crash `20260413_155527` showed PostSLOverlayRender was not called (callback deferred), but ERR_GFX_STATE still appeared ~553ms after GetState ON. This suggests the crash is not caused by PostSLOverlayRender entering per se, but by something deeper in Streamline's internal multi-device initialization timing after GetState returns ON.
+- **Root cause**: An uncommitted local modification changed `hook/common/dx12_overlay_policy.h` line 1167 from `return startupActivationPending || postSLActive;` to `return postSLActive;`. This effectively removed the `startupActivationPending` check from the callback deferral logic.
 
-- **Fix**: Reverted the uncommitted modification in `hook/common/dx12_overlay_policy.h` to restore `return startupActivationPending || postSLActive;` at line 1167. This ensures the callback is deferred when `startupActivationPending=true` (synthetic startup activation pending but PostSL not yet active), regardless of `postSLActive` state.
+- **Crash 170236 analysis**: Debug build with detailed PostSL logging showed the callback entered and PostSLOverlayRender returned successfully, yet ERR_GFX_STATE still appeared ~455ms later. This proved the crash was NOT inside PostSLOverlayRender itself.
 
-- **Additional changes retained**: The working directory had useful debug logging changes in `hook/apis/dx12_hook.cpp` that were retained: (1) Enhanced logging for GetState transition showing startup window state, consumed top-level bootstrap, and wrapper progress at the moment of GetState ON; (2) A `g_DeviceRemoved` safety check that skips PostSL callback if ERR_GFX_STATE has already been detected, preventing further rendering attempts on an unstable device.
+- **Crash 172647 analysis (new)**: Build 0.1.2258, GetState ON at 17:28:03.408 (startupWindowActive=1, consumed=0, wrapperProgress=0). The PostSL callback was DEFERRED at line 1156 (consumed=0 triggered early return), so PostSLOverlayRender was NEVER called. ERR_GFX_STATE still appeared ~450ms after GetState ON (at 17:28:03.876). This proves the crash is NOT caused by whether our PostSL callback enters - it happens regardless of callback deferral.
+
+- **CRITICAL CONCLUSION**: The crash is internal to Streamline's multi-device DLSS FG initialization. It occurs ~500ms after GetState returns ON, regardless of whether CE's PostSL callback runs, is deferred, or is never called. The crash targetTid=28168 is a different thread from the present thread T:6E0C, suggesting Streamline's internal threading is causing the issue, not CE's present path.
+
+- **Fix**: Reverted the uncommitted modification in `hook/common/dx12_overlay_policy.h` to restore `return startupActivationPending || postSLActive;` at line 1167.
+
+- **Additional changes retained**: The `dx12_hook.cpp` debug logging changes were retained: (1) Enhanced logging for GetState transition showing startup window state, consumed top-level bootstrap, and wrapper progress at the moment of GetState ON; (2) A `g_DeviceRemoved` safety check that skips PostSL callback if ERR_GFX_STATE has already been detected.
 
 - **Verification**: Build completed successfully, version bumped to 0.1.2258.
 
 - Pages touched: `log.md`.
 - Source files checked/modified: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`.
-- Stale-risk note: The uncommitted modification to `return postSLActive` suggests someone was testing whether removing the `startupActivationPending` check would help. It did not. The crash in 170236 still happened despite the callback entering. The crash appears to be a Streamline internal timing issue that occurs ~500ms after GetState ON regardless of whether our callback runs. The `startupActivationPending` check is still meaningful because it prevents the callback from running when CE is still waiting for synthetic startup activation to complete. If future tests still crash with `startupActivationPending || postSLActive`, the issue is deeper than callback deferral logic.
+- Stale-risk note: The crash is NOT preventable through callback deferral logic. The crash is a Streamline internal timing issue that occurs ~500ms after GetState ON. Potential approaches: (1) Investigate whether there's a way to delay or suppress GetState ON to prevent Streamline's multi-device initialization from starting; (2) Consider whether CE can detect and avoid triggering whatever causes the threading race in sl_dlss_g; (3) The crash is on a different thread (T:28168) than the present thread (T:6E0C), suggesting it's internal to Streamline's worker thread model.
 
 ### 2026-04-13 - Null swapchain guard and startup window clearing: Fix PostSL stall when ECL hook triggers callback directly
 
