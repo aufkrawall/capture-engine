@@ -196,14 +196,14 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     if (summaryHash != s_ConfigSummaryHash) {
         LogInfo(
             "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s mipBias=%s mode=%s cpuPrerender=%.2f "
-            "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d captureOverlay=%d screenshotOverlay=%d "
+            "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d captureOverlay=%d screenshotOverlay=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u",
             LogLevelToConfigString(config.logLevel), pSharedMem->graphicsConfig.vsyncMode,
             pSharedMem->graphicsConfig.anisotropicFiltering, pSharedMem->graphicsConfig.mipBias,
             pSharedMem->graphicsConfig.mipBiasMode, pSharedMem->graphicsConfig.prerenderLimit,
             pSharedMem->graphicsConfig.backbufferCount, pSharedMem->fpsLimiter.GetGeneralFps(),
             pSharedMem->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF", pSharedMem->overlayConfig.showOverlay,
-            pSharedMem->overlayConfig.observerOnly,
+            pSharedMem->overlayConfig.observerOnly, pSharedMem->overlayConfig.observerPolicyOnly,
             pSharedMem->overlayConfig.captureIncludeOverlay, pSharedMem->overlayConfig.screenshotIncludeOverlay,
             pSharedMem->graphicsConfig.dlssAutoExposure, pSharedMem->graphicsConfig.dlssSharpening,
             pSharedMem->graphicsConfig.dlssSRPreset);

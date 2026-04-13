@@ -35,7 +35,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 20: Added OverlayConfig::screenshotIncludeOverlay
 // Version 22: Added encoder sustainable FPS telemetry for overload UI
 // Version 23: Added OverlayConfig::observerOnly passive DX12/FG observation mode
-static constexpr uint32_t SHARED_MEMORY_VERSION = 23;
+// Version 24: Added OverlayConfig::observerPolicyOnly staged Streamline-policy probe mode
+static constexpr uint32_t SHARED_MEMORY_VERSION = 24;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -176,6 +177,7 @@ struct OverlayConfig {
     // Master toggle
     bool showOverlay;
     bool observerOnly;  // Observe DX12/FG state without overlay/PostSL interference
+    bool observerPolicyOnly;  // In observer-only mode, still allow Streamline startup-policy mutation
     bool captureIncludeOverlay;     // Include overlay in video recordings
     bool screenshotIncludeOverlay;  // Include overlay in screenshots
     // Display Elements

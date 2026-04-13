@@ -119,6 +119,10 @@ inline bool HookOverlayObserverOnlyEnabled() {
     return IsOverlayObserverOnly(GetHookOverlayConfig());
 }
 
+inline bool HookOverlayObserverPolicyOnlyEnabled() {
+    return IsOverlayObserverPolicyOnly(GetHookOverlayConfig());
+}
+
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
 float GetActivePrerenderLimit();

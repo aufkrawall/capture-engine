@@ -154,6 +154,7 @@ void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, P
     manifest << "capture_method=" << config.captureMethod << "\n";
     manifest << "overlay_enabled=" << (config.overlay.showOverlay ? 1 : 0) << "\n";
     manifest << "overlay_observer_only=" << (config.overlay.observerOnly ? 1 : 0) << "\n";
+    manifest << "overlay_observer_policy_only=" << (config.overlay.observerPolicyOnly ? 1 : 0) << "\n";
     manifest << "logger_enabled=" << (ShouldStartLoggerProcess(config) ? 1 : 0) << "\n";
     manifest << "sensor_enabled=" << (ShouldStartSensorProcess(config) ? 1 : 0) << "\n";
     manifest << "game_whitelist_entries=" << config.gameWhitelist.size() << "\n";

@@ -282,6 +282,11 @@ enabled=true
 ;   true = keep injection/hooks/logging active, but do not render the overlay,
 ;          do not install/use PostSL, and do not mutate Streamline startup state.
 observer_only=false
+; observer_policy_only - Values: true, false
+;   true = only meaningful with observer_only=true. Keeps DX12/PostSL/startup-Present
+;          behavior passive, but allows Streamline startup-policy mutation for staged
+;          active-path bisecting.
+observer_policy_only=false
 ; capture_include_overlay - Values: true, false
 capture_include_overlay=true
 ; screenshot_include_overlay - Values: true, false
@@ -959,6 +964,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // Overlay
     config.overlay.showOverlay = GetBool("Overlay", "enabled", true);
     config.overlay.observerOnly = GetBool("Overlay", "observer_only", false);
+    config.overlay.observerPolicyOnly = GetBool("Overlay", "observer_policy_only", false);
     config.overlay.captureIncludeOverlay = GetBool("Overlay", "capture_include_overlay", true);
     config.overlay.screenshotIncludeOverlay = GetBool("Overlay", "screenshot_include_overlay", true);
 
