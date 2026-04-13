@@ -14,6 +14,28 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-13 - Add staged observer-policy-only Streamline startup-policy probe
+
+- **Motivation**: The clean observer-only GTA V Enhanced session `installed/captureengine/logs/20260413_203815` confirmed that the strict passive injected baseline no longer froze and no longer misclassified transient Streamline churn as heuristic `FSR_FG`. That established the next bisect seam: re-enable only Streamline startup-policy mutation while keeping DX12 overlay rendering, PostSL, and special startup Present routing passive, so we can determine whether the remaining GTA DLSS FG freeze family lives inside startup-policy mutation itself or only in the later PostSL/startup-Present path.
+
+- **Fix**:
+  1. `common/shared_defs.h`, `common/config.cpp`, `common/config.h`, `hook/common/hook_common.h`, `captureengine/main.cpp`, and `captureengine/inject_main.cpp` now expose `Overlay.observer_policy_only=true` as a new staged probe. It is only meaningful with `observer_only=true`, bumps the shared-memory version to 24, is parsed from config/overrides, is visible in the shared-memory/inject summary log, and is recorded in `session_manifest.txt` as `overlay_observer_policy_only`.
+  2. `hook/apis/streamline_hook.cpp` now treats only `observer_only && !observer_policy_only` as the fully passive branch. When `observer_policy_only=true`, the Streamline hook re-enables the startup-policy family: startup transition window arm/extend, startup-window OFF suppression/flush, GetState-only activation suppression, and FSR-owned Streamline-enable preparation.
+  3. `hook/apis/dx12_hook.cpp` still keeps observer modes passive for DX12/PostSL behavior, but `observer_policy_only` now preserves the startup transition window instead of clearing it during observer-mode cleanup. That keeps the startup-policy seam alive without re-enabling PostSL callback install/use or startup-handoff activation state.
+  4. `hook/common/dxgi_shared.h` / `.cpp` now keep the FFX startup Present bypass disabled in all observer modes, so `observer_policy_only` does not accidentally re-enable the DXGI startup-Present path while probing only the Streamline startup-policy family.
+  5. Tests now cover the new split in `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`, `tests/test_streamline_runtime_policy.cpp`, and `tests/test_dxgi_shared.cpp`.
+
+- **Why this is generic**: We need a staged path between the strict passive baseline and full active CE behavior. `observer_policy_only` lets us ask a precise generic question: does Streamline startup-policy mutation alone destabilize the runtime, even when PostSL rendering/callbacks and special startup Present routing are still absent? That is a reusable debugging seam for any future Streamline DLSS FG startup issue, not a GTA-specific hack.
+
+- **Verification**:
+  - Ran `python build.py --incremental --skip-updates --run-tests`.
+  - All 559 tests passed.
+  - Build version bumped to `0.1.2261`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `regression-testing-and-logging.md`, `log.md`.
+- Source files checked/modified: `common/shared_defs.h`, `common/config.cpp`, `common/config.h`, `captureengine/main.cpp`, `captureengine/inject_main.cpp`, `hook/common/hook_common.h`, `hook/common/streamline_runtime_policy.h`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `hook/apis/dx12_hook.cpp`, `hook/apis/streamline_hook.cpp`, `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260413_203815/hook_debug.log`.
+- Stale-risk note: Fresh runtime validation with `[Overlay] observer_only=true` and `[Overlay] observer_policy_only=true` is still needed. Re-check this staged seam first if logs unexpectedly show PostSL callback install/use, synthetic/startup Present routing, or FFX startup Present bypass activity while `observer_policy_only` is active.
+
 ### 2026-04-13 - Preserve Streamline heuristic cleanup in observer-only mode
 
 - **Root cause**: The good observer-only GTA V Enhanced run `installed/captureengine/logs/20260413_200023` no longer froze, which confirmed the active DX12/PostSL/startup policy family as the likely crash trigger. But the same passive run exposed a separate correctness bug: after transient `Streamline Hook: FG state transition ON->OFF via GetState (observer-only pass-through)` churn at lines 714-716 and again 823-825, observer-only mode skipped the normal Streamline transition cleanup that active mode performs. That left the queue-change / ECL heuristics free to reclassify the still-Streamline-owned runtime as heuristic `FSR_FG`, producing `DX12: FG detected via queue change`, `DetourPresent: SL routing was active while FSR FG is active`, `DX12: Preparing for Streamline FG enable while live FSR runtime owns the swapchain`, and later `FG publication ... runtime=FSR_FG` even though the same session had already logged `FFX Hook: No FFX modules found` and `No AMD/FFX/FSR modules among 163 loaded`.

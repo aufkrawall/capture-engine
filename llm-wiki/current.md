@@ -44,11 +44,12 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 ## Current Hot Areas
 - DX12 / FG startup churn and queue ownership remain high-risk and change frequently.
 - Inline hook correctness is still a sensitive subsystem; use `trace` when debugging trampoline relocation or byte-level hook installs.
-- Session bundles under `installed/captureengine/logs/<session>` now benefit from a compact `session_manifest.txt` entrypoint, including `overlay_enabled` and `overlay_observer_only`.
+- Session bundles under `installed/captureengine/logs/<session>` now benefit from a compact `session_manifest.txt` entrypoint, including `overlay_enabled`, `overlay_observer_only`, and `overlay_observer_policy_only`.
 - `Overlay.enabled=false` alone is not a strict DX12 non-interference baseline; older GTA DLSS FG runs still performed pre-FG overlay setup and PostSL/startup routing with the visible overlay hidden.
 - `Overlay.observer_only=true` is now the preferred injected passive baseline for DLSS FG debugging. It keeps hooks, logging, and runtime FG telemetry alive while suppressing DX12 overlay rendering, PostSL callback install/use, special startup Present routing, and CE's Streamline startup-policy mutation. It still preserves Streamline transition heuristic cleanup (queue-change reset, teardown grace, false-heuristic clearing) so transient `GetState` OFF churn does not get misclassified as `FSR_FG`.
+- `Overlay.observer_policy_only=true` is a staged probe that only applies with `Overlay.observer_only=true`. It keeps DX12 overlay rendering, PostSL callback install/use, and special Streamline synthetic/startup Present routing passive, but lets the Streamline hook keep the startup-policy family alive: startup transition window arming/extension, startup-window OFF suppression/flush, fresh-activation suppression, and FSR-owned enable preparation. This isolates startup-policy mutation from PostSL/startup-Present behavior.
 - The real `slDLSSGSetOptions(mode=OFF)` call is still suppressed during the active-mode DLSS FG startup transition window to prevent Streamline from de-initializing FG during fragile initialization.
 
 ## Open Questions / Stale-Risk
-- Re-check this page whenever logging controls, session bundle layout, or `Overlay.observer_only` semantics change.
+- Re-check this page whenever logging controls, session bundle layout, or `Overlay.observer_only` / `Overlay.observer_policy_only` semantics change.
 - Re-check after any future split of hook diagnostics into additional sidecar logs or passive-baseline workflow changes.

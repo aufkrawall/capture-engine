@@ -169,4 +169,13 @@ inline ObserverOnlyHeuristicCleanup ResolveObserverOnlyHeuristicCleanupForStream
     return cleanup;
 }
 
+inline bool ShouldKeepPureObserverOnlyStreamlineBehavior(bool observerOnlyEnabled, bool observerPolicyOnlyEnabled) {
+    return observerOnlyEnabled && !observerPolicyOnlyEnabled;
+}
+
+inline bool ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(bool observerOnlyEnabled,
+                                                                    bool observerPolicyOnlyEnabled) {
+    return observerOnlyEnabled && observerPolicyOnlyEnabled;
+}
+
 }  // namespace ce::streamline_runtime_policy

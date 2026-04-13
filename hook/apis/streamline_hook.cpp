@@ -28,7 +28,8 @@ bool IsObserverPolicyOnlyModeActive() {
 }
 
 bool ShouldKeepPureObserverOnlyStreamlineBehavior() {
-    return IsObserverOnlyModeActive() && !IsObserverPolicyOnlyModeActive();
+    return ce::streamline_runtime_policy::ShouldKeepPureObserverOnlyStreamlineBehavior(
+        IsObserverOnlyModeActive(), IsObserverPolicyOnlyModeActive());
 }
 
 using slResult = int;

@@ -37,21 +37,21 @@ Primary sources:
 - `tests/test_fps_limiter.cpp`
   - Despite the name, this currently includes important overlay compatibility policy tests.
 - `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`
-  - Config, override, and shared-memory coverage for `Overlay.observer_only` and other runtime-visible overlay config fields.
+  - Config, override, and shared-memory coverage for `Overlay.observer_only`, `Overlay.observer_policy_only`, and other runtime-visible overlay config fields.
 
 ## Useful Existing Logging Points
 - `captureengine/injection.cpp`
   - Detailed delayed-injection logs for wait-loop start, D3D12 detection, fallback path, and injection attempt.
 - `captureengine/main.cpp`
-  - `session_manifest.txt` records `overlay_enabled` and `overlay_observer_only` so passive-vs-active sessions are self-describing.
+  - `session_manifest.txt` records `overlay_enabled`, `overlay_observer_only`, and `overlay_observer_policy_only` so passive-vs-staged-vs-active sessions are self-describing.
 - `captureengine/inject_main.cpp`
-  - Shared-memory config summary logs overlay enabled vs `observerOnly` alongside graphics override state.
+  - Shared-memory config summary logs overlay enabled vs `observerOnly` / `observerPolicyOnly` alongside graphics override state.
 - `captureengine/pseudo_overlay.cpp`
   - Logs pseudo-overlay suppression and resume during injected-overlay handoff.
 - `hook/apis/dx12_hook.cpp`
   - Logs when observer-only suppresses early PostSL registration, PostSL callback execution, and DX12 overlay/PostSL transition management.
 - `hook/apis/streamline_hook.cpp`
-  - Logs observer-only FG transition pass-through while bypassing CE's startup-window mutation logic.
+  - Logs pure observer-only FG transition pass-through versus staged observer-policy-only startup-policy handling.
 - `hook/common/dxgi_shared.cpp`
   - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths.
 - `hook/common/freeze_watchdog.cpp`
@@ -62,7 +62,7 @@ Primary sources:
 ## Practical Regression Checklist
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.
 - If you use `Overlay.enabled=false` as a diagnosis baseline, verify from the logs that there is actually no DX12 overlay/PostSL/startup-policy activity. Hidden overlay and passive observer-only are not equivalent.
-- If you touch `Overlay.observer_only` or passive-baseline behavior, verify both halves explicitly: hooks/logging/runtime FG telemetry still stay live, but there are no pre-FG overlay submits, no early/PostSL callback install/use, no special Streamline synthetic/startup Present routing, and no startup-window Streamline mutation.
+- If you touch `Overlay.observer_only` or `Overlay.observer_policy_only`, verify the intended split explicitly: pure observer-only still has no pre-FG overlay submits, no early/PostSL callback install/use, no special Streamline synthetic/startup Present routing, and no startup-window Streamline mutation; observer-policy-only may restore only the Streamline startup-policy family while DX12/PostSL/startup-Present behavior stays passive.
 - If you touch watchdog ownership or dump-trigger conditions, verify that helper heartbeats do not silently retarget the monitored thread and that explicit stall conditions still produce an automatic dump.
 - If you touch watchdog ownership or dump-trigger conditions, also verify that an immediate dump request targeting the current render/present thread is handled asynchronously instead of trying to suspend/capture that same thread inline.
 - If you touch Streamline stall detection, verify that top-level `Present1` traffic counts as forward progress alongside `Present`; otherwise `Present STALLED` can become a false positive on games/runtimes that switch entrypoints during DLSS activation.
@@ -118,5 +118,5 @@ powershell -ExecutionPolicy Bypass -File .\analysis\analyze_dump.ps1 .\installed
 
 ## Open Questions / Stale-Risk
 - Stale risk is medium because tests and logs evolve along with the runtime.
-- `Overlay.observer_only` spans config, shared-memory, DX12, DXGI, and Streamline hook paths, so stale risk increases quickly if only one side gets updated.
+- `Overlay.observer_only` and `Overlay.observer_policy_only` span config, shared-memory, DX12, DXGI, and Streamline hook paths, so stale risk increases quickly if only one side gets updated.
 - If a DX12 or FG bug fix lands without new coverage or better logs, this page should be revisited immediately.

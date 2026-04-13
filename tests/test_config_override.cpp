@@ -28,11 +28,13 @@ TEST_F(ConfigOverrideTest, SimpleOverride) {
         "[Overlay]\n"
         "enabled=true\n"
         "observer_only=false\n"
+        "observer_policy_only=false\n"
         "\n"
         "[App.1]\n"
         "Process=game.exe\n"
         "Overlay.enabled=false\n"
-        "Overlay.observer_only=true\n";
+        "Overlay.observer_only=true\n"
+        "Overlay.observer_policy_only=true\n";
 
     WriteConfig(iniContent);
 
@@ -46,6 +48,7 @@ TEST_F(ConfigOverrideTest, SimpleOverride) {
     LoadConfig(tempConfigFile, config, "game.exe");
     EXPECT_FALSE(config.overlay.showOverlay);
     EXPECT_TRUE(config.overlay.observerOnly);
+    EXPECT_TRUE(config.overlay.observerPolicyOnly);
 }
 
 TEST_F(ConfigOverrideTest, CaseInsensitiveProcessMatch) {

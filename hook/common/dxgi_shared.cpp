@@ -935,7 +935,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
-        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive);
+        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive, observerOnlyMode);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
@@ -1366,7 +1366,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
         api == APIType::D3D12, ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress),
-        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive);
+        streamlineStartupHandoffPending, streamlineStartupTransitionWindowActive, observerOnlyMode);
     if (ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();

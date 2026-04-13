@@ -1511,7 +1511,11 @@ static bool IsDX12ObserverOnlyModeActive(SharedMemoryLayout* shm) {
     return IsOverlayObserverOnly(GetActiveDX12OverlayConfig(shm));
 }
 
-static void EnsurePostSLDisabledForObserverOnly(const char* reason) {
+static bool IsDX12ObserverPolicyOnlyModeActive(SharedMemoryLayout* shm) {
+    return IsOverlayObserverPolicyOnly(GetActiveDX12OverlayConfig(shm));
+}
+
+static void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserveStartupTransitionWindow = false) {
     g_PostSLOverlayActive.store(false, std::memory_order_release);
     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
     g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
@@ -1520,7 +1524,9 @@ static void EnsurePostSLDisabledForObserverOnly(const char* reason) {
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
-    DXGIShared::ClearStreamlineStartupTransitionWindow();
+    if (!preserveStartupTransitionWindow) {
+        DXGIShared::ClearStreamlineStartupTransitionWindow();
+    }
     if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr) {
         SetPostSLCallbackInstalled(false, reason);
     }
@@ -3669,6 +3675,7 @@ DWORD DX12_GetGamePresentThreadId() {
 
 void DX12_OnStreamlineFGStateChanged(bool active) {
     const bool observerOnly = HookOverlayObserverOnlyEnabled();
+    const bool observerPolicyOnly = HookOverlayObserverPolicyOnlyEnabled();
     if (observerOnly) {
         const auto cleanup = ce::streamline_runtime_policy::ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(
             active);
@@ -3699,13 +3706,18 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_FGCompat.ClearNvidiaSMState();
         }
         if (active) {
-            HookLogImportant(
-                "DX12: Streamline FG ON observed in observer-only mode - skipping PostSL startup routing/state mutation");
+            HookLogImportant(observerPolicyOnly
+                                 ? "DX12: Streamline FG ON observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state"
+                                 : "DX12: Streamline FG ON observed in observer-only mode - skipping PostSL startup routing/state mutation");
         } else {
-            HookLogImportant(
-                "DX12: Streamline FG OFF observed in observer-only mode - keeping PostSL disabled and clearing startup state");
+            HookLogImportant(observerPolicyOnly
+                                 ? "DX12: Streamline FG OFF observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state"
+                                 : "DX12: Streamline FG OFF observed in observer-only mode - keeping PostSL disabled and clearing startup state");
         }
-        EnsurePostSLDisabledForObserverOnly("DX12: observer-only mode");
+        EnsurePostSLDisabledForObserverOnly(
+            "DX12: observer-only mode",
+            ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(observerOnly,
+                                                                                                   observerPolicyOnly));
         return;
     }
 
@@ -8213,7 +8225,9 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
         return;
     }
 
-    if (HookOverlayObserverOnlyEnabled()) {
+    const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
+    const bool observerPolicyOnlyMode = HookOverlayObserverPolicyOnlyEnabled();
+    if (observerOnlyMode) {
         static std::atomic<int> s_observerOnlyPostSLSkipLogCount{0};
         const int logCount = s_observerOnlyPostSLSkipLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 100) == 0) {
@@ -8221,7 +8235,10 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
                 "DX12: PostSL callback SKIPPED - observer-only mode active (swapchain=%p)",
                 (void*)pSwapChain);
         }
-        EnsurePostSLDisabledForObserverOnly("DX12: observer-only PostSL callback");
+        EnsurePostSLDisabledForObserverOnly(
+            "DX12: observer-only PostSL callback",
+            ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(
+                observerOnlyMode, observerPolicyOnlyMode));
         return;
     }
 
@@ -8551,9 +8568,13 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     bool allowOverlayRender = ApplyOverlayStartupCompatMode(frameDesc.OutputWindow);
     SharedMemoryLayout* observerModeShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     const bool observerOnlyMode = IsDX12ObserverOnlyModeActive(observerModeShm);
+    const bool observerPolicyOnlyMode = IsDX12ObserverPolicyOnlyModeActive(observerModeShm);
     if (observerOnlyMode) {
         allowOverlayRender = false;
-        EnsurePostSLDisabledForObserverOnly("DX12: ProcessFrame observer-only mode");
+        EnsurePostSLDisabledForObserverOnly(
+            "DX12: ProcessFrame observer-only mode",
+            ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(
+                observerOnlyMode, observerPolicyOnlyMode));
     }
 
     ULONGLONG postResumeSettleRemainingMs = 0;

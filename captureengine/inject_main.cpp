@@ -191,7 +191,8 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
                                  (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralFps()) << 4) ^
                                  (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralEnabled()) << 5) ^
                                  (static_cast<uint64_t>(pSharedMem->graphicsConfig.dlssSRPreset) << 6) ^
-                                 (static_cast<uint64_t>(config.logLevel) << 7);
+                                 (static_cast<uint64_t>(config.logLevel) << 7) ^
+                                 (static_cast<uint64_t>(pSharedMem->overlayConfig.observerPolicyOnly) << 8);
 
     if (summaryHash != s_ConfigSummaryHash) {
         LogInfo(

@@ -220,4 +220,24 @@ TEST(StreamlineRuntimePolicyTest, ObserverOnlyDeactivationSeedsRecentTeardownGra
     EXPECT_TRUE(cleanup.clearNvidiaSmoothMotion);
 }
 
+TEST(StreamlineRuntimePolicyTest, PureObserverOnlyBehaviorRequiresPolicyProbeToStayDisabled) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepPureObserverOnlyStreamlineBehavior(true, false));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepPureObserverOnlyStreamlineBehavior(true, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepPureObserverOnlyStreamlineBehavior(false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepPureObserverOnlyStreamlineBehavior(false, true));
+}
+
+TEST(StreamlineRuntimePolicyTest, ObserverPolicyOnlyPreservesStartupTransitionWindowWhilePostSLStaysDisabled) {
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(true, true));
+
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(true, false));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(false, false));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(false, true));
+}
+
 }  // namespace

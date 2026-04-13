@@ -281,14 +281,15 @@ inline bool ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(boo
 
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,
                                                           bool streamlineStartupHandoffPending,
-                                                          bool streamlineStartupTransitionWindowActive) {
+                                                          bool streamlineStartupTransitionWindowActive,
+                                                          bool observerOnlyMode) {
     // During repeated FSR->DLSS handoffs, FFX teardown Presents can arrive
     // before Streamline publishes its running signal or after an older PostSL
     // path clears the pending latch for the new epoch. A short explicit
     // transition window keeps those Presents on the safe bypass route instead
     // of falling through the generic oPresent path into third-party hook
     // chains.
-    return isD3D12SwapChain && callerFromFFXFGModule &&
+    return !observerOnlyMode && isD3D12SwapChain && callerFromFFXFGModule &&
            (streamlineStartupHandoffPending || streamlineStartupTransitionWindowActive);
 }
 
