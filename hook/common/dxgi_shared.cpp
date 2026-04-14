@@ -932,6 +932,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
+    const bool postSLStartupActivationPending =
+        g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -953,7 +955,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
     }
-    bool streamlineSyntheticReentrant = (!observerOnlyMode || observerStartupPresentOnlyMode) &&
+    bool streamlineSyntheticReentrant = ShouldAllowSpecialStreamlinePresentRouting(observerOnlyMode) &&
         ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
@@ -961,32 +963,36 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool startupTopLevelCandidate = !observerOnlyMode &&
         !streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&
         streamlineStartupHandoffInProgress && recentLargePresentGap && matchesExpectedPresentThread;
-    bool allowTopLevelStartupPresent = false;
     if (startupTopLevelCandidate) {
         bool expected = false;
         if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            allowTopLevelStartupPresent = true;
-        } else {
-            streamlineSyntheticReentrant = true;
+            static std::atomic<int> s_streamlineStartupSuppressedTopLevelLogCount{0};
+            int logCount = s_streamlineStartupSuppressedTopLevelLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (logCount <= 10 || (logCount % 100) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Keeping Streamline startup-handoff Present on the normal SL route #%d "
+                    "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1)"
+                    " — top-level promotion disabled; relying on startup-policy + wrapper-progress activation",
+                    logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId);
+            }
         }
     }
-    const bool preferBypassReturnPathForPromotedTopLevelPresent =
-        DXGIShared::ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(allowTopLevelStartupPresent,
-                                                                                     callerFromStreamlineModule);
-if (allowTopLevelStartupPresent) {
-        static std::atomic<int> s_streamlineStartupTopLevelLogCount{0};
-        int logCount = s_streamlineStartupTopLevelLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+            observerOnlyMode,
+            g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
+            callerFromStreamlineModule, streamlineStartupHandoffInProgress,
+            postSLStartupActivationPending, streamlineSyntheticReentrant)) {
+        static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount{0};
+        int logCount = s_streamlineSyntheticStartupNormalRouteLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
-                "DetourPresent: Treating Streamline startup-handoff Present as top-level live Present #%d "
-                "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1 "
-                "activationPending=%d postSLActive=%d bypass=%d)",
-                logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId,
-                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_relaxed) ? 1 : 0,
-                g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr ? 1 : 0,
-                preferBypassReturnPathForPromotedTopLevelPresent ? 1 : 0);
+                "DetourPresent: Keeping decisive synthetic Streamline startup Present on the normal SL route #%d "
+                "(startupPending=%d consumed=1 windowActive=%d tid=0x%04X)",
+                logCount, postSLStartupActivationPending ? 1 : 0,
+                streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
         }
+        streamlineSyntheticReentrant = false;
     }
     if (streamlineSyntheticReentrant) {
         auto postSLCallback = observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
@@ -1248,18 +1254,9 @@ if (allowTopLevelStartupPresent) {
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
     UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent");
 
-    const bool skipDX12ProcessFrameForObserverStartupPresentProbe =
-        ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(observerStartupPresentOnlyMode,
-                                                                 allowTopLevelStartupPresent, api);
     if (!IsShuttingDown() && (oPresentTrampoline || oPresent)) {
         if (api == APIType::D3D12) {
-            if (skipDX12ProcessFrameForObserverStartupPresentProbe) {
-                HookLogImportant(
-                    "DetourPresent: Observer-startup-present-only probe skipping full DX12 promoted-handoff processing "
-                    "(HandleDX12ProcessFrame + WaitForOverlayCompletion)");
-            } else {
-                HandleDX12ProcessFrame(pSwapChain, true);
-            }
+            HandleDX12ProcessFrame(pSwapChain, true);
         } else if (api == APIType::D3D11) {
             HandleDX11ProcessFrame(pSwapChain, true);
         }
@@ -1273,31 +1270,12 @@ if (allowTopLevelStartupPresent) {
 
     ProcessVSyncOverride(SyncInterval, Flags);
 
-    if (api == APIType::D3D12 && !skipDX12ProcessFrameForObserverStartupPresentProbe) {
+    if (api == APIType::D3D12) {
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
     HRESULT hr;
-    if (preferBypassReturnPathForPromotedTopLevelPresent) {
-        PFN_Present presentBypass = EnsurePresentBypassTrampoline();
-        if (presentBypass) {
-            static std::atomic<int> s_promotedStartupBypassLogCount{0};
-            const int logCount = s_promotedStartupBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (logCount <= 10 || (logCount % 100) == 0) {
-                HookLogImportant(
-                    "DetourPresent: Promoted Streamline startup-handoff Present using bypass return path #%d "
-                    "(bypass=%p oPresent=%p)",
-                    logCount, (void*)presentBypass, (void*)oPresent);
-            }
-            hr = presentBypass(pSwapChain, SyncInterval, Flags);
-        } else {
-            HookLogImportant(
-                "DetourPresent: Promoted Streamline startup-handoff Present has no bypass trampoline; falling back "
-                "to normal original path (oPresent=%p)",
-                (void*)oPresent);
-            hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-        }
-    } else if (s_slRoutingActive.load(std::memory_order_acquire)) {
+    if (s_slRoutingActive.load(std::memory_order_acquire)) {
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
         // Safety: if SL routing is active but FSR FG has taken over, force-disable
         // SL routing. This prevents a conflict between SL's Present hook chain and
@@ -1375,6 +1353,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
+    const bool postSLStartupActivationPending =
+        g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -1396,7 +1376,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     }
-    bool streamlineSyntheticReentrant = (!observerOnlyMode || observerStartupPresentOnlyMode) &&
+    bool streamlineSyntheticReentrant = ShouldAllowSpecialStreamlinePresentRouting(observerOnlyMode) &&
         ShouldTreatStreamlinePresentAsSyntheticReentrant(
         api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
@@ -1404,32 +1384,36 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool startupTopLevelCandidate = !observerOnlyMode &&
         !streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&
         streamlineStartupHandoffInProgress && recentLargePresentGap && matchesExpectedPresentThread;
-    bool allowTopLevelStartupPresent = false;
     if (startupTopLevelCandidate) {
         bool expected = false;
         if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
                 expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            allowTopLevelStartupPresent = true;
-        } else {
-            streamlineSyntheticReentrant = true;
+            static std::atomic<int> s_streamlineStartupSuppressedTopLevelLogCount1{0};
+            int logCount = s_streamlineStartupSuppressedTopLevelLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (logCount <= 10 || (logCount % 100) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Keeping Streamline startup-handoff Present1 on the normal SL route #%d "
+                    "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1)"
+                    " — top-level promotion disabled; relying on startup-policy + wrapper-progress activation",
+                    logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId);
+            }
         }
     }
-    const bool preferBypassReturnPathForPromotedTopLevelPresent =
-        DXGIShared::ShouldPreferBypassReturnPathForPromotedStreamlineTopLevelPresent(allowTopLevelStartupPresent,
-                                                                                     callerFromStreamlineModule);
-if (allowTopLevelStartupPresent) {
-        static std::atomic<int> s_streamlineStartupTopLevelLogCount1{0};
-        int logCount = s_streamlineStartupTopLevelLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+            observerOnlyMode,
+            g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
+            callerFromStreamlineModule, streamlineStartupHandoffInProgress,
+            postSLStartupActivationPending, streamlineSyntheticReentrant)) {
+        static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount1{0};
+        int logCount = s_streamlineSyntheticStartupNormalRouteLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
-                "DetourPresent1: Treating Streamline startup-handoff Present1 as top-level live Present #%d "
-                "(owner=0x%04X depth=%d expectedTid=0x%04X currentTid=0x%04X recentGap=1 "
-                "activationPending=%d postSLActive=%d bypass=%d)",
-                logCount, presentOwner, presentDepthVal, expectedPresentThreadId, currentThreadId,
-                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_relaxed) ? 1 : 0,
-                g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr ? 1 : 0,
-                preferBypassReturnPathForPromotedTopLevelPresent ? 1 : 0);
+                "DetourPresent1: Keeping decisive synthetic Streamline startup Present1 on the normal SL route #%d "
+                "(startupPending=%d consumed=1 windowActive=%d tid=0x%04X)",
+                logCount, postSLStartupActivationPending ? 1 : 0,
+                streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
         }
+        streamlineSyntheticReentrant = false;
     }
     if (streamlineSyntheticReentrant) {
         auto postSLCallback = observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
@@ -1600,17 +1584,8 @@ if (allowTopLevelStartupPresent) {
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
     UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent1");
 
-    const bool skipDX12ProcessFrameForObserverStartupPresentProbe =
-        ShouldSkipDX12ProcessFrameForObserverStartupPresentProbe(observerStartupPresentOnlyMode,
-                                                                 allowTopLevelStartupPresent, api);
     if (api == APIType::D3D12) {
-        if (skipDX12ProcessFrameForObserverStartupPresentProbe) {
-            HookLogImportant(
-                "DetourPresent1: Observer-startup-present-only probe skipping full DX12 promoted-handoff processing "
-                "(HandleDX12ProcessFrame + WaitForOverlayCompletion)");
-        } else {
-            HandleDX12ProcessFrame(pSwapChain, true);
-        }
+        HandleDX12ProcessFrame(pSwapChain, true);
     } else if (api == APIType::D3D11) {
         HandleDX11ProcessFrame(pSwapChain, true);
     }
@@ -1623,31 +1598,12 @@ if (allowTopLevelStartupPresent) {
 
     ProcessVSyncOverride(SyncInterval, Flags);
 
-    if (api == APIType::D3D12 && !skipDX12ProcessFrameForObserverStartupPresentProbe) {
+    if (api == APIType::D3D12) {
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
     HRESULT hr;
-    if (preferBypassReturnPathForPromotedTopLevelPresent) {
-        PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
-        if (present1Bypass) {
-            static std::atomic<int> s_promotedStartupBypassLogCount1{0};
-            const int logCount = s_promotedStartupBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (logCount <= 10 || (logCount % 100) == 0) {
-                HookLogImportant(
-                    "DetourPresent1: Promoted Streamline startup-handoff Present1 using bypass return path #%d "
-                    "(bypass=%p oPresent1=%p)",
-                    logCount, (void*)present1Bypass, (void*)oPresent1);
-            }
-            hr = present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
-        } else {
-            HookLogImportant(
-                "DetourPresent1: Promoted Streamline startup-handoff Present1 has no bypass trampoline; falling back "
-                "to normal original path (oPresent1=%p)",
-                (void*)oPresent1);
-            hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
-        }
-    } else if (s_slRoutingActive.load(std::memory_order_acquire) && oPresent1) {
+    if (s_slRoutingActive.load(std::memory_order_acquire) && oPresent1) {
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
         if (ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode)) {
             s_slRoutingActive.store(false, std::memory_order_release);

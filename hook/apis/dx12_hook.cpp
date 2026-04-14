@@ -938,6 +938,39 @@ static IDXGISwapChain* g_LastSwapChain = nullptr;
 // Pending swapchain cleanup - released after ResizeBuffers completes
 static IDXGISwapChain* g_PendingSwapChainCleanup = nullptr;
 
+static bool IsReadableSwapchainPointer(const void* ptr) {
+    if (!ptr) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+    if (mbi.State != MEM_COMMIT) {
+        return false;
+    }
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) {
+        return false;
+    }
+
+    return true;
+}
+
+static IDXGISwapChain* GetLastTrackedSwapchainForStartupActivation() {
+    IDXGISwapChain* swapchain = g_LastSwapChain;
+    if (!IsReadableSwapchainPointer(swapchain) || !IsReadableSwapchainPointer(*(void***)swapchain)) {
+        return nullptr;
+    }
+
+    void** vtable = *(void***)swapchain;
+    if (!vtable || !vtable[8]) {
+        return nullptr;
+    }
+
+    return swapchain;
+}
+
 // Track the game's Present thread ID. Captured from the first non-FG Present call.
 // During SL FG, only this thread should run pre-SL overlay rendering.
 // SL's FG worker threads call Present from different threads — they must NOT
@@ -3712,16 +3745,16 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         }
         if (active) {
             HookLogImportant(observerPolicyOnly
-                                 ? (observerStartupPresentOnly
-                                         ? "DX12: Streamline FG ON observed in observer-startup-present-only mode - keeping PostSL passive while preserving startup-policy and non-Streamline startup-Present probe state"
-                                        : "DX12: Streamline FG ON observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state")
-                                 : "DX12: Streamline FG ON observed in observer-only mode - skipping PostSL startup routing/state mutation");
+                                  ? (observerStartupPresentOnly
+                                          ? "DX12: Streamline FG ON observed in observer-startup-present-only mode - keeping PostSL and special Streamline Present routing passive while preserving startup-policy and non-Streamline startup-Present probe state"
+                                         : "DX12: Streamline FG ON observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state")
+                                  : "DX12: Streamline FG ON observed in observer-only mode - skipping PostSL startup routing/state mutation");
         } else {
             HookLogImportant(observerPolicyOnly
-                                 ? (observerStartupPresentOnly
-                                         ? "DX12: Streamline FG OFF observed in observer-startup-present-only mode - keeping PostSL passive while preserving startup-policy and non-Streamline startup-Present probe state"
-                                        : "DX12: Streamline FG OFF observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state")
-                                 : "DX12: Streamline FG OFF observed in observer-only mode - keeping PostSL disabled and clearing startup state");
+                                  ? (observerStartupPresentOnly
+                                          ? "DX12: Streamline FG OFF observed in observer-startup-present-only mode - keeping PostSL and special Streamline Present routing passive while preserving startup-policy and non-Streamline startup-Present probe state"
+                                         : "DX12: Streamline FG OFF observed in observer-policy-only mode - keeping PostSL/startup Present passive while preserving Streamline startup-policy state")
+                                  : "DX12: Streamline FG OFF observed in observer-only mode - keeping PostSL disabled and clearing startup state");
         }
         EnsurePostSLDisabledForObserverOnly(
             "DX12: observer-only mode",
@@ -12290,7 +12323,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // PostSL callback directly to complete activation before Streamline times out.
     {
         static bool s_startupWindowWasActive = false;
-        static bool s_callbackTriggeredWithNullSwapchain = false;
+        static bool s_callbackTriggeredWithCachedSwapchain = false;
         const bool activationPending =
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
         const bool callbackInstalled =
@@ -12298,10 +12331,12 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool windowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
         const bool startupTransitionWindowJustExpired = s_startupWindowWasActive && !windowActive;
         if (startupTransitionWindowJustExpired && activationPending && callbackInstalled) {
+            IDXGISwapChain* activationSwapchain = GetLastTrackedSwapchainForStartupActivation();
             HookLogImportant(
                 "DX12: ECL hook detected startup transition window expiry with pending PostSL activation — "
                 "triggering PostSL callback directly from ECL context to complete activation "
-                "(startupWindowExpired=1 activationPending=1 callbackInstalled=1 nullSwapchain=1)");
+                "(startupWindowExpired=1 activationPending=1 callbackInstalled=1 cachedSwapchain=%p)",
+                activationSwapchain);
             
             // CRITICAL: Clear the startup transition window NOW so that when PostSL callback
             // enters PostSLOverlayRenderGated, it doesn't defer rendering due to the startup
@@ -12316,13 +12351,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             
             auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
             if (postSLCallback) {
-                s_callbackTriggeredWithNullSwapchain = true;
-                postSLCallback(nullptr);
-                s_callbackTriggeredWithNullSwapchain = false;
+                s_callbackTriggeredWithCachedSwapchain = true;
+                postSLCallback(activationSwapchain);
+                s_callbackTriggeredWithCachedSwapchain = false;
                 HookLogImportant(
-                    "DX12: ECL hook PostSL callback completed (nullSwapchain=1)");
+                    "DX12: ECL hook PostSL callback completed (cachedSwapchain=%p)", activationSwapchain);
             }
-        } else if (s_callbackTriggeredWithNullSwapchain) {
+        } else if (s_callbackTriggeredWithCachedSwapchain) {
             // Log if we're still processing after callback was triggered (callbacks from ProcessFrame)
             static int s_postEclCallbackLogCount = 0;
             if (s_postEclCallbackLogCount < 5) {
