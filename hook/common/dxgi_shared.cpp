@@ -934,6 +934,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     const bool postSLStartupActivationPending =
         g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    const bool postSLActiveButUnconfirmed = api == APIType::D3D12 &&
+        HookIsPostSLOverlayActiveButUnconfirmed();
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -981,7 +983,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
             observerOnlyMode,
             g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
-            callerFromStreamlineModule, postSLStartupActivationPending, streamlineSyntheticReentrant)) {
+            callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+            streamlineSyntheticReentrant)) {
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
@@ -1354,6 +1357,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     const bool postSLStartupActivationPending =
         g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    const bool postSLActiveButUnconfirmed = api == APIType::D3D12 &&
+        HookIsPostSLOverlayActiveButUnconfirmed();
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -1401,7 +1406,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
             observerOnlyMode,
             g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
-            callerFromStreamlineModule, postSLStartupActivationPending, streamlineSyntheticReentrant)) {
+            callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+            streamlineSyntheticReentrant)) {
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount1{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {

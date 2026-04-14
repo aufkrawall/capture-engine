@@ -14,6 +14,47 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Keep startup pending alive until the first confirmed PostSL render
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_012728` on build `0.1.2277` showed that the previous unconfirmed-PostSL routing fix was directionally right but still one seam too narrow. CE now survived the startup-handoff Present, at least 100 decisive synthetic startup Presents, the cached-swapchain ECL expiry callback, and reached `DX12: PostSL synthetic startup activation complete`, `DX12: PostSL REACTIVATED`, and `DX12: PostSL warm-up after reactivation epoch=1 frame=1/15`. But the very next Streamline-originated Present still fell back to `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1` and crashed. That meant the routing layer still lost its half-armed startup proof too early. Code inspection showed why: `hook/apis/dx12_hook.cpp` still cleared `DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending` immediately at activation time, before any confirmed PostSL render happened.
+
+- **Fix**:
+  1. `hook/apis/dx12_hook.cpp` no longer clears `DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending` when synthetic startup activation completes. Activation now only enables PostSL rendering and leaves the startup family marked pending through the warm-up phase.
+  2. `hook/apis/dx12_hook.cpp` now clears that pending bit only at the first `DX12: PostSL CONFIRMED rendering via re-entrant Present`, which is the first point where CE actually knows the PostSL path rendered successfully.
+  3. `tests/test_dxgi_shared.cpp` now documents that intended meaning more explicitly: activation alone still belongs to the half-armed startup family, and the normal-route helper should remain true in that phase.
+
+- **Why this is generic**: Activation and confirmed rendering are different milestones. In this startup family, CE can complete activation and still spend the next callbacks on warm-up without any GPU submit or confirmed render yet. Clearing the pending bit at activation time falsely tells the rest of the runtime that startup has already finished, even though CE has not yet proved that the first real PostSL-rendering callback is safe. The generic safe invariant is to keep startup pending until the first confirmed PostSL render, not until activation bookkeeping alone completes.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_012728/{session_manifest.txt,hook_debug.log,external_3122f2db-d1dc-4775-afb0-41a347708de9.dmp}`.
+  - Analyzed `external_3122f2db-d1dc-4775-afb0-41a347708de9.dmp` with `cdb.exe`; it is still the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family, but now after activation and the first warm-up log line.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 564 tests passed and the build version bumped to `0.1.2278`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_012728/session_manifest.txt`, `installed/captureengine/logs/20260415_012728/hook_debug.log`, `installed/captureengine/logs/20260415_012728/external_3122f2db-d1dc-4775-afb0-41a347708de9.dmp`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2278` is required. If the next active run still crashes after the first warm-up callback, the remaining issue is likely no longer just the half-armed startup state bookkeeping and will move deeper into what the warm-up callback or cooldown logic itself does on that first post-activation path.
+
+### 2026-04-15 - Keep the first post-activation PostSL warm-up callbacks off the synthetic/bypass path too
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_010931` on build `0.1.2275` proved the previous consumed-bootstrap-latch fix worked and moved the crash boundary further again. CE now survived the cached-swapchain ECL expiry callback, logged `DX12: PostSL synthetic startup activation complete`, `DX12: PostSL REACTIVATED`, and then even entered `DX12: PostSL warm-up after reactivation epoch=1 frame=1/15` and `frame=2/15`. But the crash still returned immediately after on the next `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`. That showed the remaining seam was no longer "startup still pending". PostSL was already activated. The bad seam was specifically the first post-activation callbacks while PostSL was active but still had not confirmed a successful render.
+
+- **Fix**:
+  1. `hook/common/hook_common.h` now declares `HookIsPostSLOverlayActiveButUnconfirmed()`, and `hook/apis/dx12_hook.cpp` exports it using the existing `g_PostSLOverlayActive` and `g_PostSLConfirmedRendering` state.
+  2. `hook/common/dxgi_shared.h` widens `ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute()` again: once the one-shot startup bootstrap has been consumed, Streamline-originated startup Presents now stay off the synthetic/bypass path not only while activation is pending, but also while PostSL is already active and still unconfirmed.
+  3. `hook/common/dxgi_shared.cpp` now uses that DX12-side unconfirmed-PostSL signal in both `DetourPresent` and `DetourPresent1`, so the first post-activation warm-up callbacks remain on the normal SL route too.
+  4. `tests/test_dxgi_shared.cpp` updates `DXGISharedTest.WrapperBackedSyntheticStartupPresentCanStayOnNormalRouteInActiveMode` to cover both halves of the widened invariant, and `tests/test_stubs.cpp` now provides the small test-only stub for the new hook-common accessor.
+
+- **Why this is generic**: Activation and confirmed rendering are not the same state. In this startup family, CE can finish activation and still spend the next few callbacks on PostSL warm-up before any GPU submit/confirmed render has happened. That phase is still half-armed: CE has not yet proven the first real PostSL-rendering callback is safe. Treating those warm-up callbacks as ordinary synthetic/bypass traffic reopens the same fragile Streamline Present seam one step later in the startup state machine. The generic safe invariant is therefore "until PostSL has confirmed rendering", not merely "until activation completed".
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_010931/{session_manifest.txt,hook_debug.log,external_d249d67d-17d8-4c21-b872-6da225911223.dmp}`.
+  - Analyzed `external_d249d67d-17d8-4c21-b872-6da225911223.dmp` with `cdb.exe`; it is still the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family, but now after `PostSL REACTIVATED` and warm-up-entry rather than before activation.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 564 tests passed and the build version bumped to `0.1.2277`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_010931/session_manifest.txt`, `installed/captureengine/logs/20260415_010931/hook_debug.log`, `installed/captureengine/logs/20260415_010931/external_d249d67d-17d8-4c21-b872-6da225911223.dmp`, `hook/common/hook_common.h`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `tests/test_stubs.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2277` is required. If the next active run still crashes after entering PostSL warm-up, the remaining issue is likely no longer the synthetic/bypass routing seam at all and will move deeper into what the warm-up callback itself is doing on that first unconfirmed post-activation path.
+
 ### 2026-04-15 - Preserve the consumed startup bootstrap latch when only the startup window expires
 
 - **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_005509` on build `0.1.2274` got much further than the earlier active failures. CE rendered the normal DX12 overlay stably for about 10 seconds, then later survived a real Streamline runtime-owned handoff with one normal-routed startup-handoff Present, repeated `Keeping decisive synthetic Streamline startup Present on the normal SL route ...` lines through at least `#100`, and a cached-swapchain ECL-side callback completion: `DX12: ECL hook PostSL callback completed (cachedSwapchain=%p)`. The crash still returned immediately after, but the failure boundary changed: the very next post-expiry Streamline-originated Present again logged `Treating Streamline-originated Present as synthetic re-entrant #1`. Comparing that log against the code showed a concrete state-reset bug: `ClearStreamlineStartupTransitionWindow()` was still clearing both the timer and `streamlineStartupTopLevelPresentConsumed`, so the expiry path erased the exact one-shot bootstrap proof that `0.1.2274` depended on.

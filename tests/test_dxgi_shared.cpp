@@ -210,20 +210,22 @@ TEST(DXGISharedTest, ObserverModesKeepSpecialStreamlinePresentRoutingPassive) {
 
 TEST(DXGISharedTest, WrapperBackedSyntheticStartupPresentCanStayOnNormalRouteInActiveMode) {
     EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, true, true, true));
+        false, true, true, true, false, true));
+    EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+        false, true, true, false, true, true));
 
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        true, true, true, true, true));
+        true, true, true, true, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, true, true, true));
+        false, false, true, true, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, false, true, true));
+        false, true, false, true, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, true, false, true));
+        false, true, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, true, true, false));
+        false, true, true, false, false, false));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, true, true, false));
+        false, true, true, false, true, false));
 }
 
 TEST(DXGISharedTest, PostSLCallbackStaysInstalledOnlyWhileStreamlineStillOwnsPresentPath) {
@@ -1513,6 +1515,14 @@ TEST(DXGISharedTest, PostSLSyntheticStartupActivationPendingTracksStartupleHando
 
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
     EXPECT_TRUE(DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire));
+
+    // Synthetic startup activation alone should not be treated as the end of the
+    // half-armed startup family. The bit is only expected to clear once PostSL has
+    // actually confirmed a render.
+    const bool startupStillHalfArmedAfterActivation =
+        DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+            false, true, true, true, true, true);
+    EXPECT_TRUE(startupStillHalfArmedAfterActivation);
 
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     EXPECT_FALSE(DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire));

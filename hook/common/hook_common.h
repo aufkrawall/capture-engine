@@ -127,6 +127,10 @@ inline bool HookOverlayObserverStartupPresentOnlyEnabled() {
     return IsOverlayObserverStartupPresentOnly(GetHookOverlayConfig());
 }
 
+// DX12 exports this so shared routing code can distinguish a fully confirmed
+// PostSL path from the still-fragile post-activation warm-up phase.
+bool HookIsPostSLOverlayActiveButUnconfirmed();
+
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
 float GetActivePrerenderLimit();

@@ -165,6 +165,11 @@ static std::atomic<uint32_t> g_PostSLLifecycleEpoch{0};
 // pre-SL rendering is NOT suppressed, allowing the overlay to render before SL.
 static std::atomic<bool> g_PostSLConfirmedRendering{false};
 
+bool HookIsPostSLOverlayActiveButUnconfirmed() {
+    return g_PostSLOverlayActive.load(std::memory_order_acquire) &&
+           !g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+}
+
 // Counts Present calls where PostSL was expected but didn't fire.
 // ProcessFrame increments this; PostSLOverlayRender resets it to 0.
 // When it exceeds kPostSLStallThreshold (5), pre-SL rendering is allowed
@@ -6357,10 +6362,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             }
 
             g_PostSLOverlayActive.store(true, std::memory_order_release);
-            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+            // Startup is still half-armed until the first real PostSL render confirms
+            // that the path is actually safe. Activation alone is not enough.
             HookLogImportant("DX12: PostSL synthetic startup activation complete — enabling PostSL rendering");
         }
     }
@@ -8219,6 +8225,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Mark PostSL as confirmed rendering — pre-SL draw can now be suppressed.
     if (!g_PostSLConfirmedRendering.load(std::memory_order_relaxed)) {
         g_PostSLConfirmedRendering.store(true, std::memory_order_release);
+        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
         HookLogImportant("DX12: PostSL CONFIRMED rendering via re-entrant Present — suppressing pre-SL draw");
     }
     // Reset stall counter — PostSL is actively rendering, no need for pre-SL fallback

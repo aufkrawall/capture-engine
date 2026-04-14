@@ -288,16 +288,19 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
                                                                      bool startupTopLevelPresentConsumed,
                                                                      bool callerFromStreamlineModule,
                                                                      bool postSLStartupActivationPending,
+                                                                     bool postSLActiveButUnconfirmed,
                                                                      bool streamlineSyntheticReentrant) {
     // Once the pure-DLSS startup family has already consumed its one-shot
-    // top-level bootstrap and PostSL startup is still pending, the next decisive
-    // Streamline-originated Present can be the only callback opportunity before
-    // the runtime either settles or stalls. Sending that call down the old
-    // synthetic/bypass path can strand PostSL activation again. Keep the call on
-    // the normal SL route instead while startup is still half-armed, including
-    // the first post-expiry callback family right after the startup window clears.
+    // top-level bootstrap, the next decisive Streamline-originated Present can be
+    // the only callback opportunity before the runtime either settles or stalls.
+    // Sending that call down the old synthetic/bypass path can strand PostSL both
+    // before activation and during the first post-activation warm-up callbacks
+    // before PostSL has ever confirmed a successful render. Keep the call on the
+    // normal SL route instead while startup is still half-armed.
     return !observerOnlyMode && startupTopLevelPresentConsumed &&
-           callerFromStreamlineModule && postSLStartupActivationPending && streamlineSyntheticReentrant;
+           callerFromStreamlineModule &&
+           (postSLStartupActivationPending || postSLActiveButUnconfirmed) &&
+           streamlineSyntheticReentrant;
 }
 
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,

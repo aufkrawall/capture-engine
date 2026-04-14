@@ -64,6 +64,10 @@ bool IsProcessTerminating() {
     return false;
 }
 
+bool HookIsPostSLOverlayActiveButUnconfirmed() {
+    return false;
+}
+
 // Stubs for streamline_hook.cpp (StreamlineHook namespace)
 namespace StreamlineHook {
 void FlushSuppressedSetOptionsOffIfNeeded() {}
