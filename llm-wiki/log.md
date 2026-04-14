@@ -14,6 +14,27 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Preserve the consumed startup bootstrap latch when only the startup window expires
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_005509` on build `0.1.2274` got much further than the earlier active failures. CE rendered the normal DX12 overlay stably for about 10 seconds, then later survived a real Streamline runtime-owned handoff with one normal-routed startup-handoff Present, repeated `Keeping decisive synthetic Streamline startup Present on the normal SL route ...` lines through at least `#100`, and a cached-swapchain ECL-side callback completion: `DX12: ECL hook PostSL callback completed (cachedSwapchain=%p)`. The crash still returned immediately after, but the failure boundary changed: the very next post-expiry Streamline-originated Present again logged `Treating Streamline-originated Present as synthetic re-entrant #1`. Comparing that log against the code showed a concrete state-reset bug: `ClearStreamlineStartupTransitionWindow()` was still clearing both the timer and `streamlineStartupTopLevelPresentConsumed`, so the expiry path erased the exact one-shot bootstrap proof that `0.1.2274` depended on.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now narrows `ClearStreamlineStartupTransitionWindow()` so it clears only the timer/window itself and preserves `streamlineStartupTopLevelPresentConsumed` across the post-expiry half-armed startup phase.
+  2. `hook/common/dxgi_shared.h` now adds `ResetStreamlineStartupTransitionState()` for the true full-reset paths that should clear both the startup window and the consumed bootstrap latch.
+  3. `hook/apis/dx12_hook.cpp` now uses that new full-reset helper only in real teardown / completed-startup reset paths, while keeping the ECL-side expiry callback on the narrower window-clear behavior.
+  4. `tests/test_dxgi_shared.cpp` extends `DXGISharedTest.ExtendingStartupTransitionWindowDoesNotResetConsumedTopLevelBootstrap` so the test now also covers the new distinction directly: clearing the window preserves the consumed latch, while a full startup-state reset clears it.
+
+- **Why this is generic**: The one-shot startup bootstrap latch and the startup transition timer encode two different facts. Timer expiry only means the startup grace window ended; it does not prove CE has returned to a pre-bootstrap state. As long as PostSL startup is still pending, CE remains in the same half-armed startup family and still needs the knowledge that the top-level bootstrap already ran. Splitting those semantics removes an accidental coupling that was broader than the real state machine.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_005509/{session_manifest.txt,hook_debug.log,external_deecd195-6850-446e-93f5-ab10806dd8a8.dmp}`.
+  - Analyzed `external_deecd195-6850-446e-93f5-ab10806dd8a8.dmp` with `cdb.exe`; it is still the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family, but now after the ECL-side callback-complete marker instead of before it.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 564 tests passed and the build version bumped to `0.1.2275`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_005509/session_manifest.txt`, `installed/captureengine/logs/20260415_005509/hook_debug.log`, `installed/captureengine/logs/20260415_005509/external_deecd195-6850-446e-93f5-ab10806dd8a8.dmp`, `hook/common/dxgi_shared.h`, `hook/apis/dx12_hook.cpp`, `hook/apis/streamline_hook.cpp`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2275` is required. If the next active run still crashes after the same cached-swapchain callback completion point, then the remaining issue is no longer the consumed-bootstrap state reset and likely moves into what the callback path actually changed (or failed to change) before the first post-expiry Streamline-originated Present arrives.
+
 ### 2026-04-15 - Simplify the post-expiry normal-route guard to the actual half-armed startup condition
 
 - **Motivation**: The next GTA V Enhanced validation `installed/captureengine/logs/20260415_004935` on build `0.1.2273` still reproduced the same tail almost exactly. The run showed one normal-routed startup-handoff Present, many normal-routed synthetic startup Presents, the cached-swapchain ECL-expiry callback, and then immediately `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1` followed by the same crash family. That proved the added `startupHandoffInProgress`-style boundary was still too tied to startup-window bookkeeping: the expiry callback clears those bits before the first failing post-expiry Present arrives.

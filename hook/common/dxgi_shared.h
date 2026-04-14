@@ -107,8 +107,15 @@ inline void ExtendStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStre
 }
 
 inline void ClearStreamlineStartupTransitionWindow() {
-    g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
+    // Window expiry alone must not erase the one-shot bootstrap latch. Startup can
+    // remain half-armed after the timer ends, and the next Streamline-originated
+    // Present still needs to know that the top-level handoff bootstrap already ran.
     g_SharedState.streamlineStartupTransitionUntilMs.store(0, std::memory_order_release);
+}
+
+inline void ResetStreamlineStartupTransitionState() {
+    g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
+    ClearStreamlineStartupTransitionWindow();
 }
 
 inline bool IsStreamlineStartupTransitionWindowActive() {

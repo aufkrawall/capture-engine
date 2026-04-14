@@ -163,6 +163,10 @@ TEST(DXGISharedTest, ExtendingStartupTransitionWindowDoesNotResetConsumedTopLeve
               beforeExtend);
 
     DXGIShared::ClearStreamlineStartupTransitionWindow();
+    EXPECT_TRUE(DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire));
+
+    DXGIShared::ResetStreamlineStartupTransitionState();
+    EXPECT_FALSE(DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire));
 }
 
 TEST(DXGISharedTest, StreamlineGeneratedFramePresentUsesSyntheticReentrantRoutingOnlyForDX12FGCallers) {
