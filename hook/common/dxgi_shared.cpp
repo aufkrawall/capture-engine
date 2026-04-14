@@ -981,8 +981,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
             observerOnlyMode,
             g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
-            callerFromStreamlineModule, streamlineStartupHandoffInProgress,
-            postSLStartupActivationPending, streamlineSyntheticReentrant)) {
+            callerFromStreamlineModule, postSLStartupActivationPending, streamlineSyntheticReentrant)) {
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
@@ -1402,8 +1401,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
             observerOnlyMode,
             g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
-            callerFromStreamlineModule, streamlineStartupHandoffInProgress,
-            postSLStartupActivationPending, streamlineSyntheticReentrant)) {
+            callerFromStreamlineModule, postSLStartupActivationPending, streamlineSyntheticReentrant)) {
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount1{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {

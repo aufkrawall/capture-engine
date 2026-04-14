@@ -14,6 +14,25 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Simplify the post-expiry normal-route guard to the actual half-armed startup condition
+
+- **Motivation**: The next GTA V Enhanced validation `installed/captureengine/logs/20260415_004935` on build `0.1.2273` still reproduced the same tail almost exactly. The run showed one normal-routed startup-handoff Present, many normal-routed synthetic startup Presents, the cached-swapchain ECL-expiry callback, and then immediately `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1` followed by the same crash family. That proved the added `startupHandoffInProgress`-style boundary was still too tied to startup-window bookkeeping: the expiry callback clears those bits before the first failing post-expiry Present arrives.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` simplifies `ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute()` back down to the actual surviving half-armed startup condition from the logs: observer mode must be off, the one-shot bootstrap must already be consumed, the caller must be inside Streamline, PostSL startup must still be pending, and the call must otherwise classify as synthetic/bypass.
+  2. `hook/common/dxgi_shared.cpp` now uses that simplified helper in both `DetourPresent` and `DetourPresent1`, removing the extra runtime bit that the expiry callback was already clearing before the first post-expiry Present arrived.
+  3. `tests/test_dxgi_shared.cpp` updates `DXGISharedTest.WrapperBackedSyntheticStartupPresentCanStayOnNormalRouteInActiveMode` to match the simplified signature.
+
+- **Why this is generic**: The runtime evidence now points to a cleaner invariant than the previous startup-window bookkeeping: if startup bootstrap was consumed but PostSL startup is still pending, CE is still in a half-armed startup family and Streamline-originated Presents should stay off the synthetic/bypass path. That invariant is simpler, closer to the real failure signal, and less vulnerable to internal bookkeeping being cleared slightly before the runtime is actually safe.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_004935/{session_manifest.txt,hook_debug.log,external_4429c3bb-be7d-4a0f-9d0b-e9accf502dbe.dmp}`.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 564 tests passed and the build version bumped to `0.1.2274`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_004935/session_manifest.txt`, `installed/captureengine/logs/20260415_004935/hook_debug.log`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2274` is required. If the next active run still crashes with the same tail, the next suspicion moves past Present routing and back into what the cached-swapchain callback itself is or is not doing before the next callback arrives.
+
 ### 2026-04-15 - Keep post-expiry half-armed Streamline startup Presents off the synthetic/bypass path too
 
 - **Motivation**: The new GTA V Enhanced validations `installed/captureengine/logs/20260415_003239` on build `0.1.2271` and `installed/captureengine/logs/20260415_004226` on build `0.1.2272` proved the previous fixes were directionally right but still one seam too narrow. In both runs CE got much further: the promoted startup-handoff Present stayed on the normal route, many synthetic startup Presents also stayed on the normal route, and the ECL-expiry callback finally fired with `cachedSwapchain=%p`. But the very next post-expiry Streamline-originated Present still dropped back to `Treating Streamline-originated Present as synthetic re-entrant #1`, then the same external crash family returned. Neither run logged `PostSL synthetic startup activation complete`, `PostSL REACTIVATED`, or `Post-SL overlay SUBMIT`, so PostSL startup was still half-armed at the failing callback.

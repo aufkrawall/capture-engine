@@ -280,7 +280,6 @@ inline bool ShouldAllowSpecialStreamlinePresentRouting(bool observerOnlyMode) {
 inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observerOnlyMode,
                                                                      bool startupTopLevelPresentConsumed,
                                                                      bool callerFromStreamlineModule,
-                                                                     bool streamlineStartupHandoffInProgress,
                                                                      bool postSLStartupActivationPending,
                                                                      bool streamlineSyntheticReentrant) {
     // Once the pure-DLSS startup family has already consumed its one-shot
@@ -290,7 +289,7 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
     // synthetic/bypass path can strand PostSL activation again. Keep the call on
     // the normal SL route instead while startup is still half-armed, including
     // the first post-expiry callback family right after the startup window clears.
-    return !observerOnlyMode && startupTopLevelPresentConsumed && streamlineStartupHandoffInProgress &&
+    return !observerOnlyMode && startupTopLevelPresentConsumed &&
            callerFromStreamlineModule && postSLStartupActivationPending && streamlineSyntheticReentrant;
 }
 
