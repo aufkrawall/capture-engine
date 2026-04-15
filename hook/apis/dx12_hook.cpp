@@ -1039,6 +1039,14 @@ static std::atomic<bool> g_PostSLCallbackExecutionEnabled{false};
 static std::atomic<uint32_t> g_PostSLCallbackInFlight{0};
 static std::atomic<bool> g_PostSLDeferredQueueCleanupPending{false};
 
+bool HookHasSafePostFSRBootstrapPath() {
+    return g_HadFSRFGPhase &&
+           !ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(
+               g_HadFSRFGPhase, g_RealQueueBehindSLWrapper.load(std::memory_order_acquire) != nullptr,
+               g_RealD3D12ECL.load(std::memory_order_acquire) != nullptr,
+               g_SLWrapperQueue.load(std::memory_order_acquire) != nullptr);
+}
+
 static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);
 static void ClearPostSLQueues(const char* reason);
 

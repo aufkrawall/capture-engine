@@ -150,6 +150,11 @@ bool HookHasFSRFGHistory();
 // provisional GetState-only activation.
 bool HookHasExplicitStreamlineSetOptionsActivation();
 
+// DX12 exports this so shared routing code can tell when the stricter post-FSR
+// comeback has already reached a safe bootstrap topology even if the comeback
+// never surfaced an OFF->ON SetOptions activation edge.
+bool HookHasSafePostFSRBootstrapPath();
+
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
 float GetActivePrerenderLimit();

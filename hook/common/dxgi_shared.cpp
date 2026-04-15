@@ -943,6 +943,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool hadFSRFGPhase = api == APIType::D3D12 && HookHasFSRFGHistory();
     const bool explicitSetOptionsActivation =
         api == APIType::D3D12 && HookHasExplicitStreamlineSetOptionsActivation();
+    const bool safePostFSRBootstrapPath = api == APIType::D3D12 && HookHasSafePostFSRBootstrapPath();
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -988,14 +989,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
     }
     if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-            observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation,
+            observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
             g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
             callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
             postSLConfirmedButStartupSettling,
             streamlineSyntheticReentrant)) {
         const bool shouldInvokePostSLCallbackOnNormalRoute =
             DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-                observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation,
+                observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
                 postSLStartupActivationPending, postSLActiveButUnconfirmed,
                 postSLConfirmedButStartupSettling, streamlineSyntheticReentrant);
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount{0};
@@ -1410,6 +1411,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool hadFSRFGPhase = api == APIType::D3D12 && HookHasFSRFGHistory();
     const bool explicitSetOptionsActivation =
         api == APIType::D3D12 && HookHasExplicitStreamlineSetOptionsActivation();
+    const bool safePostFSRBootstrapPath = api == APIType::D3D12 && HookHasSafePostFSRBootstrapPath();
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -1455,14 +1457,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         }
     }
     if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-            observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation,
+            observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
             g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
             callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
             postSLConfirmedButStartupSettling,
             streamlineSyntheticReentrant)) {
         const bool shouldInvokePostSLCallbackOnNormalRoute =
             DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-                observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation,
+                observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
                 postSLStartupActivationPending, postSLActiveButUnconfirmed,
                 postSLConfirmedButStartupSettling, streamlineSyntheticReentrant);
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount1{0};

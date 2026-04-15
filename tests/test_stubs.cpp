@@ -84,6 +84,10 @@ bool HookHasExplicitStreamlineSetOptionsActivation() {
     return false;
 }
 
+bool HookHasSafePostFSRBootstrapPath() {
+    return false;
+}
+
 // Stubs for streamline_hook.cpp (StreamlineHook namespace)
 namespace StreamlineHook {
 void FlushSuppressedSetOptionsOffIfNeeded() {}

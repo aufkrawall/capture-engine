@@ -304,6 +304,7 @@ inline bool ShouldAllowSpecialStreamlinePresentRouting(bool observerOnlyMode) {
 inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observerOnlyMode,
                                                                      bool hadFSRFGPhase,
                                                                      bool explicitSetOptionsActivation,
+                                                                     bool safePostFSRBootstrapPath,
                                                                      bool startupTopLevelPresentConsumed,
                                                                      bool callerFromStreamlineModule,
                                                                      bool postSLStartupActivationPending,
@@ -326,19 +327,24 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
     // Streamline handoff queue preserved across the FSR->DLSS transition. Once
     // that stricter family is still half-armed, forcing its first comeback
     // Presents down the old synthetic/bypass return path reopens the old crash
-    // seam before the post-FSR bootstrap can progress. Talos showed one more
-    // nuance: a GetState-only comeback is still weaker evidence than an explicit
-    // SetOptions re-enable, so this widened post-FSR rule must trust only the
-    // explicit-enable case.
+    // seam before the post-FSR bootstrap can progress. Talos showed two more
+    // nuances: a GetState-only comeback is still weaker evidence than an explicit
+    // SetOptions activation edge, but some runtimes can also reach a safe
+    // post-FSR bootstrap topology before any OFF->ON SetOptions edge ever
+    // appears. Once that safe topology is already proven, continuing to force the
+    // comeback through synthetic/bypass just starves PostSL until the same old NX
+    // crash family returns later.
     const bool startupHalfArmed =
         postSLStartupActivationPending || postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling;
     return !observerOnlyMode && callerFromStreamlineModule && startupHalfArmed && streamlineSyntheticReentrant &&
-           (startupTopLevelPresentConsumed || (hadFSRFGPhase && explicitSetOptionsActivation));
+           (startupTopLevelPresentConsumed ||
+            (hadFSRFGPhase && (explicitSetOptionsActivation || safePostFSRBootstrapPath)));
 }
 
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(bool observerOnlyMode,
                                                                                  bool hadFSRFGPhase,
                                                                                  bool explicitSetOptionsActivation,
+                                                                                 bool safePostFSRBootstrapPath,
                                                                                  bool postSLStartupActivationPending,
                                                                                  bool postSLActiveButUnconfirmed,
                                                                                  bool postSLConfirmedButStartupSettling,
@@ -361,7 +367,7 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
     // startup-family Presents are kept on the normal SL route for safety, they
     // still need to invoke the callback there or the post-FSR countdown never
     // advances and the next comeback Present falls back into the old bypass seam.
-    return hadFSRFGPhase && explicitSetOptionsActivation &&
+    return hadFSRFGPhase && (explicitSetOptionsActivation || safePostFSRBootstrapPath) &&
            (postSLStartupActivationPending || postSLActiveButUnconfirmed);
 }
 
