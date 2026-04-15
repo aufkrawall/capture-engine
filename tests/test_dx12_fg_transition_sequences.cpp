@@ -70,6 +70,27 @@ TEST(DX12FGTransitionSequencesTest, OffToDLSSToOffUsesPostSLThenDisables) {
     EXPECT_FALSE(state.snapshot.publishFGActive);
 }
 
+TEST(DX12FGTransitionSequencesTest, LateStreamlineRuntimeConvergenceToDLSSDoesNotReenterEnablingPhase) {
+    State state;
+
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kStreamlineNoFG,
+                         .effectiveFGActive = true,
+                         .streamlineFGRunning = true,
+                         .streamlineLoaded = true});
+    EXPECT_EQ(state.snapshot.phase, TransitionPhase::kEnabling);
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kNormalPreSL);
+
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG,
+                         .effectiveFGActive = true,
+                         .streamlineFGRunning = true,
+                         .streamlineLoaded = true});
+    EXPECT_EQ(state.snapshot.phase, TransitionPhase::kStable);
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kPostSL);
+    EXPECT_TRUE(state.snapshot.shouldInstallPostSLCallback);
+    EXPECT_TRUE(state.snapshot.publishFGActive);
+    EXPECT_EQ(state.snapshot.publishRuntimeMode, ce::fg_runtime::RuntimeMode::kDLSSFG);
+}
+
 TEST(DX12FGTransitionSequencesTest, FSRToDLSSIsSwitchingAndMovesToPostSL) {
     State state;
 

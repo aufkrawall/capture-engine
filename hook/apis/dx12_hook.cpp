@@ -10000,8 +10000,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
             }
 
-            // Bump epoch so the inner transition handler skips redundant processing
-            if (!preserveConfirmedPostSLOnLateOuterOn) {
+            // Bump epoch so the inner transition handler resyncs its local
+            // tracking and skips redundant transition work even when the outer
+            // path preserved a proven PostSL state instead of resetting it.
+            {
                 g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
             }
 

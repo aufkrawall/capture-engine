@@ -14,6 +14,26 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Sync the inner FG tracker even when the outer late Streamline-ON path preserves confirmed PostSL
+
+- **Motivation**: The fresh Talos validation `installed/captureengine/logs/20260415_171248` on build `0.1.2290` showed that the previous late-outer-ON preservation fix was only half of the remaining Talos regression. It clearly improved behavior: Talos now logs `DX12: [outer] SL FG ON after confirmed PostSL — preserving active confirmed PostSL path instead of re-entering transition cooldown` and continues rendering visible PostSL frames all the way through `DX12: Post-SL overlay SUBMIT #118`, instead of dying immediately after `SUBMIT #9` like the earlier `0.1.2289` trace. But the overlay still disappears after that. The new smoking gun is later in the same session: `DX12: FG transition prev_mode=STREAMLINE_NO_FG next_mode=DLSS_FG phase=1 ownership=0 render_mode=1 callback=1 publish_active=1 sl_signal=0->1 cooldown=60 epoch=2`, immediately followed by `DX12: FG transition — drained overlay GPU work`, `DX12: FG transition queue reset — releasing PostSL locked queue ...`, and `DX12: Scene transition detected (gap=2054ms) during FG — overlay cooldown 30 frames`. After that, `DX12: PostSL stats: calls=500 renders=118 skipOther=381` climbs into the thousands. So the remaining Talos seam is no longer the outer reset itself; it is the inner ProcessFrame transition tracker replaying a redundant `STREAMLINE_NO_FG -> DLSS_FG` restart after the outer block already preserved a proven confirmed PostSL path.
+
+- **Fix**:
+  1. `hook/apis/dx12_hook.cpp` now always bumps `g_OuterSLTransitionEpoch` whenever the outer ProcessFrame Streamline transition block handles an ON/OFF edge, even if that edge takes the preserved late-outer-ON path.
+  2. That means the inner ProcessFrame FG tracker always resyncs its local `s_last*` state to the post-outer truth and skips redundant cooldown, GPU-drain, queue-reset, and confirmed-rendering teardown work.
+  3. `tests/test_dx12_fg_transition_sequences.cpp` now adds `LateStreamlineRuntimeConvergenceToDLSSDoesNotReenterEnablingPhase`, which locks the shared transition-model expectation that a late `STREAMLINE_NO_FG -> DLSS_FG` convergence while Streamline is already running stays `kStable`/`kPostSL` instead of re-entering `kEnabling`.
+
+- **Why this is generic**: This does not add a Talos-specific exception. It repairs a shared bookkeeping invariant between the outer and inner DX12 FG transition managers. The outer manager is allowed to preserve an already-confirmed PostSL path on a late Streamline-ON edge, but once it has made that decision, the inner manager must still be told that the transition was already consumed. Otherwise the runtime effectively handles the same transition twice: once preserving, then again restarting.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_171248/{session_manifest.txt,hook_debug.log}`.
+  - Confirmed the previous `0.1.2290` outer-preservation message still appears before the later duplicate inner transition.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 571 tests passed and the build version bumped to `0.1.2291`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_171248/session_manifest.txt`, `installed/captureengine/logs/20260415_171248/hook_debug.log`, `hook/apis/dx12_hook.cpp`, `tests/test_dx12_fg_transition_sequences.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`.
+- Stale-risk note: Talos runtime validation on `0.1.2291` is required. The next check is whether Talos now keeps rendering visible PostSL frames past `#118` without the later duplicate inner transition replay, and whether GTA remains clean on the same build.
+
 ### 2026-04-15 - Preserve confirmed PostSL across late outer Streamline-ON edges after the path is already proven
 
 - **Motivation**: The fresh Talos Reawakened validation `installed/captureengine/logs/20260415_164322` on build `0.1.2289` exposed a different regression than the GTA-visible-overlay seam. Talos reached `DX12: PostSL CONFIRMED rendering via re-entrant Present`, produced `DX12: Post-SL overlay SUBMIT #1..#9`, and even logged one `DetourPresent: Invoking PostSL on confirmed standalone Streamline Present while keeping the normal SL route #1`. But immediately after `SUBMIT #9`, the trace logged a late `DX12: [outer] SL FG ON`, and from there the visible overlay died even though synthetic Streamline Presents kept arriving. The smoking gun is the later `DX12: PostSL stats`: `calls=500 renders=9 skipOther=490`, then `calls=1000 renders=9 skipOther=990`, and so on. So this was not a routing starvation/crash seam. Talos was still receiving callback opportunities, but the late outer Streamline-ON edge had re-entered the generic fresh-transition reset path and cleared an already-confirmed PostSL path.
