@@ -798,6 +798,18 @@ inline bool ShouldSeedStreamlineStartupBootstrapAsConsumedForConfirmedPostSLResu
            swapchainQueueMatchesPostSLLastWorkingQueue;
 }
 
+inline bool ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
+    bool hadFSRFGPhase, bool hasPostSLLastWorkingQueue, bool hasSwapchainQueue, bool explicitSetOptionsActivation,
+    bool safePostFSRBootstrapPath) {
+    // After a mixed FSR->DLSS epoch goes fully FG-off, the recovered non-FG path
+    // can intentionally keep scQueue unset while it reuses the already validated
+    // PostSL last-working queue. If a later DLSS-only resume happens before a
+    // fresh non-FG swapchain proof re-establishes scQueue, that validated queue
+    // is still the strongest evidence for the live topology.
+    return hadFSRFGPhase && hasPostSLLastWorkingQueue && !hasSwapchainQueue &&
+           (explicitSetOptionsActivation || safePostFSRBootstrapPath);
+}
+
 inline bool ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(bool hadFSRFGPhase, bool hasSwapchainQueue,
                                                                        bool swapchainQueueDiffersFromOriginalGameQueue,
                                                                        bool streamlineStartupHandoffPending) {

@@ -499,6 +499,28 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPrefersValidatedLastWorkingQueue
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
 }
 
+TEST(DXGISharedTest, ReusesValidatedLastWorkingQueueForResumedDLSSDuringPostFSRInactiveRecovery) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
+            true, true, false, true, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
+            true, true, false, false, true));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
+            false, true, false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
+            true, false, false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
+            true, true, true, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
+            true, true, false, false, false));
+}
+
 TEST(DXGISharedTest, PostFSRInactiveRecoveryQueueSourcePrefersOriginalPresentQueue) {
     using ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource;
     using ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource;

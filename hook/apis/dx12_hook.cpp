@@ -6815,6 +6815,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         bool hasDirectQueueBehindWrapper = directQueueBehindWrapper != nullptr;
         const bool hasRuntimeOwnedSwapchainQueue = scQueue != nullptr && scQueue != g_OriginalGameQueue;
         const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+        const bool explicitSetOptionsActivation = HookHasExplicitStreamlineSetOptionsActivation();
         bool preferRealQueueBehindWrapper = ce::dx12_overlay_policy::ShouldUsePostSLRealQueueBehindWrapperAfterFSR(
             g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper);
         const bool preferValidatedDirectQueueForLock =
@@ -6822,8 +6823,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                                                                                     hasDirectQueueBehindWrapper);
         bool allowWrapperBootstrapQueue = ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(
             g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper, wrapperBootstrapQueue != nullptr,
-            hasRuntimeOwnedSwapchainQueue, HookHasExplicitStreamlineSetOptionsActivation(),
-            safePostFSRBootstrapPath);
+            hasRuntimeOwnedSwapchainQueue, explicitSetOptionsActivation, safePostFSRBootstrapPath);
+        const bool resumeOnValidatedLastWorkingQueue =
+            ce::dx12_overlay_policy::ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
+                g_HadFSRFGPhase, g_PostSLLastWorkingQueue != nullptr, scQueue != nullptr,
+                explicitSetOptionsActivation, safePostFSRBootstrapPath);
         const bool lockedQueueIsSLWrapper =
             g_PostSLLockedQueue && g_PostSLLockedQueue != g_OriginalGameQueue && g_PostSLLockedQueue != scQueue;
         ExecuteCommandListsPtr scQueueOrigECL = scQueue ? GetOriginalExecuteCommandLists(scQueue) : nullptr;
@@ -6863,6 +6867,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             }
         } else if (g_PostSLLockedQueue) {
             queue = g_PostSLLockedQueue;
+        } else if (resumeOnValidatedLastWorkingQueue) {
+            queue = g_PostSLLastWorkingQueue;
+            static int s_postFSRResumeQueueLog = 0;
+            if (s_postFSRResumeQueueLog++ < 10) {
+                HookLogImportant(
+                    "DX12: PostSL queue — reusing validated lastWorking queue %p for resumed DLSS activation during "
+                    "post-FSR inactive recovery (origGame=%p explicit=%d safeBootstrap=%d)",
+                    queue, g_OriginalGameQueue, explicitSetOptionsActivation ? 1 : 0,
+                    safePostFSRBootstrapPath ? 1 : 0);
+            }
         } else if (slFGNow) {
             if (preferRealQueueBehindWrapper) {
                 queue = directQueueBehindWrapper;
