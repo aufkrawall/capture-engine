@@ -415,6 +415,17 @@ inline bool ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
     return postFSRNonFGRecovery && (recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown);
 }
 
+inline bool ShouldResetBlockedECLPatternHeuristicEvidence(bool canUseFSRFGHeuristics,
+                                                          bool eclPatternHeuristicDetected,
+                                                          bool hasRealFrameEvidence,
+                                                          bool hasInterpolatedFrameEvidence) {
+    // ECL-pattern evidence collected while FSR heuristics are blocked is stale.
+    // DLSS/Streamline worker traffic can accumulate a valid-looking real/interp
+    // mix that later re-fires as a false FSR activation once the block lifts.
+    return !canUseFSRFGHeuristics &&
+           (eclPatternHeuristicDetected || hasRealFrameEvidence || hasInterpolatedFrameEvidence);
+}
+
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,

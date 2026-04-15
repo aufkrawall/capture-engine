@@ -12046,7 +12046,8 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     int count = g_CommandListsExecutedThisFrame.exchange(0);
     ++g_FGDebugFrameCount;
     g_FGCompat.RecordFrame(count);
-    const bool canUseFSRHeuristics = CanUseFSRFGHeuristics();
+    const char* fsrHeuristicBlockedReason = nullptr;
+    const bool canUseFSRHeuristics = CanUseFSRFGHeuristics(&fsrHeuristicBlockedReason);
     if (!canUseFSRHeuristics) {
         // Do not immediately clear a live heuristic/native-FSR latch just
         // because heuristics are temporarily unsafe. Talos can keep the FSR
@@ -12099,24 +12100,31 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             s_eclRealFrames = 0;
             s_eclInterpFrames = 0;
         }
-        if (suppressHeuristicFSRActivationDuringPostFSRNonFGRecovery) {
+
+        const bool shouldResetBlockedPatternEvidence =
+            ce::dx12_overlay_policy::ShouldResetBlockedECLPatternHeuristicEvidence(
+                canUseFSRHeuristics, s_eclFGDetected, s_eclRealFrames > 0, s_eclInterpFrames > 0);
+
+        if (!canUseFSRHeuristics) {
             if (g_FGCompat.IsHeuristicFSRFGActive()) {
-                g_FGCompat.SetHeuristicFSRFGActive(false);
-            }
-            if (s_eclFGDetected || s_eclRealFrames != 0 || s_eclInterpFrames != 0) {
-                static std::atomic<int> s_postFSRECLPatternSuppressionLogCount{0};
-                int logCount = s_postFSRECLPatternSuppressionLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logCount < 10 || (logCount % 300) == 0) {
-                    HookLogImportant(
-                        "DX12: Resetting ECL-pattern FG heuristic during post-FSR non-FG recovery "
-                        "(real=%d interp=%d postSLRecent=%d)",
-                        s_eclRealFrames, s_eclInterpFrames,
-                        postSLLastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0);
+                if (suppressHeuristicFSRActivationDuringPostFSRNonFGRecovery) {
+                    g_FGCompat.SetHeuristicFSRFGActive(false);
                 }
             }
-            s_eclFGDetected = false;
-            s_eclRealFrames = 0;
-            s_eclInterpFrames = 0;
+            if (shouldResetBlockedPatternEvidence) {
+                static std::atomic<int> s_blockedECLPatternResetLogCount{0};
+                int logCount = s_blockedECLPatternResetLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: Resetting ECL-pattern FG heuristic while FSR heuristics are blocked "
+                        "(%s, real=%d interp=%d detected=%d)",
+                        fsrHeuristicBlockedReason ? fsrHeuristicBlockedReason : "unsafe window",
+                        s_eclRealFrames, s_eclInterpFrames, s_eclFGDetected ? 1 : 0);
+                }
+                s_eclFGDetected = false;
+                s_eclRealFrames = 0;
+                s_eclInterpFrames = 0;
+            }
         } else {
             if (isInterpolatedFrame)
                 ++s_eclInterpFrames;

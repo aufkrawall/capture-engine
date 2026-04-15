@@ -14,6 +14,27 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Reset stale ECL-pattern FSR heuristic evidence during blocked windows so DLSS suspend/resume keeps its proven PostSL queue
+
+- **Motivation**: The fresh GTA validation `installed/captureengine/logs/20260415_180333` on build `0.1.2292` showed that the previous pure-DLSS resume fix was only half of the real problem. GTA again suspended DLSS FG cleanly: `DX12: Streamline FG OFF — disabled PostSL callback`, GPU work drained, the pre-SL overlay rebuilt on `scQueue=00000271DA955DA0`, and the game kept rendering in `runtime=STREAMLINE_NO_FG`. But the longer menu pause then exposed a second seam inside that non-FG interval. At `18:05:30.464`, CE logged `DX12: FG detected via ECL count pattern (real=5749, interp=1502)` and flipped into a false `runtime=FSR_FG` path even though no FFX runtime was present. A few lines later the false teardown logged `DX12: Preserving PostSL lastWorkingQueue 0000000000000000 for immediate post-FSR FG-off recovery`, proving the stale heuristic FSR transition had already erased the previously remembered PostSL queue. When DLSS FG really resumed at `18:05:39.304`, the `0.1.2292` resume seeding gate could no longer fire because `g_PostSLLastWorkingQueue` was gone, and the first resumed Streamline Present again fell into `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1` with the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` crash family.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now adds `ShouldResetBlockedECLPatternHeuristicEvidence()`.
+  2. `hook/apis/dx12_hook.cpp` now asks `CanUseFSRFGHeuristics()` for the block reason up front in `DX12_ProcessFrameExternal()` and resets the ECL-pattern heuristic counters whenever heuristics are blocked and stale pattern evidence still exists.
+  3. The same ECL-pattern block now logs the blocked-window reset reason explicitly instead of only the post-FSR recovery flavor.
+  4. `tests/test_dxgi_shared.cpp` now adds `BlockedFSRHeuristicWindowResetsStaleECLPatternEvidence` to lock the new policy boundary in place.
+
+- **Why this is generic**: This does not add another GTA menu exception. It fixes a shared heuristic invariant: ECL-pattern FSR evidence gathered while FSR heuristics are blocked is stale by definition and must not survive into a later unblocked window. Otherwise DLSS/Streamline worker traffic or other blocked-window activity can accumulate a valid-looking real/interpolated mix that later re-fires as a false FSR activation in an unrelated non-FG interval.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_180333/{session_manifest.txt,hook_debug.log}`.
+  - Confirmed the false intermediate path: `FG detected via ECL count pattern`, false `STREAMLINE_NO_FG -> FSR_FG -> STREAMLINE_NO_FG`, then `lastWorkingQueue` cleared before the real DLSS resume edge.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 573 tests passed and the build version bumped to `0.1.2293`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_180333/session_manifest.txt`, `installed/captureengine/logs/20260415_180333/hook_debug.log`, `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`.
+- Stale-risk note: Fresh GTA runtime validation on `0.1.2293` is required. The next question is whether the longer non-FG menu interval now stays off the false heuristic `FSR_FG` path so `g_PostSLLastWorkingQueue` survives and the already-added resume bootstrap seeding can finally hold the first resumed Streamline Present on the proven normal route.
+
 ### 2026-04-15 - Reuse the proven PostSL topology on pure-DLSS resume after suspension
 
 - **Motivation**: Two fresh runtime validations changed the picture again. First, the Talos rerun `installed/captureengine/logs/20260415_174202_talos_new` on build `0.1.2291` confirmed that the previous inner-resync fix works: Talos keeps the overlay visible through active DLSS FG instead of dying after the old `SUBMIT #118` boundary. But the GTA validation `installed/captureengine/logs/20260415_174258` on the same source line exposed a new crash family on menu-driven DLSS suspension/resume. GTA stays stable while DLSS FG is active, then suspends cleanly when the menu opens: `DX12: Streamline FG OFF — disabled PostSL callback`, overlay GPU work drains, the pre-SL overlay is rebuilt in `runtime=STREAMLINE_NO_FG`, and non-FG rendering continues for several hundred frames. The crash happens only when the menu closes and DLSS FG resumes. At `17:44:52.090-17:44:52.091`, CE logs `DX12: Streamline FG ON — GetState transition STARTING`, `Streamline Hook: FG state transition OFF->ON via SetOptions`, and then immediately `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`. The mirrored dump `external_4ead4856-d1af-4c2f-9604-bb791b6ab867.dmp` is again the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` breakpoint-corruption family. The key structural clue is that this is not a cold startup handoff: the non-FG interval shows the live swapchain queue remains `000001A281BA7C10`, and that same queue was already the last known-good PostSL queue before suspension.
