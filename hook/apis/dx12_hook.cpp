@@ -9949,24 +9949,37 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             bool slTurnedOff = previousOuterSLFGRunning && !outerSLFGRunning;
             bool slTurnedOn = !previousOuterSLFGRunning && outerSLFGRunning;
             g_OuterTrackedSLFGRunning.store(outerSLFGRunning, std::memory_order_release);
+            const bool preserveConfirmedPostSLOnLateOuterOn =
+                slTurnedOn && ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLDuringFGCooldown(
+                                  outerSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire));
 
             HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d)", slTurnedOn ? "ON" : "OFF",
                              allowOverlayRender ? 1 : 0);
 
             // Set cooldown — prevents rendering during transition window
-            g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
-            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            if (preserveConfirmedPostSLOnLateOuterOn) {
+                HookLogImportant(
+                    "DX12: [outer] SL FG ON after confirmed PostSL — preserving active confirmed PostSL path "
+                    "instead of re-entering transition cooldown");
+            } else {
+                g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
+                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            }
 
             // Reset PostSL state for fresh start after transition.
             // Keep the callback installed on Streamline FG activation so
             // startup synthetic presents can immediately find it.
-            g_PostSLOverlayActive.store(false, std::memory_order_release);
+            if (!preserveConfirmedPostSLOnLateOuterOn) {
+                g_PostSLOverlayActive.store(false, std::memory_order_release);
+            }
             if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(outerSLFGRunning)) {
                 SetPostSLCallbackInstalled(false, "DX12: [outer] SL transition");
             }
             g_PostSLStallCounter.store(0, std::memory_order_release);
-            g_PostSLStableFrameCount.store(0, std::memory_order_release);
-            g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+            if (!preserveConfirmedPostSLOnLateOuterOn) {
+                g_PostSLStableFrameCount.store(0, std::memory_order_release);
+                g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+            }
 
             // Clear false heuristic FSR FG (SL's queues trigger queue-change heuristic)
             if (g_FGCompat.IsHeuristicFSRFGActive()) {
@@ -9979,11 +9992,18 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // in DetectPattern() within a few frames.
             g_FGCompat.ClearNvidiaSMState();
 
-            // Reset queue-change heuristic so it re-captures initial queue
-            g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+            // Reset queue-change heuristic so it re-captures initial queue.
+            // If PostSL already confirmed rendering on a late outer ON edge,
+            // keep the existing proven queue/routing state instead of forcing a
+            // fresh startup-style re-capture that can starve confirmed PostSL.
+            if (!preserveConfirmedPostSLOnLateOuterOn) {
+                g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+            }
 
             // Bump epoch so the inner transition handler skips redundant processing
-            g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
+            if (!preserveConfirmedPostSLOnLateOuterOn) {
+                g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
+            }
 
             if (slTurnedOff) {
                 // Suppress queue-change heuristic for frames after SL OFF.

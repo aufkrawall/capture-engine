@@ -14,6 +14,26 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Preserve confirmed PostSL across late outer Streamline-ON edges after the path is already proven
+
+- **Motivation**: The fresh Talos Reawakened validation `installed/captureengine/logs/20260415_164322` on build `0.1.2289` exposed a different regression than the GTA-visible-overlay seam. Talos reached `DX12: PostSL CONFIRMED rendering via re-entrant Present`, produced `DX12: Post-SL overlay SUBMIT #1..#9`, and even logged one `DetourPresent: Invoking PostSL on confirmed standalone Streamline Present while keeping the normal SL route #1`. But immediately after `SUBMIT #9`, the trace logged a late `DX12: [outer] SL FG ON`, and from there the visible overlay died even though synthetic Streamline Presents kept arriving. The smoking gun is the later `DX12: PostSL stats`: `calls=500 renders=9 skipOther=490`, then `calls=1000 renders=9 skipOther=990`, and so on. So this was not a routing starvation/crash seam. Talos was still receiving callback opportunities, but the late outer Streamline-ON edge had re-entered the generic fresh-transition reset path and cleared an already-confirmed PostSL path.
+
+- **Fix**:
+  1. `hook/apis/dx12_hook.cpp` now computes `preserveConfirmedPostSLOnLateOuterOn` when a late outer `SL FG ON` edge arrives while Streamline is active and PostSL has already confirmed rendering.
+  2. When that preservation condition is true, the outer transition block no longer re-arms transition cooldown, disables `g_PostSLOverlayActive`, clears `g_PostSLConfirmedRendering`, zeroes `g_PostSLStableFrameCount`, resets queue-change heuristic capture, or bumps the outer transition epoch.
+  3. The outer block now logs this preserved path explicitly: `DX12: [outer] SL FG ON after confirmed PostSL — preserving active confirmed PostSL path instead of re-entering transition cooldown`.
+
+- **Why this is generic**: This does not add a Talos-only special case. It narrows an overly broad shared assumption in the outer DX12 FG transition manager: that every observed `SL FG ON` edge necessarily means PostSL must restart from a cold transition state. Talos shows that Streamline can surface a later outer ON signal after PostSL has already confirmed a healthy rendering path. In that topology, the correct generic rule is to preserve the proven PostSL path rather than resetting it.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_164322/{session_manifest.txt,hook_debug.log}`.
+  - Compared the Talos failure timing against the GTA-good `installed/captureengine/logs/20260415_151044/hook_debug.log`; GTA's standalone-normal-route fix survives because it rebuilds progress immediately after settling, while Talos's regression begins exactly at the later outer `SL FG ON` reset edge.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 570 tests passed and the build version bumped to `0.1.2290`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_164322/session_manifest.txt`, `installed/captureengine/logs/20260415_164322/hook_debug.log`, `installed/captureengine/logs/20260415_151044/hook_debug.log`, `hook/apis/dx12_hook.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`.
+- Stale-risk note: Fresh Talos runtime validation on `0.1.2290` is required. The next check is whether Talos now keeps submitting visible PostSL frames beyond `#9` while the GTA-good `0.1.2289` standalone-normal-route path remains intact.
+
 ### 2026-04-15 - Confirm GTA V Enhanced DLSS FG stays visible and stable on build 0.1.2289
 
 - **Motivation**: After the `0.1.2289` fix, we needed the first fresh active GTA V Enhanced validation to confirm that the new standalone-normal-route callback split was not only structurally plausible but actually sufficient at runtime.
