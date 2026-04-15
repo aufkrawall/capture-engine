@@ -1491,6 +1491,20 @@ TEST(DXGISharedTest, ConfirmedPostSLResumeSeedsStartupBootstrapAsConsumed) {
         false, true, true, false));
 }
 
+TEST(DXGISharedTest, FreshStreamlineHandoffAfterFSRDoesNotClearTheRecapturedSwapchainQueue) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
+        true, true, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
+        true, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
+        false, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
+        true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
+        true, true, false, false));
+}
+
 TEST(DXGISharedTest, ConfirmedPostSLStartupRoutingSettlesAfterEightFrames) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 0));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 1));

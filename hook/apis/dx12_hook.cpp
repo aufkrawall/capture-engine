@@ -3859,7 +3859,12 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             ID3D12CommandQueue* staleScQueue = nullptr;
             {
                 std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-                if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
+                const bool streamlineStartupHandoffPending =
+                    DXGIShared::g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
+                if (ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
+                        g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
+                        g_SwapchainQueue != nullptr && g_SwapchainQueue != g_OriginalGameQueue,
+                        streamlineStartupHandoffPending)) {
                     staleScQueue = g_SwapchainQueue;
                     g_SwapchainQueue = nullptr;
                     g_SwapchainQueueCaptureTime = 0;
@@ -3874,6 +3879,11 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                         "DX12: Streamline FG ON after FSR — cleared stale FSR swapchain queue %p (origGame=%p) "
                         "to prevent DEVICE_REMOVED on FSR→DLSS transition",
                         staleScQueue, g_OriginalGameQueue);
+                } else if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue && streamlineStartupHandoffPending) {
+                    HookLogImportant(
+                        "DX12: Streamline FG ON after FSR — preserving freshly handed-off Streamline swapchain queue %p "
+                        "during active startup handoff (origGame=%p)",
+                        g_SwapchainQueue, g_OriginalGameQueue);
                 }
             }
             if (staleScQueue) {

@@ -798,6 +798,19 @@ inline bool ShouldSeedStreamlineStartupBootstrapAsConsumedForConfirmedPostSLResu
            swapchainQueueMatchesPostSLLastWorkingQueue;
 }
 
+inline bool ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(bool hadFSRFGPhase, bool hasSwapchainQueue,
+                                                                       bool swapchainQueueDiffersFromOriginalGameQueue,
+                                                                       bool streamlineStartupHandoffPending) {
+    // After an FSR phase, a non-origGame swapchain queue often does need to be
+    // cleared before DLSS/Streamline PostSL re-establishes its own topology.
+    // But if the queue was just re-captured as the fresh authoritative
+    // Streamline runtime handoff for the new DLSS activation, clearing it
+    // immediately destroys the very proof the handoff logic needs and forces the
+    // riskier post-FSR wrapper-bootstrap path.
+    return hadFSRFGPhase && hasSwapchainQueue && swapchainQueueDiffersFromOriginalGameQueue &&
+           !streamlineStartupHandoffPending;
+}
+
 inline bool ShouldTreatPostSLSelectedQueueAsWrapper(bool queueMatchesOriginalGameQueue, bool queueMatchesDedicatedQueue,
                                                     bool queueMatchesSwapchainQueue,
                                                     bool selectedQueueOrigECLMatchesRealECL) {
