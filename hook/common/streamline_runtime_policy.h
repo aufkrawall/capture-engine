@@ -155,8 +155,13 @@ inline bool ShouldRequestStreamlineEnablePreparationOnReflexActivation(bool refl
 }
 
 inline bool ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(bool requestedDisabled,
-                                                                         bool startupTransitionWindowActive) {
+                                                                          bool startupTransitionWindowActive) {
     return requestedDisabled && startupTransitionWindowActive;
+}
+
+inline bool ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(bool activationPending,
+                                                                      bool postSLActiveButUnconfirmed) {
+    return activationPending && !postSLActiveButUnconfirmed;
 }
 
 inline ObserverOnlyHeuristicCleanup ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(bool active) {

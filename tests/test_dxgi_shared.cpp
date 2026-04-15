@@ -1409,6 +1409,16 @@ TEST(DXGISharedTest, ConfirmedPostSLStaysActiveDuringRemainingFGCooldown) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLDuringFGCooldown(true, false));
 }
 
+TEST(DXGISharedTest, SyntheticStartupStateStaysHalfArmedUntilConfirmedRender) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(true, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(false, true, true));
+}
+
 TEST(DXGISharedTest, PostSLOnlyLatchesSuspensionForFullyInactiveSignalDrop) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldLatchPostSLSuspensionOnStreamlineSignalDrop(false, false, false, false));
 
@@ -1528,25 +1538,3 @@ TEST(DXGISharedTest, PostSLSyntheticStartupActivationPendingTracksStartupleHando
     EXPECT_FALSE(DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire));
 }
 
-TEST(DXGISharedTest, PostSLActivationPendingRequiresDirectCallbackOnFlushRegardlessOfPostSLActive) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, false, false, true, true, true, true));
-
-    bool activationPending = true;
-    bool shouldTriggerDirectCallback = activationPending;
-    EXPECT_TRUE(shouldTriggerDirectCallback);
-
-    activationPending = false;
-    shouldTriggerDirectCallback = activationPending;
-    EXPECT_FALSE(shouldTriggerDirectCallback);
-}
-
-TEST(DXGISharedTest, PostSLDeferredCallbackStillNeedsActivationPendingTriggerOnFlush) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, false, false, true, true, true, false));
-
-    bool activationPending = true;
-    bool postSLActive = false;
-    bool shouldTriggerDirectCallback = activationPending;
-    EXPECT_TRUE(shouldTriggerDirectCallback);
-}

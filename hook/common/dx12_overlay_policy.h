@@ -1167,6 +1167,12 @@ inline bool ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(bool st
     return startupActivationPending || postSLActive;
 }
 
+inline bool ShouldKeepSyntheticStartupStateUntilConfirmedRender(bool startupActivationPending,
+                                                                bool postSLActiveButUnconfirmed,
+                                                                bool postSLConfirmedRendering) {
+    return !postSLConfirmedRendering && (startupActivationPending || postSLActiveButUnconfirmed);
+}
+
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
     return streamlineFGRunning && postSLConfirmedRendering;
 }

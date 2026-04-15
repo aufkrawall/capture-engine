@@ -1169,6 +1169,20 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
         std::memory_order_acquire);
     const bool callbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(
         std::memory_order_acquire) != nullptr;
+    const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool shouldTriggerDirectCallback =
+        ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(
+            activationPending, postSLActiveButUnconfirmed);
+
+    auto logSkippedDirectCallbackAfterActivation = [&]() {
+        static std::atomic<int> s_skipLogCount{0};
+        const int logCount = s_skipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Startup window expired but PostSL activation already completed — skipping "
+                "redundant direct callback until first confirmed render");
+        }
+    };
 
     // Case 1: Suppressed OFF exists — forward it to Streamline
     if (g_SuppressedSetOptionsOffDuringStartup) {
@@ -1207,7 +1221,7 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
         // startup-handoff Present arrives via the top-level path (bypassing the
         // synthetic route), and then the game's present thread stalls inside Streamline
         // before any synthetic Presents can drive PostSL activation.
-        if (activationPending && callbackInstalled) {
+        if (shouldTriggerDirectCallback && callbackInstalled) {
             HookLogImportant(
                 "Streamline Hook: Activation still pending after OFF flush — "
                 "PostSL callback never entered (deferred or bypassed); trigger direct "
@@ -1229,6 +1243,8 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 HookLogImportant(
                     "Streamline Hook: PostSL callback (via nullptr) completed after OFF flush");
             }
+        } else if (activationPending && callbackInstalled && postSLActiveButUnconfirmed) {
+            logSkippedDirectCallbackAfterActivation();
         }
         return;
     }
@@ -1238,7 +1254,7 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
     // the suppressed OFF before the window expired — ProcessFrame has stalled,
     // so the deferred PostSL callback in ProcessFrame will never fire.  Trigger
     // it here to complete activation before Streamline times out.
-    if (activationPending && callbackInstalled) {
+    if (shouldTriggerDirectCallback && callbackInstalled) {
         HookLogImportant(
             "Streamline Hook: Startup window expired with activation pending but no "
             "suppressed OFF — triggering PostSL callback directly to complete "
@@ -1260,6 +1276,8 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             HookLogImportant(
                 "Streamline Hook: PostSL callback (via nullptr) completed");
         }
+    } else if (activationPending && callbackInstalled && postSLActiveButUnconfirmed) {
+        logSkippedDirectCallbackAfterActivation();
     }
 }
 

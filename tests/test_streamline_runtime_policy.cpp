@@ -199,6 +199,18 @@ TEST(StreamlineRuntimePolicyTest, SuppressSetOptionsOffDuringStartupTransitionWi
         ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(false, false));
 }
 
+TEST(StreamlineRuntimePolicyTest, DirectPostSLCallbackTriggerStopsAfterActivationCompletes) {
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(true, false));
+
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(true, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(false, false));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(false, true));
+}
+
 TEST(StreamlineRuntimePolicyTest, ObserverOnlyActivationClearsRecentTeardownGraceAndResetsHeuristics) {
     const auto cleanup =
         ce::streamline_runtime_policy::ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(true);
