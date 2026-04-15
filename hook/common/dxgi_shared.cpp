@@ -988,16 +988,26 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
             postSLConfirmedButStartupSettling,
             streamlineSyntheticReentrant)) {
+        const bool shouldInvokePostSLCallbackOnNormalRoute =
+            DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+                observerOnlyMode, postSLConfirmedButStartupSettling, streamlineSyntheticReentrant);
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent: Keeping decisive synthetic Streamline startup Present on the normal SL route #%d "
-                "(startupPending=%d unconfirmed=%d settling=%d consumed=1 windowActive=%d tid=0x%04X)",
+                "(startupPending=%d unconfirmed=%d settling=%d callbackOnNormal=%d consumed=1 windowActive=%d tid=0x%04X)",
                 logCount, postSLStartupActivationPending ? 1 : 0,
                 postSLActiveButUnconfirmed ? 1 : 0,
                 postSLConfirmedButStartupSettling ? 1 : 0,
+                shouldInvokePostSLCallbackOnNormalRoute ? 1 : 0,
                 streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
+        }
+        if (shouldInvokePostSLCallbackOnNormalRoute) {
+            auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+            if (postSLCallback) {
+                postSLCallback(pSwapChain);
+            }
         }
         streamlineSyntheticReentrant = false;
     }
@@ -1416,16 +1426,26 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
             postSLConfirmedButStartupSettling,
             streamlineSyntheticReentrant)) {
+        const bool shouldInvokePostSLCallbackOnNormalRoute =
+            DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+                observerOnlyMode, postSLConfirmedButStartupSettling, streamlineSyntheticReentrant);
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount1{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent1: Keeping decisive synthetic Streamline startup Present1 on the normal SL route #%d "
-                "(startupPending=%d unconfirmed=%d settling=%d consumed=1 windowActive=%d tid=0x%04X)",
+                "(startupPending=%d unconfirmed=%d settling=%d callbackOnNormal=%d consumed=1 windowActive=%d tid=0x%04X)",
                 logCount, postSLStartupActivationPending ? 1 : 0,
                 postSLActiveButUnconfirmed ? 1 : 0,
                 postSLConfirmedButStartupSettling ? 1 : 0,
+                shouldInvokePostSLCallbackOnNormalRoute ? 1 : 0,
                 streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
+        }
+        if (shouldInvokePostSLCallbackOnNormalRoute) {
+            auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+            if (postSLCallback) {
+                postSLCallback(pSwapChain);
+            }
         }
         streamlineSyntheticReentrant = false;
     }

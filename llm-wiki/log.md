@@ -14,6 +14,26 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Keep invoking PostSL during confirmed startup settling even while Streamline Presents stay on the normal route
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_025500` on build `0.1.2281` showed that the previous settling-window routing fix was only half-right. It fixed the crash: the run stayed alive for the whole DLSS FG period. But the overlay was again visually absent while DLSS FG stayed active. The key trace difference is that GTA now reaches `DX12: PostSL CONFIRMED rendering via re-entrant Present` and `DX12: Post-SL overlay SUBMIT #1`, so the first visible PostSL frame does happen. After that, however, `stableFrames` stays pinned at `1`, `settling=1` never clears, and `hook_debug.log` shows `DX12: PostSL warmup — suppressing stall fallback ...` climbing forever while decisive synthetic startup Presents keep being normal-routed through at least `#4400`. That means the `0.1.2281` change did avoid the crashy synthetic/bypass return path, but it also accidentally stopped using those same startup-family Presents to drive PostSL. GTA's callback topology needs both: normal routing for safety, plus PostSL callback invocation so the visible render path can continue advancing.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now exposes `ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute()`.
+  2. `hook/common/dxgi_shared.cpp` now uses that helper in both `DetourPresent` and `DetourPresent1`. During the short confirmed-startup-settling window, if a Streamline-originated Present would otherwise classify as synthetic/bypass traffic, CE now still invokes the PostSL callback but then keeps the Present itself on the normal SL route instead of returning through the synthetic/bypass trampoline.
+  3. The normal-route diagnostic logging now records that split explicitly via `callbackOnNormal=%d` so future traces can distinguish "protected but callback-starved" from "protected and still advancing PostSL".
+  4. `tests/test_dxgi_shared.cpp` now adds `ConfirmedStartupSettlingCanStillInvokePostSLWithoutSyntheticBypass` to lock that boundary in place.
+
+- **Why this is generic**: The right state-machine split here is not GTA-specific. There are now clearly two separate decisions in this startup family: whether a Streamline-originated Present is safe to return through the old synthetic/bypass route, and whether that same callback opportunity still needs to execute PostSL work. During confirmed startup settling, the correct answer is "no" to the bypass route but still "yes" to the PostSL callback. Making those choices explicit keeps the routing logic aligned with the runtime evidence instead of overloading one boolean to mean both.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_025500/{session_manifest.txt,hook_debug.log}`.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 567 tests passed and the build version bumped to `0.1.2282`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_025500/session_manifest.txt`, `installed/captureengine/logs/20260415_025500/hook_debug.log`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2282` is required. The next check is whether `stableFrames` now advances beyond `1` during GTA DLSS FG startup while the guarded Presents still remain on the normal SL route and the old synthetic/bypass crash family stays gone.
+
 ### 2026-04-15 - Keep the first few confirmed PostSL startup frames off the synthetic/bypass Present path too
 
 - **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_023816` on build `0.1.2280` changed the picture again. This run proved that the new ECL-driven visible-overlay bridge works: the trace now reaches `DX12: PostSL WARMUP COMPLETE`, `DX12: PostSL CONFIRMED rendering via re-entrant Present`, and two successful `DX12: Post-SL overlay SUBMIT` lines, so the overlay no longer merely disappears under DLSS FG. But the crash moved one seam later immediately afterward. Right after `Post-SL overlay SUBMIT #2`, `hook_debug.log` logs `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`, and the mirrored dump `external_71bce012-9f7a-4425-bdb2-04901d895cdb.dmp` is still the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family. That proved the startup-family normal-route guard was still dropping one callback too early: first confirmation/render is not yet enough proof that GTA's pure-DLSS startup family has fully settled.

@@ -308,6 +308,17 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
            streamlineSyntheticReentrant;
 }
 
+inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(bool observerOnlyMode,
+                                                                                 bool postSLConfirmedButStartupSettling,
+                                                                                 bool streamlineSyntheticReentrant) {
+    // Once PostSL has already confirmed at least one successful render, GTA's
+    // startup family can still need a few more Streamline-originated Presents to
+    // advance the stable-frame counter and keep the visible overlay alive. Those
+    // calls should still execute the PostSL callback, but they must stay on the
+    // normal SL route instead of taking the old synthetic/bypass return path.
+    return !observerOnlyMode && postSLConfirmedButStartupSettling && streamlineSyntheticReentrant;
+}
+
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,
                                                             bool streamlineStartupHandoffPending,
                                                             bool streamlineStartupTransitionWindowActive,
