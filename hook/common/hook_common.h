@@ -145,8 +145,9 @@ bool HookIsPostSLOverlayConfirmedButStartupSettling();
 bool HookHasFSRFGHistory();
 
 // DX12 exports this so shared routing and queue-selection code can tell when a
-// post-FSR comeback has already seen an explicit Streamline SetOptions enable,
-// not just a provisional GetState-only activation.
+// post-FSR comeback was actually activated by an explicit Streamline SetOptions
+// OFF->ON edge, not just by a later steady-state enable request after a
+// provisional GetState-only activation.
 bool HookHasExplicitStreamlineSetOptionsActivation();
 
 // Helper to get active config (Local > IPC)

@@ -13,8 +13,9 @@ void Shutdown();
 // slDLSSGGetState fallback reconciliation.
 bool IsDLSSFGRequestedViaStreamline();
 
-// True once the current comeback has seen an explicit slDLSSGSetOptions enable,
-// not just a provisional GetState-only activation.
+// True once the current DLSS FG comeback was actually activated by an
+// OFF->ON slDLSSGSetOptions edge, not merely by a later steady-state enable
+// request after a provisional GetState-only activation already surfaced.
 bool HasExplicitSetOptionsActivationForCurrentComeback();
 
 // Called by the DX12 FFX handoff path when authoritative FFX runtime traffic

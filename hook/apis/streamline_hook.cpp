@@ -169,6 +169,7 @@ std::unordered_map<uint32_t, uint32_t> g_ViewportCapabilityMax;
 std::atomic<ULONGLONG> g_SuppressNewGetStateActivationUntilMs{0};
 constexpr ULONGLONG kAuthoritativeFFXTakeoverGetStateSuppressMs = 250;
 std::atomic<bool> g_BlockGetStateOnlyReactivationUntilExplicitSetOptions{false};
+std::atomic<bool> g_CurrentComebackActivatedViaExplicitSetOptions{false};
 
 std::mutex g_SuppressedOffMutex;
 bool g_SuppressedSetOptionsOffDuringStartup = false;
@@ -347,6 +348,12 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
         DXGIShared::g_StreamlineFGRunning.exchange(signalUpdate.effectiveActive, std::memory_order_acq_rel);
     if (ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(active, previousSignal)) {
         DXGIShared::ArmStreamlineStartupTransitionWindow();
+    }
+    if (signalUpdate.freshActivationEdge) {
+        const bool explicitSetOptionsActivation = source && strcmp(source, "SetOptions") == 0;
+        g_CurrentComebackActivatedViaExplicitSetOptions.store(explicitSetOptionsActivation, std::memory_order_release);
+    } else if (!signalUpdate.effectiveActive) {
+        g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     }
     g_FGCompat.SetStreamlineFGSignal(signalUpdate.effectiveActive);
     ApplyCombinedDLSSFGState(signalUpdate.effectiveActive, signalUpdate.effectiveMultiplier);
@@ -1133,6 +1140,7 @@ void OnAuthoritativeFFXTakeover() {
 
     g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
                                                  std::memory_order_release);
+    g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     HookLogImportant(
         "Streamline Hook: Authoritative FFX takeover reset %zu viewport states and preserved %zu capability caches; "
         "suppressing GetState-only reactivation for %llums",
@@ -1146,6 +1154,7 @@ void Shutdown() {
     g_ViewportCapabilityMax.clear();
     g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
     g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(false, std::memory_order_release);
+    g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
         g_SuppressedSetOptionsOffDuringStartup = false;
