@@ -140,6 +140,10 @@ bool HookIsPostSLOverlayConfirmedRendering();
 // frames after the very first successful submit.
 bool HookIsPostSLOverlayConfirmedButStartupSettling();
 
+// DX12 exports this so shared routing code can distinguish the pure-DLSS
+// cold-start family from the stricter post-FSR comeback path.
+bool HookHasFSRFGHistory();
+
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
 float GetActivePrerenderLimit();

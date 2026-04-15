@@ -257,6 +257,10 @@ static ID3D12CommandQueue* g_PostSLLockedQueue = nullptr;
 // after FSR FG phase) and PostSL uses g_CommandQueue (SL's wrapper) instead.
 static bool g_HadFSRFGPhase = false;
 
+bool HookHasFSRFGHistory() {
+    return g_HadFSRFGPhase;
+}
+
 // After FSR→DLSS→OFF: the swapchain's backbuffers have indeterminate GPU
 // resource state from the FG pipeline teardown.  Direct rendering with
 // explicit PRESENT→RENDER_TARGET barriers causes DEVICE_REMOVED when the

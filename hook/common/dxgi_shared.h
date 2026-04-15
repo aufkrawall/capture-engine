@@ -302,6 +302,7 @@ inline bool ShouldAllowSpecialStreamlinePresentRouting(bool observerOnlyMode) {
 }
 
 inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observerOnlyMode,
+                                                                     bool hadFSRFGPhase,
                                                                      bool startupTopLevelPresentConsumed,
                                                                      bool callerFromStreamlineModule,
                                                                      bool postSLStartupActivationPending,
@@ -319,13 +320,22 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
     // part of the same fragile startup family. Keep the call on the normal SL
     // route instead until startup is no longer half-armed and those first
     // confirmed PostSL frames have settled.
-    return !observerOnlyMode && startupTopLevelPresentConsumed &&
-           callerFromStreamlineModule &&
-           (postSLStartupActivationPending || postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling) &&
-           streamlineSyntheticReentrant;
+    // The post-FSR comeback family is stricter than cold pure-DLSS startup, but
+    // it also already has stronger ownership evidence: the fresh runtime-owned
+    // Streamline handoff queue preserved across the FSR->DLSS transition. Once
+    // that stricter family is still half-armed, forcing its first comeback
+    // Presents down the old synthetic/bypass return path just reopens the
+    // sl_dlss_g crash seam before the post-FSR bootstrap can progress.
+    const bool startupHalfArmed =
+        postSLStartupActivationPending || postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling;
+    return !observerOnlyMode && callerFromStreamlineModule && startupHalfArmed && streamlineSyntheticReentrant &&
+           (startupTopLevelPresentConsumed || hadFSRFGPhase);
 }
 
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(bool observerOnlyMode,
+                                                                                 bool hadFSRFGPhase,
+                                                                                 bool postSLStartupActivationPending,
+                                                                                 bool postSLActiveButUnconfirmed,
                                                                                  bool postSLConfirmedButStartupSettling,
                                                                                  bool streamlineSyntheticReentrant) {
     // Once PostSL has already confirmed at least one successful render, GTA's
@@ -333,7 +343,20 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
     // advance the stable-frame counter and keep the visible overlay alive. Those
     // calls should still execute the PostSL callback, but they must stay on the
     // normal SL route instead of taking the old synthetic/bypass return path.
-    return !observerOnlyMode && postSLConfirmedButStartupSettling && streamlineSyntheticReentrant;
+    if (observerOnlyMode || !streamlineSyntheticReentrant) {
+        return false;
+    }
+
+    if (postSLConfirmedButStartupSettling) {
+        return true;
+    }
+
+    // Post-FSR comeback still intentionally uses the older repeated-callback
+    // stabilization path before PostSL fully confirms rendering. Once those
+    // startup-family Presents are kept on the normal SL route for safety, they
+    // still need to invoke the callback there or the post-FSR countdown never
+    // advances and the next comeback Present falls back into the old bypass seam.
+    return hadFSRFGPhase && (postSLStartupActivationPending || postSLActiveButUnconfirmed);
 }
 
 inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
