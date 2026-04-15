@@ -303,6 +303,7 @@ inline bool ShouldAllowSpecialStreamlinePresentRouting(bool observerOnlyMode) {
 
 inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observerOnlyMode,
                                                                      bool hadFSRFGPhase,
+                                                                     bool explicitSetOptionsActivation,
                                                                      bool startupTopLevelPresentConsumed,
                                                                      bool callerFromStreamlineModule,
                                                                      bool postSLStartupActivationPending,
@@ -324,16 +325,20 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
     // it also already has stronger ownership evidence: the fresh runtime-owned
     // Streamline handoff queue preserved across the FSR->DLSS transition. Once
     // that stricter family is still half-armed, forcing its first comeback
-    // Presents down the old synthetic/bypass return path just reopens the
-    // sl_dlss_g crash seam before the post-FSR bootstrap can progress.
+    // Presents down the old synthetic/bypass return path reopens the old crash
+    // seam before the post-FSR bootstrap can progress. Talos showed one more
+    // nuance: a GetState-only comeback is still weaker evidence than an explicit
+    // SetOptions re-enable, so this widened post-FSR rule must trust only the
+    // explicit-enable case.
     const bool startupHalfArmed =
         postSLStartupActivationPending || postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling;
     return !observerOnlyMode && callerFromStreamlineModule && startupHalfArmed && streamlineSyntheticReentrant &&
-           (startupTopLevelPresentConsumed || hadFSRFGPhase);
+           (startupTopLevelPresentConsumed || (hadFSRFGPhase && explicitSetOptionsActivation));
 }
 
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(bool observerOnlyMode,
                                                                                  bool hadFSRFGPhase,
+                                                                                 bool explicitSetOptionsActivation,
                                                                                  bool postSLStartupActivationPending,
                                                                                  bool postSLActiveButUnconfirmed,
                                                                                  bool postSLConfirmedButStartupSettling,
@@ -356,7 +361,8 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
     // startup-family Presents are kept on the normal SL route for safety, they
     // still need to invoke the callback there or the post-FSR countdown never
     // advances and the next comeback Present falls back into the old bypass seam.
-    return hadFSRFGPhase && (postSLStartupActivationPending || postSLActiveButUnconfirmed);
+    return hadFSRFGPhase && explicitSetOptionsActivation &&
+           (postSLStartupActivationPending || postSLActiveButUnconfirmed);
 }
 
 inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(

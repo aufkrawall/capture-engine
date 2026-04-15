@@ -13,6 +13,10 @@ void Shutdown();
 // slDLSSGGetState fallback reconciliation.
 bool IsDLSSFGRequestedViaStreamline();
 
+// True once the current comeback has seen an explicit slDLSSGSetOptions enable,
+// not just a provisional GetState-only activation.
+bool HasExplicitSetOptionsActivationForCurrentComeback();
+
 // Called by the DX12 FFX handoff path when authoritative FFX runtime traffic
 // takes ownership of the swapchain. Clears cached Streamline viewport state so
 // stale slDLSSGGetState polling cannot immediately resurrect DLSS FG.

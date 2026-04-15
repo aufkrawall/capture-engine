@@ -261,6 +261,10 @@ bool HookHasFSRFGHistory() {
     return g_HadFSRFGPhase;
 }
 
+bool HookHasExplicitStreamlineSetOptionsActivation() {
+    return StreamlineHook::HasExplicitSetOptionsActivationForCurrentComeback();
+}
+
 // After FSR→DLSS→OFF: the swapchain's backbuffers have indeterminate GPU
 // resource state from the FG pipeline teardown.  Direct rendering with
 // explicit PRESENT→RENDER_TARGET barriers causes DEVICE_REMOVED when the
@@ -6796,7 +6800,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         ID3D12CommandQueue* wrapperBootstrapQueue = latestSLWrapperQueue;
         if (ce::dx12_overlay_policy::ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(
                 g_HadFSRFGPhase, slFGNow, directQueueBehindWrapper != nullptr, validatedCommandQueueIsWrapper,
-                scQueue != nullptr && scQueue != g_OriginalGameQueue)) {
+                scQueue != nullptr && scQueue != g_OriginalGameQueue,
+                HookHasExplicitStreamlineSetOptionsActivation())) {
             wrapperBootstrapQueue = validatedCommandQueue;
         }
         bool hasDirectQueueBehindWrapper = directQueueBehindWrapper != nullptr;
@@ -6806,7 +6811,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             ce::dx12_overlay_policy::ShouldPreferValidatedDirectQueueForPostFSRLock(g_HadFSRFGPhase, slFGNow,
                                                                                     hasDirectQueueBehindWrapper);
         bool allowWrapperBootstrapQueue = ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(
-            g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper, wrapperBootstrapQueue != nullptr);
+            g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper, wrapperBootstrapQueue != nullptr,
+            HookHasExplicitStreamlineSetOptionsActivation());
         const bool lockedQueueIsSLWrapper =
             g_PostSLLockedQueue && g_PostSLLockedQueue != g_OriginalGameQueue && g_PostSLLockedQueue != scQueue;
         ExecuteCommandListsPtr scQueueOrigECL = scQueue ? GetOriginalExecuteCommandLists(scQueue) : nullptr;

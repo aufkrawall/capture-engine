@@ -80,6 +80,10 @@ bool HookHasFSRFGHistory() {
     return false;
 }
 
+bool HookHasExplicitStreamlineSetOptionsActivation() {
+    return false;
+}
+
 // Stubs for streamline_hook.cpp (StreamlineHook namespace)
 namespace StreamlineHook {
 void FlushSuppressedSetOptionsOffIfNeeded() {}

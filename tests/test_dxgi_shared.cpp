@@ -214,30 +214,32 @@ TEST(DXGISharedTest, ObserverModesKeepSpecialStreamlinePresentRoutingPassive) {
 
 TEST(DXGISharedTest, WrapperBackedSyntheticStartupPresentCanStayOnNormalRouteInActiveMode) {
     EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, true, true, true, false, false, true));
+        false, false, false, true, true, true, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, true, true, false, true, false, true));
+        false, false, false, true, true, false, true, false, true));
     EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, true, true, false, false, true, true));
+        false, false, false, true, true, false, false, true, true));
     EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, false, true, true, false, false, true));
+        false, true, true, false, true, true, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, false, true, false, true, false, true));
+        false, true, true, false, true, false, true, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+        false, true, false, false, true, true, false, false, true));
 
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        true, false, true, true, true, false, false, true));
+        true, false, false, true, true, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, false, true, true, false, false, true));
+        false, false, false, false, true, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, true, false, true, false, false, true));
+        false, false, false, true, false, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, true, true, false, false, false, true));
+        false, false, false, true, true, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, true, true, false, false, false, false));
+        false, false, false, true, true, false, false, false, false));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, true, true, false, true, false, false));
+        false, false, false, true, true, false, true, false, false));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, false, true, false, false, false, true));
+        false, true, false, false, true, false, false, false, true));
 }
 
 TEST(DXGISharedTest, PostSLCallbackStaysInstalledOnlyWhileStreamlineStillOwnsPresentPath) {
@@ -1292,34 +1294,38 @@ TEST(DXGISharedTest, PostSLValidatedDirectQueueCandidateRejectsKnownWrapperShape
 }
 
 TEST(DXGISharedTest, PostSLUsesWrapperBootstrapQueueAfterFSROnlyWhenDirectPathIsUnavailable) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true, false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(false, true, false, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, false, false, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(false, true, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, false, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true, true));
 }
 
 TEST(DXGISharedTest, PostSLPrefersValidatedCommandQueueWrapperForBootstrapAfterFSR) {
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(true, true, false, true,
-                                                                                         false));
+                                                                                         false, false));
 
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(false, true, false, true,
-                                                                                         false));
+                                                                                         false, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(true, false, false, true,
-                                                                                         false));
+                                                                                         false, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(true, true, true, true,
-                                                                                         false));
+                                                                                         false, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(true, true, false, false,
-                                                                                         false));
+                                                                                         false, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(true, true, false, true,
-                                                                                         true));
+                                                                                         true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(true, true, false, true,
+                                                                                         false, true));
 }
 
 TEST(DXGISharedTest, PostSLPromotesFromWrapperBootstrapToRealQueueAfterFSR) {
@@ -1533,22 +1539,24 @@ TEST(DXGISharedTest, ConfirmedPostSLStartupRoutingSettlesAfterEightFrames) {
 
 TEST(DXGISharedTest, ConfirmedStartupSettlingCanStillInvokePostSLWithoutSyntheticBypass) {
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, true, true));
+        false, false, false, false, false, true, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, false, false, true));
+        false, true, true, true, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, false, true, false, true));
+        false, true, true, false, true, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+        false, true, false, true, false, false, true));
 
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        true, false, false, false, true, true));
+        true, false, false, false, false, true, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, false, true));
+        false, false, false, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, true, false));
+        false, false, false, false, false, true, false));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, true, false, false, true));
+        false, false, false, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, true, false, true));
+        false, false, false, false, true, false, true));
 }
 
 TEST(DXGISharedTest, ConfirmedStandaloneStreamlinePresentCanStillInvokePostSLOnNormalRouteAfterStartupSettles) {
@@ -1722,7 +1730,7 @@ TEST(DXGISharedTest, PostSLSyntheticStartupActivationPendingTracksStartupleHando
     // actually confirmed a render.
     const bool startupStillHalfArmedAfterActivation =
         DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-            false, false, true, true, true, true, false, true);
+            false, false, false, true, true, true, true, false, true);
     EXPECT_TRUE(startupStillHalfArmedAfterActivation);
 
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);

@@ -1066,6 +1066,10 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
 
 namespace StreamlineHook {
 
+bool HasExplicitSetOptionsActivationForCurrentComeback() {
+    return !g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire);
+}
+
 void Init() {
     std::lock_guard<std::mutex> lock(g_InitMutex);
     RegisterDynamicHooksOnce();

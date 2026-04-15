@@ -144,6 +144,11 @@ bool HookIsPostSLOverlayConfirmedButStartupSettling();
 // cold-start family from the stricter post-FSR comeback path.
 bool HookHasFSRFGHistory();
 
+// DX12 exports this so shared routing and queue-selection code can tell when a
+// post-FSR comeback has already seen an explicit Streamline SetOptions enable,
+// not just a provisional GetState-only activation.
+bool HookHasExplicitStreamlineSetOptionsActivation();
+
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
 float GetActivePrerenderLimit();
