@@ -39,6 +39,7 @@ Repository-specific instructions for coding agents working in this repo.
 
 ## Practical Agent Rules
 - `python build.py` is the canonical build entry point, generally prefer running it with at least `--skip-updates`.
+- DO NOT RUN `python build.py --version` !!
 - Match the local subsystem pattern instead of imposing a new one.
 - The worktree may already contain unrelated user edits; do not revert them.
 - If `compile_commands.json` or clangd looks stale after structural build changes, regenerate it with `python build.py`.

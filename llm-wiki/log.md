@@ -14,6 +14,28 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Keep the first few confirmed PostSL startup frames off the synthetic/bypass Present path too
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_023816` on build `0.1.2280` changed the picture again. This run proved that the new ECL-driven visible-overlay bridge works: the trace now reaches `DX12: PostSL WARMUP COMPLETE`, `DX12: PostSL CONFIRMED rendering via re-entrant Present`, and two successful `DX12: Post-SL overlay SUBMIT` lines, so the overlay no longer merely disappears under DLSS FG. But the crash moved one seam later immediately afterward. Right after `Post-SL overlay SUBMIT #2`, `hook_debug.log` logs `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`, and the mirrored dump `external_71bce012-9f7a-4425-bdb2-04901d895cdb.dmp` is still the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family. That proved the startup-family normal-route guard was still dropping one callback too early: first confirmation/render is not yet enough proof that GTA's pure-DLSS startup family has fully settled.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now exposes `ShouldTreatConfirmedPostSLRenderingAsStartupSettling()`, which keeps a short explicit settling window alive for the first few confirmed PostSL frames after the first successful submit.
+  2. `hook/apis/dx12_hook.cpp` now exports that state as `HookIsPostSLOverlayConfirmedButStartupSettling()` using `g_PostSLConfirmedRendering` plus `g_PostSLStableFrameCount`.
+  3. `hook/common/hook_common.h` declares that new hook-common accessor so the shared routing layer can consume it without peeking into DX12 internals.
+  4. `hook/common/dxgi_shared.h/.cpp` now widen `ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute()` again: once the one-shot bootstrap has been consumed, Streamline-originated startup Presents stay off the synthetic/bypass path not only while startup is pending or PostSL is active-but-unconfirmed, but also while PostSL has only just confirmed and is still in that explicit startup-settling window.
+  5. `tests/test_dxgi_shared.cpp` now extends the startup-routing guard coverage for this new confirmed-but-settling phase and adds `ConfirmedPostSLStartupRoutingSettlesAfterThreeFrames`; `tests/test_stubs.cpp` now provides the small stub for the new hook-common accessor.
+
+- **Why this is generic**: The latest GTA trace shows that "first confirmed render" and "startup-family routing is fully safe again" are not identical milestones. CE can now visibly render and still be inside one more fragile Streamline startup callback family before the runtime settles into the normal long-running synthetic/re-entrant Present pattern that Talos already uses safely. Holding the normal-route guard for a few confirmed startup frames is therefore a generic state-machine refinement, not a title-specific hack.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_023816/{session_manifest.txt,hook_debug.log,external_71bce012-9f7a-4425-bdb2-04901d895cdb.dmp}`.
+  - Analyzed `external_71bce012-9f7a-4425-bdb2-04901d895cdb.dmp` with `cdb.exe`; it is still the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family, but now only after `PostSL CONFIRMED rendering` and two visible PostSL submits.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 566 tests passed and the build version bumped to `0.1.2281`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_023816/session_manifest.txt`, `installed/captureengine/logs/20260415_023816/hook_debug.log`, `installed/captureengine/logs/20260415_023816/external_71bce012-9f7a-4425-bdb2-04901d895cdb.dmp`, `hook/common/hook_common.h`, `hook/common/dx12_overlay_policy.h`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `tests/test_stubs.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2281` is required. The next check is whether the first post-confirmation Streamline-originated Present now stays on the normal SL route and whether GTA then converges into the same long-running stable PostSL submit family Talos already shows.
+
 ### 2026-04-15 - Continue ECL-driven PostSL startup progress until the first visible confirmation when GTA does not surface a re-entrant PostSL callback
 
 - **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_022108` on build `0.1.2279` showed that the active startup-routing crash family is fixed, but visible overlay rendering still had one remaining gap. With `overlay_enabled=1`, the run stayed alive and reached `DX12: PostSL synthetic startup activation complete`, `DX12: PostSL REACTIVATED`, and `DX12: PostSL warm-up after reactivation epoch=1 frame=1/15`. But after that, the overlay disappeared instead of confirming/rendering. The trace never reached `DX12: PostSL CONFIRMED rendering via re-entrant Present` or any `DX12: Post-SL overlay SUBMIT` line. Instead it stayed permanently in the half-armed startup family: `DetourPresent: Keeping decisive synthetic Streamline startup Present on the normal SL route ...` continued through at least `#1700`, `DX12: Suppressing pre-SL draw during SL FG startup — waiting for PostSL ...` repeated, and the routing-state diagnostics kept showing `postSLCallback=1 postSLActive=1 ... stableFrames=0`. Talos differs because its healthy DLSS FG path still produces a real re-entrant PostSL callback after activation, which quickly reaches `CONFIRMED rendering` and visible submits.

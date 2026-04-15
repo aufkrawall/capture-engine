@@ -210,22 +210,26 @@ TEST(DXGISharedTest, ObserverModesKeepSpecialStreamlinePresentRoutingPassive) {
 
 TEST(DXGISharedTest, WrapperBackedSyntheticStartupPresentCanStayOnNormalRouteInActiveMode) {
     EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, true, true, false, true));
+        false, true, true, true, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, true, false, true, true));
+        false, true, true, false, true, false, true));
+    EXPECT_TRUE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+        false, true, true, false, false, true, true));
 
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        true, true, true, true, false, true));
+        true, true, true, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, false, true, true, false, true));
+        false, false, true, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, false, true, false, true));
+        false, true, false, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, true, false, false, true));
+        false, true, true, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, true, false, false, false));
+        false, true, true, false, false, false, false));
     EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-        false, true, true, false, true, false));
+        false, true, true, false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+        false, true, true, false, false, false, true));
 }
 
 TEST(DXGISharedTest, PostSLCallbackStaysInstalledOnlyWhileStreamlineStillOwnsPresentPath) {
@@ -1409,6 +1413,15 @@ TEST(DXGISharedTest, ConfirmedPostSLStaysActiveDuringRemainingFGCooldown) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLDuringFGCooldown(true, false));
 }
 
+TEST(DXGISharedTest, ConfirmedPostSLStartupRoutingSettlesAfterThreeFrames) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 0));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 1));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 2));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(false, 0));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 3));
+}
+
 TEST(DXGISharedTest, SyntheticStartupStateStaysHalfArmedUntilConfirmedRender) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(true, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(false, true, false));
@@ -1549,7 +1562,7 @@ TEST(DXGISharedTest, PostSLSyntheticStartupActivationPendingTracksStartupleHando
     // actually confirmed a render.
     const bool startupStillHalfArmedAfterActivation =
         DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-            false, true, true, true, true, true);
+            false, true, true, true, true, false, true);
     EXPECT_TRUE(startupStillHalfArmedAfterActivation);
 
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);

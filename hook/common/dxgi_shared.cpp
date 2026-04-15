@@ -936,6 +936,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool postSLActiveButUnconfirmed = api == APIType::D3D12 &&
         HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool postSLConfirmedButStartupSettling = api == APIType::D3D12 &&
+        HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -984,14 +986,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             observerOnlyMode,
             g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
             callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+            postSLConfirmedButStartupSettling,
             streamlineSyntheticReentrant)) {
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent: Keeping decisive synthetic Streamline startup Present on the normal SL route #%d "
-                "(startupPending=%d consumed=1 windowActive=%d tid=0x%04X)",
+                "(startupPending=%d unconfirmed=%d settling=%d consumed=1 windowActive=%d tid=0x%04X)",
                 logCount, postSLStartupActivationPending ? 1 : 0,
+                postSLActiveButUnconfirmed ? 1 : 0,
+                postSLConfirmedButStartupSettling ? 1 : 0,
                 streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
         }
         streamlineSyntheticReentrant = false;
@@ -1359,6 +1364,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool postSLActiveButUnconfirmed = api == APIType::D3D12 &&
         HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool postSLConfirmedButStartupSettling = api == APIType::D3D12 &&
+        HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -1407,14 +1414,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             observerOnlyMode,
             g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
             callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+            postSLConfirmedButStartupSettling,
             streamlineSyntheticReentrant)) {
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount1{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent1: Keeping decisive synthetic Streamline startup Present1 on the normal SL route #%d "
-                "(startupPending=%d consumed=1 windowActive=%d tid=0x%04X)",
+                "(startupPending=%d unconfirmed=%d settling=%d consumed=1 windowActive=%d tid=0x%04X)",
                 logCount, postSLStartupActivationPending ? 1 : 0,
+                postSLActiveButUnconfirmed ? 1 : 0,
+                postSLConfirmedButStartupSettling ? 1 : 0,
                 streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
         }
         streamlineSyntheticReentrant = false;

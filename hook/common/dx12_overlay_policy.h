@@ -1098,6 +1098,16 @@ inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRend
     return streamlineStartupTransitionWindowActive && stablePostSLFrameCount >= 2;
 }
 
+inline bool ShouldTreatConfirmedPostSLRenderingAsStartupSettling(bool postSLConfirmedRendering,
+                                                                 int stablePostSLFrameCount) {
+    // The first successful PostSL submit proves the render path works, but some
+    // pure-DLSS startup families still emit one more fragile Streamline Present
+    // immediately afterward. Keep the startup-family routing guard alive until
+    // a few consecutive confirmed PostSL frames have completed.
+    constexpr int kConfirmedPostSLStartupSettleFrames = 3;
+    return postSLConfirmedRendering && stablePostSLFrameCount < kConfirmedPostSLStartupSettleFrames;
+}
+
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,
                                                                     bool postSLConfirmedRendering,
                                                                     bool useTopLevelHandoffWrapperProgress) {

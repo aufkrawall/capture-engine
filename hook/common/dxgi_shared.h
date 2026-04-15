@@ -289,17 +289,22 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
                                                                      bool callerFromStreamlineModule,
                                                                      bool postSLStartupActivationPending,
                                                                      bool postSLActiveButUnconfirmed,
+                                                                     bool postSLConfirmedButStartupSettling,
                                                                      bool streamlineSyntheticReentrant) {
     // Once the pure-DLSS startup family has already consumed its one-shot
     // top-level bootstrap, the next decisive Streamline-originated Present can be
     // the only callback opportunity before the runtime either settles or stalls.
     // Sending that call down the old synthetic/bypass path can strand PostSL both
     // before activation and during the first post-activation warm-up callbacks
-    // before PostSL has ever confirmed a successful render. Keep the call on the
-    // normal SL route instead while startup is still half-armed.
+    // before PostSL has ever confirmed a successful render. GTA's latest active
+    // validation also showed one more seam: the very next Streamline-originated
+    // Present immediately after the first successful PostSL submits can still be
+    // part of the same fragile startup family. Keep the call on the normal SL
+    // route instead until startup is no longer half-armed and those first
+    // confirmed PostSL frames have settled.
     return !observerOnlyMode && startupTopLevelPresentConsumed &&
            callerFromStreamlineModule &&
-           (postSLStartupActivationPending || postSLActiveButUnconfirmed) &&
+           (postSLStartupActivationPending || postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling) &&
            streamlineSyntheticReentrant;
 }
 
