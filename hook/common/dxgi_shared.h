@@ -249,12 +249,29 @@ inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay,
 
 inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapChain, bool streamlineFGRunning,
                                                              bool callerFromStreamlineModule,
+                                                             bool postSLConfirmedRendering,
+                                                             bool postSLConfirmedButStartupSettling,
                                                              bool streamlineStartupHandoffInProgress,
                                                              bool presentOwnershipActive,
                                                              bool recentLargePresentGap,
                                                              bool matchesExpectedPresentThread,
                                                              bool startupTopLevelPresentAlreadyConsumed) {
     if (!(isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule)) {
+        return false;
+    }
+
+    // Once PostSL has already confirmed a successful render and the explicit
+    // confirmed-startup-settling window has ended, a later Streamline-originated
+    // Present that arrives with no active Present owner is no longer just a
+    // synthetic worker-thread recursion candidate. That is the live FG Present
+    // path resurfacing as a standalone top-level call, and forcing it through the
+    // synthetic/bypass path corrupts the active DX12 FG chain.
+    //
+    // During the short confirmed-startup-settling window, however, GTA still
+    // needs these standalone Streamline Presents to classify as synthetic first
+    // so the later callback-on-normal-route split can keep PostSL rendering
+    // advancing without sending the Present itself down the old bypass path.
+    if (postSLConfirmedRendering && !postSLConfirmedButStartupSettling && !presentOwnershipActive) {
         return false;
     }
 

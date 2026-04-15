@@ -936,6 +936,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool postSLActiveButUnconfirmed = api == APIType::D3D12 &&
         HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool postSLConfirmedRendering = api == APIType::D3D12 &&
+        HookIsPostSLOverlayConfirmedRendering();
     const bool postSLConfirmedButStartupSettling = api == APIType::D3D12 &&
         HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
@@ -961,8 +963,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
     bool streamlineSyntheticReentrant = ShouldAllowSpecialStreamlinePresentRouting(observerOnlyMode) &&
         ShouldTreatStreamlinePresentAsSyntheticReentrant(
-        api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
-        streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
+        api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule, postSLConfirmedRendering,
+        postSLConfirmedButStartupSettling, streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
         matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
     const bool startupTopLevelCandidate = !observerOnlyMode &&
         !streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&
@@ -1374,6 +1376,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool postSLActiveButUnconfirmed = api == APIType::D3D12 &&
         HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool postSLConfirmedRendering = api == APIType::D3D12 &&
+        HookIsPostSLOverlayConfirmedRendering();
     const bool postSLConfirmedButStartupSettling = api == APIType::D3D12 &&
         HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
@@ -1399,8 +1403,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
     bool streamlineSyntheticReentrant = ShouldAllowSpecialStreamlinePresentRouting(observerOnlyMode) &&
         ShouldTreatStreamlinePresentAsSyntheticReentrant(
-        api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
-        streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
+        api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule, postSLConfirmedRendering,
+        postSLConfirmedButStartupSettling, streamlineStartupHandoffInProgress, presentOwnershipActive, recentLargePresentGap,
         matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
     const bool startupTopLevelCandidate = !observerOnlyMode &&
         !streamlineSyntheticReentrant && callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&

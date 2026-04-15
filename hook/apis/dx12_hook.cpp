@@ -172,6 +172,10 @@ bool HookIsPostSLOverlayActiveButUnconfirmed() {
             !g_PostSLConfirmedRendering.load(std::memory_order_acquire));
 }
 
+bool HookIsPostSLOverlayConfirmedRendering() {
+    return g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+}
+
 // Counts Present calls where PostSL was expected but didn't fire.
 // ProcessFrame increments this; PostSLOverlayRender resets it to 0.
 // When it exceeds kPostSLStallThreshold (5), pre-SL rendering is allowed

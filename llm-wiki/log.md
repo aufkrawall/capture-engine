@@ -14,6 +14,67 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Let confirmed standalone Streamline Presents become live only after the explicit startup-settling window ends
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_142256` on build `0.1.2286` proved that the previous structural no-crash fix solved the synthetic/bypass crash seam, but it also exposed a no-crash/no-overlay regression. This run stayed alive for the whole DLSS FG window, reached `DX12: PostSL CONFIRMED rendering via re-entrant Present`, and logged exactly one `DX12: Post-SL overlay SUBMIT #1`. After that, `stableFrames` stayed pinned at `1`, `skip=1` showed up in the routing-state diagnostics, and the trace only logged `DX12: PostSL warmup — suppressing stall fallback ...` while more `Keeping decisive synthetic Streamline startup Present on the normal SL route ... callbackOnNormal=0` lines continued. Comparing this against the earlier `installed/captureengine/logs/20260415_025500` visibility-regression run clarified the new mismatch: the `0.1.2286` standalone-live early-out was now kicking in during the explicit confirmed-startup-settling window too, so those standalone Streamline Presents no longer classified as synthetic first and the existing callback-on-normal-route split never ran.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now widens `ShouldTreatStreamlinePresentAsSyntheticReentrant()` with one more state input: `postSLConfirmedButStartupSettling`.
+  2. The standalone-live early-out now applies only when PostSL has confirmed rendering, there is no Present owner, and the explicit confirmed-startup-settling window has already ended.
+  3. `hook/common/dxgi_shared.cpp` now feeds the existing DX12-side settling signal into both `DetourPresent` and `DetourPresent1`.
+  4. `tests/test_dxgi_shared.cpp` now updates the helper-call coverage to the 10-argument signature and adds `ConfirmedPostSLStandaloneStreamlinePresentStaysSyntheticDuringStartupSettling` so this exact boundary stays locked in place.
+
+- **Why this is generic**: The `0.1.2286` topology fix itself is still right: a confirmed standalone Streamline Present with no owner is usually the live FG Present path, not recursion. The new trace only shows that this stronger invariant starts one phase too early. During the explicit confirmed-startup-settling window, CE still needs those same standalone Streamline Presents to classify as synthetic first so it can invoke PostSL while keeping the Present itself on the normal SL route. Narrowing the standalone-live rule to start after settling preserves the structural no-crash fix without losing the earlier generic callback-on-normal-route behavior.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_142256/{session_manifest.txt,hook_debug.log}`.
+  - Compared the no-crash/no-overlay tail against `installed/captureengine/logs/20260415_134348/hook_debug.log` and `installed/captureengine/logs/20260415_025500/hook_debug.log` to confirm the new seam was specifically the missing callback-on-normal behavior after the first confirmed submit.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 569 tests passed and the build version bumped to `0.1.2288`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_142256/session_manifest.txt`, `installed/captureengine/logs/20260415_142256/hook_debug.log`, `installed/captureengine/logs/20260415_134348/hook_debug.log`, `installed/captureengine/logs/20260415_025500/hook_debug.log`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2288` is required. The next check is whether GTA now keeps submitting visible PostSL frames beyond `#1` without reopening the old crash family once the explicit startup-settling window eventually ends.
+
+### 2026-04-15 - Stop treating confirmed standalone Streamline Presents as synthetic just because the settling frame counter expired
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_134348` on build `0.1.2285` showed that widening the confirmed-startup settling counter again would be the wrong kind of fix. This run got even further: `hook_debug.log` now reaches `DX12: Post-SL overlay SUBMIT #1` through `#9`, and the overlay stays visible longer than before. But right after `Post-SL overlay SUBMIT #9`, the trace still logs `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`, and the mirrored dump `external_7cf70a46-bae2-4f9c-89c7-9f7a1643db69.dmp` is still the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family. The important new detail is structural, not temporal: the crashing Present arrives on the same Streamline thread that just produced the visible PostSL submits, and it arrives with `presentOwner=0`. So this is no longer evidence that we merely need more settling frames. It is evidence that once PostSL has already confirmed rendering, CE is still misclassifying a standalone live Streamline Present as a synthetic recursive one.
+
+- **Fix**:
+  1. `hook/common/hook_common.h` now declares `HookIsPostSLOverlayConfirmedRendering()`, and `hook/apis/dx12_hook.cpp` exports it from `g_PostSLConfirmedRendering`.
+  2. `hook/common/dxgi_shared.h` now widens `ShouldTreatStreamlinePresentAsSyntheticReentrant()` with one new structural rule: if PostSL has already confirmed rendering and there is no active Present owner, the Streamline-originated Present is kept off the synthetic/bypass path.
+  3. `hook/common/dxgi_shared.cpp` now feeds that confirmed-rendering signal into both `DetourPresent` and `DetourPresent1`.
+  4. `tests/test_dxgi_shared.cpp` now adds `ConfirmedPostSLStandaloneStreamlinePresentUsesNormalRouteWithoutPresentOwner`, and the existing synthetic-routing tests were updated to the new helper signature. `tests/test_stubs.cpp` now provides the new stub.
+
+- **Why this is generic**: This does not add a GTA-specific exception or a timing bandaid. It removes one incorrect assumption from the shared routing layer: that every later standalone Streamline-originated Present should still be treated as synthetic once a short settling counter expires. The stronger invariant is based on observed topology instead: after PostSL has already confirmed rendering, a Streamline Present with no active Present owner is evidence of the live FG Present path, not of nested recursion.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_134348/{session_manifest.txt,hook_debug.log,external_7cf70a46-bae2-4f9c-89c7-9f7a1643db69.dmp}`.
+  - Compared the failure tail against `installed/captureengine/logs/20260415_034759/hook_debug.log` to confirm that simply widening the settling counter only moved the same seam later.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 568 tests passed and the build version bumped to `0.1.2286`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_134348/session_manifest.txt`, `installed/captureengine/logs/20260415_134348/hook_debug.log`, `installed/captureengine/logs/20260415_134348/external_7cf70a46-bae2-4f9c-89c7-9f7a1643db69.dmp`, `installed/captureengine/logs/20260415_034759/hook_debug.log`, `hook/common/hook_common.h`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `tests/test_stubs.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2286` is required. If GTA still crashes after visible PostSL rendering, the next suspicion is not the old settling counter anymore; it will be whichever remaining standalone Streamline Present topology still bypasses the live-path classification despite `presentOwner=0` and confirmed PostSL rendering.
+
+### 2026-04-15 - Keep the confirmed-startup settling guard alive through the first eight visible PostSL frames
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_034759` on build `0.1.2284` proved the previous 6-frame widening was still directionally right, but still one seam too narrow. This run got further than `0.1.2283`: `hook_debug.log` now reaches `DX12: Post-SL overlay SUBMIT #1` through `#7`, and the overlay stays visibly present longer under DLSS FG. But immediately after `Post-SL overlay SUBMIT #7`, the trace still logs `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`, and the mirrored dump `external_ac9dd44f-b1a8-43d9-90bb-cba80fffc34e.dmp` remains the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` breakpoint-corruption family. The crucial detail is that the crash now returns only after `stableFrames=6`, which means the existing confirmed-startup settling guard is still the right mechanism; it just drops one callback too early for GTA's startup family.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now widens `ShouldTreatConfirmedPostSLRenderingAsStartupSettling()` from 6 confirmed PostSL frames to 8.
+  2. `tests/test_dxgi_shared.cpp` now updates the regression coverage accordingly: the startup-settling state remains true through frames `0..7` and only clears at frame `8`.
+
+- **Why this is generic**: The new trace does not reveal a different routing family or a GTA-only special case. It shows the same previously identified startup-settling boundary moving later again as the earlier seams are fixed. Extending that one existing generic settling phase is still the smallest change that matches the runtime evidence.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_034759/{session_manifest.txt,hook_debug.log,external_ac9dd44f-b1a8-43d9-90bb-cba80fffc34e.dmp}`.
+  - Analyzed `external_ac9dd44f-b1a8-43d9-90bb-cba80fffc34e.dmp` with `cdb.exe`; it is still the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family, now only after seven visible PostSL submits.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 567 tests passed and the build version bumped to `0.1.2285`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_034759/session_manifest.txt`, `installed/captureengine/logs/20260415_034759/hook_debug.log`, `installed/captureengine/logs/20260415_034759/external_ac9dd44f-b1a8-43d9-90bb-cba80fffc34e.dmp`, `hook/common/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2285` is required. The next check is whether GTA now survives beyond the first seven visible PostSL submits without dropping back into the synthetic/bypass Streamline Present path, or whether the settling phase still needs a stronger exit condition than raw stable-frame count.
+
 ### 2026-04-15 - Keep the confirmed-startup settling guard alive for more than just the first few visible PostSL frames
 
 - **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_033913` on build `0.1.2283` showed another clean boundary move. The latest callback-on-normal-route split clearly improved behavior: the overlay was finally visible for a few frames with DLSS FG active, and `hook_debug.log` now reaches `DX12: Post-SL overlay SUBMIT #1`, `#2`, `#3`, and `#4`. But the crash still returned immediately afterward. Right after that short burst of visible PostSL submits, the trace logs `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`, and the mirrored dump `external_3dd0a200-60f8-42ad-b666-60fcd5368f37.dmp` is still the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family. The crucial signal is that the crash no longer returns before visible PostSL rendering starts; it returns only after a few successful confirmed startup frames. That means the remaining problem is not a missing callback anymore. The confirmed-startup settling window is simply still too short.

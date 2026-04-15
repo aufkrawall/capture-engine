@@ -68,6 +68,10 @@ bool HookIsPostSLOverlayActiveButUnconfirmed() {
     return false;
 }
 
+bool HookIsPostSLOverlayConfirmedRendering() {
+    return false;
+}
+
 bool HookIsPostSLOverlayConfirmedButStartupSettling() {
     return false;
 }
