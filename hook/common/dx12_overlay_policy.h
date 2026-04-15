@@ -775,6 +775,18 @@ inline bool ShouldRememberPostSLLastWorkingQueue(bool queueIsSLWrapper) {
     return !queueIsSLWrapper;
 }
 
+inline bool ShouldSeedStreamlineStartupBootstrapAsConsumedForConfirmedPostSLResume(
+    bool hadFSRFGPhase, bool hasPostSLLastWorkingQueue, bool hasSwapchainQueue,
+    bool swapchainQueueMatchesPostSLLastWorkingQueue) {
+    // Pure-DLSS resume after a real DLSS suspension should reuse the already
+    // proven PostSL topology when the live swapchain queue still matches the last
+    // queue that successfully rendered PostSL. Reopening the old startup
+    // bootstrap seam in that case sends the first resumed Streamline Present back
+    // down the synthetic/bypass route and reproduces the GTA menu-close crash.
+    return !hadFSRFGPhase && hasPostSLLastWorkingQueue && hasSwapchainQueue &&
+           swapchainQueueMatchesPostSLLastWorkingQueue;
+}
+
 inline bool ShouldTreatPostSLSelectedQueueAsWrapper(bool queueMatchesOriginalGameQueue, bool queueMatchesDedicatedQueue,
                                                     bool queueMatchesSwapchainQueue,
                                                     bool selectedQueueOrigECLMatchesRealECL) {

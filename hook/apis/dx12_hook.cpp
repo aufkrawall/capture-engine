@@ -3880,6 +3880,23 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 staleScQueue->Release();
             }
         }
+
+        ID3D12CommandQueue* resumeSwapchainQueue = nullptr;
+        ID3D12CommandQueue* resumeLastWorkingQueue = nullptr;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+            resumeSwapchainQueue = g_SwapchainQueue;
+            resumeLastWorkingQueue = g_PostSLLastWorkingQueue;
+        }
+        if (ce::dx12_overlay_policy::ShouldSeedStreamlineStartupBootstrapAsConsumedForConfirmedPostSLResume(
+                g_HadFSRFGPhase, resumeLastWorkingQueue != nullptr, resumeSwapchainQueue != nullptr,
+                resumeSwapchainQueue != nullptr && resumeSwapchainQueue == resumeLastWorkingQueue)) {
+            DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.store(true, std::memory_order_release);
+            HookLogImportant(
+                "DX12: Streamline FG ON — seeded startup bootstrap as already consumed for confirmed PostSL resume "
+                "(scQueue=%p lastWorking=%p)",
+                resumeSwapchainQueue, resumeLastWorkingQueue);
+        }
         return;
     }
 
