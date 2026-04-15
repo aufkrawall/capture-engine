@@ -1485,6 +1485,37 @@ TEST(DXGISharedTest, ConfirmedStartupSettlingCanStillInvokePostSLWithoutSyntheti
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(false, true, false));
 }
 
+TEST(DXGISharedTest, ConfirmedStandaloneStreamlinePresentCanStillInvokePostSLOnNormalRouteAfterStartupSettles) {
+    EXPECT_TRUE(
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            false, true, true, true, true, false, false, false));
+
+    EXPECT_FALSE(
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            true, true, true, true, true, false, false, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            false, false, true, true, true, false, false, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            false, true, false, true, true, false, false, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            false, true, true, false, true, false, false, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            false, true, true, true, false, false, false, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            false, true, true, true, true, true, false, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            false, true, true, true, true, false, true, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            false, true, true, true, true, false, false, true));
+}
+
 TEST(DXGISharedTest, SyntheticStartupStateStaysHalfArmedUntilConfirmedRender) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(true, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(false, true, false));

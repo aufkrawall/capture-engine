@@ -336,9 +336,24 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
     return !observerOnlyMode && postSLConfirmedButStartupSettling && streamlineSyntheticReentrant;
 }
 
+inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+    bool observerOnlyMode, bool isD3D12SwapChain, bool streamlineFGRunning, bool callerFromStreamlineModule,
+    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling, bool presentOwnershipActive,
+    bool streamlineSyntheticReentrant) {
+    // Some DLSS FG runtimes surface the steady-state generated-frame Present as a
+    // standalone top-level Streamline call with no active Present owner instead
+    // of a later recursive callback. Keep that Present on the normal SL route,
+    // but still invoke PostSL there once the explicit startup-settling window has
+    // ended so visible PostSL rendering does not starve after the first few
+    // confirmed startup frames.
+    return !observerOnlyMode && isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule &&
+           postSLConfirmedRendering && !postSLConfirmedButStartupSettling && !presentOwnershipActive &&
+           !streamlineSyntheticReentrant;
+}
+
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,
-                                                            bool streamlineStartupHandoffPending,
-                                                            bool streamlineStartupTransitionWindowActive,
+                                                             bool streamlineStartupHandoffPending,
+                                                             bool streamlineStartupTransitionWindowActive,
                                                             bool observerOnlyMode,
                                                             bool observerStartupPresentOnlyMode) {
     // During repeated FSR->DLSS handoffs, FFX teardown Presents can arrive

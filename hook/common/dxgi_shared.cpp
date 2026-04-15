@@ -1013,6 +1013,25 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
         streamlineSyntheticReentrant = false;
     }
+    const bool shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute =
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            observerOnlyMode, api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
+            postSLConfirmedRendering, postSLConfirmedButStartupSettling, presentOwnershipActive,
+            streamlineSyntheticReentrant);
+    if (shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute) {
+        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        if (postSLCallback) {
+            static std::atomic<int> s_confirmedStandaloneNormalRouteCallbackLogCount{0};
+            int logCount = s_confirmedStandaloneNormalRouteCallbackLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (logCount <= 10 || (logCount % 100) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Invoking PostSL on confirmed standalone Streamline Present while keeping the normal "
+                    "SL route #%d (settling=%d owner=0x%04X depth=%d tid=0x%04X)",
+                    logCount, postSLConfirmedButStartupSettling ? 1 : 0, presentOwner, presentDepthVal, currentThreadId);
+            }
+            postSLCallback(pSwapChain);
+        }
+    }
     if (streamlineSyntheticReentrant) {
         auto postSLCallback = observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
@@ -1452,6 +1471,26 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             }
         }
         streamlineSyntheticReentrant = false;
+    }
+    const bool shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute =
+        DXGIShared::ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+            observerOnlyMode, api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
+            postSLConfirmedRendering, postSLConfirmedButStartupSettling, presentOwnershipActive,
+            streamlineSyntheticReentrant);
+    if (shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute) {
+        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        if (postSLCallback) {
+            static std::atomic<int> s_confirmedStandaloneNormalRouteCallbackLogCount1{0};
+            int logCount =
+                s_confirmedStandaloneNormalRouteCallbackLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (logCount <= 10 || (logCount % 100) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Invoking PostSL on confirmed standalone Streamline Present1 while keeping the "
+                    "normal SL route #%d (settling=%d owner=0x%04X depth=%d tid=0x%04X)",
+                    logCount, postSLConfirmedButStartupSettling ? 1 : 0, presentOwner, presentDepthVal, currentThreadId);
+            }
+            postSLCallback(pSwapChain);
+        }
     }
     if (streamlineSyntheticReentrant) {
         auto postSLCallback = observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);

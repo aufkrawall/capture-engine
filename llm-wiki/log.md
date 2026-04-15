@@ -14,6 +14,26 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Keep confirmed standalone Streamline Presents driving PostSL on the normal route after startup settling ends
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_144726` on build `0.1.2288` proved that the previous settling-window refinement fixed the earlier one-frame visibility stall, but also exposed a second seam immediately afterward. This run stayed stable, reached `DX12: PostSL WARMUP COMPLETE`, `DX12: PostSL CONFIRMED rendering via re-entrant Present`, and then `DX12: Post-SL overlay SUBMIT #1` through `#8`. So the visible PostSL path now advances correctly through the whole explicit startup-settling window. But immediately after `stableFrames` reached `8`, `hook_debug.log` stopped logging any more `Post-SL overlay SUBMIT` lines, routing-state diagnostics later showed `skip=1`, `stableFrames=8`, and the trace only emitted `DX12: PostSL warmup — suppressing stall fallback ...` until DLSS FG turned back off. The crash did not return; the visible callback stream simply starved again exactly when the explicit settling window ended.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now adds `ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute()`.
+  2. `hook/common/dxgi_shared.cpp` now uses that helper in both `DetourPresent` and `DetourPresent1`. Once PostSL has confirmed rendering, the explicit startup-settling window has ended, the Present originates from Streamline, and there is still no active Present owner, CE now invokes the PostSL callback while keeping that Present itself on the normal SL route.
+  3. `tests/test_dxgi_shared.cpp` now adds `ConfirmedStandaloneStreamlinePresentCanStillInvokePostSLOnNormalRouteAfterStartupSettles` to lock this exact boundary in place.
+
+- **Why this is generic**: The `0.1.2286`/`0.1.2288` structural refinement is still right: a confirmed standalone Streamline Present with no owner after startup settling is the live FG Present path, not nested recursion, so it must not go down the synthetic/bypass route. The new trace only shows that GTA's callback topology still needs that live standalone Present to drive PostSL work directly on the normal route, because no separate later re-entrant Present stream appears after settling. This is a routing/callback split, not a title-specific exception: keep the Present on the live normal path, but still let that same callback opportunity advance PostSL.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_144726/{session_manifest.txt,hook_debug.log}`.
+  - Compared the post-`stableFrames=8` starvation tail against `installed/captureengine/logs/20260415_134348/hook_debug.log` to confirm that the old crash seam is gone and the remaining issue is specifically missing PostSL callback progress after the explicit settling window ends.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 570 tests passed and the build version bumped to `0.1.2289`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_144726/session_manifest.txt`, `installed/captureengine/logs/20260415_144726/hook_debug.log`, `installed/captureengine/logs/20260415_134348/hook_debug.log`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2289` is required. The next check is whether GTA now keeps rendering visible PostSL frames beyond the first eight confirmed startup frames while still staying off the old synthetic/bypass crash path.
+
 ### 2026-04-15 - Let confirmed standalone Streamline Presents become live only after the explicit startup-settling window ends
 
 - **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_142256` on build `0.1.2286` proved that the previous structural no-crash fix solved the synthetic/bypass crash seam, but it also exposed a no-crash/no-overlay regression. This run stayed alive for the whole DLSS FG window, reached `DX12: PostSL CONFIRMED rendering via re-entrant Present`, and logged exactly one `DX12: Post-SL overlay SUBMIT #1`. After that, `stableFrames` stayed pinned at `1`, `skip=1` showed up in the routing-state diagnostics, and the trace only logged `DX12: PostSL warmup — suppressing stall fallback ...` while more `Keeping decisive synthetic Streamline startup Present on the normal SL route ... callbackOnNormal=0` lines continued. Comparing this against the earlier `installed/captureengine/logs/20260415_025500` visibility-regression run clarified the new mismatch: the `0.1.2286` standalone-live early-out was now kicking in during the explicit confirmed-startup-settling window too, so those standalone Streamline Presents no longer classified as synthetic first and the existing callback-on-normal-route split never ran.
