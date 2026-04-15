@@ -14,6 +14,28 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Confirm GTA V Enhanced DLSS FG stays visible and stable on build 0.1.2289
+
+- **Motivation**: After the `0.1.2289` fix, we needed the first fresh active GTA V Enhanced validation to confirm that the new standalone-normal-route callback split was not only structurally plausible but actually sufficient at runtime.
+
+- **Result**:
+  1. `installed/captureengine/logs/20260415_151044/session_manifest.txt` confirms the intended active injected config on build `0.1.2289`: `overlay_enabled=1`, `overlay_observer_only=0`, `overlay_observer_policy_only=0`, `overlay_observer_startup_present_only=0`.
+  2. `hook_debug.log` shows the repaired full sequence: startup policy/window arming, wrapper-progress-driven activation, `DX12: PostSL CONFIRMED rendering via re-entrant Present`, visible `DX12: Post-SL overlay SUBMIT #1..#8`, then repeated `DetourPresent: Invoking PostSL on confirmed standalone Streamline Present while keeping the normal SL route ...` entries after settling ends.
+  3. The visible PostSL path stays alive for the rest of the DLSS FG window. The same log later reaches `Post-SL overlay SUBMIT #10321`, with `devRemoved=0x00000000`, while routing-state diagnostics continue to show `runtime=DLSS_FG`, `postSLCallback=1`, `postSLActive=1`, and `stableFrames` rising into the thousands.
+  4. The old failure signatures are absent: no `Treating Streamline-originated Present as synthetic re-entrant`, no `Present STALLED`, no `CrashMirror`, no dump artifact in the session directory, and no `DEVICE_REMOVED` marker.
+  5. The session shuts down cleanly with `DX12: Streamline FG OFF — disabled PostSL callback` and later `runtime=STREAMLINE_NO_FG` routing-state diagnostics.
+
+- **Why this matters**: This is the first confirmed GTA V Enhanced DLSS FG validation in the entire recent seam-by-seam repair chain where all three goals are true at once: the game does not crash, the overlay remains visibly present while DLSS FG is active, and the logs stay structurally clean through the active FG interval and back out through shutdown.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_151044/{session_manifest.txt,hook_debug.log}`.
+  - Counted failure markers in `hook_debug.log`: `Present STALLED=0`, `Treating Streamline-originated Present as synthetic re-entrant=0`, `CrashMirror=0`, `DEVICE_REMOVED=0`.
+  - Counted success markers in `hook_debug.log`: `Invoking PostSL on confirmed standalone Streamline Present while keeping the normal SL route=113`, `Post-SL overlay SUBMIT=8719` log lines, with the logged submit counter reaching `#10321` before FG turns off.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_151044/session_manifest.txt`, `installed/captureengine/logs/20260415_151044/hook_debug.log`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`.
+- Stale-risk note: The GTA V Enhanced DLSS FG active path is now runtime-confirmed on `0.1.2289`. Future changes in this area should treat this session as the new known-good reference and compare against it before adjusting startup routing, PostSL callback ownership, or standalone Streamline Present behavior.
+
 ### 2026-04-15 - Keep confirmed standalone Streamline Presents driving PostSL on the normal route after startup settling ends
 
 - **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_144726` on build `0.1.2288` proved that the previous settling-window refinement fixed the earlier one-frame visibility stall, but also exposed a second seam immediately afterward. This run stayed stable, reached `DX12: PostSL WARMUP COMPLETE`, `DX12: PostSL CONFIRMED rendering via re-entrant Present`, and then `DX12: Post-SL overlay SUBMIT #1` through `#8`. So the visible PostSL path now advances correctly through the whole explicit startup-settling window. But immediately after `stableFrames` reached `8`, `hook_debug.log` stopped logging any more `Post-SL overlay SUBMIT` lines, routing-state diagnostics later showed `skip=1`, `stableFrames=8`, and the trace only emitted `DX12: PostSL warmup — suppressing stall fallback ...` until DLSS FG turned back off. The crash did not return; the visible callback stream simply starved again exactly when the explicit settling window ended.
