@@ -1534,6 +1534,13 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     StreamlineHook::OnAuthoritativeFFXTakeover();
     DXGIShared::DisableSLPresentRouting();
+    {
+        ID3D12CommandQueue* oldWrapper = g_SLWrapperQueue.exchange(nullptr, std::memory_order_acq_rel);
+        if (oldWrapper) {
+            HookLogImportant("DX12: FFX swapchain takeover — released stale SL wrapper queue %p", oldWrapper);
+            oldWrapper->Release();
+        }
+    }
 
     HookLogImportant("DX12: FFX swapchain takeover via %s (queue=%p, staleSL=%d) — cleared Streamline/PostSL ownership",
                      callerModulePath[0] ? callerModulePath : "unknown", capturedQueue, staleStreamlineSignal ? 1 : 0);
@@ -6784,7 +6791,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             validatedCommandQueue && validatedCommandQueue != g_OriginalGameQueue && validatedCommandQueue != scQueue;
         ID3D12CommandQueue* wrapperBootstrapQueue = latestSLWrapperQueue;
         if (ce::dx12_overlay_policy::ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(
-                g_HadFSRFGPhase, slFGNow, directQueueBehindWrapper != nullptr, validatedCommandQueueIsWrapper)) {
+                g_HadFSRFGPhase, slFGNow, directQueueBehindWrapper != nullptr, validatedCommandQueueIsWrapper,
+                scQueue != nullptr && scQueue != g_OriginalGameQueue)) {
             wrapperBootstrapQueue = validatedCommandQueue;
         }
         bool hasDirectQueueBehindWrapper = directQueueBehindWrapper != nullptr;

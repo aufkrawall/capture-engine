@@ -972,8 +972,15 @@ inline bool ShouldUsePostSLWrapperBootstrapQueueAfterFSR(bool hadFSRFGPhase, boo
 
 inline bool ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(bool hadFSRFGPhase, bool streamlineFGActive,
                                                                    bool hasDirectQueueBehindWrapper,
-                                                                   bool commandQueueIsWrapper) {
-    return hadFSRFGPhase && streamlineFGActive && !hasDirectQueueBehindWrapper && commandQueueIsWrapper;
+                                                                   bool commandQueueIsWrapper,
+                                                                   bool hasRuntimeOwnedSwapchainQueue) {
+    // During a fresh FSR->DLSS handoff, g_CommandQueue can still point at the
+    // previous FSR-owned queue until Streamline's new wrapper/direct traffic has
+    // fully surfaced. Once a fresh runtime-owned swapchain queue is already
+    // captured, prefer that authoritative handoff evidence over the last seen
+    // command queue instead of treating the latter as a wrapper-bootstrap source.
+    return hadFSRFGPhase && streamlineFGActive && !hasDirectQueueBehindWrapper && commandQueueIsWrapper &&
+           !hasRuntimeOwnedSwapchainQueue;
 }
 
 inline bool ShouldBootstrapPostSLRealQueueBehindWrapperAfterFSR(bool hadFSRFGPhase, bool streamlineFGActive,
