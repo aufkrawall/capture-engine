@@ -14,6 +14,27 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Continue ECL-driven PostSL startup progress until the first visible confirmation when GTA does not surface a re-entrant PostSL callback
+
+- **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_022108` on build `0.1.2279` showed that the active startup-routing crash family is fixed, but visible overlay rendering still had one remaining gap. With `overlay_enabled=1`, the run stayed alive and reached `DX12: PostSL synthetic startup activation complete`, `DX12: PostSL REACTIVATED`, and `DX12: PostSL warm-up after reactivation epoch=1 frame=1/15`. But after that, the overlay disappeared instead of confirming/rendering. The trace never reached `DX12: PostSL CONFIRMED rendering via re-entrant Present` or any `DX12: Post-SL overlay SUBMIT` line. Instead it stayed permanently in the half-armed startup family: `DetourPresent: Keeping decisive synthetic Streamline startup Present on the normal SL route ...` continued through at least `#1700`, `DX12: Suppressing pre-SL draw during SL FG startup — waiting for PostSL ...` repeated, and the routing-state diagnostics kept showing `postSLCallback=1 postSLActive=1 ... stableFrames=0`. Talos differs because its healthy DLSS FG path still produces a real re-entrant PostSL callback after activation, which quickly reaches `CONFIRMED rendering` and visible submits.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now exposes `ShouldContinueECLDrivenPostSLStartupProgress()`, which is true only when the overlay is visible, a cached swapchain is still available, the callback is installed, PostSL is still startup-half-armed (pending or active-but-unconfirmed), and confirmation has not happened yet.
+  2. `hook/apis/dx12_hook.cpp` now uses that policy in the ECL hook. The cached-swapchain direct callback is still triggered at the one-time startup-window expiry edge, but when visible overlay rendering remains activated-yet-unconfirmed afterward, CE now continues driving `PostSLOverlayRenderGated(cachedSwapchain)` from ECL context at a controlled rate instead of waiting forever for a re-entrant Present callback that GTA may never surface in this startup family.
+  3. The ECL-side logging for that new path is rate-limited separately so traces remain usable: `continuing visible-overlay PostSL startup progress while render remains unconfirmed ...` and the matching completion log only sample periodically.
+  4. `tests/test_dxgi_shared.cpp` now adds `VisibleOverlayCanContinueECLDrivenStartupProgressUntilFirstConfirmation` to lock that policy boundary in place.
+
+- **Why this is generic**: The missing signal here is not GTA-specific rendering logic; it is a startup-family callback topology difference. Talos surfaces a real re-entrant PostSL callback after activation, but GTA's DLSS FG startup family can leave CE activated, visible, and still unconfirmed while only ECL-side cached-swapchain progress keeps arriving. Once startup routing is already stable and the callback has a valid cached swapchain, continuing that exact gated callback path is a generic way to reach the first visible confirmation without depending on a specific runtime exposing a later re-entrant Present callback.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_022108/{session_manifest.txt,hook_debug.log}`.
+  - Compared the GTA hidden-overlay and visible-overlay traces against the known-good Talos confirmation path `installed/captureengine/logs/20260412_170141_talos/hook_debug.log`.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 565 tests passed and the build version bumped to `0.1.2280`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_022108/session_manifest.txt`, `installed/captureengine/logs/20260415_022108/hook_debug.log`, `installed/captureengine/logs/20260412_170141_talos/hook_debug.log`, `hook/apis/dx12_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`.
+- Stale-risk note: Fresh runtime validation on `0.1.2280` is required. If GTA still keeps the overlay invisible, re-check whether the new ECL-driven progress path reaches `PostSL WARMUP COMPLETE`, `CONFIRMED rendering`, and the first visible submit, or whether some later render gate such as scene-transition cooldown is still consuming those callbacks before submit.
+
 ### 2026-04-15 - Validate hidden-overlay active startup path on build 0.1.2279
 
 - **Motivation**: After the `0.1.2279` fix preserved the half-armed synthetic PostSL startup state across cooldown and stopped the redundant expiry-time direct callbacks after activation, we needed a fresh GTA V Enhanced validation to see whether the original active startup crash family was finally gone with the same active injected setup and `overlay_enabled=0`.

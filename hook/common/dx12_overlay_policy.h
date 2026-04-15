@@ -1173,6 +1173,19 @@ inline bool ShouldKeepSyntheticStartupStateUntilConfirmedRender(bool startupActi
     return !postSLConfirmedRendering && (startupActivationPending || postSLActiveButUnconfirmed);
 }
 
+inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible,
+                                                         bool startupActivationPending,
+                                                         bool postSLActiveButUnconfirmed,
+                                                         bool postSLConfirmedRendering,
+                                                         bool callbackInstalled,
+                                                         bool cachedSwapchainAvailable) {
+    if (!overlayVisible || !callbackInstalled || !cachedSwapchainAvailable || postSLConfirmedRendering) {
+        return false;
+    }
+
+    return startupActivationPending || postSLActiveButUnconfirmed;
+}
+
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
     return streamlineFGRunning && postSLConfirmedRendering;
 }

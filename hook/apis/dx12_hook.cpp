@@ -12400,38 +12400,84 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     {
         static bool s_startupWindowWasActive = false;
         static bool s_callbackTriggeredWithCachedSwapchain = false;
+        static std::atomic<ULONGLONG> s_lastVisibleOverlayStartupProgressTriggerMs{0};
+        static std::atomic<int> s_visibleOverlayStartupProgressLogCount{0};
+        static std::atomic<int> s_visibleOverlayStartupProgressCompleteLogCount{0};
         const bool activationPending =
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
         const bool callbackInstalled =
             DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
+        const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+        const bool postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+        const bool overlayVisible = GetHookOverlayConfig().showOverlay;
         const bool windowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
         const bool startupTransitionWindowJustExpired = s_startupWindowWasActive && !windowActive;
-        if (startupTransitionWindowJustExpired && activationPending && callbackInstalled) {
-            IDXGISwapChain* activationSwapchain = GetLastTrackedSwapchainForStartupActivation();
-            HookLogImportant(
-                "DX12: ECL hook detected startup transition window expiry with pending PostSL activation — "
-                "triggering PostSL callback directly from ECL context to complete activation "
-                "(startupWindowExpired=1 activationPending=1 callbackInstalled=1 cachedSwapchain=%p)",
-                activationSwapchain);
-            
-            // CRITICAL: Clear the startup transition window NOW so that when PostSL callback
-            // enters PostSLOverlayRenderGated, it doesn't defer rendering due to the startup
-            // window still appearing active. The window was detected as expired based on
-            // IsStreamlineStartupTransitionWindowActive() returning false, but we must
-            // explicitly clear it to prevent race conditions between threads.
-            DXGIShared::ClearStreamlineStartupTransitionWindow();
-            HookLogImportant(
-                "DX12: ECL hook cleared startup transition window after triggering PostSL callback "
-                "(prevWindowActive=%d nowCleared=1)",
-                s_startupWindowWasActive ? 1 : 0);
-            
+        IDXGISwapChain* activationSwapchain = GetLastTrackedSwapchainForStartupActivation();
+        const bool continueVisibleOverlayStartupProgress =
+            ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
+                overlayVisible, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+                callbackInstalled, activationSwapchain != nullptr);
+        const ULONGLONG nowMs = GetTickCount64();
+        const ULONGLONG lastVisibleOverlayStartupProgressTriggerMs =
+            s_lastVisibleOverlayStartupProgressTriggerMs.load(std::memory_order_acquire);
+        const bool visibleOverlayStartupProgressTick =
+            continueVisibleOverlayStartupProgress && !windowActive &&
+            (lastVisibleOverlayStartupProgressTriggerMs == 0 ||
+             nowMs - lastVisibleOverlayStartupProgressTriggerMs >= 16);
+
+        if ((startupTransitionWindowJustExpired && activationPending && callbackInstalled) ||
+            visibleOverlayStartupProgressTick) {
+            if (startupTransitionWindowJustExpired) {
+                HookLogImportant(
+                    "DX12: ECL hook detected startup transition window expiry with pending PostSL activation — "
+                    "triggering PostSL callback directly from ECL context to complete activation "
+                    "(startupWindowExpired=1 activationPending=1 callbackInstalled=1 cachedSwapchain=%p)",
+                    activationSwapchain);
+            } else {
+                const int logCount =
+                    s_visibleOverlayStartupProgressLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 120) == 0) {
+                    HookLogImportant(
+                        "DX12: ECL hook continuing visible-overlay PostSL startup progress while render remains "
+                        "unconfirmed (startupPending=%d activeButUnconfirmed=%d cachedSwapchain=%p)",
+                        activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0, activationSwapchain);
+                }
+            }
+
+            if (startupTransitionWindowJustExpired) {
+                // CRITICAL: Clear the startup transition window NOW so that when PostSL callback
+                // enters PostSLOverlayRenderGated, it doesn't defer rendering due to the startup
+                // window still appearing active. The window was detected as expired based on
+                // IsStreamlineStartupTransitionWindowActive() returning false, but we must
+                // explicitly clear it to prevent race conditions between threads.
+                DXGIShared::ClearStreamlineStartupTransitionWindow();
+                HookLogImportant(
+                    "DX12: ECL hook cleared startup transition window after triggering PostSL callback "
+                    "(prevWindowActive=%d nowCleared=1)",
+                    s_startupWindowWasActive ? 1 : 0);
+            }
+
             auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
             if (postSLCallback) {
                 s_callbackTriggeredWithCachedSwapchain = true;
+                if (!startupTransitionWindowJustExpired) {
+                    s_lastVisibleOverlayStartupProgressTriggerMs.store(nowMs, std::memory_order_release);
+                }
                 postSLCallback(activationSwapchain);
                 s_callbackTriggeredWithCachedSwapchain = false;
-                HookLogImportant(
-                    "DX12: ECL hook PostSL callback completed (cachedSwapchain=%p)", activationSwapchain);
+                if (startupTransitionWindowJustExpired) {
+                    HookLogImportant(
+                        "DX12: ECL hook PostSL callback completed (cachedSwapchain=%p)", activationSwapchain);
+                } else {
+                    const int logCount =
+                        s_visibleOverlayStartupProgressCompleteLogCount.fetch_add(1, std::memory_order_relaxed);
+                    if (logCount < 10 || (logCount % 120) == 0) {
+                        HookLogImportant(
+                            "DX12: ECL hook visible-overlay PostSL progress callback completed "
+                            "(cachedSwapchain=%p)",
+                            activationSwapchain);
+                    }
+                }
             }
         } else if (s_callbackTriggeredWithCachedSwapchain) {
             // Log if we're still processing after callback was triggered (callbacks from ProcessFrame)
