@@ -244,6 +244,20 @@ TEST(DXGISharedTest, WrapperBackedSyntheticStartupPresentCanStayOnNormalRouteInA
         false, true, false, false, false, true, false, false, false, true));
 }
 
+TEST(DXGISharedTest, PostFSRStartupNormalRouteUsesBypassUntilPostSLConfirms) {
+    EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+        true, true, true, false));
+
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+        false, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+        true, false, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+        true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+        true, true, true, true));
+}
+
 TEST(DXGISharedTest, PostSLCallbackStaysInstalledOnlyWhileStreamlineStillOwnsPresentPath) {
     EXPECT_TRUE(DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(true));
     EXPECT_FALSE(DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(false));
@@ -1296,13 +1310,24 @@ TEST(DXGISharedTest, PostSLValidatedDirectQueueCandidateRejectsKnownWrapperShape
 }
 
 TEST(DXGISharedTest, PostSLUsesWrapperBootstrapQueueAfterFSROnlyWhenDirectPathIsUnavailable) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true, false, false,
+                                                                              false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(false, true, false, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, false, false, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(false, true, false, true,
+                                                                                        false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, false, false, true,
+                                                                                        false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, true, true, false,
+                                                                                        false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, false,
+                                                                                        false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true,
+                                                                                        false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true, true,
+                                                                                        false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(true, true, false, true, false,
+                                                                                       false, true));
 }
 
 TEST(DXGISharedTest, PostSLPrefersValidatedCommandQueueWrapperForBootstrapAfterFSR) {
@@ -1606,20 +1631,32 @@ TEST(DXGISharedTest, SyntheticStartupStateStaysHalfArmedUntilConfirmedRender) {
 
 TEST(DXGISharedTest, VisibleOverlayCanContinueECLDrivenStartupProgressUntilFirstConfirmation) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
-        true, true, false, false, true, true));
+        true, true, false, false, true, true, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
-        true, false, true, false, true, true));
+        true, false, true, false, true, true, false, false));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
-        false, true, false, false, true, true));
+        false, true, false, false, true, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
-        true, false, false, false, true, true));
+        true, false, false, false, true, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
-        true, true, false, true, true, true));
+        true, true, false, true, true, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
-        true, true, false, false, false, true));
+        true, true, false, false, false, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
-        true, true, false, false, true, false));
+        true, true, false, false, true, false, false, false));
+}
+
+TEST(DXGISharedTest, VisibleOverlayBlocksECLDrivenStartupProgressForPostFSRWithoutSafeBootstrap) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
+        true, true, false, false, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
+        true, false, true, false, true, true, true, false));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
+        true, true, false, false, true, true, true, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
+        true, false, true, false, true, true, true, true));
 }
 
 TEST(DXGISharedTest, PostSLOnlyLatchesSuspensionForFullyInactiveSignalDrop) {

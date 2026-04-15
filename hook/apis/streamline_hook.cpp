@@ -1074,7 +1074,8 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
 namespace StreamlineHook {
 
 bool HasExplicitSetOptionsActivationForCurrentComeback() {
-    return !g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire);
+    return !g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire) &&
+           g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
 }
 
 void Init() {

@@ -371,6 +371,19 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
            (postSLStartupActivationPending || postSLActiveButUnconfirmed);
 }
 
+inline bool ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+    bool isD3D12SwapChain, bool keepStartupPresentOnNormalRoute, bool hadFSRFGPhase,
+    bool postSLConfirmedRendering) {
+    // After an FSR->DLSS comeback, the shared routing layer can correctly decide
+    // that the decisive startup Present must stay in the normal Streamline family
+    // so PostSL keeps making progress. But the brand-new swapchain can still have
+    // stale third-party vtable hooks whose saved original Present pointer is not
+    // ready yet. Keep the callback/routing decision, but transport the actual
+    // Present through the bypass trampoline until PostSL confirms at least one
+    // successful render on the recovered path.
+    return isD3D12SwapChain && keepStartupPresentOnNormalRoute && hadFSRFGPhase && !postSLConfirmedRendering;
+}
+
 inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(
     bool observerOnlyMode, bool isD3D12SwapChain, bool streamlineFGRunning, bool callerFromStreamlineModule,
     bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling, bool presentOwnershipActive,

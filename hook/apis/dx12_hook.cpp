@@ -6813,6 +6813,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             wrapperBootstrapQueue = validatedCommandQueue;
         }
         bool hasDirectQueueBehindWrapper = directQueueBehindWrapper != nullptr;
+        const bool hasRuntimeOwnedSwapchainQueue = scQueue != nullptr && scQueue != g_OriginalGameQueue;
+        const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
         bool preferRealQueueBehindWrapper = ce::dx12_overlay_policy::ShouldUsePostSLRealQueueBehindWrapperAfterFSR(
             g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper);
         const bool preferValidatedDirectQueueForLock =
@@ -6820,7 +6822,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                                                                                     hasDirectQueueBehindWrapper);
         bool allowWrapperBootstrapQueue = ce::dx12_overlay_policy::ShouldUsePostSLWrapperBootstrapQueueAfterFSR(
             g_HadFSRFGPhase, slFGNow, hasDirectQueueBehindWrapper, wrapperBootstrapQueue != nullptr,
-            HookHasExplicitStreamlineSetOptionsActivation());
+            hasRuntimeOwnedSwapchainQueue, HookHasExplicitStreamlineSetOptionsActivation(),
+            safePostFSRBootstrapPath);
         const bool lockedQueueIsSLWrapper =
             g_PostSLLockedQueue && g_PostSLLockedQueue != g_OriginalGameQueue && g_PostSLLockedQueue != scQueue;
         ExecuteCommandListsPtr scQueueOrigECL = scQueue ? GetOriginalExecuteCommandLists(scQueue) : nullptr;
@@ -12509,7 +12512,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool continueVisibleOverlayStartupProgress =
             ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
                 overlayVisible, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
-                callbackInstalled, activationSwapchain != nullptr);
+                callbackInstalled, activationSwapchain != nullptr,
+                g_HadFSRFGPhase, HookHasSafePostFSRBootstrapPath());
         const ULONGLONG nowMs = GetTickCount64();
         const ULONGLONG lastVisibleOverlayStartupProgressTriggerMs =
             s_lastVisibleOverlayStartupProgressTriggerMs.load(std::memory_order_acquire);

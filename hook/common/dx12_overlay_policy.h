@@ -961,13 +961,25 @@ inline bool IsUsableValidatedPostSLDirectQueueCandidate(bool queueLooksDirect, b
 
 inline bool ShouldUsePostSLWrapperBootstrapQueueAfterFSR(bool hadFSRFGPhase, bool streamlineFGActive,
                                                          bool hasDirectQueueBehindWrapper, bool hasSLWrapperQueue,
-                                                         bool explicitSetOptionsActivation) {
+                                                         bool hasRuntimeOwnedSwapchainQueue,
+                                                         bool explicitSetOptionsActivation,
+                                                         bool safePostFSRBootstrapPath) {
     if (!hadFSRFGPhase || !streamlineFGActive) {
         return false;
     }
     if (hasDirectQueueBehindWrapper) {
         return false;
     }
+
+    // Once the post-FSR comeback already has both pieces of stronger recovery
+    // evidence - a preserved runtime-owned swapchain queue and a bootstrap
+    // topology that is safe enough to leave the synthetic/bypass family -
+    // continuing to bootstrap through the SL wrapper is too conservative and can
+    // reopen the old DEVICE_REMOVED seam on the first post-FSR probe.
+    if (hasRuntimeOwnedSwapchainQueue && safePostFSRBootstrapPath) {
+        return false;
+    }
+
     return hasSLWrapperQueue && !explicitSetOptionsActivation;
 }
 
@@ -1238,8 +1250,14 @@ inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible,
                                                          bool postSLActiveButUnconfirmed,
                                                          bool postSLConfirmedRendering,
                                                          bool callbackInstalled,
-                                                         bool cachedSwapchainAvailable) {
+                                                         bool cachedSwapchainAvailable,
+                                                         bool hadFSRFGPhase,
+                                                         bool safePostFSRBootstrapPath) {
     if (!overlayVisible || !callbackInstalled || !cachedSwapchainAvailable || postSLConfirmedRendering) {
+        return false;
+    }
+
+    if (hadFSRFGPhase && !safePostFSRBootstrapPath) {
         return false;
     }
 

@@ -988,12 +988,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             }
         }
     }
-    if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-            observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
-            g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
-            callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
-            postSLConfirmedButStartupSettling,
-            streamlineSyntheticReentrant)) {
+    const bool keepStartupPresentOnNormalRoute = DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+        observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
+        g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
+        callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+        postSLConfirmedButStartupSettling,
+        streamlineSyntheticReentrant);
+    if (keepStartupPresentOnNormalRoute) {
         const bool shouldInvokePostSLCallbackOnNormalRoute =
             DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
                 observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
@@ -1018,6 +1019,25 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
             if (postSLCallback) {
                 postSLCallback(pSwapChain);
+            }
+        }
+        if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+                api == APIType::D3D12, keepStartupPresentOnNormalRoute, hadFSRFGPhase,
+                postSLConfirmedRendering)) {
+            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR startup normal-route Present");
+            PFN_Present presentBypass = EnsurePresentBypassTrampoline();
+            if (presentBypass) {
+                static std::atomic<int> s_postFSRStartupNormalRouteBypassLogCount{0};
+                int bypassCount =
+                    s_postFSRStartupNormalRouteBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (bypassCount <= 10 || (bypassCount % 100) == 0) {
+                    HookLogImportant(
+                        "DetourPresent: Post-FSR startup normal-route bypass #%d "
+                        "(startupPending=%d unconfirmed=%d confirmed=%d tid=0x%04X)",
+                        bypassCount, postSLStartupActivationPending ? 1 : 0,
+                        postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0, currentThreadId);
+                }
+                return presentBypass(pSwapChain, SyncInterval, Flags);
             }
         }
         streamlineSyntheticReentrant = false;
@@ -1456,12 +1476,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             }
         }
     }
-    if (DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
-            observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
-            g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
-            callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
-            postSLConfirmedButStartupSettling,
-            streamlineSyntheticReentrant)) {
+    const bool keepStartupPresentOnNormalRoute = DXGIShared::ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+        observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
+        g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire),
+        callerFromStreamlineModule, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+        postSLConfirmedButStartupSettling,
+        streamlineSyntheticReentrant);
+    if (keepStartupPresentOnNormalRoute) {
         const bool shouldInvokePostSLCallbackOnNormalRoute =
             DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
                 observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
@@ -1486,6 +1507,25 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
             if (postSLCallback) {
                 postSLCallback(pSwapChain);
+            }
+        }
+        if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+                api == APIType::D3D12, keepStartupPresentOnNormalRoute, hadFSRFGPhase,
+                postSLConfirmedRendering)) {
+            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR startup normal-route Present1");
+            PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
+            if (present1Bypass) {
+                static std::atomic<int> s_postFSRStartupNormalRouteBypassLogCount1{0};
+                int bypassCount =
+                    s_postFSRStartupNormalRouteBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (bypassCount <= 10 || (bypassCount % 100) == 0) {
+                    HookLogImportant(
+                        "DetourPresent1: Post-FSR startup normal-route bypass #%d "
+                        "(startupPending=%d unconfirmed=%d confirmed=%d tid=0x%04X)",
+                        bypassCount, postSLStartupActivationPending ? 1 : 0,
+                        postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0, currentThreadId);
+                }
+                return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
             }
         }
         streamlineSyntheticReentrant = false;
