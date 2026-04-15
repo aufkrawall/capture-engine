@@ -14,6 +14,25 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-15 - Validate hidden-overlay active startup path on build 0.1.2279
+
+- **Motivation**: After the `0.1.2279` fix preserved the half-armed synthetic PostSL startup state across cooldown and stopped the redundant expiry-time direct callbacks after activation, we needed a fresh GTA V Enhanced validation to see whether the original active startup crash family was finally gone with the same active injected setup and `overlay_enabled=0`.
+
+- **Result**:
+  1. `installed/captureengine/logs/20260415_021638/session_manifest.txt` confirms the intended active injected config: `overlay_enabled=0`, `overlay_observer_only=0`, `overlay_observer_policy_only=0`, `overlay_observer_startup_present_only=0` on build `0.1.2279`.
+  2. `hook_debug.log` shows the repaired startup sequence: one normal-routed startup-handoff Present, decisive synthetic startup Presents staying on the normal route through at least `#2100`, cached-swapchain ECL-expiry activation, repeated `Streamline Hook: Startup window expired but PostSL activation already completed — skipping redundant direct callback until first confirmed render`, and the cooldown-complete path logging `preserving half-armed synthetic PostSL startup state until confirmed render` instead of reopening the old synthetic/bypass seam.
+  3. The session stayed stable: no dump artifact in the session folder and no `Present STALLED` / `CrashMirror:` line.
+  4. The same run still did **not** log `DX12: PostSL CONFIRMED rendering via re-entrant Present` before DLSS FG turned off again. With `overlay_enabled=0`, that means this validation proves the hidden-overlay active startup-routing crash family is fixed, but it does not yet prove visible overlay rendering.
+
+- **Why this matters**: This is the first clean active injected GTA V Enhanced DLSS FG startup run after the startup-routing fixes were reintroduced seam by seam. The remaining risk has shifted from "startup activation crashes immediately" to the next natural stage: visible overlay rendering with the same now-stable startup path.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260415_021638/{session_manifest.txt,hook_debug.log}`.
+
+- Pages touched: `current.md`, `frame-generation-switching.md`, `log.md`.
+- Source files checked/modified: `installed/captureengine/logs/20260415_021638/session_manifest.txt`, `installed/captureengine/logs/20260415_021638/hook_debug.log`.
+- Stale-risk note: The next validation target is `overlay_enabled=true` with the same otherwise-active config. Re-check whether the visible overlay reaches `PostSL CONFIRMED rendering` / actual submit lines without reintroducing the old crash family.
+
 ### 2026-04-15 - Preserve half-armed synthetic PostSL startup state across cooldown and stop redundant expiry-time direct callbacks after activation
 
 - **Motivation**: The fresh GTA V Enhanced validation `installed/captureengine/logs/20260415_013655` on build `0.1.2278` proved the previous pending-bit fix worked, but also exposed the next stale assumption immediately afterward. CE now survived the startup-handoff Present, at least 200 decisive synthetic startup Presents, the cached-swapchain ECL-expiry callback, synthetic activation, `DX12: PostSL REACTIVATED`, and `DX12: PostSL warm-up after reactivation epoch=1 frame=1/15`. The crash still returned, but the trace had changed. Right after the first valid activation callback, `hook_debug.log` showed repeated `Streamline Hook: Startup window expired with activation pending but no suppressed OFF — triggering PostSL callback directly ...` lines paired with `DX12: PostSL callback SKIPPED — null swapchain passed from ECL hook direct trigger ...`; the first such callback still saw `active=1`, but the later ones already saw `active=0`. Then, when the FG cooldown finished, CE logged `DX12: FG transition cooldown complete — reactivated PostSL (slFG=1, reinit path)`, `DX12: PostSL warm-up after reactivation epoch=1 frame=2/15`, and the very next Streamline-originated Present fell back to `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1` and crashed in the same `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` family (`external_df3d9b26-820d-428c-b250-c804bb4b78c7.dmp`).
