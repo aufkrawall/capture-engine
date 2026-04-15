@@ -403,9 +403,23 @@ inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnN
            !streamlineSyntheticReentrant;
 }
 
+inline bool ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+    bool isD3D12SwapChain, bool hadFSRFGPhase,
+    bool invokePostSLOnConfirmedStandaloneNormalRoute) {
+    // Talos still reaches the stale-Steam-hook crash family after the post-FSR
+    // comeback has already left the earlier startup-bypass window. At that later
+    // boundary the Present is no longer classified as synthetic startup traffic;
+    // it is the confirmed standalone Streamline Present that keeps PostSL alive
+    // on the recovered swapchain. Routing should stay on the normal Streamline
+    // family, but DX12 transport still needs the bypass trampoline on post-FSR
+    // comebacks so we do not fall back through a fresh-swapchain third-party hook
+    // chain whose saved original Present pointer is still stale.
+    return isD3D12SwapChain && hadFSRFGPhase && invokePostSLOnConfirmedStandaloneNormalRoute;
+}
+
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,
-                                                             bool streamlineStartupHandoffPending,
-                                                             bool streamlineStartupTransitionWindowActive,
+                                                              bool streamlineStartupHandoffPending,
+                                                              bool streamlineStartupTransitionWindowActive,
                                                             bool observerOnlyMode,
                                                             bool observerStartupPresentOnlyMode) {
     // During repeated FSR->DLSS handoffs, FFX teardown Presents can arrive

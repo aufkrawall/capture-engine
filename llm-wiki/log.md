@@ -14,6 +14,53 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Keep post-FSR confirmed standalone Streamline Presents on the normal route logically, but still use bypass transport
+
+- **Motivation**: Talos `installed/captureengine/logs/20260416_012730` on build `0.1.2311` proved the previous expiry-triggered ECL gate fix worked, but exposed the next seam one step later. The post-FSR comeback now stayed dormant correctly while unsafe: the log repeats `DX12: PostSL synthetic startup waiting for safe bootstrap path after FSR phase (realQ=0 realECL=00007FFE5C949470 slWrapper=0)` and then explicitly logs `DX12: ECL hook leaving pending PostSL activation dormant after startup window expiry because post-FSR bootstrap path is still unsafe ... safeBootstrap=0`. Later, once wrapper-derived progress existed, the visible-overlay ECL path reactivated PostSL, `DetourPresent` kept the half-armed family on `Post-FSR startup normal-route bypass #1..#10`, CE rebuilt overlay state on preserved `scQueue=000002536AA3A820`, passed post-FSR probes, confirmed rendering, and submitted `Post-SL overlay SUBMIT #2368..#2376`. The crash still immediately returned in the same family: `0x0 -> gameoverlayrenderer64!OverlayHookD3D3 -> capture_hook_x64 -> sl_dlss_g`.
+
+- **Root cause refinement**: The surviving seam is no longer the half-armed startup family. After confirmation, the recovered post-FSR path leaves the earlier startup-bypass branch and falls into the later `confirmed standalone Streamline Present on the normal SL route` path in `hook/common/dxgi_shared.cpp`. That branch correctly invokes PostSL so visible rendering continues, but it still falls through the normal `CallOriginalPresent()` / `CallOriginalPresent1()` transport path instead of using the bypass trampoline. The Talos trace shows this later boundary clearly: there are no more `Post-FSR startup normal-route bypass ...` lines once confirmed standalone Presents take over, yet the very next crash is still the stale-Steam-hook null-call family. So routing was already correct; transport was still too trusting on the recovered swapchain.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now adds `ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(...)`.
+  2. `hook/common/dxgi_shared.cpp` now applies that helper in both `DetourPresent` and `DetourPresent1`: on DX12 post-FSR comebacks, when a confirmed standalone Streamline Present is kept on the normal route and used to invoke PostSL, transport also returns through `EnsurePresentBypassTrampoline()` / `EnsurePresent1BypassTrampoline()`.
+  3. New diagnostics `DetourPresent: Post-FSR confirmed standalone normal-route bypass ...` and `DetourPresent1: Post-FSR confirmed standalone normal-route bypass ...` make the new split visible.
+  4. `tests/test_dxgi_shared.cpp` adds `PostFSRConfirmedStandaloneNormalRouteUsesBypassTransport` to lock the invariant in place.
+
+- **Why this is generic**: This is not a Talos-specific Steam workaround. The generic rule is the same routing/transport separation used earlier for half-armed startup Presents: a post-FSR comeback can already have enough shared-state evidence to keep later standalone Streamline Presents on the normal SL route and to invoke PostSL there, while the recovered swapchain's third-party Present hook chain is still not safe to trust. Routing stays topology-driven; transport remains on bypass.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_012730/{session_manifest.txt,hook_debug.log,crash.log,crash_20260416_012838_015_pid14144_tid15476.dmp,external_UEMinidump.dmp}`.
+  - Confirmed the previous fix held: expiry-time ECL activation stayed blocked while `safeBootstrap=0`.
+  - Confirmed the new seam: later visible-overlay ECL progress reactivated PostSL, startup normal-route bypass covered only the half-armed phase, CE then confirmed rendering and submitted `#2368..#2376` before the crash returned.
+  - Analyzed the dump with `cdb.exe`; stack remains `0x0 -> gameoverlayrenderer64!OverlayHookD3D3 -> capture_hook_x64 -> sl_dlss_g`.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; build succeeded and all 579 tests passed.
+
+- **Files changed**: `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/log.md`, `llm-wiki/frame-generation-switching.md`
+- **Stale risk**: Fresh Talos runtime validation is still required. If another crash remains after this split, the next seam will likely be in what `CallOriginalPresent()` trusts after the confirmed-standalone bypass path, not in the earlier startup routing state machine.
+
+### 2026-04-16 - Block expiry-triggered ECL startup activation on post-FSR comebacks until the safe bootstrap topology exists
+
+- **Motivation**: Talos `installed/captureengine/logs/20260416_011843` on build `0.1.2310` still crashed at the end of `DLSS_FG -> FSR_FG -> DLSS_FG`, but the trace exposed a more precise contradiction than the previous run. CE preserved the fresh post-FSR Streamline `scQueue=000001C4685D8030`, correctly kept logging `DX12: PostSL synthetic startup waiting for safe bootstrap path after FSR phase (realQ=0 realECL=00007FFE5C949470 slWrapper=0)`, then the ECL hook still logged `startup transition window expiry with pending PostSL activation — triggering PostSL callback directly from ECL context to complete activation`. Seconds later CE reactivated PostSL, used `DetourPresent: Post-FSR startup normal-route bypass #1..#10`, rebuilt overlay state on the preserved `scQueue`, passed post-FSR probes, confirmed rendering, submitted `#2295..#2303`, and then crashed again in the same Steam / `sl_dlss_g` null-call family.
+
+- **Root cause refinement**: The earlier safe-bootstrap gating fix only covered the periodic visible-overlay ECL startup-progress path. A second ECL path, the one-shot `startupTransitionWindowJustExpired` direct callback trigger in `hook/apis/dx12_hook.cpp`, still ignored that policy entirely. In this Talos trace the contradiction is explicit: the same run logs `waiting for safe bootstrap path after FSR phase` and then immediately activates PostSL anyway from the expiry callback even though the bootstrap inputs are still unsafe (`realQ=0`, `slWrapper=0`). That let PostSL advance into the later post-FSR normal-route/bypass family from an activation source that had skipped the intended topology gate.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now adds `ShouldTriggerExpiryDrivenECLPostSLStartupActivation(...)` so the expiry-time ECL trigger and the periodic ECL startup-progress path share the same post-FSR safety rule.
+  2. `hook/apis/dx12_hook.cpp` now computes `safePostFSRBootstrapPath` once, threads it into both ECL startup-progress decisions, and blocks the expiry-triggered direct callback while `hadFSR=1` and the safe bootstrap topology is still unavailable.
+  3. The ECL hook now logs `leaving pending PostSL activation dormant after startup window expiry because post-FSR bootstrap path is still unsafe ...` when it deliberately preserves the half-armed state instead of forcing activation.
+  4. `tests/test_dxgi_shared.cpp` adds `ExpiryDrivenECLStartupActivationRespectsPostFSRSafeBootstrapGate` to lock the new invariant in place.
+
+- **Why this is generic**: This is not another Talos-specific branch. The generic rule is that all ECL-side startup-activation paths must obey the same post-FSR topology safety boundary. If `PostSLOverlayRender()` itself would still delay activation because the comeback lacks a safe bootstrap path, the ECL expiry callback must not be allowed to jump around that gate.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_011843/{session_manifest.txt,hook_debug.log,crash.log,crash_20260416_011934_664_pid9240_tid13284.dmp,external_UEMinidump.dmp}`.
+  - Confirmed the contradiction in the trace: repeated `waiting for safe bootstrap path after FSR phase`, then `ECL hook detected startup transition window expiry ... triggering PostSL callback directly`, later `Post-FSR startup normal-route bypass #1..#10`, overlay bootstrap on preserved `scQueue`, post-FSR probe success, confirmation, and `Post-SL overlay SUBMIT #2295..#2303` before the crash.
+  - Analyzed the dump with `cdb.exe`; the crash stack remains `0x0 -> gameoverlayrenderer64!OverlayHookD3D3 -> capture_hook_x64 -> sl_dlss_g`, so this patch specifically closes an activation-path contradiction rather than claiming the full Talos family is solved.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; build succeeded and all 578 tests passed.
+
+- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/log.md`, `llm-wiki/frame-generation-switching.md`
+- **Stale risk**: Fresh Talos runtime validation is still required. If a later crash remains after this gating fix, the next seam will be after a genuinely safe post-FSR activation path rather than this earlier ECL-expiry bypass around the topology gate.
+
 ### 2026-04-16 - Keep post-FSR normal-route Present transport on bypass through the confirmed-startup-settling window
 
 - **Motivation**: Talos `installed/captureengine/logs/20260416_011004` on build `0.1.2309` still crashed at the end of the `DLSS_FG -> FSR_FG -> DLSS_FG` switching sequence. The previous fixes were working up to a later boundary than before: CE preserved the fresh post-FSR Streamline `scQueue=0000020AF4B01300`, kept decisive startup Presents on the normal route while logging `DetourPresent: Post-FSR startup normal-route bypass #1..#10`, rebuilt torn-down overlay state after warm-up, passed the post-FSR level-0 probes on the selected `scQueue`, confirmed rendering, and logged `Post-SL overlay SUBMIT #2085` and `#2086`. The crash still immediately returned in the old family: `0x0 -> gameoverlayrenderer64!OverlayHookD3D3 -> capture_hook_x64 -> sl_dlss_g`.

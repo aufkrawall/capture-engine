@@ -1264,6 +1264,18 @@ inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible,
     return startupActivationPending || postSLActiveButUnconfirmed;
 }
 
+inline bool ShouldTriggerExpiryDrivenECLPostSLStartupActivation(bool startupTransitionWindowJustExpired,
+                                                                bool startupActivationPending,
+                                                                bool callbackInstalled,
+                                                                bool hadFSRFGPhase,
+                                                                bool safePostFSRBootstrapPath) {
+    if (!startupTransitionWindowJustExpired || !startupActivationPending || !callbackInstalled) {
+        return false;
+    }
+
+    return !hadFSRFGPhase || safePostFSRBootstrapPath;
+}
+
 inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering) {
     return streamlineFGRunning && postSLConfirmedRendering;
 }

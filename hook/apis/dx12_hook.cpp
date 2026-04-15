@@ -12509,11 +12509,16 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool windowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
         const bool startupTransitionWindowJustExpired = s_startupWindowWasActive && !windowActive;
         IDXGISwapChain* activationSwapchain = GetLastTrackedSwapchainForStartupActivation();
+        const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+        const bool allowExpiryTriggeredStartupActivation =
+            ce::dx12_overlay_policy::ShouldTriggerExpiryDrivenECLPostSLStartupActivation(
+                startupTransitionWindowJustExpired, activationPending, callbackInstalled,
+                g_HadFSRFGPhase, safePostFSRBootstrapPath);
         const bool continueVisibleOverlayStartupProgress =
             ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
                 overlayVisible, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
                 callbackInstalled, activationSwapchain != nullptr,
-                g_HadFSRFGPhase, HookHasSafePostFSRBootstrapPath());
+                g_HadFSRFGPhase, safePostFSRBootstrapPath);
         const ULONGLONG nowMs = GetTickCount64();
         const ULONGLONG lastVisibleOverlayStartupProgressTriggerMs =
             s_lastVisibleOverlayStartupProgressTriggerMs.load(std::memory_order_acquire);
@@ -12522,7 +12527,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             (lastVisibleOverlayStartupProgressTriggerMs == 0 ||
              nowMs - lastVisibleOverlayStartupProgressTriggerMs >= 16);
 
-        if ((startupTransitionWindowJustExpired && activationPending && callbackInstalled) ||
+        if (allowExpiryTriggeredStartupActivation ||
             visibleOverlayStartupProgressTick) {
             if (startupTransitionWindowJustExpired) {
                 HookLogImportant(
@@ -12576,6 +12581,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                     }
                 }
             }
+        } else if (startupTransitionWindowJustExpired && activationPending && callbackInstalled &&
+                   !allowExpiryTriggeredStartupActivation) {
+            HookLogImportant(
+                "DX12: ECL hook leaving pending PostSL activation dormant after startup window expiry "
+                "because post-FSR bootstrap path is still unsafe "
+                "(activationPending=1 hadFSR=%d safeBootstrap=%d cachedSwapchain=%p)",
+                g_HadFSRFGPhase ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0, activationSwapchain);
         } else if (s_callbackTriggeredWithCachedSwapchain) {
             // Log if we're still processing after callback was triggered (callbacks from ProcessFrame)
             static int s_postEclCallbackLogCount = 0;

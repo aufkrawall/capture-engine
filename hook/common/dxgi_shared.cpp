@@ -1061,6 +1061,25 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             }
             postSLCallback(pSwapChain);
         }
+
+        if (DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+                api == APIType::D3D12, hadFSRFGPhase,
+                shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute)) {
+            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
+            PFN_Present presentBypass = EnsurePresentBypassTrampoline();
+            if (presentBypass) {
+                static std::atomic<int> s_confirmedStandaloneNormalRouteBypassLogCount{0};
+                int bypassCount =
+                    s_confirmedStandaloneNormalRouteBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (bypassCount <= 10 || (bypassCount % 100) == 0) {
+                    HookLogImportant(
+                        "DetourPresent: Post-FSR confirmed standalone normal-route bypass #%d "
+                        "(owner=0x%04X depth=%d tid=0x%04X)",
+                        bypassCount, presentOwner, presentDepthVal, currentThreadId);
+                }
+                return presentBypass(pSwapChain, SyncInterval, Flags);
+            }
+        }
     }
     if (streamlineSyntheticReentrant) {
         auto postSLCallback = observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
@@ -1550,6 +1569,25 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     logCount, postSLConfirmedButStartupSettling ? 1 : 0, presentOwner, presentDepthVal, currentThreadId);
             }
             postSLCallback(pSwapChain);
+        }
+
+        if (DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+                api == APIType::D3D12, hadFSRFGPhase,
+                shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute)) {
+            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present1");
+            PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
+            if (present1Bypass) {
+                static std::atomic<int> s_confirmedStandaloneNormalRouteBypassLogCount1{0};
+                int bypassCount =
+                    s_confirmedStandaloneNormalRouteBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (bypassCount <= 10 || (bypassCount % 100) == 0) {
+                    HookLogImportant(
+                        "DetourPresent1: Post-FSR confirmed standalone normal-route bypass #%d "
+                        "(owner=0x%04X depth=%d tid=0x%04X)",
+                        bypassCount, presentOwner, presentDepthVal, currentThreadId);
+                }
+                return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+            }
         }
     }
     if (streamlineSyntheticReentrant) {
