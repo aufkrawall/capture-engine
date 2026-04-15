@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-04-15
+Last cross-checked: 2026-04-16
 
 Primary sources:
 - `llm-wiki/log.md`
@@ -89,4 +89,4 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 ## Open Questions / Stale-Risk
 - Re-check this page whenever logging controls, session bundle layout, external-dump mirroring, or `Overlay.observer_only` / `Overlay.observer_policy_only` / `Overlay.observer_startup_present_only` semantics change.
 - Re-check after any future split of hook diagnostics into additional sidecar logs, passive-baseline workflow changes, or DbgHelp hook ownership changes.
-- Fresh runtime validation is still required after the `HasExplicitSetOptionsActivationForCurrentComeback()` narrowing, the `ShouldContinueECLDrivenPostSLStartupProgress` safe-bootstrap gating, the post-FSR startup Present transport split, and the new post-FSR wrapper-bootstrap clamp. Build `0.1.2308` no longer reproduces the old Steam null-Present crash family in Talos `installed/captureengine/logs/20260416_010150`; the log shows repeated `Post-FSR startup normal-route bypass ...` entries and the dump no longer goes through `gameoverlayrenderer64!OverlayHookD3D3`. The next failure seam is later and cleaner: after warm-up and overlay bootstrap, CE still selected the post-FSR wrapper-bootstrap queue even though the comeback already had a preserved runtime-owned `scQueue` plus a safe bootstrap topology, then immediately hit `DX12: PostSL post-FSR PROBE level=0 ... devRemoved=0x887A0001 FAILED`. The shared fix now blocks wrapper bootstrap once both stronger signals already exist.
+- Fresh runtime validation is still required after the `HasExplicitSetOptionsActivationForCurrentComeback()` narrowing, the `ShouldContinueECLDrivenPostSLStartupProgress` safe-bootstrap gating, the post-FSR startup Present transport split, the post-FSR wrapper-bootstrap clamp, and the new post-FSR confirmed-startup-settling bypass extension. Talos `installed/captureengine/logs/20260416_011004` on build `0.1.2309` showed why the previous transport split was still one seam too narrow: CE preserved the fresh post-FSR `scQueue`, stayed on `Post-FSR startup normal-route bypass ...` during warm-up, rebuilt overlay state, passed the post-FSR probes, confirmed rendering, and logged `Post-SL overlay SUBMIT #2085/#2086`, then immediately crashed again in the old `0x0 -> gameoverlayrenderer64!OverlayHookD3D3` family. The shared fix now keeps post-FSR normal-route Present transport on bypass until the short confirmed-startup-settling window ends, not just until the first successful render.

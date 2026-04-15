@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-Last cross-checked: 2026-04-13
+Last cross-checked: 2026-04-16
 
 Purpose:
 - Track wiki edits.
@@ -13,6 +13,29 @@ Update rules:
 - If an area is churning, call that out explicitly so the next reader knows to re-check the code.
 
 ## Activity Timeline
+
+### 2026-04-16 - Keep post-FSR normal-route Present transport on bypass through the confirmed-startup-settling window
+
+- **Motivation**: Talos `installed/captureengine/logs/20260416_011004` on build `0.1.2309` still crashed at the end of the `DLSS_FG -> FSR_FG -> DLSS_FG` switching sequence. The previous fixes were working up to a later boundary than before: CE preserved the fresh post-FSR Streamline `scQueue=0000020AF4B01300`, kept decisive startup Presents on the normal route while logging `DetourPresent: Post-FSR startup normal-route bypass #1..#10`, rebuilt torn-down overlay state after warm-up, passed the post-FSR level-0 probes on the selected `scQueue`, confirmed rendering, and logged `Post-SL overlay SUBMIT #2085` and `#2086`. The crash still immediately returned in the old family: `0x0 -> gameoverlayrenderer64!OverlayHookD3D3 -> capture_hook_x64 -> sl_dlss_g`.
+
+- **Root cause refinement**: The remaining seam was still in shared DXGI transport, but one step later than the previous fix. `ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(...)` dropped the bypass as soon as `postSLConfirmedRendering` became true. Talos proves that the first successful post-FSR render is still not enough to trust Steam's fresh-swapchain DX12 Present hook chain again. During the short confirmed-but-startup-settling window, Streamline-originated Presents still belong to the fragile startup family; falling through normal `oPresent` / `oPresent1` there can re-enter `gameoverlayrenderer64` before Steam's saved original Present pointer on the recovered swapchain is stable.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now widens `ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(...)` with one more state input: `postSLConfirmedButStartupSettling`.
+  2. On DX12 post-FSR comebacks, bypass transport now remains active until PostSL has both confirmed rendering and left that short startup-settling window.
+  3. `hook/common/dxgi_shared.cpp` now threads that settling signal through both `DetourPresent` and `DetourPresent1`, and the diagnostics now log `settling=` on the post-FSR normal-route bypass path.
+  4. `tests/test_dxgi_shared.cpp` renames and extends the focused regression test to `PostFSRStartupNormalRouteUsesBypassUntilPostSLSettles`.
+
+- **Why this is generic**: This is not a Talos-specific branch and not a Steam-specific quirk hardcoded into policy. The shared rule is that PostSL's first successful render proves CE's recovered overlay path, but it does not prove that a third-party overlay's fresh-swapchain Present hook chain is already safe to trust again. On post-FSR DX12 comebacks, routing can remain topology-driven while actual Present transport stays on the bypass trampoline through the short confirmed-startup-settling window.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_011004/{session_manifest.txt,hook_debug.log,crash.log,crash_20260416_011049_873_pid24748_tid25984.dmp,external_UEMinidump.dmp}`.
+  - Confirmed the pre-crash sequence: preserved fresh post-FSR `scQueue`, repeated `Post-FSR startup normal-route bypass ...`, warm-up completion, overlay bootstrap rebuild on `scQueue=0000020AF4B01300`, passed post-FSR probes, then `DX12: PostSL CONFIRMED rendering via re-entrant Present` plus `Post-SL overlay SUBMIT #2085/#2086` immediately before the crash.
+  - Analyzed the primary dump with `cdb.exe`; the crash stack is again `0x0 -> gameoverlayrenderer64!OverlayHookD3D3 -> capture_hook_x64 -> sl_dlss_g`, confirming a return to the stale-Steam-hook family after first confirmation.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; all 577 tests passed.
+
+- **Files changed**: `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/log.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/dx12-overlay-third-party-coexistence.md`
+- **Stale risk**: Fresh Talos runtime validation is still required. If a later crash remains after this settling-window transport clamp, the next seam will likely be after startup settling has ended rather than in the earlier half-armed comeback transport path.
 
 ### 2026-04-16 - Stop post-FSR wrapper bootstrap once the comeback already has a preserved runtime-owned swapchain queue and a safe bootstrap topology
 

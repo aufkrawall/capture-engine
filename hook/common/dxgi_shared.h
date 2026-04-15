@@ -373,15 +373,19 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
 
 inline bool ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
     bool isD3D12SwapChain, bool keepStartupPresentOnNormalRoute, bool hadFSRFGPhase,
-    bool postSLConfirmedRendering) {
+    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling) {
     // After an FSR->DLSS comeback, the shared routing layer can correctly decide
     // that the decisive startup Present must stay in the normal Streamline family
     // so PostSL keeps making progress. But the brand-new swapchain can still have
     // stale third-party vtable hooks whose saved original Present pointer is not
-    // ready yet. Keep the callback/routing decision, but transport the actual
-    // Present through the bypass trampoline until PostSL confirms at least one
-    // successful render on the recovered path.
-    return isD3D12SwapChain && keepStartupPresentOnNormalRoute && hadFSRFGPhase && !postSLConfirmedRendering;
+    // ready yet. The Talos post-FSR comeback traces show that the first confirmed
+    // render alone is still too early to trust the recovered hook chain again:
+    // Steam can still crash on the next few confirmed-but-startup-settling
+    // Presents. Keep the callback/routing decision, but transport the actual
+    // Present through the bypass trampoline until PostSL has both confirmed a
+    // successful render and left that short startup-settling window.
+    return isD3D12SwapChain && keepStartupPresentOnNormalRoute && hadFSRFGPhase &&
+           (!postSLConfirmedRendering || postSLConfirmedButStartupSettling);
 }
 
 inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(

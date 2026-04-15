@@ -244,18 +244,20 @@ TEST(DXGISharedTest, WrapperBackedSyntheticStartupPresentCanStayOnNormalRouteInA
         false, true, false, false, false, true, false, false, false, true));
 }
 
-TEST(DXGISharedTest, PostFSRStartupNormalRouteUsesBypassUntilPostSLConfirms) {
+TEST(DXGISharedTest, PostFSRStartupNormalRouteUsesBypassUntilPostSLSettles) {
     EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, true, false));
+        true, true, true, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+        true, true, true, true, true));
 
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        false, true, true, false));
+        false, true, true, false, false));
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, false, true, false));
+        true, false, true, false, false));
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, false, false));
+        true, true, false, false, false));
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, true, true));
+        true, true, true, true, false));
 }
 
 TEST(DXGISharedTest, PostSLCallbackStaysInstalledOnlyWhileStreamlineStillOwnsPresentPath) {

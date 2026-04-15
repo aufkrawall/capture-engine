@@ -1023,7 +1023,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
                 api == APIType::D3D12, keepStartupPresentOnNormalRoute, hadFSRFGPhase,
-                postSLConfirmedRendering)) {
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR startup normal-route Present");
             PFN_Present presentBypass = EnsurePresentBypassTrampoline();
             if (presentBypass) {
@@ -1033,9 +1033,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 if (bypassCount <= 10 || (bypassCount % 100) == 0) {
                     HookLogImportant(
                         "DetourPresent: Post-FSR startup normal-route bypass #%d "
-                        "(startupPending=%d unconfirmed=%d confirmed=%d tid=0x%04X)",
+                        "(startupPending=%d unconfirmed=%d confirmed=%d settling=%d tid=0x%04X)",
                         bypassCount, postSLStartupActivationPending ? 1 : 0,
-                        postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0, currentThreadId);
+                        postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                        postSLConfirmedButStartupSettling ? 1 : 0, currentThreadId);
                 }
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }
@@ -1511,7 +1512,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
                 api == APIType::D3D12, keepStartupPresentOnNormalRoute, hadFSRFGPhase,
-                postSLConfirmedRendering)) {
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR startup normal-route Present1");
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {
@@ -1521,9 +1522,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 if (bypassCount <= 10 || (bypassCount % 100) == 0) {
                     HookLogImportant(
                         "DetourPresent1: Post-FSR startup normal-route bypass #%d "
-                        "(startupPending=%d unconfirmed=%d confirmed=%d tid=0x%04X)",
+                        "(startupPending=%d unconfirmed=%d confirmed=%d settling=%d tid=0x%04X)",
                         bypassCount, postSLStartupActivationPending ? 1 : 0,
-                        postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0, currentThreadId);
+                        postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                        postSLConfirmedButStartupSettling ? 1 : 0, currentThreadId);
                 }
                 return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
             }
