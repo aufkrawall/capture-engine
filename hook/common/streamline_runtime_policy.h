@@ -110,11 +110,18 @@ inline GetStateRuntimeEvaluation EvaluateViewportRuntimeUpdateFromGetState(
 }
 
 inline bool ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(bool persistentSetOptionsBlock,
-                                                                      bool startupTransitionWindowActive,
-                                                                      ce::fg_runtime::RuntimeMode runtimeMode) {
+                                                                       bool startupTransitionWindowActive,
+                                                                       ce::fg_runtime::RuntimeMode runtimeMode) {
     const bool runtimeStillInactive = runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG ||
                                       runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
     return runtimeStillInactive && (persistentSetOptionsBlock || startupTransitionWindowActive);
+}
+
+inline bool ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(
+    bool blockUntilSafePostFSRBootstrapPath, bool safePostFSRBootstrapPath, ce::fg_runtime::RuntimeMode runtimeMode) {
+    const bool runtimeStillInactive = runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG ||
+                                      runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
+    return runtimeStillInactive && blockUntilSafePostFSRBootstrapPath && !safePostFSRBootstrapPath;
 }
 
 inline bool ShouldArmStartupTransitionWindowOnFreshActiveSignal(bool active, bool previousSignal) {

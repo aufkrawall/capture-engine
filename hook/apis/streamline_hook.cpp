@@ -169,6 +169,7 @@ std::unordered_map<uint32_t, uint32_t> g_ViewportCapabilityMax;
 std::atomic<ULONGLONG> g_SuppressNewGetStateActivationUntilMs{0};
 constexpr ULONGLONG kAuthoritativeFFXTakeoverGetStateSuppressMs = 250;
 std::atomic<bool> g_BlockGetStateOnlyReactivationUntilExplicitSetOptions{false};
+std::atomic<bool> g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap{false};
 std::atomic<bool> g_CurrentComebackActivatedViaExplicitSetOptions{false};
 
 std::mutex g_SuppressedOffMutex;
@@ -385,6 +386,13 @@ bool ShouldSuppressNewGetStateActivation() {
     }
 
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+    if (ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(
+            g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.load(std::memory_order_acquire),
+            safePostFSRBootstrapPath, runtimeMode)) {
+        return true;
+    }
+
     if (ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(
             g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire),
             DXGIShared::IsStreamlineStartupTransitionWindowActive(), runtimeMode)) {
@@ -915,6 +923,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                 g_SuppressNewGetStateActivationUntilMs.exchange(0, std::memory_order_acq_rel);
             const bool wasBlockingGetStateOnlyReactivation =
                 g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.exchange(false, std::memory_order_acq_rel);
+            const bool wasBlockingUnsafePostFSRGetStateOnlyReactivation =
+                g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.exchange(false, std::memory_order_acq_rel);
             if (previousSuppressUntilMs != 0) {
                 const ULONGLONG nowMs = GetTickCount64();
                 if (previousSuppressUntilMs > nowMs) {
@@ -927,6 +937,12 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             if (wasBlockingGetStateOnlyReactivation) {
                 HookLogImportant(
                     "Streamline Hook: Cleared persistent GetState-only DLSS FG suppression due to explicit "
+                    "slDLSSGSetOptions enable request (viewport=%u)",
+                    viewportKey);
+            }
+            if (wasBlockingUnsafePostFSRGetStateOnlyReactivation) {
+                HookLogImportant(
+                    "Streamline Hook: Cleared unsafe post-FSR GetState-only DLSS FG suppression due to explicit "
                     "slDLSSGSetOptions enable request (viewport=%u)",
                     viewportKey);
             }
@@ -1141,10 +1157,11 @@ void OnAuthoritativeFFXTakeover() {
 
     g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
                                                  std::memory_order_release);
+    g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(true, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     HookLogImportant(
         "Streamline Hook: Authoritative FFX takeover reset %zu viewport states and preserved %zu capability caches; "
-        "suppressing GetState-only reactivation for %llums",
+        "suppressing GetState-only reactivation for %llums and until safe post-FSR bootstrap or explicit enable",
         resetViewportCount, preservedCapabilityCount,
         (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
 }
@@ -1155,6 +1172,7 @@ void Shutdown() {
     g_ViewportCapabilityMax.clear();
     g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
     g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(false, std::memory_order_release);
+    g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(false, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);

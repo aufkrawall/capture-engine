@@ -128,6 +128,22 @@ TEST(StreamlineRuntimePolicyTest, FreshGetStateActivationSuppressedWhileRuntimeS
         false, true, RuntimeMode::kDLSSFG));
 }
 
+TEST(StreamlineRuntimePolicyTest, FreshGetStateActivationStaysSuppressedDuringUnsafePostFSRComeback) {
+    using ce::fg_runtime::RuntimeMode;
+
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(
+        true, false, RuntimeMode::kOff));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(
+        true, false, RuntimeMode::kStreamlineNoFG));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(
+        false, false, RuntimeMode::kOff));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(
+        true, true, RuntimeMode::kOff));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(
+        true, false, RuntimeMode::kDLSSFG));
+}
+
 TEST(StreamlineRuntimePolicyTest, StartupTransitionWindowOnlyRearmsOnFreshActiveSignal) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(true, false));
 
