@@ -519,6 +519,11 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool 
     return authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode);
 }
 
+inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,
+                                                        bool formatChanged) {
+    return backendInitialized && (deviceChanged || formatChanged);
+}
+
 inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,
                                                         bool authoritativeFSRActive, bool isInterpolatedFrame,
                                                         bool recentStreamlineTeardown) {

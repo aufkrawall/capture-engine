@@ -25,6 +25,7 @@ struct CombinedRuntimeSignalUpdate {
     int effectiveMultiplier = 0;
     bool deferredOffDuringStartupWindow = false;
     bool freshActivationEdge = false;
+    bool shouldExtendStartupTransitionWindow = false;
 };
 
 struct ObserverOnlyHeuristicCleanup {
@@ -140,6 +141,7 @@ inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool reque
     update.effectiveActive = update.deferredOffDuringStartupWindow ? previousSignal : requestedActive;
     update.effectiveMultiplier = update.effectiveActive ? requestedMultiplier : 0;
     update.freshActivationEdge = requestedActive && !previousSignal;
+    update.shouldExtendStartupTransitionWindow = update.deferredOffDuringStartupWindow && previousSignal;
     return update;
 }
 

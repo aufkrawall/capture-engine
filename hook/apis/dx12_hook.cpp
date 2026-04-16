@@ -869,6 +869,11 @@ static OverlayAdapter g_D3D11On12Adapter;
 // Uses the DX11 backend via D3D11On12 bridge to properly manage cross-queue
 // resource transitions, which SL's FG pipeline can track.
 static OverlayAdapter g_SLFGAdapter;
+// Native/runtime-owned FSR present-callback rendering must not inherit stale
+// normal/DLSS DX12 backend state across later FFX-owned swapchain/device handoffs.
+static OverlayAdapter g_FFXPresentOverlayAdapter;
+static ID3D12Device* g_FFXPresentOverlayDevice = nullptr;
+static DXGI_FORMAT g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
 
 // CRITICAL FIX: Use atomic pointers for thread-safe access
 // These are read/written from multiple threads (hook thread, present thread, etc.)
@@ -1060,6 +1065,7 @@ bool HookHasSafePostFSRBootstrapPath() {
 
 static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);
 static void ClearPostSLQueues(const char* reason);
+static void ResetFFXPresentCallbackOverlayBackend(const char* reason);
 
 static void SetPostSLCallbackInstalled(bool installed, const char* reason) {
     if (installed) {
@@ -1562,6 +1568,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    ResetFFXPresentCallbackOverlayBackend("DX12: FFX swapchain takeover");
     StreamlineHook::OnAuthoritativeFFXTakeover();
     DXGIShared::DisableSLPresentRouting();
     {
@@ -2016,6 +2023,17 @@ static bool EnsureOverlayAdapterReadyForFFXPresentCallback(
     auto* dx12Device = static_cast<ID3D12Device*>(desc->device);
     auto* outputResource = static_cast<ID3D12Resource*>(desc->outputSwapChainBuffer.resource);
     const D3D12_RESOURCE_DESC resourceDesc = outputResource->GetDesc();
+    ID3D12CommandQueue* callbackQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> qLock(g_CommandQueueMutex);
+        callbackQueue = g_SwapchainQueue ? g_SwapchainQueue : g_CommandQueue.load(std::memory_order_acquire);
+    }
+    if (!callbackQueue) {
+        HookLogImportant(
+            "DX12: FFX present callback has no live queue for overlay backend init (device=%p frameId=%llu)",
+            dx12Device, static_cast<unsigned long long>(desc->frameID));
+        return false;
+    }
 
     std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
 
@@ -2023,17 +2041,30 @@ static bool EnsureOverlayAdapterReadyForFFXPresentCallback(
     g_State.cachedHeight = static_cast<int>(resourceDesc.Height);
     g_State.format = resourceDesc.Format;
 
-    if (!g_OverlayAdapter.IsInitialized()) {
-        g_OverlayAdapter.SetHwnd(nullptr);
-        if (!g_OverlayAdapter.InitDX12(dx12Device, nullptr, static_cast<int>(resourceDesc.Format))) {
+    if (ce::dx12_overlay_policy::ShouldResetFFXPresentCallbackOverlayBackend(
+            g_FFXPresentOverlayAdapter.IsInitialized(), g_FFXPresentOverlayDevice != dx12Device,
+            g_FFXPresentOverlayFormat != resourceDesc.Format)) {
+        HookLogImportant(
+            "DX12: Resetting FFX present callback overlay backend before runtime-owned FSR render "
+            "(oldDevice=%p newDevice=%p oldFmt=%d newFmt=%d)",
+            g_FFXPresentOverlayDevice, dx12Device, static_cast<int>(g_FFXPresentOverlayFormat),
+            static_cast<int>(resourceDesc.Format));
+        g_FFXPresentOverlayAdapter.Shutdown();
+    }
+
+    if (!g_FFXPresentOverlayAdapter.IsInitialized()) {
+        g_FFXPresentOverlayAdapter.SetHwnd(nullptr);
+        if (!g_FFXPresentOverlayAdapter.InitDX12(dx12Device, callbackQueue, static_cast<int>(resourceDesc.Format))) {
             HookLogImportant(
                 "DX12: FFX present callback failed to initialize overlay adapter (device=%p fmt=%d frameId=%llu)",
                 dx12Device, static_cast<int>(resourceDesc.Format), static_cast<unsigned long long>(desc->frameID));
             return false;
         }
-        g_OverlayAdapter.SetHDR(resourceDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ||
-                                    resourceDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT,
-                                static_cast<int>(resourceDesc.Format));
+        g_FFXPresentOverlayAdapter.SetHDR(resourceDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ||
+                                              resourceDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT,
+                                          static_cast<int>(resourceDesc.Format));
+        g_FFXPresentOverlayDevice = dx12Device;
+        g_FFXPresentOverlayFormat = resourceDesc.Format;
         HookLogImportant("DX12: FFX present callback initialized overlay adapter for runtime-owned FSR (fmt=%d)",
                          static_cast<int>(resourceDesc.Format));
     }
@@ -2081,14 +2112,14 @@ static bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFr
 
         TransitionResourceIfNeeded(cmdList, outputResource, outputState, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-        g_OverlayAdapter.SetIPCClient(g_IPC);
-        g_OverlayAdapter.SetReserveInactiveFGSpace(false);
+        g_FFXPresentOverlayAdapter.SetIPCClient(g_IPC);
+        g_FFXPresentOverlayAdapter.SetReserveInactiveFGSpace(false);
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
-            g_OverlayAdapter.SetMetrics(perf);
+            g_FFXPresentOverlayAdapter.SetMetrics(perf);
         }
-        g_OverlayAdapter.SetGraphicsAPI("DX12");
-        g_OverlayAdapter.SetDX12RenderTarget(cmdList, reinterpret_cast<void*>(rtvHandle.ptr));
-        g_OverlayAdapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
+        g_FFXPresentOverlayAdapter.SetGraphicsAPI("DX12");
+        g_FFXPresentOverlayAdapter.SetDX12RenderTarget(cmdList, reinterpret_cast<void*>(rtvHandle.ptr));
+        g_FFXPresentOverlayAdapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
 
         TransitionResourceIfNeeded(cmdList, outputResource, D3D12_RESOURCE_STATE_RENDER_TARGET, outputState);
     }
@@ -2128,6 +2159,20 @@ void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey) {
     g_FFXPresentCallbackBridges.erase(bridgeKey);
 }
 
+static void ResetFFXPresentCallbackOverlayBackend(const char* reason) {
+    std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
+    if (g_FFXPresentOverlayAdapter.IsInitialized()) {
+        HookLogImportant("%s — resetting native FSR present-callback overlay adapter", reason);
+        g_FFXPresentOverlayAdapter.Shutdown();
+    }
+    g_FFXPresentOverlayDevice = nullptr;
+    g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
+    if (g_FFXPresentRtvHeap) {
+        g_FFXPresentRtvHeap->Release();
+        g_FFXPresentRtvHeap = nullptr;
+    }
+}
+
 void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
     if (enabled) {
         ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
@@ -2157,10 +2202,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     }
 
     uint32_t result = 0;
-    bool copiedBaseFrame = false;
     if (originalCallback) {
         result = originalCallback(desc, originalUserContext);
-        copiedBaseFrame = true;
     }
 
     if (!desc) {
@@ -2178,7 +2221,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         return result;
     }
 
-    if (!copiedBaseFrame && desc->currentBackBuffer.resource &&
+    if (!originalCallback && desc->currentBackBuffer.resource &&
         desc->currentBackBuffer.resource != desc->outputSwapChainBuffer.resource) {
         auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(desc->commandList);
         CopyFFXPresentSourceToOutput(cmdList, desc);
@@ -6087,6 +6130,11 @@ void CleanupOverlay() {
         g_FFXPresentRtvHeap->Release();
         g_FFXPresentRtvHeap = nullptr;
     }
+    if (g_FFXPresentOverlayAdapter.IsInitialized()) {
+        g_FFXPresentOverlayAdapter.Shutdown();
+    }
+    g_FFXPresentOverlayDevice = nullptr;
+    g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
     g_State.currentFenceValue = 0;
     g_State.crossQueueFenceValue = 0;
     g_State.allocIndex = 0;

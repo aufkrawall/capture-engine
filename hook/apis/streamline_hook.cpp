@@ -171,6 +171,7 @@ constexpr ULONGLONG kAuthoritativeFFXTakeoverGetStateSuppressMs = 250;
 std::atomic<bool> g_BlockGetStateOnlyReactivationUntilExplicitSetOptions{false};
 std::atomic<bool> g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap{false};
 std::atomic<bool> g_CurrentComebackActivatedViaExplicitSetOptions{false};
+std::atomic<bool> g_StartupWindowOffExtensionPending{false};
 
 std::mutex g_SuppressedOffMutex;
 bool g_SuppressedSetOptionsOffDuringStartup = false;
@@ -350,6 +351,7 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
         DXGIShared::g_StreamlineFGRunning.exchange(signalUpdate.effectiveActive, std::memory_order_acq_rel);
     if (ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(active, previousSignal)) {
         DXGIShared::ArmStreamlineStartupTransitionWindow();
+        g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     }
     if (signalUpdate.freshActivationEdge) {
         const bool explicitSetOptionsActivation = source && strcmp(source, "SetOptions") == 0;
@@ -365,12 +367,18 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
         HookLogImportant("Streamline Hook: FG state transition %s->%s via %s", previousSignalObserved ? "ON" : "OFF",
                          signalUpdate.effectiveActive ? "ON" : "OFF", source ? source : "runtime-state");
     }
-    if (signalUpdate.deferredOffDuringStartupWindow) {
+    if (signalUpdate.deferredOffDuringStartupWindow && signalUpdate.shouldExtendStartupTransitionWindow) {
+        const bool shouldExtend = g_StartupWindowOffExtensionPending.exchange(false, std::memory_order_acq_rel);
+        if (!shouldExtend) {
+            return;
+        }
         DXGIShared::ExtendStreamlineStartupTransitionWindow();
         HookLogImportant(
             "Streamline Hook: Deferring OFF signal during startup transition window "
             "(g_StreamlineFGRunning stays ON, multiplier=%d source=%s) — extended startup window",
             signalUpdate.effectiveMultiplier, source ? source : "unknown");
+    } else if (signalUpdate.effectiveActive) {
+        g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     }
 }
 
@@ -1157,6 +1165,7 @@ void OnAuthoritativeFFXTakeover() {
                                                  std::memory_order_release);
     g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(true, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
+    g_StartupWindowOffExtensionPending.store(false, std::memory_order_release);
     HookLogImportant(
         "Streamline Hook: Authoritative FFX takeover reset %zu viewport states and preserved %zu capability caches; "
         "suppressing GetState-only reactivation for %llums and until safe post-FSR bootstrap or explicit enable",
@@ -1166,6 +1175,7 @@ void OnAuthoritativeFFXTakeover() {
 void OnAuthoritativeStreamlineStartupHandoff() {
     g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
                                                  std::memory_order_release);
+    g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     HookLogImportant(
         "Streamline Hook: Authoritative Streamline startup handoff observed — suppressing fresh GetState-only "
         "reactivation for %llums until explicit enable or stable startup evidence arrives",
@@ -1180,6 +1190,7 @@ void Shutdown() {
     g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(false, std::memory_order_release);
     g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(false, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
+    g_StartupWindowOffExtensionPending.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
         g_SuppressedSetOptionsOffDuringStartup = false;

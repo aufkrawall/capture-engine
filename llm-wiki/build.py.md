@@ -127,6 +127,7 @@ Default quality mode currently:
   - a copy of the top-level `build.log`
   - paths to important artifacts such as `compile_commands.json`, `tests/unit_tests.exe`, sanitizer child log, and built binaries when available
 - `build/verification/latest_summary.txt`, `latest_manifest.json`, `latest_run_dir.txt`, and `latest_build.log` always point at the most recent top-level verification/build run.
+- For long-running verification/build commands, prefer re-reading `build/verification/latest_summary.txt` or `latest_manifest.json` to check completion/status instead of leaving a shell in a passive polling/watch loop. The summary/manifest pair is the intended status contract.
 - On Windows, the script bootstraps MSYS2 and manages a custom FFmpeg build path.
 - On Windows, `--skip-updates` now also skips the old unconditional MSYS2 `pacman -S --needed ...` package-install step. Earlier behavior still entered pacman even on focused test runs and could hang on mirrors or stale package-manager state before any compile/test work started.
 - The nested sanitizer regression child now writes to its own log file inside the parent verification bundle instead of clobbering the parent top-level `build.log`.

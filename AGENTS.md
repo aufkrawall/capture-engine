@@ -39,6 +39,7 @@ Repository-specific instructions for coding agents working in this repo.
 ## Practical Agent Rules
 - After code changes, the canonical end-to-end verification command is `python build.py --verify --skip-updates`.
 - Read `build/verification/latest_summary.txt` first after that run. Use the paired `latest_manifest.json` and `latest_build.log` only as needed.
+- Do not sit in long passive watch loops waiting for build/test completion. Re-check `build/verification/latest_summary.txt` or `latest_manifest.json` directly instead; those files are the completion/status contract.
 - DO NOT RUN `python build.py --version` !!
 - Match the local subsystem pattern instead of imposing a new one.
 - The worktree may already contain unrelated user edits; do not revert them.

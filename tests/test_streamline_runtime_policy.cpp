@@ -158,6 +158,7 @@ TEST(StreamlineRuntimePolicyTest, DeferredStartupWindowOffKeepsEffectiveDlssSign
     EXPECT_TRUE(update.effectiveActive);
     EXPECT_EQ(2, update.effectiveMultiplier);
     EXPECT_FALSE(update.freshActivationEdge);
+    EXPECT_TRUE(update.shouldExtendStartupTransitionWindow);
 }
 
 TEST(StreamlineRuntimePolicyTest, NonDeferredOffClearsEffectiveDlssSignalAndMultiplier) {
@@ -167,6 +168,7 @@ TEST(StreamlineRuntimePolicyTest, NonDeferredOffClearsEffectiveDlssSignalAndMult
     EXPECT_FALSE(update.effectiveActive);
     EXPECT_EQ(0, update.effectiveMultiplier);
     EXPECT_FALSE(update.freshActivationEdge);
+    EXPECT_FALSE(update.shouldExtendStartupTransitionWindow);
 }
 
 TEST(StreamlineRuntimePolicyTest, FreshActivationEdgeOnlyTracksOffToOnTransitions) {
@@ -179,9 +181,21 @@ TEST(StreamlineRuntimePolicyTest, FreshActivationEdgeOnlyTracksOffToOnTransition
 
     EXPECT_FALSE(steadyOn.freshActivationEdge);
     EXPECT_TRUE(steadyOn.effectiveActive);
+    EXPECT_FALSE(steadyOn.shouldExtendStartupTransitionWindow);
 
     EXPECT_FALSE(deferredOff.freshActivationEdge);
     EXPECT_TRUE(deferredOff.effectiveActive);
+    EXPECT_TRUE(deferredOff.shouldExtendStartupTransitionWindow);
+}
+
+TEST(StreamlineRuntimePolicyTest, DeferredStartupWindowOffDoesNotExtendWithoutExistingActiveSignal) {
+    const auto deferredWithoutActive =
+        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, false, 4);
+
+    EXPECT_TRUE(deferredWithoutActive.deferredOffDuringStartupWindow);
+    EXPECT_FALSE(deferredWithoutActive.effectiveActive);
+    EXPECT_EQ(0, deferredWithoutActive.effectiveMultiplier);
+    EXPECT_FALSE(deferredWithoutActive.shouldExtendStartupTransitionWindow);
 }
 
 TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOnlyRunsForFsrOwnedHandoff) {
