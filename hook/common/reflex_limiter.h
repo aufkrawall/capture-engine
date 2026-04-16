@@ -24,11 +24,11 @@
 // clang-format on
 #include <intrin.h>
 #include <atomic>
-#include "hook_common.h"
-#include "fg_detection.h"
-#include "streamline_runtime_policy.h"
 #include "../apis/dx12_hook.h"
+#include "fg_detection.h"
+#include "hook_common.h"
 #include "reflex_defs.h"
+#include "streamline_runtime_policy.h"
 
 // IAT hook infrastructure for game activation detection.
 // Only available in the Hook DLL build, not in the Vulkan Layer.

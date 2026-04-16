@@ -183,22 +183,23 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
     pSharedMem->fpsLimiter.SetUseVFR(config.video.useVFR);
 
-    const uint64_t summaryHash = std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.vsyncMode)) ^
-                                 (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.anisotropicFiltering))
-                                  << 1) ^
-                                 (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.mipBias)) << 2) ^
-                                 (static_cast<uint64_t>(pSharedMem->graphicsConfig.backbufferCount) << 3) ^
-                                 (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralFps()) << 4) ^
-                                 (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralEnabled()) << 5) ^
-                                 (static_cast<uint64_t>(pSharedMem->graphicsConfig.dlssSRPreset) << 6) ^
-                                 (static_cast<uint64_t>(config.logLevel) << 7) ^
-                                 (static_cast<uint64_t>(pSharedMem->overlayConfig.observerPolicyOnly) << 8) ^
-                                 (static_cast<uint64_t>(pSharedMem->overlayConfig.observerStartupPresentOnly) << 9);
+    const uint64_t summaryHash =
+        std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.vsyncMode)) ^
+        (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.anisotropicFiltering)) << 1) ^
+        (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.mipBias)) << 2) ^
+        (static_cast<uint64_t>(pSharedMem->graphicsConfig.backbufferCount) << 3) ^
+        (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralFps()) << 4) ^
+        (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralEnabled()) << 5) ^
+        (static_cast<uint64_t>(pSharedMem->graphicsConfig.dlssSRPreset) << 6) ^
+        (static_cast<uint64_t>(config.logLevel) << 7) ^
+        (static_cast<uint64_t>(pSharedMem->overlayConfig.observerPolicyOnly) << 8) ^
+        (static_cast<uint64_t>(pSharedMem->overlayConfig.observerStartupPresentOnly) << 9);
 
     if (summaryHash != s_ConfigSummaryHash) {
         LogInfo(
             "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s mipBias=%s mode=%s cpuPrerender=%.2f "
-            "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
+            "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
+            "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u",
             LogLevelToConfigString(config.logLevel), pSharedMem->graphicsConfig.vsyncMode,
             pSharedMem->graphicsConfig.anisotropicFiltering, pSharedMem->graphicsConfig.mipBias,
@@ -206,10 +207,9 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
             pSharedMem->graphicsConfig.backbufferCount, pSharedMem->fpsLimiter.GetGeneralFps(),
             pSharedMem->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF", pSharedMem->overlayConfig.showOverlay,
             pSharedMem->overlayConfig.observerOnly, pSharedMem->overlayConfig.observerPolicyOnly,
-            pSharedMem->overlayConfig.observerStartupPresentOnly,
-            pSharedMem->overlayConfig.captureIncludeOverlay, pSharedMem->overlayConfig.screenshotIncludeOverlay,
-            pSharedMem->graphicsConfig.dlssAutoExposure, pSharedMem->graphicsConfig.dlssSharpening,
-            pSharedMem->graphicsConfig.dlssSRPreset);
+            pSharedMem->overlayConfig.observerStartupPresentOnly, pSharedMem->overlayConfig.captureIncludeOverlay,
+            pSharedMem->overlayConfig.screenshotIncludeOverlay, pSharedMem->graphicsConfig.dlssAutoExposure,
+            pSharedMem->graphicsConfig.dlssSharpening, pSharedMem->graphicsConfig.dlssSRPreset);
         s_ConfigSummaryHash = summaryHash;
     }
 }

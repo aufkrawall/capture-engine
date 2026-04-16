@@ -21,8 +21,7 @@ InjectorConfigState BuildInjectorConfigState(const AppConfig& config) {
 
 bool ShouldRescanForConfigChange(const AppConfig& oldBaseConfig, const InjectorConfigState& oldState,
                                  const AppConfig& newBaseConfig, const InjectorConfigState& newState) {
-    return oldState.allowInjection != newState.allowInjection ||
-           oldBaseConfig.logLevel != newBaseConfig.logLevel ||
+    return oldState.allowInjection != newState.allowInjection || oldBaseConfig.logLevel != newBaseConfig.logLevel ||
            oldState.config.gameWhitelist != newState.config.gameWhitelist ||
            oldState.config.overlayWhitelist != newState.config.overlayWhitelist;
 }

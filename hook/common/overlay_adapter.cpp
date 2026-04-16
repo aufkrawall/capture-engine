@@ -520,10 +520,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     bool shouldRefreshGraph = showGraph;
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
-    bool dynamicStateChanged = (fgVisible != lastFGActive) ||
-                               (reserveInactiveFGSpace != lastReserveInactiveFGSpace) ||
-                               (isRecording != lastRecordingActive) ||
-                               (recordingSeconds != lastRecordingSeconds) ||
+    bool dynamicStateChanged = (fgVisible != lastFGActive) || (reserveInactiveFGSpace != lastReserveInactiveFGSpace) ||
+                               (isRecording != lastRecordingActive) || (recordingSeconds != lastRecordingSeconds) ||
                                (showOverloadWarning != lastShowOverloadWarning);
     bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
                        dynamicStateChanged || layoutDirty;

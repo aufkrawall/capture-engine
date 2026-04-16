@@ -8,8 +8,8 @@
 #include <iomanip>
 #include <iterator>
 #include <sstream>
-#include "crash_handler.h"
 #include "crash_dump_policy.h"
+#include "crash_handler.h"
 #include "dxgi_shared.h"
 #include "fg_detection.h"
 #include "hook_common.h"
@@ -32,7 +32,7 @@ static uint64_t GetCurrentMicros() {
 }
 
 static bool ShouldAllowImmediateDumpRequest(std::atomic<uint64_t>& lastDumpRequestMicros, uint64_t nowMicros,
-                                           uint64_t dedupWindowMicros = 10'000'000) {
+                                            uint64_t dedupWindowMicros = 10'000'000) {
     uint64_t previousRequest = lastDumpRequestMicros.load(std::memory_order_acquire);
     while (true) {
         if (previousRequest != 0 && nowMicros > previousRequest && (nowMicros - previousRequest) < dedupWindowMicros) {
@@ -447,9 +447,8 @@ void FreezeWatchdog::WatchdogThread() {
             }
 
             if (!pendingReason.empty()) {
-                HookLogImportant(
-                    "FreezeWatchdog: Processing deferred immediate dump request (%s, targetTid=%lu)",
-                    pendingReason.c_str(), pendingTargetTid);
+                HookLogImportant("FreezeWatchdog: Processing deferred immediate dump request (%s, targetTid=%lu)",
+                                 pendingReason.c_str(), pendingTargetTid);
                 CreateMinidumpWithThreadContext(pendingReason, pendingTargetTid);
                 continue;
             }
@@ -650,8 +649,7 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
     BOOL success = FALSE;
     DWORD err = ERROR_SUCCESS;
     for (size_t i = 0; i < std::size(attempts); ++i) {
-        HookLogImportant("FreezeWatchdog: Dump attempt %zu/%zu (%s)", i + 1, std::size(attempts),
-                         attempts[i].label);
+        HookLogImportant("FreezeWatchdog: Dump attempt %zu/%zu (%s)", i + 1, std::size(attempts), attempts[i].label);
         success = pMiniDumpWriteDump_(hProcess, processId, hFile, attempts[i].type,
                                       mei.ExceptionPointers ? &mei : nullptr, nullptr, nullptr);
         if (success) {

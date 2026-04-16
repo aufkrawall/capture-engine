@@ -1349,13 +1349,12 @@ bool Install(void* target, void* detour, void** outTrampoline) {
             uintptr_t newInstrEnd = (uintptr_t)(trampoline + trampolineOffset + instrLen);
             int64_t newDisp = (int64_t)absTarget - (int64_t)newInstrEnd;
 
-                if (HookTraceLoggingEnabled()) {
-                    HookLog(
-                        "InlineHook: PC-relative fixup at srcOff=%d, dispOff=%d, "
-                        "origDisp=0x%08X, absTarget=%p, newInstrEnd=%p, newDisp=0x%08llX",
-                        srcOffset, dispOff, (unsigned)origDisp, (void*)absTarget, (void*)newInstrEnd,
-                        (long long)newDisp);
-                }
+            if (HookTraceLoggingEnabled()) {
+                HookLog(
+                    "InlineHook: PC-relative fixup at srcOff=%d, dispOff=%d, "
+                    "origDisp=0x%08X, absTarget=%p, newInstrEnd=%p, newDisp=0x%08llX",
+                    srcOffset, dispOff, (unsigned)origDisp, (void*)absTarget, (void*)newInstrEnd, (long long)newDisp);
+            }
 
             if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
                 // Check if this is a JMP rel32 (0xE9) or CALL rel32 (0xE8) that we can convert to absolute

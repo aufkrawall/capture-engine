@@ -33,9 +33,9 @@ inline constexpr MINIDUMP_TYPE kRichFreezeDumpType = static_cast<MINIDUMP_TYPE>(
     MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithProcessThreadData | MiniDumpWithFullMemoryInfo |
     MiniDumpIgnoreInaccessibleMemory);
 
-inline constexpr MINIDUMP_TYPE kCompatibilityFreezeDumpType = static_cast<MINIDUMP_TYPE>(
-    MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
-    MiniDumpWithIndirectlyReferencedMemory);
+inline constexpr MINIDUMP_TYPE kCompatibilityFreezeDumpType =
+    static_cast<MINIDUMP_TYPE>(MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
+                               MiniDumpWithIndirectlyReferencedMemory);
 
 inline constexpr MINIDUMP_TYPE kMinimalDumpType = MiniDumpNormal;
 

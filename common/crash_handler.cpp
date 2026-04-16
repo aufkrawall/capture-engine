@@ -1,5 +1,4 @@
 #include "crash_handler.h"
-#include "crash_dump_policy.h"
 #include <direct.h>
 #include <errno.h>
 #include <atomic>
@@ -9,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include "crash_dump_policy.h"
 #include "logging.h"
 
 static std::string g_DumpDir = ".\\logs";
@@ -26,9 +26,9 @@ static std::atomic<int> g_ENoInterfaceExceptionCount{0};
 static std::atomic<int> g_BreakpointExceptionCount{0};
 static std::mutex g_SymbolArchiveMutex;
 typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
-                                         PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
-                                         PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
-                                         PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
+                                        PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
+                                        PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
+                                        PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
 static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
 
 namespace {

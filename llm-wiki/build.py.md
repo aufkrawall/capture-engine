@@ -11,6 +11,15 @@ Primary sources:
 ## Default Mode
 Running `python build.py` with no flags enables the repo's default quality mode.
 
+## Canonical Post-Change Verification
+Use one command for normal post-change verification:
+
+```powershell
+python build.py --verify --skip-updates
+```
+
+Canonical verification mode is now the preferred agent/maintainer workflow after code changes because it keeps build, lint, unit-test, and sanitizer-cadence validation inside one top-level run and leaves a compact verification bundle behind for later inspection.
+
 Default quality mode currently:
 - bootstraps toolchain state as needed
 - runs lint and Python LSP checks
@@ -26,6 +35,7 @@ Default quality mode currently:
 ### User-facing and advanced flags
 | Flag | Tier | Effect | Notes |
 | --- | --- | --- | --- |
+| `--verify` | user-facing | Run the canonical post-change verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Prefer this after code changes. |
 | `--skip-updates` | user-facing | Skip FFmpeg source update work when possible | On Windows, if FFmpeg is already built and `installed/captureengine/ffmpeg` exists, the script can skip the FFmpeg rebuild and just sync runtime DLLs. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
 | `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build anyway so `compile_commands.json` stays useful. This flag controls execution. |
 | `--gtest-filter=<expr>` | user-facing | Pass a GoogleTest filter through to `tests/unit_tests.exe` | Useful together with `--run-tests` for focused iteration on one suite or a few cases. |
@@ -46,6 +56,7 @@ Default quality mode currently:
 | `--sanitize-regression-child` | internal | Internal flag for the nested sanitizer child build | Not a normal day-to-day user flag. |
 
 ## Flag Interactions
+- `--verify` implies the normal post-change validation set: lint, unit tests, and sanitizer regression cadence.
 - No-arg default mode enables `--lint`, `--run-tests`, and `--sanitize-regression` behavior implicitly.
 - `--full-integration` implies `--run-integration-tests`.
 - `--run-integration-tests` implies `--run-tests`.
@@ -110,16 +121,26 @@ Default quality mode currently:
 
 ## Operational Notes
 - The script always rewrites `compile_commands.json` at the end of a successful build.
+- Canonical verification now writes a compact verification bundle under `build/verification/<timestamp>_build_<n>/` containing:
+  - `verification_summary.txt`
+  - `verification_manifest.json`
+  - a copy of the top-level `build.log`
+  - paths to important artifacts such as `compile_commands.json`, `tests/unit_tests.exe`, sanitizer child log, and built binaries when available
+- `build/verification/latest_summary.txt`, `latest_manifest.json`, `latest_run_dir.txt`, and `latest_build.log` always point at the most recent top-level verification/build run.
 - On Windows, the script bootstraps MSYS2 and manages a custom FFmpeg build path.
 - On Windows, `--skip-updates` now also skips the old unconditional MSYS2 `pacman -S --needed ...` package-install step. Earlier behavior still entered pacman even on focused test runs and could hang on mirrors or stale package-manager state before any compile/test work started.
+- The nested sanitizer regression child now writes to its own log file inside the parent verification bundle instead of clobbering the parent top-level `build.log`.
 - MSYS2 package install now uses an explicit timeout and logs partial stdout/stderr on timeout instead of silently waiting forever.
 - Parallel compile now emits progress lines and a summary, and `run_tests()` logs the test launch plus elapsed time so long builds/tests no longer look idle.
+- Full verification/build runs now fail on lint errors even when lint is only one phase of a larger run. Earlier behavior only failed the process for standalone `--lint` invocations.
+- `--jobs` is now applied after environment initialization, fixing the earlier `env`-before-initialization bug in `main()`.
 - On Windows hosts, the build now emits CodeView debug info plus sidecar `.pdb` files for the built PE outputs while staying on the existing clang/lld toolchain.
 - On Linux and WSL, the script uses cross-compilers and downloaded MSYS2 packages for dependencies.
 - There is no strict unknown-flag validator. Flags that the script does not inspect are not automatically rejected.
 
 ## Common Commands
 ```powershell
+python build.py --verify --skip-updates
 python build.py
 python build.py --skip-updates
 python build.py --incremental --skip-updates

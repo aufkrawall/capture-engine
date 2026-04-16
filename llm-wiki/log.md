@@ -14,6 +14,57 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Make one-shot `build.py --verify --skip-updates` the canonical post-change verification path and emit compact verification bundles
+
+- **Motivation**: The existing build/test workflow had become unnecessarily awkward for post-change verification. Agents and maintainers were often mixing focused test-only invocations, full builds, direct `unit_tests.exe` reruns, and ad-hoc log scraping. Two concrete problems in the current `build.py` also made that worse: lint failures only failed the process when `--lint` was the only requested action, and `--jobs` tried to write into `env` before `get_env()` had initialized it. Separately, the top-level `build.log` was still a human-oriented stream rather than a compact verification artifact, and the nested sanitizer regression child reused the same top-level logging path conceptually instead of leaving a dedicated child log inside a verification bundle.
+
+- **Fix**:
+  1. `build.py` now supports an explicit `--verify` mode that enables the canonical post-change validation set in one top-level run: lint, unit tests, full build, and sanitizer regression cadence. This is now the preferred workflow after code changes.
+  2. Top-level runs now emit a compact verification bundle under `build/verification/<timestamp>_build_<n>/` containing `verification_summary.txt`, `verification_manifest.json`, and a copy of the top-level build log. Stable pointers are maintained as `build/verification/latest_summary.txt`, `latest_manifest.json`, `latest_run_dir.txt`, and `latest_build.log`.
+  3. The verification manifest records per-step pass/fail state for toolchain setup, Python tool bootstrap, lint, unit tests, sanitizer regression, build, integration tests when used, and compile-commands generation, plus paths to important artifacts.
+  4. The nested sanitizer regression child now writes to its own log file inside the parent verification bundle instead of only contributing opaque child output to the parent run.
+  5. `build.py` now correctly fails the full run on lint errors even when lint is only one phase of a larger verification/build flow.
+  6. `--jobs` is now applied after environment initialization, fixing the earlier latent `env`-before-init bug in `main()`.
+  7. `AGENTS.md`, `llm-wiki/build.py.md`, and `llm-wiki/regression-testing-and-logging.md` now document `python build.py --verify --skip-updates` as the canonical post-change command and `build/verification/latest_summary.txt` as the first file to inspect afterward.
+
+- **Why this is generic**: This is not an agent-only convenience layer. The repo already treats `build.py` as the canonical build entry point, so the right fix is to make that entry point itself produce a durable verification session artifact and a single normal workflow instead of expecting each caller to improvise their own orchestration and log parsing.
+
+- **Verification**:
+  - Re-checked `build.py`, `AGENTS.md`, `llm-wiki/build.py.md`, and `llm-wiki/regression-testing-and-logging.md`.
+  - Confirmed the new canonical command is `python build.py --verify --skip-updates`.
+  - Confirmed the new verification output contract is centered on `build/verification/latest_summary.txt` first, with `latest_manifest.json` and `latest_build.log` as follow-on detail sources.
+  - Re-ran the canonical verification path after implementation and confirmed the bundle files were emitted successfully.
+
+- **Files changed**: `build.py`, `AGENTS.md`, `llm-wiki/build.py.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Medium. The new verification contract is only useful if future `build.py` changes keep the summary/manifest current and preserve `latest_*` outputs. Re-check this page after any future CLI, sanitizer-child, integration, or compile-commands flow change.
+
+### 2026-04-16 - Keep Steam DX12 hook-chain transport risk alive for the first protected post-FSR startup-handoff Present even after DLSS FG is already live
+
+- **Motivation**: Talos `installed/captureengine/logs/20260416_195002` on build `0.1.2335` crashed after multiple switching sequences on a later `FSR_FG -> DLSS_FG` comeback. The earlier label fix is still working: the session cleanly logs repeated `DX12: Native FSR explicitly configured FG OFF while runtime-owned swapchain teardown is still active` plus `DX12: Suppressing queue-change FSR FG heuristic ...` during the preceding FSR-off edge. The new crash happens later. CE captures a fresh authoritative Streamline runtime-owned queue `000001376DEA6970`, suppresses provisional `GetState` reactivation, then a real explicit `slDLSSGSetOptions(ON)` arrives. Right after that CE logs `DX12: Streamline FG ON after FSR — preserving freshly handed-off Streamline swapchain queue 000001376DEA6970`, then `DetourPresent: Keeping Streamline startup-handoff Present on the normal SL route #2`, publishes `runtime=DLSS_FG`, and immediately crashes before any `PostSL REACTIVATED`, bootstrap wait, probe, or submit log appears.
+
+- **Root cause refinement**: The surviving boundary is again transport, but narrower than the older unconditional post-FSR bypass rule. The preserved startup-handoff Present was already on the correct logical route. The problem is that the transport-risk signal that decides whether that normal-route Present should still use bypass had become too dependent on the generic Steam startup helper `ShouldForceSteamDX12Bypass(...)`. That helper intentionally goes false once Streamline is actively running in `DLSS_FG`, which is correct for ordinary live startup windows but too early for this exact recovered post-FSR handoff boundary. The dumps prove the stale Steam hook chain is still live there: both `external_sl-sha-bbeb8b77.dmp` and CE's own `crash_20260416_195126_529_pid6988_tid15992.dmp` land in `0x0 -> gameoverlayrenderer64!OverlayHookD3D3 -> capture_hook_x64 -> sl_dlss_g`.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now adds `ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(...)`.
+  2. `hook/common/dxgi_shared.cpp` now computes that dedicated risk signal in both `DetourPresent` and `DetourPresent1` from Steam overlay presence plus the protected post-FSR startup-handoff candidate state, independent of whether generic startup bypass would already stand down after DLSS FG becomes live.
+  3. `ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(...)` now consumes `staleThirdPartyPresentHookRisk || stalePostFSRStartupHandoffPresentHookRisk`, so only the first protected post-FSR startup-handoff Present gets the broader Steam-risk transport rule.
+  4. `tests/test_dxgi_shared.cpp` now adds `SteamDX12HookRiskExtendsToProtectedPostFSRStartupHandoff` to lock that new decision boundary.
+
+- **Why this is generic**: This is not another Talos-only branch. The generic rule is that a recovered post-FSR startup-handoff Present can still face a stale Steam DX12 Present-hook chain even after Streamline has already re-entered live DLSS FG. That risk is specific to the protected first recovered startup-handoff Present, not to all later post-FSR normal-route traffic, so it needs its own narrow transport-risk signal.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_195002/{session_manifest.txt,hook_debug.log,crash.log,external_sl-sha-bbeb8b77.dmp,crash_20260416_195126_529_pid6988_tid15992.dmp}`.
+  - Confirmed the decisive edge in `hook_debug.log`: explicit native-FSR-off suppression still active earlier, later fresh authoritative Streamline handoff to `queue=000001376DEA6970`, explicit `OFF->ON via SetOptions`, then `Keeping Streamline startup-handoff Present on the normal SL route #2` with no `Post-FSR startup-handoff normal-route bypass` line before the crash.
+  - Analyzed both dumps with `cdb.exe`; both are the same `SOFTWARE_NX_FAULT_c0000005_gameoverlayrenderer64.dll!Unknown` / `0x0 -> gameoverlayrenderer64!OverlayHookD3D3 -> capture_hook_x64 -> sl_dlss_g` family.
+  - Ran `python build.py --skip-updates --tests-only --gtest-filter=DXGISharedTest.SteamDX12HookRiskExtendsToProtectedPostFSRStartupHandoff:DXGISharedTest.PostFSRStartupHandoffNormalRouteUsesBypassTransport:DXGISharedTest.PostFSRConfirmedStandaloneNormalRouteUsesBypassTransport`; the focused build completed successfully.
+  - Ran `tests\unit_tests.exe --gtest_filter=DXGISharedTest.SteamDX12HookRiskExtendsToProtectedPostFSRStartupHandoff:DXGISharedTest.PostFSRStartupHandoffNormalRouteUsesBypassTransport:DXGISharedTest.PostFSRConfirmedStandaloneNormalRouteUsesBypassTransport`; all three focused DXGI tests passed.
+  - Ran the full canonical rebuild `python build.py --skip-updates`; it completed successfully and ended with `Build Complete.`.
+
+- **Files changed**: `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next check is that Talos now logs `Post-FSR startup-handoff normal-route bypass ...` for this comeback family and reaches the later protected post-FSR activation/probe path again without reopening the old GTA sessions that motivated the narrower general transport-risk clamp.
+
 ### 2026-04-16 - Suppress heuristic FSR relatch after explicit native-FSR off during runtime-owned teardown so the overlay status clears correctly in Talos
 
 - **Motivation**: Talos `installed/captureengine/logs/20260416_192846` on build `0.1.2333` stayed stable through `DLSS_FG -> FSR_FG -> off`, but the overlay status regressed on the final off transition: the visible label stayed on `FSR FG` even though no frame generation was active anymore. The decisive log edge is compact and contradictory. `FFX Hook` first logs repeated `Installed DX12 overlay present-callback bridge ... enabled=0`, then CE publishes `FG publication: source=DXGIShared::DetourPresent runtime=STREAMLINE_NO_FG active=0`, then on the very next frame `DX12: FG detected via queue change (initial=0000017D40635A00, current=0000017D32C676C0, gameQ=0000017D32C676C0, frame=4471)` fires and CE immediately republishes `runtime=FSR_FG active=1`. From that point the overlay remains stuck on the runtime-owned FSR path even though `apiFSR=0`.

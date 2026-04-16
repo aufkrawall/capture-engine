@@ -1,11 +1,11 @@
 #pragma once
 
 #include <windows.h>
+#include <algorithm>
+#include <cctype>
 #include <map>
 #include <string>
 #include <vector>
-#include <algorithm>
-#include <cctype>
 #include "shared_defs.h"
 
 #include "build_version.h"
@@ -271,7 +271,7 @@ struct PseudoOverlayConfig {
 
 struct AppConfig {
     // General
-    bool debugLogging = true;   // Legacy compatibility view: true when logLevel >= Debug
+    bool debugLogging = true;  // Legacy compatibility view: true when logLevel >= Debug
     LogLevel logLevel = LogLevel::Debug;
     std::string captureMethod;  // "inject", "wgc", "auto"
     std::string logFilePath;    // Path to captureengine.log
@@ -381,9 +381,8 @@ inline const char* LogLevelToConfigString(LogLevel level) {
 }
 
 inline std::string NormalizeConfigToken(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return value;
 }
 

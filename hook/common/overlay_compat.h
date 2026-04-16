@@ -175,12 +175,7 @@ inline bool IsFFXFrameGenerationModulePath(const char* path) {
 
 inline bool IsStreamlineFrameGenerationModulePath(const char* path) {
     static constexpr const char* kStreamlineFrameGenerationTokens[] = {
-        "sl.interposer",
-        "sl.common",
-        "sl.dlss",
-        "sl.dlss_g",
-        "nvngx_dlssg",
-        "nvngx_dlss",
+        "sl.interposer", "sl.common", "sl.dlss", "sl.dlss_g", "nvngx_dlssg", "nvngx_dlss",
     };
 
     for (const char* token : kStreamlineFrameGenerationTokens) {
@@ -193,12 +188,7 @@ inline bool IsStreamlineFrameGenerationModulePath(const char* path) {
 
 inline bool IsStreamlineFrameGenerationModulePath(const wchar_t* path) {
     static constexpr const wchar_t* kStreamlineFrameGenerationTokens[] = {
-        L"sl.interposer",
-        L"sl.common",
-        L"sl.dlss",
-        L"sl.dlss_g",
-        L"nvngx_dlssg",
-        L"nvngx_dlss",
+        L"sl.interposer", L"sl.common", L"sl.dlss", L"sl.dlss_g", L"nvngx_dlssg", L"nvngx_dlss",
     };
 
     for (const wchar_t* token : kStreamlineFrameGenerationTokens) {

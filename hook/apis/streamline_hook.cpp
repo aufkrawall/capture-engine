@@ -328,7 +328,8 @@ void ApplyCombinedDLSSFGState(bool active, int multiplier) {
 
 void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char* source) {
     if (ShouldKeepPureObserverOnlyStreamlineBehavior()) {
-        const bool previousSignalObserved = DXGIShared::g_StreamlineFGRunning.exchange(active, std::memory_order_acq_rel);
+        const bool previousSignalObserved =
+            DXGIShared::g_StreamlineFGRunning.exchange(active, std::memory_order_acq_rel);
         g_FGCompat.SetStreamlineFGSignal(active);
         ApplyCombinedDLSSFGState(active, active ? std::clamp(multiplier, 2, 4) : 0);
         if (previousSignalObserved != active) {
@@ -361,9 +362,8 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
 
     if (previousSignalObserved != signalUpdate.effectiveActive) {
         DX12_OnStreamlineFGStateChanged(signalUpdate.effectiveActive);
-        HookLogImportant("Streamline Hook: FG state transition %s->%s via %s",
-                         previousSignalObserved ? "ON" : "OFF", signalUpdate.effectiveActive ? "ON" : "OFF",
-                         source ? source : "runtime-state");
+        HookLogImportant("Streamline Hook: FG state transition %s->%s via %s", previousSignalObserved ? "ON" : "OFF",
+                         signalUpdate.effectiveActive ? "ON" : "OFF", source ? source : "runtime-state");
     }
     if (signalUpdate.deferredOffDuringStartupWindow) {
         DXGIShared::ExtendStreamlineStartupTransitionWindow();
@@ -732,10 +732,9 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         options ? options->mode : 0, options ? options->numFramesToGenerate : 0u, capabilityMax);
     if (runtimeEvaluation.update.shouldUpdate) {
         UpdateViewportRuntimeState(viewportKey, runtimeEvaluation.update.active, runtimeEvaluation.update.multiplier,
-                                   runtimeEvaluation.update.generatedFrames,
-                                   runtimeEvaluation.update.capabilityMax, "GetState");
-    } else if (result == kSlResultOk && options != nullptr &&
-               runtimeEvaluation.suppressedFreshActivation) {
+                                   runtimeEvaluation.update.generatedFrames, runtimeEvaluation.update.capabilityMax,
+                                   "GetState");
+    } else if (result == kSlResultOk && options != nullptr && runtimeEvaluation.suppressedFreshActivation) {
         static std::atomic<int> s_recentFfxTakeoverSuppressedGetStateLogCount{0};
         const int logCount = s_recentFfxTakeoverSuppressedGetStateLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 128) == 0) {
@@ -754,8 +753,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
                 "startupRemaining=%llums remaining=%llums)",
                 viewportKey, options->mode, options->numFramesToGenerate, state.inputsProcessingCompletionFence,
                 (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue, persistentBlock ? 1 : 0,
-                startupWindowActive ? 1 : 0, (unsigned long long)startupRemainingMs,
-                (unsigned long long)remainingMs);
+                startupWindowActive ? 1 : 0, (unsigned long long)startupRemainingMs, (unsigned long long)remainingMs);
         }
     }
 
@@ -770,7 +768,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
             const slResult offResult = g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
             if (offResult != kSlResultOk) {
                 HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via GetState returned %d",
-                                  offResult);
+                                 offResult);
             }
             g_SuppressedSetOptionsOffDuringStartup = false;
         }
@@ -825,8 +823,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     if (!pureObserverOnly && requestedEnabled) {
         std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
         if (g_SuppressedSetOptionsOffDuringStartup) {
-            const bool activationPending = DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
-                std::memory_order_acquire);
+            const bool activationPending =
+                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
             HookLogImportant(
                 "Streamline Hook: Clearing suppressed slDLSSGSetOptions(OFF) due to explicit re-enable request "
                 "(viewport=%u) — Streamline never received the OFF, re-enable is consistent "
@@ -857,14 +855,14 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     const bool runtimeModeIsFSRFG = runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
     if (!pureObserverOnly && ce::streamline_runtime_policy::ShouldPrepareForStreamlineEnableBeforeOriginalCall(
-            requestedEnabled, g_FGCompat.IsFSRFGApiActive(), runtimeModeIsFSRFG,
-            DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration())) {
+                                 requestedEnabled, g_FGCompat.IsFSRFGApiActive(), runtimeModeIsFSRFG,
+                                 DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration())) {
         DX12_PrepareForStreamlineEnableTransition();
     }
 
-    const bool suppressOffCall = !pureObserverOnly &&
-        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(
-        requestedDisabled, DXGIShared::IsStreamlineStartupTransitionWindowActive());
+    const bool suppressOffCall =
+        !pureObserverOnly && ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(
+                                 requestedDisabled, DXGIShared::IsStreamlineStartupTransitionWindowActive());
 
     slResult result;
     if (suppressOffCall) {
@@ -1162,8 +1160,7 @@ void OnAuthoritativeFFXTakeover() {
     HookLogImportant(
         "Streamline Hook: Authoritative FFX takeover reset %zu viewport states and preserved %zu capability caches; "
         "suppressing GetState-only reactivation for %llums and until safe post-FSR bootstrap or explicit enable",
-        resetViewportCount, preservedCapabilityCount,
-        (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
+        resetViewportCount, preservedCapabilityCount, (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
 }
 
 void OnAuthoritativeStreamlineStartupHandoff() {
@@ -1206,10 +1203,9 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
         return;
     }
 
-    const bool activationPending = DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
-        std::memory_order_acquire);
-    const bool callbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(
-        std::memory_order_acquire) != nullptr;
+    const bool activationPending =
+        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    const bool callbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
     const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
     const bool shouldTriggerDirectCallback =
         ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(
@@ -1237,7 +1233,7 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
         const slResult offResult = g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
         if (offResult != kSlResultOk) {
             HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via periodic flush returned %d",
-                              offResult);
+                             offResult);
         }
         g_SuppressedSetOptionsOffDuringStartup = false;
 
@@ -1267,22 +1263,20 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 "Streamline Hook: Activation still pending after OFF flush — "
                 "PostSL callback never entered (deferred or bypassed); trigger direct "
                 "callback to attempt activation before Streamline processes OFF");
-            
+
             // CRITICAL: Clear the startup transition window so that when the PostSL
             // callback is skipped (due to null swapchain), the next ProcessFrame call
             // won't see the window as still active and defer again.
             DXGIShared::ClearStreamlineStartupTransitionWindow();
-            HookLogImportant(
-                "Streamline Hook: Cleared startup transition window after OFF flush trigger");
-            
+            HookLogImportant("Streamline Hook: Cleared startup transition window after OFF flush trigger");
+
             auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
             if (postSLCallback) {
                 // Note: PostSLOverlayRenderGated now handles nullptr swapchain by returning early.
                 // The startup window has been cleared, so the next normal ProcessFrame call
                 // will properly complete activation with a valid swapchain.
                 postSLCallback(nullptr);
-                HookLogImportant(
-                    "Streamline Hook: PostSL callback (via nullptr) completed after OFF flush");
+                HookLogImportant("Streamline Hook: PostSL callback (via nullptr) completed after OFF flush");
             }
         } else if (activationPending && callbackInstalled && postSLActiveButUnconfirmed) {
             logSkippedDirectCallbackAfterActivation();
@@ -1300,22 +1294,20 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             "Streamline Hook: Startup window expired with activation pending but no "
             "suppressed OFF — triggering PostSL callback directly to complete "
             "activation before Streamline times out");
-        
+
         // CRITICAL: Clear the startup transition window so that when the PostSL
         // callback is skipped (due to null swapchain), the next ProcessFrame call
         // won't see the window as still active and defer again.
         DXGIShared::ClearStreamlineStartupTransitionWindow();
-        HookLogImportant(
-            "Streamline Hook: Cleared startup transition window before direct callback trigger");
-        
+        HookLogImportant("Streamline Hook: Cleared startup transition window before direct callback trigger");
+
         auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
             // Note: PostSLOverlayRenderGated now handles nullptr swapchain by returning early.
             // The startup window has been cleared, so the next normal ProcessFrame call
             // will properly complete activation with a valid swapchain.
             postSLCallback(nullptr);
-            HookLogImportant(
-                "Streamline Hook: PostSL callback (via nullptr) completed");
+            HookLogImportant("Streamline Hook: PostSL callback (via nullptr) completed");
         }
     } else if (activationPending && callbackInstalled && postSLActiveButUnconfirmed) {
         logSkippedDirectCallbackAfterActivation();

@@ -97,13 +97,11 @@ inline void ArmStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreaml
 
 inline void ExtendStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
     const ULONGLONG extendedUntilMs = GetTickCount64() + durationMs;
-    ULONGLONG currentUntilMs =
-        g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
+    ULONGLONG currentUntilMs = g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
 
     while (currentUntilMs < extendedUntilMs &&
            !g_SharedState.streamlineStartupTransitionUntilMs.compare_exchange_weak(
-               currentUntilMs, extendedUntilMs, std::memory_order_acq_rel, std::memory_order_acquire)) {
-    }
+               currentUntilMs, extendedUntilMs, std::memory_order_acq_rel, std::memory_order_acquire)) {}
 }
 
 inline void ClearStreamlineStartupTransitionWindow() {
@@ -167,10 +165,8 @@ inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool thirdPartyOver
     return !thirdPartyOverlayLoaded || hasPresentDetourHooks;
 }
 
-inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable,
-                                                          bool trackedVtableMatchesCurrent,
-                                                          bool presentHookInstalled,
-                                                          bool present1HookInstalled) {
+inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable, bool trackedVtableMatchesCurrent,
+                                                          bool presentHookInstalled, bool present1HookInstalled) {
     if (!hasReadableVtable) {
         return false;
     }
@@ -227,10 +223,22 @@ inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isStea
     return streamlineNeedsBypass || smoothMotionNeedsBypass;
 }
 
+inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
+    bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain,
+    bool hadFSRFGPhase, bool startupTopLevelCandidate) {
+    // The first recovered top-level Streamline Present after an FSR-owned epoch
+    // can still hit Steam's stale Present hook chain even after Streamline has
+    // already flipped back to DLSS FG. The older Steam startup bypass helper is
+    // intentionally narrower and goes inactive once DLSS FG is live, so keep a
+    // separate transport-risk signal for this one protected post-FSR handoff.
+    return bypassAvailable && isSteamOverlay && isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain &&
+           hadFSRFGPhase && startupTopLevelCandidate;
+}
+
 inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay, bool presentTrampolineInstalled,
-                                                       bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
-                                                       ce::fg_runtime::RuntimeMode runtimeMode,
-                                                       bool streamlineFGRunning) {
+                                                      bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
+                                                      ce::fg_runtime::RuntimeMode runtimeMode,
+                                                      bool streamlineFGRunning) {
     if (!hasThirdPartyOverlay || presentTrampolineInstalled || present1TrampolineInstalled) {
         return false;
     }
@@ -247,15 +255,10 @@ inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay,
     return !actualFrameGenerationActive && !steamBypassShouldOwnPath;
 }
 
-inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(bool isD3D12SwapChain, bool streamlineFGRunning,
-                                                             bool callerFromStreamlineModule,
-                                                             bool postSLConfirmedRendering,
-                                                             bool postSLConfirmedButStartupSettling,
-                                                             bool streamlineStartupHandoffInProgress,
-                                                             bool presentOwnershipActive,
-                                                             bool recentLargePresentGap,
-                                                             bool matchesExpectedPresentThread,
-                                                             bool startupTopLevelPresentAlreadyConsumed) {
+inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(
+    bool isD3D12SwapChain, bool streamlineFGRunning, bool callerFromStreamlineModule, bool postSLConfirmedRendering,
+    bool postSLConfirmedButStartupSettling, bool streamlineStartupHandoffInProgress, bool presentOwnershipActive,
+    bool recentLargePresentGap, bool matchesExpectedPresentThread, bool startupTopLevelPresentAlreadyConsumed) {
     if (!(isD3D12SwapChain && streamlineFGRunning && callerFromStreamlineModule)) {
         return false;
     }
@@ -301,16 +304,10 @@ inline bool ShouldAllowSpecialStreamlinePresentRouting(bool observerOnlyMode) {
     return !observerOnlyMode;
 }
 
-inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observerOnlyMode,
-                                                                     bool hadFSRFGPhase,
-                                                                     bool explicitSetOptionsActivation,
-                                                                     bool safePostFSRBootstrapPath,
-                                                                     bool startupTopLevelPresentConsumed,
-                                                                     bool callerFromStreamlineModule,
-                                                                     bool postSLStartupActivationPending,
-                                                                     bool postSLActiveButUnconfirmed,
-                                                                     bool postSLConfirmedButStartupSettling,
-                                                                     bool streamlineSyntheticReentrant) {
+inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
+    bool observerOnlyMode, bool hadFSRFGPhase, bool explicitSetOptionsActivation, bool safePostFSRBootstrapPath,
+    bool startupTopLevelPresentConsumed, bool callerFromStreamlineModule, bool postSLStartupActivationPending,
+    bool postSLActiveButUnconfirmed, bool postSLConfirmedButStartupSettling, bool streamlineSyntheticReentrant) {
     // Once the pure-DLSS startup family has already consumed its one-shot
     // top-level bootstrap, the next decisive Streamline-originated Present can be
     // the only callback opportunity before the runtime either settles or stalls.
@@ -341,10 +338,9 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
             (hadFSRFGPhase && (explicitSetOptionsActivation || safePostFSRBootstrapPath)));
 }
 
-inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(bool isD3D12SwapChain,
-                                                                             bool hadFSRFGPhase,
-                                                                             bool startupTopLevelCandidate,
-                                                                             bool staleThirdPartyPresentHookRisk) {
+inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(bool isD3D12SwapChain, bool hadFSRFGPhase,
+                                                                            bool startupTopLevelCandidate,
+                                                                            bool staleThirdPartyPresentHookRisk) {
     // The first large-gap Streamline startup-handoff Present can still be the
     // only top-level call that re-establishes the live route after an FSR-owned
     // swapchain handoff. That Present should remain logically on the normal SL
@@ -354,14 +350,10 @@ inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(bool
     return isD3D12SwapChain && hadFSRFGPhase && startupTopLevelCandidate && staleThirdPartyPresentHookRisk;
 }
 
-inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(bool observerOnlyMode,
-                                                                                 bool hadFSRFGPhase,
-                                                                                 bool explicitSetOptionsActivation,
-                                                                                 bool safePostFSRBootstrapPath,
-                                                                                 bool postSLStartupActivationPending,
-                                                                                 bool postSLActiveButUnconfirmed,
-                                                                                 bool postSLConfirmedButStartupSettling,
-                                                                                 bool streamlineSyntheticReentrant) {
+inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+    bool observerOnlyMode, bool hadFSRFGPhase, bool explicitSetOptionsActivation, bool safePostFSRBootstrapPath,
+    bool postSLStartupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedButStartupSettling,
+    bool streamlineSyntheticReentrant) {
     // Once PostSL has already confirmed at least one successful render, GTA's
     // startup family can still need a few more Streamline-originated Presents to
     // advance the stable-frame counter and keep the visible overlay alive. Those
@@ -385,8 +377,8 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
 }
 
 inline bool ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-    bool isD3D12SwapChain, bool keepStartupPresentOnNormalRoute, bool hadFSRFGPhase,
-    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling, bool staleThirdPartyPresentHookRisk) {
+    bool isD3D12SwapChain, bool keepStartupPresentOnNormalRoute, bool hadFSRFGPhase, bool postSLConfirmedRendering,
+    bool postSLConfirmedButStartupSettling, bool staleThirdPartyPresentHookRisk) {
     // After an FSR->DLSS comeback, the shared routing layer can correctly decide
     // that the decisive startup Present must stay in the normal Streamline family
     // so PostSL keeps making progress. But the brand-new swapchain can still have
@@ -417,8 +409,8 @@ inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnN
 }
 
 inline bool ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
-    bool isD3D12SwapChain, bool hadFSRFGPhase,
-    bool invokePostSLOnConfirmedStandaloneNormalRoute, bool staleThirdPartyPresentHookRisk) {
+    bool isD3D12SwapChain, bool hadFSRFGPhase, bool invokePostSLOnConfirmedStandaloneNormalRoute,
+    bool staleThirdPartyPresentHookRisk) {
     // Talos still reaches the stale-Steam-hook crash family after the post-FSR
     // comeback has already left the earlier startup-bypass window. At that later
     // boundary the Present is no longer classified as synthetic startup traffic;
@@ -432,10 +424,9 @@ inline bool ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRo
 }
 
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,
-                                                              bool streamlineStartupHandoffPending,
-                                                              bool streamlineStartupTransitionWindowActive,
-                                                            bool observerOnlyMode,
-                                                            bool observerStartupPresentOnlyMode) {
+                                                          bool streamlineStartupHandoffPending,
+                                                          bool streamlineStartupTransitionWindowActive,
+                                                          bool observerOnlyMode, bool observerStartupPresentOnlyMode) {
     // During repeated FSR->DLSS handoffs, FFX teardown Presents can arrive
     // before Streamline publishes its running signal or after an older PostSL
     // path clears the pending latch for the new epoch. A short explicit

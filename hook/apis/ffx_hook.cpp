@@ -8,8 +8,8 @@
 #include "../common/ffx_api_parsing.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
-#include "../wrappers/inline_hook.h"
 #include "../wrappers/iat_hook.h"
+#include "../wrappers/inline_hook.h"
 #include "dx12_hook.h"
 
 extern void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled);
@@ -130,12 +130,11 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
             return false;
         }
 
-        HookLogImportant("FFX Hook: %s at %p lost the expected detour patch; refreshing inline hook", hookName,
-                         target);
+        HookLogImportant("FFX Hook: %s at %p lost the expected detour patch; refreshing inline hook", hookName, target);
         if (!InlineHook::Remove(target)) {
             HookLogImportant(
-                "FFX Hook: %s at %p could not remove stale inline-hook bookkeeping cleanly; retrying install",
-                hookName, target);
+                "FFX Hook: %s at %p could not remove stale inline-hook bookkeeping cleanly; retrying install", hookName,
+                target);
         }
         installedFlag.store(false, std::memory_order_release);
         targetSlot.store(nullptr, std::memory_order_release);
@@ -240,11 +239,11 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
 
     {
         std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
-        g_PresentCallbackBridgeKeys.erase(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(context) |
-                                                                 static_cast<uintptr_t>(1)));
+        g_PresentCallbackBridgeKeys.erase(
+            reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(context) | static_cast<uintptr_t>(1)));
     }
-    DX12_ClearFFXPresentCallbackBridge(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(context) |
-                                                              static_cast<uintptr_t>(1)));
+    DX12_ClearFFXPresentCallbackBridge(
+        reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(context) | static_cast<uintptr_t>(1)));
 
     // Call original
     ffxReturnCode_t result = g_Original_ffxDestroyContext(context, memCb);
@@ -287,9 +286,9 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     if (recognizedFGConfigure) {
         localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
         void* bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
-        DX12_SetFFXPresentCallbackBridge(bridgeKey,
-                                         localConfig.presentCallback ? localConfig.presentCallback : g_DefaultPresentCallback,
-                                         localConfig.presentCallback ? localConfig.presentCallbackUserContext : nullptr);
+        DX12_SetFFXPresentCallbackBridge(
+            bridgeKey, localConfig.presentCallback ? localConfig.presentCallback : g_DefaultPresentCallback,
+            localConfig.presentCallback ? localConfig.presentCallbackUserContext : nullptr);
         localConfig.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
         localConfig.presentCallbackUserContext = bridgeKey;
         descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
@@ -309,9 +308,10 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     if (recognizedFGConfigure) {
         const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
         HookLogImportant(
-            "FFX Hook: Installed DX12 overlay present-callback bridge for context=%p frameID=%llu enabled=%d originalPresent=%p",
-            context, static_cast<unsigned long long>(originalDesc->frameID), originalDesc->frameGenerationEnabled ? 1 : 0,
-            reinterpret_cast<void*>(originalDesc->presentCallback));
+            "FFX Hook: Installed DX12 overlay present-callback bridge for context=%p frameID=%llu enabled=%d "
+            "originalPresent=%p",
+            context, static_cast<unsigned long long>(originalDesc->frameID),
+            originalDesc->frameGenerationEnabled ? 1 : 0, reinterpret_cast<void*>(originalDesc->presentCallback));
     }
 
     HookLog("FFX Hook: Frame Generation configure %s (context=%p, frameID=%llu, type=0x%llx)",
@@ -381,10 +381,9 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     void* dummy = nullptr;
     bool hookedAnything = false;
     if (createCtx) {
-        hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(createCtx),
-                                                reinterpret_cast<void*>(Hooked_ffxCreateContext),
-                                                g_Original_ffxCreateContext, g_ffxCreateContextInlineHooked,
-                                                g_ffxCreateContextTarget, "ffxCreateContext");
+        hookedAnything |= InstallInlineHookOnce(
+            reinterpret_cast<void*>(createCtx), reinterpret_cast<void*>(Hooked_ffxCreateContext),
+            g_Original_ffxCreateContext, g_ffxCreateContextInlineHooked, g_ffxCreateContextTarget, "ffxCreateContext");
         HookLog("FFX Hook: ffxCreateContext found at %p, hooking via IAT", createCtx);
         // Patch IAT for all modules that import from the FFX DLL
         IATHook::PatchIATAllModules(moduleName, "ffxCreateContext", (void*)Hooked_ffxCreateContext, &dummy);
@@ -394,10 +393,10 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     }
 
     if (destroyCtx) {
-        hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(destroyCtx),
-                                                reinterpret_cast<void*>(Hooked_ffxDestroyContext),
-                                                g_Original_ffxDestroyContext, g_ffxDestroyContextInlineHooked,
-                                                g_ffxDestroyContextTarget, "ffxDestroyContext");
+        hookedAnything |=
+            InstallInlineHookOnce(reinterpret_cast<void*>(destroyCtx),
+                                  reinterpret_cast<void*>(Hooked_ffxDestroyContext), g_Original_ffxDestroyContext,
+                                  g_ffxDestroyContextInlineHooked, g_ffxDestroyContextTarget, "ffxDestroyContext");
         HookLog("FFX Hook: ffxDestroyContext found at %p, hooking via IAT", destroyCtx);
         IATHook::PatchIATAllModules(moduleName, "ffxDestroyContext", (void*)Hooked_ffxDestroyContext, &dummy);
         IATHook::RegisterDynamicHook("ffxDestroyContext", (void*)Hooked_ffxDestroyContext,

@@ -103,9 +103,8 @@ TEST(StreamlineRuntimePolicyTest, GetStateSuppressionDoesNotDisableAlreadyActive
 }
 
 TEST(StreamlineRuntimePolicyTest, EvaluateGetStateSuppressionBlocksFreshActivationEvenWithFenceEvidence) {
-    const auto evaluation =
-        ce::streamline_runtime_policy::EvaluateViewportRuntimeUpdateFromGetState(true, true, false, true, true, 1, 1,
-                                                                                 3);
+    const auto evaluation = ce::streamline_runtime_policy::EvaluateViewportRuntimeUpdateFromGetState(
+        true, true, false, true, true, 1, 1, 3);
 
     EXPECT_FALSE(evaluation.update.shouldUpdate);
     EXPECT_FALSE(evaluation.update.active);
@@ -153,8 +152,7 @@ TEST(StreamlineRuntimePolicyTest, StartupTransitionWindowOnlyRearmsOnFreshActive
 }
 
 TEST(StreamlineRuntimePolicyTest, DeferredStartupWindowOffKeepsEffectiveDlssSignalAndMultiplier) {
-    const auto update =
-        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, true, 2);
+    const auto update = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, true, 2);
 
     EXPECT_TRUE(update.deferredOffDuringStartupWindow);
     EXPECT_TRUE(update.effectiveActive);
@@ -163,8 +161,7 @@ TEST(StreamlineRuntimePolicyTest, DeferredStartupWindowOffKeepsEffectiveDlssSign
 }
 
 TEST(StreamlineRuntimePolicyTest, NonDeferredOffClearsEffectiveDlssSignalAndMultiplier) {
-    const auto update =
-        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, false, true, 2);
+    const auto update = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, false, true, 2);
 
     EXPECT_FALSE(update.deferredOffDuringStartupWindow);
     EXPECT_FALSE(update.effectiveActive);
@@ -173,12 +170,9 @@ TEST(StreamlineRuntimePolicyTest, NonDeferredOffClearsEffectiveDlssSignalAndMult
 }
 
 TEST(StreamlineRuntimePolicyTest, FreshActivationEdgeOnlyTracksOffToOnTransitions) {
-    const auto freshOn =
-        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(true, false, false, 4);
-    const auto steadyOn =
-        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(true, false, true, 4);
-    const auto deferredOff =
-        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, true, 4);
+    const auto freshOn = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(true, false, false, 4);
+    const auto steadyOn = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(true, false, true, 4);
+    const auto deferredOff = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, true, 4);
 
     EXPECT_TRUE(freshOn.freshActivationEdge);
     EXPECT_TRUE(freshOn.effectiveActive);
@@ -205,46 +199,34 @@ TEST(StreamlineRuntimePolicyTest, PrepareForStreamlineEnableBeforeOriginalCallOn
 }
 
 TEST(StreamlineRuntimePolicyTest, ReflexActivationOnlyRequestsPrepareDuringFsrOwnedHandoff) {
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, false,
-                                                                                                   true));
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, false, true,
-                                                                                                   true));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true,
+                                                                                                          false, true));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, false,
+                                                                                                          true, true));
 
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(false, true, false,
-                                                                                                   true));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, false, false,
-                                                                                                   true));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(true, true, false,
-                                                                                                   false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(
+        false, true, false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(
+        true, false, false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(
+        true, true, false, false));
 }
 
 TEST(StreamlineRuntimePolicyTest, SuppressSetOptionsOffDuringStartupTransitionWindow) {
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(true, true));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(true, true));
 
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(true, false));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(false, true));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(false, false));
 }
 
 TEST(StreamlineRuntimePolicyTest, DirectPostSLCallbackTriggerStopsAfterActivationCompletes) {
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(true, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(true, false));
 
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(true, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(true, true));
     EXPECT_FALSE(
         ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(false, false));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(false, true));
 }
 
 TEST(StreamlineRuntimePolicyTest, ObserverOnlyActivationClearsRecentTeardownGraceAndResetsHeuristics) {
@@ -294,15 +276,11 @@ TEST(StreamlineRuntimePolicyTest, PureObserverOnlyBehaviorRequiresPolicyProbeToS
 }
 
 TEST(StreamlineRuntimePolicyTest, ObserverPolicyOnlyPreservesStartupTransitionWindowWhilePostSLStaysDisabled) {
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(true, true));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(true, true));
 
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(true, false));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(false, false));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(false, true));
 }
 
 }  // namespace

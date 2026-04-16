@@ -95,9 +95,8 @@ inline bool ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
 }
 
 inline bool ShouldAllowStartupOverlayRendering(bool startupOverlayCompatibilityActive, bool hasSwapchainQueue,
-                                                bool runtimeOwnsSwapchain,
-                                                ULONGLONG runtimeOwnedSwapchainActiveMs = 0,
-                                                ULONGLONG runtimeOwnedSwapchainSettleMs = 0) {
+                                               bool runtimeOwnsSwapchain, ULONGLONG runtimeOwnedSwapchainActiveMs = 0,
+                                               ULONGLONG runtimeOwnedSwapchainSettleMs = 0) {
     if (!startupOverlayCompatibilityActive) {
         return true;
     }
@@ -381,8 +380,7 @@ inline bool ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(bool 
     return postFSRNonFGRecovery && postSLRecentTeardownActivity;
 }
 
-inline bool ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(bool postFSRNonFGRecovery,
-                                                               bool recentStreamlineTeardown,
+inline bool ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(bool postFSRNonFGRecovery, bool recentStreamlineTeardown,
                                                                bool postSLRecentTeardownActivity) {
     return ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(
         postFSRNonFGRecovery, recentStreamlineTeardown, postSLRecentTeardownActivity);
@@ -418,8 +416,7 @@ inline bool ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
     return postFSRNonFGRecovery && (recentStreamlineTeardown || postSLLastWorkingQueueStillActiveDuringRecentTeardown);
 }
 
-inline bool ShouldResetBlockedECLPatternHeuristicEvidence(bool canUseFSRFGHeuristics,
-                                                          bool eclPatternHeuristicDetected,
+inline bool ShouldResetBlockedECLPatternHeuristicEvidence(bool canUseFSRFGHeuristics, bool eclPatternHeuristicDetected,
                                                           bool hasRealFrameEvidence,
                                                           bool hasInterpolatedFrameEvidence) {
     // ECL-pattern evidence collected while FSR heuristics are blocked is stale.
@@ -546,8 +543,7 @@ inline bool ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(int realFrameOnlyRu
     return realFrameOnlyRunLength >= 120;
 }
 
-inline bool ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(bool streamlineFGRunning,
-                                                                   bool runtimeOwnsSwapchain,
+inline bool ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,
                                                                    fg_runtime::RuntimeMode runtimeMode,
                                                                    bool hasOriginalGameQueue,
                                                                    bool commandQueueUsesOriginalGameQueue,
@@ -635,9 +631,9 @@ inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive, bool f
 }
 
 inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGActive, bool streamlineFGRunning,
-                                                                 bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
-                                                                 bool hasCommandQueue,
-                                                                 bool commandQueueMatchesSwapchainQueue) {
+                                                                bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
+                                                                bool hasCommandQueue,
+                                                                bool commandQueueMatchesSwapchainQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
@@ -1044,10 +1040,10 @@ inline bool ShouldUsePostSLWrapperBootstrapQueueAfterFSR(bool hadFSRFGPhase, boo
 }
 
 inline bool ShouldUseValidatedCommandQueueWrapperBootstrapAfterFSR(bool hadFSRFGPhase, bool streamlineFGActive,
-                                                                    bool hasDirectQueueBehindWrapper,
-                                                                    bool commandQueueIsWrapper,
-                                                                    bool hasRuntimeOwnedSwapchainQueue,
-                                                                    bool explicitSetOptionsActivation) {
+                                                                   bool hasDirectQueueBehindWrapper,
+                                                                   bool commandQueueIsWrapper,
+                                                                   bool hasRuntimeOwnedSwapchainQueue,
+                                                                   bool explicitSetOptionsActivation) {
     // During a fresh FSR->DLSS handoff, g_CommandQueue can still point at the
     // previous FSR-owned queue until Streamline's new wrapper/direct traffic has
     // fully surfaced. Once a fresh runtime-owned swapchain queue is already
@@ -1187,8 +1183,9 @@ inline bool ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(bool had
     return hadFSRFGPhase;
 }
 
-inline bool ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
-    bool hadFSRFGPhase, bool startupTopLevelPresentConsumed, bool wrapperProgressObserved) {
+inline bool ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(bool hadFSRFGPhase,
+                                                                                bool startupTopLevelPresentConsumed,
+                                                                                bool wrapperProgressObserved) {
     return !hadFSRFGPhase && startupTopLevelPresentConsumed && wrapperProgressObserved;
 }
 
@@ -1250,14 +1247,9 @@ inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startup
     return startupTransitionWindowActive && !postSLConfirmedRendering;
 }
 
-inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(bool hadFSRFGPhase,
-                                                                         bool startupTopLevelPresentConsumed,
-                                                                         int wrapperProgressCount,
-                                                                         bool startupActivationPending,
-                                                                         bool postSLActive,
-                                                                         bool postSLConfirmedRendering,
-                                                                         ULONGLONG processFrameDormantMs,
-                                                                         bool dumpAlreadyRequested) {
+inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
+    bool hadFSRFGPhase, bool startupTopLevelPresentConsumed, int wrapperProgressCount, bool startupActivationPending,
+    bool postSLActive, bool postSLConfirmedRendering, ULONGLONG processFrameDormantMs, bool dumpAlreadyRequested) {
     if (dumpAlreadyRequested || hadFSRFGPhase || !startupTopLevelPresentConsumed) {
         return false;
     }
@@ -1274,13 +1266,10 @@ inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(bool ha
     return processFrameDormantMs >= 1000;
 }
 
-inline bool ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(bool startupTransitionWindowActive,
-                                                                         bool postSLConfirmedRendering,
-                                                                         bool hadFSRFGPhase,
-                                                                         bool startupTopLevelPresentConsumed,
-                                                                         bool wrapperProgressObserved,
-                                                                         bool startupActivationPending,
-                                                                         bool postSLActive) {
+inline bool ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
+    bool startupTransitionWindowActive, bool postSLConfirmedRendering, bool hadFSRFGPhase,
+    bool startupTopLevelPresentConsumed, bool wrapperProgressObserved, bool startupActivationPending,
+    bool postSLActive) {
     if (!startupTransitionWindowActive || postSLConfirmedRendering || hadFSRFGPhase) {
         return false;
     }
@@ -1305,14 +1294,10 @@ inline bool ShouldKeepSyntheticStartupStateUntilConfirmedRender(bool startupActi
     return !postSLConfirmedRendering && (startupActivationPending || postSLActiveButUnconfirmed);
 }
 
-inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible,
-                                                         bool startupActivationPending,
-                                                         bool postSLActiveButUnconfirmed,
-                                                         bool postSLConfirmedRendering,
-                                                         bool callbackInstalled,
-                                                         bool cachedSwapchainAvailable,
-                                                         bool hadFSRFGPhase,
-                                                         bool safePostFSRBootstrapPath) {
+inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible, bool startupActivationPending,
+                                                         bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering,
+                                                         bool callbackInstalled, bool cachedSwapchainAvailable,
+                                                         bool hadFSRFGPhase, bool safePostFSRBootstrapPath) {
     if (!overlayVisible || !callbackInstalled || !cachedSwapchainAvailable || postSLConfirmedRendering) {
         return false;
     }
@@ -1325,10 +1310,8 @@ inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible,
 }
 
 inline bool ShouldTriggerExpiryDrivenECLPostSLStartupActivation(bool startupTransitionWindowJustExpired,
-                                                                bool startupActivationPending,
-                                                                bool callbackInstalled,
-                                                                bool hadFSRFGPhase,
-                                                                bool safePostFSRBootstrapPath) {
+                                                                bool startupActivationPending, bool callbackInstalled,
+                                                                bool hadFSRFGPhase, bool safePostFSRBootstrapPath) {
     if (!startupTransitionWindowJustExpired || !startupActivationPending || !callbackInstalled) {
         return false;
     }

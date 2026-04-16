@@ -98,29 +98,29 @@ inline GetStateRuntimeEvaluation EvaluateViewportRuntimeUpdateFromGetState(
     bool callSucceeded, bool hasOptions, bool viewportWasActive, bool hasRuntimeFenceEvidence,
     bool suppressNewActivation, uint32_t mode, uint32_t requestedGeneratedFrames, uint32_t capabilityMax) {
     GetStateRuntimeEvaluation evaluation;
-    evaluation.update = BuildViewportRuntimeUpdateFromGetState(callSucceeded, hasOptions, viewportWasActive,
-                                                               hasRuntimeFenceEvidence, suppressNewActivation, mode,
-                                                               requestedGeneratedFrames, capabilityMax);
+    evaluation.update =
+        BuildViewportRuntimeUpdateFromGetState(callSucceeded, hasOptions, viewportWasActive, hasRuntimeFenceEvidence,
+                                               suppressNewActivation, mode, requestedGeneratedFrames, capabilityMax);
 
-    const bool attemptedFreshActivation =
-        callSucceeded && hasOptions && IsDLSSGModeEnabled(mode) && !viewportWasActive;
+    const bool attemptedFreshActivation = callSucceeded && hasOptions && IsDLSSGModeEnabled(mode) && !viewportWasActive;
     evaluation.suppressedFreshActivation =
         attemptedFreshActivation && suppressNewActivation && !evaluation.update.shouldUpdate;
     return evaluation;
 }
 
 inline bool ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(bool persistentSetOptionsBlock,
-                                                                       bool startupTransitionWindowActive,
-                                                                       ce::fg_runtime::RuntimeMode runtimeMode) {
-    const bool runtimeStillInactive = runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG ||
-                                      runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
+                                                                      bool startupTransitionWindowActive,
+                                                                      ce::fg_runtime::RuntimeMode runtimeMode) {
+    const bool runtimeStillInactive =
+        runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG || runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
     return runtimeStillInactive && (persistentSetOptionsBlock || startupTransitionWindowActive);
 }
 
-inline bool ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(
-    bool blockUntilSafePostFSRBootstrapPath, bool safePostFSRBootstrapPath, ce::fg_runtime::RuntimeMode runtimeMode) {
-    const bool runtimeStillInactive = runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG ||
-                                      runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
+inline bool ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(bool blockUntilSafePostFSRBootstrapPath,
+                                                                             bool safePostFSRBootstrapPath,
+                                                                             ce::fg_runtime::RuntimeMode runtimeMode) {
+    const bool runtimeStillInactive =
+        runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG || runtimeMode == ce::fg_runtime::RuntimeMode::kOff;
     return runtimeStillInactive && blockUntilSafePostFSRBootstrapPath && !safePostFSRBootstrapPath;
 }
 
@@ -133,9 +133,8 @@ inline bool ShouldArmStartupTransitionWindowOnFreshActiveSignal(bool active, boo
 }
 
 inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool requestedActive,
-                                                                     bool startupTransitionWindowActive,
-                                                                     bool previousSignal,
-                                                                     int requestedMultiplier) {
+                                                                      bool startupTransitionWindowActive,
+                                                                      bool previousSignal, int requestedMultiplier) {
     CombinedRuntimeSignalUpdate update;
     update.deferredOffDuringStartupWindow = !requestedActive && startupTransitionWindowActive;
     update.effectiveActive = update.deferredOffDuringStartupWindow ? previousSignal : requestedActive;
@@ -148,7 +147,8 @@ inline bool IsLiveFSRRuntimeHandoffSource(bool currentlyAuthoritativeFSRActive, 
     return currentlyAuthoritativeFSRActive || currentRuntimeModeIsFSRFG;
 }
 
-inline bool ShouldPrepareForStreamlineEnableBeforeOriginalCall(bool requestedEnabled, bool currentlyAuthoritativeFSRActive,
+inline bool ShouldPrepareForStreamlineEnableBeforeOriginalCall(bool requestedEnabled,
+                                                               bool currentlyAuthoritativeFSRActive,
                                                                bool currentRuntimeModeIsFSRFG,
                                                                bool runtimeOwnsSwapchain) {
     return requestedEnabled && runtimeOwnsSwapchain &&
@@ -164,7 +164,7 @@ inline bool ShouldRequestStreamlineEnablePreparationOnReflexActivation(bool refl
 }
 
 inline bool ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(bool requestedDisabled,
-                                                                          bool startupTransitionWindowActive) {
+                                                                     bool startupTransitionWindowActive) {
     return requestedDisabled && startupTransitionWindowActive;
 }
 

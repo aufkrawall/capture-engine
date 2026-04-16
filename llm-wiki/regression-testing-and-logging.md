@@ -62,6 +62,9 @@ Primary sources:
   - Logs FG publication state changes and invariant violations.
 
 ## Practical Regression Checklist
+- After code changes, prefer the one-shot canonical verification command: `python build.py --verify --skip-updates`.
+- After that run finishes, read `build/verification/latest_summary.txt` first and `build/verification/latest_manifest.json` second instead of scraping the full build log unless the summary says a step failed and you need the larger log.
+- If you need the full top-level log from the last verification/build run, use `build/verification/latest_build.log`; the nested sanitizer child now writes to its own dedicated log inside the same verification bundle.
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.
 - If you use `Overlay.enabled=false` as a diagnosis baseline, verify from the logs that there is actually no DX12 overlay/PostSL/startup-policy activity. Hidden overlay and passive observer-only are not equivalent.
 - If you touch `Overlay.observer_only`, `Overlay.observer_policy_only`, or `Overlay.observer_startup_present_only`, verify the intended split explicitly: pure observer-only still has no pre-FG overlay submits, no early/PostSL callback install/use, no special Streamline synthetic/startup Present routing, and no startup-window Streamline mutation; observer-policy-only may restore only the Streamline startup-policy family while DX12/PostSL/startup-Present behavior stays passive; observer-startup-present-only may further restore only the remaining non-Streamline startup-Present probe pieces while PostSL callback install/use and rendering still stay passive, and Streamline-originated startup-handoff Presents must stay synthetic in observer mode.
@@ -89,6 +92,7 @@ Primary sources:
 
 ## Useful Commands
 ```powershell
+python build.py --verify --skip-updates
 python build.py --run-tests --skip-updates
 python build.py --run-tests --tests-only --skip-updates --gtest-filter=DXGISharedTest.*
 python build.py --sanitize --run-tests --skip-updates

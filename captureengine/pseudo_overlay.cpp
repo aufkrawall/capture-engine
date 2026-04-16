@@ -9,7 +9,7 @@
 #include <dwmapi.h>
 
 namespace {
-typedef HRESULT(WINAPI * DwmSetWindowAttributeFn)(HWND, DWORD, LPCVOID, DWORD);
+typedef HRESULT(WINAPI* DwmSetWindowAttributeFn)(HWND, DWORD, LPCVOID, DWORD);
 DwmSetWindowAttributeFn g_DwmSetWindowAttribute = nullptr;
 bool g_DwmApiInitialized = false;
 
@@ -19,11 +19,10 @@ void EnsureDwmApi() {
     g_DwmApiInitialized = true;
     HMODULE mod = LoadLibraryA("dwmapi.dll");
     if (mod) {
-        g_DwmSetWindowAttribute =
-            (DwmSetWindowAttributeFn)GetProcAddress(mod, "DwmSetWindowAttribute");
+        g_DwmSetWindowAttribute = (DwmSetWindowAttributeFn)GetProcAddress(mod, "DwmSetWindowAttribute");
     }
 }
-}
+}  // namespace
 
 #include <algorithm>
 #include <cctype>
@@ -157,8 +156,10 @@ static void ApplyPremultipliedAlpha(void* pBits, int width, int height) {
         BYTE g = static_cast<BYTE>((v >> 8) & 0xFF);
         BYTE b = static_cast<BYTE>((v >> 16) & 0xFF);
         BYTE a = r;
-        if (g > a) a = g;
-        if (b > a) a = b;
+        if (g > a)
+            a = g;
+        if (b > a)
+            a = b;
         px[i] = (a << 24) | (v & 0x00FFFFFF);
     }
 }
@@ -282,7 +283,8 @@ void PseudoOverlay::UpdateScaleForDpi(UINT dpi) {
         fontWarn_ = NULL;
     }
 
-    fontWarn_ = CreateFontA(-S(40), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, ANTIALIASED_QUALITY, 0, 0, 0, "Segoe UI");
+    fontWarn_ =
+        CreateFontA(-S(40), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, ANTIALIASED_QUALITY, 0, 0, 0, "Segoe UI");
 }
 
 // ---- Foreground process detection (ported from OBSIndicator) ----
