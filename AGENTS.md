@@ -4,8 +4,7 @@ Repository-specific instructions for coding agents working in this repo.
 
 ## Scope
 - Root: `C:\Users\TestUser\Programme\build\captureproject`
-- Platform: Windows-first (prefer Windows commands over Linux commands), PowerShell 7, MinGW/Clang via `build.py`
-- Build system: custom `python build.py`
+- Platform: Windows-first (prefer Windows commands over Linux commands), PowerShell 7.6, MinGW/Clang via `build.py`
 - Canonical derived documentation lives in `llm-wiki/`
 
 ## Error Handling
@@ -17,15 +16,15 @@ Repository-specific instructions for coding agents working in this repo.
 
 ## llm-wiki Workflow
 - Always consult `llm-wiki/index.md` first, then the relevant `llm-wiki/*.md` pages, then `llm-wiki/log.md` for recent updates and stale-risk notes.
-- `llm-wiki` must always be consulted, but not blindly trusted, especially not after many changes.
+- `llm-wiki` must always be consulted.
 - `llm-wiki` must constantly be cross-checked for factual correctness against the real sources of truth: implementation, tests, build scripts, config files, and current behavior.
+- `llm-wiki`, code and code annotations must be mistrusted. They can all be correct or incorrect. If they contradict each other, we must think of a correct way to align all of them in a shared correct state.
 - `llm-wiki` must constantly get updated to maintain the highest practical factual correctness and completeness.
-- Do not conflate `llm-wiki` with the concrete project code. If the wiki and the code disagree, the code/tests/build scripts win. But still consider the possibility for the code to be wrong too.
-- Treat comments and annotations in code with skepticism; they may be outdated.
+- Do not conflate `llm-wiki` with the concrete project code.
 - Our llm-wiki must be dynamically extended with new information, corrections and entries, for example when new realizations occur on new code changes.
 - When you fixed a bug or implemented a feature, always check if our llm-wiki should be updated.
 - This can also mean already existing llm-wiki entries and information might need corrections or other changes, perhaps even deletions, after new changes applied to the code base to maintain up-to-dateness.
-- Update the llm-wiki instantly after having implemented even a partial code fix or code improvement, and also include the remaining parts to be implemented. That way we lose less valuable information when context window compaction kicks in before we are done, unlike when we would update the llm-wiki only after all steps are completed!
+- Update the llm-wiki instantly after having implemented even a partial code fix or code improvement, and also include mentionings the remaining parts which are yet to be implemented. That way we do not lose valuable information when context window compaction kicks in before we are done, unlike when we would update the llm-wiki only once after all steps are completed!
 
 ## Project Constraints
 - We are paranoid about regressions. Add regression coverage where feasible when fixing bugs (add new test units etc.).
@@ -34,16 +33,13 @@ Repository-specific instructions for coding agents working in this repo.
 - Do not disable features as a workaround.
 - Do not use sleeps, wait tables, or other timing bandaids as a crash fix or race workaround.
 - Do not introduce racy or otherwise frail behavior.
-- Prefer thorough, maintainable fixes over quick patches.
+- Prefer thorough, maintainable, hardened fixes over quick patches.
 - Switching between FG modes must work gracefully in Talos and GTA validation scenarios, in all directions and combinations, without crashes, without lost overlay rendering, and with the correct visible FG status.
 
 ## Practical Agent Rules
-- `python build.py` is the canonical build entry point, generally prefer running it with at least `--skip-updates`.
 - After code changes, the canonical end-to-end verification command is `python build.py --verify --skip-updates`.
 - Read `build/verification/latest_summary.txt` first after that run. Use the paired `latest_manifest.json` and `latest_build.log` only as needed.
 - DO NOT RUN `python build.py --version` !!
 - Match the local subsystem pattern instead of imposing a new one.
 - The worktree may already contain unrelated user edits; do not revert them.
-- If `compile_commands.json` or clangd looks stale after structural build changes, regenerate it with `python build.py`.
 - Don't wait ages on truncated outputs, check results directly without wasting time.
-- Never expect the user thet they are required to run build themselves after changing code! You must always do it!

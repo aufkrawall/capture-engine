@@ -268,6 +268,26 @@ TEST(DXGISharedTest, PostFSRStartupNormalRouteUsesBypassUntilPostSLSettles) {
                                                                                                   false, false, false));
 }
 
+TEST(DXGISharedTest, SteamDX12HookRiskExtendsToProtectedPostFSRStartupNormalRoute) {
+    EXPECT_TRUE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+        true, true, true, false, false, true, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+        false, true, true, false, false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+        true, false, true, false, false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+        true, true, false, false, false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+        true, true, true, true, false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+        true, true, true, false, true, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+        true, true, true, false, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+        true, true, true, false, false, true, false));
+}
+
 TEST(DXGISharedTest, PostSLCallbackStaysInstalledOnlyWhileStreamlineStillOwnsPresentPath) {
     EXPECT_TRUE(DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(true));
     EXPECT_FALSE(DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(false));
@@ -1649,6 +1669,26 @@ TEST(DXGISharedTest, PostFSRConfirmedStandaloneNormalRouteUsesBypassTransport) {
         DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(true, true, false, true));
     EXPECT_FALSE(
         DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(true, true, true, false));
+}
+
+TEST(DXGISharedTest, SteamDX12HookRiskExtendsToPostFSRConfirmedStandaloneNormalRoute) {
+    EXPECT_TRUE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+        true, true, true, false, false, true, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+        false, true, true, false, false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+        true, false, true, false, false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+        true, true, false, false, false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+        true, true, true, true, false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+        true, true, true, false, true, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+        true, true, true, false, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+        true, true, true, false, false, true, false));
 }
 
 TEST(DXGISharedTest, PostFSRStartupHandoffNormalRouteUsesBypassTransport) {

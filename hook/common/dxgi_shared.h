@@ -235,6 +235,28 @@ inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
            hadFSRFGPhase && startupTopLevelCandidate;
 }
 
+inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+    bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain,
+    bool hadFSRFGPhase, bool keepStartupPresentOnNormalRoute) {
+    // The same stale Steam Present-hook chain can survive past the one-shot
+    // startup-handoff Present and still be live on the later decisive
+    // synthetic-startup normal-route callbacks that keep PostSL progressing on a
+    // recovered post-FSR swapchain.
+    return bypassAvailable && isSteamOverlay && isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain &&
+           hadFSRFGPhase && keepStartupPresentOnNormalRoute;
+}
+
+inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+    bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain,
+    bool hadFSRFGPhase, bool invokePostSLOnConfirmedStandaloneNormalRoute) {
+    // Once startup has settled, some runtimes surface the live generated-frame
+    // callback as a confirmed standalone Streamline Present on the recovered
+    // swapchain. That later branch still needs the bypass trampoline when the
+    // stale Steam hook chain is present.
+    return bypassAvailable && isSteamOverlay && isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain &&
+           hadFSRFGPhase && invokePostSLOnConfirmedStandaloneNormalRoute;
+}
+
 inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay, bool presentTrampolineInstalled,
                                                       bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
                                                       ce::fg_runtime::RuntimeMode runtimeMode,
