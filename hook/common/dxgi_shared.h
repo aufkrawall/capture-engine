@@ -343,14 +343,15 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
 
 inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(bool isD3D12SwapChain,
                                                                              bool hadFSRFGPhase,
-                                                                             bool startupTopLevelCandidate) {
+                                                                             bool startupTopLevelCandidate,
+                                                                             bool staleThirdPartyPresentHookRisk) {
     // The first large-gap Streamline startup-handoff Present can still be the
     // only top-level call that re-establishes the live route after an FSR-owned
     // swapchain handoff. That Present should remain logically on the normal SL
     // route so startup-policy state can advance, but the recovered swapchain's
     // third-party Present hook chain is still too fragile to trust at that
     // moment. Keep the route, but transport through the bypass trampoline.
-    return isD3D12SwapChain && hadFSRFGPhase && startupTopLevelCandidate;
+    return isD3D12SwapChain && hadFSRFGPhase && startupTopLevelCandidate && staleThirdPartyPresentHookRisk;
 }
 
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(bool observerOnlyMode,
@@ -385,7 +386,7 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
 
 inline bool ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
     bool isD3D12SwapChain, bool keepStartupPresentOnNormalRoute, bool hadFSRFGPhase,
-    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling) {
+    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling, bool staleThirdPartyPresentHookRisk) {
     // After an FSR->DLSS comeback, the shared routing layer can correctly decide
     // that the decisive startup Present must stay in the normal Streamline family
     // so PostSL keeps making progress. But the brand-new swapchain can still have
@@ -396,7 +397,7 @@ inline bool ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute
     // Presents. Keep the callback/routing decision, but transport the actual
     // Present through the bypass trampoline until PostSL has both confirmed a
     // successful render and left that short startup-settling window.
-    return isD3D12SwapChain && keepStartupPresentOnNormalRoute && hadFSRFGPhase &&
+    return isD3D12SwapChain && keepStartupPresentOnNormalRoute && hadFSRFGPhase && staleThirdPartyPresentHookRisk &&
            (!postSLConfirmedRendering || postSLConfirmedButStartupSettling);
 }
 
@@ -417,7 +418,7 @@ inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnN
 
 inline bool ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
     bool isD3D12SwapChain, bool hadFSRFGPhase,
-    bool invokePostSLOnConfirmedStandaloneNormalRoute) {
+    bool invokePostSLOnConfirmedStandaloneNormalRoute, bool staleThirdPartyPresentHookRisk) {
     // Talos still reaches the stale-Steam-hook crash family after the post-FSR
     // comeback has already left the earlier startup-bypass window. At that later
     // boundary the Present is no longer classified as synthetic startup traffic;
@@ -426,7 +427,8 @@ inline bool ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRo
     // family, but DX12 transport still needs the bypass trampoline on post-FSR
     // comebacks so we do not fall back through a fresh-swapchain third-party hook
     // chain whose saved original Present pointer is still stale.
-    return isD3D12SwapChain && hadFSRFGPhase && invokePostSLOnConfirmedStandaloneNormalRoute;
+    return isD3D12SwapChain && hadFSRFGPhase && invokePostSLOnConfirmedStandaloneNormalRoute &&
+           staleThirdPartyPresentHookRisk;
 }
 
 inline bool ShouldBypassFFXPresentDuringStreamlineStartup(bool isD3D12SwapChain, bool callerFromFFXFGModule,

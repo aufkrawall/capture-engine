@@ -4,7 +4,7 @@ Repository-specific instructions for coding agents working in this repo.
 
 ## Scope
 - Root: `C:\Users\TestUser\Programme\build\captureproject`
-- Platform: Windows-first, PowerShell 7, MinGW/Clang via `build.py`
+- Platform: Windows-first (prefer Windows commands over Linux commands), PowerShell 7, MinGW/Clang via `build.py`
 - Build system: custom `python build.py`
 - Canonical derived documentation lives in `llm-wiki/`
 

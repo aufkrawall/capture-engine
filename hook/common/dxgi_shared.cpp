@@ -944,6 +944,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool explicitSetOptionsActivation =
         api == APIType::D3D12 && HookHasExplicitStreamlineSetOptionsActivation();
     const bool safePostFSRBootstrapPath = api == APIType::D3D12 && HookHasSafePostFSRBootstrapPath();
+    const bool staleThirdPartyPresentHookRisk =
+        api == APIType::D3D12 && ShouldForceSteamDX12Bypass(pSwapChain, EnsurePresentBypassTrampoline() != nullptr,
+                                                            IsSLInterposerLoaded());
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -989,7 +992,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
 
         if (ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
-                api == APIType::D3D12, hadFSRFGPhase, startupTopLevelCandidate)) {
+                api == APIType::D3D12, hadFSRFGPhase, startupTopLevelCandidate, staleThirdPartyPresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR startup-handoff Present");
             PFN_Present presentBypass = EnsurePresentBypassTrampoline();
             if (presentBypass) {
@@ -1040,7 +1043,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
                 api == APIType::D3D12, keepStartupPresentOnNormalRoute, hadFSRFGPhase,
-                postSLConfirmedRendering, postSLConfirmedButStartupSettling)) {
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling, staleThirdPartyPresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR startup normal-route Present");
             PFN_Present presentBypass = EnsurePresentBypassTrampoline();
             if (presentBypass) {
@@ -1081,7 +1084,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
         if (DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
                 api == APIType::D3D12, hadFSRFGPhase,
-                shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute)) {
+                shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute, staleThirdPartyPresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
             PFN_Present presentBypass = EnsurePresentBypassTrampoline();
             if (presentBypass) {
@@ -1469,6 +1472,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool explicitSetOptionsActivation =
         api == APIType::D3D12 && HookHasExplicitStreamlineSetOptionsActivation();
     const bool safePostFSRBootstrapPath = api == APIType::D3D12 && HookHasSafePostFSRBootstrapPath();
+    const bool staleThirdPartyPresentHookRisk =
+        api == APIType::D3D12 && ShouldForceSteamDX12Bypass(pSwapChain, EnsurePresent1BypassTrampoline() != nullptr,
+                                                            IsSLInterposerLoaded());
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -1514,7 +1520,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         }
 
         if (ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
-                api == APIType::D3D12, hadFSRFGPhase, startupTopLevelCandidate)) {
+                api == APIType::D3D12, hadFSRFGPhase, startupTopLevelCandidate, staleThirdPartyPresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR startup-handoff Present1");
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {
@@ -1566,7 +1572,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
                 api == APIType::D3D12, keepStartupPresentOnNormalRoute, hadFSRFGPhase,
-                postSLConfirmedRendering, postSLConfirmedButStartupSettling)) {
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling, staleThirdPartyPresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR startup normal-route Present1");
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {
@@ -1608,7 +1614,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
         if (DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
                 api == APIType::D3D12, hadFSRFGPhase,
-                shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute)) {
+                shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute, staleThirdPartyPresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present1");
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {

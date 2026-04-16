@@ -14,6 +14,33 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Limit post-FSR normal-route bypass transport to comeback families that still have a real stale third-party Present-hook risk
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_033646` on build `0.1.2316` showed that the earlier callback-on-normal-route tightening was real but still not the final seam. The late `FSR_FG -> off -> DLSS_FG` comeback still preserved the fresh post-FSR `scQueue=0000024F705E4380`, logged `DX12: Streamline FG ON after FSR — preserving freshly handed-off Streamline swapchain queue ...`, then `Streamline Hook: FG state transition OFF->ON via SetOptions`, then `DetourPresent: Post-FSR startup normal-route bypass #1`. The mirrored `sl-sha-11cf43f.dmp` storm still started immediately afterward. Crucially, there is still no `DX12: PostSL synthetic startup waiting for safe bootstrap path after FSR phase ...` line and no `DX12: PostSL REACTIVATED` line before the dump storm, while the later ECL hook still logs `safeBootstrap=0`. That means the previous callback-entry gate is holding; the remaining issue is not early PostSL callback entry.
+
+- **Root cause refinement**: The earlier post-FSR bypass transport split had become too broad. It was introduced to dodge the stale Steam `gameoverlayrenderer64` Present-hook chain on Talos/Talos-like post-FSR comeback families, but on this GTA session the same unconditional bypass transport was still being applied on the protected post-FSR normal-route family even though the logs no longer showed the older callback-entry mismatch and did not provide evidence that a stale Steam-style Present-hook chain was the thing that needed dodging on this comeback. In other words: route-versus-transport was still the right abstraction, but transport was now being forced onto bypass even when the specific stale third-party hook risk had not been re-established.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now widens the three post-FSR transport helpers with an explicit `staleThirdPartyPresentHookRisk` input:
+     `ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(...)`,
+     `ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(...)`, and
+     `ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(...)`.
+  2. `hook/common/dxgi_shared.cpp` now computes that signal from the existing Steam DX12 bypass detection path (`ShouldForceSteamDX12Bypass(...)`) for both `DetourPresent` and `DetourPresent1`.
+  3. Post-FSR normal-route transport now stays on bypass only when that stale Steam-style Present-hook risk is actually present. Otherwise CE keeps the logical post-FSR normal-route behavior without forcing unconditional bypass transport.
+  4. `tests/test_dxgi_shared.cpp` now updates the three focused transport tests to require the new risk signal, and also corrects the stale callback-gate expectation in `ConfirmedStartupSettlingCanStillInvokePostSLWithoutSyntheticBypass`: safe bootstrap alone is still not enough to unlock post-FSR callback-on-normal-route without explicit `SetOptions` activation.
+
+- **Why this is generic**: This is not another GTA-specific exception. The shared rule remains: post-FSR comeback routing and transport are separate decisions, but transport should only be forced onto bypass when the specific stale third-party Present-hook risk is actually present. Talos proved that risk exists on some post-FSR comeback families; `20260416_033646` proved it should not be assumed universally for every protected post-FSR normal-route Present.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_033646/{session_manifest.txt,hook_debug.log,external_sl-sha-11cf43f.dmp}`.
+  - Confirmed the decisive failing edge: preserved fresh post-FSR `scQueue=0000024F705E4380`, explicit `OFF->ON via SetOptions`, `Post-FSR startup normal-route bypass #1`, then immediate mirrored Streamline dump storm and later `safeBootstrap=0` with no PostSL activation logs.
+  - Confirmed the previous callback gate still held in this run: there is no `PostSL synthetic startup waiting for safe bootstrap path ...` or `PostSL REACTIVATED` line before the dump storm.
+  - Re-ran `python build.py --incremental --skip-updates --run-tests`; build succeeded and all 581 tests passed.
+
+- **Files changed**: `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next check is whether limiting post-FSR normal-route bypass transport to actual stale third-party Present-hook risk closes the GTA `FSR_FG -> off -> DLSS_FG` seam without reopening the older Talos/Steam crash family that originally justified the bypass transport split.
+
 ### 2026-04-16 - Do not invoke PostSL on the protected post-FSR startup normal-route path until the bootstrap topology is actually safe
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_031434` on build `0.1.2315` showed that the earlier post-FSR startup-handoff bypass transport split fixed the previous seam but still left one narrower callback-entry bug. The session survives earlier pure-DLSS runs and several mixed switches, then later hits a final `FSR_FG -> STREAMLINE_NO_FG -> DLSS_FG` comeback. CE preserves the fresh post-FSR `scQueue=0000029BED4111C0`, logs `DX12: Streamline FG ON after FSR — preserving freshly handed-off Streamline swapchain queue ...`, then `Streamline Hook: FG state transition OFF->ON via SetOptions`, then `DX12: PostSL synthetic startup takeover — ProcessFrame dormant for 203ms`, then `DetourPresent: Post-FSR startup normal-route bypass #1`. Immediately after that first protected startup callback, Streamline starts emitting `sl-sha-11cf43f.dmp` repeatedly. There is still no `DX12: PostSL synthetic startup waiting for safe bootstrap path after FSR phase ...` line and no `DX12: PostSL REACTIVATED` line for the failing comeback. The later ECL diagnostic in the same failure still says `safeBootstrap=0`.
