@@ -14,6 +14,30 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Refresh FFX API hooks when a later authoritative native-FSR takeover starts a new runtime-owned FSR epoch
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_140309` on build `0.1.2319` confirmed the late `FSR_FG -> off -> DLSS_FG` crash is fixed, but revealed a different regression on the next `DLSS_FG -> FSR_FG` switch: the overlay disappeared while the game stayed stable. The session proves the earlier post-FSR DLSS comeback is healthy first: CE reaches sustained `Post-SL overlay SUBMIT #7000+` on epoch 4 after the post-FSR DLSS recovery. The later fresh authoritative FFX takeover then captures `scQueue=0000026E8C76D910`, publishes `runtime=FSR_FG`, and starts the runtime-owned/native-FSR guardrail path. But no new `DX12: FFX present callback rendered overlay on runtime-owned FSR path` lines ever appear for this second FSR run. Instead, after 120 real top-level frames CE logs `DX12: Clearing stale authoritative FSR FG after 120 consecutive real frames on runtime-owned swapchain without direct FFX API confirmation ...`, and the rest of the session stays stuck in `DX12: Deferring overlay init because runtime-owned native FSR FG swapchain is active and separate overlay GPU work is unsafe ... apiFSR=0`.
+
+- **Root cause refinement**: The failure is no longer in the DLSS/FSR routing state machine itself. The FSR ownership/topology signals are still present: authoritative FFX swapchain handoff is detected, `g_FGRuntimeOwnsSwapchain=1`, and runtime mode stays `FSR_FG`. The missing piece is renewed FFX API/callback authority for the new runtime-owned FSR epoch. The existing `FFXHook::Init()` behavior was effectively one-shot: once it had successfully hooked an earlier FFX module instance, later repeated native-FSR epochs relied on that old success latch and did not actively refresh the FFX export hooks when a later authoritative FFX takeover began. If the FFX DLL had been reloaded or the export entrypoints had lost CE's detour patch, the later epoch could keep the runtime-owned FSR topology but lose fresh `ffxConfigure`/present-callback bridge interception, which is exactly the pattern the session shows.
+
+- **Fix**:
+  1. `hook/apis/ffx_hook.cpp` now makes repeated `FFXHook::Init()` rescans refresh-capable instead of permanent-one-shot.
+  2. The local FFX inline-hook helper now recognizes whether the current export entrypoint still contains CE's expected detour patch. If a previously tracked `ffxCreateContext` / `ffxDestroyContext` / `ffxConfigure` target at the same address has lost that patch, CE removes stale inline-hook bookkeeping and reinstalls the hook.
+  3. Repeated rescans now preserve the existing trampoline-backed original function pointers instead of overwriting them with whatever address `GetProcAddress()` currently returns during a later scan.
+  4. `hook/apis/dx12_hook.cpp` now calls `FFXHook::Init()` immediately from the authoritative FFX swapchain-takeover path so later native-FSR DLL loads/reloads can re-arm the FFX API hooks and present-callback bridge before the new runtime-owned FSR epoch begins, instead of waiting only for the slower periodic render-frame retry.
+
+- **Why this is generic**: This is not another GTA-only exception. The shared problem is that native-FSR ownership can recur later in the same session on a different runtime-owned swapchain epoch, and CE's FFX API hook lifecycle must be able to refresh with that epoch. The generic rule is that authoritative FFX takeover is strong enough evidence to trigger a targeted FFX hook refresh, and repeated `Init()` calls must be safe/idempotent even if the live FFX exports were already hooked earlier.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_140309/{session_manifest.txt,hook_debug.log}`.
+  - Confirmed the new seam is visual-only and later than the earlier crash family: post-FSR DLSS comeback is healthy through `Post-SL overlay SUBMIT #7000+`, then the next FFX takeover loses visible overlay with no dump.
+  - Confirmed the failing signature: second authoritative FFX takeover to `scQueue=0000026E8C76D910`, then `Clearing stale authoritative FSR FG after 120 consecutive real frames ... without direct FFX API confirmation`, then repeated passive `Deferring overlay init because runtime-owned native FSR FG swapchain is active and separate overlay GPU work is unsafe ... apiFSR=0`.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; build succeeded and all 581 tests passed.
+
+- **Files changed**: `hook/apis/ffx_hook.cpp`, `hook/apis/dx12_hook.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. If the later native-FSR overlay-loss family still reproduces after the FFX hook-refresh path, the remaining seam is likely not loader timing but how `Hooked_ffxConfigure()` interprets noisy `frameGenerationEnabled` traffic versus the still-live FFX present-callback path.
+
 ### 2026-04-16 - Limit post-FSR normal-route bypass transport to comeback families that still have a real stale third-party Present-hook risk
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_033646` on build `0.1.2316` showed that the earlier callback-on-normal-route tightening was real but still not the final seam. The late `FSR_FG -> off -> DLSS_FG` comeback still preserved the fresh post-FSR `scQueue=0000024F705E4380`, logged `DX12: Streamline FG ON after FSR — preserving freshly handed-off Streamline swapchain queue ...`, then `Streamline Hook: FG state transition OFF->ON via SetOptions`, then `DetourPresent: Post-FSR startup normal-route bypass #1`. The mirrored `sl-sha-11cf43f.dmp` storm still started immediately afterward. Crucially, there is still no `DX12: PostSL synthetic startup waiting for safe bootstrap path after FSR phase ...` line and no `DX12: PostSL REACTIVATED` line before the dump storm, while the later ECL hook still logs `safeBootstrap=0`. That means the previous callback-entry gate is holding; the remaining issue is not early PostSL callback entry.

@@ -1527,6 +1527,12 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
         strncpy_s(callerModulePath, sizeof(callerModulePath), "runtime-owned swapchain transition", _TRUNCATE);
     }
 
+    // Native FFX can be unloaded and reloaded across repeated FG runs. Refresh
+    // the FFX API hooks immediately on authoritative takeover so the next
+    // configure call can re-arm the present-callback bridge on the live module
+    // instead of waiting for the background hook scan.
+    FFXHook::Init();
+
     g_FGCompat.SetFSRFGSupportPresent(true);
     g_FGCompat.SetFSRFGMultiplier(2);
     g_FGCompat.SetFSRFGActive(true);

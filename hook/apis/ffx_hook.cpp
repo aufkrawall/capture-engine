@@ -81,6 +81,33 @@ std::atomic<void*> g_ffxCreateContextTarget{nullptr};
 std::atomic<void*> g_ffxDestroyContextTarget{nullptr};
 std::atomic<void*> g_ffxConfigureTarget{nullptr};
 
+bool IsExpectedInlineDetourInstalled(void* target, void* detour) {
+    if (!target || !detour) {
+        return false;
+    }
+
+    const auto* code = static_cast<const uint8_t*>(target);
+#ifdef _WIN64
+    if (code[0] != 0xFF || code[1] != 0x25 || code[2] != 0x00 || code[3] != 0x00 || code[4] != 0x00 ||
+        code[5] != 0x00) {
+        return false;
+    }
+
+    void* installedDetour = nullptr;
+    memcpy(&installedDetour, code + 6, sizeof(installedDetour));
+    return installedDetour == detour;
+#else
+    if (code[0] != 0xE9) {
+        return false;
+    }
+
+    int32_t relativeTarget = 0;
+    memcpy(&relativeTarget, code + 1, sizeof(relativeTarget));
+    const auto* installedDetour = reinterpret_cast<const uint8_t*>(target) + 5 + relativeTarget;
+    return installedDetour == detour;
+#endif
+}
+
 template <typename T>
 bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
                            std::atomic<void*>& targetSlot, const char* hookName) {
@@ -97,7 +124,19 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
 
     const void* installedTarget = targetSlot.load(std::memory_order_acquire);
     if (installedFlag.load(std::memory_order_acquire) && installedTarget == target) {
-        return false;
+        if (IsExpectedInlineDetourInstalled(target, detour)) {
+            return false;
+        }
+
+        HookLogImportant("FFX Hook: %s at %p lost the expected detour patch; refreshing inline hook", hookName,
+                         target);
+        if (!InlineHook::Remove(target)) {
+            HookLogImportant(
+                "FFX Hook: %s at %p could not remove stale inline-hook bookkeeping cleanly; retrying install",
+                hookName, target);
+        }
+        installedFlag.store(false, std::memory_order_release);
+        targetSlot.store(nullptr, std::memory_order_release);
     }
 
     void* trampoline = nullptr;
@@ -294,7 +333,10 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     if (!hModule)
         return false;
 
-    HookLog("FFX Hook: Installing hooks for module %s (%p)", moduleName, hModule);
+    const bool firstSeenModule = g_HookedModule != hModule;
+    if (firstSeenModule) {
+        HookLog("FFX Hook: Installing hooks for module %s (%p)", moduleName, hModule);
+    }
     g_FGCompat.SetFSRFGSupportPresent(true);
 
     // Get the original functions
@@ -316,20 +358,30 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
         }
     }
 
-    // Store originals
-    g_Original_ffxCreateContext = createCtx;
-    g_Original_ffxDestroyContext = destroyCtx;
-    g_Original_ffxConfigure = configureCtx;
+    // Preserve the existing trampoline-backed originals across rescan attempts.
+    // Repeated Init() calls are expected now that later native-FSR DLL loads can
+    // arrive after an earlier module instance was already hooked.
+    if (!g_Original_ffxCreateContext) {
+        g_Original_ffxCreateContext = createCtx;
+    }
+    if (!g_Original_ffxDestroyContext) {
+        g_Original_ffxDestroyContext = destroyCtx;
+    }
+    if (!g_Original_ffxConfigure) {
+        g_Original_ffxConfigure = configureCtx;
+    }
     g_HookedModule = hModule;
 
     // Install IAT hooks in all loaded modules to intercept calls to FFX functions
     // This patches the import tables of the game exe and all loaded DLLs
 
     void* dummy = nullptr;
+    bool hookedAnything = false;
     if (createCtx) {
-        InstallInlineHookOnce(reinterpret_cast<void*>(createCtx), reinterpret_cast<void*>(Hooked_ffxCreateContext),
-                              g_Original_ffxCreateContext, g_ffxCreateContextInlineHooked, g_ffxCreateContextTarget,
-                              "ffxCreateContext");
+        hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(createCtx),
+                                                reinterpret_cast<void*>(Hooked_ffxCreateContext),
+                                                g_Original_ffxCreateContext, g_ffxCreateContextInlineHooked,
+                                                g_ffxCreateContextTarget, "ffxCreateContext");
         HookLog("FFX Hook: ffxCreateContext found at %p, hooking via IAT", createCtx);
         // Patch IAT for all modules that import from the FFX DLL
         IATHook::PatchIATAllModules(moduleName, "ffxCreateContext", (void*)Hooked_ffxCreateContext, &dummy);
@@ -339,9 +391,10 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     }
 
     if (destroyCtx) {
-        InstallInlineHookOnce(reinterpret_cast<void*>(destroyCtx), reinterpret_cast<void*>(Hooked_ffxDestroyContext),
-                              g_Original_ffxDestroyContext, g_ffxDestroyContextInlineHooked,
-                              g_ffxDestroyContextTarget, "ffxDestroyContext");
+        hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(destroyCtx),
+                                                reinterpret_cast<void*>(Hooked_ffxDestroyContext),
+                                                g_Original_ffxDestroyContext, g_ffxDestroyContextInlineHooked,
+                                                g_ffxDestroyContextTarget, "ffxDestroyContext");
         HookLog("FFX Hook: ffxDestroyContext found at %p, hooking via IAT", destroyCtx);
         IATHook::PatchIATAllModules(moduleName, "ffxDestroyContext", (void*)Hooked_ffxDestroyContext, &dummy);
         IATHook::RegisterDynamicHook("ffxDestroyContext", (void*)Hooked_ffxDestroyContext,
@@ -349,15 +402,17 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     }
 
     if (configureCtx) {
-        InstallInlineHookOnce(reinterpret_cast<void*>(configureCtx), reinterpret_cast<void*>(Hooked_ffxConfigure),
-                              g_Original_ffxConfigure, g_ffxConfigureInlineHooked, g_ffxConfigureTarget,
-                              "ffxConfigure");
+        hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(configureCtx),
+                                                reinterpret_cast<void*>(Hooked_ffxConfigure), g_Original_ffxConfigure,
+                                                g_ffxConfigureInlineHooked, g_ffxConfigureTarget, "ffxConfigure");
         HookLog("FFX Hook: ffxConfigure found at %p, hooking via IAT", configureCtx);
         IATHook::PatchIATAllModules(moduleName, "ffxConfigure", (void*)Hooked_ffxConfigure, &dummy);
         IATHook::RegisterDynamicHook("ffxConfigure", (void*)Hooked_ffxConfigure, (void**)&g_Original_ffxConfigure);
     }
 
-    HookLog("FFX Hook: Hooks installed successfully for %s", moduleName);
+    if (hookedAnything) {
+        HookLog("FFX Hook: Hooks installed successfully for %s", moduleName);
+    }
     return true;
 }
 
@@ -376,14 +431,10 @@ void* GetPresentCallbackBridgeKey(void* context) {
 void Init() {
     std::lock_guard<std::mutex> lock(g_InitMutex);
 
-    if (g_Initialized.load(std::memory_order_acquire)) {
-        return;
-    }
-
     static int s_initCallCount = 0;
     ++s_initCallCount;
 
-    if (!g_NoModulesLogged.load(std::memory_order_acquire)) {
+    if (!g_Initialized.load(std::memory_order_acquire) && !g_NoModulesLogged.load(std::memory_order_acquire)) {
         HookLog("FFX Hook: Initializing...");
     }
 
@@ -425,20 +476,31 @@ void Init() {
         "fsr3mod.dll",
     };
 
+    bool foundSupportedModule = false;
     for (size_t i = 0; i < _countof(ffxModules); ++i) {
         HMODULE hMod = GetModuleHandleW(ffxModules[i]);
         if (hMod) {
-            HookLog("FFX Hook: Found module %s at %p", ffxModuleNames[i], hMod);
+            if (!g_Initialized.load(std::memory_order_acquire) || g_HookedModule != hMod) {
+                HookLog("FFX Hook: Found module %s at %p", ffxModuleNames[i], hMod);
+            }
             g_FGCompat.SetFSRFGSupportPresent(true);
             if (InstallHooksForModule(hMod, ffxModuleNames[i])) {
-                g_Initialized.store(true, std::memory_order_release);
-                g_NoModulesLogged.store(false, std::memory_order_release);
-                return;
+                foundSupportedModule = true;
+                continue;
             }
             // Module exists but has no FFX exports (e.g. real nvngx_dlssg.dll)
             HookLog("FFX Hook: Module %s has no FFX exports, continuing search", ffxModuleNames[i]);
         }
     }
+
+    if (foundSupportedModule) {
+        g_Initialized.store(true, std::memory_order_release);
+        g_NoModulesLogged.store(false, std::memory_order_release);
+        return;
+    }
+
+    g_Initialized.store(false, std::memory_order_release);
+    g_HookedModule = nullptr;
 
     if (!g_NoModulesLogged.exchange(true, std::memory_order_acq_rel)) {
         HookLog("FFX Hook: No FFX modules found, hooks not installed");
