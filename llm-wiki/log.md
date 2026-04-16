@@ -14,6 +14,29 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Stop reserving blank FG rows for the full post-FSR non-FG recovery interval once the immediate teardown pulse has settled
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_170259` on build `0.1.2322` is the fresh broad switching rerun after the unsafe-post-FSR `GetState` suppression tightening. The important outcome is stability: repeated FG-on/off and mixed `DLSS_FG` / `FSR_FG` switching stayed stable with no mirrored dump, no `Present STALLED`, and no new crash markers. The remaining user-visible issue was minor and cosmetic. During some post-FSR non-FG recovery windows, the overlay briefly showed two empty rows where the FG type and `Base/Display` lines normally appear.
+
+- **Root cause refinement**: The stronger clue was in the overlay layout path, not in the fragile FG routing logic. `hook/common/dx12_overlay_policy.h` already narrowed inactive-FG row reservation to the short recent-PostSL-teardown pulse via `ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(...)`, specifically to avoid leaving blank gaps long after the live overlay had already returned to a normal non-FG shape. But `hook/apis/dx12_hook.cpp` still widened the effective decision again inside `ShouldReserveInactiveFGOverlaySpaceNow()`: after computing that narrow pulse, it also returned true for the entire `kRecoveryPostFSROff` render-mode interval. `OverlayAdapter` then did exactly what it was told to do: reserve the two FG rows and advance the layout, but intentionally render nothing into them while FG details were hidden. That matches the transient blank-line symptom directly and does not require another risky FG-state-machine change.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now exposes `ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(...)` as the canonical current-frame decision for inactive-FG row reservation.
+  2. `hook/apis/dx12_hook.cpp` now makes `ShouldReserveInactiveFGOverlaySpaceNow()` delegate only to that narrow helper instead of also reserving rows for the full `kRecoveryPostFSROff` interval.
+  3. `tests/test_dxgi_shared.cpp` now updates `PostFSRNonFGRecoveryReservesInactiveFGOverlaySpace` to lock the narrower behavior: reserve only while the short teardown pulse is live, not for the whole recovery mode.
+
+- **Why this is generic**: This is not a GTA-only visual hack. The generic rule is that post-FSR non-FG recovery can keep using special routing/compositing paths without forcing the overlay layout to reserve FG rows after the teardown-era visual continuity window has already ended. Routing/recovery state and visible row reservation are separate concerns.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_170259/{session_manifest.txt,hook_debug.log}`.
+  - Confirmed the stability result first: build `0.1.2322`, `overlay_enabled=1`, no dump artifacts in the session, repeated mixed FG switching reported stable by manual validation.
+  - Confirmed the relevant recovery signature in the log: repeated `path=lastWorking(post-FSR)` windows and short `Streamline FG OFF seeded recent PostSL teardown activity ... (250ms)` pulses, which align with the intended narrow reservation window.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; the suite completed successfully with 582 tests passing.
+
+- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime confirmation is still useful for the visual result. This patch is intentionally cosmetic-only and does not touch FG routing, activation, queue selection, or Present transport. If a later validation still shows transient blank FG rows, the next seam is more likely the first FG publication carrying zero FPS fields (`runtime=DLSS_FG active=1 base_fps=0.00 output_fps=0.00`) than the inactive-row reservation itself.
+
 ### 2026-04-16 - Keep fresh `GetState` DLSS FG reactivation suppressed during an unsafe post-FSR comeback until bootstrap is safe or a real explicit enable arrives
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_164245` on build `0.1.2320` showed that the previous FFX hook-refresh fix really did repair the late native-FSR overlay-loss family, but it also exposed the next seam immediately afterward on the return path. The session's authoritative FFX epoch is healthy: CE logs sustained `DX12: FFX present callback rendered overlay on runtime-owned FSR path`, later tears down cleanly to `runtime=STREAMLINE_NO_FG`, and rebuilds the normal non-FG overlay on `scQueue=0000013C8DE1BC90`. The crash appears only on the later `FSR_FG -> DLSS_FG` comeback. CE preserves that fresh post-FSR Streamline handoff queue and pre-arms the PostSL callback, but the comeback surfaces only `Streamline Hook: FG state transition OFF->ON via GetState`, then immediately `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`. Both mirrored dumps (`external_sl-sha-11cf43f.dmp` and `external_378db52b-341d-4665-913d-f4f502276c84.dmp`) resolve to the same patched `dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` breakpoint-corruption family, while the later ECL trace still says `safeBootstrap=0` and no `PostSL synthetic startup waiting for safe bootstrap path after FSR phase ...` or `PostSL REACTIVATED` line ever appears before the dump.

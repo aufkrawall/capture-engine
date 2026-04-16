@@ -365,10 +365,6 @@ inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverla
            !hasSwapchainQueue;
 }
 
-inline bool ShouldReserveInactiveFGOverlaySpace(bool postFSRNonFGRecovery) {
-    return postFSRNonFGRecovery;
-}
-
 inline bool ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(bool postFSRNonFGRecovery,
                                                                            bool recentStreamlineTeardown,
                                                                            bool postSLRecentTeardownActivity) {
@@ -383,6 +379,13 @@ inline bool ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(bool 
     // the live overlay has already returned to its smaller non-FG shape.
     (void)recentStreamlineTeardown;
     return postFSRNonFGRecovery && postSLRecentTeardownActivity;
+}
+
+inline bool ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(bool postFSRNonFGRecovery,
+                                                               bool recentStreamlineTeardown,
+                                                               bool postSLRecentTeardownActivity) {
+    return ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(
+        postFSRNonFGRecovery, recentStreamlineTeardown, postSLRecentTeardownActivity);
 }
 
 inline bool ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(bool endingPostFSRNonFGRecovery) {

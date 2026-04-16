@@ -3042,25 +3042,8 @@ static bool ShouldReserveInactiveFGOverlaySpaceNow() {
     const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
     const bool postSLRecentTeardownActivity =
         GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
-    const bool reserveInactiveSpace =
-        ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(
-            postFSRNonFGRecovery, recentStreamlineTeardown, postSLRecentTeardownActivity);
-
-    static ce::dx12_fg_transition::State s_transitionState;
-    s_transitionState =
-        ce::dx12_fg_transition::Reduce(s_transitionState, {
-                                                              .runtimeMode = g_FGCompat.GetRuntimeMode(),
-                                                              .effectiveFGActive = g_FGCompat.IsFGActive(),
-                                                              .streamlineFGRunning = streamlineFGRunning,
-                                                              .streamlineLoaded = g_FGCompat.HasStreamlineSupport(),
-                                                              .runtimeOwnsSwapchain = g_FGRuntimeOwnsSwapchain,
-                                                              .hadFSRPhase = g_HadFSRFGPhase,
-                                                              .recoveringPostFSRNonFG = postFSRNonFGRecovery,
-                                                              .startupBypassActive = false,
-                                                              .overlaySuppressed = false,
-                                                          });
-    return reserveInactiveSpace ||
-           s_transitionState.snapshot.renderMode == ce::dx12_fg_transition::OverlayRenderMode::kRecoveryPostFSROff;
+    return ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(
+        postFSRNonFGRecovery, recentStreamlineTeardown, postSLRecentTeardownActivity);
 }
 
 static ID3D12CommandQueue* GetFrameClassificationQueue() {
