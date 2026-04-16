@@ -44,3 +44,4 @@ Repository-specific instructions for coding agents working in this repo.
 - The worktree may already contain unrelated user edits; do not revert them.
 - If `compile_commands.json` or clangd looks stale after structural build changes, regenerate it with `python build.py`.
 - Don't wait ages on truncated outputs, check results directly without wasting time.
+- Never expect the user thet they are required to run build themselves after changing code! You must always do it!

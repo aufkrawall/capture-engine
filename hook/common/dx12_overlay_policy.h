@@ -812,14 +812,28 @@ inline bool ShouldRememberPostSLLastWorkingQueue(bool queueIsSLWrapper) {
 
 inline bool ShouldSeedStreamlineStartupBootstrapAsConsumedForConfirmedPostSLResume(
     bool hadFSRFGPhase, bool hasPostSLLastWorkingQueue, bool hasSwapchainQueue,
-    bool swapchainQueueMatchesPostSLLastWorkingQueue) {
+    bool swapchainQueueMatchesPostSLLastWorkingQueue, bool runtimeOwnedNoFGStateWasClearedAfterLongOrigGameRun,
+    bool hasOriginalGameQueue, bool commandQueueMatchesOriginalGameQueue) {
     // Pure-DLSS resume after a real DLSS suspension should reuse the already
     // proven PostSL topology when the live swapchain queue still matches the last
     // queue that successfully rendered PostSL. Reopening the old startup
     // bootstrap seam in that case sends the first resumed Streamline Present back
     // down the synthetic/bypass route and reproduces the GTA menu-close crash.
-    return !hadFSRFGPhase && hasPostSLLastWorkingQueue && hasSwapchainQueue &&
-           swapchainQueueMatchesPostSLLastWorkingQueue;
+    if (hadFSRFGPhase) {
+        return false;
+    }
+
+    if (hasPostSLLastWorkingQueue && hasSwapchainQueue && swapchainQueueMatchesPostSLLastWorkingQueue) {
+        return true;
+    }
+
+    // A late in-session DLSS enable can also happen after CE already proved that
+    // the runtime-owned no-FG handoff was auxiliary/stale and explicitly cleared
+    // it after a long real-frame run back on origGame. In that case the next
+    // DLSS-on edge should reuse the now-proven top-level game Present path rather
+    // than reopening the old fragile startup bootstrap seam.
+    return runtimeOwnedNoFGStateWasClearedAfterLongOrigGameRun && hasOriginalGameQueue &&
+           commandQueueMatchesOriginalGameQueue;
 }
 
 inline bool ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(

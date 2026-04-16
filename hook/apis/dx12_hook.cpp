@@ -945,6 +945,7 @@ static std::atomic<int> g_CommandListsExecutedThisFrame{0};
 static std::atomic<uint64_t> g_FGDebugFrameCount{0};
 static std::atomic<int> g_AuthoritativeFSRRealFrameOnlyStreak{0};
 static std::atomic<int> g_StaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak{0};
+static std::atomic<bool> g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun{false};
 
 static void ResetAuthoritativeFSRRealFrameOnlyStreak() {
     g_AuthoritativeFSRRealFrameOnlyStreak.store(0, std::memory_order_release);
@@ -2249,6 +2250,7 @@ static void UpdateStartupOverlayCompatibilityState() {
         s_startupOverlayObservedAnyFG.store(true, std::memory_order_release);
         s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
         ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+        g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.store(false, std::memory_order_release);
         return;
     }
 
@@ -3914,20 +3916,30 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
 
         ID3D12CommandQueue* resumeSwapchainQueue = nullptr;
         ID3D12CommandQueue* resumeLastWorkingQueue = nullptr;
+        ID3D12CommandQueue* resumeOriginalGameQueue = nullptr;
+        ID3D12CommandQueue* resumeCommandQueue = nullptr;
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
             resumeSwapchainQueue = g_SwapchainQueue;
             resumeLastWorkingQueue = g_PostSLLastWorkingQueue;
+            resumeOriginalGameQueue = g_OriginalGameQueue;
+            resumeCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         }
         if (ce::dx12_overlay_policy::ShouldSeedStreamlineStartupBootstrapAsConsumedForConfirmedPostSLResume(
                 g_HadFSRFGPhase, resumeLastWorkingQueue != nullptr, resumeSwapchainQueue != nullptr,
-                resumeSwapchainQueue != nullptr && resumeSwapchainQueue == resumeLastWorkingQueue)) {
+                resumeSwapchainQueue != nullptr && resumeSwapchainQueue == resumeLastWorkingQueue,
+                g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.load(std::memory_order_acquire),
+                resumeOriginalGameQueue != nullptr,
+                resumeOriginalGameQueue != nullptr && resumeCommandQueue == resumeOriginalGameQueue)) {
             DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.store(true, std::memory_order_release);
             HookLogImportant(
                 "DX12: Streamline FG ON — seeded startup bootstrap as already consumed for confirmed PostSL resume "
-                "(scQueue=%p lastWorking=%p)",
-                resumeSwapchainQueue, resumeLastWorkingQueue);
+                "(scQueue=%p lastWorking=%p clearedStaleNoFG=%d origGame=%p cmdQ=%p)",
+                resumeSwapchainQueue, resumeLastWorkingQueue,
+                g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.load(std::memory_order_relaxed) ? 1 : 0,
+                resumeOriginalGameQueue, resumeCommandQueue);
         }
+        g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.store(false, std::memory_order_release);
         return;
     }
 
@@ -3970,6 +3982,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     g_SLOffHeuristicGrace.store(600, std::memory_order_release);
+    g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.store(false, std::memory_order_release);
     if (g_PostSLLastWorkingQueue) {
         MarkPostSLRecentTeardownActivity("DX12: Streamline FG OFF seeded recent PostSL teardown activity",
                                          g_PostSLLastWorkingQueue);
@@ -12281,6 +12294,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                 staleRuntimeOwnedSwapchainQueue->Release();
             }
         }
+        g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.store(true, std::memory_order_release);
         DXGIShared::ResetStreamlineStartupTransitionState();
         ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
     }
