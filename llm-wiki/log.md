@@ -14,6 +14,29 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Re-probe real D3D12 ECL on fresh authoritative post-FSR Streamline handoff so safe bootstrap can recover after the earlier FG-off teardown
+
+- **Motivation**: Talos `installed/captureengine/logs/20260416_215730_talos_fgdisappeared` on build `0.1.2352` no longer crashed on the later `DLSS_FG -> FSR_FG -> DLSS_FG` comeback, but the overlay still disappeared. The decisive sequence is a no-crash starvation family: CE clears `realECL` earlier at `hook_debug.log:3149` (`DX12: [outer] FG→off — cleared realECL ...`), later captures a fresh authoritative Streamline runtime-owned handoff `queue=000002A3882BA1B0`, suppresses provisional `GetState`, and then reaches a real explicit `Streamline Hook: FG state transition OFF->ON via SetOptions`. After that the session repeatedly logs `Keeping Streamline startup-handoff Present on the normal SL route #1`, `Post-FSR startup-handoff normal-route bypass #1`, then `Keeping decisive synthetic Streamline startup Present on the normal SL route ... callbackOnNormal=0`, `Post-FSR startup normal-route bypass ...`, and later `DX12: ECL hook leaving pending PostSL activation dormant after startup window expiry because post-FSR bootstrap path is still unsafe (activationPending=1 hadFSR=1 safeBootstrap=0 ...)`. There is no `PostSL REACTIVATED`, no `Post-SL overlay SUBMIT`, and no crash.
+
+- **Root cause refinement**: The surviving seam was not transport or routing anymore. Those parts were already doing the right thing: the recovered Presents stayed on the protected normal Streamline route and still used bypass transport. The thing that never recovered was bootstrap evidence. `g_RealD3D12ECL` had been intentionally cleared earlier during FG-off recovery, but the later fresh authoritative Streamline handoff after FSR did not re-probe it. `HookHasSafePostFSRBootstrapPath()` therefore stayed false for the whole comeback even though the session had already re-captured the recovered `scQueue` and later resumed ECL traffic on the new DLSS epoch. That left `callbackOnNormal=0` forever and stranded the visible overlay in startup-pending state.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now adds `ShouldReprobeRealD3D12ECLOnFreshAuthoritativeStreamlineHandoff(...)`.
+  2. `hook/apis/dx12_hook.cpp` now calls `ProbeRealD3D12ECL(...)` immediately on a fresh authoritative Streamline runtime-owned handoff after an FSR phase whenever `realECL` is currently missing, and logs the reprobe result or device-query failure.
+  3. `tests/test_dxgi_shared.cpp` now adds `FreshAuthoritativeStreamlineHandoffAfterFSRReprobesMissingRealECL`.
+
+- **Why this is generic**: This is not another Talos-only branch. Mixed FSR->DLSS sessions can legitimately clear `realECL` during FG-off recovery so stale runtime dispatch does not leak into the next epoch. But once the next epoch already has a fresh authoritative Streamline handoff, CE must re-establish that probe promptly or the existing safe-bootstrap gate will stay falsely unsafe forever. The generic rule is that bootstrap evidence must be refreshed together with authoritative recovered queue ownership.
+
+- **Verification so far**:
+  - Re-checked `installed/captureengine/logs/20260416_215730_talos_fgdisappeared/{session_manifest.txt,hook_debug.log}`.
+  - Confirmed the earlier `realECL` clear at `hook_debug.log:3149` and the later decisive comeback edge: preserved fresh handoff `queue=000002A3882BA1B0`, explicit `OFF->ON via SetOptions`, repeated `Post-FSR startup normal-route bypass ...`, `callbackOnNormal=0`, and no `PostSL REACTIVATED` / submit lines through the end of the session.
+  - Ran `python build.py --skip-updates --tests-only --gtest-filter=DXGISharedTest.FreshAuthoritativeStreamlineHandoffAfterFSRReprobesMissingRealECL:DXGISharedTest.PostSLActivationWaitsForSafeBootstrapPathAfterFSRPhase`; the focused build completed successfully.
+  - Ran `tests\unit_tests.exe --gtest_filter=DXGISharedTest.FreshAuthoritativeStreamlineHandoffAfterFSRReprobesMissingRealECL:DXGISharedTest.PostSLActivationWaitsForSafeBootstrapPathAfterFSRPhase`; both focused DXGI tests passed.
+
+- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next check is that a later Talos `FSR_FG -> DLSS_FG` comeback now logs the new post-FSR handoff-side `realECL` reprobe, leaves the `safeBootstrap=0` / `callbackOnNormal=0` startup loop, and reaches `PostSL REACTIVATED` plus visible `Post-SL overlay SUBMIT` traffic again.
+
 ### 2026-04-16 - Keep the dedicated stale-Steam-hook bypass alive for the later protected post-FSR normal-route Present branches too
 
 - **Motivation**: Talos `installed/captureengine/logs/20260416_213438` on build `0.1.2348` crashed during a later `FSR_FG -> DLSS_FG` comeback after several earlier mixed-runtime transitions in the same session. This was not the just-fixed `DLSS_FG -> FSR_FG` `CreateSwapChainForHwnd` `E_ACCESSDENIED` family. The session stays healthy through multiple FSR epochs first, then captures a fresh authoritative Streamline runtime-owned handoff `queue=000001C150E022D0`, suppresses provisional `GetState` reactivation, and later reaches a real explicit `Streamline Hook: FG state transition OFF->ON via SetOptions`. Right after that CE logs `DX12: Streamline FG ON after FSR — preserving freshly handed-off Streamline swapchain queue 000001C150E022D0 during active startup handoff`, then `DetourPresent: Keeping decisive synthetic Streamline startup Present on the normal SL route #1`, and immediately crashes before any `Post-FSR startup normal-route bypass`, `PostSL REACTIVATED`, probe, or submit log appears.

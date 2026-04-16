@@ -3499,6 +3499,25 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         if (freshAuthoritativeStreamlineHandoff) {
             DXGIShared::ArmStreamlineStartupTransitionWindow();
             StreamlineHook::OnAuthoritativeStreamlineStartupHandoff();
+            if (ce::dx12_overlay_policy::ShouldReprobeRealD3D12ECLOnFreshAuthoritativeStreamlineHandoff(
+                    freshAuthoritativeStreamlineHandoff, g_HadFSRFGPhase,
+                    g_RealD3D12ECL.load(std::memory_order_acquire) != nullptr)) {
+                ID3D12Device* handoffDevice = nullptr;
+                const HRESULT handoffDeviceHr = pQueue->GetDevice(IID_PPV_ARGS(&handoffDevice));
+                if (SUCCEEDED(handoffDeviceHr) && handoffDevice) {
+                    ProbeRealD3D12ECL(handoffDevice);
+                    HookLogImportant(
+                        "%s: Re-probed real D3D12 ECL for fresh authoritative Streamline handoff after FSR "
+                        "(queue=%p realECL=%p dev=%p)",
+                        context, pQueue, (void*)g_RealD3D12ECL.load(std::memory_order_acquire), handoffDevice);
+                    handoffDevice->Release();
+                } else {
+                    HookLogImportant(
+                        "%s: Failed to get handoff device for post-FSR realECL reprobe "
+                        "(queue=%p hr=0x%08X)",
+                        context, pQueue, (unsigned)handoffDeviceHr);
+                }
+            }
             HookLogImportant(
                 "%s: Armed Streamline startup transition window after authoritative runtime-owned swapchain handoff "
                 "(queue=%p prevScQueue=%p origGame=%p caller=%s)",

@@ -939,6 +939,16 @@ inline bool ShouldUseShortPostFSRInactiveCooldown(bool commandQueueSettledToPrim
     return commandQueueSettledToPrimary && hadFSRFGPhase && recentStreamlineTeardown;
 }
 
+inline bool ShouldReprobeRealD3D12ECLOnFreshAuthoritativeStreamlineHandoff(bool freshAuthoritativeStreamlineHandoff,
+                                                                           bool hadFSRFGPhase, bool hasRealD3D12ECL) {
+    // Mixed FSR->DLSS sessions can intentionally clear the earlier realECL
+    // pointer during FG-off recovery. If the next authoritative Streamline
+    // handoff arrives before the later outer SL-ON path re-probes it, the
+    // post-FSR safe-bootstrap gate can stay falsely unsafe forever even though
+    // the recovered Streamline queue topology is already moving again.
+    return freshAuthoritativeStreamlineHandoff && hadFSRFGPhase && !hasRealD3D12ECL;
+}
+
 inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
                                                               bool hasRealD3D12ECL, bool hasSLWrapperQueue) {
     if (!hadFSRFGPhase) {
