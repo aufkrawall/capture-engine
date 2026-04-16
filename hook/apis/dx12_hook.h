@@ -89,6 +89,7 @@ DWORD DX12_GetGamePresentThreadId();
 void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallback originalCallback,
                                       void* originalUserContext);
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
+void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled);
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* callbackDesc,
                                                  void* userCtx);
 void RemoveGlobalVTableHooks();

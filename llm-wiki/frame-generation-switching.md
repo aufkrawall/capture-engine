@@ -32,6 +32,7 @@ This page records current guardrails and tested transition families for no-FG, D
   - GTA-style DLSS suspension and resume during loading
   - startup coexistence using startup bypass first and normal routing after settle
 - Current overlay status tests explicitly cover visible label switching between `FSR FG` and `DLSS FG`, plus clearing back to `FG` when frame generation turns off.
+- Explicit native-FSR off via `ffxConfigure(frameGenerationEnabled=0)` is now treated as stronger evidence than queue-change/ECL heuristics during runtime-owned teardown. That prevents `FSR_FG -> off` from immediately re-latching heuristic `FSR_FG` on the lingering runtime-owned queue and leaving the overlay status stale.
 - Current DX12 overlay policy code treats a runtime-owned swapchain alone as insufficient proof of FSR FG. That matters because GTA can keep a runtime-owned swapchain during non-FSR windows, and misclassifying that state can break post-FSR or post-DLSS recovery.
 - Current DX12 overlay policy comments repeatedly preserve queue and recovery choices specifically to avoid Talos device-removed paths and stale-overlay teardown behavior during mixed FSR and DLSS transitions.
 - Effective FSR runtime mode is now also used as the guard for SL routing suppression. That prevents a stale SL hook from re-activating Present routing after FSR takeover.

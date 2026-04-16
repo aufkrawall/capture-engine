@@ -587,6 +587,16 @@ inline bool ShouldPreserveRuntimeOwnedFSRTeardown(bool targetIsNone, bool hadFSR
     return targetIsNone && hadFSRFGPhase && runtimeOwnsSwapchain && !streamlineFGRunning;
 }
 
+inline bool ShouldSuppressHeuristicFSRAfterExplicitNativeFSROff(bool explicitNativeFSROffPending,
+                                                                bool runtimeOwnsSwapchain) {
+    // A real native-FSR off signal can arrive before the runtime-owned swapchain
+    // and queue topology have unwound back to the normal non-FG path. In that
+    // teardown window, queue-change/ECL heuristics must not immediately relatch
+    // FSR_FG or the overlay status flips back to stale FSR even though the
+    // runtime already disabled frame generation explicitly.
+    return explicitNativeFSROffPending && runtimeOwnsSwapchain;
+}
+
 inline bool ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
     bool recoveringPostFSRNonFG, bool actualFGActive, bool streamlineFGRunning, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPrimaryGameQueue, bool originalQueueMatchesPrimaryQueue) {

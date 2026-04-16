@@ -1,6 +1,6 @@
 # Overlay FG Status
 
-Last cross-checked: 2026-04-11
+Last cross-checked: 2026-04-16
 
 Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
@@ -17,6 +17,8 @@ This page records how the current tree publishes visible FG status to the overla
 - When FG is active, the helper currently publishes a multiplier of at least `2`.
 - When FG is inactive, the helper resets published output FPS and base FPS to `0.0f` and resets the multiplier to `1`.
 - The helper tracks the last published state and only emits the main publication log when the visible state actually changes.
+- A stale visible FG label can still originate upstream from runtime classification drift even when `PublishOverlayFGMetrics()` itself behaves correctly. Talos `installed/captureengine/logs/20260416_192846` showed this explicitly: CE first published `runtime=STREAMLINE_NO_FG active=0`, then immediately re-detected heuristic `FSR_FG` from a lingering runtime-owned queue after `ffxConfigure(frameGenerationEnabled=0)` had already disabled the native FSR present-callback bridge.
+- The current tree now treats an explicit native-FSR `frameGenerationEnabled=0` signal as authoritative during runtime-owned teardown: heuristic `FSR_FG` reactivation is suppressed until the runtime-owned swapchain ownership actually unwinds or native FSR explicitly turns back on. That keeps the visible overlay status from snapping back to stale `FSR FG` after a real `FSR_FG -> off` transition.
 - Current tests explicitly require:
   - `FSR FG` to publish as `FSR FG`
   - `DLSS FG` to publish as `DLSS FG`
@@ -27,6 +29,7 @@ This page records how the current tree publishes visible FG status to the overla
 - Route visible FG status publication through the shared helper instead of duplicating mapping logic in multiple runtime paths.
 - Treat the visible overlay state as user-facing correctness, not cosmetic best effort.
 - When changing FG routing or detection, verify that label, multiplier, base FPS, and output FPS all move together instead of leaving a stale mixed state on screen.
+- When a visible label is stale but `PublishOverlayFGMetrics()` is publishing the wrong runtime, fix the upstream runtime-state ownership/heuristic boundary instead of papering over the label mapping.
 - If a runtime path can produce stale status for even a few frames, add a regression test before assuming the behavior is acceptable.
 
 ## Open Questions / Stale-Risk

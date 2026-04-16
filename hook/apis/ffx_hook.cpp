@@ -12,6 +12,8 @@
 #include "../wrappers/iat_hook.h"
 #include "dx12_hook.h"
 
+extern void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled);
+
 // ============================================================================
 // FFX API Type Definitions (from FFX SDK)
 // We don't include the SDK headers directly to avoid dependency issues
@@ -318,6 +320,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
 
     // Native FSR can keep its context alive while toggling FG on/off via
     // ffxConfigure. Trust that runtime signal over context lifetime.
+    DX12_OnNativeFSRFrameGenerationConfigured(parsed.enabled);
     g_FGCompat.SetFSRFGActive(parsed.enabled);
     if (parsed.enabled) {
         g_FGCompat.MarkDirectFFXApiConfirmation();

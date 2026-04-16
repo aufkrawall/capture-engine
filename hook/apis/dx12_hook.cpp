@@ -946,6 +946,7 @@ static std::atomic<uint64_t> g_FGDebugFrameCount{0};
 static std::atomic<int> g_AuthoritativeFSRRealFrameOnlyStreak{0};
 static std::atomic<int> g_StaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak{0};
 static std::atomic<bool> g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun{false};
+static std::atomic<bool> g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown{false};
 
 static void ResetAuthoritativeFSRRealFrameOnlyStreak() {
     g_AuthoritativeFSRRealFrameOnlyStreak.store(0, std::memory_order_release);
@@ -953,6 +954,10 @@ static void ResetAuthoritativeFSRRealFrameOnlyStreak() {
 
 static void ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak() {
     g_StaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak.store(0, std::memory_order_release);
+}
+
+static void ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown() {
+    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.store(false, std::memory_order_release);
 }
 
 // Primary game queue — set once from the first ECL call (always the game's queue,
@@ -1542,6 +1547,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
     g_FGCompat.SetFSRFGSupportPresent(true);
     g_FGCompat.SetFSRFGMultiplier(2);
     g_FGCompat.SetFSRFGActive(true);
+    ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
     ResetAuthoritativeFSRRealFrameOnlyStreak();
     if (!g_HadFSRFGPhase) {
         g_HadFSRFGPhase = true;
@@ -2124,6 +2130,22 @@ void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey) {
     g_FFXPresentCallbackBridges.erase(bridgeKey);
 }
 
+void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
+    if (enabled) {
+        ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+        return;
+    }
+
+    const bool runtimeOwnedTeardownStillActive = g_FGRuntimeOwnsSwapchain;
+    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.store(runtimeOwnedTeardownStillActive, std::memory_order_release);
+    if (runtimeOwnedTeardownStillActive) {
+        HookLogImportant(
+            "DX12: Native FSR explicitly configured FG OFF while runtime-owned swapchain teardown is still active "
+            "(scQueue=%p origGame=%p cmdQ=%p)",
+            g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
+    }
+}
+
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* desc, void* userCtx) {
     ce::ffx_api::PresentCallback originalCallback = nullptr;
     void* originalUserContext = nullptr;
@@ -2168,6 +2190,21 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 }
 
 static bool UpdateHeuristicFSRFGState(bool active, const char* source) {
+    if (active && ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRAfterExplicitNativeFSROff(
+                      g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
+                      g_FGRuntimeOwnsSwapchain)) {
+        g_FGCompat.SetHeuristicFSRFGActive(false);
+
+        static std::atomic<int> s_explicitOffSuppressedLogCount{0};
+        if (s_explicitOffSuppressedLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+            HookLogImportant(
+                "DX12: Suppressing %s FSR FG heuristic because native FSR explicitly turned FG off while the runtime-owned "
+                "swapchain teardown is still active",
+                source ? source : "unknown");
+        }
+        return false;
+    }
+
     const char* blockedReason = nullptr;
     if (!CanUseFSRFGHeuristics(&blockedReason)) {
         g_FGCompat.SetHeuristicFSRFGActive(false);
@@ -3365,6 +3402,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = 0;
             ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+            ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
             s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
             if (g_FGCompat.IsFSRFGApiActive()) {
                 HookLogImportant("DX12: Swapchain returned to origGame queue %p — ending authoritative FSR FG state",
@@ -3893,6 +3931,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                     g_SwapchainQueueCaptureTime = 0;
                     g_FGRuntimeOwnsSwapchain = false;
                     DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
+                    ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
                     if (g_FGCompat.IsFSRFGApiActive()) {
                         g_FGCompat.SetFSRFGActive(false);
                         g_FGCompat.SetFSRFGMultiplier(0);
@@ -4024,6 +4063,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                 g_FGRuntimeOwnsSwapchainSince = 0;
                 ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+                ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
                 if (g_FGCompat.IsFSRFGApiActive()) {
                     g_FGCompat.SetFSRFGActive(false);
                     g_FGCompat.SetFSRFGMultiplier(0);
@@ -10553,6 +10593,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                         g_FGRuntimeOwnsSwapchainSince = 0;
                         ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+                        ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
                         HookLogImportant("DX12: FG→off — clearing FG runtime ownership of swapchain queue");
                     }
                     HookLogImportant("DX12: FG→off — keeping g_SwapchainQueue %p (origGame=%p)", g_SwapchainQueue,
@@ -10572,6 +10613,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                         g_FGRuntimeOwnsSwapchainSince = 0;
                         ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+                        ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
                         HookLogImportant("DX12: FG type change to None — clearing FG runtime ownership");
                     }
                     if (g_SwapchainQueue) {
@@ -10623,6 +10665,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                             g_FGRuntimeOwnsSwapchainSince = 0;
                             ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+                            ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
                             const bool preserveAuthoritativeFSRDuringTransition =
                                 ce::dx12_overlay_policy::ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(
                                     g_FGCompat.IsFSRFGApiActive(), targetIsNone, g_FGTransitionCooldown);
@@ -12127,6 +12170,12 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                 canUseFSRHeuristics, g_FGRuntimeOwnsSwapchain, g_HadFSRFGPhase)) {
             g_FGCompat.SetHeuristicFSRFGActive(false);
         }
+    } else if (ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRAfterExplicitNativeFSROff(
+                   g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
+                   g_FGRuntimeOwnsSwapchain)) {
+        if (g_FGCompat.IsHeuristicFSRFGActive()) {
+            g_FGCompat.SetHeuristicFSRFGActive(false);
+        }
     }
     // Interpolated (FG) frame detection: the game submits zero command lists
     // between consecutive Present calls for frames generated by the FG engine.
@@ -12281,6 +12330,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                 g_FGRuntimeOwnsSwapchain = false;
                 DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                 g_FGRuntimeOwnsSwapchainSince = 0;
+                ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
                 s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
             }
             if (g_SwapchainQueue && g_OriginalGameQueue && g_SwapchainQueue != g_OriginalGameQueue) {

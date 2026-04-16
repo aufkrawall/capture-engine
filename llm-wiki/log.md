@@ -14,6 +14,55 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Suppress heuristic FSR relatch after explicit native-FSR off during runtime-owned teardown so the overlay status clears correctly in Talos
+
+- **Motivation**: Talos `installed/captureengine/logs/20260416_192846` on build `0.1.2333` stayed stable through `DLSS_FG -> FSR_FG -> off`, but the overlay status regressed on the final off transition: the visible label stayed on `FSR FG` even though no frame generation was active anymore. The decisive log edge is compact and contradictory. `FFX Hook` first logs repeated `Installed DX12 overlay present-callback bridge ... enabled=0`, then CE publishes `FG publication: source=DXGIShared::DetourPresent runtime=STREAMLINE_NO_FG active=0`, then on the very next frame `DX12: FG detected via queue change (initial=0000017D40635A00, current=0000017D32C676C0, gameQ=0000017D32C676C0, frame=4471)` fires and CE immediately republishes `runtime=FSR_FG active=1`. From that point the overlay remains stuck on the runtime-owned FSR path even though `apiFSR=0`.
+
+- **Root cause refinement**: The overlay label mapping itself was behaving correctly; the runtime classification was wrong. `PublishOverlayFGMetrics()` had already done the right thing and briefly cleared the visible FG status when the real `ffxConfigure(frameGenerationEnabled=0)` off signal arrived. But heuristic FSR detection was still allowed to win again one frame later on the lingering runtime-owned queue. In this Talos teardown family, explicit native-FSR off is a stronger truth source than the queue-change heuristic: the runtime can keep the swapchain/queue runtime-owned for a short teardown interval after FG has already turned off. Letting heuristics override that explicit off signal immediately relatches `FSR_FG` and leaves the overlay status stale even though the real native FSR callback path is already disabled.
+
+- **Fix**:
+  1. `hook/apis/dx12_hook.cpp` now tracks a small explicit-native-FSR-off teardown latch: when `ffxConfigure(frameGenerationEnabled=0)` arrives while the runtime-owned swapchain teardown is still active, CE marks heuristic FSR reactivation as unsafe for that window.
+  2. `hook/apis/ffx_hook.cpp` now forwards the parsed native-FSR enable/disable signal to DX12 via `DX12_OnNativeFSRFrameGenerationConfigured(...)` so the suppression begins exactly on the explicit runtime off edge.
+  3. `hook/apis/dx12_hook.cpp` clears that latch automatically when native FSR explicitly turns back on or when the runtime-owned swapchain ownership is actually released/cleared by the existing teardown paths.
+  4. `hook/common/dx12_overlay_policy.h` now exposes `ShouldSuppressHeuristicFSRAfterExplicitNativeFSROff(...)`, and `tests/test_dxgi_shared.cpp` adds `ExplicitNativeFSROffSuppressesHeuristicReactivationUntilRuntimeOwnedTeardownEnds` to lock the new policy boundary.
+
+- **Why this is generic**: This is not a Talos-only label hack. The generic rule is that explicit native-runtime off signals outrank heuristic FSR evidence during the short runtime-owned teardown window. Queue ownership can linger after the runtime already disabled FG, so heuristics must not immediately resurrect `FSR_FG` until the runtime-owned topology truly ends or the runtime explicitly re-enables FSR FG.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_192846/hook_debug.log` around lines `3106-3141`.
+  - Confirmed the exact stale-label sequence: explicit FFX callback bridge disable (`enabled=0`), correct `STREAMLINE_NO_FG` publication, then immediate heuristic queue-change re-detection to `FSR_FG`.
+  - Ran `python build.py --skip-updates --tests-only --gtest-filter=DXGISharedTest.ExplicitNativeFSROffSuppressesHeuristicReactivationUntilRuntimeOwnedTeardownEnds:OverlayFGStatusPublicationTest.TransitionBackToOffClearsPublishedStatus`; the focused build completed successfully.
+  - Ran `tests\unit_tests.exe --gtest_filter=DXGISharedTest.ExplicitNativeFSROffSuppressesHeuristicReactivationUntilRuntimeOwnedTeardownEnds:OverlayFGStatusPublicationTest.TransitionBackToOffClearsPublishedStatus`; both tests passed.
+
+- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.h`, `hook/apis/dx12_hook.cpp`, `hook/apis/ffx_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh Talos runtime validation is still required. The next check is that `FSR_FG -> off` now leaves the overlay on the baseline `FG` label instead of relatching `FSR FG`, while genuine later native-FSR re-enables still recover immediately when `ffxConfigure(frameGenerationEnabled=1)` returns.
+
+### 2026-04-16 - GTA active rerun validates the late pure-DLSS enable fix and broad mixed switching stability on build 0.1.2333
+
+- **Motivation**: After the `20260416_185240` root-cause fix, GTA needed a fresh active rerun from a cold `all FG off` start through broad in-game switching sequences to verify that the new late pure-DLSS bootstrap-consumed seed actually closed the old crash family instead of just moving it.
+
+- **Validation result**: `installed/captureengine/logs/20260416_191605` on build `0.1.2333` looks good. GTA launches with all FG off, CE again clears the stale runtime-owned `STREAMLINE_NO_FG` handoff after a long origGame-only real-frame run, then a later pure-DLSS enable logs `DX12: Streamline FG ON — seeded startup bootstrap as already consumed for confirmed PostSL resume (scQueue=0000000000000000 lastWorking=0000000000000000 clearedStaleNoFG=1 origGame=... cmdQ=origGame)` exactly as intended for the new late-enable path. The session then survives repeated mixed switching sequences across `DLSS_FG`, `FSR_FG`, and fully off, with clean FG publications and continuous visible overlay rendering.
+
+- **What the logs confirm**:
+  1. The stale runtime-owned no-FG cleanup still triggers early in the session: `Clearing stale runtime-owned Streamline no-FG swapchain ...` plus release of the stale `scQueue`.
+  2. The new late pure-DLSS enable seed fires on the first in-game DLSS activation after that cleanup (`clearedStaleNoFG=1`) and the session does not fall back into `Treating Streamline-originated Present as synthetic re-entrant #1` / mirrored `sl-sha` dump / `ERR_GFX_STATE`.
+  3. Later pure-DLSS resumes also keep using the older proven-resume seed when `scQueue == lastWorkingQueue`.
+  4. Mixed post-FSR `FSR_FG -> DLSS_FG` comebacks still exercise the stricter post-FSR path: explicit `slDLSSGSetOptions(ON)` clears the unsafe post-FSR `GetState` suppression, fresh Streamline handoff queues are preserved, PostSL reactivates, and the session keeps running without crash markers.
+  5. There are no mirrored external dumps, no `Present STALLED`, no `ERR_GFX_STATE`, and no `DEVICE_REMOVED` markers anywhere in the session.
+
+- **Residual watch-item**: The post-FSR DLSS comeback still sometimes logs `DX12: PostSL queue — WARNING: falling back to scQueue ... in post-FSR DLSS path (no wrapper/direct queue available)`. In `20260416_191605`, both observed fallbacks were benign: each immediately passed the post-FSR probe, confirmed rendering, updated `lastWorkingQueue`, and continued with clean `Post-SL overlay SUBMIT` traffic. So this is not an active failure seam right now, but it is still worth watching in later sessions because it means the stronger direct/wrapper queue proof was unavailable and CE had to lean on the recovered `scQueue` path.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_191605/{session_manifest.txt,hook_debug.log}`.
+  - Confirmed active injected mode: `overlay_enabled=1`, all observer modes off, build `0.1.2333`.
+  - Confirmed no crash-family markers with targeted greps for `ERR_GFX_STATE`, `Present STALLED`, `DEVICE_REMOVED`, mirrored dumps, and synthetic-re-entrant crash seams.
+  - Confirmed coherent FG publications across the switching run: `STREAMLINE_NO_FG -> DLSS_FG -> STREAMLINE_NO_FG -> DLSS_FG -> STREAMLINE_NO_FG -> FSR_FG -> STREAMLINE_NO_FG -> DLSS_FG -> STREAMLINE_NO_FG -> FSR_FG -> STREAMLINE_NO_FG`.
+
+- **Files changed**: `llm-wiki/current.md`, `llm-wiki/log.md`
+
+- **Stale risk**: The active GTA switching path looks stable enough that no immediate code change is justified from this session alone. The remaining watch area is only the post-FSR DLSS queue-choice fallback warning; fix it only if a future session shows that fallback correlating with regressions instead of immediately converging to a healthy confirmed-render path as it does here.
+
 ### 2026-04-16 - Reuse the proven top-level game Present path for late pure-DLSS enables after stale runtime-owned no-FG handoff cleanup
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_185240` on build `0.1.2329` proved the previous stale runtime-owned no-FG cleanup was real: GTA now launched with FG off, CE logged `Clearing stale runtime-owned Streamline no-FG swapchain ...` and `Releasing stale runtime-owned Streamline no-FG swapchain queue ...`, and the session then ran for thousands of stable non-FG real frames on `origGame` with `scQ=0000000000000000`. But a later in-game `all FG off -> DLSS FG on` still crashed. The decisive edge is narrower than the earlier `20260416_172755` cold-start family: there is no fresh runtime-owned handoff at the crash boundary, yet CE still logs `DX12: Streamline FG ON — GetState transition STARTING (startupWindowActive=1 startupRemaining=1500ms consumed=0 wrapperProgress=0)`, then `Streamline Hook: FG state transition OFF->ON via GetState`, then immediately `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`, followed by mirrored `external_sl-sha-11cf43f.dmp`, Rockstar breakpoint dump `external_567158bd-7299-4d74-b12b-d3d694bb78f5.dmp`, and the visible `ERR_GFX_STATE` watchdog dump.
