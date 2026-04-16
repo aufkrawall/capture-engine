@@ -1357,8 +1357,11 @@ inline bool ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(bool strea
         return false;
     }
 
+    // During mixed DLSS/FSR sessions, authoritative FFX takeover is also a
+    // runtime-managed swapchain lifecycle boundary. CE must not tear down
+    // overlay resources or retry CreateSwapChainForHwnd on that path.
     if (callerFromFFXFGModule || ffxFrameGenerationInStack) {
-        return false;
+        return true;
     }
 
     return streamlineFGRunning || streamlineStartupHandoffPending;

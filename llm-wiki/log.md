@@ -14,6 +14,31 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Pass `CreateSwapChainForHwnd` `E_ACCESSDENIED` through unchanged during authoritative FFX takeover instead of tearing down CE overlay state inside the takeover call
+
+- **Motivation**: Talos `installed/captureengine/logs/20260416_205811` on build `0.1.2343` crashed on `DLSS_FG -> FSR_FG`, but the signature differed from the older Steam / `sl_dlss_g` startup-Present crash family. The session stayed healthy through a long pure-DLSS epoch first (`Post-SL overlay SUBMIT #2738`, stable `runtime=DLSS_FG`, no `Present STALLED`, no device-removed markers). The failing edge only appears when authoritative FFX takeover attempts `CreateSwapChainForHwnd` on the game HWND from `amd_fidelityfx_framegeneration_dx12.dll`: the deep hook logs `E_ACCESSDENIED`, then CE cleans up overlay refs, retries ten times, still returns `E_ACCESSDENIED`, and Talos immediately crashes. CE's own dump plus the mirrored `external_UEMinidump.dmp` are both the same game-side null-read family in `Talos1_Win64_Shipping!src_strerror+0xaad447`, not the old `dxgi!Present+0x5` / Steam / `sl_dlss_g` corruption family.
+
+- **Root cause refinement**: The surviving seam is not Present transport or Streamline startup routing. It is CE's `CreateSwapChainForHwnd` `E_ACCESSDENIED` recovery policy being too invasive during authoritative FFX takeover. The existing guard already bypassed CE cleanup/retry when Streamline itself was managing an active startup or live DLSS swapchain lifecycle, but it explicitly excluded authoritative FFX callers. In this Talos mixed-runtime handoff, that meant CE still ran `CleanupOverlay()` plus retries from inside the FFX takeover call while Streamline was still loaded and the runtime-owned handoff had not settled. That interfered with the runtime-managed swapchain transition and left Talos crashing after the failed handoff.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now lets `ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(...)` return true for authoritative FFX caller/stack evidence too when Streamline is loaded.
+  2. `hook/apis/dx12_hook.cpp` now uses that broader runtime-managed pass-through policy in both the deep and inline `CreateSwapChainForHwnd` hooks.
+  3. The access-denied logs now distinguish the pass-through reason explicitly (`third-party overlay caller`, `Streamline active`, or `authoritative FFX takeover`) so future traces show which non-interference path was taken.
+  4. `tests/test_dxgi_shared.cpp` now renames and extends the regression to `CreateSwapchainAccessDeniedPassThroughRequiresRuntimeOwnershipOrAuthoritativeFFXTakeover`, locking the new authoritative-FFX acceptance cases while keeping the old negative cases.
+
+- **Why this is generic**: This is not a Talos-only exception and not a blanket suppression of `E_ACCESSDENIED` recovery. The generic rule is that once create-swapchain authority clearly belongs to a frame-generation runtime, CE must not flush queues, tear down overlay state, or retry the call from inside that runtime-managed handoff. Returning the original `E_ACCESSDENIED` unchanged is the safer behavior because the runtime, not CE, owns the swapchain transition state machine at that boundary.
+
+- **Verification so far**:
+  - Re-checked `installed/captureengine/logs/20260416_205811/{session_manifest.txt,hook_debug.log,crash.log,crash_20260416_205847_819_pid16000_tid11904.dmp,external_UEMinidump.dmp}`.
+  - Confirmed the decisive handoff sequence in `hook_debug.log`: long healthy DLSS epoch first, then `DeepHook: E_ACCESSDENIED ... cleaning up overlay refs ... callerFFX=1 stackFFX=1`, ten failed retries, and only then the crash.
+  - Analyzed both dumps with `cdb.exe`; both resolve to the same Talos game-side null-read family in `Talos1_Win64_Shipping!src_strerror+0xaad447`, not the older Steam/Streamline Present-hook family.
+  - Ran `python build.py --skip-updates --tests-only --gtest-filter=DXGISharedTest.CreateSwapchainAccessDeniedPassThroughRequiresRuntimeOwnershipOrAuthoritativeFFXTakeover`; the focused build completed successfully.
+  - Ran `tests\unit_tests.exe --gtest_filter=DXGISharedTest.CreateSwapchainAccessDeniedPassThroughRequiresRuntimeOwnershipOrAuthoritativeFFXTakeover`; the focused regression test passed.
+
+- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next check is that a later Talos `DLSS_FG -> FSR_FG` takeover now logs the new `authoritative FFX takeover` pass-through path instead of `cleaning up overlay refs`, and that FFX either completes takeover cleanly or surfaces its own recoverable fallback without Talos crashing afterward.
+
 ### 2026-04-16 - Make one-shot `build.py --verify --skip-updates` the canonical post-change verification path and emit compact verification bundles
 
 - **Motivation**: The existing build/test workflow had become unnecessarily awkward for post-change verification. Agents and maintainers were often mixing focused test-only invocations, full builds, direct `unit_tests.exe` reruns, and ad-hoc log scraping. Two concrete problems in the current `build.py` also made that worse: lint failures only failed the process when `--lint` was the only requested action, and `--jobs` tried to write into `env` before `get_env()` had initialized it. Separately, the top-level `build.log` was still a human-oriented stream rather than a compact verification artifact, and the nested sanitizer regression child reused the same top-level logging path conceptually instead of leaving a dedicated child log inside a verification bundle.

@@ -4298,25 +4298,30 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
 
     // Reactive recovery: if E_ACCESSDENIED, an old SC still holds the HWND.
     // DON'T force-destroy — that invalidates game-held references and causes
-    // delayed UE5 assertion crashes.  Clean up our overlay refs and do a very
-    // brief retry.  If it still fails, return the error so the caller
-    // (Streamline/game) can manage its own state machine — long blocking here
-    // causes DLSS FG activation crashes.
+    // delayed UE5 assertion crashes. For ordinary callers we can clean up our
+    // overlay refs and do a very brief retry. For runtime-managed Streamline /
+    // authoritative FFX takeover paths, return the error untouched so the
+    // runtime can manage its own swapchain state machine.
     if (hr == E_ACCESSDENIED && hWnd) {
         const bool streamlineModuleLoaded = IsStreamlineLoaded();
         const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
-        const bool passThroughForStreamline =
+        const bool passThroughForRuntimeManagedFG =
             ce::dx12_overlay_policy::ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(
                 streamlineModuleLoaded, streamlineFGRunning, streamlineStartupHandoffPending, callerFromFFXFGModule,
                 ffxFrameGenerationInStack);
-        if (passThroughForStreamline || callerFromThirdPartyOverlay) {
+        const char* passThroughReason =
+            callerFromThirdPartyOverlay
+                ? "third-party overlay caller"
+                : ((callerFromFFXFGModule || ffxFrameGenerationInStack) ? "authoritative FFX takeover"
+                                                                        : "Streamline active");
+        if (passThroughForRuntimeManagedFG || callerFromThirdPartyOverlay) {
             HookLogImportant(
                 "DeepHook: E_ACCESSDENIED for HWND=%p — %s, passing through without CE cleanup "
                 "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d module=%s)",
-                hWnd, callerFromThirdPartyOverlay ? "third-party overlay caller" : "Streamline active",
-                streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0, callerFromFFXFGModule ? 1 : 0,
-                ffxFrameGenerationInStack ? 1 : 0, callerModulePath[0] ? callerModulePath : "unknown");
+                hWnd, passThroughReason, streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0,
+                callerModulePath[0] ? callerModulePath : "unknown");
         } else {
             HookLogImportant(
                 "DeepHook: E_ACCESSDENIED for HWND=%p — cleaning up overlay refs "
@@ -4397,8 +4402,8 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
 // This code-level hook fires for ALL calls to the real DXGI function,
 // including internal calls by Streamline's DLFG module (linkSwapchainToCmdQueue).
 // When E_ACCESSDENIED occurs (HWND already has a flip-model swapchain), we
-// force-release the old swapchain and retry, preventing the fatal crash during
-// FSR FG → DLSS FG runtime switching.
+// only do CE-owned cleanup/retry for non-runtime-managed cases. Streamline and
+// authoritative FFX takeover paths must manage that handoff themselves.
 static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd,
                                                                     const DXGI_SWAP_CHAIN_DESC1* pDesc,
                                                                     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc,
@@ -4458,23 +4463,29 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
 
     if (hr == E_ACCESSDENIED && hWnd) {
-        // When Streamline is managing swapchain lifecycle, don't interfere.
-        // Our CleanupOverlay() flushes the GPU (200ms Signal+Wait) and destroys
-        // overlay resources, which disrupts Streamline's internal state machine.
+        // When a frame-generation runtime is managing swapchain lifecycle,
+        // don't interfere. Our CleanupOverlay() flushes the GPU (200ms
+        // Signal+Wait) and destroys overlay resources, which disrupts the
+        // runtime's internal handoff state machine.
         const bool streamlineModuleLoaded = IsStreamlineLoaded();
         const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
-        const bool passThroughForStreamline =
+        const bool passThroughForRuntimeManagedFG =
             ce::dx12_overlay_policy::ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(
                 streamlineModuleLoaded, streamlineFGRunning, streamlineStartupHandoffPending, callerFromFFXFGModule,
                 ffxFrameGenerationInStack);
-        if (passThroughForStreamline || callerFromThirdPartyOverlay) {
+        const char* passThroughReason =
+            callerFromThirdPartyOverlay
+                ? "third-party overlay caller"
+                : ((callerFromFFXFGModule || ffxFrameGenerationInStack) ? "authoritative FFX takeover"
+                                                                        : "Streamline active");
+        if (passThroughForRuntimeManagedFG || callerFromThirdPartyOverlay) {
             HookLogImportant(
                 "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — %s, passing through without CE cleanup "
                 "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d module=%s)",
-                hWnd, callerFromThirdPartyOverlay ? "third-party overlay caller" : "Streamline active",
-                streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0, callerFromFFXFGModule ? 1 : 0,
-                ffxFrameGenerationInStack ? 1 : 0, callerModulePath[0] ? callerModulePath : "unknown");
+                hWnd, passThroughReason, streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0,
+                callerModulePath[0] ? callerModulePath : "unknown");
         } else {
             HookLogImportant(
                 "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "
