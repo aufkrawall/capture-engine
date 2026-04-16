@@ -14,6 +14,30 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Keep the first post-FSR startup-handoff Present on the normal route logically, but bypass its transport too
+
+- **Motivation**: Talos `installed/captureengine/logs/20260416_015012` on build `0.1.2313` showed the previous queue-reuse fix was real but still one seam short. The earlier `DLSS_FG -> FSR_FG -> DLSS_FG` resume still worked and reused `lastWorkingQ=000001C0224DFFF0`, but a later fresh `FSR_FG -> off -> DLSS_FG` comeback in the same session crashed before PostSL reactivated. The decisive trace was earlier: CE preserved the fresh post-FSR `scQueue=000001C106E06A70`, logged `DetourPresent: Keeping Streamline startup-handoff Present on the normal SL route #2`, published `runtime=DLSS_FG`, and then the very next artifact was the mirrored external Streamline dump. There were no `PostSL REACTIVATED`, wrapper-progress, probe, or submit logs for that comeback.
+
+- **Root cause refinement**: The surviving seam is the first post-FSR startup-handoff Present itself. The routing layer already knew to keep the startup-handoff Present logically on the normal Streamline route, but `DetourPresent` and `DetourPresent1` still fell through the recovered swapchain's ordinary Present transport, which was too trusting for the fresh third-party hook chain on that post-FSR comeback.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now adds `ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(...)`.
+  2. `hook/common/dxgi_shared.cpp` now applies that helper in both `DetourPresent` and `DetourPresent1`, so the first post-FSR startup-handoff Present stays logically on the normal SL route but still returns through the bypass trampoline.
+  3. New diagnostics `DetourPresent: Post-FSR startup-handoff normal-route bypass ...` and `DetourPresent1: Post-FSR startup-handoff normal-route bypass ...` make the split visible.
+  4. `tests/test_dxgi_shared.cpp` adds `PostFSRStartupHandoffNormalRouteUsesBypassTransport`.
+
+- **Why this is generic**: The shared rule is still routing versus transport. A post-FSR comeback can already have enough evidence to advance startup state on the normal route, while the recovered swapchain's third-party Present hook chain is still unsafe to trust at the transport layer.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_015012/{session_manifest.txt,hook_debug.log,crash.log,crash_20260416_015231_609_pid13760_tid8000.dmp,external_sl-sha-bbeb8b77.dmp,external_UEMinidump.dmp}`.
+  - Confirmed the earlier `DLSS_FG -> FSR_FG -> DLSS_FG` resume still worked on reused `lastWorkingQueue`, while the later fresh `FSR_FG -> off -> DLSS_FG` comeback crashed before PostSL reactivation.
+  - Confirmed the boundary immediately before the crash: preserved fresh post-FSR `scQueue`, normal-route startup-handoff Present, then the mirrored external dump with no PostSL activation/probe/submit logs.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; build succeeded and all 581 tests passed.
+
+- **Files changed**: `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/log.md`, `llm-wiki/frame-generation-switching.md`
+
+- **Stale risk**: Fresh Talos runtime validation is still required. The next check is whether the new startup-handoff transport bypass closes the last mixed `FSR_FG -> off -> DLSS_FG` seam without regressing the already working resumed-DLSS queue-reuse path.
+
 ### 2026-04-16 - Reuse the validated last-working PostSL queue when a later DLSS-only resume still happens inside stale post-FSR inactive recovery
 
 - **Motivation**: Talos `installed/captureengine/logs/20260416_013624` on build `0.1.2312` disproved the assumption that the next seam was only another post-FSR Present-hook transport issue. The earlier `DLSS_FG -> FSR_FG -> DLSS_FG` comeback in the same run now worked without a crash. The later sequence `DLSS_FG -> all FG off -> DLSS_FG` still crashed, but the trace showed a different family. During the FG-off window, CE kept logging `DX12: Streamline FG OFF after FSR history ...`, `Frame classification using primary queue ... during post-FSR non-FG recovery`, `ProcessFrame queue=... path=lastWorking(post-FSR)`, and offscreen `Post-FSR DLSS overlay via 2-copy compositing` on the preserved `lastWorkingQ=000002BF3A5038E0`. When DLSS resumed, CE still logged `DX12: PostSL REACTIVATED (epoch=4 hadFSR=1 origGame=000002BF6BE2E0D0)`, `DetourPresent: Post-FSR startup normal-route bypass #100`, then locked PostSL to `queue=000002BF6BE2E0D0` with `scQueue=0000000000000000`, submitted `Post-SL overlay SUBMIT #5438`, and immediately logged `DX12: DEVICE_REMOVED detected after PostSL ECL submit #5438 ... hr=0x887A002B` before UE raised the fatal exception.

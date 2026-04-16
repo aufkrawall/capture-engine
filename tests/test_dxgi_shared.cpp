@@ -1655,6 +1655,14 @@ TEST(DXGISharedTest, PostFSRConfirmedStandaloneNormalRouteUsesBypassTransport) {
         true, true, false));
 }
 
+TEST(DXGISharedTest, PostFSRStartupHandoffNormalRouteUsesBypassTransport) {
+    EXPECT_TRUE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(true, true, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(true, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(true, true, false));
+}
+
 TEST(DXGISharedTest, SyntheticStartupStateStaysHalfArmedUntilConfirmedRender) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(true, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(false, true, false));

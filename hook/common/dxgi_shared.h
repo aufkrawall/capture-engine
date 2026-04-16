@@ -341,6 +341,18 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(bool observ
             (hadFSRFGPhase && (explicitSetOptionsActivation || safePostFSRBootstrapPath)));
 }
 
+inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(bool isD3D12SwapChain,
+                                                                             bool hadFSRFGPhase,
+                                                                             bool startupTopLevelCandidate) {
+    // The first large-gap Streamline startup-handoff Present can still be the
+    // only top-level call that re-establishes the live route after an FSR-owned
+    // swapchain handoff. That Present should remain logically on the normal SL
+    // route so startup-policy state can advance, but the recovered swapchain's
+    // third-party Present hook chain is still too fragile to trust at that
+    // moment. Keep the route, but transport through the bypass trampoline.
+    return isD3D12SwapChain && hadFSRFGPhase && startupTopLevelCandidate;
+}
+
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(bool observerOnlyMode,
                                                                                  bool hadFSRFGPhase,
                                                                                  bool explicitSetOptionsActivation,
