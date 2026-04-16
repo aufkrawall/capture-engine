@@ -1166,6 +1166,15 @@ void OnAuthoritativeFFXTakeover() {
         (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
 }
 
+void OnAuthoritativeStreamlineStartupHandoff() {
+    g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
+                                                 std::memory_order_release);
+    HookLogImportant(
+        "Streamline Hook: Authoritative Streamline startup handoff observed — suppressing fresh GetState-only "
+        "reactivation for %llums until explicit enable or stable startup evidence arrives",
+        (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
+}
+
 void Shutdown() {
     std::lock_guard<std::mutex> lock(g_StateMutex);
     g_ViewportStates.clear();

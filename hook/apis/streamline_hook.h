@@ -23,6 +23,13 @@ bool HasExplicitSetOptionsActivationForCurrentComeback();
 // stale slDLSSGGetState polling cannot immediately resurrect DLSS FG.
 void OnAuthoritativeFFXTakeover();
 
+// Called by the DX12 Streamline handoff path when a fresh authoritative
+// runtime-owned Streamline swapchain takeover is observed before DLSS FG has
+// actually activated. Arms the same short GetState-only startup suppression
+// window that prevents provisional OFF->ON GetState activation from racing
+// ahead of the later explicit SetOptions enable.
+void OnAuthoritativeStreamlineStartupHandoff();
+
 // Forward any suppressed slDLSSGSetOptions(OFF) call that was buffered during
 // the startup transition window, now that the window has expired.  Called from
 // periodic check points (DetourPresent, DetourPresent1, GetState, etc.) to

@@ -14,6 +14,29 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Restore the short GetState-only startup suppression on fresh authoritative Streamline handoff for pure DLSS cold start
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_172755` on build `0.1.2323` crashed on turning on FG. This is not the same shape as the recent cosmetic blank-row issue from `20260416_170259`. The session stays stable in non-FG mode, later captures a fresh authoritative Streamline runtime-owned swapchain handoff on `queue=000002130B289B70`, and logs `Armed Streamline startup transition window after authoritative runtime-owned swapchain handoff`. But the eventual FG-on still arrives only as `DX12: Streamline FG ON — GetState transition STARTING ...`, then `Streamline Hook: FG state transition OFF->ON via GetState`, immediately followed by `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`, mirrored `external_sl-sha-11cf43f.dmp`, and finally an `ERR_GFX_STATE` dialog plus Rockstar/watchdog dumps.
+
+- **Root cause refinement**: The regression is in the older pure-DLSS startup guard, not in the new cosmetic layout change. The `external_sl-sha-11cf43f.dmp` signature is the old patched-`dxgi!CDXGISwapChain::Present+0x5` / `capture_hook_x64` / `sl_dlss_g` breakpoint-corruption family, which means the path fell back into the classic early synthetic startup seam. The key drift is in the handoff-side suppression setup. The older GTA cold-start fix for `20260412_133431` was supposed to treat a fresh authoritative Streamline runtime-owned swapchain handoff as a short suppression window for `slDLSSGGetState`-only activation while runtime mode was still `Off` / `STREAMLINE_NO_FG`. In the current tree, authoritative Streamline handoff in `hook/apis/dx12_hook.cpp` still armed the startup transition window, but no longer re-armed that short handoff-side `GetState` suppression window. The startup window alone was too late here: it only became relevant again once the provisional `OFF->ON via GetState` had already been accepted, logged, and allowed to drive the first synthetic Present.
+
+- **Fix**:
+  1. `hook/apis/streamline_hook.h/.cpp` now add `OnAuthoritativeStreamlineStartupHandoff()`.
+  2. That helper re-arms the same short fresh-`GetState` suppression timer used for fragile startup races, without touching the newer post-FSR-specific safe-bootstrap suppression latch.
+  3. `hook/apis/dx12_hook.cpp` now calls `StreamlineHook::OnAuthoritativeStreamlineStartupHandoff()` alongside `DXGIShared::ArmStreamlineStartupTransitionWindow()` whenever a fresh authoritative Streamline runtime-owned swapchain handoff is observed.
+
+- **Why this is generic**: This is not a GTA-only exception and not a rollback of the recent cosmetic row-reservation change. The generic rule is that authoritative Streamline cold-start handoff and authoritative FFX post-FSR takeover are different suppression families. Pure DLSS startup still needs the older short handoff-side `GetState` startup suppression to stop provisional `OFF->ON via GetState` from racing ahead of the later explicit enable. Post-FSR comeback still needs the stronger bootstrap-aware suppression that was added recently.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_172755/{session_manifest.txt,hook_debug.log,external_sl-sha-11cf43f.dmp,external_679bb8eb-3106-42de-8f95-14cd1effbe56.dmp,GTA5_Enhanced.exe_FREEZE_2026-04-16_17-29-51_522.dmp}`.
+  - Confirmed the decisive runtime sequence: fresh authoritative Streamline handoff first, later `OFF->ON via GetState`, immediate `synthetic re-entrant #1`, then `ERR_GFX_STATE`.
+  - Analyzed the three dumps with `cdb.exe`: the Streamline external dump is the familiar patched-`dxgi!Present+0x5` / `sl_dlss_g` family, the Rockstar dump is the resulting game-side breakpoint, and the watchdog dump captures the visible `ERR_GFX_STATE` dialog path.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; the suite completed successfully with 582 tests passing.
+
+- **Files changed**: `hook/apis/streamline_hook.h`, `hook/apis/streamline_hook.cpp`, `hook/apis/dx12_hook.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh GTA runtime validation is required. If a future pure DLSS startup still crashes after this restoration, the next seam is likely not the missing handoff-side suppression itself but either stale viewport/runtime state surviving longer than expected into the final `GetState` poll or how the first authoritative `SetOptions(ON)` edge is surfaced on this runtime family.
+
 ### 2026-04-16 - Stop reserving blank FG rows for the full post-FSR non-FG recovery interval once the immediate teardown pulse has settled
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_170259` on build `0.1.2322` is the fresh broad switching rerun after the unsafe-post-FSR `GetState` suppression tightening. The important outcome is stability: repeated FG-on/off and mixed `DLSS_FG` / `FSR_FG` switching stayed stable with no mirrored dump, no `Present STALLED`, and no new crash markers. The remaining user-visible issue was minor and cosmetic. During some post-FSR non-FG recovery windows, the overlay briefly showed two empty rows where the FG type and `Base/Display` lines normally appear.

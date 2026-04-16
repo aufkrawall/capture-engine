@@ -3450,6 +3450,7 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             DX12_SetSwapchainQueue(pQueue, authoritativeStreamlineRuntimeQueue);
         if (freshAuthoritativeStreamlineHandoff) {
             DXGIShared::ArmStreamlineStartupTransitionWindow();
+            StreamlineHook::OnAuthoritativeStreamlineStartupHandoff();
             HookLogImportant(
                 "%s: Armed Streamline startup transition window after authoritative runtime-owned swapchain handoff "
                 "(queue=%p prevScQueue=%p origGame=%p caller=%s)",
