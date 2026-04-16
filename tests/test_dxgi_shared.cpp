@@ -1592,13 +1592,17 @@ TEST(DXGISharedTest, ConfirmedStartupSettlingCanStillInvokePostSLWithoutSyntheti
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
         false, false, false, false, false, false, true, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, false, true, false, false, true));
+        false, true, true, true, true, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, false, false, true, false, true));
+        false, true, true, true, false, true, false, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
         false, true, false, true, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
         false, true, false, false, true, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+        false, true, true, false, true, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+        false, true, true, false, false, true, false, true));
 
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
         true, false, false, false, false, false, true, true));

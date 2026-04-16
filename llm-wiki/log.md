@@ -14,6 +14,30 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-16 - Do not invoke PostSL on the protected post-FSR startup normal-route path until the bootstrap topology is actually safe
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260416_031434` on build `0.1.2315` showed that the earlier post-FSR startup-handoff bypass transport split fixed the previous seam but still left one narrower callback-entry bug. The session survives earlier pure-DLSS runs and several mixed switches, then later hits a final `FSR_FG -> STREAMLINE_NO_FG -> DLSS_FG` comeback. CE preserves the fresh post-FSR `scQueue=0000029BED4111C0`, logs `DX12: Streamline FG ON after FSR — preserving freshly handed-off Streamline swapchain queue ...`, then `Streamline Hook: FG state transition OFF->ON via SetOptions`, then `DX12: PostSL synthetic startup takeover — ProcessFrame dormant for 203ms`, then `DetourPresent: Post-FSR startup normal-route bypass #1`. Immediately after that first protected startup callback, Streamline starts emitting `sl-sha-11cf43f.dmp` repeatedly. There is still no `DX12: PostSL synthetic startup waiting for safe bootstrap path after FSR phase ...` line and no `DX12: PostSL REACTIVATED` line for the failing comeback. The later ECL diagnostic in the same failure still says `safeBootstrap=0`.
+
+- **Root cause refinement**: The remaining mismatch was no longer the startup Present transport. `DetourPresent` correctly kept the post-FSR startup Present on the protected normal route and returned it through bypass transport. But the shared callback-on-normal-route helper still let explicit `SetOptions(ON)` unlock PostSL callback entry for that post-FSR startup family even while the bootstrap topology was still unsafe. In other words, explicit comeback authority and safe bootstrap topology were still being conflated one step too early at callback entry.
+
+- **Fix**:
+  1. `hook/common/dxgi_shared.h` now tightens `ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(...)` for post-FSR startup.
+  2. The post-FSR startup family still needs `explicitSetOptionsActivation`, but it now also requires `safePostFSRBootstrapPath` before callback-on-normal-route can enter PostSL.
+  3. The protected startup Present itself is unchanged: it still stays on the normal Streamline route logically and still uses bypass transport.
+  4. `tests/test_dxgi_shared.cpp` updates `ConfirmedStartupSettlingCanStillInvokePostSLWithoutSyntheticBypass` to lock the distinction: explicit `SetOptions` alone is no longer enough for post-FSR callback-on-normal-route while startup is still half-armed.
+
+- **Why this is generic**: This is not another GTA-specific branch. The generic rule is that post-FSR comeback authority and post-FSR bootstrap safety are separate questions. A real `OFF->ON via SetOptions` edge says the comeback is authoritative enough to keep the startup Present on the protected normal-route family. It does not by itself prove that the callback may already enter PostSL on that recovered queue topology.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260416_031434/{session_manifest.txt,hook_debug.log,external_sl-sha-11cf43f.dmp}`.
+  - Confirmed the healthy earlier parts of the session: initial pure-DLSS startup reaches sustained `Post-SL overlay SUBMIT` traffic, and several earlier OFF/ON cycles remain stable.
+  - Confirmed the late failing family: authoritative FSR takeover, long non-FG recovery on the FSR-owned queue, fresh post-FSR Streamline handoff, explicit `OFF->ON via SetOptions`, `Post-FSR startup normal-route bypass #1`, then immediate external dump storm with later `safeBootstrap=0` and no PostSL activation logs.
+  - Ran `python build.py --incremental --skip-updates --run-tests`; build succeeded and all 581 tests passed.
+
+- **Files changed**: `hook/common/dxgi_shared.h`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/log.md`, `llm-wiki/frame-generation-switching.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next check is whether keeping the post-FSR startup Present protected while blocking callback-on-normal-route until `safeBootstrap=1` closes the GTA `FSR_FG -> off -> DLSS_FG` seam without regressing the already working post-FSR repeated-callback stabilization path once wrapper/direct bootstrap evidence appears.
+
 ### 2026-04-16 - Keep the first post-FSR startup-handoff Present on the normal route logically, but bypass its transport too
 
 - **Motivation**: Talos `installed/captureengine/logs/20260416_015012` on build `0.1.2313` showed the previous queue-reuse fix was real but still one seam short. The earlier `DLSS_FG -> FSR_FG -> DLSS_FG` resume still worked and reused `lastWorkingQ=000001C0224DFFF0`, but a later fresh `FSR_FG -> off -> DLSS_FG` comeback in the same session crashed before PostSL reactivated. The decisive trace was earlier: CE preserved the fresh post-FSR `scQueue=000001C106E06A70`, logged `DetourPresent: Keeping Streamline startup-handoff Present on the normal SL route #2`, published `runtime=DLSS_FG`, and then the very next artifact was the mirrored external Streamline dump. There were no `PostSL REACTIVATED`, wrapper-progress, probe, or submit logs for that comeback.

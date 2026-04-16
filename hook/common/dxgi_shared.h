@@ -375,11 +375,11 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
     }
 
     // Post-FSR comeback still intentionally uses the older repeated-callback
-    // stabilization path before PostSL fully confirms rendering. Once those
-    // startup-family Presents are kept on the normal SL route for safety, they
-    // still need to invoke the callback there or the post-FSR countdown never
-    // advances and the next comeback Present falls back into the old bypass seam.
-    return hadFSRFGPhase && (explicitSetOptionsActivation || safePostFSRBootstrapPath) &&
+    // stabilization path before PostSL fully confirms rendering, but only once
+    // the bootstrap topology itself is already safe. Explicit SetOptions(ON)
+    // proves the comeback is authoritative; it does not by itself prove that the
+    // first callback can safely enter PostSL on the recovered queue path.
+    return hadFSRFGPhase && explicitSetOptionsActivation && safePostFSRBootstrapPath &&
            (postSLStartupActivationPending || postSLActiveButUnconfirmed);
 }
 
