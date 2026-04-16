@@ -699,6 +699,30 @@ TEST(DXGISharedTest, StaleAuthoritativeFSRDoesNotClearAfterDirectFFXApiConfirmat
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(1200, true));
 }
 
+TEST(DXGISharedTest, TracksStaleRuntimeOwnedStreamlineNoFGOnlyOnRealFramesBackOnOriginalQueue) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+        true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+        false, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+        false, true, ce::fg_runtime::RuntimeMode::kDLSSFG, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, true));
+}
+
+TEST(DXGISharedTest, StaleRuntimeOwnedStreamlineNoFGRequiresLongRealFrameRunBeforeClearing) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleRuntimeOwnedStreamlineNoFGAfterRealFrameRun(1));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearStaleRuntimeOwnedStreamlineNoFGAfterRealFrameRun(119));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldClearStaleRuntimeOwnedStreamlineNoFGAfterRealFrameRun(120));
+}
+
 TEST(DXGISharedTest, AuthoritativeFSRIsPreservedDuringTransitionCooldownForTransientOffEdges) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(true, true, 1));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(true, true, 90));

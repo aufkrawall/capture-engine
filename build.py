@@ -705,6 +705,7 @@ def run_command(
     cwd: Optional[str] = None,
     input_str: Optional[str] = None,
     fail_exit: bool = True,
+    timeout: Optional[int] = None,
 ) -> str:
     cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
 
@@ -747,7 +748,12 @@ def run_command(
     try:
         input_bytes = input_str.encode("utf-8") if input_str is not None else None
         result = subprocess.run(
-            cmd, capture_output=True, env=env, cwd=cwd, input=input_bytes
+            cmd,
+            capture_output=True,
+            env=env,
+            cwd=cwd,
+            input=input_bytes,
+            timeout=timeout,
         )
         stdout = (
             result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
@@ -762,6 +768,17 @@ def run_command(
             if fail_exit:
                 sys.exit(1)
         return stdout
+    except subprocess.TimeoutExpired as e:
+        log(f"TIMEOUT: Command exceeded {timeout}s: {cmd_str}")
+        stdout = e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
+        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+        if stdout:
+            log(f"PARTIAL STDOUT: {stdout}")
+        if stderr:
+            log(f"PARTIAL STDERR: {stderr}")
+        if fail_exit:
+            sys.exit(1)
+        return ""
     except Exception as e:
         log(f"EXCEPTION: {e}")
         if fail_exit:
@@ -1049,7 +1066,7 @@ def get_windres_exe(arch: str = "x64") -> str:
         )
 
 
-def setup_msys2():
+def setup_msys2(skip_updates: bool = False):
     if IS_LINUX:
         log("Running on Linux/WSL - skipping MSYS2 setup, using system mingw-w64")
         check_mingw_packages()
@@ -1097,11 +1114,21 @@ def setup_msys2():
     else:
         log("MSYS2 found.")
 
+    if skip_updates:
+        log("MSYS2 package updates/install skipped (--skip-updates)")
+        patch_amf_header()
+        verify_msys2_ffmpeg_build_deps(MSYS2_DIR)
+        return
+
     log("Installing Packages...")
     msys_bash = os.path.join(MSYS2_DIR, "usr", "bin", "bash.exe")
     pkg_cmd = f"pacman -S --needed --noconfirm --disable-download-timeout {' '.join(PACKAGES)}"
     clear_stale_msys2_pacman_lock()
-    run_command([msys_bash, "-lc", pkg_cmd], input_str="\n")
+    run_command(
+        [msys_bash, "-lc", pkg_cmd],
+        input_str="\n",
+        timeout=600,
+    )
     patch_amf_header()
     verify_msys2_ffmpeg_build_deps(MSYS2_DIR)
 
@@ -2872,20 +2899,30 @@ def parallel_compile(env, clang_exe, cflags, src_obj_pairs):
     num_workers = max(1, min(num_workers, len(src_obj_pairs) or 1))
     compiled = 0
     skipped = 0
+    total = len(src_obj_pairs)
+    completed = 0
 
     def compile_one(args):
         src, obj = args
         os.makedirs(os.path.dirname(obj), exist_ok=True)
-        return compile_object(env, clang_exe, cflags, src, obj), obj
+        return compile_object(env, clang_exe, cflags, src, obj), src, obj
 
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = {executor.submit(compile_one, pair): pair for pair in src_obj_pairs}
         for future in as_completed(futures):
-            was_compiled, obj = future.result()
+            was_compiled, src, obj = future.result()
+            completed += 1
             if was_compiled:
                 compiled += 1
             else:
                 skipped += 1
+            if completed <= 10 or completed == total or (completed % 50) == 0:
+                state = "compiled" if was_compiled else "cached"
+                log(
+                    f"Compile progress: {completed}/{total} ({state}) - {os.path.relpath(src, PROJECT_ROOT)}"
+                )
+
+    log(f"Compile summary: {compiled} compiled, {skipped} cached, {total} total")
 
     return compiled, skipped
 
@@ -3093,7 +3130,7 @@ def copy_test_runtime_dlls(tests_dir):
         log(f"Copied {len(copied)} runtime DLLs to tests/ for direct execution")
 
 
-def run_tests(env, test_exe):
+def run_tests(env, test_exe, gtest_filter=None):
     log("=== Running Unit Tests ===")
     if not os.path.exists(test_exe):
         log("Error: Test executable not found.")
@@ -3115,7 +3152,14 @@ def run_tests(env, test_exe):
         cmd = [wine_exe, test_exe]
     else:
         cmd = [test_exe]
+    if gtest_filter:
+        cmd.append(f"--gtest_filter={gtest_filter}")
+        log(f"Applying unit test filter: {gtest_filter}")
+    log("Launching unit_tests.exe...")
+    start = time.time()
     result = subprocess.run(cmd, env=test_env)
+    elapsed = time.time() - start
+    log(f"unit_tests.exe finished in {elapsed:.1f}s")
     if result.returncode != 0:
         log(f"=== Unit Tests FAILED (exit code {result.returncode}) ===")
         return False
@@ -4132,7 +4176,14 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         log(f"Error linking layer: {e}")
 
 
-def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
+def compile_project(
+    env,
+    clang_bin,
+    skip_updates=False,
+    should_run_tests=False,
+    gtest_filter=None,
+    tests_only=False,
+):
     ensure_dirs()
 
     compile_custom_ffmpeg(skip_updates=skip_updates)
@@ -4149,6 +4200,28 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     cflags = make_cpp_cflags(
         OPT_FLAGS_X64, production_build=env.get("CE_PRODUCTION_BUILD") == "1"
     )
+
+    if tests_only:
+        log("Tests-only mode: building only unit test dependencies/executable")
+        x64_common_objs = [
+            os.path.join(
+                OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o")
+            )
+            for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
+        ]
+        test_exe = compile_tests(
+            env,
+            clang_exe,
+            cflags,
+            x64_common_objs,
+            pkg_config,
+            os.path.join(OBJ_DIR, "x64"),
+        )
+        if should_run_tests and test_exe:
+            if not run_tests(env, test_exe, gtest_filter=gtest_filter):
+                sys.exit(1)
+        log("Tests-only mode: stopping after unit test build/run")
+        return
 
     # --- Architecture Loop ---
     arch_targets = ["x64"]
@@ -4625,7 +4698,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         os.path.join(OBJ_DIR, "x64"),
     )
     if should_run_tests and test_exe:
-        if not run_tests(env, test_exe):
+        if not run_tests(env, test_exe, gtest_filter=gtest_filter):
             sys.exit(1)
 
     # 5. CaptureEngine (x64 only for now)
@@ -4958,6 +5031,15 @@ def run_sanitizer_regression_pass(skip_updates: bool, ccache_flag: bool) -> None
     log("=== Sanitizer regression cadence pass: OK ===")
 
 
+def parse_flag_value(flag_name: str):
+    for i, arg in enumerate(sys.argv):
+        if arg == flag_name and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+        if arg.startswith(flag_name + "="):
+            return arg.split("=", 1)[1]
+    return None
+
+
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
@@ -5020,13 +5102,6 @@ def main():
     args = sys.argv[1:]
     global VERBOSE_COMMANDS
     VERBOSE_COMMANDS = "--verbose-commands" in sys.argv
-    setup_msys2()
-    if should_bootstrap_python_tools(args):
-        check_python_lsp_tools()
-    else:
-        log("Skipping optional Python tooling bootstrap in CI for non-lint build")
-    env, clang_bin = get_env()
-
     # Parse flags
     default_quality_mode = len(args) == 0
     skip_updates = "--skip-updates" in sys.argv
@@ -5036,6 +5111,8 @@ def main():
     lint_flag = "--lint" in sys.argv
     format_flag = "--format" in sys.argv
     ccache_flag = "--ccache" in sys.argv
+    gtest_filter = parse_flag_value("--gtest-filter")
+    tests_only_flag = "--tests-only" in sys.argv
     sanitize_flag = "--sanitize" in sys.argv
     sanitize_regression_flag = "--sanitize-regression" in sys.argv
     sanitize_regression_child = "--sanitize-regression-child" in sys.argv
@@ -5069,6 +5146,19 @@ def main():
 
     if VERBOSE_COMMANDS:
         log("Verbose command logging enabled (--verbose-commands)")
+
+    if gtest_filter:
+        log(f"Using unit test filter (--gtest-filter): {gtest_filter}")
+
+    if tests_only_flag:
+        log("Tests-only build mode enabled (--tests-only)")
+
+    setup_msys2(skip_updates=skip_updates)
+    if should_bootstrap_python_tools(args):
+        check_python_lsp_tools()
+    else:
+        log("Skipping optional Python tooling bootstrap in CI for non-lint build")
+    env, clang_bin = get_env()
 
     if default_quality_mode:
         log(
@@ -5185,7 +5275,12 @@ def main():
             )
 
     compile_project(
-        env, clang_bin, skip_updates=skip_updates, should_run_tests=run_tests_flag
+        env,
+        clang_bin,
+        skip_updates=skip_updates,
+        should_run_tests=run_tests_flag,
+        gtest_filter=gtest_filter,
+        tests_only=tests_only_flag,
     )
 
     # Write compile_commands.json

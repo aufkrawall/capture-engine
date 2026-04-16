@@ -84,11 +84,13 @@ Primary sources:
 - If you change injection or overlay handoff behavior, verify the runtime flags and pseudo-overlay suppression path.
 - Prefer fast focused unit tests while iterating, then run broader coverage before considering the work complete.
 - After build or test infrastructure changes, verify both direct `unit_tests.exe` execution and the `python build.py --run-tests` path.
+- After build/test workflow changes, verify the focused iteration path too: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=...` should stop before the expensive product builds and should show live compile/test progress instead of going silent for long periods.
 - If you touch perf CSV durability, verify that `perf_metrics_*.csv` gains rows during long-running and hang/crash sessions instead of relying on a clean-process shutdown to flush buffered data.
 
 ## Useful Commands
 ```powershell
 python build.py --run-tests --skip-updates
+python build.py --run-tests --tests-only --skip-updates --gtest-filter=DXGISharedTest.*
 python build.py --sanitize --run-tests --skip-updates
 python build.py --run-integration-tests --skip-updates
 python build.py --full-integration --skip-updates

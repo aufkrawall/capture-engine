@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-04-12
+Last cross-checked: 2026-04-16
 
 Primary sources:
 - `build.py`
@@ -28,6 +28,8 @@ Default quality mode currently:
 | --- | --- | --- | --- |
 | `--skip-updates` | user-facing | Skip FFmpeg source update work when possible | On Windows, if FFmpeg is already built and `installed/captureengine/ffmpeg` exists, the script can skip the FFmpeg rebuild and just sync runtime DLLs. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
 | `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build anyway so `compile_commands.json` stays useful. This flag controls execution. |
+| `--gtest-filter=<expr>` | user-facing | Pass a GoogleTest filter through to `tests/unit_tests.exe` | Useful together with `--run-tests` for focused iteration on one suite or a few cases. |
+| `--tests-only` | user-facing | Stop after building/running unit-test dependencies and `tests/unit_tests.exe` | Skips the later CaptureEngine, hook DLL, mediaengine DLL, Vulkan layer, and testapp build phases. Best paired with `--run-tests`. |
 | `--run-integration-tests` | user-facing | Run smoke integration tests after the build | Also implies `--run-tests`. Before running, the script forces at least `log_level=debug` in `installed/captureengine/config.ini` if that file exists. |
 | `--full-integration` | user-facing | Run the full integration matrix | Implies `--run-integration-tests`, which also implies `--run-tests`. |
 | `--lint` | user-facing | Run `clang-format --dry-run -Werror`, `flake8`, and `pyright` | If passed alone, the script exits after linting. |
@@ -47,6 +49,7 @@ Default quality mode currently:
 - No-arg default mode enables `--lint`, `--run-tests`, and `--sanitize-regression` behavior implicitly.
 - `--full-integration` implies `--run-integration-tests`.
 - `--run-integration-tests` implies `--run-tests`.
+- `--tests-only` does not imply `--run-tests` by itself; it only short-circuits the build after the unit-test build path. Use both when you want focused test execution.
 - `--sanitize-regression-child` disables spawning another nested sanitizer regression pass.
 - `--incremental` turns off the script's default force-rebuild mode.
 - `--lint` alone exits after linting.
@@ -83,6 +86,8 @@ Default quality mode currently:
 ## Unit Test Behavior
 - `compile_tests()` runs on every build so `compile_commands.json` contains authoritative entries for tests even if tests are not executed.
 - `--run-tests` controls whether `tests/unit_tests.exe` is executed.
+- `--gtest-filter` is passed through as `--gtest_filter=...` when `tests/unit_tests.exe` is executed.
+- `--tests-only` now takes effect before the normal product build phases, so focused test runs do not also rebuild the hook DLL, mediaengine DLL, captureengine.exe, Vulkan layer, and test apps.
 - `copy_test_runtime_dlls()` copies required MSYS2 and FFmpeg DLLs next to `tests/unit_tests.exe`, so direct execution works after a successful build.
 - On Linux, executing `unit_tests.exe` requires `wine64` or `wine` in `PATH`.
 
@@ -106,6 +111,9 @@ Default quality mode currently:
 ## Operational Notes
 - The script always rewrites `compile_commands.json` at the end of a successful build.
 - On Windows, the script bootstraps MSYS2 and manages a custom FFmpeg build path.
+- On Windows, `--skip-updates` now also skips the old unconditional MSYS2 `pacman -S --needed ...` package-install step. Earlier behavior still entered pacman even on focused test runs and could hang on mirrors or stale package-manager state before any compile/test work started.
+- MSYS2 package install now uses an explicit timeout and logs partial stdout/stderr on timeout instead of silently waiting forever.
+- Parallel compile now emits progress lines and a summary, and `run_tests()` logs the test launch plus elapsed time so long builds/tests no longer look idle.
 - On Windows hosts, the build now emits CodeView debug info plus sidecar `.pdb` files for the built PE outputs while staying on the existing clang/lld toolchain.
 - On Linux and WSL, the script uses cross-compilers and downloaded MSYS2 packages for dependencies.
 - There is no strict unknown-flag validator. Flags that the script does not inspect are not automatically rejected.
@@ -116,6 +124,7 @@ python build.py
 python build.py --skip-updates
 python build.py --incremental --skip-updates
 python build.py --run-tests --skip-updates
+python build.py --run-tests --tests-only --skip-updates --gtest-filter=DXGISharedTest.*
 python build.py --sanitize --run-tests --skip-updates
 python build.py --run-integration-tests --skip-updates
 python build.py --full-integration --skip-updates

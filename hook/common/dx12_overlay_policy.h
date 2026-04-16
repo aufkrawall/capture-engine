@@ -546,6 +546,27 @@ inline bool ShouldClearAuthoritativeFSRAfterRealFrameOnlyRun(int realFrameOnlyRu
     return realFrameOnlyRunLength >= 120;
 }
 
+inline bool ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(bool streamlineFGRunning,
+                                                                   bool runtimeOwnsSwapchain,
+                                                                   fg_runtime::RuntimeMode runtimeMode,
+                                                                   bool hasOriginalGameQueue,
+                                                                   bool commandQueueUsesOriginalGameQueue,
+                                                                   bool isInterpolatedFrame) {
+    // A late Streamline-owned startup handoff can create a runtime-owned
+    // swapchain/queue that never becomes the live non-FG Present path. If top-
+    // level real-frame rendering keeps running on the original game queue while
+    // Streamline never re-activates, the latched runtime-owned ownership and
+    // captured runtime queue are stale and poison later startup/non-FG routing.
+    return !streamlineFGRunning && runtimeOwnsSwapchain && runtimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG &&
+           hasOriginalGameQueue && commandQueueUsesOriginalGameQueue && !isInterpolatedFrame;
+}
+
+inline bool ShouldClearStaleRuntimeOwnedStreamlineNoFGAfterRealFrameRun(int realFrameRunLength) {
+    // Require a sustained run so short queue/Present ownership wobble during a
+    // genuine startup handoff does not collapse runtime-owned state too early.
+    return realFrameRunLength >= 120;
+}
+
 inline bool ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(bool authoritativeFSRActive,
                                                                    bool runtimeTargetIsNone, int fgTransitionCooldown) {
     // Talos can briefly suspend native FSR FG during startup/menu transitions

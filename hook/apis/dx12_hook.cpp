@@ -944,9 +944,14 @@ static std::atomic<uint64_t> g_FrameIndex{0};
 static std::atomic<int> g_CommandListsExecutedThisFrame{0};
 static std::atomic<uint64_t> g_FGDebugFrameCount{0};
 static std::atomic<int> g_AuthoritativeFSRRealFrameOnlyStreak{0};
+static std::atomic<int> g_StaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak{0};
 
 static void ResetAuthoritativeFSRRealFrameOnlyStreak() {
     g_AuthoritativeFSRRealFrameOnlyStreak.store(0, std::memory_order_release);
+}
+
+static void ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak() {
+    g_StaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak.store(0, std::memory_order_release);
 }
 
 // Primary game queue — set once from the first ECL call (always the game's queue,
@@ -2243,6 +2248,7 @@ static void UpdateStartupOverlayCompatibilityState() {
     if (actualFGActive) {
         s_startupOverlayObservedAnyFG.store(true, std::memory_order_release);
         s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
+        ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
         return;
     }
 
@@ -3329,6 +3335,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(true, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = GetTickCount64();
             runtimeOwnershipJustActivated = true;
+            ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
             s_pendingLateRuntimeOwnedStartupHandoff.store(true, std::memory_order_release);
             HookLogImportant(
                 "DX12: FG runtime now owns swapchain queue %p (origGame=%p) — dedicated/cross-queue overlay work is "
@@ -3355,6 +3362,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             g_FGRuntimeOwnsSwapchain = false;
             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
             g_FGRuntimeOwnsSwapchainSince = 0;
+            ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
             s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
             if (g_FGCompat.IsFSRFGApiActive()) {
                 HookLogImportant("DX12: Swapchain returned to origGame queue %p — ending authoritative FSR FG state",
@@ -4002,6 +4010,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 g_FGRuntimeOwnsSwapchain = false;
                 DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                 g_FGRuntimeOwnsSwapchainSince = 0;
+                ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
                 if (g_FGCompat.IsFSRFGApiActive()) {
                     g_FGCompat.SetFSRFGActive(false);
                     g_FGCompat.SetFSRFGMultiplier(0);
@@ -10530,6 +10539,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         g_FGRuntimeOwnsSwapchain = false;
                         DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                         g_FGRuntimeOwnsSwapchainSince = 0;
+                        ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
                         HookLogImportant("DX12: FG→off — clearing FG runtime ownership of swapchain queue");
                     }
                     HookLogImportant("DX12: FG→off — keeping g_SwapchainQueue %p (origGame=%p)", g_SwapchainQueue,
@@ -10548,6 +10558,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         g_FGRuntimeOwnsSwapchain = false;
                         DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                         g_FGRuntimeOwnsSwapchainSince = 0;
+                        ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
                         HookLogImportant("DX12: FG type change to None — clearing FG runtime ownership");
                     }
                     if (g_SwapchainQueue) {
@@ -10598,6 +10609,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             g_FGRuntimeOwnsSwapchain = false;
                             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                             g_FGRuntimeOwnsSwapchainSince = 0;
+                            ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
                             const bool preserveAuthoritativeFSRDuringTransition =
                                 ce::dx12_overlay_policy::ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(
                                     g_FGCompat.IsFSRFGApiActive(), targetIsNone, g_FGTransitionCooldown);
@@ -12220,6 +12232,57 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         g_FGCompat.SetFSRFGActive(false);
         g_FGCompat.SetFSRFGMultiplier(0);
         ResetAuthoritativeFSRRealFrameOnlyStreak();
+    }
+
+    ID3D12CommandQueue* currentCommandQueueForStaleRuntimeOwnedCheck = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        currentCommandQueueForStaleRuntimeOwnedCheck = g_CommandQueue.load(std::memory_order_acquire);
+    }
+    const bool staleRuntimeOwnedStreamlineNoFGRun =
+        ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+            streamlineFGRunning, g_FGRuntimeOwnsSwapchain, g_FGCompat.GetRuntimeMode(), g_OriginalGameQueue != nullptr,
+            g_OriginalGameQueue != nullptr && currentCommandQueueForStaleRuntimeOwnedCheck == g_OriginalGameQueue,
+            isInterpolatedFrame);
+    int staleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak = 0;
+    if (staleRuntimeOwnedStreamlineNoFGRun) {
+        staleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak =
+            g_StaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak.fetch_add(1, std::memory_order_acq_rel) + 1;
+    } else {
+        ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+    }
+
+    if (ce::dx12_overlay_policy::ShouldClearStaleRuntimeOwnedStreamlineNoFGAfterRealFrameRun(
+            staleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak)) {
+        if (staleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak == 120 ||
+            (staleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak % 600) == 0) {
+            HookLogImportant(
+                "DX12: Clearing stale runtime-owned Streamline no-FG swapchain after %d consecutive real frames on "
+                "origGame while runtime remains STREAMLINE_NO_FG (origGame=%p scQueue=%p slFG=%d)",
+                staleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak, g_OriginalGameQueue, currentSwapchainQueue,
+                streamlineFGRunning ? 1 : 0);
+        }
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+            if (g_FGRuntimeOwnsSwapchain) {
+                g_FGRuntimeOwnsSwapchain = false;
+                DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
+                g_FGRuntimeOwnsSwapchainSince = 0;
+                s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
+            }
+            if (g_SwapchainQueue && g_OriginalGameQueue && g_SwapchainQueue != g_OriginalGameQueue) {
+                ID3D12CommandQueue* staleRuntimeOwnedSwapchainQueue = g_SwapchainQueue;
+                g_SwapchainQueue = nullptr;
+                g_SwapchainQueueCaptureTime = 0;
+                HookLogImportant(
+                    "DX12: Releasing stale runtime-owned Streamline no-FG swapchain queue %p after long origGame-only "
+                    "real-frame run (origGame=%p)",
+                    staleRuntimeOwnedSwapchainQueue, g_OriginalGameQueue);
+                staleRuntimeOwnedSwapchainQueue->Release();
+            }
+        }
+        DXGIShared::ResetStreamlineStartupTransitionState();
+        ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
     }
 
     if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
