@@ -452,6 +452,43 @@ inline bool HasUsableDX12OverlayStartupWindowSize(LONG width, LONG height) {
     return width >= 640 && height >= 360;
 }
 
+inline bool IsSameProcessWindow(HWND window, DWORD expectedProcessId) {
+    if (!window || expectedProcessId == 0) {
+        return false;
+    }
+
+    DWORD windowProcessId = 0;
+    if (GetWindowThreadProcessId(window, &windowProcessId) == 0) {
+        return false;
+    }
+
+    return windowProcessId == expectedProcessId;
+}
+
+inline bool IsUsableSameProcessForegroundWindow(HWND foregroundWindow, DWORD expectedProcessId, LONG* width = nullptr,
+                                                LONG* height = nullptr) {
+    if (!IsSameProcessWindow(foregroundWindow, expectedProcessId)) {
+        return false;
+    }
+
+    RECT clientRect = {};
+    LONG localWidth = 0;
+    LONG localHeight = 0;
+    if (GetClientRect(foregroundWindow, &clientRect)) {
+        localWidth = clientRect.right - clientRect.left;
+        localHeight = clientRect.bottom - clientRect.top;
+    }
+
+    if (width) {
+        *width = localWidth;
+    }
+    if (height) {
+        *height = localHeight;
+    }
+
+    return HasUsableDX12OverlayStartupWindowSize(localWidth, localHeight);
+}
+
 inline bool ShouldDelayDX12OverlayAfterStartupResume(bool processNeedsDelay, bool hadStartupSuppression,
                                                      bool actualFGActive, bool runtimeOwnedSwapchainNeedsExtraSettle,
                                                      bool windowForeground, LONG width, LONG height,

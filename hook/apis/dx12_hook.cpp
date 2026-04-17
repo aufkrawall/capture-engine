@@ -2905,16 +2905,32 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
         height = clientRect.bottom - clientRect.top;
     }
 
-    const bool windowForeground = (GetForegroundWindow() == gameWindow);
+    const DWORD expectedProcessId = GetCurrentProcessId();
+    const HWND foregroundWindow = GetForegroundWindow();
+    LONG foregroundWidth = 0;
+    LONG foregroundHeight = 0;
+    const bool exactWindowForeground = (foregroundWindow == gameWindow);
     const ULONGLONG now = GetTickCount64();
+    const ULONGLONG elapsedSinceResumeReady =
+        (s_resumeStableSinceMs != 0 && now >= s_resumeStableSinceMs) ? (now - s_resumeStableSinceMs) : 0;
+    const bool usableSameProcessForegroundWindow =
+        !exactWindowForeground && elapsedSinceResumeReady >= kStartupOverlayPostResumeSettleMs &&
+        ce::overlay_compat::IsUsableSameProcessForegroundWindow(foregroundWindow, expectedProcessId, &foregroundWidth,
+                                                                &foregroundHeight);
+    const bool windowForeground = exactWindowForeground || usableSameProcessForegroundWindow;
+    if (usableSameProcessForegroundWindow) {
+        width = foregroundWidth;
+        height = foregroundHeight;
+    }
     if (!windowForeground || !ce::overlay_compat::HasUsableDX12OverlayStartupWindowSize(width, height)) {
         s_resumeStableSinceMs = 0;
-        s_resumeWindow = gameWindow;
+        s_resumeWindow = windowForeground ? foregroundWindow : gameWindow;
         return true;
     }
 
-    if (s_resumeWindow != gameWindow || s_resumeStableSinceMs == 0) {
-        s_resumeWindow = gameWindow;
+    const HWND stableWindow = exactWindowForeground ? gameWindow : foregroundWindow;
+    if (s_resumeWindow != stableWindow || s_resumeStableSinceMs == 0) {
+        s_resumeWindow = stableWindow;
         s_resumeStableSinceMs = now;
     }
 

@@ -513,6 +513,16 @@ TEST(OverlayCompatTest, PostResumeOverlayDelayAlsoBlocksRuntimeOwnedSwapchainTra
                                                                               6000, 5000));
 }
 
+TEST(OverlayCompatTest, UsableSameProcessForegroundWindowIsAcceptedAfterResumeSettle) {
+    LONG width = 0;
+    LONG height = 0;
+    EXPECT_FALSE(ce::overlay_compat::IsSameProcessWindow(nullptr, GetCurrentProcessId()));
+    EXPECT_FALSE(ce::overlay_compat::IsUsableSameProcessForegroundWindow(nullptr, GetCurrentProcessId()));
+    EXPECT_FALSE(ce::overlay_compat::IsSameProcessWindow(reinterpret_cast<HWND>(1), GetCurrentProcessId()));
+    EXPECT_FALSE(ce::overlay_compat::IsUsableSameProcessForegroundWindow(reinterpret_cast<HWND>(1),
+                                                                         GetCurrentProcessId(), &width, &height));
+}
+
 TEST(OverlayCompatTest, StartupCompatibleAllocatorPoolCanShrinkForStartupOverlay) {
     EXPECT_EQ(3u, ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(true, true, false, false, 16));
     EXPECT_EQ(16u, ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(true, false, false, false, 16));
