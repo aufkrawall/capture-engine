@@ -188,6 +188,24 @@ TEST(StreamlineRuntimePolicyTest, FreshActivationEdgeOnlyTracksOffToOnTransition
     EXPECT_TRUE(deferredOff.shouldExtendStartupTransitionWindow);
 }
 
+TEST(StreamlineRuntimePolicyTest, ExplicitSetOptionsComebackProofPersistsAcrossDeferredStartupOffChurn) {
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ResolveCurrentComebackExplicitSetOptionsActivation(false, true, true, true));
+
+    const auto deferredOff = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, true, 4);
+    EXPECT_TRUE(ce::streamline_runtime_policy::ResolveCurrentComebackExplicitSetOptionsActivation(
+        true, deferredOff.effectiveActive, deferredOff.freshActivationEdge, false));
+
+    const auto realOff = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, false, true, 4);
+    EXPECT_FALSE(ce::streamline_runtime_policy::ResolveCurrentComebackExplicitSetOptionsActivation(
+        true, realOff.effectiveActive, realOff.freshActivationEdge, false));
+
+    const auto getStateComeback =
+        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(true, false, false, 4);
+    EXPECT_FALSE(ce::streamline_runtime_policy::ResolveCurrentComebackExplicitSetOptionsActivation(
+        false, getStateComeback.effectiveActive, getStateComeback.freshActivationEdge, false));
+}
+
 TEST(StreamlineRuntimePolicyTest, DeferredStartupWindowOffDoesNotExtendWithoutExistingActiveSignal) {
     const auto deferredWithoutActive =
         ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, false, 4);

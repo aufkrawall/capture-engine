@@ -346,6 +346,8 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
     const bool previousSignal = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const auto signalUpdate = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(
         active, inStartupWindow, previousSignal, multiplier);
+    const bool previousExplicitSetOptionsActivation =
+        g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
 
     const bool previousSignalObserved =
         DXGIShared::g_StreamlineFGRunning.exchange(signalUpdate.effectiveActive, std::memory_order_acq_rel);
@@ -353,12 +355,12 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
         DXGIShared::ArmStreamlineStartupTransitionWindow();
         g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     }
-    if (signalUpdate.freshActivationEdge) {
-        const bool explicitSetOptionsActivation = source && strcmp(source, "SetOptions") == 0;
-        g_CurrentComebackActivatedViaExplicitSetOptions.store(explicitSetOptionsActivation, std::memory_order_release);
-    } else if (!signalUpdate.effectiveActive) {
-        g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
-    }
+    const bool explicitSetOptionsActivation = source && strcmp(source, "SetOptions") == 0;
+    g_CurrentComebackActivatedViaExplicitSetOptions.store(
+        ce::streamline_runtime_policy::ResolveCurrentComebackExplicitSetOptionsActivation(
+            previousExplicitSetOptionsActivation, signalUpdate.effectiveActive, signalUpdate.freshActivationEdge,
+            explicitSetOptionsActivation),
+        std::memory_order_release);
     g_FGCompat.SetStreamlineFGSignal(signalUpdate.effectiveActive);
     ApplyCombinedDLSSFGState(signalUpdate.effectiveActive, signalUpdate.effectiveMultiplier);
 
@@ -1096,8 +1098,11 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
 namespace StreamlineHook {
 
 bool HasExplicitSetOptionsActivationForCurrentComeback() {
-    return !g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire) &&
-           g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
+    // Provenance of the current comeback is tracked explicitly. Startup-window
+    // OFF churn can temporarily re-arm provisional GetState suppression without
+    // changing the fact that the live comeback itself was activated by a fresh
+    // OFF->ON SetOptions edge.
+    return g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
 }
 
 void Init() {

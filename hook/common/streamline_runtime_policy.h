@@ -145,6 +145,22 @@ inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool reque
     return update;
 }
 
+inline bool ResolveCurrentComebackExplicitSetOptionsActivation(bool previousExplicitSetOptionsActivation,
+                                                               bool effectiveSignalActive, bool freshActivationEdge,
+                                                               bool explicitSetOptionsActivation) {
+    if (freshActivationEdge) {
+        return explicitSetOptionsActivation;
+    }
+
+    if (!effectiveSignalActive) {
+        return false;
+    }
+
+    // Startup-window OFF churn can temporarily re-arm provisional GetState
+    // suppression without changing the provenance of the current comeback.
+    return previousExplicitSetOptionsActivation;
+}
+
 inline bool IsLiveFSRRuntimeHandoffSource(bool currentlyAuthoritativeFSRActive, bool currentRuntimeModeIsFSRFG) {
     return currentlyAuthoritativeFSRActive || currentRuntimeModeIsFSRFG;
 }
