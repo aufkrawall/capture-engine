@@ -2102,11 +2102,6 @@ static bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFr
             }
         }
 
-        if (desc->currentBackBuffer.resource &&
-            desc->currentBackBuffer.resource != desc->outputSwapChainBuffer.resource) {
-            CopyFFXPresentSourceToOutput(cmdList, desc);
-        }
-
         rtvHandle = g_FFXPresentRtvHeap->GetCPUDescriptorHandleForHeapStart();
         dx12Device->CreateRenderTargetView(outputResource, nullptr, rtvHandle);
 
@@ -2221,8 +2216,16 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         return result;
     }
 
-    if (!originalCallback && desc->currentBackBuffer.resource &&
-        desc->currentBackBuffer.resource != desc->outputSwapChainBuffer.resource) {
+    if (ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(
+            originalCallback != nullptr, desc->currentBackBuffer.resource != nullptr,
+            desc->currentBackBuffer.resource != desc->outputSwapChainBuffer.resource)) {
+        static std::atomic<int> s_ffxPresentFallbackCopyLogCount{0};
+        if (s_ffxPresentFallbackCopyLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+            HookLogImportant(
+                "DX12: FFX present callback bridge fallback-copying current backbuffer because no runtime "
+                "composition callback is available (frameId=%llu)",
+                static_cast<unsigned long long>(desc->frameID));
+        }
         auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(desc->commandList);
         CopyFFXPresentSourceToOutput(cmdList, desc);
     }

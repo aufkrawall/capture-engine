@@ -283,12 +283,16 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     const ffxConfigureDescHeader* descToCall = desc;
     const auto* parsedDesc = reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc);
     const bool recognizedFGConfigure = parsedDesc && parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGeneration;
+    ce::ffx_api::PresentCallback bridgedOriginalCallback = nullptr;
+    void* bridgedOriginalUserContext = nullptr;
+    bool usingDefaultPresentCallback = false;
     if (recognizedFGConfigure) {
         localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
         void* bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
-        DX12_SetFFXPresentCallbackBridge(
-            bridgeKey, localConfig.presentCallback ? localConfig.presentCallback : g_DefaultPresentCallback,
-            localConfig.presentCallback ? localConfig.presentCallbackUserContext : nullptr);
+        bridgedOriginalCallback = localConfig.presentCallback ? localConfig.presentCallback : g_DefaultPresentCallback;
+        bridgedOriginalUserContext = localConfig.presentCallback ? localConfig.presentCallbackUserContext : nullptr;
+        usingDefaultPresentCallback = !localConfig.presentCallback && bridgedOriginalCallback;
+        DX12_SetFFXPresentCallbackBridge(bridgeKey, bridgedOriginalCallback, bridgedOriginalUserContext);
         localConfig.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
         localConfig.presentCallbackUserContext = bridgeKey;
         descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
@@ -309,9 +313,10 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
         HookLogImportant(
             "FFX Hook: Installed DX12 overlay present-callback bridge for context=%p frameID=%llu enabled=%d "
-            "originalPresent=%p",
+            "originalPresent=%p resolvedPresent=%p usedDefaultPresent=%d",
             context, static_cast<unsigned long long>(originalDesc->frameID),
-            originalDesc->frameGenerationEnabled ? 1 : 0, reinterpret_cast<void*>(originalDesc->presentCallback));
+            originalDesc->frameGenerationEnabled ? 1 : 0, reinterpret_cast<void*>(originalDesc->presentCallback),
+            reinterpret_cast<void*>(bridgedOriginalCallback), usingDefaultPresentCallback ? 1 : 0);
     }
 
     HookLog("FFX Hook: Frame Generation configure %s (context=%p, frameID=%llu, type=0x%llx)",

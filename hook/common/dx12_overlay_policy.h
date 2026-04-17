@@ -524,6 +524,16 @@ inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized,
     return backendInitialized && (deviceChanged || formatChanged);
 }
 
+inline bool ShouldFallbackCopyFFXPresentSourceToOutput(bool originalPresentCallbackAvailable, bool hasCurrentBackBuffer,
+                                                       bool outputDiffersFromCurrent) {
+    // The bridge only needs to copy the base frame when the runtime has no
+    // callback available to compose it into the output surface first. Doing the
+    // copy again after a real/default callback already ran, or performing the
+    // fallback copy twice, adds unnecessary work on the native-FSR hot path and
+    // can overwrite the runtime's own composition.
+    return !originalPresentCallbackAvailable && hasCurrentBackBuffer && outputDiffersFromCurrent;
+}
+
 inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,
                                                         bool authoritativeFSRActive, bool isInterpolatedFrame,
                                                         bool recentStreamlineTeardown) {
