@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <dxgi1_6.h>
+
 #include "fg_runtime_state.h"
 
 namespace ce::dx12_overlay_policy {
@@ -522,6 +524,40 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool 
 inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,
                                                         bool formatChanged) {
     return backendInitialized && (deviceChanged || formatChanged);
+}
+
+inline bool ShouldTreatFormatAsDefinitelyHDR(int dxgiFormat) {
+    return dxgiFormat == static_cast<int>(DXGI_FORMAT_R16G16B16A16_FLOAT);
+}
+
+inline bool ShouldProbeDisplayColorSpaceForHDR(int dxgiFormat) {
+    return dxgiFormat == static_cast<int>(DXGI_FORMAT_R10G10B10A2_UNORM);
+}
+
+inline bool IsHDRColorSpace(int colorSpace) {
+    switch (colorSpace) {
+        case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+        case DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020:
+        case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020:
+        case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020:
+        case DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020:
+        case DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool ResolveActualHDRStateForOverlayTarget(int dxgiFormat, bool hasDisplayColorSpace, int colorSpace) {
+    if (ShouldTreatFormatAsDefinitelyHDR(dxgiFormat)) {
+        return true;
+    }
+
+    if (!ShouldProbeDisplayColorSpaceForHDR(dxgiFormat)) {
+        return false;
+    }
+
+    return hasDisplayColorSpace && IsHDRColorSpace(colorSpace);
 }
 
 inline bool ShouldFallbackCopyFFXPresentSourceToOutput(bool originalPresentCallbackAvailable, bool hasCurrentBackBuffer,

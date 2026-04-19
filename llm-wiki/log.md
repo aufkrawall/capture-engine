@@ -14,6 +14,33 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-19 - Use real output color-space detection on the native-FSR callback overlay path so 10-bit SDR targets do not get misclassified as HDR
+
+- **Motivation**: Talos `installed/captureengine/logs/20260419_221615` on build `0.1.2464` did not crash and did not lose the native-FSR callback path, but the visible overlay looked strangely dim only while FSR FG was active. The session clearly reaches the runtime-owned callback family: `FFX Hook: Installed DX12 overlay present-callback bridge ... originalPresent=00007FF6AC9EBDB0 resolvedPresent=00007FF6AC9EBDB0 usedDefaultPresent=0`, then repeated `DX12: FFX present callback rendered overlay on runtime-owned FSR path` lines on thread `0x2E8C`. The live output format on that path is `fmt=24` (`DXGI_FORMAT_R10G10B10A2_UNORM`). The same session also shows the earlier normal Talos DX12 overlay and the PostSL descriptor-free path rendering on the same `fmt=24` target before FSR without the reported dimness. That pointed away from queue/routing failure and toward a callback-side color/HDR contract mismatch.
+
+- **Root cause refinement**:
+  1. The native-FSR callback path had drifted from the normal DX12 overlay path in how it classified HDR on 10-bit targets. `EnsureOverlayAdapterReadyForFFXPresentCallback(...)` was unconditionally calling `SetHDR(true, fmt=24)` for `DXGI_FORMAT_R10G10B10A2_UNORM`, while the normal `ProcessFrame` path already knew that `R10G10B10A2_UNORM` is ambiguous and only enabled HDR after checking the real DXGI output color space.
+  2. On Talos, that means the callback overlay path could PQ-encode overlay colors on a 10-bit SDR output even though the non-callback Talos overlay path on the same target stayed in SDR. A callback-only PQ encode on SDR output matches the exact user-visible symptom of a globally dim or wrong-looking overlay without crashes or lost rendering.
+  3. The FFX callback ABI also exposes a premultiplied-alpha extension on `ffxCallbackDescFrameGenerationPresent`, and while the current fix does not change blending behavior yet, the bridge had not been logging that callback-side composition contract at all. Future visual investigations need that evidence alongside the callback HDR decision.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now makes the callback/normal-path HDR rule explicit and testable: `ShouldTreatFormatAsDefinitelyHDR(...)`, `ShouldProbeDisplayColorSpaceForHDR(...)`, `IsHDRColorSpace(...)`, and `ResolveActualHDRStateForOverlayTarget(...)` model the intended distinction between FP16, 10-bit UNORM, and the real DXGI output color space.
+  2. `hook/apis/dx12_hook.cpp` now resolves callback-side HDR from the tracked live swapchain/output via `ResolveSwapchainOutputHDRState(...)` instead of assuming `R10G10B10A2_UNORM => HDR`. The callback backend init log now includes `hdr=%d`, and callback-side HDR probing now logs `DX12: FFX present callback HDR check - colorSpace=... isHDR=...`.
+  3. `hook/apis/dx12_hook.cpp` now also logs the FFX callback's premultiplied-alpha contract (`premulAlpha=%d`) for the first few callbacks so future visual regressions can distinguish callback-side composition-mode differences from queue/transport problems.
+  4. `tests/test_dxgi_shared.cpp` now locks the HDR decision boundary with focused coverage for: FP16 always HDR, 10-bit UNORM requiring display-color-space probing, recognition of HDR vs SDR 10-bit color spaces, and the combined `ResolveActualHDRStateForOverlayTarget(...)` rule.
+
+- **Why this is generic**: This is not a Talos-specific branch and not a callback-only hack for one title. The generic rule is that overlay HDR classification must depend on the actual output contract, not only on the DXGI format. `DXGI_FORMAT_R10G10B10A2_UNORM` is used in both HDR10/PQ and 10-bit SDR setups. If one overlay path probes color space and another path guesses from format alone, the same session can render visibly different overlay colors purely because the rendering route changed.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260419_221615/{session_manifest.txt,hook_debug.log}`.
+  - Confirmed the reported Talos seam is on the live native-FSR callback path itself, not a fallback-copy-only path and not a non-rendering seam: `originalPresent=00007FF6AC9EBDB0`, `usedDefaultPresent=0`, repeated `DX12: FFX present callback rendered overlay on runtime-owned FSR path`, and callback backend init on `fmt=24`.
+  - Confirmed the same session already used `fmt=24` on the earlier normal Talos overlay path (`[Overlay] Initializing DX12 backend ... fmt=24`, `DX12: PostSL format check — backbuffer=24 psoFmt=24 MATCH`), which narrowed the issue to callback-side color/HDR handling rather than a generic Talos format incompatibility.
+  - Ran `python build.py --verify --skip-updates`; verification passed and `build/verification/latest_summary.txt` reports success on lint, sanitizer regression, unit tests, build, and compile-commands generation.
+
+- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next check is that Talos `installed/captureengine/logs/...` on build `0.1.2467+` still reaches the same native-FSR callback family, but now logs the callback-side HDR decision explicitly and no longer shows the visibly dim overlay on 10-bit SDR output. GTA validation is also still required to confirm that the shared callback HDR rule does not regress true HDR/PQ callback rendering there.
+
 ### 2026-04-19 - Add the first shared FG session/planner layer, planner-driven publication, and structured FG session logging
 
 - **Motivation**: `fg-plan.md` called for a single authoritative FG planning layer because the real FG lifecycle was still split across Streamline runtime state, DXGI Present routing/transport, DX12 queue/bootstrap/PostSL logic, FFX callback lifecycle, and shared runtime heuristics. The current tree already had many narrow fixes, but diagnostics and user-visible publication were still decided from multiple partially authoritative seams.

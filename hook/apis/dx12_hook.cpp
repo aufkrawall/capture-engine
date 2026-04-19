@@ -2037,6 +2037,63 @@ static D3D12_RESOURCE_STATES GetDX12StateFromFFXResourceState(uint32_t state) {
     return dx12State == static_cast<D3D12_RESOURCE_STATES>(0) ? D3D12_RESOURCE_STATE_COMMON : dx12State;
 }
 
+static IDXGISwapChain* GetTrackedSwapchainForCallbackOverlayHDR() {
+    if (IDXGISwapChain* swapchain = GetLastTrackedSwapchainForStartupActivation()) {
+        return swapchain;
+    }
+
+    IDXGISwapChain* cachedSwapchain = g_State.cachedSwapChain;
+    if (cachedSwapchain && IsReadableSwapchainPointer(cachedSwapchain) &&
+        IsReadableSwapchainPointer(*(void***)cachedSwapchain)) {
+        return cachedSwapchain;
+    }
+
+    return nullptr;
+}
+
+static bool ResolveSwapchainOutputHDRState(IDXGISwapChain* swapchain, DXGI_FORMAT format, const char* logPrefix,
+                                           int* outColorSpace = nullptr) {
+    if (outColorSpace) {
+        *outColorSpace = -1;
+    }
+
+    if (!ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(static_cast<int>(format)) || !swapchain) {
+        return ce::dx12_overlay_policy::ResolveActualHDRStateForOverlayTarget(static_cast<int>(format), false, -1);
+    }
+
+    IDXGISwapChain3* sc3 = nullptr;
+    if (FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
+        return false;
+    }
+
+    bool hasDisplayColorSpace = false;
+    int colorSpace = -1;
+    IDXGIOutput* output = nullptr;
+    if (SUCCEEDED(sc3->GetContainingOutput(&output)) && output) {
+        IDXGIOutput6* output6 = nullptr;
+        if (SUCCEEDED(output->QueryInterface(IID_PPV_ARGS(&output6))) && output6) {
+            DXGI_OUTPUT_DESC1 desc1 = {};
+            if (SUCCEEDED(output6->GetDesc1(&desc1))) {
+                colorSpace = static_cast<int>(desc1.ColorSpace);
+                hasDisplayColorSpace = true;
+                if (outColorSpace) {
+                    *outColorSpace = colorSpace;
+                }
+            }
+            output6->Release();
+        }
+        output->Release();
+    }
+
+    sc3->Release();
+    const bool isActualHDR = ce::dx12_overlay_policy::ResolveActualHDRStateForOverlayTarget(
+        static_cast<int>(format), hasDisplayColorSpace, colorSpace);
+    if (logPrefix && hasDisplayColorSpace) {
+        HookLog("%s - colorSpace=%d, isHDR=%d", logPrefix, colorSpace, isActualHDR ? 1 : 0);
+    }
+    return isActualHDR;
+}
+
 static void TransitionResourceIfNeeded(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* resource,
                                        D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
     if (!cmdList || !resource || before == after) {
@@ -2116,13 +2173,14 @@ static bool EnsureOverlayAdapterReadyForFFXPresentCallback(
                 dx12Device, static_cast<int>(resourceDesc.Format), static_cast<unsigned long long>(desc->frameID));
             return false;
         }
-        g_FFXPresentOverlayAdapter.SetHDR(resourceDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ||
-                                              resourceDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT,
-                                          static_cast<int>(resourceDesc.Format));
+
+        const bool callbackOutputHDR = ResolveSwapchainOutputHDRState(
+            GetTrackedSwapchainForCallbackOverlayHDR(), resourceDesc.Format, "DX12: FFX present callback HDR check");
+        g_FFXPresentOverlayAdapter.SetHDR(callbackOutputHDR, static_cast<int>(resourceDesc.Format));
         g_FFXPresentOverlayDevice = dx12Device;
         g_FFXPresentOverlayFormat = resourceDesc.Format;
-        HookLogImportant("DX12: FFX present callback initialized overlay adapter for runtime-owned FSR (fmt=%d)",
-                         static_cast<int>(resourceDesc.Format));
+        HookLogImportant("DX12: FFX present callback initialized overlay adapter for runtime-owned FSR (fmt=%d hdr=%d)",
+                         static_cast<int>(resourceDesc.Format), callbackOutputHDR ? 1 : 0);
     }
 
     return true;
@@ -2276,6 +2334,14 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                 result, static_cast<unsigned long long>(desc->frameID));
         }
         return result;
+    }
+
+    static std::atomic<int> s_ffxPresentPremulLogCount{0};
+    const bool usePremulAlpha = ce::ffx_api::ResolvePresentCallbackUsePremulAlpha(desc);
+    const int premulLogCount = s_ffxPresentPremulLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (premulLogCount < 10) {
+        HookLogImportant("DX12: FFX present callback composition contract (frameId=%llu premulAlpha=%d)",
+                         static_cast<unsigned long long>(desc->frameID), usePremulAlpha ? 1 : 0);
     }
 
     if (ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(
@@ -9808,28 +9874,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     s_consecutiveInitFails = 0;
                     s_nextRetryFrame = 0;
 
-                    // Detect actual HDR state from the display output, not just format.
-                    // R10G10B10A2_UNORM is used for both SDR 10-bit and HDR10/PQ.
-                    // Only enable HDR overlay mode if the display is actually in HDR.
-                    bool isActualHDR = false;
-                    if (desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
-                        isActualHDR = true;  // FP16 is always HDR (scRGB)
-                    } else if (desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) {
-                        IDXGIOutput* output = nullptr;
-                        if (SUCCEEDED(sc3->GetContainingOutput(&output)) && output) {
-                            IDXGIOutput6* output6 = nullptr;
-                            if (SUCCEEDED(output->QueryInterface(IID_PPV_ARGS(&output6)))) {
-                                DXGI_OUTPUT_DESC1 desc1 = {};
-                                if (SUCCEEDED(output6->GetDesc1(&desc1))) {
-                                    isActualHDR = (desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
-                                    HookLog("DX12: Display HDR check — colorSpace=%d, isHDR=%d", (int)desc1.ColorSpace,
-                                            isActualHDR);
-                                }
-                                output6->Release();
-                            }
-                            output->Release();
-                        }
-                    }
+                    const bool isActualHDR = ResolveSwapchainOutputHDRState(
+                        static_cast<IDXGISwapChain*>(sc3), desc.BufferDesc.Format, "DX12: Display HDR check");
                     g_OverlayAdapter.SetHDR(isActualHDR, (int)desc.BufferDesc.Format);
 
                     // Propagate HDR state to media engine via shared memory

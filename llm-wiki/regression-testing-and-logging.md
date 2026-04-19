@@ -52,6 +52,7 @@ Primary sources:
   - Logs pseudo-overlay suppression and resume during injected-overlay handoff.
 - `hook/apis/dx12_hook.cpp`
   - Logs when observer-only suppresses early PostSL registration, PostSL callback execution, and DX12 overlay/PostSL transition management.
+  - Native-FSR callback traces now also log callback-side HDR classification (`DX12: FFX present callback HDR check ... colorSpace=... isHDR=...`) and the FFX UI-composition contract (`premulAlpha=%d`) so visual FSR callback regressions can be distinguished from queue/routing failures.
 - `hook/apis/streamline_hook.cpp`
   - Logs pure observer-only FG transition pass-through versus staged observer-policy-only startup-policy handling.
 - `hook/common/dxgi_shared.cpp`
@@ -71,6 +72,7 @@ Primary sources:
 - Do not leave a shell sitting in a passive watch loop waiting for that run to finish. Re-read `build/verification/latest_summary.txt` or `latest_manifest.json` directly when you need status; those files are the explicit completion contract for long-running verification/build work.
 - If you need the full top-level log from the last verification/build run, use `build/verification/latest_build.log`; the nested sanitizer child now writes to its own dedicated log inside the same verification bundle.
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.
+- If you touch native-FSR callback rendering, verify both callback-side color/composition contracts explicitly: 10-bit UNORM outputs must not be treated as HDR without probing the real display color space, and callback-side diagnostics should still reveal the resolved HDR decision and whether FFX requested premultiplied-alpha UI composition.
 - If you touch `hook/common/fg_session_state.*` or move a decision under the planner/session layer, verify both sides: focused unit coverage for the planner/session output and the existing reducer/replay/publication compatibility suites that still depend on the old public contract.
 - If you use `Overlay.enabled=false` as a diagnosis baseline, verify from the logs that there is actually no DX12 overlay/PostSL/startup-policy activity. Hidden overlay and passive observer-only are not equivalent.
 - If you touch `Overlay.observer_only`, `Overlay.observer_policy_only`, or `Overlay.observer_startup_present_only`, verify the intended split explicitly: pure observer-only still has no pre-FG overlay submits, no early/PostSL callback install/use, no special Streamline synthetic/startup Present routing, and no startup-window Streamline mutation; observer-policy-only may restore only the Streamline startup-policy family while DX12/PostSL/startup-Present behavior stays passive; observer-startup-present-only may further restore only the remaining non-Streamline startup-Present probe pieces while PostSL callback install/use and rendering still stay passive, and Streamline-originated startup-handoff Presents must stay synthetic in observer mode.
