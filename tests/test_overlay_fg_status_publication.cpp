@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "../hook/common/dx12_overlay_policy.h"
+#include "../hook/common/fg_session_state.h"
 #include "../hook/common/overlay_metrics_publisher.h"
 #include "../hook/common/performance_metrics.h"
 
@@ -30,6 +31,15 @@ void Publish(PerformanceMetrics& metrics, bool active, ce::fg_runtime::RuntimeMo
                                                      .multiplier = multiplier,
                                                      .publicationSource = "test_overlay_fg_status_publication",
                                                  });
+}
+
+void PublishPlanner(PerformanceMetrics& metrics, bool active, ce::fg_runtime::RuntimeMode runtimeMode, int multiplier,
+                    float outputFps = 120.0f, float baseFps = 60.0f) {
+    ce::fg_session::FGActionPlan plan;
+    plan.publishFGActive = active;
+    plan.publishRuntimeMode = runtimeMode;
+    ce::overlay_metrics::PublishOverlayFGMetrics(&metrics, plan, outputFps, baseFps, multiplier,
+                                                 "test_overlay_fg_status_publication_planner");
 }
 
 }  // namespace
@@ -100,5 +110,18 @@ TEST(OverlayFGStatusPublicationTest, TransitionBackToOffClearsPublishedStatus) {
 
     EXPECT_FALSE(metrics.IsFGActive());
     EXPECT_EQ(metrics.GetFGMultiplier(), 1);
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
+}
+
+TEST(OverlayFGStatusPublicationTest, PlannerDrivenPublicationUsesPlannerRuntimeAndActiveState) {
+    PerformanceMetrics metrics;
+
+    PublishPlanner(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 3, 180.0f, 60.0f);
+    EXPECT_TRUE(metrics.IsFGActive());
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "DLSS FG");
+    EXPECT_EQ(metrics.GetFGMultiplier(), 3);
+
+    PublishPlanner(metrics, false, ce::fg_runtime::RuntimeMode::kOff, 1, 0.0f, 0.0f);
+    EXPECT_FALSE(metrics.IsFGActive());
     EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
 }

@@ -1,7 +1,69 @@
 #include "dx12_fg_transition_model.h"
 
+#include "fg_session_state.h"
+
 namespace ce::dx12_fg_transition {
 namespace {
+
+ObservedRuntimeMode ToObservedRuntimeModeFromSession(ce::fg_runtime::RuntimeMode mode) {
+    switch (mode) {
+        case ce::fg_runtime::RuntimeMode::kOff:
+            return ObservedRuntimeMode::kOff;
+        case ce::fg_runtime::RuntimeMode::kStreamlineNoFG:
+            return ObservedRuntimeMode::kStreamlineNoFG;
+        case ce::fg_runtime::RuntimeMode::kDLSSFG:
+            return ObservedRuntimeMode::kDLSSFG;
+        case ce::fg_runtime::RuntimeMode::kFSRFG:
+            return ObservedRuntimeMode::kFSRFG;
+        case ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion:
+            return ObservedRuntimeMode::kNvidiaSM;
+        case ce::fg_runtime::RuntimeMode::kUnknown:
+        default:
+            return ObservedRuntimeMode::kUnknown;
+    }
+}
+
+OverlayRenderMode ToLegacyRenderMode(ce::fg_session::FGOverlayBackendMode mode) {
+    switch (mode) {
+        case ce::fg_session::FGOverlayBackendMode::kSuppressed:
+            return OverlayRenderMode::kSuppressed;
+        case ce::fg_session::FGOverlayBackendMode::kStartupBypass:
+            return OverlayRenderMode::kStartupBypass;
+        case ce::fg_session::FGOverlayBackendMode::kPostSL:
+            return OverlayRenderMode::kPostSL;
+        case ce::fg_session::FGOverlayBackendMode::kRuntimeOwnedFSRCallback:
+            return OverlayRenderMode::kRuntimeOwnedPreSL;
+        case ce::fg_session::FGOverlayBackendMode::kPostFSRRecovery:
+            return OverlayRenderMode::kRecoveryPostFSROff;
+        case ce::fg_session::FGOverlayBackendMode::kNormalPreSL:
+        default:
+            return OverlayRenderMode::kNormalPreSL;
+    }
+}
+
+TransitionPhase ToLegacyPhase(ce::fg_session::FGStartupPhase phase, bool runtimeChanged, bool fgChanged,
+                              bool previousWasFG, bool currentIsFG, bool currentStreamlineFGRunning,
+                              bool previousStreamlineFGRunning, bool recoveringPostFSRNonFG) {
+    if (!currentStreamlineFGRunning && previousStreamlineFGRunning && currentIsFG) {
+        return TransitionPhase::kSuspended;
+    }
+
+    if (recoveringPostFSRNonFG || phase == ce::fg_session::FGStartupPhase::kHandoffPending ||
+        phase == ce::fg_session::FGStartupPhase::kChurnWindow) {
+        return TransitionPhase::kRecovering;
+    }
+
+    if (runtimeChanged && previousWasFG && currentIsFG) {
+        return TransitionPhase::kSwitching;
+    }
+    if (fgChanged && currentIsFG) {
+        return TransitionPhase::kEnabling;
+    }
+    if (fgChanged && !currentIsFG) {
+        return TransitionPhase::kDisabling;
+    }
+    return TransitionPhase::kStable;
+}
 
 OverlayRenderMode ResolveRenderMode(const Input& input) {
     if (input.overlaySuppressed) {
@@ -94,7 +156,15 @@ State Reduce(const State& state, const Input& input) {
     State next = state;
     Snapshot snapshot = state.snapshot;
 
-    snapshot.observedMode = ToObservedRuntimeMode(input.runtimeMode);
+    const ce::fg_session::FGSessionSnapshot sessionSnapshot = ce::fg_session::CaptureFGSessionSnapshot();
+    const ce::fg_session::FGActionPlan actionPlan = ce::fg_session::BuildFGActionPlan(sessionSnapshot);
+
+    const bool runtimeChanged = input.runtimeMode != state.previousRuntimeMode;
+    const bool fgChanged = input.effectiveFGActive != state.previousFGActive;
+    const bool previousWasFG = ce::fg_runtime::IsRuntimeFGActive(state.previousRuntimeMode);
+    const bool currentIsFG = ce::fg_runtime::IsRuntimeFGActive(input.runtimeMode);
+
+    snapshot.observedMode = ToObservedRuntimeModeFromSession(sessionSnapshot.effectiveRuntimeMode);
     snapshot.ownership = ResolveOwnership(input);
     snapshot.renderMode = ResolveRenderMode(input);
     snapshot.phase = ResolvePhase(state, input);
@@ -103,8 +173,9 @@ State Reduce(const State& state, const Input& input) {
     snapshot.shouldSuppressHeuristics = snapshot.phase == TransitionPhase::kSuspended ||
                                         snapshot.phase == TransitionPhase::kDisabling ||
                                         snapshot.phase == TransitionPhase::kSwitching || input.recoveringPostFSRNonFG;
-    snapshot.publishFGActive = input.effectiveFGActive;
-    snapshot.publishRuntimeMode = input.effectiveFGActive ? input.runtimeMode : ce::fg_runtime::RuntimeMode::kOff;
+    snapshot.publishFGActive = actionPlan.publishFGActive;
+    snapshot.publishRuntimeMode = actionPlan.publishRuntimeMode;
+    snapshot.epoch = sessionSnapshot.sessionEpoch;
 
     const bool changed = snapshot.observedMode != state.snapshot.observedMode ||
                          snapshot.renderMode != state.snapshot.renderMode ||
@@ -114,7 +185,7 @@ State Reduce(const State& state, const Input& input) {
                          snapshot.publishRuntimeMode != state.snapshot.publishRuntimeMode ||
                          snapshot.overlayAllowed != state.snapshot.overlayAllowed ||
                          snapshot.shouldSuppressHeuristics != state.snapshot.shouldSuppressHeuristics;
-    if (changed) {
+    if (changed && snapshot.epoch == 0) {
         snapshot.epoch = state.snapshot.epoch + 1;
     }
 

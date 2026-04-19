@@ -1,6 +1,6 @@
 # Frame Generation Switching
 
-Last cross-checked: 2026-04-17
+Last cross-checked: 2026-04-19
 
 Primary sources:
 - `AGENTS.md`
@@ -26,6 +26,9 @@ This page records current guardrails and tested transition families for no-FG, D
 - Fixes must stay generic so DLSS FG and FSR FG support scales across multiple games instead of accumulating title-specific branches.
 
 ## Facts
+- The tree now has a shared FG session/planner layer in `hook/common/fg_session_state.{h,cpp}` that captures the current mixed DX12/Streamline/FFX FG state, computes a concrete `FGActionPlan`, and emits structured transition/session logs. It is currently used as the common authority for diagnostics and publication, while some low-level queue/route/transport execution still remains in the older DX12/DXGI code paths.
+- `hook/common/dx12_fg_transition_model.cpp` is now a compatibility adapter over that planner-backed session snapshot instead of a separate competing reducer. Existing transition/replay tests still validate the same public transition contract, but the underlying snapshot now comes from the shared FG session layer.
+- The planner currently sees explicit hook events from DX12, Streamline, FFX, and top-level Present observation for at least: authoritative Streamline startup handoff, authoritative FFX takeover, native-FSR configure on/off, PostSL callback install/remove, PostSL activation complete, PostSL first confirmed render, swapchain invalidation, Streamline runtime updates, and top-level Present observation.
 - Current trace-replay tests explicitly cover:
   - Talos-style `off -> DLSS -> off -> FSR`
   - GTA-style `FSR -> DLSS` without a clean `off`

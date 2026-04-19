@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include "../common/dxgi_shared.h"
 #include "../common/fg_detection.h"
+#include "../common/fg_session_state.h"
 #include "../common/freeze_watchdog.h"
 #include "../common/hook_common.h"
 #include "../common/reflex_limiter.h"
@@ -369,6 +370,13 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
         HookLogImportant("Streamline Hook: FG state transition %s->%s via %s", previousSignalObserved ? "ON" : "OFF",
                          signalUpdate.effectiveActive ? "ON" : "OFF", source ? source : "runtime-state");
     }
+    ce::fg_session::EmitFGEvent(
+        explicitSetOptionsActivation ? ce::fg_session::FGEventKind::kStreamlineSetOptionsRuntimeUpdate
+                                     : ce::fg_session::FGEventKind::kStreamlineGetStateRuntimeUpdate,
+        source ? source : "StreamlineRuntimeState", nullptr, nullptr,
+        signalUpdate.effectiveActive ? ce::fg_runtime::RuntimeMode::kDLSSFG
+                                     : ce::fg_runtime::RuntimeMode::kStreamlineNoFG,
+        signalUpdate.effectiveActive, g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire));
     if (signalUpdate.deferredOffDuringStartupWindow && signalUpdate.shouldExtendStartupTransitionWindow) {
         const bool shouldExtend = g_StartupWindowOffExtensionPending.exchange(false, std::memory_order_acq_rel);
         if (!shouldExtend) {
@@ -1175,6 +1183,9 @@ void OnAuthoritativeFFXTakeover() {
         "Streamline Hook: Authoritative FFX takeover reset %zu viewport states and preserved %zu capability caches; "
         "suppressing GetState-only reactivation for %llums and until safe post-FSR bootstrap or explicit enable",
         resetViewportCount, preservedCapabilityCount, (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kAuthoritativeFFXTakeover,
+                                "StreamlineHook::OnAuthoritativeFFXTakeover", nullptr, nullptr,
+                                ce::fg_runtime::RuntimeMode::kFSRFG, true, true);
 }
 
 void OnAuthoritativeStreamlineStartupHandoff() {
@@ -1185,6 +1196,9 @@ void OnAuthoritativeStreamlineStartupHandoff() {
         "Streamline Hook: Authoritative Streamline startup handoff observed — suppressing fresh GetState-only "
         "reactivation for %llums until explicit enable or stable startup evidence arrives",
         (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kAuthoritativeStreamlineStartupHandoff,
+                                "StreamlineHook::OnAuthoritativeStreamlineStartupHandoff", nullptr, nullptr,
+                                ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false);
 }
 
 void Shutdown() {

@@ -156,6 +156,11 @@ void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, P
     manifest << "overlay_observer_only=" << (config.overlay.observerOnly ? 1 : 0) << "\n";
     manifest << "overlay_observer_policy_only=" << (config.overlay.observerPolicyOnly ? 1 : 0) << "\n";
     manifest << "overlay_observer_startup_present_only=" << (config.overlay.observerStartupPresentOnly ? 1 : 0) << "\n";
+    manifest << "steam_overlay_loaded=0\n";
+    manifest << "streamline_loaded=0\n";
+    manifest << "ffx_loaded=0\n";
+    manifest << "fg_shadow_state_enabled=1\n";
+    manifest << "fg_state_schema_version=1\n";
     manifest << "logger_enabled=" << (ShouldStartLoggerProcess(config) ? 1 : 0) << "\n";
     manifest << "sensor_enabled=" << (ShouldStartSensorProcess(config) ? 1 : 0) << "\n";
     manifest << "game_whitelist_entries=" << config.gameWhitelist.size() << "\n";

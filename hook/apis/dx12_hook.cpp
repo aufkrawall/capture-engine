@@ -27,6 +27,7 @@
 #include "../common/custom_overlay_dx12.h"
 #include "../common/dx12_fg_transition_model.h"
 #include "../common/fg_detection.h"
+#include "../common/fg_session_state.h"
 #include "../common/hook_common.h"
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
@@ -1066,6 +1067,7 @@ bool HookHasSafePostFSRBootstrapPath() {
 static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);
 static void ClearPostSLQueues(const char* reason);
 static void ResetFFXPresentCallbackOverlayBackend(const char* reason);
+static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* out);
 
 static void SetPostSLCallbackInstalled(bool installed, const char* reason) {
     if (installed) {
@@ -1073,6 +1075,9 @@ static void SetPostSLCallbackInstalled(bool installed, const char* reason) {
         if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != &PostSLOverlayRenderGated) {
             DXGIShared::g_PostSLOverlayRenderCallback.store(&PostSLOverlayRenderGated, std::memory_order_release);
             HookLogImportant("%s — installed gated PostSL callback", reason);
+            ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPostSLCallbackInstalled,
+                                        reason ? reason : "SetPostSLCallbackInstalled", nullptr, nullptr,
+                                        g_FGCompat.GetRuntimeMode(), g_FGCompat.IsFGActive(), false);
         }
         return;
     }
@@ -1081,6 +1086,9 @@ static void SetPostSLCallbackInstalled(bool installed, const char* reason) {
     if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr) {
         DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
         HookLogImportant("%s — disabled PostSL callback", reason);
+        ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPostSLCallbackRemoved,
+                                    reason ? reason : "SetPostSLCallbackInstalled", nullptr, nullptr,
+                                    g_FGCompat.GetRuntimeMode(), g_FGCompat.IsFGActive(), false);
     }
 }
 
@@ -1305,6 +1313,51 @@ static ULONGLONG g_SwapchainQueueCaptureTime = 0;  // GetTickCount64() when scQu
 // for a sustained period.
 static bool g_FGRuntimeOwnsSwapchain = false;
 static ULONGLONG g_FGRuntimeOwnsSwapchainSince = 0;
+
+static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* out) {
+    if (!out) {
+        return;
+    }
+
+    ce::fg_session::DX12LegacyStateView view;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        view.originalGameQueue = g_OriginalGameQueue;
+        view.primaryGameQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+        view.swapchainQueue = g_SwapchainQueue;
+        view.currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+        view.slWrapperQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
+        view.realQueueBehindWrapper = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
+        view.postSLLockedQueue = g_PostSLLockedQueue;
+        view.postSLLastWorkingQueue = g_PostSLLastWorkingQueue;
+        view.postSLDedicatedQueue = g_PostSLDedicatedQueue;
+        view.realECL = reinterpret_cast<void*>(g_RealD3D12ECL.load(std::memory_order_acquire));
+        view.runtimeOwnsSwapchain = g_FGRuntimeOwnsSwapchain;
+    }
+
+    view.hadFSRPhase = g_HadFSRFGPhase;
+    view.safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+    view.explicitSetOptionsActivationForCurrentComeback = HookHasExplicitStreamlineSetOptionsActivation();
+    view.streamlineStartupHandoffPending =
+        DXGIShared::g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
+    view.startupTopLevelPresentConsumed =
+        DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
+    view.postSLCallbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
+    view.postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
+    view.postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    view.postSLSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
+    view.postSLStartupActivationPending =
+        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    view.postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+    view.postSLStableFrameCount = g_PostSLStableFrameCount.load(std::memory_order_acquire);
+    view.fgTransitionCooldown = g_FGTransitionCooldown;
+    view.observerOnly = HookOverlayObserverOnlyEnabled();
+    view.observerPolicyOnly = HookOverlayObserverPolicyOnlyEnabled();
+    view.observerStartupPresentOnly = HookOverlayObserverStartupPresentOnlyEnabled();
+    view.usingFFXPresentCallbackPath = g_FFXPresentOverlayDevice != nullptr;
+
+    *out = view;
+}
 
 static void RealignInactiveCommandQueueToSwapchainQueue(const char* reason) {
     ID3D12CommandQueue* oldCommandQueue = nullptr;
@@ -1570,6 +1623,9 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     ResetFFXPresentCallbackOverlayBackend("DX12: FFX swapchain takeover");
     StreamlineHook::OnAuthoritativeFFXTakeover();
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kAuthoritativeFFXTakeover,
+                                "DX12::AuthoritativeFFXTakeover", capturedQueue, nullptr,
+                                ce::fg_runtime::RuntimeMode::kFSRFG, true, true);
     DXGIShared::DisableSLPresentRouting();
     {
         ID3D12CommandQueue* oldWrapper = g_SLWrapperQueue.exchange(nullptr, std::memory_order_acq_rel);
@@ -2171,6 +2227,9 @@ static void ResetFFXPresentCallbackOverlayBackend(const char* reason) {
 void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
     if (enabled) {
         ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+        ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kNativeFSRConfigureOn,
+                                    "DX12_OnNativeFSRFrameGenerationConfigured", nullptr, nullptr,
+                                    ce::fg_runtime::RuntimeMode::kFSRFG, true, true);
         return;
     }
 
@@ -2182,6 +2241,9 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
             "(scQueue=%p origGame=%p cmdQ=%p)",
             g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
     }
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kNativeFSRConfigureOff,
+                                "DX12_OnNativeFSRFrameGenerationConfigured", nullptr, nullptr,
+                                ce::fg_runtime::RuntimeMode::kOff, false, true);
 }
 
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* desc, void* userCtx) {
@@ -3112,6 +3174,7 @@ void CleanupRTVs();
 void DX12_InvalidateSwapchain() {
     DXGIShared::g_SharedState.swapchainInvalid.store(true, std::memory_order_release);
     HookLog("DX12: Swapchain marked INVALID (FSR/FG transition detected)");
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kSwapchainInvalidation, "DX12_InvalidateSwapchain");
     // Log current state for debugging
     HookLog("DX12: Invalidating - overlayInit=%d, syncInit=%d, device=%p, queue=%p", g_State.overlayInit,
             g_State.syncInit, g_Device.load(), g_CommandQueue.load());
@@ -3561,6 +3624,9 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         if (freshAuthoritativeStreamlineHandoff) {
             DXGIShared::ArmStreamlineStartupTransitionWindow();
             StreamlineHook::OnAuthoritativeStreamlineStartupHandoff();
+            ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kAuthoritativeStreamlineStartupHandoff,
+                                        context ? context : "DX12::AuthoritativeStreamlineStartupHandoff", pQueue,
+                                        pSwapChain, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false);
             if (ce::dx12_overlay_policy::ShouldReprobeRealD3D12ECLOnFreshAuthoritativeStreamlineHandoff(
                     freshAuthoritativeStreamlineHandoff, g_HadFSRFGPhase,
                     g_RealD3D12ECL.load(std::memory_order_acquire) != nullptr)) {
@@ -3684,6 +3750,9 @@ void DX12Hook::Init() {
     if (s_InitDone)
         return;
     s_InitDone = true;
+
+    ce::fg_session::RegisterDX12LegacyStateProvider(&FillFGSessionLegacyStateView);
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPresentObserved, "DX12Hook::Init");
 
     // CRITICAL FIX: Check if Vulkan is active before installing ANY DXGI hooks
     // Vulkan games using WSI-to-DXGI mapping can freeze if we hook DXGI
@@ -3872,6 +3941,12 @@ DWORD DX12_GetGamePresentThreadId() {
 }
 
 void DX12_OnStreamlineFGStateChanged(bool active) {
+    ce::fg_session::EmitFGEvent(active ? ce::fg_session::FGEventKind::kStreamlineSetOptionsRuntimeUpdate
+                                       : ce::fg_session::FGEventKind::kTransitionCooldownComplete,
+                                "DX12_OnStreamlineFGStateChanged", nullptr, nullptr,
+                                active ? ce::fg_runtime::RuntimeMode::kDLSSFG : g_FGCompat.GetRuntimeMode(), active,
+                                HookHasExplicitStreamlineSetOptionsActivation());
+
     const bool observerOnly = HookOverlayObserverOnlyEnabled();
     const bool observerPolicyOnly = HookOverlayObserverPolicyOnlyEnabled();
     const bool observerStartupPresentOnly = HookOverlayObserverStartupPresentOnlyEnabled();
@@ -4090,15 +4165,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
         g_FGCompat.SetHeuristicFSRFGActive(false);
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
-            ce::overlay_metrics::PublishOverlayFGMetrics(perf,
-                                                         {
-                                                             .effectiveFGActive = false,
-                                                             .runtimeMode = g_FGCompat.GetRuntimeMode(),
-                                                             .outputFPS = 0.0f,
-                                                             .baseFPS = 0.0f,
-                                                             .multiplier = 1,
-                                                             .publicationSource = "DX12_OnStreamlineFGStateChanged",
-                                                         });
+            const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
+            ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, 0.0f, 0.0f, 1, "DX12_OnStreamlineFGStateChanged");
         }
         return;
     }
@@ -4124,14 +4192,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_FGCompat.SetHeuristicFSRFGActive(false);
     g_FGCompat.ClearNvidiaSMState();
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
-        ce::overlay_metrics::PublishOverlayFGMetrics(perf, {
-                                                               .effectiveFGActive = false,
-                                                               .runtimeMode = g_FGCompat.GetRuntimeMode(),
-                                                               .outputFPS = 0.0f,
-                                                               .baseFPS = 0.0f,
-                                                               .multiplier = 1,
-                                                               .publicationSource = "DX12_OnStreamlineFGStateChanged",
-                                                           });
+        const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
+        ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, 0.0f, 0.0f, 1, "DX12_OnStreamlineFGStateChanged");
     }
     InvalidateAllOverlayCachedFrames();
     g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
@@ -6600,6 +6662,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             // Startup is still half-armed until the first real PostSL render confirms
             // that the path is actually safe. Activation alone is not enough.
             HookLogImportant("DX12: PostSL synthetic startup activation complete — enabling PostSL rendering");
+            ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPostSLActivationComplete,
+                                        "DX12::PostSLSyntheticStartupActivation", directQueue, pSwapChain,
+                                        g_FGCompat.GetRuntimeMode(), g_FGCompat.IsFGActive(),
+                                        HookHasExplicitStreamlineSetOptionsActivation());
         }
     }
 
@@ -7902,14 +7968,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         if (ce::dx12_overlay_policy::ShouldSyntheticPostSLRefreshMetrics(cachedSLFGActive, processFrameRecentlySeen)) {
             if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
                 perf->Update(PerfLogger::GetQpcUs());
-                ce::overlay_metrics::PublishOverlayFGMetrics(perf, {
-                                                                       .effectiveFGActive = g_FGCompat.IsFGActive(),
-                                                                       .runtimeMode = g_FGCompat.GetRuntimeMode(),
-                                                                       .outputFPS = g_FGCompat.GetOutputFPS(),
-                                                                       .baseFPS = g_FGCompat.GetBaseFPS(),
-                                                                       .multiplier = g_FGCompat.GetFGMultiplier(),
-                                                                       .publicationSource = "DX12::PostSLOverlayRender",
-                                                                   });
+                const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
+                ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(),
+                                                             g_FGCompat.GetBaseFPS(), g_FGCompat.GetFGMultiplier(),
+                                                             "DX12::PostSLOverlayRender");
             }
         }
 
@@ -8481,6 +8543,12 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Track PostSL warmup — stable frame count since last FG transition.
     // Stall fallback is only enabled after this exceeds warmup threshold.
     const int stableFrameCount = g_PostSLStableFrameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (stableFrameCount == 1) {
+        ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPostSLFirstConfirmedRender,
+                                    "DX12::PostSLOverlayRender", submittedQueue, pSwapChain,
+                                    g_FGCompat.GetRuntimeMode(), g_FGCompat.IsFGActive(),
+                                    HookHasExplicitStreamlineSetOptionsActivation());
+    }
     if (ce::dx12_overlay_policy::ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
             DXGIShared::IsStreamlineStartupTransitionWindowActive(), stableFrameCount)) {
         DXGIShared::ClearStreamlineStartupTransitionWindow();
@@ -10479,14 +10547,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         }
 
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
-            ce::overlay_metrics::PublishOverlayFGMetrics(perf, {
-                                                                   .effectiveFGActive = currentFGActive,
-                                                                   .runtimeMode = currentRuntimeMode,
-                                                                   .outputFPS = g_FGCompat.GetOutputFPS(),
-                                                                   .baseFPS = g_FGCompat.GetBaseFPS(),
-                                                                   .multiplier = g_FGCompat.GetFGMultiplier(),
-                                                                   .publicationSource = "DX12::ProcessFrame",
-                                                               });
+            const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
+            ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(),
+                                                         g_FGCompat.GetFGMultiplier(), "DX12::ProcessFrame");
         }
 
         ID3D12CommandQueue* transitionSwapchainQueue = nullptr;

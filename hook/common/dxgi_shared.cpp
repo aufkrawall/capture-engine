@@ -7,6 +7,7 @@
 #include "config.h"
 #include "dx12_overlay_policy.h"
 #include "fg_detection.h"
+#include "fg_session_state.h"
 #include "fps_limiter.h"
 #include "freeze_watchdog.h"
 #include "hook_common.h"
@@ -765,6 +766,8 @@ static void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* pub
         return;
     }
 
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPresentObserved, publicationSource);
+
     static int64_t qpcFreq = 0;
     if (qpcFreq == 0) {
         LARGE_INTEGER f;
@@ -776,14 +779,10 @@ static void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* pub
     QueryPerformanceCounter(&qpc);
     const int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
     g_DXGIPerfMetrics.Update(us);
-    ce::overlay_metrics::PublishOverlayFGMetrics(&g_DXGIPerfMetrics, {
-                                                                         .effectiveFGActive = g_FGCompat.IsFGActive(),
-                                                                         .runtimeMode = g_FGCompat.GetRuntimeMode(),
-                                                                         .outputFPS = g_FGCompat.GetOutputFPS(),
-                                                                         .baseFPS = g_FGCompat.GetBaseFPS(),
-                                                                         .multiplier = g_FGCompat.GetFGMultiplier(),
-                                                                         .publicationSource = publicationSource,
-                                                                     });
+    const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
+    ce::overlay_metrics::PublishOverlayFGMetrics(&g_DXGIPerfMetrics, plan, g_FGCompat.GetOutputFPS(),
+                                                 g_FGCompat.GetBaseFPS(), g_FGCompat.GetFGMultiplier(),
+                                                 publicationSource);
 }
 
 static void RefreshLivePresentHooksForSwapchainIfNeeded(IDXGISwapChain* pSwapChain, const char* source) {

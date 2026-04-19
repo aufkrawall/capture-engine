@@ -1,6 +1,6 @@
 # Overlay FG Status
 
-Last cross-checked: 2026-04-16
+Last cross-checked: 2026-04-19
 
 Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
@@ -12,6 +12,7 @@ This page records how the current tree publishes visible FG status to the overla
 
 ## Facts
 - The current shared helper for FG publication is `PublishOverlayFGMetrics()`.
+- The main DXGI/DX12 publication call sites now publish from the planner-owned `FGActionPlan` rather than each caller independently deciding `(effectiveFGActive, runtimeMode)` ad hoc.
 - That helper uses `ResolveOverlayFGMetricType()` to map `(effectiveFGActive, runtimeMode)` into the published FG type.
 - If frame generation is active but the resolved published type is `0`, the helper logs an invariant violation.
 - When FG is active, the helper currently publishes a multiplier of at least `2`.
@@ -24,6 +25,7 @@ This page records how the current tree publishes visible FG status to the overla
   - `DLSS FG` to publish as `DLSS FG`
   - switching between those modes to update the visible label immediately
   - transitioning back to `off` to clear the published FG status back to the baseline `FG` label
+- `tests/test_overlay_fg_status_publication.cpp` now also covers the planner-driven publication overload directly, so publication correctness is no longer tested only through the legacy helper-input path.
 
 ## Practical Guidance
 - Route visible FG status publication through the shared helper instead of duplicating mapping logic in multiple runtime paths.

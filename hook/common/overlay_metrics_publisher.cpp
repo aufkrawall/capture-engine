@@ -1,6 +1,7 @@
 #include "overlay_metrics_publisher.h"
 
 #include "dx12_overlay_policy.h"
+#include "fg_session_state.h"
 #include "hook_common.h"
 #include "performance_metrics.h"
 
@@ -57,6 +58,18 @@ void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const PublicationInput
         last.publishedType = publishedType;
         last.publishedMultiplier = publishedMultiplier;
     }
+}
+
+void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const fg_session::FGActionPlan& plan, float outputFPS,
+                             float baseFPS, int multiplier, const char* publicationSource) {
+    PublishOverlayFGMetrics(metrics, {
+                                         .effectiveFGActive = plan.publishFGActive,
+                                         .runtimeMode = plan.publishRuntimeMode,
+                                         .outputFPS = outputFPS,
+                                         .baseFPS = baseFPS,
+                                         .multiplier = multiplier,
+                                         .publicationSource = publicationSource,
+                                     });
 }
 
 }  // namespace ce::overlay_metrics

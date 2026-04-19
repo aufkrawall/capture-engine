@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include "../common/ffx_api_parsing.h"
 #include "../common/fg_detection.h"
+#include "../common/fg_session_state.h"
 #include "../common/hook_common.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
@@ -265,6 +266,9 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
                 "FFX Hook: FSR Frame Generation DEACTIVATED (all contexts "
                 "destroyed)");
             g_FGCompat.SetFSRFGActive(false);
+            ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kFFXContextDestroy,
+                                        "FFXHook::Hooked_ffxDestroyContext", context, nullptr,
+                                        ce::fg_runtime::RuntimeMode::kOff, false, true);
         }
     } else if (result == FFX_API_RETURN_OK && !isFGContext) {
         HookLog("FFX Hook: Non-FG Context destroyed");
@@ -330,6 +334,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     if (parsed.enabled) {
         g_FGCompat.MarkDirectFFXApiConfirmation();
     }
+    ce::fg_session::EmitFGEvent(
+        parsed.enabled ? ce::fg_session::FGEventKind::kNativeFSRConfigureOn
+                       : ce::fg_session::FGEventKind::kNativeFSRConfigureOff,
+        "FFXHook::Hooked_ffxConfigure", context, nullptr,
+        parsed.enabled ? ce::fg_runtime::RuntimeMode::kFSRFG : ce::fg_runtime::RuntimeMode::kOff, parsed.enabled, true);
     return result;
 }
 

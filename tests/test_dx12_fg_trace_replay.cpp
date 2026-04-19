@@ -3,6 +3,8 @@
 #include <vector>
 
 #include "../hook/common/dx12_fg_transition_model.h"
+#include "../hook/common/fg_detection.h"
+#include "../hook/common/fg_session_state.h"
 
 namespace {
 
@@ -11,6 +13,15 @@ using ce::dx12_fg_transition::ObservedRuntimeMode;
 using ce::dx12_fg_transition::OverlayRenderMode;
 using ce::dx12_fg_transition::State;
 using ce::dx12_fg_transition::TransitionPhase;
+
+ce::fg_session::DX12LegacyStateView g_ReplayLegacyState;
+
+void FillReplayLegacyState(ce::fg_session::DX12LegacyStateView* out) {
+    if (!out) {
+        return;
+    }
+    *out = g_ReplayLegacyState;
+}
 
 struct ExpectedSnapshot {
     ObservedRuntimeMode observedMode;
@@ -30,6 +41,41 @@ struct TraceStep {
 void ReplayTrace(const std::vector<TraceStep>& trace) {
     State state;
     for (const auto& step : trace) {
+        g_ReplayLegacyState = {};
+        g_ReplayLegacyState.runtimeOwnsSwapchain = step.input.runtimeOwnsSwapchain;
+        g_ReplayLegacyState.hadFSRPhase = step.input.hadFSRPhase;
+        g_ReplayLegacyState.postSLCallbackInstalled =
+            step.input.streamlineFGRunning && step.input.runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG;
+        g_ReplayLegacyState.postSLActive = g_ReplayLegacyState.postSLCallbackInstalled;
+        g_ReplayLegacyState.postSLConfirmedRendering =
+            g_ReplayLegacyState.postSLActive && step.input.effectiveFGActive && !step.input.startupBypassActive;
+        g_ReplayLegacyState.postSLStartupActivationPending =
+            g_ReplayLegacyState.postSLActive && !g_ReplayLegacyState.postSLConfirmedRendering;
+        g_ReplayLegacyState.postSLActiveButUnconfirmed = g_ReplayLegacyState.postSLStartupActivationPending;
+        g_ReplayLegacyState.safePostFSRBootstrapPath = step.input.streamlineFGRunning || !step.input.hadFSRPhase;
+        g_ReplayLegacyState.explicitSetOptionsActivationForCurrentComeback =
+            step.input.streamlineFGRunning && step.input.runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG &&
+            step.input.hadFSRPhase;
+        g_ReplayLegacyState.observerOnly = step.input.overlaySuppressed;
+
+        g_FGCompat.SetStreamlineSupportPresent(step.input.streamlineLoaded);
+        g_FGCompat.SetFSRFGSupportPresent(step.input.runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG);
+        g_FGCompat.SetStreamlineFGSignal(step.input.streamlineFGRunning);
+        g_FGCompat.SetDLSSFGActive(step.input.runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG &&
+                                   step.input.effectiveFGActive);
+        g_FGCompat.SetDLSSFGMultiplier(
+            step.input.runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG && step.input.effectiveFGActive ? 2 : 0);
+        g_FGCompat.SetFSRFGActive(step.input.runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG &&
+                                  step.input.effectiveFGActive);
+        g_FGCompat.SetFSRFGMultiplier(
+            step.input.runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG && step.input.effectiveFGActive ? 2 : 0);
+        g_FGCompat.SetHeuristicFSRFGActive(false);
+
+        ce::fg_session::RegisterDX12LegacyStateProvider(&FillReplayLegacyState);
+        ce::fg_session::EmitFGEvent(step.input.streamlineFGRunning
+                                        ? ce::fg_session::FGEventKind::kStreamlineSetOptionsRuntimeUpdate
+                                        : ce::fg_session::FGEventKind::kPresentObserved,
+                                    step.label);
         state = ce::dx12_fg_transition::Reduce(state, step.input);
         EXPECT_EQ(state.snapshot.observedMode, step.expected.observedMode) << step.label;
         EXPECT_EQ(state.snapshot.renderMode, step.expected.renderMode) << step.label;
@@ -42,7 +88,25 @@ void ReplayTrace(const std::vector<TraceStep>& trace) {
 
 }  // namespace
 
-TEST(DX12FGTraceReplayTest, TalosNoFGToDLSSOffToFSRReplay) {
+class DX12FGTraceReplayFixture : public ::testing::Test {
+protected:
+    void SetUp() override {
+        ce::fg_session::ResetFGSessionStateForTests();
+        g_ReplayLegacyState = {};
+        ce::fg_session::RegisterDX12LegacyStateProvider(&FillReplayLegacyState);
+        g_FGCompat.SetStreamlineSupportPresent(false);
+        g_FGCompat.SetFSRFGSupportPresent(false);
+        g_FGCompat.SetStreamlineFGSignal(false);
+        g_FGCompat.SetDLSSFGActive(false);
+        g_FGCompat.SetDLSSFGMultiplier(0);
+        g_FGCompat.SetFSRFGActive(false);
+        g_FGCompat.SetFSRFGMultiplier(0);
+        g_FGCompat.SetHeuristicFSRFGActive(false);
+        g_FGCompat.ClearNvidiaSMState();
+    }
+};
+
+TEST_F(DX12FGTraceReplayFixture, TalosNoFGToDLSSOffToFSRReplay) {
     ReplayTrace({
         {"talos-off",
          {.runtimeMode = ce::fg_runtime::RuntimeMode::kOff},
@@ -69,7 +133,7 @@ TEST(DX12FGTraceReplayTest, TalosNoFGToDLSSOffToFSRReplay) {
     });
 }
 
-TEST(DX12FGTraceReplayTest, GTAFSRToDLSSWithoutCleanOffReplay) {
+TEST_F(DX12FGTraceReplayFixture, GTAFSRToDLSSWithoutCleanOffReplay) {
     ReplayTrace({
         {"gta-fsr-on",
          {.runtimeMode = ce::fg_runtime::RuntimeMode::kFSRFG,
@@ -93,7 +157,7 @@ TEST(DX12FGTraceReplayTest, GTAFSRToDLSSWithoutCleanOffReplay) {
     });
 }
 
-TEST(DX12FGTraceReplayTest, GTADLSSSuspensionDuringLoadingReplay) {
+TEST_F(DX12FGTraceReplayFixture, GTADLSSSuspensionDuringLoadingReplay) {
     ReplayTrace({
         {"gta-dlss-on",
          {.runtimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG,
@@ -119,7 +183,7 @@ TEST(DX12FGTraceReplayTest, GTADLSSSuspensionDuringLoadingReplay) {
     });
 }
 
-TEST(DX12FGTraceReplayTest, StartupCoexistenceReplayUsesStartupBypassThenNormalRouting) {
+TEST_F(DX12FGTraceReplayFixture, StartupCoexistenceReplayUsesStartupBypassThenNormalRouting) {
     ReplayTrace({
         {"startup-bypass",
          {.runtimeMode = ce::fg_runtime::RuntimeMode::kOff, .startupBypassActive = true},
