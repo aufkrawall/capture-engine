@@ -10365,17 +10365,18 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             bool slTurnedOff = previousOuterSLFGRunning && !outerSLFGRunning;
             bool slTurnedOn = !previousOuterSLFGRunning && outerSLFGRunning;
             g_OuterTrackedSLFGRunning.store(outerSLFGRunning, std::memory_order_release);
-            const bool preserveConfirmedPostSLOnLateOuterOn =
-                slTurnedOn && ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLDuringFGCooldown(
-                                  outerSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+            const bool preserveActivePostSLOnLateOuterOn =
+                slTurnedOn && ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
+                                  outerSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                                  HookIsPostSLOverlayActiveButUnconfirmed());
 
             HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d)", slTurnedOn ? "ON" : "OFF",
                              allowOverlayRender ? 1 : 0);
 
             // Set cooldown — prevents rendering during transition window
-            if (preserveConfirmedPostSLOnLateOuterOn) {
+            if (preserveActivePostSLOnLateOuterOn) {
                 HookLogImportant(
-                    "DX12: [outer] SL FG ON after confirmed PostSL — preserving active confirmed PostSL path "
+                    "DX12: [outer] SL FG ON after active PostSL — preserving active PostSL path "
                     "instead of re-entering transition cooldown");
             } else {
                 g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
@@ -10385,14 +10386,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // Reset PostSL state for fresh start after transition.
             // Keep the callback installed on Streamline FG activation so
             // startup synthetic presents can immediately find it.
-            if (!preserveConfirmedPostSLOnLateOuterOn) {
+            if (!preserveActivePostSLOnLateOuterOn) {
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
             }
             if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(outerSLFGRunning)) {
                 SetPostSLCallbackInstalled(false, "DX12: [outer] SL transition");
             }
             g_PostSLStallCounter.store(0, std::memory_order_release);
-            if (!preserveConfirmedPostSLOnLateOuterOn) {
+            if (!preserveActivePostSLOnLateOuterOn) {
                 g_PostSLStableFrameCount.store(0, std::memory_order_release);
                 g_PostSLConfirmedRendering.store(false, std::memory_order_release);
             }
@@ -10412,7 +10413,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // If PostSL already confirmed rendering on a late outer ON edge,
             // keep the existing proven queue/routing state instead of forcing a
             // fresh startup-style re-capture that can starve confirmed PostSL.
-            if (!preserveConfirmedPostSLOnLateOuterOn) {
+            if (!preserveActivePostSLOnLateOuterOn) {
                 g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
             }
 
@@ -11039,24 +11040,28 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         bool skipOverlayDraw = false;
         if (g_FGTransitionCooldown > 0) {
             --g_FGTransitionCooldown;
-            const bool preserveConfirmedPostSLDuringCooldown =
-                ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLDuringFGCooldown(
-                    currentSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire));
-            if (preserveConfirmedPostSLDuringCooldown) {
-                // Synthetic startup can confirm a working PostSL path before the
-                // game-thread cooldown has fully counted down. Do not let the
-                // slower ProcessFrame cooldown re-disable that confirmed path.
+            const bool preserveActivePostSLDuringCooldown =
+                ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
+                    currentSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                    HookIsPostSLOverlayActiveButUnconfirmed());
+            if (preserveActivePostSLDuringCooldown) {
+                // Synthetic startup can already have an active PostSL path before
+                // the game-thread cooldown has fully counted down. Do not let the
+                // slower ProcessFrame cooldown re-disable that same path and force
+                // a second reactivation/warm-up epoch before first confirmation.
                 g_PostSLOverlayActive.store(true, std::memory_order_release);
                 g_PostSLCooldownRemaining.store(0, std::memory_order_release);
 
-                static int s_preserveConfirmedPostSLLog = 0;
-                if (s_preserveConfirmedPostSLLog < 10 || g_FGTransitionCooldown == 0) {
+                static int s_preserveActivePostSLLog = 0;
+                if (s_preserveActivePostSLLog < 10 || g_FGTransitionCooldown == 0) {
                     HookLogImportant(
-                        "DX12: FG cooldown preserving confirmed PostSL rendering "
-                        "(remaining=%d slSignal=%d)",
-                        g_FGTransitionCooldown, currentSLFGRunning ? 1 : 0);
+                        "DX12: FG cooldown preserving active PostSL path "
+                        "(remaining=%d slSignal=%d confirmed=%d unconfirmed=%d)",
+                        g_FGTransitionCooldown, currentSLFGRunning ? 1 : 0,
+                        g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
+                        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0);
                 }
-                s_preserveConfirmedPostSLLog++;
+                s_preserveActivePostSLLog++;
             } else {
                 // During cooldown, suppress BOTH pre-SL and post-SL rendering.
                 g_PostSLOverlayActive.store(false, std::memory_order_release);

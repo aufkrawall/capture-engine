@@ -1419,6 +1419,11 @@ inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunni
     return streamlineFGRunning && postSLConfirmedRendering;
 }
 
+inline bool ShouldPreserveActivePostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering,
+                                                       bool postSLActiveButUnconfirmed) {
+    return streamlineFGRunning && (postSLConfirmedRendering || postSLActiveButUnconfirmed);
+}
+
 inline bool ShouldLatchPostSLSuspensionOnStreamlineSignalDrop(bool streamlineFGRunning, bool postSLActive,
                                                               bool postSLConfirmedRendering,
                                                               bool startupActivationPending) {

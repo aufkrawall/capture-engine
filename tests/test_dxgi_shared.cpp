@@ -1664,6 +1664,15 @@ TEST(DXGISharedTest, ConfirmedPostSLStaysActiveDuringRemainingFGCooldown) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLDuringFGCooldown(true, false));
 }
 
+TEST(DXGISharedTest, ActivePostSLStartupAlsoStaysActiveDuringRemainingFGCooldown) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(true, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(true, true, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(true, false, false));
+}
+
 TEST(DXGISharedTest, ConfirmedPostSLResumeSeedsStartupBootstrapAsConsumed) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSeedStreamlineStartupBootstrapAsConsumedForConfirmedPostSLResume(
         false, true, true, true, false, false, false));
