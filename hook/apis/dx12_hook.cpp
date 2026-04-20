@@ -3525,7 +3525,8 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
 // Capture the queue that was passed to CreateSwapChain* so we can prefer it
 // for overlay submission.  Only accepts DIRECT queues (same rule as
 // DX12_SetCommandQueue).  Also hooks the queue vtable for ECL interception.
-static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue) {
+static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue,
+                                   bool authoritativeFFXRuntimeQueue) {
     if (!pQueue)
         return false;
 
@@ -3619,7 +3620,8 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
     // causing ffxQuery to spin-wait or WaitForSingleObject indefinitely.
     // We already hook origGame's queue for watchdog/heartbeat — that's sufficient.
     const bool shouldHookQueueVTable = ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(
-        g_OriginalGameQueue != nullptr, pQueue == g_OriginalGameQueue, authoritativeStreamlineRuntimeQueue);
+        g_OriginalGameQueue != nullptr, pQueue == g_OriginalGameQueue, authoritativeStreamlineRuntimeQueue,
+        authoritativeFFXRuntimeQueue);
     if (shouldHookQueueVTable) {
         if (authoritativeStreamlineRuntimeQueue && g_OriginalGameQueue && pQueue != g_OriginalGameQueue) {
             HookLogImportant(
@@ -3629,8 +3631,16 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
         }
         DX12_HookQueueVTable(pQueue);
     } else {
-        HookLogImportant("DX12: Skipping vtable hook for FG runtime queue %p (origGame=%p) — preserving FSR timing",
-                         pQueue, g_OriginalGameQueue);
+        if (authoritativeFFXRuntimeQueue && authoritativeStreamlineRuntimeQueue && g_OriginalGameQueue &&
+            pQueue != g_OriginalGameQueue) {
+            HookLogImportant(
+                "DX12: Skipping vtable hook for FFX-owned runtime queue %p despite stale Streamline provenance "
+                "(origGame=%p) — preserving FSR timing",
+                pQueue, g_OriginalGameQueue);
+        } else {
+            HookLogImportant("DX12: Skipping vtable hook for FG runtime queue %p (origGame=%p) — preserving FSR timing",
+                             pQueue, g_OriginalGameQueue);
+        }
     }
 
     return runtimeOwnershipJustActivated;
@@ -3668,7 +3678,12 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(
                 captureEvidence.callerFromThirdPartyOverlay, currentOriginalGameQueue != nullptr,
                 pQueue == currentOriginalGameQueue);
+        const bool authoritativeFFXRuntimeQueue =
+            ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeFFXRuntime(
+                captureEvidence.authoritativeFFXRuntimeCreator, currentOriginalGameQueue != nullptr,
+                pQueue == currentOriginalGameQueue);
         const bool authoritativeStreamlineRuntimeQueue =
+            !authoritativeFFXRuntimeQueue &&
             ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(
                 captureEvidence.authoritativeStreamlineRuntimeCreator, currentOriginalGameQueue != nullptr,
                 pQueue == currentOriginalGameQueue);
@@ -3686,7 +3701,18 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             pQueue->Release();
             return;
         }
-        const bool runtimeOwnershipJustActivated = DX12_SetSwapchainQueue(pQueue, authoritativeStreamlineRuntimeQueue);
+        if (authoritativeFFXRuntimeQueue && captureEvidence.authoritativeStreamlineRuntimeCreator) {
+            static std::atomic<int> s_ffxOverridesStreamlineQueueAuthorityLogCount{0};
+            const int logCount = s_ffxOverridesStreamlineQueueAuthorityLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20) {
+                HookLogImportant(
+                    "%s: Authoritative FFX ownership overrides stale Streamline runtime queue authority "
+                    "(queue=%p caller=%s)",
+                    context, pQueue, captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "stack");
+            }
+        }
+        const bool runtimeOwnershipJustActivated =
+            DX12_SetSwapchainQueue(pQueue, authoritativeStreamlineRuntimeQueue, authoritativeFFXRuntimeQueue);
         if (freshAuthoritativeStreamlineHandoff) {
             DXGIShared::ArmStreamlineStartupTransitionWindow();
             StreamlineHook::OnAuthoritativeStreamlineStartupHandoff();

@@ -193,6 +193,12 @@ inline bool ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(bool autho
     return authoritativeStreamlineRuntimeCreator && hasOriginalGameQueue && !queueMatchesOriginalGameQueue;
 }
 
+inline bool ShouldTreatSwapchainQueueAsAuthoritativeFFXRuntime(bool authoritativeFFXRuntimeCreator,
+                                                               bool hasOriginalGameQueue,
+                                                               bool queueMatchesOriginalGameQueue) {
+    return authoritativeFFXRuntimeCreator && hasOriginalGameQueue && !queueMatchesOriginalGameQueue;
+}
+
 inline bool ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
     bool authoritativeStreamlineRuntimeQueue, bool queueMatchesCurrentSwapchainQueue) {
     return authoritativeStreamlineRuntimeQueue && !queueMatchesCurrentSwapchainQueue;
@@ -220,9 +226,18 @@ inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThi
 
 inline bool ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(bool hasOriginalGameQueue,
                                                                     bool queueMatchesOriginalGameQueue,
-                                                                    bool authoritativeStreamlineRuntimeQueue) {
+                                                                    bool authoritativeStreamlineRuntimeQueue,
+                                                                    bool authoritativeFFXRuntimeQueue) {
     if (!hasOriginalGameQueue || queueMatchesOriginalGameQueue) {
         return true;
+    }
+
+    // If the current authoritative owner is FFX/native FSR, stale Streamline
+    // provenance on the same non-origGame queue must not keep its vtable hook
+    // alive. The added ECL detour overhead on that runtime-owned queue has been
+    // observed to stall the FFX runtime inside ffxQuery.
+    if (authoritativeFFXRuntimeQueue) {
+        return false;
     }
 
     // Native FSR runtime queues stay unhooked to preserve the timing-sensitive
