@@ -197,6 +197,15 @@ inline bool ShouldCaptureQueueWhenSkippingWrapForStreamline(bool streamlineLoade
     return streamlineLoaded;
 }
 
+inline bool ShouldKeepSLPresentRoutingDisabledForNativeFG(bool effectiveFSRRuntime,
+                                                          bool runtimeOwnedNativeFGPresentPath) {
+    // Streamline's Present-hook chain must stay detached not only while the
+    // effective runtime mode already says FSR_FG, but also through the native
+    // FSR teardown window where the runtime still owns presentation even though
+    // ffxConfigure(frameGenerationEnabled=0) has temporarily published Off.
+    return effectiveFSRRuntime || runtimeOwnedNativeFGPresentPath;
+}
+
 // External Present entry hooks can recurse back through our detour. Some paths
 // need a bypass trampoline available at install time so re-entrant Present can
 // still reach the real DXGI implementation.

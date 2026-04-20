@@ -530,7 +530,9 @@ FGActionPlan BuildPlanNoLog(const FGSessionSnapshot& snapshot) {
             plan.selectedQueueRole = FGQueueRole::kPostSLLastWorking;
             plan.selectedQueue = snapshot.postSLLastWorkingQueue.ptr;
             plan.reason = "reuse-last-working";
-        } else if (snapshot.slWrapperQueue.valid && !snapshot.explicitSetOptionsActivationForCurrentComeback) {
+        } else if (snapshot.slWrapperQueue.valid &&
+                   !(snapshot.hadFSRPhase && snapshot.swapchainQueue.valid && snapshot.safePostFSRBootstrapPath) &&
+                   !snapshot.explicitSetOptionsActivationForCurrentComeback) {
             plan.selectedQueueRole = FGQueueRole::kWrapperBootstrap;
             plan.selectedQueue = snapshot.slWrapperQueue.ptr;
             plan.reason = "wrapper-bootstrap";

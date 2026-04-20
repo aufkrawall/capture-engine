@@ -88,6 +88,10 @@ bool HookHasSafePostFSRBootstrapPath() {
     return false;
 }
 
+bool HookHasRuntimeOwnedNativeFGPresentPath() {
+    return false;
+}
+
 // Stubs for streamline_hook.cpp (StreamlineHook namespace)
 namespace StreamlineHook {
 void FlushSuppressedSetOptionsOffIfNeeded() {}

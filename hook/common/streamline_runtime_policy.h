@@ -133,6 +133,15 @@ inline bool ShouldArmStartupTransitionWindowOnFreshActiveSignal(bool active, boo
     return active && !previousSignal;
 }
 
+inline bool ShouldPrimeStartupWindowOffExtensionLatch(bool effectiveActive, bool freshActivationEdge) {
+    // The OFF-extension latch is intentionally one-shot per startup churn burst.
+    // Prime it on a fresh activation edge (or a fresh authoritative handoff via
+    // the dedicated caller path), but do not re-prime it on every later steady
+    // active GetState/SetOptions poll or the startup window can keep extending
+    // indefinitely during post-FSR OFF churn.
+    return effectiveActive && freshActivationEdge;
+}
+
 inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool requestedActive, bool deferOffSignal,
                                                                       bool previousSignal, int requestedMultiplier) {
     CombinedRuntimeSignalUpdate update;

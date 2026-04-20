@@ -63,6 +63,29 @@ TEST(FGSessionStateTest, PostFSRDLSSPrefersRealQueueBehindWrapperOverWrapperBoot
     EXPECT_STREQ(plan.reason, "real-queue-behind-wrapper");
 }
 
+TEST(FGSessionStateTest, PostFSRDLSSPrefersSwapchainQueueOverWrapperBootstrapOnceBootstrapIsSafe) {
+    ce::fg_session::ResetFGSessionStateForTests();
+    g_TestLegacyState = {};
+    g_TestLegacyState.hadFSRPhase = true;
+    g_TestLegacyState.safePostFSRBootstrapPath = true;
+    g_TestLegacyState.explicitSetOptionsActivationForCurrentComeback = false;
+    g_TestLegacyState.postSLCallbackInstalled = true;
+    g_TestLegacyState.slWrapperQueue = reinterpret_cast<ID3D12CommandQueue*>(0x3333);
+    g_TestLegacyState.swapchainQueue = reinterpret_cast<ID3D12CommandQueue*>(0x4444);
+
+    ce::fg_session::RegisterDX12LegacyStateProvider(&FillTestLegacyState);
+    g_FGCompat.SetStreamlineSupportPresent(true);
+    g_FGCompat.SetStreamlineFGSignal(true);
+    g_FGCompat.SetDLSSFGActive(true);
+    g_FGCompat.SetDLSSFGMultiplier(2);
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kStreamlineGetStateRuntimeUpdate, "test-dlss-getstate");
+
+    const auto plan = ce::fg_session::GetLatestFGActionPlan();
+    EXPECT_EQ(plan.selectedQueueRole, ce::fg_session::FGQueueRole::kSwapchain);
+    EXPECT_EQ(plan.selectedQueue, g_TestLegacyState.swapchainQueue);
+    EXPECT_STREQ(plan.reason, "swapchain-queue");
+}
+
 TEST(FGSessionStateTest, ValidationRejectsConfirmedPostSLWithoutActivePostSL) {
     ce::fg_session::FGSessionSnapshot snapshot;
     snapshot.postSLConfirmedRendering = true;

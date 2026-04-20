@@ -151,6 +151,14 @@ TEST(StreamlineRuntimePolicyTest, StartupTransitionWindowOnlyRearmsOnFreshActive
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldArmStartupTransitionWindowOnFreshActiveSignal(false, true));
 }
 
+TEST(StreamlineRuntimePolicyTest, StartupWindowOffExtensionLatchOnlyPrimesOnFreshActiveEdge) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldPrimeStartupWindowOffExtensionLatch(true, true));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldPrimeStartupWindowOffExtensionLatch(true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldPrimeStartupWindowOffExtensionLatch(false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldPrimeStartupWindowOffExtensionLatch(false, false));
+}
+
 TEST(StreamlineRuntimePolicyTest, DeferredStartupWindowOffKeepsEffectiveDlssSignalAndMultiplier) {
     const auto update = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, true, 2);
 

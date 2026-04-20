@@ -155,6 +155,12 @@ bool HookHasExplicitStreamlineSetOptionsActivation();
 // never surfaced an OFF->ON SetOptions activation edge.
 bool HookHasSafePostFSRBootstrapPath();
 
+// DX12 exports this so shared DXGI Present routing can keep Streamline's
+// Present-hook chain disabled while the native/runtime-owned FSR path still owns
+// presentation, including the explicit native-FSR OFF teardown window before the
+// swapchain returns to origGame ownership.
+bool HookHasRuntimeOwnedNativeFGPresentPath();
+
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
 float GetActivePrerenderLimit();

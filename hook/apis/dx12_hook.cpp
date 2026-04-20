@@ -1064,6 +1064,12 @@ bool HookHasSafePostFSRBootstrapPath() {
                g_SLWrapperQueue.load(std::memory_order_acquire) != nullptr);
 }
 
+bool HookHasRuntimeOwnedNativeFGPresentPath() {
+    return DXGIShared::DoesFGRuntimeOwnSwapchain() &&
+           (g_FGCompat.IsFSRFGApiActive() ||
+            g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
+}
+
 static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);
 static void ClearPostSLQueues(const char* reason);
 static void ResetFFXPresentCallbackOverlayBackend(const char* reason);

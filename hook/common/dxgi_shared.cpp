@@ -695,6 +695,20 @@ static bool IsSLInterposerLoaded() {
     return detected;
 }
 
+static bool ShouldKeepSLPresentRoutingDisabledNow(ce::fg_runtime::RuntimeMode* runtimeModeOut = nullptr,
+                                                  bool* runtimeOwnedNativeFGPresentPathOut = nullptr) {
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const bool runtimeOwnedNativeFGPresentPath = HookHasRuntimeOwnedNativeFGPresentPath();
+    if (runtimeModeOut) {
+        *runtimeModeOut = runtimeMode;
+    }
+    if (runtimeOwnedNativeFGPresentPathOut) {
+        *runtimeOwnedNativeFGPresentPathOut = runtimeOwnedNativeFGPresentPath;
+    }
+    return DXGIShared::ShouldKeepSLPresentRoutingDisabledForNativeFG(ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode),
+                                                                     runtimeOwnedNativeFGPresentPath);
+}
+
 // Detect if SL has hooked the Present function with an E9 JMP or FF 25
 // indirect JMP.  If so, set up routing so our final Present call goes
 // through SL's hook chain instead of bypassing it via the trampoline.
@@ -737,19 +751,24 @@ static void DetectSLPresentHook() {
                      trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3], trampolineBytes[4],
                      trampolineBytes[5]);
 
-    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
+    bool runtimeOwnedNativeFGPresentPath = false;
 
-    // Don't re-enable SL routing if an effective FSR runtime has taken over.
-    // Heuristic FSR can be latched before the raw FFX API flag, so the
-    // effective runtime mode is the authoritative guard here.
-    if (ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode)) {
+    // Don't re-enable SL routing while the native/runtime-owned FSR path still
+    // owns presentation. GTA showed that the old runtime=FSR_FG-only guard was
+    // too narrow: during the explicit native-FSR OFF teardown window, the FFX
+    // runtime can still own presentation even though ffxConfigure briefly
+    // publishes Off. Re-attaching Streamline's Present hook chain in that window
+    // reintroduces mixed-runtime routing on the native FSR path.
+    if (ShouldKeepSLPresentRoutingDisabledNow(&runtimeMode, &runtimeOwnedNativeFGPresentPath)) {
         static int s_suppressedCount = 0;
         int suppressedNum = ++s_suppressedCount;
         if (suppressedNum <= 5 || (suppressedNum % 500) == 0) {
             HookLogImportant(
                 "DetectSLPresentHook: SL %s JMP detected at oPresent=%p but SL routing NOT re-enabled "
-                "(FSR runtime active, suppressed #%d, runtime=%s)",
-                isE9 ? "E9" : "FF25", oPresent, suppressedNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode));
+                "(native FG path still owns Present routing, suppressed #%d, runtime=%s runtimeOwnedNativeFG=%d)",
+                isE9 ? "E9" : "FF25", oPresent, suppressedNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode),
+                runtimeOwnedNativeFGPresentPath ? 1 : 0);
         }
         return;
     }
@@ -1234,11 +1253,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
 
-    // Detect SL's E9 JMP on Present if not already detected.
-    // Skip when FSR FG is active — SL routing must stay disabled to avoid
-    // conflicting with FSR FG's own Present interception (freeze in ffxQuery).
-    if (!s_slRoutingActive.load(std::memory_order_relaxed) &&
-        !ce::fg_runtime::RuntimeModeUsesFSR(g_FGCompat.GetRuntimeMode())) {
+    // Detect SL's E9 JMP on Present if not already detected. DetectSLPresentHook
+    // itself owns the native-FSR suppression rule so the explicit native-FSR OFF
+    // teardown window stays protected too.
+    if (!s_slRoutingActive.load(std::memory_order_relaxed)) {
         static int s_slCheckCount = 0;
         bool slLoaded = IsSLInterposerLoaded();
         if (s_slCheckCount++ < 10) {
@@ -1397,18 +1415,21 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     HRESULT hr;
     if (s_slRoutingActive.load(std::memory_order_acquire)) {
-        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
-        // Safety: if SL routing is active but FSR FG has taken over, force-disable
-        // SL routing. This prevents a conflict between SL's Present hook chain and
-        // FSR FG's own Present interception that deadlocks in ffxQuery/ffxPresent.
-        if (ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode)) {
+        ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
+        bool runtimeOwnedNativeFGPresentPath = false;
+        // Safety: if SL routing is still active while the native FSR path owns
+        // presentation, force-disable it. The effective runtime label alone is
+        // not sufficient here because the explicit native-FSR OFF teardown window
+        // can still be runtime-owned while temporarily publishing Off.
+        if (ShouldKeepSLPresentRoutingDisabledNow(&runtimeMode, &runtimeOwnedNativeFGPresentPath)) {
             static int s_fsrlatchCount = 0;
             int latchNum = ++s_fsrlatchCount;
             if (latchNum <= 5) {
                 HookLogImportant(
-                    "DetourPresent: SL routing was active while FSR FG is active — force-disabling SL routing "
-                    "(latch #%d, runtime=%s). Present will go through trampoline directly.",
-                    latchNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode));
+                    "DetourPresent: SL routing was active while native FG still owned Present routing — "
+                    "force-disabling SL routing (latch #%d, runtime=%s runtimeOwnedNativeFG=%d). Present will go "
+                    "through trampoline directly.",
+                    latchNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), runtimeOwnedNativeFGPresentPath ? 1 : 0);
             }
             s_slRoutingActive.store(false, std::memory_order_release);
             hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
@@ -1750,10 +1771,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
 
-    // Detect SL's E9 JMP if not yet done (same as DetourPresent).
-    // Skip when FSR FG is active — SL routing must stay disabled.
-    if (!s_slRoutingActive.load(std::memory_order_relaxed) && IsSLInterposerLoaded() &&
-        !ce::fg_runtime::RuntimeModeUsesFSR(g_FGCompat.GetRuntimeMode())) {
+    // Detect SL's E9 JMP if not yet done (same as DetourPresent). DetectSLPresentHook
+    // itself owns the native-FSR suppression rule.
+    if (!s_slRoutingActive.load(std::memory_order_relaxed) && IsSLInterposerLoaded()) {
         DetectSLPresentHook();
     }
 
@@ -1851,8 +1871,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     HRESULT hr;
     if (s_slRoutingActive.load(std::memory_order_acquire) && oPresent1) {
-        const auto runtimeMode = g_FGCompat.GetRuntimeMode();
-        if (ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode)) {
+        ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
+        bool runtimeOwnedNativeFGPresentPath = false;
+        if (ShouldKeepSLPresentRoutingDisabledNow(&runtimeMode, &runtimeOwnedNativeFGPresentPath)) {
+            static int s_present1FsrlatchCount = 0;
+            int latchNum = ++s_present1FsrlatchCount;
+            if (latchNum <= 5) {
+                HookLogImportant(
+                    "DetourPresent1: SL routing was active while native FG still owned Present routing — "
+                    "force-disabling SL routing (latch #%d, runtime=%s runtimeOwnedNativeFG=%d). Present1 will go "
+                    "through trampoline directly.",
+                    latchNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), runtimeOwnedNativeFGPresentPath ? 1 : 0);
+            }
             s_slRoutingActive.store(false, std::memory_order_release);
             hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
         } else {

@@ -413,6 +413,16 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
     if (signalUpdate.deferredOffDuringStartupWindow && signalUpdate.shouldExtendStartupTransitionWindow) {
         const bool shouldExtend = g_StartupWindowOffExtensionPending.exchange(false, std::memory_order_acq_rel);
         if (!shouldExtend) {
+            static std::atomic<int> s_startupWindowOffExtensionAlreadyConsumedLogCount{0};
+            const int logCount =
+                s_startupWindowOffExtensionAlreadyConsumedLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 100) == 0) {
+                HookLogImportant(
+                    "Streamline Hook: Deferring OFF signal during startup transition window "
+                    "(g_StreamlineFGRunning stays ON, multiplier=%d source=%s) — extension already consumed for "
+                    "current churn burst",
+                    signalUpdate.effectiveMultiplier, source ? source : "unknown");
+            }
             return;
         }
         DXGIShared::ExtendStreamlineStartupTransitionWindow();
@@ -420,7 +430,8 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
             "Streamline Hook: Deferring OFF signal during startup transition window "
             "(g_StreamlineFGRunning stays ON, multiplier=%d source=%s) — extended startup window",
             signalUpdate.effectiveMultiplier, source ? source : "unknown");
-    } else if (signalUpdate.effectiveActive) {
+    } else if (ce::streamline_runtime_policy::ShouldPrimeStartupWindowOffExtensionLatch(
+                   signalUpdate.effectiveActive, signalUpdate.freshActivationEdge)) {
         g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     }
 }
