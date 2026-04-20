@@ -1964,8 +1964,10 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
+    const bool runtimeOwnedNativeFGPresentPath = HookHasRuntimeOwnedNativeFGPresentPath();
     const bool skip = ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, authoritativeFSRActive);
+        g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, authoritativeFSRActive,
+        runtimeOwnedNativeFGPresentPath);
     if (!skip) {
         if (reason) {
             *reason = nullptr;
@@ -1976,6 +1978,8 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
     if (reason) {
         if (authoritativeFSRActive || runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG) {
             *reason = "runtime-owned native FSR FG swapchain";
+        } else if (runtimeOwnedNativeFGPresentPath) {
+            *reason = "runtime-owned native FSR Present teardown window";
         } else {
             *reason = "runtime-owned swapchain";
         }
@@ -1988,7 +1992,7 @@ static bool ShouldBridgeOverlayViaFFXPresentCallback(const ce::ffx_api::Callback
         return false;
     }
 
-    if (!g_FGRuntimeOwnsSwapchain || !ce::fg_runtime::RuntimeModeUsesFSR(g_FGCompat.GetRuntimeMode())) {
+    if (!HookHasRuntimeOwnedNativeFGPresentPath()) {
         return false;
     }
 
@@ -2553,6 +2557,7 @@ static bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule 
     const bool fsrFGActive = IsFSRFrameGenerationActive();
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool runtimeOwnsSwapchain = g_FGRuntimeOwnsSwapchain;
+    const bool runtimeOwnedNativeFGPresentPath = HookHasRuntimeOwnedNativeFGPresentPath();
 
     // When Streamline FG is active, do NOT use a dedicated overlay queue.
     // D3D12 rejects cross-queue access to swapchain backbuffers with
@@ -2567,14 +2572,16 @@ static bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule 
     }
 
     if (ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
-            actualFGActive, fsrFGActive, streamlineFGRunning, runtimeOwnsSwapchain)) {
+            actualFGActive, fsrFGActive, streamlineFGRunning, runtimeOwnsSwapchain,
+            runtimeOwnedNativeFGPresentPath)) {
         static std::atomic<int> s_runtimeOwnedDedicatedQueueDisableLogCount{0};
         int logCount = s_runtimeOwnedDedicatedQueueDisableLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
             HookLogImportant(
                 "DX12: Dedicated overlay queue disabled for native/runtime-owned FG "
-                "(fsrFG=%d runtimeOwns=%d scQueue=%p origGame=%p)",
-                fsrFGActive ? 1 : 0, runtimeOwnsSwapchain ? 1 : 0, g_SwapchainQueue, g_OriginalGameQueue);
+                "(fsrFG=%d runtimeOwns=%d nativePresentPath=%d scQueue=%p origGame=%p)",
+                fsrFGActive ? 1 : 0, runtimeOwnsSwapchain ? 1 : 0, runtimeOwnedNativeFGPresentPath ? 1 : 0,
+                g_SwapchainQueue, g_OriginalGameQueue);
         }
         if (disabledByOverlayModule)
             *disabledByOverlayModule = nullptr;
@@ -3594,7 +3601,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             const bool preserveAuthoritativeFSR =
                 ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
                     true, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), runtimeMode,
-                    g_FGCompat.IsFSRFGApiActive());
+                    g_FGCompat.IsFSRFGApiActive(), HookHasRuntimeOwnedNativeFGPresentPath());
             if (preserveAuthoritativeFSR) {
                 HookLogImportant(
                     "DX12: Swapchain queue returned to origGame %p while authoritative/runtime-owned FSR state is "
@@ -4312,7 +4319,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
         const bool preserveRuntimeOwnedFSRTakeover =
             ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-                g_FGRuntimeOwnsSwapchain, false, runtimeMode, g_FGCompat.IsFSRFGApiActive());
+                g_FGRuntimeOwnsSwapchain, false, runtimeMode, g_FGCompat.IsFSRFGApiActive(),
+                HookHasRuntimeOwnedNativeFGPresentPath());
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
 

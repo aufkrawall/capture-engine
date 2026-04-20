@@ -503,8 +503,9 @@ inline bool ShouldSuppressLikelyDuplicateTopLevelPresent(bool runtimeOwnsSwapcha
 
 inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(bool actualFGActive, bool fsrFGActive,
                                                                              bool streamlineFGRunning,
-                                                                             bool runtimeOwnsSwapchain) {
-    if (!actualFGActive || streamlineFGRunning) {
+                                                                             bool runtimeOwnsSwapchain,
+                                                                             bool runtimeOwnedNativeFGPresentPath) {
+    if ((!actualFGActive && !runtimeOwnedNativeFGPresentPath) || streamlineFGRunning) {
         return false;
     }
 
@@ -512,13 +513,17 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
     // swapchain queue. Spinning up a second overlay queue in that window
     // reintroduces cross-queue synchronization against the runtime-owned path
     // and has been observed to stall inside native FFX frame-generation work.
-    return fsrFGActive || runtimeOwnsSwapchain;
+    // That remains true during the explicit native-FSR OFF teardown window too:
+    // the runtime-owned Present path still owns presentation even before the
+    // effective runtime label flips back to FSR_FG on resume.
+    return fsrFGActive || runtimeOwnsSwapchain || runtimeOwnedNativeFGPresentPath;
 }
 
 inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool runtimeOwnsSwapchain,
-                                                                           bool streamlineFGRunning,
-                                                                           fg_runtime::RuntimeMode runtimeMode,
-                                                                           bool authoritativeFSRActive) {
+                                                                            bool streamlineFGRunning,
+                                                                            fg_runtime::RuntimeMode runtimeMode,
+                                                                            bool authoritativeFSRActive,
+                                                                            bool runtimeOwnedNativeFGPresentPath) {
     if (!runtimeOwnsSwapchain || streamlineFGRunning) {
         return false;
     }
@@ -533,7 +538,10 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool 
     // Streamline suspension windows can keep the swapchain runtime-owned
     // without native FSR ownership, and those windows still need normal
     // ProcessFrame recovery instead of blanket overlay suppression.
-    return authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode);
+    // The native/runtime-owned FSR teardown window is also still part of the
+    // callback-owned Present path, even while the temporary effective runtime
+    // label says Off.
+    return authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode) || runtimeOwnedNativeFGPresentPath;
 }
 
 inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,

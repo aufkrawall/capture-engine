@@ -696,36 +696,43 @@ TEST(DXGISharedTest, DuplicateTopLevelPresentSuppressionBypassesRuntimeOwnedNonS
 
 TEST(DXGISharedTest, DedicatedOverlayQueueStaysDisabledForRuntimeOwnedNativeFG) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(true, true,
-                                                                                                          false, true));
+                                                                                                          false, true,
+                                                                                                          true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(true, false,
-                                                                                                          false, true));
+                                                                                                          false, true,
+                                                                                                          true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
-        true, true, false, false));
+        true, true, false, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
+        false, false, false, true, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(true, false,
-                                                                                                           true, true));
+                                                                                                           true, true,
+                                                                                                           true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
-        false, true, false, true));
+        false, true, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
-        true, false, false, false));
+        true, false, false, false, false));
 }
 
 TEST(DXGISharedTest, RuntimeOwnedNativeFSRSuppressesInjectedOverlayGpuWorkOnlyForFSRStates) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true));
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, false));
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, false, true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true));
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kOff, false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true));
+        false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, true, ce::fg_runtime::RuntimeMode::kFSRFG, true));
+        true, true, ce::fg_runtime::RuntimeMode::kFSRFG, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kOff, false));
+        true, false, ce::fg_runtime::RuntimeMode::kOff, false, false));
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackOverlayBackendResetsOnlyForDeviceOrFormatChange) {
