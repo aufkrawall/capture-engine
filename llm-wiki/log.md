@@ -14,6 +14,40 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-20 - Start the startup-overlay resume countdown from the real usable same-process foreground candidate so GTA no-FG startup cannot self-latch forever on `remaining=0ms`
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260420_225446_gtanocrash_startedwithnofgoverlaydoesnotshow` on build `0.1.2495` still lost the visible overlay when the game started with all FG off, even though GTA with FG on from the start `installed/captureengine/logs/20260420_225021_gtanocrash_startingwithfgvariousfgswitching` and Talos `installed/captureengine/logs/20260420_215301_talosnocrash_multipleswitching` were already healthy comparisons.
+
+- **Comparison that narrowed the seam**:
+  1. The failing GTA no-FG session and the same-build working GTA comparison both reach the same early healthy pre-FG state: normal DX12 overlay backend init on `origGame`, repeated `Reinit SUBMIT #1..#50`, and `Stable DX12 overlay rendering observed`.
+  2. Both GTA sessions then hit the same later authoritative Streamline no-FG startup handoff on an EOS-mediated runtime-owned queue, re-arm startup compatibility, and temporarily block draws while the runtime-owned queue is unstable.
+  3. Both sessions also later log `Overlay allowed during startup-overlay compatibility - queue topology stable enough for barrier-free mode` and then `Resuming DX12 overlay after startup overlay windows settled`.
+  4. The decisive divergence is only after that edge. The failing no-FG session then logs nothing but repeated `DX12: Keeping overlay rendering deferred after startup-overlay resume for GTA5_Enhanced.exe (remaining=0ms)` until the stale runtime-owned no-FG queue is cleared. The working GTA comparison instead counts down `remaining=100ms -> 6ms`, then reaches `Priming DX12 overlay resources before first GTA overlay draw`, `Startup compat resource-prime settle complete`, and `Startup overlay probe complete - rendering stably`.
+
+- **Root cause refinement**:
+  1. The older `2026-04-17` same-process-foreground relaxation was directionally correct but still had one circular dependency in `ShouldDelayOverlayInitAfterStartupResumeCompat(...)`.
+  2. That code only considered a same-process foreground window after `elapsedSinceResumeReady >= kStartupOverlayPostResumeSettleMs`.
+  3. But `elapsedSinceResumeReady` itself only grows once CE has already picked a stable resume window and started `s_resumeStableSinceMs`.
+  4. In the failing GTA no-FG session, the exact swapchain `OutputWindow` was no longer the foreground window after the late startup handoff. A usable same-process foreground window did exist, but it was the only viable candidate. Because the gate refused to treat it as a candidate until the timer had already elapsed, the code reset `s_resumeStableSinceMs` every frame and the countdown never actually started. That is why the trace could latch forever on `remaining=0ms` instead of converging into the old GTA resource-prime / first-draw path.
+
+- **Fix**:
+  1. `hook/common/overlay_compat.h` now adds `ResolveDX12OverlayStartupResumeForegroundWindowMetrics(...)`, which resolves the metrics and ownership of the real post-resume candidate window first instead of making candidate selection depend on an already-running timer.
+  2. `hook/apis/dx12_hook.cpp` now uses that helper in `ShouldDelayOverlayInitAfterStartupResumeCompat(...)`, so the countdown starts on either the exact swapchain window or a usable same-process foreground window as soon as CE has a viable candidate.
+  3. The hook now logs both branches explicitly: `DX12: Startup-overlay resume still waiting for a usable foreground window ...` when there is no viable candidate yet, and `DX12: Startup-overlay resume tracking usable same-process foreground window ...` when CE intentionally starts the countdown on a same-process foreground window instead of the old swapchain HWND.
+  4. `tests/test_fps_limiter.cpp` now adds `OverlayCompatTest.SameProcessForegroundWindowCanDrivePostResumeCountdown` plus `OverlayCompatTest.InvalidForegroundWindowDoesNotCreatePostResumeCandidate`, alongside the earlier `OverlayCompatTest.UsableSameProcessForegroundWindowIsAcceptedAfterResumeSettle` coverage.
+
+- **Why this is generic**: This is not a GTA-only exception and not a relaxation of the earlier startup-safety rule. The generic invariant is: after a late startup-overlay/runtime-owned handoff, CE must defer until it has a real usable foreground candidate, but once that candidate exists the countdown must be able to start on it immediately. Otherwise any title that changes from the original swapchain HWND to another same-process foreground window during startup overlay unwind can self-latch forever in the resume-defer state even with no blocker left.
+
+- **Verification so far**:
+  - Re-checked GTA no-FG `installed/captureengine/logs/20260420_225446_gtanocrash_startedwithnofgoverlaydoesnotshow/hook_debug.log` and confirmed the failing shape: repeated `remaining=0ms` lines after `Resuming DX12 overlay after startup overlay windows settled`, with no later `Priming DX12 overlay resources before first GTA overlay draw`.
+  - Re-checked same-build GTA comparison `installed/captureengine/logs/20260420_225021_gtanocrash_startingwithfgvariousfgswitching/hook_debug.log` and confirmed the healthy countdown plus the later resource-prime / probe-complete sequence.
+  - Re-checked Talos `installed/captureengine/logs/20260420_215301_talosnocrash_multipleswitching/hook_debug.log` as the broad healthy comparison that does not reproduce this startup-overlay seam.
+  - Ran `python build.py --run-tests --tests-only --skip-updates --gtest-filter="OverlayCompatTest.*"`; the focused overlay-compat suite passed.
+
+- **Files changed**: `hook/common/overlay_compat.h`, `hook/apis/dx12_hook.cpp`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next GTA no-FG startup check on build `0.1.2496+` should no longer latch forever on `Keeping overlay rendering deferred ... (remaining=0ms)`. It should either log the new `still waiting for a usable foreground window` reason until a candidate appears, or log `tracking usable same-process foreground window ...`, count down, and then reach `Priming DX12 overlay resources before first GTA overlay draw` plus `Startup overlay probe complete - rendering stably` again.
+
 ### 2026-04-20 - Keep an already active half-armed post-FSR DLSS PostSL startup alive across the remaining generic FG cooldown so GTA does not restart the same comeback into a second reactivation epoch
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260420_222504_gtanocrash_fsrfgtodlssfgoverlaydisappear` on build `0.1.2493` no longer crashes on `FSR_FG -> DLSS_FG`, but the visible overlay still disappears for much longer than Talos during the comeback. The GTA trace proves the comeback itself is structurally valid: CE preserves the fresh post-FSR Streamline `scQueue=000002237054E120`, clears the unsafe `GetState`-only suppressions on explicit `slDLSSGSetOptions(ON)`, publishes `runtime=DLSS_FG active=1`, later logs `DX12: ECL hook detected startup transition window expiry with pending PostSL activation ...`, and eventually reaches `DX12: PostSL CONFIRMED rendering via re-entrant Present` plus `DX12: Post-SL overlay SUBMIT #1`. So the queue/bootstrap/ownership path is not fundamentally broken.

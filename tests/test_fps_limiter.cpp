@@ -523,6 +523,38 @@ TEST(OverlayCompatTest, UsableSameProcessForegroundWindowIsAcceptedAfterResumeSe
                                                                          GetCurrentProcessId(), &width, &height));
 }
 
+TEST(OverlayCompatTest, SameProcessForegroundWindowCanDrivePostResumeCountdown) {
+    LONG width = 0;
+    LONG height = 0;
+    bool usingSameProcessForegroundWindow = false;
+
+    EXPECT_TRUE(ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
+        false, true, 320, 200, 1280, 720, &width, &height, &usingSameProcessForegroundWindow));
+    EXPECT_TRUE(usingSameProcessForegroundWindow);
+    EXPECT_EQ(1280, width);
+    EXPECT_EQ(720, height);
+    EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayAfterStartupResume(true, true, false, false, true, width,
+                                                                             height, 0, 100));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayAfterStartupResume(true, true, false, false, true, width,
+                                                                              height, 100, 100));
+}
+
+TEST(OverlayCompatTest, InvalidForegroundWindowDoesNotCreatePostResumeCandidate) {
+    LONG width = 0;
+    LONG height = 0;
+    bool usingSameProcessForegroundWindow = false;
+
+    EXPECT_FALSE(ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
+        false, false, 1280, 720, 1280, 720, &width, &height, &usingSameProcessForegroundWindow));
+    EXPECT_FALSE(usingSameProcessForegroundWindow);
+    EXPECT_EQ(1280, width);
+    EXPECT_EQ(720, height);
+
+    EXPECT_FALSE(ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
+        false, true, 1280, 720, 320, 200, &width, &height, &usingSameProcessForegroundWindow));
+    EXPECT_FALSE(usingSameProcessForegroundWindow);
+}
+
 TEST(OverlayCompatTest, StartupCompatibleAllocatorPoolCanShrinkForStartupOverlay) {
     EXPECT_EQ(3u, ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(true, true, false, false, 16));
     EXPECT_EQ(16u, ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(true, false, false, false, 16));

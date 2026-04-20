@@ -3013,6 +3013,9 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
     static bool s_hadStartupSuppression = false;
     static ULONGLONG s_resumeStableSinceMs = 0;
     static HWND s_resumeWindow = nullptr;
+    static HWND s_loggedSameProcessResumeWindow = nullptr;
+    static HWND s_loggedUnusableResumeGameWindow = nullptr;
+    static HWND s_loggedUnusableResumeForegroundWindow = nullptr;
     if (remainingMs) {
         *remainingMs = 0;
     }
@@ -3023,6 +3026,9 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
         s_hadStartupSuppression = false;
         s_resumeStableSinceMs = 0;
         s_resumeWindow = nullptr;
+        s_loggedSameProcessResumeWindow = nullptr;
+        s_loggedUnusableResumeGameWindow = nullptr;
+        s_loggedUnusableResumeForegroundWindow = nullptr;
         return false;
     }
 
@@ -3030,6 +3036,9 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
         s_hadStartupSuppression = true;
         s_resumeStableSinceMs = 0;
         s_resumeWindow = nullptr;
+        s_loggedSameProcessResumeWindow = nullptr;
+        s_loggedUnusableResumeGameWindow = nullptr;
+        s_loggedUnusableResumeForegroundWindow = nullptr;
         return false;
     }
 
@@ -3062,24 +3071,50 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
     LONG foregroundHeight = 0;
     const bool exactWindowForeground = (foregroundWindow == gameWindow);
     const ULONGLONG now = GetTickCount64();
-    const ULONGLONG elapsedSinceResumeReady =
-        (s_resumeStableSinceMs != 0 && now >= s_resumeStableSinceMs) ? (now - s_resumeStableSinceMs) : 0;
     const bool usableSameProcessForegroundWindow =
-        !exactWindowForeground && elapsedSinceResumeReady >= kStartupOverlayPostResumeSettleMs &&
+        !exactWindowForeground &&
         ce::overlay_compat::IsUsableSameProcessForegroundWindow(foregroundWindow, expectedProcessId, &foregroundWidth,
                                                                 &foregroundHeight);
-    const bool windowForeground = exactWindowForeground || usableSameProcessForegroundWindow;
-    if (usableSameProcessForegroundWindow) {
-        width = foregroundWidth;
-        height = foregroundHeight;
-    }
-    if (!windowForeground || !ce::overlay_compat::HasUsableDX12OverlayStartupWindowSize(width, height)) {
+    bool usingSameProcessForegroundWindow = false;
+    const bool trackableForegroundWindow = ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
+        exactWindowForeground, usableSameProcessForegroundWindow, width, height, foregroundWidth, foregroundHeight,
+        &width, &height, &usingSameProcessForegroundWindow);
+    if (!trackableForegroundWindow) {
+        if (s_loggedUnusableResumeGameWindow != gameWindow || s_loggedUnusableResumeForegroundWindow != foregroundWindow) {
+            HookLogImportant(
+                "DX12: Startup-overlay resume still waiting for a usable foreground window "
+                "(swapchainWindow=%p foregroundWindow=%p exact=%d sameProcessUsable=%d gameSize=%ldx%ld "
+                "foregroundSize=%ldx%ld)",
+                gameWindow, foregroundWindow, exactWindowForeground ? 1 : 0,
+                usableSameProcessForegroundWindow ? 1 : 0, width, height, foregroundWidth, foregroundHeight);
+            s_loggedUnusableResumeGameWindow = gameWindow;
+            s_loggedUnusableResumeForegroundWindow = foregroundWindow;
+        }
         s_resumeStableSinceMs = 0;
-        s_resumeWindow = windowForeground ? foregroundWindow : gameWindow;
+        s_resumeWindow = gameWindow;
         return true;
     }
 
-    const HWND stableWindow = exactWindowForeground ? gameWindow : foregroundWindow;
+    s_loggedUnusableResumeGameWindow = nullptr;
+    s_loggedUnusableResumeForegroundWindow = nullptr;
+
+    // GTA can switch from the swapchain HWND to another same-process foreground
+    // window while the Social Club startup path unwinds. Track either stable
+    // candidate so the post-resume delay can count down instead of latching at
+    // remaining=0ms forever when the exact swapchain window no longer owns the
+    // foreground.
+    const bool windowForeground = true;
+    const HWND stableWindow = usingSameProcessForegroundWindow ? foregroundWindow : gameWindow;
+    if (usingSameProcessForegroundWindow && s_loggedSameProcessResumeWindow != stableWindow) {
+        HookLogImportant(
+            "DX12: Startup-overlay resume tracking usable same-process foreground window %p instead of "
+            "swapchain window %p (foregroundSize=%ldx%ld)",
+            stableWindow, gameWindow, width, height);
+        s_loggedSameProcessResumeWindow = stableWindow;
+    } else if (!usingSameProcessForegroundWindow) {
+        s_loggedSameProcessResumeWindow = nullptr;
+    }
+
     if (s_resumeWindow != stableWindow || s_resumeStableSinceMs == 0) {
         s_resumeWindow = stableWindow;
         s_resumeStableSinceMs = now;

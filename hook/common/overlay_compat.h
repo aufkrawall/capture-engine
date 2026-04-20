@@ -489,6 +489,48 @@ inline bool IsUsableSameProcessForegroundWindow(HWND foregroundWindow, DWORD exp
     return HasUsableDX12OverlayStartupWindowSize(localWidth, localHeight);
 }
 
+inline bool ResolveDX12OverlayStartupResumeForegroundWindowMetrics(bool exactWindowForeground,
+                                                                   bool usableSameProcessForegroundWindow,
+                                                                   LONG gameWidth, LONG gameHeight,
+                                                                   LONG foregroundWidth, LONG foregroundHeight,
+                                                                   LONG* resolvedWidth = nullptr,
+                                                                   LONG* resolvedHeight = nullptr,
+                                                                   bool* usingSameProcessForegroundWindow = nullptr) {
+    if (resolvedWidth) {
+        *resolvedWidth = gameWidth;
+    }
+    if (resolvedHeight) {
+        *resolvedHeight = gameHeight;
+    }
+    if (usingSameProcessForegroundWindow) {
+        *usingSameProcessForegroundWindow = false;
+    }
+
+    if (exactWindowForeground) {
+        return HasUsableDX12OverlayStartupWindowSize(gameWidth, gameHeight);
+    }
+
+    if (!usableSameProcessForegroundWindow) {
+        return false;
+    }
+
+    if (!HasUsableDX12OverlayStartupWindowSize(foregroundWidth, foregroundHeight)) {
+        return false;
+    }
+
+    if (resolvedWidth) {
+        *resolvedWidth = foregroundWidth;
+    }
+    if (resolvedHeight) {
+        *resolvedHeight = foregroundHeight;
+    }
+    if (usingSameProcessForegroundWindow) {
+        *usingSameProcessForegroundWindow = true;
+    }
+
+    return true;
+}
+
 inline bool ShouldDelayDX12OverlayAfterStartupResume(bool processNeedsDelay, bool hadStartupSuppression,
                                                      bool actualFGActive, bool runtimeOwnedSwapchainNeedsExtraSettle,
                                                      bool windowForeground, LONG width, LONG height,
