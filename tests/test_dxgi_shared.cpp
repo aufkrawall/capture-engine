@@ -737,6 +737,18 @@ TEST(DXGISharedTest, FFXPresentCallbackOverlayBackendResetsOnlyForDeviceOrFormat
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldResetFFXPresentCallbackOverlayBackend(true, false, false));
 }
 
+TEST(DXGISharedTest, NormalOverlayCleanupPreservesFFXCallbackBackendOnlyWhileRuntimeOwnedNativeFGPresentPathPersists) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(true, true));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(false, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(false, false));
+}
+
 TEST(DXGISharedTest, FFXPresentCallbackFallbackCopyOnlyRunsWithoutRuntimeCompositionCallback) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, true));
 

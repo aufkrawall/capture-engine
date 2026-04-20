@@ -541,6 +541,18 @@ inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized,
     return backendInitialized && (deviceChanged || formatChanged);
 }
 
+inline bool ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(bool callbackBackendInitialized,
+                                                                              bool runtimeOwnedNativeFGPresentPath) {
+    // A temporary native-FSR suspension can make the normal pre-SL overlay path
+    // rebuild its own sync state while the runtime-owned FFX Present path still
+    // owns presentation. Tearing down the dedicated callback backend in that
+    // window forces a fresh callback-backend re-init on resume. Talos already
+    // proves the backend can safely stay warm across those transient
+    // suspensions, and GTA resume stability depends on avoiding that extra
+    // callback-path churn.
+    return callbackBackendInitialized && runtimeOwnedNativeFGPresentPath;
+}
+
 inline bool ShouldTreatFormatAsDefinitelyHDR(int dxgiFormat) {
     return dxgiFormat == static_cast<int>(DXGI_FORMAT_R16G16B16A16_FLOAT);
 }

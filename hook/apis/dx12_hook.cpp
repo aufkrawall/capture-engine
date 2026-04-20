@@ -2187,6 +2187,13 @@ static bool EnsureOverlayAdapterReadyForFFXPresentCallback(
         g_FFXPresentOverlayFormat = resourceDesc.Format;
         HookLogImportant("DX12: FFX present callback initialized overlay adapter for runtime-owned FSR (fmt=%d hdr=%d)",
                          static_cast<int>(resourceDesc.Format), callbackOutputHDR ? 1 : 0);
+    } else {
+        static std::atomic<int> s_ffxPresentOverlayReuseLogCount{0};
+        const int reuseLogCount = s_ffxPresentOverlayReuseLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (reuseLogCount < 10 || (reuseLogCount % 300) == 0) {
+            HookLog("DX12: Reusing FFX present callback overlay adapter for runtime-owned FSR (device=%p fmt=%d frameId=%llu)",
+                    dx12Device, static_cast<int>(resourceDesc.Format), static_cast<unsigned long long>(desc->frameID));
+        }
     }
 
     return true;
@@ -2404,7 +2411,10 @@ static bool UpdateHeuristicFSRFGState(bool active, const char* source) {
 }
 
 void ShutdownImGui();
-void CleanupOverlay();
+void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend);
+inline void CleanupOverlay() {
+    CleanupOverlay(false);
+}
 void CleanupRTVs();
 static void DrawOverlay(ID3D12GraphicsCommandList* list, bool isRealFrame, UINT bufferIdx,
                         D3D12_CPU_DESCRIPTOR_HANDLE* rtvOverride = nullptr);
@@ -3824,7 +3834,7 @@ void DX12_NotifyCommandLists(UINT numCommandLists) {
 }
 
 void DX12_OnSwapchainResizeEnd();
-void CleanupOverlay();
+void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend);
 void CleanupRTVs();
 void DX12_InvalidateSwapchain();
 
@@ -6257,9 +6267,26 @@ static bool DrainCommandQueue(ID3D12CommandQueue* queue, ID3D12Device* device) {
     return true;
 }
 
-void CleanupOverlay() {
-    if (!g_State.syncInit)
+void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend) {
+    auto cleanupFFXPresentCallbackBackend = [preserveNativeFSRPresentCallbackBackend]() {
+        if (preserveNativeFSRPresentCallbackBackend) {
+            return;
+        }
+        if (g_FFXPresentRtvHeap) {
+            g_FFXPresentRtvHeap->Release();
+            g_FFXPresentRtvHeap = nullptr;
+        }
+        if (g_FFXPresentOverlayAdapter.IsInitialized()) {
+            g_FFXPresentOverlayAdapter.Shutdown();
+        }
+        g_FFXPresentOverlayDevice = nullptr;
+        g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
+    };
+
+    if (!g_State.syncInit) {
+        cleanupFFXPresentCallbackBackend();
         return;
+    }
 
     // Dedicated overlay queue: flush overlay queue instead of game queue
     ID3D12CommandQueue* queueToFlush = g_State.overlayQueue;
@@ -6305,15 +6332,7 @@ void CleanupOverlay() {
         g_State.crossQueueFence->Release();
         g_State.crossQueueFence = nullptr;
     }
-    if (g_FFXPresentRtvHeap) {
-        g_FFXPresentRtvHeap->Release();
-        g_FFXPresentRtvHeap = nullptr;
-    }
-    if (g_FFXPresentOverlayAdapter.IsInitialized()) {
-        g_FFXPresentOverlayAdapter.Shutdown();
-    }
-    g_FFXPresentOverlayDevice = nullptr;
-    g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
+    cleanupFFXPresentCallbackBackend();
     g_State.currentFenceValue = 0;
     g_State.crossQueueFenceValue = 0;
     g_State.allocIndex = 0;
@@ -9853,9 +9872,21 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         // deferred cleanup MUST hold mutex to prevent race with DrawOverlay
         if (g_OverlayAdapter.IsInitialized()) {
             std::lock_guard<std::recursive_mutex> cleanupLock(g_OverlayMutex);
+            const bool preserveNativeFSRPresentCallbackBackend =
+                ce::dx12_overlay_policy::ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(
+                    g_FFXPresentOverlayAdapter.IsInitialized(), HookHasRuntimeOwnedNativeFGPresentPath());
             HookLog("DX12: ProcessFrame - cleaning up stale OverlayAdapter (mutex held)");
+            if (preserveNativeFSRPresentCallbackBackend) {
+                HookLogImportant(
+                    "DX12: ProcessFrame - preserving native FSR present-callback overlay backend during normal "
+                    "overlay cleanup because the runtime-owned native FG Present path still owns presentation "
+                    "(runtime=%s scQ=%p origGame=%p explicitOff=%d)",
+                    ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_SwapchainQueue,
+                    g_OriginalGameQueue,
+                    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0);
+            }
             g_OverlayAdapter.Shutdown();
-            CleanupOverlay();
+            CleanupOverlay(preserveNativeFSRPresentCallbackBackend);
             CleanupRTVs();
             HookLog("DX12: ProcessFrame - cleanup complete, proceeding with init");
         }

@@ -14,6 +14,41 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-20 - Preserve the warm native-FSR callback backend across temporary suspend/resume windows so GTA does not cold-reinit it back into the `ffxQuery` deadlock family
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260420_171341_gtacrash_fsrfgcrashonsuspend` on build `0.1.2489` still froze when the game temporarily suspended native FSR FG for the menu and then resumed it a fraction of a second later. The same session's initial FSR bring-up on the `originalPresent=resolvedPresent=null` fallback-copy callback path is healthy up front, but after the suspend burst (`17:15:20.230-17:15:20.932`) GTA logs a second `DX12: FFX present callback initialized overlay adapter for runtime-owned FSR ...` at `17:15:20.980` immediately before the later freeze. The dump `GTA5_Enhanced.exe_2026-04-20_17-15-53.dmp` again shows the `AMD FSR Interpolation Thread`, `AMD FSR Presenter Thread`, and another GTA worker thread blocked in `amd_fidelityfx_dx12!ffxQuery`.
+
+- **Talos comparison that narrowed the seam**:
+  1. Talos `installed/captureengine/logs/20260420_171636_talosnocrash_fsrfgnocrashonsuspend` on the same build survives repeated menu-driven suspend/resume with no dump and continuous recovery.
+  2. Talos still exercises the same transient `ffxConfigure(frameGenerationEnabled=0)` teardown window plus later resume on the runtime-owned FSR path, but its hook log only ever shows one `DX12: FFX present callback initialized overlay adapter ...` line for the whole session.
+  3. That means the GTA-only divergence is not merely "native FSR got suspended" or "originalPresent was null". The sharper mismatch is callback-backend lifecycle churn on resume: GTA cold-reinitializes the dedicated callback backend again during the temporary resume family, Talos keeps the proven warm backend alive across that same kind of transient suspension.
+
+- **Root cause refinement**:
+  1. `hook/apis/dx12_hook.cpp` already has a dedicated backend for the runtime-owned native-FSR callback path (`g_FFXPresentOverlayAdapter` / `g_FFXPresentRtvHeap`) so it does not inherit the normal injected overlay backend.
+  2. But generic normal-overlay cleanup still ran through the shared `CleanupOverlay()` path, and that helper unconditionally shut down the dedicated native-FSR callback backend too.
+  3. During a temporary native-FSR suspension where the runtime-owned swapchain still owns presentation, that coupling is too broad. The normal pre-SL overlay path may legitimately rebuild its own sync state while `HookHasRuntimeOwnedNativeFGPresentPath()` is still true, but that does **not** mean the runtime-owned callback backend itself became invalid.
+  4. GTA's null-runtime-composition fallback path appears sensitive to that needless cold callback-backend reinit on quick resume; Talos's no-crash trace shows the safe generic target state instead: keep the warm backend alive and reuse it when native FSR resumes on the same runtime-owned path.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now adds `ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(...)`, making the intended rule explicit and testable.
+  2. `hook/apis/dx12_hook.cpp` now lets `CleanupOverlay(...)` optionally preserve `g_FFXPresentOverlayAdapter` / `g_FFXPresentRtvHeap` while still cleaning the normal overlay sync state. Full cleanup paths still tear the callback backend down; only the transient normal-overlay cleanup family can preserve it.
+  3. The ProcessFrame stale-normal-overlay cleanup path now uses that preserve mode while `HookHasRuntimeOwnedNativeFGPresentPath()` is still true, and logs `preserving native FSR present-callback overlay backend during normal overlay cleanup ...` so future suspend/resume traces show the decision directly.
+  4. `EnsureOverlayAdapterReadyForFFXPresentCallback(...)` now also logs `Reusing FFX present callback overlay adapter ...` on the warm-backend path, so future GTA/Talos traces can distinguish warm reuse from a cold callback-backend init.
+  5. `tests/test_dxgi_shared.cpp` now adds `NormalOverlayCleanupPreservesFFXCallbackBackendOnlyWhileRuntimeOwnedNativeFGPresentPathPersists`.
+
+- **Why this is generic**: This is not a GTA-only workaround and not a blanket "never clean up" rule. The generic invariant is: as long as the runtime-owned native-FG Present path still owns presentation, normal pre-SL overlay cleanup must not accidentally tear down the dedicated runtime-owned callback backend. That backend should stay warm across transient suspend/resume windows and only be cold-reset on real swapchain/device/format boundaries or full cleanup paths.
+
+- **Verification**:
+  - Re-checked GTA `installed/captureengine/logs/20260420_171341_gtacrash_fsrfgcrashonsuspend/{hook_debug.log,GTA5_Enhanced.exe_2026-04-20_17-15-53.dmp}`.
+  - Re-checked Talos `installed/captureengine/logs/20260420_171636_talosnocrash_fsrfgnocrashonsuspend/hook_debug.log` as the same-build no-crash comparison.
+  - Used `analysis/analyze_dump.ps1` plus `cdb.exe` thread inspection and confirmed the GTA dump still lands in the native-FSR `amd_fidelityfx_dx12!ffxQuery` worker-thread family (`AMD FSR Interpolation Thread`, `AMD FSR Presenter Thread`, and GTA thread `0x5A00`).
+  - Ran `python build.py --run-tests --tests-only --skip-updates --gtest-filter="DXGISharedTest.*"`; the focused DXGI/policy suite passed, including the new callback-backend preservation test.
+  - Ran `python build.py --skip-updates`; full rebuild passed and produced build `0.1.2491`.
+
+- **Files changed**: `hook/apis/dx12_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next GTA check is that a menu-driven native-FSR suspend/resume on build `0.1.2491+` no longer logs a second `DX12: FFX present callback initialized overlay adapter ...` for the same runtime-owned path, instead logs the new preserve/reuse lines, and stays out of the `amd_fidelityfx_dx12!ffxQuery` deadlock family. Talos should continue to show the same single-init warm-backend behavior across repeated suspend/resume windows.
+
 ### 2026-04-20 - Keep Streamline Present routing disabled for the full native-FSR runtime-owned ownership window so GTA cannot re-attach SL mid-handoff
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260420_121020_gtacrash_dlssfgtofsrfgcrash` on build `0.1.2482` still froze on `DLSS_FG -> FSR_FG` even after the earlier authoritative-FFX queue-ownership fix from `0.1.2472/2473`. The old stale-Streamline queue-hook mismatch is now visibly fixed: GTA logs `Authoritative FFX ownership overrides stale Streamline runtime queue authority ...`, then `Skipping vtable hook for FG runtime queue 000001D88F1C6A70 ... — preserving FSR timing`, reaches authoritative FFX takeover, spends hundreds of `enabled=0` callbacks on the fallback-copy path (`originalPresent=resolvedPresent=null`), then enables native FSR at `frameID=667-669` and successfully renders several runtime-owned callback frames (`DX12: FFX present callback rendered overlay on runtime-owned FSR path` for `frameId=668-674`). But the later mirrored dump `GTA5_Enhanced.exe_2026-04-20_12-12-59.dmp` still lands in GTA's own breakpoint/wait path a few hundred milliseconds later, so a mixed-runtime seam still survived after callback bring-up.
