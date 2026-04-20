@@ -30,18 +30,17 @@ void OnAuthoritativeFFXTakeover();
 // ahead of the later explicit SetOptions enable.
 void OnAuthoritativeStreamlineStartupHandoff();
 
-// Forward any suppressed slDLSSGSetOptions(OFF) call that was buffered during
-// the startup transition window, now that the window has expired.  Called from
-// periodic check points (DetourPresent, DetourPresent1, GetState, etc.) to
-// ensure deferred OFF signals eventually reach Streamline.
+// Forward or discard any suppressed slDLSSGSetOptions(OFF) call that was buffered
+// during startup-window churn once the window is no longer the active blocker.
+// Called from periodic check points (DetourPresent, DetourPresent1, GetState,
+// etc.) so stale deferred OFF does not linger indefinitely.
 //
 // When PostSL activation is still pending (startup-handoff Present bypassed the
 // synthetic Present path, or the callback is deferred by the startup transition
 // window guard), this function also triggers the PostSL callback directly before
-// forwarding the suppressed OFF.  This ensures PostSL activation is attempted
-// before Streamline receives OFF and potentially destabilizes its FG pipeline.
-// The activationPending flag alone is the ground truth — the callback may be
-// installed but deferred (postSLActive=false) while still needing activation.
+// forwarding a genuine OFF edge. If a newer explicit post-FSR comeback is already
+// half-armed and the buffered OFF is now just stale startup churn, the stale OFF
+// is discarded instead of being replayed into the recovered comeback.
 void FlushSuppressedSetOptionsOffIfNeeded();
 
 }  // namespace StreamlineHook

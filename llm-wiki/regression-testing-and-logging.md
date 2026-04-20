@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-04-19
+Last cross-checked: 2026-04-20
 
 Primary sources:
 - `AGENTS.md`
@@ -82,6 +82,7 @@ Primary sources:
 - If you touch Streamline stall detection, verify that top-level `Present1` traffic counts as forward progress alongside `Present`; otherwise `Present STALLED` can become a false positive on games/runtimes that switch entrypoints during DLSS activation.
 - If you touch Streamline startup-window or state-signal logic, verify that the startup transition window is only armed by fresh activation/handoff edges and cannot be kept alive indefinitely by steady-state active `GetState` / `SetOptions` polls.
 - If you touch startup-window extension or deferred-OFF churn handling, verify separately that extending the window does not reset the one-shot top-level startup-handoff Present latch; a later deferred OFF must not reopen a second promoted top-level Present in the same handoff.
+- If you touch deferred startup-window OFF replay after a post-FSR comeback, verify both halves explicitly: half-armed explicit `SetOptions(ON)` post-FSR comebacks must keep stale OFF churn deferred past literal startup-window expiry, and once that comeback is already the live effective signal the stale buffered OFF must be dropped rather than replayed later into the recovered DLSS epoch.
 - If you touch promoted Streamline startup-handoff Present routing, verify the active and staged observer paths separately: active mode may still need the selected handoff Present to reach the top-level CE processing path and return via the bypass/original DXGI Present path, but observer mode must not accidentally promote that Streamline-originated handoff Present once the staged seam has been narrowed back to the synthetic route.
 - If you touch dormant PostSL startup activation, verify both startup families explicitly: pure DLSS startup must be able to promote PostSL even when Streamline only emits a very short synthetic Present burst, while post-FSR DLSS startup still waits for the safer wrapper/direct bootstrap path before PostSL fully activates.
 - If you touch the pure-DLSS startup-window gating, verify both layers separately: real PostSL rendering must still defer while the startup window is active, and the gated PostSL callback itself must also stay dormant for the top-level-handoff wrapper-progress family until the startup window expires. Otherwise CE can still perturb Streamline just by entering the callback and spending the only decisive callback on warm-up.

@@ -252,6 +252,44 @@ TEST(StreamlineRuntimePolicyTest, SuppressSetOptionsOffDuringStartupTransitionWi
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(false, false));
 }
 
+TEST(StreamlineRuntimePolicyTest, ExplicitPostFSRComebackKeepsOffChurnDeferredWhileHalfArmed) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+        true, true, true, false, false, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+        false, true, true, true, false, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+        false, true, true, false, true, false));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+        false, false, true, true, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+        false, true, false, true, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+        false, true, true, false, false, true));
+}
+
+TEST(StreamlineRuntimePolicyTest, ExplicitPostFSRComebackDropsStaleSuppressedOffChurnOnceActive) {
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(true, true, true));
+
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(false, true, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(true, false, true));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(true, true, false));
+}
+
+TEST(StreamlineRuntimePolicyTest, CombinedRuntimeStateDefersHalfArmedExplicitPostFSRComebackOffAfterWindowExpiry) {
+    const bool deferOff = ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+        false, true, true, true, false, false);
+    const auto update = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, deferOff, true, 2);
+
+    EXPECT_TRUE(update.deferredOffDuringStartupWindow);
+    EXPECT_TRUE(update.effectiveActive);
+    EXPECT_EQ(2, update.effectiveMultiplier);
+}
+
 TEST(StreamlineRuntimePolicyTest, DirectPostSLCallbackTriggerStopsAfterActivationCompletes) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(true, false));
 

@@ -133,16 +133,36 @@ inline bool ShouldArmStartupTransitionWindowOnFreshActiveSignal(bool active, boo
     return active && !previousSignal;
 }
 
-inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool requestedActive,
-                                                                      bool startupTransitionWindowActive,
+inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool requestedActive, bool deferOffSignal,
                                                                       bool previousSignal, int requestedMultiplier) {
     CombinedRuntimeSignalUpdate update;
-    update.deferredOffDuringStartupWindow = !requestedActive && startupTransitionWindowActive;
+    update.deferredOffDuringStartupWindow = !requestedActive && deferOffSignal;
     update.effectiveActive = update.deferredOffDuringStartupWindow ? previousSignal : requestedActive;
     update.effectiveMultiplier = update.effectiveActive ? requestedMultiplier : 0;
     update.freshActivationEdge = requestedActive && !previousSignal;
     update.shouldExtendStartupTransitionWindow = update.deferredOffDuringStartupWindow && previousSignal;
     return update;
+}
+
+inline bool ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+    bool startupTransitionWindowActive, bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback,
+    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering) {
+    if (startupTransitionWindowActive) {
+        return true;
+    }
+
+    // A real explicit post-FSR comeback can still be half-armed after the literal
+    // startup window has expired. Replaying the earlier OFF churn at that point can
+    // tear down the same live comeback before PostSL has finished proving the
+    // recovered topology.
+    return hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback && !postSLConfirmedRendering &&
+           (startupActivationPending || postSLActiveButUnconfirmed);
+}
+
+inline bool ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(bool hadFSRFGPhase,
+                                                                   bool explicitSetOptionsActivationForCurrentComeback,
+                                                                   bool effectiveSignalActive) {
+    return hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback && effectiveSignalActive;
 }
 
 inline bool ResolveCurrentComebackExplicitSetOptionsActivation(bool previousExplicitSetOptionsActivation,

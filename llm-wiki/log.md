@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-Last cross-checked: 2026-04-16
+Last cross-checked: 2026-04-20
 
 Purpose:
 - Track wiki edits.
@@ -13,6 +13,39 @@ Update rules:
 - If an area is churning, call that out explicitly so the next reader knows to re-check the code.
 
 ## Activity Timeline
+
+### 2026-04-20 - Keep stale startup-window OFF churn from tearing down an explicit post-FSR DLSS comeback after startup expiry
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260419_230437_gtacrash_fsrfgtodlssfg` on build `0.1.2468` still crashed on `FSR_FG -> DLSS_FG`, but the failure family was now different from the older Steam / `sl_dlss_g` Present-hook crashes. The first comeback at `23:07:10` is structurally good: CE re-probes `realECL`, preserves the fresh post-FSR Streamline handoff queue `000001DB8D7BDD90`, logs a real `Streamline Hook: FG state transition OFF->ON via SetOptions`, and keeps the startup-handoff plus later decisive synthetic startup Presents on the normal route with `callbackOnNormal=1`. PostSL even reactivates, warms up, and later confirms rendering. The actual crash happens because startup-window `slDLSSGSetOptions(OFF)` churn was still being buffered and then replayed after startup expiry. At `23:07:12.095`, CE logs `transition-cooldown-complete ... runtime=STREAMLINE_NO_FG active=0`, `DX12: Streamline FG OFF — disabled PostSL callback`, releases the preserved `scQueue`, and falls into post-FSR inactive recovery. A later second explicit `OFF->ON via SetOptions` then has to recover without a fresh authoritative `scQueue`, so the first confirmed PostSL submit lands on `origGame` and immediately returns `devRemoved=0x887A002B`, after which GTA shows the visible `ERR_GFX_STATE` dialog and the dump lands in GTA's own message-box/breakpoint path rather than in `sl_dlss_g`.
+
+- **Talos comparison that narrowed the seam**:
+  1. Talos `installed/captureengine/logs/20260419_230820_talosnocrash_fsrfgtodlssfg` on the same build also reaches the post-FSR explicit comeback family: preserved fresh handoff queue `000001A2D2EFFAB0`, `OFF->ON via SetOptions`, normal-route startup Presents with `callbackOnNormal=1`, and later expiry-driven activation.
+  2. Talos does not tear the comeback back down at startup expiry. Instead, it keeps the preserved `scQueue`, falls back to that queue in the post-FSR path, logs `origECL=1 realECL=1 sameQueue=1`, passes the three scratch-barrier probes, and sustains `DX12: PostSL post-FSR submit #0..#600` plus `Post-SL overlay SUBMIT` traffic with no device removal.
+  3. GTA only diverges after the buffered OFF replay. Once CE has replayed that stale OFF, the recovered epoch no longer has the preserved runtime-owned `scQueue`, so the later direct submit is forced onto `origGame` (`scQueue=0`, `sameQueue=0`) and immediately hits the old `DEVICE_REMOVED` / `ERR_GFX_STATE` family.
+
+- **Root cause refinement**:
+  1. The previous provenance fix from `2026-04-17` was real but incomplete. CE correctly kept the current comeback classified as explicit `SetOptions`-activated even after startup-window OFF churn re-armed the provisional GetState-only suppression latch.
+  2. The remaining mismatch was that the stale buffered OFF itself still survived and was replayed later from multiple expiry paths (`GetState`, inline `SetOptions` expiry handling, and `FlushSuppressedSetOptionsOffIfNeeded()`) once the literal startup timer elapsed.
+  3. On an explicit post-FSR comeback, that replayed OFF is no longer a trustworthy inactive edge. It is startup/runtime noise from the same comeback epoch. Replaying it after CE has already preserved the recovered `scQueue`, re-probed `realECL`, and switched routing/callback policy onto the explicit post-FSR normal-route family tears down the very comeback CE is in the middle of recovering.
+
+- **Fix**:
+  1. `hook/common/streamline_runtime_policy.h` now adds `ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(...)`. The rule is: if the current epoch has post-FSR history, the comeback was explicitly activated via `SetOptions`, and PostSL is still startup-pending or active-but-unconfirmed, OFF churn stays deferred even after the literal startup window has expired.
+  2. `hook/common/streamline_runtime_policy.h` now also adds `ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(...)`. Once the explicit post-FSR comeback is already the live effective DLSS signal, a previously buffered startup OFF is stale noise and should be discarded instead of replayed later.
+  3. `hook/apis/streamline_hook.cpp` now uses those helpers in all delayed-OFF seams: combined runtime-signal reduction, the `GetState` expiry flush, the inline `SetOptions` expiry flush, and `FlushSuppressedSetOptionsOffIfNeeded()`. New logs now distinguish `Keeping OFF churn deferred after startup window expiry ...` from `Dropping stale suppressed slDLSSGSetOptions(OFF) ...`, so future traces show when CE intentionally protected the live comeback instead of replaying old startup noise.
+  4. `tests/test_streamline_runtime_policy.cpp` now adds focused coverage for: keeping OFF churn deferred while an explicit post-FSR comeback remains half-armed, dropping stale buffered OFF once that comeback is already the active effective signal, and the combined runtime-signal reducer preserving `effectiveActive=true` across the post-expiry half-armed explicit-post-FSR case.
+
+- **Why this is generic**: This is not a GTA-only workaround. The generic invariant is that startup-window OFF churn is only trustworthy as a real inactive edge before a stronger recovery epoch has already taken ownership. Once CE has a newer explicit post-FSR `SetOptions(ON)` comeback and that comeback is still half-armed or already the live effective signal, replaying an older buffered OFF into that same epoch reintroduces a false local `FG OFF` transition and can destroy the recovered queue/bootstrap state that the comeback depends on.
+
+- **Verification**:
+  - Re-checked `installed/captureengine/logs/20260419_230437_gtacrash_fsrfgtodlssfg/{hook_debug.log,GTA5_Enhanced.exe_FREEZE_2026-04-19_23-07-16_802.dmp,external_93d8df7a-2608-4843-aa92-acfe40e19d9f.dmp}`.
+  - Re-checked `installed/captureengine/logs/20260419_230820_talosnocrash_fsrfgtodlssfg/hook_debug.log` as the same-build non-crash comparison.
+  - Confirmed the GTA dumps are now the game's own `ERR_GFX_STATE` family rather than the old Streamline/Steam hook-chain crash family.
+  - Ran `python build.py --run-tests --tests-only --skip-updates --gtest-filter="StreamlineRuntimePolicyTest.*:DXGISharedTest.PostSLOnlyLatchesSuspensionForFullyInactiveSignalDrop"`; the focused policy suite passed.
+  - Ran `python build.py --verify --skip-updates`; verification passed and `build/verification/latest_summary.txt` reports success on lint, sanitizer regression, unit tests, build, and compile-commands generation.
+
+- **Files changed**: `hook/common/streamline_runtime_policy.h`, `hook/apis/streamline_hook.cpp`, `hook/apis/streamline_hook.h`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next GTA check is that `FSR_FG -> DLSS_FG` on build `0.1.2471+` no longer logs any buffered OFF replay that tears the first explicit comeback back to `STREAMLINE_NO_FG`, keeps the preserved `scQueue` alive through startup expiry, and avoids the later `devRemoved=0x887A002B` / `ERR_GFX_STATE` seam. Talos should still retain its existing no-crash `post-FSR submit` family on the same build.
 
 ### 2026-04-19 - Use real output color-space detection on the native-FSR callback overlay path so 10-bit SDR targets do not get misclassified as HDR
 
