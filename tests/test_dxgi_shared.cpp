@@ -1464,12 +1464,43 @@ TEST(DXGISharedTest, PostSLReactivatesAfterLifecycleResetEvenIfCallbackStateWasS
 }
 
 TEST(DXGISharedTest, PostSLBootstrapsOverlayStateOnlyWhenDormantReactivationOutrunsProcessFrame) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, false, false, false, false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(false, true, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, false, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(false, true, false, false, false, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, false, false, false, false, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, true, false, false, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, true, false, false, false));
+}
+
+TEST(DXGISharedTest, PostSLBootstrapsOverlayStateDuringHalfArmedSyntheticStartupEvenIfProcessFrameIsRecent) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, true, true, false, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, true, false, true, false));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, true, false, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, true, true, false, true));
+}
+
+TEST(DXGISharedTest, SceneTransitionCooldownIsSuppressedDuringHalfArmedSyntheticStartup) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(
+        true, true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(
+        true, false, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(
+        false, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(
+        true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(
+        true, true, false, true));
 }
 
 TEST(DXGISharedTest, PostSLUsesSelectedSwapchainQueueDirectSubmitAfterFSRWhenAvailable) {

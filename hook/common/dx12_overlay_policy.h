@@ -1025,8 +1025,20 @@ inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPen
 }
 
 inline bool ShouldBootstrapPostSLOverlayState(bool streamlineFGRunning, bool postSLActive, bool overlayInit,
-                                              bool processFrameRecentlySeen) {
-    return streamlineFGRunning && postSLActive && !overlayInit && !processFrameRecentlySeen;
+                                              bool processFrameRecentlySeen, bool startupActivationPending,
+                                              bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering) {
+    const bool syntheticStartupHalfArmed =
+        !postSLConfirmedRendering && (startupActivationPending || postSLActiveButUnconfirmed);
+    return streamlineFGRunning && postSLActive && !overlayInit &&
+           (!processFrameRecentlySeen || syntheticStartupHalfArmed);
+}
+
+inline bool ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(bool streamlineFGRunning,
+                                                                              bool startupActivationPending,
+                                                                              bool postSLActiveButUnconfirmed,
+                                                                              bool postSLConfirmedRendering) {
+    return streamlineFGRunning && !postSLConfirmedRendering &&
+           (startupActivationPending || postSLActiveButUnconfirmed);
 }
 
 inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,

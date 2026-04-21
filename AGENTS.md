@@ -44,3 +44,4 @@ Repository-specific instructions for coding agents working in this repo.
 - The worktree may already contain unrelated user edits; do not revert them.
 - Don't wait ages on truncated outputs, check results directly without wasting time.
 - Always stage and push git commits after changes. Exception: When explicitly asked not to push.
+- DON'T BE SHY ABOUT PUSHING AND COMMITTING, GENERALLY DO IT WITHOUT AWAITING FURTHER CONFIRMATION!

@@ -6783,6 +6783,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     const bool postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
     const bool startupActivationPending =
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
     if (cachedSLFGActive) {
         s_wasSLFGActive = true;
         s_postSLFGSuspended = false;
@@ -7049,8 +7050,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     if (!dev)
         dev = g_Device.load(std::memory_order_acquire);
 
-    if (dev && ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(cachedSLFGActive, active, g_State.overlayInit,
-                                                                          processFrameRecentlySeen)) {
+    if (dev && ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(
+                   cachedSLFGActive, active, g_State.overlayInit, processFrameRecentlySeen,
+                   startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering)) {
         DXGI_SWAP_CHAIN_DESC bootstrapDesc = {};
         const HRESULT descHr = pSwapChain->GetDesc(&bootstrapDesc);
         if (SUCCEEDED(descHr)) {
@@ -11478,12 +11480,34 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 double deltaMs =
                     (double)(now.QuadPart - s_lastProcessFrameTime.QuadPart) * 1000.0 / (double)freq.QuadPart;
 
+                const bool startupActivationPending =
+                    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+                const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+                const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
+                const bool suppressSceneCooldownForSyntheticStartup =
+                    ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(
+                        currentSLFGRunning, startupActivationPending, postSLActiveButUnconfirmed,
+                        postSLConfirmedRendering);
+
                 if (deltaMs > 1000.0 && currentFGActive) {
-                    int cooldown = 30;
-                    g_SceneTransitionCooldown.store(cooldown, std::memory_order_release);
-                    HookLogImportant(
-                        "DX12: Scene transition detected (gap=%.0fms) during FG — overlay cooldown %d frames", deltaMs,
-                        cooldown);
+                    if (suppressSceneCooldownForSyntheticStartup) {
+                        static std::atomic<int> s_syntheticStartupSceneCooldownSkipLogCount{0};
+                        const int logCount =
+                            s_syntheticStartupSceneCooldownSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+                        if (logCount < 10 || (logCount % 100) == 0) {
+                            HookLogImportant(
+                                "DX12: Suppressing scene transition cooldown during half-armed synthetic PostSL startup "
+                                "(gap=%.0fms pending=%d unconfirmed=%d confirmed=%d)",
+                                deltaMs, startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
+                                postSLConfirmedRendering ? 1 : 0);
+                        }
+                    } else {
+                        int cooldown = 30;
+                        g_SceneTransitionCooldown.store(cooldown, std::memory_order_release);
+                        HookLogImportant(
+                            "DX12: Scene transition detected (gap=%.0fms) during FG — overlay cooldown %d frames",
+                            deltaMs, cooldown);
+                    }
                 }
             }
             s_lastProcessFrameTime = now;
