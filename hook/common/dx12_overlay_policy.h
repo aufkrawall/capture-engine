@@ -659,9 +659,26 @@ inline bool ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(bool authorit
     return authoritativeFSRActive && runtimeTargetIsNone && fgTransitionCooldown > 0;
 }
 
+inline bool ShouldSuppressHeuristicFSRActivationDuringAuthoritativeStreamlineStartupHandoff(
+    bool runtimeOwnsSwapchain, bool streamlineStartupHandoffPending, fg_runtime::RuntimeMode runtimeMode) {
+    // A fresh authoritative Streamline startup handoff can move presentation onto
+    // a runtime-owned queue while Streamline still reports Off/NoFG. Treating that
+    // queue change as heuristic FSR FG poisons the later DLSS comeback before any
+    // real FSR proof exists.
+    const bool runtimeStillInactive =
+        runtimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG || runtimeMode == fg_runtime::RuntimeMode::kOff;
+    return runtimeOwnsSwapchain && streamlineStartupHandoffPending && runtimeStillInactive;
+}
+
 inline bool ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(bool canUseFSRHeuristics, bool runtimeOwnsSwapchain,
-                                                                    bool hadFSRFGPhase) {
-    return !canUseFSRHeuristics && runtimeOwnsSwapchain && hadFSRFGPhase;
+                                                                    bool hadFSRFGPhase,
+                                                                    bool streamlineStartupHandoffPending) {
+    // Preserve heuristic FSR only for transient runtime-owned teardown windows
+    // that still plausibly belong to native FSR. A fresh authoritative
+    // Streamline startup handoff is the opposite case: preserving stale
+    // heuristic FSR there lets the later DLSS comeback bypass the repo's own
+    // unsafe-GetState startup guards.
+    return !canUseFSRHeuristics && runtimeOwnsSwapchain && hadFSRFGPhase && !streamlineStartupHandoffPending;
 }
 
 inline bool ShouldPreserveRuntimeOwnedFSRTeardown(bool targetIsNone, bool hadFSRFGPhase, bool runtimeOwnsSwapchain,

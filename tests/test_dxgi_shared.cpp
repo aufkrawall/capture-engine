@@ -871,11 +871,15 @@ TEST(DXGISharedTest, AuthoritativeFSRIsPreservedDuringTransitionCooldownForTrans
 }
 
 TEST(DXGISharedTest, HeuristicFSRIsPreservedDuringTransientBlocksOnRuntimeOwnedPostFSRSwapchains) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, true));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, true, false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(true, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, false, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(true, true, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, false, false));
 }
 
 TEST(DXGISharedTest, RuntimeOwnedPostFSRTeardownRequiresStrongerOffSignalThanTransientNoneEdge) {
@@ -1115,6 +1119,37 @@ TEST(DXGISharedTest, PostFSRNonFGRecoverySuppressesHeuristicFSRActivationWhileTe
         ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(false, true, true));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(true, false, false));
+}
+
+TEST(DXGISharedTest, FreshAuthoritativeStreamlineStartupHandoffKeepsHeuristicFSRInactive) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringAuthoritativeStreamlineStartupHandoff(
+        true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringAuthoritativeStreamlineStartupHandoff(
+        true, true, ce::fg_runtime::RuntimeMode::kOff));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringAuthoritativeStreamlineStartupHandoff(
+            false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringAuthoritativeStreamlineStartupHandoff(
+            true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringAuthoritativeStreamlineStartupHandoff(
+            true, true, ce::fg_runtime::RuntimeMode::kDLSSFG));
+}
+
+TEST(DXGISharedTest, FreshStreamlineStartupHandoffDoesNotPreserveStaleHeuristicFSR) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, true,
+                                                                                                  false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, true,
+                                                                                                   true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(true, true, true,
+                                                                                                   false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, false, true,
+                                                                                                   false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(false, true, false,
+                                                                                                   false));
 }
 
 TEST(DXGISharedTest, BlockedFSRHeuristicWindowResetsStaleECLPatternEvidence) {

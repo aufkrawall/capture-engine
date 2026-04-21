@@ -1919,6 +1919,16 @@ static bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr) {
         return false;
     }
 
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
+    if (ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringAuthoritativeStreamlineStartupHandoff(
+            g_FGRuntimeOwnsSwapchain, streamlineStartupHandoffPending, runtimeMode)) {
+        if (blockedReason) {
+            *blockedReason = "fresh authoritative Streamline startup handoff is still runtime-inactive";
+        }
+        return false;
+    }
+
     ID3D12CommandQueue* currentSwapchainQueue = nullptr;
     {
         std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
@@ -12517,7 +12527,8 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         // classification to STREAMLINE_NO_FG and tears down the still-live FSR
         // overlay path.
         if (!ce::dx12_overlay_policy::ShouldPreserveHeuristicFSRDuringTransientHeuristicBlock(
-                canUseFSRHeuristics, g_FGRuntimeOwnsSwapchain, g_HadFSRFGPhase)) {
+                canUseFSRHeuristics, g_FGRuntimeOwnsSwapchain, g_HadFSRFGPhase,
+                DXGIShared::IsStreamlineStartupHandoffPending())) {
             g_FGCompat.SetHeuristicFSRFGActive(false);
         }
     } else if (ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRAfterExplicitNativeFSROff(
