@@ -155,7 +155,8 @@ inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool reque
 
 inline bool ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
     bool startupTransitionWindowActive, bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback,
-    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering) {
+    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering,
+    bool postSLConfirmedButStartupSettling) {
     if (startupTransitionWindowActive) {
         return true;
     }
@@ -164,14 +165,17 @@ inline bool ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
     // startup window has expired. Replaying the earlier OFF churn at that point can
     // tear down the same live comeback before PostSL has finished proving the
     // recovered topology.
-    return hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback && !postSLConfirmedRendering &&
-           (startupActivationPending || postSLActiveButUnconfirmed);
+    return hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback &&
+           (startupActivationPending || postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling) &&
+           (!postSLConfirmedRendering || postSLConfirmedButStartupSettling);
 }
 
 inline bool ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(bool hadFSRFGPhase,
-                                                                   bool explicitSetOptionsActivationForCurrentComeback,
-                                                                   bool effectiveSignalActive) {
-    return hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback && effectiveSignalActive;
+                                                                    bool explicitSetOptionsActivationForCurrentComeback,
+                                                                    bool effectiveSignalActive,
+                                                                    bool postSLConfirmedButStartupSettling) {
+    return hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback && effectiveSignalActive &&
+           !postSLConfirmedButStartupSettling;
 }
 
 inline bool ResolveCurrentComebackExplicitSetOptionsActivation(bool previousExplicitSetOptionsActivation,

@@ -4239,6 +4239,19 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
                 const bool streamlineStartupHandoffPending =
                     DXGIShared::g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
+                const bool explicitSetOptionsActivation = HookHasExplicitStreamlineSetOptionsActivation();
+                const bool clearStaleNativeFGPresentOwnership =
+                    ce::dx12_overlay_policy::ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
+                        g_HadFSRFGPhase, explicitSetOptionsActivation, g_SwapchainQueue != nullptr,
+                        g_SwapchainQueue != nullptr && g_SwapchainQueue != g_OriginalGameQueue,
+                        streamlineStartupHandoffPending, HookHasRuntimeOwnedNativeFGPresentPath());
+                if (clearStaleNativeFGPresentOwnership) {
+                    ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+                    HookLogImportant(
+                        "DX12: Streamline FG ON after FSR — cleared stale native-FG Present ownership before explicit "
+                        "DLSS comeback activation (scQueue=%p origGame=%p)",
+                        g_SwapchainQueue, g_OriginalGameQueue);
+                }
                 if (ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
                         g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
                         g_SwapchainQueue != nullptr && g_SwapchainQueue != g_OriginalGameQueue,

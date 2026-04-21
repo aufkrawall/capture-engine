@@ -1449,6 +1449,24 @@ inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOw
     return callerFromFFXFGModule;
 }
 
+inline bool ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(bool hadFSRFGPhase,
+                                                                                  bool explicitSetOptionsActivation,
+                                                                                  bool hasSwapchainQueue,
+                                                                                  bool swapchainQueueDiffersFromOriginalGameQueue,
+                                                                                  bool streamlineStartupHandoffPending,
+                                                                                  bool runtimeOwnedNativeFGPresentPath) {
+    // After a real FSR -> DLSS comeback, the preserved non-origGame swapchain queue
+    // can already belong to the new authoritative Streamline handoff. In that
+    // state, a stale native-FSR Present-ownership latch from the prior runtime must
+    // not keep the later DLSS startup path classified as still runtime-owned native
+    // FG. Clear only that stale native-FSR ownership latch; the generic runtime-
+    // owned swapchain fact can still remain true for the new Streamline-owned
+    // queue topology.
+    return hadFSRFGPhase && explicitSetOptionsActivation && hasSwapchainQueue &&
+           swapchainQueueDiffersFromOriginalGameQueue && streamlineStartupHandoffPending &&
+           runtimeOwnedNativeFGPresentPath;
+}
+
 inline bool ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(bool streamlineModuleLoaded,
                                                                       bool streamlineFGRunning,
                                                                       bool streamlineStartupHandoffPending,
