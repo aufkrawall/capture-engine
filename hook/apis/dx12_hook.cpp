@@ -4273,6 +4273,17 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                         staleScQueue, g_OriginalGameQueue);
                 } else if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue &&
                            streamlineStartupHandoffPending) {
+                    if (ce::dx12_overlay_policy::ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
+                            g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
+                            g_SwapchainQueue != nullptr && g_SwapchainQueue != g_OriginalGameQueue,
+                            streamlineStartupHandoffPending, g_PostSLLastWorkingQueue != nullptr,
+                            g_SwapchainQueue != nullptr && g_SwapchainQueue == g_PostSLLastWorkingQueue)) {
+                        HookLogImportant(
+                            "DX12: Streamline FG ON after FSR — cleared stale PostSL lastWorking queue %p because "
+                            "fresh Streamline handoff moved to new scQueue %p (origGame=%p)",
+                            g_PostSLLastWorkingQueue, g_SwapchainQueue, g_OriginalGameQueue);
+                        SetPostSLLastWorkingQueue(nullptr);
+                    }
                     HookLogImportant(
                         "DX12: Streamline FG ON after FSR — preserving freshly handed-off Streamline swapchain queue "
                         "%p "

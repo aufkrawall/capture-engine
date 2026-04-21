@@ -153,28 +153,34 @@ inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool reque
     return update;
 }
 
-inline bool ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+inline bool ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
     bool startupTransitionWindowActive, bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback,
-    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering,
-    bool postSLConfirmedButStartupSettling) {
+    bool safePostFSRBootstrapPath, bool startupActivationPending, bool postSLActiveButUnconfirmed,
+    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling) {
     if (startupTransitionWindowActive) {
         return true;
     }
 
-    // A real explicit post-FSR comeback can still be half-armed after the literal
-    // startup window has expired. Replaying the earlier OFF churn at that point can
-    // tear down the same live comeback before PostSL has finished proving the
-    // recovered topology.
-    return hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback &&
+    // A post-FSR comeback can still be half-armed after the literal startup window
+    // has expired. Replaying the earlier OFF churn at that point can tear down the
+    // same live comeback before PostSL has finished proving the recovered topology.
+    // Explicit SetOptions(ON) is the strongest proof, but a GetState-only comeback
+    // that already reached the repo's shared safe post-FSR bootstrap topology is
+    // also far enough along that stale OFF churn must stay deferred until startup
+    // protection really ends.
+    const bool startupProtectedComebackProof =
+        explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
+    return hadFSRFGPhase && startupProtectedComebackProof &&
            (startupActivationPending || postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling) &&
            (!postSLConfirmedRendering || postSLConfirmedButStartupSettling);
 }
 
-inline bool ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(bool hadFSRFGPhase,
-                                                                    bool explicitSetOptionsActivationForCurrentComeback,
-                                                                    bool effectiveSignalActive,
-                                                                    bool postSLConfirmedButStartupSettling) {
-    return hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback && effectiveSignalActive &&
+inline bool ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+    bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback, bool safePostFSRBootstrapPath,
+    bool effectiveSignalActive, bool postSLConfirmedButStartupSettling) {
+    const bool startupProtectedComebackProof =
+        explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
+    return hadFSRFGPhase && startupProtectedComebackProof && effectiveSignalActive &&
            !postSLConfirmedButStartupSettling;
 }
 

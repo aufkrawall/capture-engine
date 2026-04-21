@@ -43,4 +43,4 @@ Repository-specific instructions for coding agents working in this repo.
 - Match the local subsystem pattern instead of imposing a new one.
 - The worktree may already contain unrelated user edits; do not revert them.
 - Don't wait ages on truncated outputs, check results directly without wasting time.
-- Generally, commit changes, unless explicitly told otherwise.
+- Always git commit and push changes, unless explicitly told otherwise.

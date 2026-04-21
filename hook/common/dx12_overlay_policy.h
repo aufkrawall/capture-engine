@@ -940,6 +940,20 @@ inline bool ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringP
            (explicitSetOptionsActivation || safePostFSRBootstrapPath);
 }
 
+inline bool ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
+    bool hadFSRFGPhase, bool hasSwapchainQueue, bool swapchainQueueDiffersFromOriginalGameQueue,
+    bool streamlineStartupHandoffPending, bool hasPostSLLastWorkingQueue,
+    bool swapchainQueueMatchesPostSLLastWorkingQueue) {
+    // A fresh post-FSR Streamline handoff to a different runtime-owned swapchain
+    // queue invalidates the old PostSL last-working queue proof. Reusing proof from
+    // the previous DLSS epoch after a newer authoritative handoff can drive the
+    // next off-recovery back onto a stale queue if the new comeback tears down
+    // before first confirmation.
+    return hadFSRFGPhase && hasSwapchainQueue && swapchainQueueDiffersFromOriginalGameQueue &&
+           streamlineStartupHandoffPending && hasPostSLLastWorkingQueue &&
+           !swapchainQueueMatchesPostSLLastWorkingQueue;
+}
+
 inline bool ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(bool hadFSRFGPhase, bool hasSwapchainQueue,
                                                                        bool swapchainQueueDiffersFromOriginalGameQueue,
                                                                        bool streamlineStartupHandoffPending) {

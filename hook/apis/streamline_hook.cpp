@@ -24,15 +24,21 @@ bool IsObserverOnlyModeActive() {
     return HookOverlayObserverOnlyEnabled();
 }
 
-void LogDroppedSuppressedOffForHalfArmedExplicitPostFSRComeback(uint32_t viewportKey, bool startupActivationPending,
-                                                                bool postSLActiveButUnconfirmed) {
+void LogDroppedSuppressedOffForStartupProtectedPostFSRComeback(uint32_t viewportKey,
+                                                               bool explicitSetOptionsActivationForCurrentComeback,
+                                                               bool safePostFSRBootstrapPath,
+                                                               bool startupActivationPending,
+                                                               bool postSLActiveButUnconfirmed) {
     static std::atomic<int> s_dropLogCount{0};
     const int logCount = s_dropLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 10 || (logCount % 100) == 0) {
         HookLogImportant(
             "Streamline Hook: Dropping stale suppressed slDLSSGSetOptions(OFF) after startup window expiry because "
-            "explicit post-FSR DLSS comeback is still half-armed (viewport=%u pending=%d unconfirmed=%d)",
-            viewportKey, startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0);
+            "post-FSR DLSS comeback is still startup-protected (viewport=%u explicit=%d safeBootstrap=%d "
+            "pending=%d unconfirmed=%d)",
+            viewportKey, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
+            safePostFSRBootstrapPath ? 1 : 0, startupActivationPending ? 1 : 0,
+            postSLActiveButUnconfirmed ? 1 : 0);
     }
 }
 
@@ -363,10 +369,12 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
     const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool explicitSetOptionsActivationForCurrentComeback =
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
+    const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
     const bool deferOffSignal =
-        !active && ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+        !active && ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
             startupWindowActive, HookHasFSRFGHistory(), explicitSetOptionsActivationForCurrentComeback,
-            startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+            safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
+            postSLConfirmedRendering,
             postSLConfirmedButStartupSettling);
     const bool previousSignal = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const auto signalUpdate = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(
@@ -406,9 +414,10 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
         const int logCount = s_halfArmedDeferredOffLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 100) == 0) {
             HookLogImportant(
-                "Streamline Hook: Keeping OFF churn deferred after startup window expiry because explicit post-FSR "
-                "DLSS comeback is still startup-protected (pending=%d unconfirmed=%d confirmed=%d settling=%d "
-                "source=%s)",
+                "Streamline Hook: Keeping OFF churn deferred after startup window expiry because post-FSR DLSS "
+                "comeback is still startup-protected (explicit=%d safeBootstrap=%d pending=%d unconfirmed=%d "
+                "confirmed=%d settling=%d source=%s)",
+                explicitSetOptionsActivationForCurrentComeback ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
                 startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
                 postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                 source ? source : "runtime-state");
@@ -833,18 +842,22 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
         const bool explicitSetOptionsActivationForCurrentComeback =
             g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
+        const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
         const bool shouldKeepDeferred =
-            ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+            ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
                 startupWindowActive, HookHasFSRFGHistory(), explicitSetOptionsActivationForCurrentComeback,
-                startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+                safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
+                postSLConfirmedRendering,
                 postSLConfirmedButStartupSettling);
         if (g_SuppressedSetOptionsOffDuringStartup && !shouldKeepDeferred) {
-            if (ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(
+            if (ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
                     HookHasFSRFGHistory(), explicitSetOptionsActivationForCurrentComeback,
+                    safePostFSRBootstrapPath,
                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
                     postSLConfirmedButStartupSettling)) {
-                LogDroppedSuppressedOffForHalfArmedExplicitPostFSRComeback(
-                    g_SuppressedOffViewportKey, startupActivationPending, postSLActiveButUnconfirmed);
+                LogDroppedSuppressedOffForStartupProtectedPostFSRComeback(
+                    g_SuppressedOffViewportKey, explicitSetOptionsActivationForCurrentComeback,
+                    safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed);
             } else if (g_Original_slDLSSGSetOptions) {
                 HookLogImportant(
                     "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via GetState — startup window "
@@ -931,10 +944,12 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
         const bool explicitSetOptionsActivationForCurrentComeback =
             g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
+        const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
         const bool shouldKeepDeferred =
-            ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+            ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
                 startupWindowActive, HookHasFSRFGHistory(), explicitSetOptionsActivationForCurrentComeback,
-                startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+                safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
+                postSLConfirmedRendering,
                 postSLConfirmedButStartupSettling);
         if (g_SuppressedSetOptionsOffDuringStartup && !shouldKeepDeferred) {
             if (g_Original_slDLSSGSetOptions) {
@@ -968,21 +983,25 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool explicitSetOptionsActivationForCurrentComeback =
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
+    const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
     const bool suppressOffCall =
         !pureObserverOnly && requestedDisabled &&
-        ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
+        ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
             startupWindowActive, HookHasFSRFGHistory(), explicitSetOptionsActivationForCurrentComeback,
-            startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+            safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
+            postSLConfirmedRendering,
             postSLConfirmedButStartupSettling);
 
     slResult result;
     if (suppressOffCall) {
         HookLogImportant(
             "Streamline Hook: Suppressing slDLSSGSetOptions(OFF) while DLSS comeback remains startup-protected "
-            "(viewport=%u mode=%u startupWindow=%d hadFSR=%d explicitComeback=%d pending=%d unconfirmed=%d "
-            "confirmed=%d settling=%d) — preventing Streamline FG de-initialization before recovery proves stable",
+            "(viewport=%u mode=%u startupWindow=%d hadFSR=%d explicitComeback=%d safeBootstrap=%d pending=%d "
+            "unconfirmed=%d confirmed=%d settling=%d) — preventing Streamline FG de-initialization before recovery "
+            "proves stable",
             viewportKey, options.mode, startupWindowActive ? 1 : 0, HookHasFSRFGHistory() ? 1 : 0,
-            explicitSetOptionsActivationForCurrentComeback ? 1 : 0, startupActivationPending ? 1 : 0,
+            explicitSetOptionsActivationForCurrentComeback ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
+            startupActivationPending ? 1 : 0,
             postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
             postSLConfirmedButStartupSettling ? 1 : 0);
         {
@@ -1334,10 +1353,12 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
     const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool explicitSetOptionsActivationForCurrentComeback =
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
+    const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
     const bool shouldKeepDeferred =
-        ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForHalfArmedExplicitPostFSRComeback(
-            windowStillActive, HookHasFSRFGHistory(), explicitSetOptionsActivationForCurrentComeback, activationPending,
-            postSLActiveButUnconfirmed, postSLConfirmedRendering, postSLConfirmedButStartupSettling);
+        ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
+            windowStillActive, HookHasFSRFGHistory(), explicitSetOptionsActivationForCurrentComeback,
+            safePostFSRBootstrapPath, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+            postSLConfirmedButStartupSettling);
     if (shouldKeepDeferred) {
         return;
     }
@@ -1357,16 +1378,17 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
     };
 
     // Case 1: Suppressed OFF exists — either forward it to Streamline for a real
-    // inactive edge, or drop it if a newer explicit post-FSR comeback is already
-    // half-armed and this OFF is now stale churn.
-        if (g_SuppressedSetOptionsOffDuringStartup) {
-            if (ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForExplicitPostFSRComeback(
-                    HookHasFSRFGHistory(), explicitSetOptionsActivationForCurrentComeback,
-                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-                    postSLConfirmedButStartupSettling)) {
-                LogDroppedSuppressedOffForHalfArmedExplicitPostFSRComeback(g_SuppressedOffViewportKey, activationPending,
-                                                                        postSLActiveButUnconfirmed);
-                g_SuppressedSetOptionsOffDuringStartup = false;
+    // inactive edge, or drop it if a newer post-FSR comeback is already
+    // startup-protected and this OFF is now stale churn.
+    if (g_SuppressedSetOptionsOffDuringStartup) {
+        if (ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+                HookHasFSRFGHistory(), explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
+                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+                postSLConfirmedButStartupSettling)) {
+            LogDroppedSuppressedOffForStartupProtectedPostFSRComeback(
+                g_SuppressedOffViewportKey, explicitSetOptionsActivationForCurrentComeback,
+                safePostFSRBootstrapPath, activationPending, postSLActiveButUnconfirmed);
+            g_SuppressedSetOptionsOffDuringStartup = false;
         } else {
             if (!g_Original_slDLSSGSetOptions) {
                 return;

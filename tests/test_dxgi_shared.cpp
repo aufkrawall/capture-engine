@@ -575,6 +575,24 @@ TEST(DXGISharedTest, ReusesValidatedLastWorkingQueueForResumedDLSSDuringPostFSRI
                          true, true, false, false, false));
 }
 
+TEST(DXGISharedTest, FreshPostFSRStreamlineHandoffInvalidatesOnlyStaleLastWorkingQueueProof) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
+        true, true, true, true, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
+        false, true, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
+        true, false, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
+        true, true, false, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
+        true, true, true, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
+        true, true, true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
+        true, true, true, true, true, true));
+}
+
 TEST(DXGISharedTest, PostFSRInactiveRecoveryQueueSourcePrefersOriginalPresentQueue) {
     using ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource;
     using ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource;
