@@ -14,6 +14,39 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-22 - Fix Reflex limiter nvapi_QueryInterface detour returning wrapper pointers instead of original driver pointers, causing Streamline/DLSS FG Reflex init to abort with pink-tint diagnostic
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260422_010709` on build `0.1.2528` showed a transient pink tint when toggling DLSS FG on from an all-FG-off state, then the game continued at non-FG FPS. Healthy Talos `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching` did not show this symptom. The same build also had a latent struct-size mismatch in `NV_SET_SLEEP_MODE_PARAMS_V1`.
+
+- **Comparison that narrowed the seam**:
+  1. The inline hook on `nvapi_QueryInterface` succeeded in GTA but failed in Talos (RIP-relative out of range). Our `ReflexDetour_QueryInterface` was returning our own wrapper pointers (`&ReflexDetour_SetSleepMode` / `&ReflexDetour_Sleep`) instead of the original NVAPI driver pointers.
+  2. Streamline / DLSS FG internally queries `nvapi_QueryInterface` to obtain these pointers for its own Reflex integration; receiving non-`nvapi64.dll` addresses causes it to abort Reflex initialization. This produces the pink-tint diagnostic and causes the game to fall back to non-FG mode.
+  3. `hook/common/reflex_defs.h` defined `NV_SET_SLEEP_MODE_PARAMS` as 40 bytes, but the current NVAPI SDK defines the struct as 56 bytes (added `bUseMinQueueTime` and `rsvd[30]`). While the offsets of fields we read/write are unchanged, our own `PushFpsLimit()` constructs a struct with version `0x10028` (old 40-byte V1), which a modern driver may reject.
+
+- **Root cause refinement**:
+  1. `ReflexDetour_QueryInterface` intercepted `NVAPI_ID_D3D_SetSleepMode` and `NVAPI_ID_D3D_Sleep` and returned `&ReflexDetour_SetSleepMode` / `&ReflexDetour_Sleep`. Any caller (including Streamline's internal Reflex integration) that validates the returned pointer against the `nvapi64.dll` module range will see a non-module address and treat the API as unavailable.
+  2. The direct inline hooks on `NvAPI_D3D_SetSleepMode` and `NvAPI_D3D_Sleep` are installed *before* `HookNvAPIQueryInterface()` is called. Any caller that obtains the original pointer and then calls it will still hit the inline hook at the original function address, so activation detection and FPS-limit overriding continue to work exactly as before.
+  3. The struct size mismatch is latent: our `InterceptSetSleepMode` copies `lastSleepModeParams_ = *pParams` assuming the struct is the size we declared, but the game may pass a 56-byte struct. Because the fields we read/write (`minimumIntervalUs`, `bLowLatencyMode`) are at unchanged offsets, the copy does not corrupt adjacent memory. However, `PushFpsLimit()` constructs a fresh struct with `params.version = NV_SET_SLEEP_MODE_PARAMS_VER` where `VER` is derived from `sizeof(NV_SET_SLEEP_MODE_PARAMS_V1)`. If the driver expects the 56-byte V1, a 40-byte version tag may be rejected.
+
+- **Fix**:
+  1. `hook/common/reflex_defs.h` now expands `NV_SET_SLEEP_MODE_PARAMS_V1` to 56 bytes: adds `uint32_t bUseMinQueueTime` and `uint8_t rsvd[30]` to match the current NVAPI SDK. The version tag `NV_SET_SLEEP_MODE_PARAMS_VER1` is now `0x1038` (56 | (1 << 16)). Offsets of existing fields are unchanged.
+  2. `hook/common/reflex_limiter.h` now changes `ReflexDetour_QueryInterface` to return `limiter.origSetSleepMode_` / `limiter.origSleep_` when available, falling back to the wrapper pointers only when the originals are not yet resolved. This lets Streamline/DLSS FG obtain valid `nvapi64.dll` addresses for its own Reflex integration.
+  3. The same header now adds diagnostic logging in `InterceptSetSleepMode` for version mismatches (first 5 occurrences), forward failures (first 5 occurrences), and original-pointer returns (once per ID). The `PushFpsLimit()` path already logs interval and boost values on first success.
+
+- **Why this is generic**: This is not a GTA-only carve-out. Any game where Streamline internally queries `nvapi_QueryInterface` for Reflex pointers would see the same abort if CE returns non-module wrapper addresses. Returning the original driver pointer is safe because the direct inline hook on the original address still intercepts every actual call. The struct size fix is also generic: any modern NVAPI driver may reject the old 40-byte version tag.
+
+- **Verification**:
+  - Re-checked GTA `installed/captureengine/logs/20260422_010709/hook_debug.log` and confirmed the pink-tint symptom correlates with the DLSS FG enable attempt from an all-FG-off state.
+  - Re-checked Talos `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching/hook_debug.log` and confirmed the same `nvapi_QueryInterface` inline hook fails with RIP-relative out-of-range, so Talos was unaffected by the wrapper-pointer bug.
+  - Re-read `hook/common/reflex_limiter.h` `ReflexDetour_QueryInterface` implementation and verified it now returns `origSetSleepMode_` / `origSleep_` with wrapper fallback.
+  - Re-read `hook/common/reflex_defs.h` and verified `NV_SET_SLEEP_MODE_PARAMS_V1` now contains 56 bytes and `NV_SET_SLEEP_MODE_PARAMS_VER1` evaluates to `0x1038`.
+  - Ran `python build.py --skip-updates`; full rebuild passed and `build/verification/latest_summary.txt` reports success for build `0.1.2528`.
+  - Ran `& ".\tests\unit_tests.exe"`; all 632 tests passed, 0 failed.
+
+- **Files changed**: `hook/common/reflex_defs.h`, `hook/common/reflex_limiter.h`, `llm-wiki/current.md`, `llm-wiki/log.md`
+
+- **Stale risk**: The next GTA check on build `0.1.2528+` is that the pure-DLSS `all FG off -> DLSS FG` family no longer shows the transient pink tint and no longer falls back to non-FG FPS after enable. Talos should keep its already healthy behavior. The `nvapi_QueryInterface` inline hook failure in Talos (RIP-relative out of range) is a separate watch-item that may need a different hook mechanism if we ever need activation detection there.
+
 ### 2026-04-22 - Keep fresh pure-DLSS runtime-owned startup handoffs startup-protected through the confirmed-startup-settling window too, so GTA cannot drop the proven normal-route path back into synthetic re-entrant routing right after first confirmed PostSL submit
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260421_235555` on build `0.1.2523` no longer failed before first visible render on the fresh pure-DLSS runtime-owned Streamline handoff. CE now really did bootstrap overlay state on `scQueue=0000012B0C058750`, reach `DX12: PostSL CONFIRMED rendering via re-entrant Present`, and submit `Post-SL overlay SUBMIT #1..#2` with no device removal. But the game still crashed immediately afterward, and the user also reported a transient pink tint just before the crash.

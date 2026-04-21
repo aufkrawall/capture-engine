@@ -291,6 +291,17 @@ public:
         if (!forwardSetSleepMode || !pParams)
             return NVAPI_ERROR;
 
+        // Diagnostic: detect struct version mismatches early
+        if (pParams->version != NV_SET_SLEEP_MODE_PARAMS_VER) {
+            static std::atomic<int> s_versionMismatchLogCount{0};
+            int logCount = s_versionMismatchLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 5) {
+                HookLogImportant(
+                    "ReflexLimiter: SetSleepMode version mismatch (got=0x%08X expected=0x%08X size=%zu)",
+                    pParams->version, NV_SET_SLEEP_MODE_PARAMS_VER, sizeof(NV_SET_SLEEP_MODE_PARAMS));
+            }
+        }
+
         const uint32_t ourInterval = targetIntervalUs_.load(std::memory_order_acquire);
 
         lastSleepModeParams_ = *pParams;
@@ -332,7 +343,16 @@ public:
             pParams->minimumIntervalUs = ourInterval;
         }
 
-        return forwardSetSleepMode(pDev, pParams);
+        NvAPI_Status status = forwardSetSleepMode(pDev, pParams);
+        if (status != NVAPI_OK) {
+            static std::atomic<int> s_failLogCount{0};
+            int failCount = s_failLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (failCount < 5) {
+                HookLogImportant("ReflexLimiter: SetSleepMode forward failed (status=%d version=0x%08X)",
+                                 status, pParams->version);
+            }
+        }
+        return status;
     }
 
     // Returns true if the game has activated Reflex (called SetSleepMode with bLowLatencyMode=true)
@@ -546,11 +566,34 @@ inline void* __cdecl ReflexLimiter::ReflexDetour_QueryInterface(uint32_t id) {
     auto& limiter = g_ReflexLimiter;
 
     if (id == NVAPI_ID_D3D_SetSleepMode) {
-        // Return our intercept wrapper instead of the real function
+        // Return the original driver pointer so Streamline/DLSS FG can hook or
+        // validate it cleanly. Our direct inline hook on SetSleepMode still
+        // catches every call to this address, so activation detection and FPS
+        // limiting continue to work.
+        if (limiter.origSetSleepMode_) {
+            static std::atomic<bool> s_loggedOnce{false};
+            if (!s_loggedOnce.exchange(true, std::memory_order_relaxed)) {
+                HookLogImportant(
+                    "ReflexLimiter: Returning original SetSleepMode pointer from QueryInterface "
+                    "(orig=%p wrapper=%p)",
+                    (void*)limiter.origSetSleepMode_, (void*)&ReflexDetour_SetSleepMode);
+            }
+            return reinterpret_cast<void*>(limiter.origSetSleepMode_);
+        }
         return reinterpret_cast<void*>(&ReflexDetour_SetSleepMode);
     }
 
     if (id == NVAPI_ID_D3D_Sleep) {
+        if (limiter.origSleep_) {
+            static std::atomic<bool> s_loggedOnce{false};
+            if (!s_loggedOnce.exchange(true, std::memory_order_relaxed)) {
+                HookLogImportant(
+                    "ReflexLimiter: Returning original Sleep pointer from QueryInterface "
+                    "(orig=%p wrapper=%p)",
+                    (void*)limiter.origSleep_, (void*)&ReflexDetour_Sleep);
+            }
+            return reinterpret_cast<void*>(limiter.origSleep_);
+        }
         return reinterpret_cast<void*>(&ReflexDetour_Sleep);
     }
 

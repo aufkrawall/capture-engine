@@ -19,7 +19,8 @@ struct NV_SET_SLEEP_MODE_PARAMS_V1 {
     uint32_t bLowLatencyBoost;       // 0 = disabled, 1 = enabled
     uint32_t minimumIntervalUs;      // Minimum frame interval in microseconds (FPS cap)
     uint32_t bUseMarkersToOptimize;  // Use latency markers for optimization
-    uint32_t reserved[4];
+    uint32_t bUseMinQueueTime;       // Consider all submission overlaps (both in between frames and within each frame)
+    uint8_t  rsvd[30];               // Reserved. Must be set to 0s.
 };
 // Version tag — low 16 bits = struct size, high 16 bits = version number
 constexpr uint32_t NV_SET_SLEEP_MODE_PARAMS_VER1 = (sizeof(NV_SET_SLEEP_MODE_PARAMS_V1)) | (1 << 16);
