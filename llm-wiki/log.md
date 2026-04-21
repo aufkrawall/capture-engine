@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-Last cross-checked: 2026-04-20
+Last cross-checked: 2026-04-21
 
 Purpose:
 - Track wiki edits.
@@ -13,6 +13,37 @@ Update rules:
 - If an area is churning, call that out explicitly so the next reader knows to re-check the code.
 
 ## Activity Timeline
+
+### 2026-04-21 - Keep post-FSR explicit DLSS comebacks startup-protected through the full intended eight confirmed PostSL frames so GTA cannot fall back to no-FG immediately after submit #8
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260421_144254_gtanocrash_allfgofftofsrfgontodlsesfgfail` on build `0.1.2501` no longer hit the older stale-OFF-at-expiry seam. The explicit post-FSR DLSS comeback on fresh `scQueue=000002538D784660` now reaches `PostSL REACTIVATED`, `PostSL CONFIRMED rendering`, updates `lastWorkingQueue`, and submits visible PostSL overlay frames. But GTA still silently loses DLSS FG afterward and falls back to `STREAMLINE_NO_FG` with no crash.
+
+- **Comparison that narrowed the seam**:
+  1. GTA and Talos both recover far enough to reach `Post-SL overlay SUBMIT #1` on the preserved post-FSR `scQueue`.
+  2. Talos `installed/captureengine/logs/20260420_215301_talosnocrash_multipleswitching` keeps going cleanly past `Post-SL overlay SUBMIT #8` into sustained PostSL traffic.
+  3. GTA instead reaches `Post-SL overlay SUBMIT #8`, then CE immediately logs the stale-OFF drop and the next stale `GetState` OFF churn drives `DX12_OnStreamlineFGStateChanged(false)` plus `Streamline Hook: FG state transition ON->OFF via GetState`.
+
+- **Root cause refinement**:
+  1. The earlier confirmed-startup-settling protection was one frame too short at the exact boundary. `ShouldTreatConfirmedPostSLRenderingAsStartupSettling(...)` used `< 8`, so the eighth confirmed frame was already treated as fully settled.
+  2. The GTA `0.1.2501` trace proves stale OFF churn can survive all the way to that boundary. Once protection ended at submit `#8`, the buffered stale OFF was dropped and the next stale `GetState` OFF churn immediately collapsed the still-live comeback into `STREAMLINE_NO_FG`.
+  3. Talos shows the target behavior for the same broad family: the recovered post-FSR DLSS comeback continues past submit `#8` rather than collapsing exactly at the settling-window boundary.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now keeps `ShouldTreatConfirmedPostSLRenderingAsStartupSettling(...)` true for `stablePostSLFrameCount <= 8`, so the ninth confirmed PostSL frame becomes the first fully settled one.
+  2. `hook/apis/streamline_hook.cpp` now expands the stale-OFF drop diagnostic to include `confirmed=%d settling=%d`, so traces reveal whether CE dropped buffered OFF churn only after the comeback was truly settled.
+  3. `tests/test_dxgi_shared.cpp` now renames and extends the boundary test to `DXGISharedTest.ConfirmedPostSLStartupRoutingProtectsThroughFirstEightFrames`.
+
+- **Why this is generic**: This is not a GTA-only workaround. The generic invariant is: if CE's shared confirmed-startup-settling policy says the first eight confirmed PostSL frames are still startup-protected, stale OFF churn must not be allowed to survive until the exact boundary after submit `#8` and then collapse the same recovered post-FSR DLSS comeback on the very next runtime poll.
+
+- **Verification**:
+  - Re-checked GTA `installed/captureengine/logs/20260421_144254_gtanocrash_allfgofftofsrfgontodlsesfgfail/{hook_debug.log,session_manifest.txt}` and confirmed the exact boundary: `Post-SL overlay SUBMIT #8`, then stale-OFF drop, then `Streamline FG OFF` / `ON->OFF via GetState`.
+  - Re-checked Talos `installed/captureengine/logs/20260420_215301_talosnocrash_multipleswitching/hook_debug.log` and confirmed it continues cleanly past `Post-SL overlay SUBMIT #8` into long-running PostSL traffic.
+  - Ran `python build.py --run-tests --tests-only --skip-updates --gtest-filter="DXGISharedTest.ConfirmedPostSLStartupRoutingProtectsThroughFirstEightFrames:StreamlineRuntimePolicyTest.StartupProtectedPostFSRComebackKeepsOffChurnDeferredWhileHalfArmed:StreamlineRuntimePolicyTest.StartupProtectedPostFSRComebackDropsStaleSuppressedOffChurnOnceActive:StreamlineRuntimePolicyTest.CombinedRuntimeStateDefersHalfArmedStartupProtectedPostFSRComebackOffAfterWindowExpiry"`; the focused suite passed.
+  - Ran `python build.py --skip-updates`; full rebuild passed and `build/verification/latest_summary.txt` reports success for build `0.1.2503`.
+
+- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/streamline_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next GTA check on build `0.1.2503+` is that the post-FSR explicit DLSS comeback on `scQueue=000002538D784660` stays alive past `Post-SL overlay SUBMIT #8` and does not immediately log `FG state transition ON->OFF via GetState`. Talos should continue to sustain PostSL submits across the same boundary.
 
 ### 2026-04-21 - Keep stale OFF churn deferred for safe-bootstrap post-FSR GetState comebacks too, and invalidate older PostSL last-working queue proof when a fresh post-FSR Streamline handoff moves to a different queue
 

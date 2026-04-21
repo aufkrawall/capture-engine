@@ -1330,11 +1330,12 @@ inline bool ShouldTreatConfirmedPostSLRenderingAsStartupSettling(bool postSLConf
     // long-running FG callback pattern settles. Keep the startup-family routing
     // guard alive until several consecutive confirmed PostSL frames have
     // completed, not just the first couple. GTA's latest DLSS FG trace still
-    // falls back to the synthetic/bypass seam immediately after the seventh
-    // visible PostSL submit, so keep protecting the startup family through the
-    // first eight confirmed frames.
+    // falls back to the synthetic/bypass seam right as the eighth confirmed
+    // frame completes if we clear the guard too early. Keep protecting the
+    // startup family through the first eight confirmed frames, and only let the
+    // ninth frame become the first fully settled one.
     constexpr int kConfirmedPostSLStartupSettleFrames = 8;
-    return postSLConfirmedRendering && stablePostSLFrameCount < kConfirmedPostSLStartupSettleFrames;
+    return postSLConfirmedRendering && stablePostSLFrameCount <= kConfirmedPostSLStartupSettleFrames;
 }
 
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,

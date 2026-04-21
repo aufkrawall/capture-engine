@@ -28,17 +28,20 @@ void LogDroppedSuppressedOffForStartupProtectedPostFSRComeback(uint32_t viewport
                                                                bool explicitSetOptionsActivationForCurrentComeback,
                                                                bool safePostFSRBootstrapPath,
                                                                bool startupActivationPending,
-                                                               bool postSLActiveButUnconfirmed) {
+                                                               bool postSLActiveButUnconfirmed,
+                                                               bool postSLConfirmedRendering,
+                                                               bool postSLConfirmedButStartupSettling) {
     static std::atomic<int> s_dropLogCount{0};
     const int logCount = s_dropLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 10 || (logCount % 100) == 0) {
         HookLogImportant(
             "Streamline Hook: Dropping stale suppressed slDLSSGSetOptions(OFF) after startup window expiry because "
-            "post-FSR DLSS comeback is still startup-protected (viewport=%u explicit=%d safeBootstrap=%d "
-            "pending=%d unconfirmed=%d)",
+            "post-FSR DLSS comeback is already stably active (viewport=%u explicit=%d safeBootstrap=%d "
+            "pending=%d unconfirmed=%d confirmed=%d settling=%d)",
             viewportKey, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
             safePostFSRBootstrapPath ? 1 : 0, startupActivationPending ? 1 : 0,
-            postSLActiveButUnconfirmed ? 1 : 0);
+            postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+            postSLConfirmedButStartupSettling ? 1 : 0);
     }
 }
 
@@ -857,7 +860,8 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
                     postSLConfirmedButStartupSettling)) {
                 LogDroppedSuppressedOffForStartupProtectedPostFSRComeback(
                     g_SuppressedOffViewportKey, explicitSetOptionsActivationForCurrentComeback,
-                    safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed);
+                    safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
+                    postSLConfirmedRendering, postSLConfirmedButStartupSettling);
             } else if (g_Original_slDLSSGSetOptions) {
                 HookLogImportant(
                     "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via GetState — startup window "
@@ -1387,7 +1391,8 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 postSLConfirmedButStartupSettling)) {
             LogDroppedSuppressedOffForStartupProtectedPostFSRComeback(
                 g_SuppressedOffViewportKey, explicitSetOptionsActivationForCurrentComeback,
-                safePostFSRBootstrapPath, activationPending, postSLActiveButUnconfirmed);
+                safePostFSRBootstrapPath, activationPending, postSLActiveButUnconfirmed,
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling);
             g_SuppressedSetOptionsOffDuringStartup = false;
         } else {
             if (!g_Original_slDLSSGSetOptions) {

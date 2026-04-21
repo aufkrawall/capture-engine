@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-04-20
+Last cross-checked: 2026-04-21
 
 Primary sources:
 - `AGENTS.md`
@@ -89,6 +89,7 @@ Primary sources:
 - If you touch startup-window extension or deferred-OFF churn handling, also verify that the OFF-extension latch is still one-shot per churn burst. A later steady-state active `GetState` / `SetOptions` poll must not silently re-prime the extension latch and keep the startup window alive indefinitely during a post-FSR DLSS comeback.
 - If you touch deferred startup-window OFF replay after a post-FSR comeback, verify both halves explicitly: half-armed explicit `SetOptions(ON)` post-FSR comebacks must keep stale OFF churn deferred past literal startup-window expiry, and once that comeback is already the live effective signal the stale buffered OFF must be dropped rather than replayed later into the recovered DLSS epoch.
 - If you touch deferred startup-window OFF replay after a post-FSR comeback, also verify the short first-confirmed-startup-settling window explicitly: a stale `GetState` / `SetOptions(OFF)` churn edge must not tear the comeback back down immediately after the first `Post-SL overlay SUBMIT #1` while PostSL is still inside the confirmed-startup-settling guard.
+- If you touch the confirmed-startup-settling guard itself, verify the exact boundary frame explicitly too: a post-FSR DLSS comeback that already reached `Post-SL overlay SUBMIT #8` must still remain startup-protected through that eighth confirmed frame, and must not immediately log `FG state transition ON->OFF via GetState` on the next stale runtime poll. Talos should continue past the same boundary into sustained PostSL submits.
 - If you touch deferred startup-window OFF replay after a post-FSR comeback, verify the later `GetState`-only startup family too: once the shared DX12 policy already proves `safePostFSRBootstrapPath=1` on a fresh authoritative Streamline handoff, stale suppressed OFF churn must stay deferred past startup-window expiry for that comeback as well. Otherwise GTA can activate PostSL on the fresh handoff queue and then immediately replay the old OFF on the next line before first confirmed render.
 - If you touch post-FSR inactive recovery queue reuse, verify that a fresh authoritative Streamline handoff to a different non-origGame `scQueue` invalidates older `lastWorkingQ` proof from the previous DLSS epoch. Otherwise a failed later startup on the new queue can still make non-FG recovery reinitialize on the older queue and reopen `devRemoved=0x887A002B` / `ERR_GFX_STATE`.
 - If you touch FG cooldown or late-ON preservation around post-FSR DLSS comeback, verify that an already active-but-unconfirmed PostSL startup path survives the remaining generic cooldown too. A later cooldown/scene-gap path must not drop `postSLActive` back to `0` while the same comeback is still half-armed, or GTA can restart the same comeback into a second `PostSL REACTIVATED` epoch before first confirmation and make the overlay look lost even though it eventually comes back.
