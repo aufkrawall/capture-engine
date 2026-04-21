@@ -9793,14 +9793,27 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         // FG runtime to crash (observed: sl_dlss_g exception 0x00008000 in Talos).
         if (g_FGTransitionCooldown > 0) {
             --g_FGTransitionCooldown;
-            // Suppress post-SL rendering during cooldown
-            g_PostSLOverlayActive.store(false, std::memory_order_release);
+            const bool preserveSyntheticStartupStateDuringReinitCooldown =
+                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
+                ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(
+                    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
+                    HookIsPostSLOverlayActiveButUnconfirmed(),
+                    g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+            if (!preserveSyntheticStartupStateDuringReinitCooldown) {
+                // Suppress post-SL rendering during cooldown unless the same
+                // synthetic startup is already half-armed and still waiting for
+                // first confirmation. Otherwise the reinit cooldown path restarts
+                // the same pure-DLSS startup into a second reactivation epoch.
+                g_PostSLOverlayActive.store(false, std::memory_order_release);
+            }
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
             static std::atomic<int> s_fgCooldownReinitBlockLogCount{0};
             int logCount = s_fgCooldownReinitBlockLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10 || g_FGTransitionCooldown == 0) {
-                HookLogImportant("DX12: Deferring overlay reinit during FG transition cooldown (%d frames remaining)",
-                                 g_FGTransitionCooldown);
+                HookLogImportant(
+                    "DX12: Deferring overlay reinit during FG transition cooldown (%d frames remaining, "
+                    "preserveHalfArmedPostSL=%d)",
+                    g_FGTransitionCooldown, preserveSyntheticStartupStateDuringReinitCooldown ? 1 : 0);
             }
             if (g_FGTransitionCooldown == 0) {
                 s_fgCooldownReinitBlockLogCount.store(0, std::memory_order_relaxed);
@@ -9817,9 +9830,16 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                 std::memory_order_acquire),
                             HookIsPostSLOverlayActiveButUnconfirmed(),
                             g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+                    const bool keepStartupHandoffPending = ce::dx12_overlay_policy::
+                        ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
+                            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
+                                std::memory_order_acquire),
+                            HookIsPostSLOverlayActiveButUnconfirmed(),
+                            g_PostSLConfirmedRendering.load(std::memory_order_acquire));
                     g_PostSLOverlayActive.store(true, std::memory_order_release);
                     g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
-                    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+                    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
+                                                                                    std::memory_order_release);
                     if (!preserveSyntheticStartupState) {
                         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(
                             false, std::memory_order_release);

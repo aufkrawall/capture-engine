@@ -58,9 +58,9 @@ inline uint32_t ResolveDLSSFGGeneratedFrames(bool active, uint32_t requestedGene
 }
 
 inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromRequestedOptions(bool callSucceeded, bool hasOptions,
-                                                                            uint32_t mode,
-                                                                            uint32_t requestedGeneratedFrames,
-                                                                            uint32_t capabilityMax) {
+                                                                             uint32_t mode,
+                                                                             uint32_t requestedGeneratedFrames,
+                                                                             uint32_t capabilityMax) {
     ViewportRuntimeUpdate update;
     update.capabilityMax = capabilityMax;
     if (!callSucceeded || !hasOptions) {
@@ -72,6 +72,14 @@ inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromRequestedOptions(bool
     update.multiplier = ResolveDLSSFGMultiplier(update.active, requestedGeneratedFrames);
     update.generatedFrames = ResolveDLSSFGGeneratedFrames(update.active, requestedGeneratedFrames, update.multiplier);
     return update;
+}
+
+inline bool ShouldApplyViewportRuntimeUpdateFromSetOptions(bool callSucceeded, bool setOptionsCallSuppressed) {
+    // If CE intentionally swallowed a stale startup OFF request, Streamline never
+    // observed that disable edge. Keep CE's own viewport/runtime reduction aligned
+    // with the runtime's real live state instead of self-tearing the startup down
+    // from local bookkeeping alone.
+    return callSucceeded && !setOptionsCallSuppressed;
 }
 
 inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromGetState(

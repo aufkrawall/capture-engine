@@ -26,6 +26,16 @@ TEST(StreamlineRuntimePolicyTest, RequestedOptionsOffBuildsInactiveRuntimeUpdate
     EXPECT_EQ(0u, update.generatedFrames);
 }
 
+TEST(StreamlineRuntimePolicyTest, SuppressedSetOptionsOffDoesNotApplyLocalRuntimeUpdate) {
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(true, true));
+
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(true, false));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(false, false));
+}
+
 TEST(StreamlineRuntimePolicyTest, RequestedOptionsFallbacksToTwoXForInvalidGeneratedFrameCount) {
     const auto update =
         ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(true, true, 2, 0, 1);

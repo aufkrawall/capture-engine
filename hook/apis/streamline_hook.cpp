@@ -974,7 +974,15 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                 postSLConfirmedRendering,
                 postSLConfirmedButStartupSettling);
         if (g_SuppressedSetOptionsOffDuringStartup && !shouldKeepDeferred) {
-            if (g_Original_slDLSSGSetOptions) {
+            if (ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
+                    hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
+                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+                    postSLConfirmedButStartupSettling)) {
+                LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
+                    g_SuppressedOffViewportKey, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
+                    safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
+                    postSLConfirmedRendering, postSLConfirmedButStartupSettling);
+            } else if (g_Original_slDLSSGSetOptions) {
                 HookLogImportant(
                     "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) — startup window expired "
                     "(viewport=%u)",
@@ -1015,6 +1023,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             postSLConfirmedRendering,
             postSLConfirmedButStartupSettling);
 
+    const bool setOptionsCallSuppressed = suppressOffCall;
     slResult result;
     if (suppressOffCall) {
         HookLogImportant(
@@ -1101,7 +1110,9 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                     "slDLSSGSetOptions enable request (viewport=%u)",
                     viewportKey);
             }
-        } else if (!pureObserverOnly && requestedDisabled) {
+        } else if (!pureObserverOnly && requestedDisabled &&
+                   ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(
+                       result == kSlResultOk, setOptionsCallSuppressed)) {
             g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
             const bool wasBlockingGetStateOnlyReactivation =
                 g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.exchange(true, std::memory_order_acq_rel);
@@ -1113,10 +1124,25 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             }
         }
 
-        const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(
-            true, true, adjustedOptions.mode, adjustedOptions.numFramesToGenerate, capabilityMax);
-        UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
-                                   runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "SetOptions");
+        if (ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(result == kSlResultOk,
+                                                                                          setOptionsCallSuppressed)) {
+            const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(
+                true, true, adjustedOptions.mode, adjustedOptions.numFramesToGenerate, capabilityMax);
+            UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
+                                       runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "SetOptions");
+        } else if (setOptionsCallSuppressed) {
+            static std::atomic<int> s_suppressedSetOptionsRuntimeSkipLogCount{0};
+            const int logCount = s_suppressedSetOptionsRuntimeSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 200) == 0) {
+                HookLogImportant(
+                    "Streamline Hook: Skipping local runtime-state reduction for suppressed slDLSSGSetOptions(OFF) "
+                    "because Streamline never observed that disable edge (viewport=%u startupWindow=%d pending=%d "
+                    "unconfirmed=%d confirmed=%d settling=%d)",
+                    viewportKey, startupWindowActive ? 1 : 0, startupActivationPending ? 1 : 0,
+                    postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                    postSLConfirmedButStartupSettling ? 1 : 0);
+            }
+        }
 
         const int effectiveMultiplier = GetEffectiveMultiplier(adjustedOptions);
 
