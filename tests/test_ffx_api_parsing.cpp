@@ -1,8 +1,34 @@
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstdint>
+#include <cstring>
+
+#include "../hook/apis/ffx_hook.h"
 #include "../hook/common/ffx_api_parsing.h"
 
 namespace {
+
+void DummyFFXDetour() {}
+void OtherDummyFFXDetour() {}
+
+template <size_t N>
+void FillInlineDetourSnapshot(std::array<unsigned char, N>& snapshot, const void* target, const void* detour) {
+    snapshot.fill(0);
+#ifdef _WIN64
+    static_assert(N >= 14);
+    snapshot[0] = 0xFF;
+    snapshot[1] = 0x25;
+    std::memcpy(snapshot.data() + 6, &detour, sizeof(detour));
+#else
+    static_assert(N >= 5);
+    snapshot[0] = 0xE9;
+    const auto* targetBytes = reinterpret_cast<const std::uint8_t*>(target);
+    const auto* detourBytes = reinterpret_cast<const std::uint8_t*>(detour);
+    const int32_t relativeTarget = static_cast<int32_t>(detourBytes - (targetBytes + 5));
+    std::memcpy(snapshot.data() + 1, &relativeTarget, sizeof(relativeTarget));
+#endif
+}
 
 TEST(FFXApiParsingTest, RecognizesEnabledFrameGenerationConfigure) {
     ce::ffx_api::ConfigureDescFrameGeneration desc{};
@@ -78,6 +104,40 @@ TEST(FFXApiParsingTest, PresentCallbackPremulAlphaReadsLinkedExtension) {
     desc.header.pNext = &premul.header;
 
     EXPECT_TRUE(ce::ffx_api::ResolvePresentCallbackUsePremulAlpha(&desc));
+}
+
+TEST(FFXHookValidationTest, ProbeRecognizesExpectedInlineDetourSnapshot) {
+#ifdef _WIN64
+    std::array<unsigned char, 14> snapshot{};
+#else
+    std::array<unsigned char, 5> snapshot{};
+#endif
+    FillInlineDetourSnapshot(snapshot, snapshot.data(), reinterpret_cast<void*>(&DummyFFXDetour));
+
+    const auto probeResult =
+        FFXHook::detail::ProbeExpectedInlineDetourInstalled(snapshot.data(), reinterpret_cast<void*>(&DummyFFXDetour));
+    EXPECT_EQ(probeResult.state, FFXHook::detail::InlineDetourProbeState::kInstalledExpected);
+    EXPECT_EQ(probeResult.win32Error, ERROR_SUCCESS);
+}
+
+TEST(FFXHookValidationTest, SnapshotRejectsChangedDetourTarget) {
+#ifdef _WIN64
+    std::array<unsigned char, 14> snapshot{};
+#else
+    std::array<unsigned char, 5> snapshot{};
+#endif
+    FillInlineDetourSnapshot(snapshot, snapshot.data(), reinterpret_cast<void*>(&DummyFFXDetour));
+
+    EXPECT_FALSE(FFXHook::detail::SnapshotMatchesExpectedInlineDetour(
+        snapshot.data(), snapshot.data(), snapshot.size(), reinterpret_cast<void*>(&OtherDummyFFXDetour)));
+}
+
+TEST(FFXHookValidationTest, ProbeHandlesUnreadableTargetGracefully) {
+    const auto probeResult =
+        FFXHook::detail::ProbeExpectedInlineDetourInstalled(reinterpret_cast<void*>(static_cast<uintptr_t>(1)),
+                                                            reinterpret_cast<void*>(&DummyFFXDetour));
+    EXPECT_EQ(probeResult.state, FFXHook::detail::InlineDetourProbeState::kUnreadableTarget);
+    EXPECT_NE(probeResult.win32Error, ERROR_SUCCESS);
 }
 
 }  // namespace

@@ -14,6 +14,36 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-21 - Harden FFX inline-hook revalidation against stale export addresses during long mixed-runtime churn so periodic rescans cannot crash on dead `ffxConfigure` code pointers
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260421_153355_gtacrash_variousfgswitching` on build `0.1.2503` crashed late in a long mixed FG session after many otherwise healthy startup and switching fixes were already in place. The failure is not the older `ERR_GFX_STATE`, stale-OFF replay, or native-FSR `amd_fidelityfx_dx12!ffxQuery` worker-thread deadlock family.
+
+- **Comparison that narrowed the seam**:
+  1. The session spends a long runtime-owned native-FSR teardown window issuing repeated `FFX Hook: Installed DX12 overlay present-callback bridge ... enabled=0` logs with no immediate crash.
+  2. The hook thread had already re-entered FFX export maintenance earlier in the same session and logged repeated `FFX Hook: ffxCreateContext/ffxDestroyContext/ffxConfigure ... lost the expected detour patch; refreshing inline hook`, which proves the runtime was mutating those export entrypoints mid-session.
+  3. `crash.log` and both dumps then land in CE itself with the fault address `0x00007FFC298311E0`, which exactly matches the live `ffxConfigure` export address previously logged during hook install.
+
+- **Root cause refinement**:
+  1. The nearest-export symbol in the dump (`DX12_WaitForOverlayCompletion+...`) is misleading for this slice; disassembly of the faulting RIP shows CE comparing the bytes at `r13` against the x64 inline-detour signature `FF 25 00 00 00 00 [8-byte target]`.
+  2. That instruction pattern matches CE's own FFX inline-hook validation path, not the small overlay fence wait helper body.
+  3. The long-lived hook thread runs `CheckAndInstallHooks()` every second. During late native-FSR teardown and runtime patch churn, that periodic FFX revalidation could still treat an earlier export address as permanently readable and directly inspect its opcode bytes after the runtime had already rewritten or torn the export down.
+
+- **Fix**:
+  1. `hook/apis/ffx_hook.h` now exposes a tiny detour-probe helper that snapshots the expected inline-hook bytes via `ReadProcessMemory()` and returns a tri-state result: expected detour still installed, bytes changed while still readable, or target unreadable.
+  2. `hook/apis/ffx_hook.cpp` now uses that helper inside `InstallInlineHookOnce(...)`. If the export remains readable but the detour bytes changed, CE keeps the previous refresh behavior and reinstalls the inline hook. If the export address has become unreadable, CE now logs `became unreadable during inline-detour validation ... deferring refresh until a later rescan` and returns without dereferencing the stale code pointer.
+  3. `tests/test_ffx_api_parsing.cpp` now adds focused `FFXHookValidationTest.*` coverage for the expected-detour, changed-detour, and unreadable-target cases.
+
+- **Why this is generic**: This is not a GTA-only carve-out and not a workaround for one export name. Any long-running mixed-runtime session can make CE's periodic hook maintenance race against a runtime that rewrites, unloads, or temporarily invalidates previously seen export entrypoints. The generic invariant is: periodic inline-hook validation may observe stale export addresses, but it must never assume those addresses remain directly readable across runtime churn.
+
+- **Verification**:
+  - Re-checked GTA `installed/captureengine/logs/20260421_153355_gtacrash_variousfgswitching/{hook_debug.log,crash.log,crash_20260421_153842_654_pid11004_tid11164.dmp,external_f2f8c55b-f9a7-4307-b93d-b1cfbb2d23d5.dmp}`.
+  - Confirmed the fault address `0x00007FFC298311E0` matches the session's logged `ffxConfigure` export install address and that earlier same-session rescans had already logged repeated `lost the expected detour patch; refreshing inline hook` against those same FFX exports.
+  - Ran `python build.py --run-tests --tests-only --skip-updates --gtest-filter="FFXApiParsingTest.*:FFXHookValidationTest.*"`; the focused suite passed.
+
+- **Files changed**: `hook/apis/ffx_hook.h`, `hook/apis/ffx_hook.cpp`, `tests/test_ffx_api_parsing.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next GTA check on build `0.1.2504+` is that a similarly long mixed FSR/DLSS switching session no longer crashes in the hook thread while periodic FFX rescans are active, and that hook logs either continue to refresh readable changed exports or log the new unreadable-target deferral instead of AVing on the old `ffxConfigure` address.
+
 ### 2026-04-21 - Keep post-FSR explicit DLSS comebacks startup-protected through the full intended eight confirmed PostSL frames so GTA cannot fall back to no-FG immediately after submit #8
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260421_144254_gtanocrash_allfgofftofsrfgontodlsesfgfail` on build `0.1.2501` no longer hit the older stale-OFF-at-expiry seam. The explicit post-FSR DLSS comeback on fresh `scQueue=000002538D784660` now reaches `PostSL REACTIVATED`, `PostSL CONFIRMED rendering`, updates `lastWorkingQueue`, and submits visible PostSL overlay frames. But GTA still silently loses DLSS FG afterward and falls back to `STREAMLINE_NO_FG` with no crash.

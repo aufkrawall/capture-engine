@@ -84,33 +84,6 @@ std::atomic<void*> g_ffxCreateContextTarget{nullptr};
 std::atomic<void*> g_ffxDestroyContextTarget{nullptr};
 std::atomic<void*> g_ffxConfigureTarget{nullptr};
 
-bool IsExpectedInlineDetourInstalled(void* target, void* detour) {
-    if (!target || !detour) {
-        return false;
-    }
-
-    const auto* code = static_cast<const uint8_t*>(target);
-#ifdef _WIN64
-    if (code[0] != 0xFF || code[1] != 0x25 || code[2] != 0x00 || code[3] != 0x00 || code[4] != 0x00 ||
-        code[5] != 0x00) {
-        return false;
-    }
-
-    void* installedDetour = nullptr;
-    memcpy(&installedDetour, code + 6, sizeof(installedDetour));
-    return installedDetour == detour;
-#else
-    if (code[0] != 0xE9) {
-        return false;
-    }
-
-    int32_t relativeTarget = 0;
-    memcpy(&relativeTarget, code + 1, sizeof(relativeTarget));
-    const auto* installedDetour = reinterpret_cast<const uint8_t*>(target) + 5 + relativeTarget;
-    return installedDetour == detour;
-#endif
-}
-
 template <typename T>
 bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
                            std::atomic<void*>& targetSlot, const char* hookName) {
@@ -127,7 +100,20 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
 
     const void* installedTarget = targetSlot.load(std::memory_order_acquire);
     if (installedFlag.load(std::memory_order_acquire) && installedTarget == target) {
-        if (IsExpectedInlineDetourInstalled(target, detour)) {
+        const auto probeResult = FFXHook::detail::ProbeExpectedInlineDetourInstalled(target, detour);
+        if (probeResult.state == FFXHook::detail::InlineDetourProbeState::kInstalledExpected) {
+            return false;
+        }
+
+        if (probeResult.state == FFXHook::detail::InlineDetourProbeState::kUnreadableTarget) {
+            static std::atomic<int> s_unreadableValidationLogCount{0};
+            const int logCount = s_unreadableValidationLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10) {
+                HookLogImportant(
+                    "FFX Hook: %s at %p became unreadable during inline-detour validation (error=%lu) - deferring "
+                    "refresh until a later rescan",
+                    hookName, target, probeResult.win32Error);
+            }
             return false;
         }
 
@@ -366,9 +352,10 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
         return false;
     }
 
-    if (!g_DefaultPresentCallback) {
-        g_DefaultPresentCallback = reinterpret_cast<ce::ffx_api::PresentCallback>(
-            GetProcAddress(hModule, "ffxFrameInterpolationUiComposition"));
+    const auto resolvedDefaultPresentCallback =
+        reinterpret_cast<ce::ffx_api::PresentCallback>(GetProcAddress(hModule, "ffxFrameInterpolationUiComposition"));
+    if (resolvedDefaultPresentCallback && resolvedDefaultPresentCallback != g_DefaultPresentCallback) {
+        g_DefaultPresentCallback = resolvedDefaultPresentCallback;
         if (g_DefaultPresentCallback) {
             HookLogImportant("FFX Hook: Resolved default frame-interpolation present callback at %p",
                              reinterpret_cast<void*>(g_DefaultPresentCallback));
@@ -517,6 +504,7 @@ void Init() {
 
     g_Initialized.store(false, std::memory_order_release);
     g_HookedModule = nullptr;
+    g_DefaultPresentCallback = nullptr;
 
     if (!g_NoModulesLogged.exchange(true, std::memory_order_acq_rel)) {
         HookLog("FFX Hook: No FFX modules found, hooks not installed");
@@ -577,6 +565,7 @@ void Shutdown() {
     g_Original_ffxDestroyContext = nullptr;
     g_Original_ffxConfigure = nullptr;
     g_HookedModule = nullptr;
+    g_DefaultPresentCallback = nullptr;
     g_ActiveFGContextCount.store(0, std::memory_order_release);
     g_FGCompat.SetFSRFGActive(false);
     g_FGCompat.SetFSRFGSupportPresent(false);
