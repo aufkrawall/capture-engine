@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-Last cross-checked: 2026-04-21
+Last cross-checked: 2026-04-22
 
 Purpose:
 - Track wiki edits.
@@ -13,6 +13,44 @@ Update rules:
 - If an area is churning, call that out explicitly so the next reader knows to re-check the code.
 
 ## Activity Timeline
+
+### 2026-04-22 - Keep fresh pure-DLSS runtime-owned startup handoffs startup-protected through the confirmed-startup-settling window too, so GTA cannot drop the proven normal-route path back into synthetic re-entrant routing right after first confirmed PostSL submit
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260421_235555` on build `0.1.2523` no longer failed before first visible render on the fresh pure-DLSS runtime-owned Streamline handoff. CE now really did bootstrap overlay state on `scQueue=0000012B0C058750`, reach `DX12: PostSL CONFIRMED rendering via re-entrant Present`, and submit `Post-SL overlay SUBMIT #1..#2` with no device removal. But the game still crashed immediately afterward, and the user also reported a transient pink tint just before the crash.
+
+- **Comparison that narrowed the seam**:
+  1. This is not the earlier `state unavailable` / delayed-first-confirmation family from `20260421_223723`. GTA really does confirm rendering and submit PostSL work on the fresh runtime-owned Streamline `scQueue=0000012B0C058750` before the failure.
+  2. It is also not the older stale-OFF replay family. The GTA trace keeps logging `Streamline Hook: Suppressing slDLSSGSetOptions(OFF) while DLSS comeback remains startup-protected ... confirmed=1 settling=1`, so the stale OFF is still being held correctly during this slice.
+  3. The decisive GTA/Talos divergence is one step later, inside the short confirmed-startup-settling window. Right after GTA reaches `Post-SL overlay SUBMIT #2`, the same session logs `DX12: Scene transition detected (gap=2006ms) during FG — overlay cooldown 30 frames` while the planner/routing logs still say `startupPhase=settling route=confirmedStandaloneNormalRoute callback=1 confirmed=1 settling=1`.
+  4. GTA then stays in that `settling` family until `DX12: FG cooldown preserving active PostSL path (remaining=0 ...)`, immediately followed by `DX12: FG transition cooldown complete — resuming overlay`, and then the very next Streamline-originated Present falls back to `DetourPresent: Treating Streamline-originated Present as synthetic re-entrant #1`.
+  5. Both dumps (`external_0b3348d9-a5b7-43a9-89a0-c35a03ba4641.dmp` and `crash_external_0b3348d9-a5b7-43a9-89a0-c35a03ba4641.dmp`) still land in the familiar patched-`dxgi!CDXGISwapChain::Present+0x5` corruption family (`CHKIMG` shows `E9 ... CC` at `dxgi!CDXGISwapChain::Present`), so the crash is the old route-corruption seam reopened from a later startup phase rather than a new CE-side fault.
+  6. Healthy Talos `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching` does not hit that drop-back. Its corresponding pure-DLSS startup reaches `PostSL CONFIRMED rendering`, stays on `startupPhase=settling route=confirmedStandaloneNormalRoute`, then progresses to `startupPhase=stable` and repeated `DetourPresent: Invoking PostSL on confirmed standalone Streamline Present while keeping the normal SL route ...` lines with no synthetic re-entrant fallback.
+
+- **Root cause refinement**:
+  1. The repo already modeled the first eight confirmed PostSL frames as still startup-settling for routing and stale-OFF protection (`HookIsPostSLOverlayConfirmedButStartupSettling()`), but the DX12 startup-handoff lifetime helpers still encoded an older, narrower contract: `ShouldKeepSyntheticStartupStateUntilConfirmedRender(...)` and `ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(...)` stopped protecting the startup at first confirmation rather than at the end of the explicit settling window.
+  2. That mismatch meant CE could simultaneously say "this startup is still settling" in routing/state logs while the cooldown/reinit/callback-registration seams were already clearing the one-shot startup-handoff protection state (`streamlineStartupHandoffPending` / `ResetStreamlineStartupTransitionState()`) as soon as `postSLConfirmedRendering` became true.
+  3. On GTA `20260421_235555`, the later scene-gap cooldown widened the time between `Post-SL overlay SUBMIT #2` and `FG transition cooldown complete`. Once that cooldown hit zero, the narrower helper contract let CE clear the startup-handoff protection exactly while the startup was still inside the repo's own settling window, so the next standalone Streamline Present lost its normal-route protection and fell back into `synthetic re-entrant #1`.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now broadens `ShouldKeepSyntheticStartupStateUntilConfirmedRender(...)`: once PostSL has confirmed rendering, the helper now remains true only while `postSLConfirmedButStartupSettling` is still true. Impossible/stale combinations like `confirmed=1 settling=0 pending=1` are no longer treated as protected.
+  2. The same header now broadens `ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(...)` using that stronger helper.
+  3. The same header also broadens `ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(...)` so the short confirmed-startup-settling window is still protected from a new scene-gap overlay cooldown, and the helper likewise rejects impossible stale combinations once `confirmed=1 settling=0`.
+  4. `hook/apis/dx12_hook.cpp` now threads `HookIsPostSLOverlayConfirmedButStartupSettling()` through all the pure-DLSS cooldown/reinit/callback-registration seams that previously asked only `(startupPending, activeButUnconfirmed, confirmedRendering)` when deciding whether to preserve startup state, keep `streamlineStartupHandoffPending`, or call `ResetStreamlineStartupTransitionState()`.
+  5. The scene-gap suppression log now includes `settling=%d`, so future traces show explicitly when the cooldown was skipped because the startup was already confirmed but still inside the settling window rather than because it was still half-armed pre-confirmation.
+  6. `tests/test_dxgi_shared.cpp` now extends the existing focused policy coverage so the settling-window family is explicit: `SceneTransitionCooldownIsSuppressedDuringHalfArmedSyntheticStartup`, `FreshStreamlineStartupHandoffStaysPendingWhileSyntheticStartupIsHalfArmed`, `SyntheticStartupStateStaysHalfArmedUntilConfirmedRender`, and `ReinitCooldownAlsoPreservesHalfArmedSyntheticStartupState` now all cover the `confirmed=1 settling=1` case too.
+
+- **Why this is generic**: This is not a GTA-only carve-out and not a special case for one queue address. Any pure-DLSS startup can surface the same shape: a fresh authoritative runtime-owned Streamline handoff already confirms PostSL rendering, but the startup is still inside the explicit first-confirmed-startup-settling window when another scene-gap or cooldown seam fires. The generic invariant is: the startup-handoff/normal-route protection must survive until that settling window ends, not merely until first confirmation. Otherwise CE can reopen the older synthetic re-entrant Present crash family even after the first confirmed PostSL submits already proved the runtime-owned path works.
+
+- **Verification**:
+  - Re-checked GTA `installed/captureengine/logs/20260421_235555/{hook_debug.log,external_0b3348d9-a5b7-43a9-89a0-c35a03ba4641.dmp,crash_external_0b3348d9-a5b7-43a9-89a0-c35a03ba4641.dmp,session_manifest.txt}` and confirmed the decisive sequence: `PostSL CONFIRMED rendering`, `Post-SL overlay SUBMIT #1..#2`, `Scene transition detected (gap=2006ms) during FG — overlay cooldown 30 frames`, `FG transition cooldown complete — resuming overlay`, then immediate `synthetic re-entrant #1` and the same patched-`dxgi!CDXGISwapChain::Present+0x5` dump family.
+  - Re-checked healthy Talos `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching/hook_debug.log` and confirmed the matching pure-DLSS startup progresses from `startupPhase=settling` to `startupPhase=stable`, then repeated `Invoking PostSL on confirmed standalone Streamline Present while keeping the normal SL route ...` with no synthetic re-entrant fallback.
+  - Ran `& ".\tests\unit_tests.exe" --gtest_filter=DXGISharedTest.SceneTransitionCooldownIsSuppressedDuringHalfArmedSyntheticStartup:DXGISharedTest.FreshStreamlineStartupHandoffStaysPendingWhileSyntheticStartupIsHalfArmed:DXGISharedTest.SyntheticStartupStateStaysHalfArmedUntilConfirmedRender:DXGISharedTest.ReinitCooldownAlsoPreservesHalfArmedSyntheticStartupState:DXGISharedTest.ActivePostSLStartupAlsoStaysActiveDuringRemainingFGCooldown`; the focused suite passed.
+  - Ran `python build.py --run-tests --tests-only --skip-updates --gtest-filter="DXGISharedTest.SceneTransitionCooldownIsSuppressedDuringHalfArmedSyntheticStartup:DXGISharedTest.FreshStreamlineStartupHandoffStaysPendingWhileSyntheticStartupIsHalfArmed:DXGISharedTest.SyntheticStartupStateStaysHalfArmedUntilConfirmedRender:DXGISharedTest.ReinitCooldownAlsoPreservesHalfArmedSyntheticStartupState:DXGISharedTest.ActivePostSLStartupAlsoStaysActiveDuringRemainingFGCooldown"`; the focused build/test path passed.
+  - Ran `& ".\tests\unit_tests.exe" --gtest_filter=DXGISharedTest.*`; all 175 `DXGISharedTest.*` cases passed.
+
+- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next GTA check on build `0.1.2526+` is that the same pure-DLSS `all FG off -> DLSS FG` family on fresh runtime-owned `scQueue=0000012B0C058750` no longer logs `Scene transition detected ... overlay cooldown 30 frames` while PostSL is still inside confirmed-startup settling, no longer clears startup-handoff protection when the remaining FG cooldown completes, and therefore no longer falls back to `Treating Streamline-originated Present as synthetic re-entrant #1` right after the first confirmed PostSL submits. Talos should keep its already healthy pure-DLSS startup behavior.
 
 ### 2026-04-21 - Let half-armed pure-DLSS synthetic PostSL startup rebuild overlay state on a fresh runtime-owned Streamline handoff without waiting for full ProcessFrame dormancy, and suppress generic scene-gap cooldown on that same startup
 

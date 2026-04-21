@@ -1036,9 +1036,21 @@ inline bool ShouldBootstrapPostSLOverlayState(bool streamlineFGRunning, bool pos
 inline bool ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(bool streamlineFGRunning,
                                                                               bool startupActivationPending,
                                                                               bool postSLActiveButUnconfirmed,
-                                                                              bool postSLConfirmedRendering) {
-    return streamlineFGRunning && !postSLConfirmedRendering &&
-           (startupActivationPending || postSLActiveButUnconfirmed);
+                                                                              bool postSLConfirmedRendering,
+                                                                              bool postSLConfirmedButStartupSettling) {
+    // A fresh pure-DLSS runtime-owned handoff can still be in the fragile startup
+    // family for a few confirmed PostSL frames after first confirmation. Arming a
+    // separate scene-gap cooldown there can tear the route back off the proven
+    // confirmed-standalone path before startup has really settled.
+    if (!streamlineFGRunning) {
+        return false;
+    }
+
+    if (postSLConfirmedRendering) {
+        return postSLConfirmedButStartupSettling;
+    }
+
+    return startupActivationPending || postSLActiveButUnconfirmed;
 }
 
 inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
@@ -1443,15 +1455,28 @@ inline bool ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
 
 inline bool ShouldKeepSyntheticStartupStateUntilConfirmedRender(bool startupActivationPending,
                                                                 bool postSLActiveButUnconfirmed,
-                                                                bool postSLConfirmedRendering) {
-    return !postSLConfirmedRendering && (startupActivationPending || postSLActiveButUnconfirmed);
+                                                                bool postSLConfirmedRendering,
+                                                                bool postSLConfirmedButStartupSettling) {
+    // Historical name retained: the same startup-protection contract must now
+    // survive not only until first confirmation, but also through the short
+    // confirmed-startup-settling window. GTA's fresh runtime-owned pure-DLSS
+    // handoff can otherwise clear the one-shot normal-route protection exactly at
+    // first confirmation and fall back into synthetic re-entrant routing on the
+    // next Streamline Present.
+    if (postSLConfirmedRendering) {
+        return postSLConfirmedButStartupSettling;
+    }
+
+    return startupActivationPending || postSLActiveButUnconfirmed;
 }
 
 inline bool ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(bool startupActivationPending,
                                                                                     bool postSLActiveButUnconfirmed,
-                                                                                    bool postSLConfirmedRendering) {
+                                                                                    bool postSLConfirmedRendering,
+                                                                                    bool postSLConfirmedButStartupSettling) {
     return ShouldKeepSyntheticStartupStateUntilConfirmedRender(startupActivationPending, postSLActiveButUnconfirmed,
-                                                               postSLConfirmedRendering);
+                                                               postSLConfirmedRendering,
+                                                               postSLConfirmedButStartupSettling);
 }
 
 inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible, bool startupActivationPending,
