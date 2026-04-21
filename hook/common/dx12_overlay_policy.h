@@ -595,6 +595,19 @@ inline bool ResolveActualHDRStateForOverlayTarget(int dxgiFormat, bool hasDispla
     return hasDisplayColorSpace && IsHDRColorSpace(colorSpace);
 }
 
+inline bool ResolveRuntimeOwnedCallbackHDRStateFromCachedState(int dxgiFormat, bool hasCachedHDRState,
+                                                               bool cachedHDRState) {
+    if (ShouldTreatFormatAsDefinitelyHDR(dxgiFormat)) {
+        return true;
+    }
+
+    if (!ShouldProbeDisplayColorSpaceForHDR(dxgiFormat)) {
+        return false;
+    }
+
+    return hasCachedHDRState && cachedHDRState;
+}
+
 inline bool ShouldFallbackCopyFFXPresentSourceToOutput(bool originalPresentCallbackAvailable, bool hasCurrentBackBuffer,
                                                        bool outputDiffersFromCurrent) {
     // The bridge only needs to copy the base frame when the runtime has no

@@ -14,6 +14,41 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-21 - Cache trusted swapchain HDR state for native-FSR callback setup so Talos `DLSS_FG -> FSR_FG` cannot die while the callback thread probes weak raw swapchain COM state after authoritative FFX takeover
+
+- **Motivation**: Talos `installed/captureengine/logs/20260421_182513_taloscrash_dlssfgtofsrfgcrash` on build `0.1.2510` crashed on `DLSS FG -> FSR FG` even though the older Talos comparison `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching` on build `0.1.2507` stayed healthy through multiple mixed switches. No CE crash dump was captured, so the diagnosis had to come from the hook traces alone.
+
+- **Comparison that narrowed the seam**:
+  1. Both Talos sessions still reach a healthy initial DLSS epoch first, so the later failure is on the native-FSR takeover/callback family rather than on first DLSS startup.
+  2. The crash session still reaches authoritative FFX takeover on `queue=0000028B4A3AC010`, clears stale Streamline/PostSL ownership, publishes native FSR `configure-on`, and installs the callback bridge for `context=0000028B4AD1A640` / `frameID=1908-1909`.
+  3. The exact crash boundary is narrow: `DX12: FFX present callback composition contract (frameId=1908 premulAlpha=0)`, `[Overlay] Initializing DX12 backend (device=000002887B503CF0, queue=0000028B4A3AC010, fmt=24)`, `[Overlay] DX12 backend initialized successfully (dpiScale=1.50)`, then no later `DX12: FFX present callback initialized overlay adapter ...` or `rendered overlay on runtime-owned FSR path` line appears.
+  4. The healthy comparison reaches the matching callback family and immediately continues into `DX12: FFX present callback initialized overlay adapter for runtime-owned FSR ...` and repeated callback render lines.
+
+- **Root cause refinement**:
+  1. The callback-side native-FSR HDR/setup path still depended on probing DXGI output state through raw non-AddRef'd swapchain globals from the callback thread after authoritative FFX takeover.
+  2. Those raw pointers are acceptable as weak tracking/diagnostic evidence, but not as an authoritative COM-lifetime source for late callback-thread classification. Runtime-owned callback execution can legitimately outlive the last normal tracked swapchain object.
+  3. The crash boundary fits that seam exactly: callback-backend `InitDX12` already succeeds, so the failure is later than basic backend bring-up but earlier than CE's own `initialized overlay adapter` log, which is exactly where callback-side HDR/swapchain probing still ran.
+
+- **Fix**:
+  1. `hook/common/dx12_overlay_policy.h` now adds `ResolveRuntimeOwnedCallbackHDRStateFromCachedState(...)`, making the stronger rule explicit: FP16 is always HDR, non-10-bit formats are SDR, and 10-bit UNORM may use cached trusted HDR state only when earlier live-swapchain probing actually established it.
+  2. `hook/apis/dx12_hook.cpp` now keeps a small trusted cache for the last live swapchain HDR decision (`valid`, `isHDR`, `colorSpace`) and updates it from the normal live-swapchain path when `ProcessFrame` successfully probes the real DXGI output color space.
+  3. `hook/apis/dx12_hook.h` / `hook/apis/dx12_hook.cpp` now add `DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain)`, which snapshots that same trusted HDR/color-space state from the live `ffxConfigure(... swapChain=...)` pointer while the runtime is still handing CE a current swapchain object.
+  4. `hook/apis/ffx_hook.cpp` now calls that helper before replacing the runtime callback with CE's bridge, so the later callback thread no longer needs to rediscover HDR through weak global swapchain pointers.
+  5. `hook/apis/dx12_hook.cpp` now lets `EnsureOverlayAdapterReadyForFFXPresentCallback(...)` resolve callback-side HDR strictly from cached trusted state and logs `using cached HDR state instead of probing weak swapchain COM state ...` when the callback path needs that fallback.
+  6. `tests/test_dxgi_shared.cpp` now adds `DXGISharedTest.RuntimeOwnedCallbackHDRFallbackUsesCachedKnownState` alongside the existing HDR policy tests.
+
+- **Why this is generic**: This is not a Talos-only workaround and not a special case for one queue or one frame id. Any runtime-owned native-FSR callback path can outlive the last normal tracked swapchain object. The generic invariant is: callback threads may consume cached trusted swapchain/HDR facts captured earlier from a live swapchain, but they must not require weak raw COM pointer lifetime for late callback-side classification.
+
+- **Verification**:
+  - Re-checked Talos crash `installed/captureengine/logs/20260421_182513_taloscrash_dlssfgtofsrfgcrash/hook_debug.log` and confirmed the exact final emitted boundary: native FSR `configure-on`, callback composition-contract log, callback backend `InitDX12` success, then log termination before `initialized overlay adapter` / callback render.
+  - Re-checked healthy Talos comparison `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching/hook_debug.log` and confirmed the matching family continues directly into `DX12: FFX present callback initialized overlay adapter for runtime-owned FSR ...` and repeated callback render lines.
+  - Ran `python build.py --run-tests --tests-only --skip-updates --gtest-filter="DXGISharedTest.HDRDetectionOnlyProbesDisplayColorSpaceForTenBitUNormOutputs:DXGISharedTest.HDRDetectionRecognizesHDRAndSDRTenBitColorSpaces:DXGISharedTest.HDRDetectionResolvesActualOverlayTargetStateFromFormatAndColorSpace:DXGISharedTest.RuntimeOwnedCallbackHDRFallbackUsesCachedKnownState"`; the focused suite passed.
+  - Ran `python build.py --skip-updates`; full rebuild passed and `build/verification/latest_summary.txt` reports success for build `0.1.2515`.
+
+- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.h`, `hook/apis/dx12_hook.cpp`, `hook/apis/ffx_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next Talos check on build `0.1.2515+` is that the same `DLSS FG -> FSR FG` family on runtime-owned callback queue `0000028B4A3AC010` now progresses past callback backend init into `DX12: FFX present callback initialized overlay adapter ...` and sustained `rendered overlay on runtime-owned FSR path` lines instead of dying in the callback-side setup window. GTA should also be re-checked so true HDR/PQ callback rendering still stays correct when the cached trusted HDR state is populated from a real HDR output.
+
 ### 2026-04-21 - Keep fresh post-FSR Streamline startup handoffs pending until synthetic startup is no longer half-armed, and let a later explicit `slDLSSGSetOptions(ON)` upgrade the same already-live comeback to explicit provenance
 
 - **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260421_170319` on build `0.1.2507` still crashed at the end of a long mixed switching session even after the earlier `0.1.2505` fresh-startup heuristic-FSR fix. The final `all FG off -> DLSS FG` comeback again lands in the external Streamline `sl-sha-11cf43f.dmp` family rather than the older CE-side `ffxConfigure` AV or the earlier `ERR_GFX_STATE` / `devRemoved` queue-proof family.

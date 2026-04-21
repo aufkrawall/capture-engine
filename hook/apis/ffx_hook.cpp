@@ -278,6 +278,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     bool usingDefaultPresentCallback = false;
     if (recognizedFGConfigure) {
         localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
+        DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(localConfig.swapChain);
         void* bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
         bridgedOriginalCallback = localConfig.presentCallback ? localConfig.presentCallback : g_DefaultPresentCallback;
         bridgedOriginalUserContext = localConfig.presentCallback ? localConfig.presentCallbackUserContext : nullptr;

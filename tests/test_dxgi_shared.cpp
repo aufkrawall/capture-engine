@@ -814,6 +814,25 @@ TEST(DXGISharedTest, HDRDetectionResolvesActualOverlayTargetStateFromFormatAndCo
         DXGI_FORMAT_R8G8B8A8_UNORM, true, DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020));
 }
 
+TEST(DXGISharedTest, RuntimeOwnedCallbackHDRFallbackUsesCachedKnownState) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(DXGI_FORMAT_R16G16B16A16_FLOAT,
+                                                                                    false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(DXGI_FORMAT_R8G8B8A8_UNORM, true,
+                                                                                    true));
+
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(DXGI_FORMAT_R10G10B10A2_UNORM,
+                                                                                    true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(DXGI_FORMAT_R10G10B10A2_UNORM,
+                                                                                    true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(DXGI_FORMAT_R10G10B10A2_UNORM,
+                                                                                    false, true));
+}
+
 TEST(DXGISharedTest, AuthoritativeFSRRealFrameOnlyRunTracksOnlyQualifiedFrames) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTrackAuthoritativeFSRRealFrameOnlyRun(false, true, true, false, false));
 

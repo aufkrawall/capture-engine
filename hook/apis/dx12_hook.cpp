@@ -979,6 +979,20 @@ static std::atomic<bool> g_KnownDLSSFGModuleSeen{false};
 static IDXGISwapChain* g_LastSwapChain = nullptr;
 // Pending swapchain cleanup - released after ResizeBuffers completes
 static IDXGISwapChain* g_PendingSwapChainCleanup = nullptr;
+// Native-FSR callback rendering can outlive the last normal live swapchain COM object.
+// Cache the last trusted live-swapchain HDR decision so the callback thread does not
+// need to probe DXGI output state through a weak raw swapchain pointer after takeover.
+static std::atomic<bool> g_LastKnownSwapchainHDRStateValid{false};
+static std::atomic<bool> g_LastKnownSwapchainIsHDR{false};
+static std::atomic<int> g_LastKnownSwapchainColorSpace{-1};
+
+static void UpdateLastKnownSwapchainHDRStateCache(DXGI_FORMAT format, bool isActualHDR, int outputColorSpace) {
+    const bool trustedHDRState =
+        !ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(static_cast<int>(format)) || outputColorSpace != -1;
+    g_LastKnownSwapchainColorSpace.store(outputColorSpace, std::memory_order_release);
+    g_LastKnownSwapchainIsHDR.store(isActualHDR, std::memory_order_release);
+    g_LastKnownSwapchainHDRStateValid.store(trustedHDRState, std::memory_order_release);
+}
 
 static bool IsReadableSwapchainPointer(const void* ptr) {
     if (!ptr) {
@@ -2057,18 +2071,26 @@ static D3D12_RESOURCE_STATES GetDX12StateFromFFXResourceState(uint32_t state) {
     return dx12State == static_cast<D3D12_RESOURCE_STATES>(0) ? D3D12_RESOURCE_STATE_COMMON : dx12State;
 }
 
-static IDXGISwapChain* GetTrackedSwapchainForCallbackOverlayHDR() {
-    if (IDXGISwapChain* swapchain = GetLastTrackedSwapchainForStartupActivation()) {
-        return swapchain;
+static bool ResolveRuntimeOwnedFFXPresentCallbackHDRState(DXGI_FORMAT format) {
+    const bool cachedHDRStateValid = g_LastKnownSwapchainHDRStateValid.load(std::memory_order_acquire);
+    const bool cachedHDRState = g_LastKnownSwapchainIsHDR.load(std::memory_order_acquire);
+    const int cachedColorSpace = g_LastKnownSwapchainColorSpace.load(std::memory_order_acquire);
+    const bool resolvedHDR = ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(
+        static_cast<int>(format), cachedHDRStateValid, cachedHDRState);
+
+    if (ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(static_cast<int>(format))) {
+        static std::atomic<int> s_ffxPresentCachedHDRLogCount{0};
+        const int logCount = s_ffxPresentCachedHDRLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || !cachedHDRStateValid) {
+            HookLogImportant(
+                "DX12: FFX present callback using cached HDR state instead of probing weak swapchain COM state "
+                "(fmt=%d cachedValid=%d cachedHDR=%d cachedColorSpace=%d resolvedHDR=%d)",
+                static_cast<int>(format), cachedHDRStateValid ? 1 : 0, cachedHDRState ? 1 : 0, cachedColorSpace,
+                resolvedHDR ? 1 : 0);
+        }
     }
 
-    IDXGISwapChain* cachedSwapchain = g_State.cachedSwapChain;
-    if (cachedSwapchain && IsReadableSwapchainPointer(cachedSwapchain) &&
-        IsReadableSwapchainPointer(*(void***)cachedSwapchain)) {
-        return cachedSwapchain;
-    }
-
-    return nullptr;
+    return resolvedHDR;
 }
 
 static bool ResolveSwapchainOutputHDRState(IDXGISwapChain* swapchain, DXGI_FORMAT format, const char* logPrefix,
@@ -2112,6 +2134,25 @@ static bool ResolveSwapchainOutputHDRState(IDXGISwapChain* swapchain, DXGI_FORMA
         HookLog("%s - colorSpace=%d, isHDR=%d", logPrefix, colorSpace, isActualHDR ? 1 : 0);
     }
     return isActualHDR;
+}
+
+void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain) {
+    auto* dxgiSwapChain = static_cast<IDXGISwapChain*>(swapChain);
+    if (!dxgiSwapChain || !IsReadableSwapchainPointer(dxgiSwapChain) ||
+        !IsReadableSwapchainPointer(*(void***)dxgiSwapChain)) {
+        return;
+    }
+
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    if (FAILED(dxgiSwapChain->GetDesc(&desc))) {
+        return;
+    }
+
+    int outputColorSpace = -1;
+    const bool isActualHDR = ResolveSwapchainOutputHDRState(dxgiSwapChain, desc.BufferDesc.Format,
+                                                            "DX12: Cached runtime-owned callback HDR source",
+                                                            &outputColorSpace);
+    UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace);
 }
 
 static void TransitionResourceIfNeeded(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* resource,
@@ -2194,8 +2235,7 @@ static bool EnsureOverlayAdapterReadyForFFXPresentCallback(
             return false;
         }
 
-        const bool callbackOutputHDR = ResolveSwapchainOutputHDRState(
-            GetTrackedSwapchainForCallbackOverlayHDR(), resourceDesc.Format, "DX12: FFX present callback HDR check");
+        const bool callbackOutputHDR = ResolveRuntimeOwnedFFXPresentCallbackHDRState(resourceDesc.Format);
         g_FFXPresentOverlayAdapter.SetHDR(callbackOutputHDR, static_cast<int>(resourceDesc.Format));
         g_FFXPresentOverlayDevice = dx12Device;
         g_FFXPresentOverlayFormat = resourceDesc.Format;
@@ -10014,8 +10054,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     s_consecutiveInitFails = 0;
                     s_nextRetryFrame = 0;
 
+                    int outputColorSpace = -1;
                     const bool isActualHDR = ResolveSwapchainOutputHDRState(
-                        static_cast<IDXGISwapChain*>(sc3), desc.BufferDesc.Format, "DX12: Display HDR check");
+                        static_cast<IDXGISwapChain*>(sc3), desc.BufferDesc.Format, "DX12: Display HDR check",
+                        &outputColorSpace);
+                    UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace);
                     g_OverlayAdapter.SetHDR(isActualHDR, (int)desc.BufferDesc.Format);
 
                     // Propagate HDR state to media engine via shared memory
@@ -13700,6 +13743,9 @@ void DX12Hook::Shutdown() {
     if (g_LastSwapChain) {
         g_LastSwapChain = nullptr;
     }
+    g_LastKnownSwapchainHDRStateValid.store(false, std::memory_order_release);
+    g_LastKnownSwapchainIsHDR.store(false, std::memory_order_release);
+    g_LastKnownSwapchainColorSpace.store(-1, std::memory_order_release);
     if (g_SharedCaptureD3D12.IsActive()) {
         std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
         g_SharedCaptureD3D12.Reset();
