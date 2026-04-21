@@ -349,7 +349,8 @@ void ApplyCombinedDLSSFGState(bool active, int multiplier) {
     }
 }
 
-void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char* source) {
+void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool explicitSetOptionsEnableSignal,
+                                        const char* source) {
     if (ShouldKeepPureObserverOnlyStreamlineBehavior()) {
         const bool previousSignalObserved =
             DXGIShared::g_StreamlineFGRunning.exchange(active, std::memory_order_acq_rel);
@@ -391,14 +392,26 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
         DXGIShared::ArmStreamlineStartupTransitionWindow();
         g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     }
-    const bool explicitSetOptionsActivation = source && strcmp(source, "SetOptions") == 0;
-    g_CurrentComebackActivatedViaExplicitSetOptions.store(
+    const bool sourceWasSetOptions = source && strcmp(source, "SetOptions") == 0;
+    const bool explicitSetOptionsActivation = explicitSetOptionsEnableSignal;
+    const bool updatedExplicitSetOptionsActivation =
         ce::streamline_runtime_policy::ResolveCurrentComebackExplicitSetOptionsActivation(
             previousExplicitSetOptionsActivation, signalUpdate.effectiveActive, signalUpdate.freshActivationEdge,
-            explicitSetOptionsActivation),
-        std::memory_order_release);
+            explicitSetOptionsActivation);
+    g_CurrentComebackActivatedViaExplicitSetOptions.store(updatedExplicitSetOptionsActivation,
+                                                          std::memory_order_release);
     g_FGCompat.SetStreamlineFGSignal(signalUpdate.effectiveActive);
     ApplyCombinedDLSSFGState(signalUpdate.effectiveActive, signalUpdate.effectiveMultiplier);
+
+    if (!previousExplicitSetOptionsActivation && updatedExplicitSetOptionsActivation &&
+        signalUpdate.effectiveActive && explicitSetOptionsActivation && !signalUpdate.freshActivationEdge) {
+        HookLogImportant(
+            "Streamline Hook: Upgraded already-live DLSS comeback provenance to explicit SetOptions enable "
+            "(source=%s startupWindow=%d hadFSR=%d safeBootstrap=%d pending=%d unconfirmed=%d settling=%d)",
+            source ? source : "runtime-state", startupWindowActive ? 1 : 0, HookHasFSRFGHistory() ? 1 : 0,
+            safePostFSRBootstrapPath ? 1 : 0, startupActivationPending ? 1 : 0,
+            postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0);
+    }
 
     if (previousSignalObserved != signalUpdate.effectiveActive) {
         DX12_OnStreamlineFGStateChanged(signalUpdate.effectiveActive);
@@ -406,12 +419,12 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, const char
                          signalUpdate.effectiveActive ? "ON" : "OFF", source ? source : "runtime-state");
     }
     ce::fg_session::EmitFGEvent(
-        explicitSetOptionsActivation ? ce::fg_session::FGEventKind::kStreamlineSetOptionsRuntimeUpdate
-                                     : ce::fg_session::FGEventKind::kStreamlineGetStateRuntimeUpdate,
+        sourceWasSetOptions ? ce::fg_session::FGEventKind::kStreamlineSetOptionsRuntimeUpdate
+                            : ce::fg_session::FGEventKind::kStreamlineGetStateRuntimeUpdate,
         source ? source : "StreamlineRuntimeState", nullptr, nullptr,
         signalUpdate.effectiveActive ? ce::fg_runtime::RuntimeMode::kDLSSFG
                                      : ce::fg_runtime::RuntimeMode::kStreamlineNoFG,
-        signalUpdate.effectiveActive, g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire));
+        signalUpdate.effectiveActive, updatedExplicitSetOptionsActivation);
     if (signalUpdate.deferredOffDuringStartupWindow && !startupWindowActive) {
         static std::atomic<int> s_halfArmedDeferredOffLogCount{0};
         const int logCount = s_halfArmedDeferredOffLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -526,7 +539,8 @@ void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplie
         }
     }
 
-    ApplyCombinedStreamlineRuntimeState(anyActive, combinedMultiplier, source);
+    const bool explicitSetOptionsEnableSignal = source && strcmp(source, "SetOptions") == 0 && active;
+    ApplyCombinedStreamlineRuntimeState(anyActive, combinedMultiplier, explicitSetOptionsEnableSignal, source);
 
     if (stateChanged) {
         HookLog("Streamline Hook: Viewport %u state active=%d multiplier=%dx generatedFrames=%u capabilityMax=%u",

@@ -1422,6 +1422,13 @@ inline bool ShouldKeepSyntheticStartupStateUntilConfirmedRender(bool startupActi
     return !postSLConfirmedRendering && (startupActivationPending || postSLActiveButUnconfirmed);
 }
 
+inline bool ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(bool startupActivationPending,
+                                                                                    bool postSLActiveButUnconfirmed,
+                                                                                    bool postSLConfirmedRendering) {
+    return ShouldKeepSyntheticStartupStateUntilConfirmedRender(startupActivationPending, postSLActiveButUnconfirmed,
+                                                               postSLConfirmedRendering);
+}
+
 inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible, bool startupActivationPending,
                                                          bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering,
                                                          bool callbackInstalled, bool cachedSwapchainAvailable,

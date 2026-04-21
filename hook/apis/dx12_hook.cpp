@@ -10598,9 +10598,16 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                 std::memory_order_acquire),
                             HookIsPostSLOverlayActiveButUnconfirmed(),
                             g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+                    const bool keepStartupHandoffPending =
+                        ce::dx12_overlay_policy::ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
+                            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
+                                std::memory_order_acquire),
+                            HookIsPostSLOverlayActiveButUnconfirmed(),
+                            g_PostSLConfirmedRendering.load(std::memory_order_acquire));
                     g_PostSLOverlayActive.store(true, std::memory_order_release);
                     g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
-                    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+                    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
+                                                                                    std::memory_order_release);
                     if (!preserveSyntheticStartupState) {
                         g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
                         DXGIShared::ResetStreamlineStartupTransitionState();
@@ -10619,6 +10626,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             std::memory_order_acquire),
                         HookIsPostSLOverlayActiveButUnconfirmed(),
                         g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+                const bool keepStartupHandoffPending =
+                    ce::dx12_overlay_policy::ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
+                        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
+                            std::memory_order_acquire),
+                        HookIsPostSLOverlayActiveButUnconfirmed(),
+                        g_PostSLConfirmedRendering.load(std::memory_order_acquire));
                 SetPostSLCallbackInstalled(true, "DX12: [outer] Registered PostSL callback");
                 g_PostSLOverlayActive.store(true, std::memory_order_release);
                 if (!preserveSyntheticStartupState) {
@@ -10627,7 +10640,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
                 }
                 g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
-                DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+                DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
+                                                                                std::memory_order_release);
                 if (!preserveSyntheticStartupState) {
                     DXGIShared::ResetStreamlineStartupTransitionState();
                 }
@@ -11165,6 +11179,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                 std::memory_order_acquire),
                             HookIsPostSLOverlayActiveButUnconfirmed(),
                             g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+                    const bool keepStartupHandoffPending =
+                        ce::dx12_overlay_policy::ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
+                            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
+                                std::memory_order_acquire),
+                            HookIsPostSLOverlayActiveButUnconfirmed(),
+                            g_PostSLConfirmedRendering.load(std::memory_order_acquire));
                     g_PostSLOverlayActive.store(true, std::memory_order_release);
                     if (!preserveSyntheticStartupState) {
                         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(
@@ -11173,7 +11193,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         DXGIShared::ResetStreamlineStartupTransitionState();
                     }
                     g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
-                    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+                    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
+                                                                                    std::memory_order_release);
                 }
             }
             skipOverlayDraw = true;
@@ -11248,6 +11269,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         std::memory_order_acquire),
                                     HookIsPostSLOverlayActiveButUnconfirmed(),
                                     g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+                            const bool keepStartupHandoffPending = ce::dx12_overlay_policy::
+                                ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
+                                    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
+                                        std::memory_order_acquire),
+                                    HookIsPostSLOverlayActiveButUnconfirmed(),
+                                    g_PostSLConfirmedRendering.load(std::memory_order_acquire));
                             g_PostSLOverlayActive.store(true, std::memory_order_release);
                             if (!preserveSyntheticStartupState) {
                                 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(
@@ -11255,8 +11282,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                 g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
                             }
                             g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
-                            DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false,
-                                                                                            std::memory_order_release);
+                            DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(
+                                !keepStartupHandoffPending, std::memory_order_release);
                             if (!preserveSyntheticStartupState) {
                                 DXGIShared::ResetStreamlineStartupTransitionState();
                             }

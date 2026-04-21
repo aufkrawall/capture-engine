@@ -186,13 +186,22 @@ inline bool ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
 
 inline bool ResolveCurrentComebackExplicitSetOptionsActivation(bool previousExplicitSetOptionsActivation,
                                                                bool effectiveSignalActive, bool freshActivationEdge,
-                                                               bool explicitSetOptionsActivation) {
+                                                               bool explicitSetOptionsEnableSignal) {
     if (freshActivationEdge) {
-        return explicitSetOptionsActivation;
+        return explicitSetOptionsEnableSignal;
     }
 
     if (!effectiveSignalActive) {
         return false;
+    }
+
+    // Some runtimes surface the live comeback as active via GetState first and
+    // only then deliver the explicit SetOptions(ON) for that same already-live
+    // comeback. Preserve the stronger explicit provenance once that real enable
+    // request arrives instead of leaving the comeback permanently classified as
+    // GetState-only just because the shared active signal was already ON.
+    if (explicitSetOptionsEnableSignal) {
+        return true;
     }
 
     // Startup-window OFF churn can temporarily re-arm provisional GetState

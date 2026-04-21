@@ -214,6 +214,21 @@ TEST(StreamlineRuntimePolicyTest, ExplicitSetOptionsComebackProofPersistsAcrossD
         false, getStateComeback.effectiveActive, getStateComeback.freshActivationEdge, false));
 }
 
+TEST(StreamlineRuntimePolicyTest, ExplicitSetOptionsEnableUpgradesAlreadyLiveGetStateComeback) {
+    const auto getStateComeback =
+        ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(true, false, false, 4);
+    ASSERT_TRUE(getStateComeback.effectiveActive);
+    ASSERT_TRUE(getStateComeback.freshActivationEdge);
+
+    const bool getStateOnly = ce::streamline_runtime_policy::ResolveCurrentComebackExplicitSetOptionsActivation(
+        false, getStateComeback.effectiveActive, getStateComeback.freshActivationEdge, false);
+    EXPECT_FALSE(getStateOnly);
+
+    const bool upgradedToExplicit = ce::streamline_runtime_policy::ResolveCurrentComebackExplicitSetOptionsActivation(
+        getStateOnly, true, false, true);
+    EXPECT_TRUE(upgradedToExplicit);
+}
+
 TEST(StreamlineRuntimePolicyTest, DeferredStartupWindowOffDoesNotExtendWithoutExistingActiveSignal) {
     const auto deferredWithoutActive =
         ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, true, false, 4);
