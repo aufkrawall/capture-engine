@@ -15,6 +15,8 @@ inline constexpr const char* kCaptureEngineArchiveDirName = "captureengine";
 inline constexpr const char* kSymbolArchiveManifestFileName = "manifest.txt";
 inline constexpr const char* kMirroredExternalDumpPrefix = "external_";
 inline constexpr const char* kMirroredExternalDumpFallbackFileName = "external_dump.dmp";
+inline constexpr const char* kSupplementalExternalCrashDumpPrefix = "crash_external_";
+inline constexpr const char* kSupplementalExternalCrashDumpFallbackFileName = "crash_external_dump.dmp";
 
 inline constexpr MINIDUMP_TYPE kRichCrashDumpType = static_cast<MINIDUMP_TYPE>(
     MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
@@ -173,6 +175,20 @@ inline std::string BuildMirroredExternalDumpFileName(const char* sourcePathOrFil
         mirroredName += ".dmp";
     }
     return mirroredName;
+}
+
+inline std::string BuildSupplementalCrashDumpFileNameFromExternalSource(const char* sourcePathOrFileName) {
+    const char* fileName = GetPathFileName(sourcePathOrFileName);
+    if (!fileName || fileName[0] == '\0') {
+        return kSupplementalExternalCrashDumpFallbackFileName;
+    }
+
+    std::string crashName = kSupplementalExternalCrashDumpPrefix;
+    crashName += fileName;
+    if (!EndsWithAsciiInsensitive(crashName.c_str(), ".dmp")) {
+        crashName += ".dmp";
+    }
+    return crashName;
 }
 
 }  // namespace ce::crash_dump_policy

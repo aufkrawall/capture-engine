@@ -14,6 +14,44 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-21 - Keep stale startup-window OFF churn deferred for pure-DLSS explicit Streamline startup too, and capture a supplemental CE-owned dump alongside mirrored external crash dumps
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260421_204230` on build `0.1.2515` still crashed on a later `all FG off -> DLSS FG` startup even after the earlier post-FSR stale-OFF and fresh-handoff fixes. The session also revealed a diagnostics gap: CE mirrored Rockstar's crash dump into the session as `external_103327d5-227b-4bb7-b529-7c8a38cccdbf.dmp`, but no CE-owned game-process dump appeared alongside it.
+
+- **Comparison that narrowed the seam**:
+  1. This failing startup is not the older post-FSR family. The decisive activation has `hadFSR=0`, explicit `Streamline Hook: FG state transition OFF->ON via SetOptions`, then expiry-driven `DX12: PostSL synthetic startup activation complete` and `DX12: PostSL REACTIVATED (epoch=1 hadFSR=0)`.
+  2. The fatal edge is immediately after that expiry-driven activation, not before it. At `20:59:55.465-20:59:55.466`, CE still accepts `FG state transition ON->OFF via GetState` and then `Forwarding suppressed slDLSSGSetOptions(OFF) via GetState — startup window expired` before first confirmed render.
+  3. The mirrored external dump still lands in the familiar patched-`dxgi!CDXGISwapChain::Present+0x5` family. `cdb.exe` reports `CHKIMG` corruption exactly at `dxgi!CDXGISwapChain::Present`, with the bytes overwritten by the known `E9 ... CC` crash signature rather than a new CE-side fault.
+  4. Talos `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching` remains a healthy comparison: its corresponding pure-DLSS startup reaches `PostSL REACTIVATED`, warms up, confirms rendering, and continues into `Post-SL overlay SUBMIT #1` without replaying stale OFF churn into the half-armed startup.
+
+- **Root cause refinement**:
+  1. The current stale-OFF helper had already been generalized from explicit post-FSR-only to startup-protected post-FSR (`explicit SetOptions` or `safePostFSRBootstrapPath`), but it still encoded one implicit assumption: startup protection after literal expiry only mattered when `hadFSR=1`.
+  2. GTA `20260421_204230` proves the same seam exists in pure-DLSS explicit startup too. Once expiry-driven activation has already promoted PostSL into the half-armed startup state, replaying stale buffered `slDLSSGSetOptions(OFF)` immediately afterward is still wrong even with `hadFSR=0`.
+  3. The dump-capture gap is separate from the runtime crash root cause. CE's `MiniDumpWriteDump` interception was already mirroring externally handled dumps into the session folder, but it stopped there. When the game/runtime already handled the crash itself, the session could end up with only `external_*.dmp` and no CE-owned crash artifact under CE's own naming/path contract.
+
+- **Fix**:
+  1. `hook/common/streamline_runtime_policy.h` now models two startup-protected stale-OFF families explicitly: the older post-FSR family (`ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(...)` / `ShouldDrop...PostFSR...`) and the new pure-DLSS explicit-startup family (`ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(...)` / `ShouldDrop...PureDLSS...`).
+  2. The same header now exposes shared wrapper helpers `ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(...)` and `ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(...)`, so the call sites do not have to duplicate family selection.
+  3. `hook/apis/streamline_hook.cpp` now threads those shared helpers through all four stale-OFF seams: combined runtime-state reduction, `Hooked_slDLSSGGetState`, `Hooked_slDLSSGSetOptions`, and `FlushSuppressedSetOptionsOffIfNeeded()`.
+  4. The stale-OFF drop / defer diagnostics now explicitly log `hadFSR=%d`, and the wording broadens from `post-FSR DLSS comeback` to `Streamline DLSS startup`, so future traces show whether CE is protecting a pure-DLSS or post-FSR startup family.
+  5. `common/crash_dump_policy.h` now adds stable supplemental external-crash naming via `BuildSupplementalCrashDumpFileNameFromExternalSource(...)`, producing `crash_external_<original-name>.dmp`.
+  6. `common/crash_handler.cpp` / `.h` now expose `WriteSupplementalCrashDump(...)`, which writes a CE-owned dump into the active session directory using CE's richer dump-attempt policy when an externally handled crash is still giving us a valid process handle.
+  7. `hook/main.cpp` now calls that helper immediately after successfully mirroring an intercepted external dump, so the session keeps the original mirrored `external_<original>.dmp` and also gets a second CE-owned `crash_external_<original>.dmp` when the target process is still dumpable.
+  8. `tests/test_streamline_runtime_policy.cpp` now adds focused coverage for the new pure-DLSS startup-protected stale-OFF family plus the shared wrapper helpers, and `tests/test_crash_dump_policy.cpp` now covers the new supplemental dump naming helper.
+
+- **Why this is generic**: This is not a GTA-only carve-out and not a rollback of the earlier post-FSR protection work. The generic invariant is that stale startup-window OFF churn must not tear down a live Streamline DLSS startup while that startup is still half-armed or still inside confirmed-startup settling, whether the startup is a post-FSR comeback or a fresh pure-DLSS explicit enable. Separately, externally handled crashes should still leave behind a CE-owned session-local dump artifact when CE successfully intercepts the dump call and the target process handle is still valid.
+
+- **Verification**:
+  - Re-checked GTA `installed/captureengine/logs/20260421_204230/{hook_debug.log,external_103327d5-227b-4bb7-b529-7c8a38cccdbf.dmp,session_manifest.txt}` and confirmed the exact failing edge: explicit `OFF->ON via SetOptions`, expiry-driven `PostSL synthetic startup activation complete`, then immediate `ON->OFF via GetState` plus stale `slDLSSGSetOptions(OFF)` replay before first confirmation.
+  - Analyzed `external_103327d5-227b-4bb7-b529-7c8a38cccdbf.dmp` with `cdb.exe` and confirmed the familiar patched-`dxgi!CDXGISwapChain::Present+0x5` corruption family rather than a new CE-side crash.
+  - Re-checked healthy Talos comparison `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching/hook_debug.log` and confirmed the corresponding pure-DLSS startup reaches `PostSL REACTIVATED`, `PostSL WARMUP COMPLETE`, and `Post-SL overlay SUBMIT #1` without replaying stale OFF churn into the half-armed startup.
+  - Ran `python build.py --run-tests --tests-only --skip-updates --gtest-filter="StreamlineRuntimePolicyTest.*:CrashDumpPolicyTest.*"`; the focused suites passed.
+  - Ran `python build.py --skip-updates`; full rebuild passed and `build/verification/latest_summary.txt` reports success for build `0.1.2518`.
+
+- **Files changed**: `hook/common/streamline_runtime_policy.h`, `hook/apis/streamline_hook.cpp`, `common/crash_dump_policy.h`, `common/crash_handler.h`, `common/crash_handler.cpp`, `hook/main.cpp`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_crash_dump_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+
+- **Stale risk**: Fresh runtime validation is still required. The next GTA check on build `0.1.2518+` is that the pure-DLSS startup in the `all FG off -> DLSS FG` family no longer logs expiry-driven `PostSL REACTIVATED` immediately followed by `FG state transition ON->OFF via GetState` plus stale `slDLSSGSetOptions(OFF)` replay before first confirmation. The same session should also now leave behind both `external_<original>.dmp` and `crash_external_<original>.dmp` when an externally handled crash still occurs.
+
 ### 2026-04-21 - Cache trusted swapchain HDR state for native-FSR callback setup so Talos `DLSS_FG -> FSR_FG` cannot die while the callback thread probes weak raw swapchain COM state after authoritative FFX takeover
 
 - **Motivation**: Talos `installed/captureengine/logs/20260421_182513_taloscrash_dlssfgtofsrfgcrash` on build `0.1.2510` crashed on `DLSS FG -> FSR FG` even though the older Talos comparison `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching` on build `0.1.2507` stayed healthy through multiple mixed switches. No CE crash dump was captured, so the diagnosis had to come from the hook traces alone.

@@ -79,9 +79,9 @@ std::string BuildExternalDumpMirrorPath(const char* sourcePath) {
 }
 
 void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess, DWORD processId, MINIDUMP_TYPE dumpType,
-                                       PMINIDUMP_EXCEPTION_INFORMATION exceptionParam,
-                                       PMINIDUMP_USER_STREAM_INFORMATION userStreamParam,
-                                       PMINIDUMP_CALLBACK_INFORMATION callbackParam) {
+                                        PMINIDUMP_EXCEPTION_INFORMATION exceptionParam,
+                                        PMINIDUMP_USER_STREAM_INFORMATION userStreamParam,
+                                        PMINIDUMP_CALLBACK_INFORMATION callbackParam) {
   if (!sourcePath || sourcePath[0] == '\0') {
     return;
   }
@@ -134,6 +134,14 @@ void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess,
   }
 
   HookLogImportant("CrashMirror: Mirrored external dump %s -> %s", sourcePath, mirrorPath.c_str());
+
+  if (!WriteSupplementalCrashDump(sourcePath, hProcess, processId, ce::crash_dump_policy::kRichCrashDumpType,
+                                  exceptionParam, userStreamParam, callbackParam)) {
+    HookLog("CrashMirror: Supplemental CE-owned dump capture did not succeed for %s", sourcePath);
+    return;
+  }
+
+  HookLogImportant("CrashMirror: Captured supplemental CE-owned dump for externally handled crash %s", sourcePath);
 }
 
 void TryInstallMiniDumpWriteDumpHookForModule(HMODULE module, const char* moduleNameOrPath) {

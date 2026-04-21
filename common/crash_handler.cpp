@@ -127,6 +127,76 @@ void ArchiveInstalledCrashArtifactsForDumpDirectory(const std::string& dumpDir) 
 
 }  // namespace
 
+bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD processId,
+                                MINIDUMP_TYPE preferredDumpType,
+                                PMINIDUMP_EXCEPTION_INFORMATION exceptionParam,
+                                PMINIDUMP_USER_STREAM_INFORMATION userStreamParam,
+                                PMINIDUMP_CALLBACK_INFORMATION callbackParam) {
+    if (!g_pMiniDumpWriteDump) {
+        return false;
+    }
+
+    std::string dumpDir;
+    {
+        std::lock_guard<std::mutex> dirLock(g_DumpDirMutex);
+        dumpDir = g_DumpDir;
+    }
+    if (dumpDir.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(dumpDir, ec);
+    if (ec) {
+        return false;
+    }
+
+    const std::filesystem::path dumpPath =
+        std::filesystem::path(dumpDir) /
+        ce::crash_dump_policy::BuildSupplementalCrashDumpFileNameFromExternalSource(fileNameHint);
+
+    HANDLE hFile = CreateFileA(dumpPath.string().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    struct DumpAttempt {
+        MINIDUMP_TYPE type;
+        PMINIDUMP_EXCEPTION_INFORMATION exceptionInfo;
+    };
+
+    const DumpAttempt attempts[] = {
+        {preferredDumpType, exceptionParam},
+        {ce::crash_dump_policy::kCompatibilityCrashDumpType, exceptionParam},
+        {ce::crash_dump_policy::kMinimalDumpType, exceptionParam},
+        {ce::crash_dump_policy::kMinimalDumpType, nullptr},
+    };
+
+    BOOL success = FALSE;
+    for (size_t i = 0; i < std::size(attempts); ++i) {
+        success = g_pMiniDumpWriteDump(hProcess, processId, hFile, attempts[i].type, attempts[i].exceptionInfo,
+                                       userStreamParam, callbackParam);
+        if (success) {
+            FlushFileBuffers(hFile);
+            break;
+        }
+
+        if (i + 1 < std::size(attempts)) {
+            SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
+            SetEndOfFile(hFile);
+        }
+    }
+
+    CloseHandle(hFile);
+    if (!success) {
+        DeleteFileA(dumpPath.string().c_str());
+        return false;
+    }
+
+    return true;
+}
+
 static int IncrementExceptionCount(std::atomic<int>& counter) {
     return counter.fetch_add(1, std::memory_order_acq_rel) + 1;
 }

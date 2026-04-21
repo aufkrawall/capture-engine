@@ -72,3 +72,14 @@ TEST(CrashDumpPolicyTest, ExternalDumpMirrorBuildsStableDestinationFileNames) {
     EXPECT_EQ(policy::BuildMirroredExternalDumpFileName("crashcontext"), "external_crashcontext.dmp");
     EXPECT_EQ(policy::BuildMirroredExternalDumpFileName(nullptr), "external_dump.dmp");
 }
+
+TEST(CrashDumpPolicyTest, SupplementalExternalCrashDumpBuildsStableDestinationFileNames) {
+    EXPECT_EQ(
+        policy::BuildSupplementalCrashDumpFileNameFromExternalSource(
+            R"(C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\103327d5-227b-4bb7-b529-7c8a38cccdbf.dmp)"),
+        "crash_external_103327d5-227b-4bb7-b529-7c8a38cccdbf.dmp");
+    EXPECT_EQ(policy::BuildSupplementalCrashDumpFileNameFromExternalSource("sl-sha-11cf43f"),
+              "crash_external_sl-sha-11cf43f.dmp");
+    EXPECT_EQ(policy::BuildSupplementalCrashDumpFileNameFromExternalSource(nullptr),
+              "crash_external_dump.dmp");
+}
