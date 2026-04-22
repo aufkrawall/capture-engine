@@ -1403,25 +1403,47 @@ inline bool ShouldTreatConfirmedPostSLRenderingAsStartupSettling(bool postSLConf
     return postSLConfirmedRendering && stablePostSLFrameCount <= kConfirmedPostSLStartupSettleFrames;
 }
 
+inline constexpr int GetConfirmedPostSLWarmupProofFrameThreshold() {
+    return 30;
+}
+
+inline bool ShouldExtendConfirmedPostSLRuntimeStateStabilizationAfterReactivation(
+    int previousStablePostSLFrameCount) {
+    // A reactivation that interrupts confirmed PostSL startup before the same
+    // repo-wide warmup proof threshold is reached means the older epoch never
+    // fully matured into the long-running FG callback pattern. The next epoch
+    // can still receive stale OFF churn from that earlier half-proven startup,
+    // so keep only the stale-OFF stabilization window alive until the new epoch
+    // reaches the same proof threshold.
+    return previousStablePostSLFrameCount > 0 &&
+           previousStablePostSLFrameCount < GetConfirmedPostSLWarmupProofFrameThreshold();
+}
+
 inline constexpr int GetConfirmedPostSLRuntimeStateStabilizationFirstFrame() {
     return 9;
 }
 
-inline constexpr int GetConfirmedPostSLRuntimeStateStabilizationLastFrame() {
-    return 12;
+inline constexpr int GetConfirmedPostSLRuntimeStateStabilizationLastFrame(
+    bool extendForChurnedReactivation = false) {
+    return extendForChurnedReactivation ? GetConfirmedPostSLWarmupProofFrameThreshold() : 12;
 }
 
 inline bool ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(bool postSLConfirmedRendering,
-                                                                         int stablePostSLFrameCount) {
+                                                                         int stablePostSLFrameCount,
+                                                                         bool extendForChurnedReactivation = false) {
     // GTA's latest pure-DLSS startup still emits one more stale OFF churn burst on
     // the first frame after the older settling guard ends. Keep only the
     // Streamline stale-OFF protection alive for a few more confirmed PostSL
-    // frames so that short post-settling runtime-state jitter cannot collapse the
-    // just-proven DLSS FG session. This intentionally does NOT extend the wider
-    // DX12 startup-routing / handoff-pending protection.
+    // frames so that short post-settling runtime-state jitter cannot collapse
+    // the just-proven DLSS FG session. If the current epoch was itself preceded
+    // by a churned reactivation before the same startup ever reached the repo's
+    // 30-frame warmup proof threshold, stretch only this narrow stale-OFF guard
+    // to that proof threshold for the new epoch. This intentionally does NOT
+    // extend the wider DX12 startup-routing / handoff-pending protection.
     return postSLConfirmedRendering &&
            stablePostSLFrameCount >= GetConfirmedPostSLRuntimeStateStabilizationFirstFrame() &&
-           stablePostSLFrameCount <= GetConfirmedPostSLRuntimeStateStabilizationLastFrame();
+           stablePostSLFrameCount <=
+               GetConfirmedPostSLRuntimeStateStabilizationLastFrame(extendForChurnedReactivation);
 }
 
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,

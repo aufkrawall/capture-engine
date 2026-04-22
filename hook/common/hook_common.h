@@ -144,6 +144,7 @@ bool HookIsPostSLOverlayConfirmedButStartupSettling();
 // post-settling runtime-state jitter window without extending the wider
 // startup-routing / handoff-pending protection.
 bool HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
+int HookGetPostSLRuntimeStateStabilizationLastFrame();
 
 // DX12 exports this so shared routing code can distinguish the pure-DLSS
 // cold-start family from the stricter post-FSR comeback path.

@@ -167,6 +167,11 @@ static std::atomic<uint32_t> g_PostSLLifecycleEpoch{0};
 static std::atomic<bool> g_PostSLConfirmedRendering{false};
 static std::atomic<bool> g_PostSLSyntheticStartupActivatedButUnconfirmed{false};
 static std::atomic<bool> g_PostSLRuntimeStateStabilizationLogged{false};
+// A reactivated PostSL startup that had already confirmed a few frames but had
+// not yet reached the repo's broader warmup proof threshold can still inherit
+// stale Streamline OFF churn from the earlier epoch. Keep only the narrow
+// runtime-state stale-OFF guard extended for that new epoch.
+static std::atomic<bool> g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch{false};
 
 bool HookIsPostSLOverlayActiveButUnconfirmed() {
     return g_PostSLSyntheticStartupActivatedButUnconfirmed.load(std::memory_order_acquire) ||
@@ -219,9 +224,16 @@ bool HookIsPostSLOverlayConfirmedButStartupSettling() {
 }
 
 bool HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() {
+    const bool extendRuntimeStateStabilization =
+        g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.load(std::memory_order_acquire);
     return ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(
         g_PostSLConfirmedRendering.load(std::memory_order_acquire),
-        g_PostSLStableFrameCount.load(std::memory_order_acquire));
+        g_PostSLStableFrameCount.load(std::memory_order_acquire), extendRuntimeStateStabilization);
+}
+
+int HookGetPostSLRuntimeStateStabilizationLastFrame() {
+    return ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationLastFrame(
+        g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.load(std::memory_order_acquire));
 }
 
 // Flag to reset the queue-change heuristic's internal state.  Set during FG
@@ -1646,6 +1658,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
     g_PostSLStallCounter.store(0, std::memory_order_release);
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
     g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
+    g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
@@ -1706,6 +1719,7 @@ static void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserv
     g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
     g_PostSLStallCounter.store(0, std::memory_order_release);
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
+    g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
@@ -4255,6 +4269,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_PostSLStallCounter.store(0, std::memory_order_release);
             g_PostSLStableFrameCount.store(0, std::memory_order_release);
             g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
+            g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
@@ -4286,6 +4301,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_PostSLStallCounter.store(0, std::memory_order_release);
             g_PostSLStableFrameCount.store(0, std::memory_order_release);
             g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
+            g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
@@ -4412,6 +4428,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_PostSLStallCounter.store(0, std::memory_order_release);
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
     g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
+    g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
     g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
@@ -6932,6 +6949,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         const int previousStallCount = g_PostSLStallCounter.exchange(0, std::memory_order_acq_rel);
         const bool previousRuntimeStateStabilizationLogged =
             g_PostSLRuntimeStateStabilizationLogged.exchange(false, std::memory_order_acq_rel);
+        const bool extendRuntimeStateStabilization = ce::dx12_overlay_policy::
+            ShouldExtendConfirmedPostSLRuntimeStateStabilizationAfterReactivation(previousStableFrameCount);
+        g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(extendRuntimeStateStabilization,
+                                                                       std::memory_order_release);
         // Clean up dedicated queue from previous epochs (no longer used — virtual
         // call through SL's COM wrapper is now the primary submission path).
         ClearPostSLQueues("DX12: PostSL reactivation");
@@ -6949,9 +6970,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 previousRuntimeStateStabilizationLogged)) {
             HookLogImportant(
                 "DX12: PostSL reactivation reset confirmed-startup progress "
-                "(epoch=%d confirmed=%d stableFrames=%d stallCount=%d stabilizing=%d)",
+                "(epoch=%d confirmed=%d stableFrames=%d stallCount=%d stabilizing=%d extendStaleOff=%d)",
                 s_reactivationEpoch, previouslyConfirmed ? 1 : 0, previousStableFrameCount, previousStallCount,
-                previousRuntimeStateStabilizationLogged ? 1 : 0);
+                previousRuntimeStateStabilizationLogged ? 1 : 0, extendRuntimeStateStabilization ? 1 : 0);
+        }
+        if (extendRuntimeStateStabilization) {
+            HookLogImportant(
+                "DX12: PostSL reactivation extended runtime-state stabilization for churned startup "
+                "(epoch=%d previousStableFrames=%d previousStallCount=%d proofThreshold=%d)",
+                s_reactivationEpoch, previousStableFrameCount, previousStallCount,
+                ce::dx12_overlay_policy::GetConfirmedPostSLWarmupProofFrameThreshold());
         }
         HookLogImportant("DX12: PostSL REACTIVATED (epoch=%d hadFSR=%d origGame=%p)", s_reactivationEpoch,
                          g_HadFSRFGPhase ? 1 : 0, g_OriginalGameQueue);
@@ -8810,23 +8838,30 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                                     g_FGCompat.GetRuntimeMode(), g_FGCompat.IsFGActive(),
                                     HookHasExplicitStreamlineSetOptionsActivation());
     }
+    const bool extendRuntimeStateStabilization =
+        g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.load(std::memory_order_acquire);
+    const int runtimeStateStabilizationLastFrame =
+        ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationLastFrame(
+            extendRuntimeStateStabilization);
     const bool runtimeStateStabilizing =
-        ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(true, stableFrameCount);
+        ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(
+            true, stableFrameCount, extendRuntimeStateStabilization);
     const bool runtimeStateStabilizingPreviousFrame =
         stableFrameCount > 1 &&
-        ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(true,
-                                                                                              stableFrameCount - 1);
+        ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(
+            true, stableFrameCount - 1, extendRuntimeStateStabilization);
     if (runtimeStateStabilizing && !runtimeStateStabilizingPreviousFrame) {
         g_PostSLRuntimeStateStabilizationLogged.store(true, std::memory_order_release);
         HookLogImportant(
             "DX12: PostSL confirmed startup rendering entered runtime-state stabilization "
-            "(stableFrames=%d first=%d last=%d)",
+            "(stableFrames=%d first=%d last=%d extended=%d epoch=%d)",
             stableFrameCount, ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationFirstFrame(),
-            ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationLastFrame());
+            runtimeStateStabilizationLastFrame, extendRuntimeStateStabilization ? 1 : 0, s_reactivationEpoch);
     } else if (!runtimeStateStabilizing && runtimeStateStabilizingPreviousFrame) {
         HookLogImportant("DX12: PostSL confirmed startup rendering left runtime-state stabilization "
-                         "(stableFrames=%d)",
-                         stableFrameCount);
+                         "(stableFrames=%d last=%d extended=%d epoch=%d)",
+                         stableFrameCount, runtimeStateStabilizationLastFrame,
+                         extendRuntimeStateStabilization ? 1 : 0, s_reactivationEpoch);
     }
     if (ce::dx12_overlay_policy::ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
             DXGIShared::IsStreamlineStartupTransitionWindowActive(), stableFrameCount)) {
@@ -10576,6 +10611,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             if (!preserveActivePostSLOnLateOuterOn) {
                 g_PostSLStableFrameCount.store(0, std::memory_order_release);
                 g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+                g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
             }
 
             // Clear false heuristic FSR FG (SL's queues trigger queue-change heuristic)
@@ -10940,6 +10976,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             }
             g_PostSLStallCounter.store(0, std::memory_order_release);      // Fresh start after transition
             g_PostSLStableFrameCount.store(0, std::memory_order_release);  // Reset warmup counter
+            g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
 
             // When SL FG turns ON or OFF, clear any false heuristic FSR FG state.
             // SL's queue changes trigger the queue-change heuristic, causing
@@ -11453,7 +11490,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         // TESTED: GTA V Enhanced (menu pauses FG), Talos Reawakened
                         // (continuous FG — stall never triggers during normal play).
                         constexpr int kPostSLStallThreshold = 5;
-                        constexpr int kPostSLWarmupThreshold = 30;  // ~0.5s at 60fps
+                        const int kPostSLWarmupThreshold =
+                            ce::dx12_overlay_policy::GetConfirmedPostSLWarmupProofFrameThreshold();
                         int stableFrames = g_PostSLStableFrameCount.load(std::memory_order_acquire);
                         int stallCount = g_PostSLStallCounter.fetch_add(1, std::memory_order_acq_rel) + 1;
 
@@ -11494,6 +11532,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
                     g_PostSLStallCounter.store(0, std::memory_order_release);
                     g_PostSLStableFrameCount.store(0, std::memory_order_release);
+                    g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
                     HookLogImportant("DX12: Disabled post-SL callback — rendering pre-SL in ProcessFrame (fgType=%s)",
                                      g_FGCompat.GetFGTypeName(g_FGCompat.GetActiveFGType()));
                 }

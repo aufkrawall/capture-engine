@@ -80,6 +80,10 @@ bool HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() {
     return false;
 }
 
+int HookGetPostSLRuntimeStateStabilizationLastFrame() {
+    return 12;
+}
+
 bool HookHasFSRFGHistory() {
     return false;
 }

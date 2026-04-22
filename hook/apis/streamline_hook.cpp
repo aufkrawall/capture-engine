@@ -437,13 +437,14 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
             source && strcmp(source, "GetState") == 0) {
             static std::atomic<bool> s_loggedPostSettlingGetStateSuppression{false};
             if (!s_loggedPostSettlingGetStateSuppression.exchange(true, std::memory_order_relaxed)) {
+                const int runtimeStateStabilizationLastFrame = HookGetPostSLRuntimeStateStabilizationLastFrame();
                 HookLogImportant(
                     "Streamline Hook: Suppressing first post-settling GetState OFF during runtime-state stabilization "
                     "(hadFSR=%d explicit=%d safeBootstrap=%d stableProtectionWindow=%d-%d)",
                     hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
                     safePostFSRBootstrapPath ? 1 : 0,
                     ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationFirstFrame(),
-                    ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationLastFrame());
+                    runtimeStateStabilizationLastFrame);
             }
         }
         static std::atomic<int> s_halfArmedDeferredOffLogCount{0};
