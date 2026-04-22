@@ -1463,6 +1463,15 @@ TEST(DXGISharedTest, PostSLReactivatesAfterLifecycleResetEvenIfCallbackStateWasS
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(false, false, true));
 }
 
+TEST(DXGISharedTest, PostSLReactivationRestartsConfirmedStartupProgressPerEpoch) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldResetPostSLStartupProgressOnReactivation(true, 0, 0, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldResetPostSLStartupProgressOnReactivation(false, 8, 0, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldResetPostSLStartupProgressOnReactivation(false, 0, 2, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldResetPostSLStartupProgressOnReactivation(false, 0, 0, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldResetPostSLStartupProgressOnReactivation(false, 0, 0, false));
+}
+
 TEST(DXGISharedTest, PostSLBootstrapsOverlayStateOnlyWhenDormantReactivationOutrunsProcessFrame) {
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, false, false, false, false));

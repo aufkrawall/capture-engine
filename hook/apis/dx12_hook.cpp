@@ -6927,6 +6927,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         s_reactivationEpoch++;
         s_callsSinceReactivation = 0;
         s_postSLProbeFrames = 0;  // Reset probe counter for new reactivation
+        const bool previouslyConfirmed = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+        const int previousStableFrameCount = g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
+        const int previousStallCount = g_PostSLStallCounter.exchange(0, std::memory_order_acq_rel);
+        const bool previousRuntimeStateStabilizationLogged =
+            g_PostSLRuntimeStateStabilizationLogged.exchange(false, std::memory_order_acq_rel);
         // Clean up dedicated queue from previous epochs (no longer used — virtual
         // call through SL's COM wrapper is now the primary submission path).
         ClearPostSLQueues("DX12: PostSL reactivation");
@@ -6939,6 +6944,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             s_dedicatedFenceEvent = nullptr;
         }
         s_dedicatedSyncFenceValue = 0;
+        if (ce::dx12_overlay_policy::ShouldResetPostSLStartupProgressOnReactivation(
+                previouslyConfirmed, previousStableFrameCount, previousStallCount,
+                previousRuntimeStateStabilizationLogged)) {
+            HookLogImportant(
+                "DX12: PostSL reactivation reset confirmed-startup progress "
+                "(epoch=%d confirmed=%d stableFrames=%d stallCount=%d stabilizing=%d)",
+                s_reactivationEpoch, previouslyConfirmed ? 1 : 0, previousStableFrameCount, previousStallCount,
+                previousRuntimeStateStabilizationLogged ? 1 : 0);
+        }
         HookLogImportant("DX12: PostSL REACTIVATED (epoch=%d hadFSR=%d origGame=%p)", s_reactivationEpoch,
                          g_HadFSRFGPhase ? 1 : 0, g_OriginalGameQueue);
         // Reset ECL diagnostic counter for fresh diagnostics after transition

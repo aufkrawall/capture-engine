@@ -1147,6 +1147,17 @@ inline bool ShouldTreatPostSLAsReactivated(bool postSLActive, bool wasActiveInCu
     return !wasActiveInCurrentCallbackLifetime || postSLLifecycleChanged;
 }
 
+inline bool ShouldResetPostSLStartupProgressOnReactivation(bool postSLConfirmedRendering, int stablePostSLFrameCount,
+                                                           int postSLStallCount,
+                                                           bool runtimeStateStabilizationLogged) {
+    // A second PostSL reactivation inside the same DLSS startup family must
+    // start a fresh per-epoch settling/stabilization window. Reusing confirmed
+    // progress from an older epoch lets the stale-OFF guard expire too early on
+    // the newly reactivated path.
+    return postSLConfirmedRendering || stablePostSLFrameCount > 0 || postSLStallCount > 0 ||
+           runtimeStateStabilizationLogged;
+}
+
 inline bool ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(bool hadFSRFGPhase, bool selectedQueueIsSwapchainQueue,
                                                                 bool queueIsSLWrapper, bool hasSelectedQueueSubmitPath,
                                                                 bool hasWrapperDerivedDirectPath) {
