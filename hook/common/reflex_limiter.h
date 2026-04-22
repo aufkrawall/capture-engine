@@ -90,19 +90,20 @@ public:
         realSetSleepModeForHook_ = origSetSleepMode_;
         realSleepForHook_ = origSleep_;
 
-        // Hook the concrete Reflex entrypoints so we intercept every call
-        // regardless of how the game obtained the function pointer.
-        HookNvAPIEntryPoints();
-
         // NOTE: We intentionally do NOT hook nvapi_QueryInterface.
         // In some titles (e.g. GTA V Enhanced) the inline hook patch on
         // nvapi_QueryInterface is detected by Streamline/DLSS FG or anti-tamper
         // validation, causing Reflex init to abort and DLSS FG to fail with the
-        // pink-tint diagnostic.  The direct inline hooks on SetSleepMode and
-        // Sleep are sufficient: any caller that obtains the original pointer
-        // (via QueryInterface or cache) and calls it will still hit our inline
-        // hook at the original function address.
-        HookLogImportant("ReflexLimiter: Skipping nvapi_QueryInterface hook — relying on direct SetSleepMode/Sleep hooks");
+        // pink-tint diagnostic.
+        //
+        // We also defer the direct inline hooks on SetSleepMode/Sleep until
+        // the FPS limiter is actually configured (targetIntervalUs_ > 0).
+        // This keeps nvapi64.dll unmodified when the user is not using the
+        // FPS limiter, avoiding detection by integrity checks during DLSS FG
+        // initialization.  Activation detection for auto-mode still works via
+        // the Streamline slReflexSetConstants hook; direct-nvapi activation
+        // detection is only needed when we are actively limiting.
+        EnsureNvAPIHooksInstalled();
 
         available_.store(true, std::memory_order_release);
         HookLogImportant("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p)", (void*)origSetSleepMode_,
@@ -126,6 +127,9 @@ public:
         } else {
             targetIntervalUs_.store(1000000 / fps, std::memory_order_release);
         }
+        // If the user has just configured an FPS cap, ensure the inline hooks
+        // on SetSleepMode/Sleep are installed so we can intercept and override.
+        EnsureNvAPIHooksInstalled();
     }
 
     uint32_t GetTargetIntervalUs() const {
@@ -209,6 +213,10 @@ public:
     // Directly push our FPS limit to the driver's Reflex pipeline.
     // Returns true if the SetSleepMode call succeeded.
     bool PushFpsLimit() {
+        // Ensure hooks are installed if the user has configured a cap but
+        // Init() ran before the cap was set.
+        EnsureNvAPIHooksInstalled();
+
         auto forwardSetSleepMode = GetForwardSetSleepMode();
         if (!forwardSetSleepMode || !lastDevice_) {
             if (!loggedMissingDevice_) {
@@ -365,13 +373,29 @@ public:
             pParams->minimumIntervalUs = ourInterval;
         }
 
+        if (!forwardSetSleepMode) {
+            HookLogImportant("ReflexLimiter: SetSleepMode forward missing — no real or original pointer available");
+            return NVAPI_ERROR;
+        }
+
         NvAPI_Status status = forwardSetSleepMode(pDev, pParams);
-        if (status != NVAPI_OK) {
+        if (status == NVAPI_OK) {
+            static std::atomic<bool> s_loggedSuccess{false};
+            if (!s_loggedSuccess.exchange(true, std::memory_order_relaxed)) {
+                HookLogImportant(
+                    "ReflexLimiter: SetSleepMode forward succeeded (version=0x%08X intervalUs=%u boost=%u markers=%u)",
+                    pParams->version, pParams->minimumIntervalUs, pParams->bLowLatencyBoost,
+                    pParams->bUseMarkersToOptimize);
+            }
+        } else {
             static std::atomic<int> s_failLogCount{0};
             int failCount = s_failLogCount.fetch_add(1, std::memory_order_relaxed);
             if (failCount < 5) {
-                HookLogImportant("ReflexLimiter: SetSleepMode forward failed (status=%d version=0x%08X)",
-                                 status, pParams->version);
+                HookLogImportant(
+                    "ReflexLimiter: SetSleepMode forward failed (status=%d version=0x%08X intervalUs=%u boost=%u "
+                    "markers=%u)",
+                    status, pParams->version, pParams->minimumIntervalUs, pParams->bLowLatencyBoost,
+                    pParams->bUseMarkersToOptimize);
             }
         }
         return status;
@@ -435,11 +459,25 @@ public:
 
 
 
-    void HookNvAPIEntryPoints() {
+    void EnsureNvAPIHooksInstalled() {
 #if !REFLEX_IAT_HOOK_AVAILABLE
         (void)realSetSleepModeForHook_;
         (void)realSleepForHook_;
+        return;
 #else
+        // Defer hook installation until the FPS limiter is actually configured.
+        // When targetIntervalUs_ == 0 the user is not using Reflex-based limiting,
+        // so keeping nvapi64.dll unmodified avoids detection by integrity checks
+        // during DLSS FG initialization in titles like GTA V Enhanced.
+        if (targetIntervalUs_.load(std::memory_order_acquire) == 0) {
+            static std::atomic<bool> s_loggedSkip{false};
+            if (!s_loggedSkip.exchange(true, std::memory_order_relaxed)) {
+                HookLogImportant(
+                    "ReflexLimiter: Deferring SetSleepMode/Sleep inline hooks — no FPS cap configured");
+            }
+            return;
+        }
+
         if (origSetSleepMode_ && !directSetSleepModeHooked_) {
             void* trampoline = nullptr;
             if (InlineHook::Install(reinterpret_cast<void*>(origSetSleepMode_),
