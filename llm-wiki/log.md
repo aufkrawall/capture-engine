@@ -14,6 +14,39 @@ Update rules:
 
 ## Activity Timeline
 
+### 2026-04-22 - Remove Reflex limiter nvapi_QueryInterface inline hook entirely and fix SetSleepMode buffer overread
+
+- **Motivation**: GTA V Enhanced `installed/captureengine/logs/20260422_022003` on build `0.1.2528` still showed the transient pink-tint DLSS FG enablement failure after the earlier "return original driver pointers from QueryInterface" fix. The same symptom did not occur in Talos, where the `nvapi_QueryInterface` inline hook already failed (RIP-relative out of range).
+
+- **Comparison that narrowed the seam**:
+  1. The earlier fix changed `ReflexDetour_QueryInterface` to return original `nvapi64.dll` pointers instead of wrapper pointers, but DLSS FG still failed in GTA with the same pink-tint symptom.
+  2. Log analysis showed the game activated Reflex via `SetSleepMode` (~02:22:20.337), then deactivated it ~500ms later (~02:22:20.834), suggesting a validation failure. DLSS FG then ran without proper Reflex for ~2.5s, producing the pink tint, before Streamline explicitly called `slDLSSGSetOptions(OFF)`.
+  3. The decisive difference from Talos is that the inline hook on `nvapi_QueryInterface` **succeeds** in GTA. Even though our detour now returns original driver pointers, the mere presence of the 14-byte JMP patch on the first bytes of `nvapi_QueryInterface` appears to be detected by Streamline/DLSS FG or the game's anti-tamper/integrity validation, causing it to abort Reflex integration shortly after startup.
+  4. Additionally, `InterceptSetSleepMode` performed `lastSleepModeParams_ = *pParams;` where the game passed a 44-byte struct (`version=0x1002C`) but our `NV_SET_SLEEP_MODE_PARAMS` is 56 bytes. This overreads 12 bytes of adjacent stack memory. While `PushFpsLimit()` was inactive during this session (the FPS limiter trace shows `Apply: INACTIVE capReq=0`), the overread is a latent bug that would forward garbage to the driver if the limiter ever activates.
+
+- **Root cause refinement**:
+  1. The `nvapi_QueryInterface` inline hook itself — not just the return values — is the remaining root cause. Removing the hook entirely eliminates the detectable patch from the function prologue.
+  2. The direct inline hooks on `NvAPI_D3D_SetSleepMode` and `NvAPI_D3D_Sleep` are installed **before** `HookNvAPIQueryInterface()` was called and remain active. Any caller that obtains the original pointer (whether from `QueryInterface` or cached) and calls it will still hit our inline hook at the original function address. Activation detection and FPS-limit overriding continue to work exactly as before.
+  3. The buffer overread in `InterceptSetSleepMode` is fixed by copying only up to the caller's declared struct size (encoded in `version & 0xFFFF`) and zeroing the remainder of our larger buffer.
+
+- **Fix**:
+  1. `hook/common/reflex_limiter.h` now removes `HookNvAPIQueryInterface()` entirely: the call in `Init()`, the method definition, the `ReflexDetour_QueryInterface` static detour, and the `detourOrigQueryInterface_` member field. `Init()` now logs `Skipping nvapi_QueryInterface hook — relying on direct SetSleepMode/Sleep hooks` so future traces confirm the hook is absent.
+  2. The same header now fixes `InterceptSetSleepMode` to perform a version-aware copy: `callerSize = pParams->version & 0xFFFF`, `copySize = min(callerSize, sizeof(NV_SET_SLEEP_MODE_PARAMS))`, `CopyMemory` for the prefix, and `ZeroMemory` for any trailing bytes we do not receive from the caller. A new diagnostic log (first 5 occurrences) reports `SetSleepMode struct size mismatch (caller=%u our=%u version=0x%08X)`.
+  3. The existing version-mismatch log (first 5 occurrences) is kept unchanged for when `pParams->version != NV_SET_SLEEP_MODE_PARAMS_VER`.
+
+- **Why this is generic**: This is not a GTA-only carve-out. Any title where Streamline or the runtime validates the integrity of `nvapi_QueryInterface` would see the same Reflex-init abort if CE leaves an inline hook patch on that function. The fix is generic because we rely on the already-installed direct hooks on the concrete Reflex entrypoints, which intercept every actual call regardless of how the caller obtained the pointer. The struct-size fix is also generic: any game that passes a smaller `NV_SET_SLEEP_MODE_PARAMS` than our declared size would previously have caused a buffer overread.
+
+- **Verification**:
+  - Re-checked GTA `installed/captureengine/logs/20260422_022003/{hook_debug.log,fps_limiter_trace.log,nvngx_debug.log}` and confirmed the decisive sequence: Reflex activation, rapid deactivation, pink-tint diagnostic, then explicit Streamline OFF.
+  - Re-checked Talos `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching/hook_debug.log` and confirmed the `nvapi_QueryInterface` inline hook fails with RIP-relative out-of-range, so Talos was unaffected.
+  - Re-read `hook/common/reflex_limiter.h` and verified `HookNvAPIQueryInterface()`, `ReflexDetour_QueryInterface`, and `detourOrigQueryInterface_` are fully removed, and the version-aware copy is present in `InterceptSetSleepMode`.
+  - Ran `python build.py --skip-updates`; full rebuild passed and `build/verification/latest_summary.txt` reports success for build `0.1.2532`.
+  - Ran `& ".\tests\unit_tests.exe"`; all 632 tests passed, 0 failed.
+
+- **Files changed**: `hook/common/reflex_limiter.h`, `llm-wiki/current.md`, `llm-wiki/log.md`
+
+- **Stale risk**: The next GTA check on build `0.1.2532+` is that the pure-DLSS `all FG off -> DLSS FG` family no longer shows the transient pink tint and no longer falls back to non-FG FPS after enable. Talos should keep its already healthy behavior. If activation detection ever becomes unreliable in a title that caches function pointers before our inline hooks are installed, we may need a different hook mechanism (e.g. IAT hook on `GetProcAddress` for `nvapi64.dll`) rather than restoring the inline `nvapi_QueryInterface` patch.
+
 ### 2026-04-22 - Make LSP and C++ linting work automatically from `python build.py`; add VS Code settings, clang-tidy, and resilient compile_commands.json generation
 
 - **Motivation**: The user asked why LSP did not work and requested that everything (including linting) function automatically when running `python build.py`, without causing extra compilation passes or ASan builds.

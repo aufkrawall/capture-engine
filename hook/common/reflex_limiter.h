@@ -86,19 +86,23 @@ public:
             return false;
         }
 
-        // Cache the real SetSleepMode entrypoint before we patch QueryInterface.
+        // Cache the real SetSleepMode/Sleep entrypoints for direct inline hook forwarding.
         realSetSleepModeForHook_ = origSetSleepMode_;
         realSleepForHook_ = origSleep_;
 
-        // Hook the concrete Reflex entrypoints first so we still observe late-load
-        // cases where the game cached raw function pointers before QueryInterface
-        // was detoured.
+        // Hook the concrete Reflex entrypoints so we intercept every call
+        // regardless of how the game obtained the function pointer.
         HookNvAPIEntryPoints();
 
-        // Hook nvapi_QueryInterface to intercept future Reflex queries.
-        // This must happen AFTER resolving origSetSleepMode_ / origSleep_ or we'd
-        // end up caching our own detours as the forward targets.
-        HookNvAPIQueryInterface();
+        // NOTE: We intentionally do NOT hook nvapi_QueryInterface.
+        // In some titles (e.g. GTA V Enhanced) the inline hook patch on
+        // nvapi_QueryInterface is detected by Streamline/DLSS FG or anti-tamper
+        // validation, causing Reflex init to abort and DLSS FG to fail with the
+        // pink-tint diagnostic.  The direct inline hooks on SetSleepMode and
+        // Sleep are sufficient: any caller that obtains the original pointer
+        // (via QueryInterface or cache) and calls it will still hit our inline
+        // hook at the original function address.
+        HookLogImportant("ReflexLimiter: Skipping nvapi_QueryInterface hook — relying on direct SetSleepMode/Sleep hooks");
 
         available_.store(true, std::memory_order_release);
         HookLogImportant("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p)", (void*)origSetSleepMode_,
@@ -304,7 +308,25 @@ public:
 
         const uint32_t ourInterval = targetIntervalUs_.load(std::memory_order_acquire);
 
-        lastSleepModeParams_ = *pParams;
+        // Version-aware copy: the game may pass a smaller struct than ours
+        // (e.g. version 0x1002C = 44 bytes).  Copy only what the caller
+        // provided and zero the rest to avoid reading adjacent stack memory.
+        uint32_t callerSize = pParams->version & 0xFFFF;
+        uint32_t ourSize = sizeof(NV_SET_SLEEP_MODE_PARAMS);
+        if (callerSize != ourSize) {
+            static std::atomic<int> s_sizeMismatchLogCount{0};
+            int logCount = s_sizeMismatchLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 5) {
+                HookLogImportant(
+                    "ReflexLimiter: SetSleepMode struct size mismatch (caller=%u our=%u version=0x%08X)",
+                    callerSize, ourSize, pParams->version);
+            }
+        }
+        uint32_t copySize = (callerSize < ourSize) ? callerSize : ourSize;
+        CopyMemory(&lastSleepModeParams_, pParams, copySize);
+        if (copySize < ourSize) {
+            ZeroMemory(reinterpret_cast<uint8_t*>(&lastSleepModeParams_) + copySize, ourSize - copySize);
+        }
         hasLastSleepModeParams_.store(true, std::memory_order_release);
 
         // Detect game activation: game called with low-latency mode enabled
@@ -399,7 +421,6 @@ public:
         directSleepHooked_ = false;
         directSetSleepModeTrampoline_ = nullptr;
         directSleepTrampoline_ = nullptr;
-        detourOrigQueryInterface_ = nullptr;
         realSetSleepModeForHook_ = nullptr;
         realSleepForHook_ = nullptr;
     }
@@ -412,55 +433,7 @@ public:
         return origSleep_;
     }
 
-    // Hook the game's nvapi_QueryInterface to detect game Reflex activation.
-    // Uses InlineHook to directly hook the function address, intercepting ALL calls
-    // regardless of how the game obtained the function pointer (cached, GetProcAddress, etc).
-    // When the game queries NVAPI_ID_D3D_SetSleepMode, we return a wrapper that
-    // detects bLowLatencyMode=true and marks gameActivated_.
-    // Only available in the Hook DLL build (not Vulkan Layer).
-    void HookNvAPIQueryInterface() {
-#if !REFLEX_IAT_HOOK_AVAILABLE
-        HookLog("ReflexLimiter: Game activation detection not available in this build context");
-        (void)realSetSleepModeForHook_;
-        (void)detourOrigQueryInterface_;
-#else
-        if (!origQueryInterface_)
-            return;
 
-        // Verify we can resolve SetSleepMode before hooking. If a direct inline
-        // hook is already installed, keep forwarding through its trampoline
-        // instead of re-caching the now-hooked entrypoint and recursing.
-        auto pResolvedSetSleepMode =
-            reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
-        if (!pResolvedSetSleepMode) {
-            HookLog("ReflexLimiter: Cannot resolve SetSleepMode, skipping game activation hook");
-            return;
-        }
-
-        // Store the real SetSleepMode for our intercept wrapper to forward to.
-        // When the direct hook is already active, the trampoline is the only
-        // safe forward target.
-        realSetSleepModeForHook_ =
-            directSetSleepModeTrampoline_ ? directSetSleepModeTrampoline_ : pResolvedSetSleepMode;
-
-        // Install inline hook on nvapi_QueryInterface itself.
-        // This intercepts ALL calls to nvapi_QueryInterface, regardless of how the
-        // game obtained the function pointer (direct call, cached from GetProcAddress, etc).
-        void* queryInterfaceAddr = reinterpret_cast<void*>(origQueryInterface_);
-        void* trampoline = nullptr;
-        if (InlineHook::Install(queryInterfaceAddr, reinterpret_cast<void*>(&ReflexDetour_QueryInterface),
-                                &trampoline)) {
-            // Store the trampoline as the original function for forwarding non-intercepted calls
-            detourOrigQueryInterface_ = reinterpret_cast<PFN_NvAPI_QueryInterface>(trampoline);
-            HookLogImportant(
-                "ReflexLimiter: Inline hook installed on nvapi_QueryInterface (target=%p, detour=%p, "
-                "trampoline=%p)",
-                queryInterfaceAddr, (void*)&ReflexDetour_QueryInterface, trampoline);
-        } else {
-            HookLogImportant("ReflexLimiter: Failed to install inline hook on nvapi_QueryInterface");
-        }
-#endif
-    }
 
     void HookNvAPIEntryPoints() {
 #if !REFLEX_IAT_HOOK_AVAILABLE
@@ -500,12 +473,9 @@ public:
 #endif
     }
 
-    // Detour for nvapi_QueryInterface — intercepts game's NvAPI calls.
+    // Detour for NvAPI_D3D_SetSleepMode — detects game activation.
     // Only available in the Hook DLL build.
 #if REFLEX_IAT_HOOK_AVAILABLE
-    static void* __cdecl ReflexDetour_QueryInterface(uint32_t id);
-
-    // Detour for NvAPI_D3D_SetSleepMode — detects game activation.
     static NvAPI_Status __cdecl ReflexDetour_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* pParams);
 
     // Detour for NvAPI_D3D_Sleep — detects whether the game actually uses native pacing.
@@ -538,7 +508,6 @@ private:
     std::atomic<uint32_t> lastPushedIntervalUs_{UINT32_MAX};
     PFN_NvAPI_D3D_SetSleepMode realSetSleepModeForHook_ = nullptr;  // Real SetSleepMode for detour forwarding
     PFN_NvAPI_D3D_Sleep realSleepForHook_ = nullptr;                // Real Sleep for detour forwarding
-    PFN_NvAPI_QueryInterface detourOrigQueryInterface_ = nullptr;   // Original QueryInterface from dynamic hook
     bool directSetSleepModeHooked_ = false;
     bool directSleepHooked_ = false;
     PFN_NvAPI_D3D_SetSleepMode directSetSleepModeTrampoline_ = nullptr;
@@ -561,52 +530,6 @@ inline ReflexLimiter g_ReflexLimiter;
 // ============================================================================
 
 #if REFLEX_IAT_HOOK_AVAILABLE
-
-inline void* __cdecl ReflexLimiter::ReflexDetour_QueryInterface(uint32_t id) {
-    auto& limiter = g_ReflexLimiter;
-
-    if (id == NVAPI_ID_D3D_SetSleepMode) {
-        // Return the original driver pointer so Streamline/DLSS FG can hook or
-        // validate it cleanly. Our direct inline hook on SetSleepMode still
-        // catches every call to this address, so activation detection and FPS
-        // limiting continue to work.
-        if (limiter.origSetSleepMode_) {
-            static std::atomic<bool> s_loggedOnce{false};
-            if (!s_loggedOnce.exchange(true, std::memory_order_relaxed)) {
-                HookLogImportant(
-                    "ReflexLimiter: Returning original SetSleepMode pointer from QueryInterface "
-                    "(orig=%p wrapper=%p)",
-                    (void*)limiter.origSetSleepMode_, (void*)&ReflexDetour_SetSleepMode);
-            }
-            return reinterpret_cast<void*>(limiter.origSetSleepMode_);
-        }
-        return reinterpret_cast<void*>(&ReflexDetour_SetSleepMode);
-    }
-
-    if (id == NVAPI_ID_D3D_Sleep) {
-        if (limiter.origSleep_) {
-            static std::atomic<bool> s_loggedOnce{false};
-            if (!s_loggedOnce.exchange(true, std::memory_order_relaxed)) {
-                HookLogImportant(
-                    "ReflexLimiter: Returning original Sleep pointer from QueryInterface "
-                    "(orig=%p wrapper=%p)",
-                    (void*)limiter.origSleep_, (void*)&ReflexDetour_Sleep);
-            }
-            return reinterpret_cast<void*>(limiter.origSleep_);
-        }
-        return reinterpret_cast<void*>(&ReflexDetour_Sleep);
-    }
-
-    // Forward other IDs to the real nvapi_QueryInterface
-    if (limiter.detourOrigQueryInterface_) {
-        return limiter.detourOrigQueryInterface_(id);
-    }
-    // Fallback: use the original resolved pointer
-    if (limiter.origQueryInterface_) {
-        return limiter.origQueryInterface_(id);
-    }
-    return nullptr;
-}
 
 inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_SetSleepMode(IUnknown* pDev,
                                                                      NV_SET_SLEEP_MODE_PARAMS* pParams) {
