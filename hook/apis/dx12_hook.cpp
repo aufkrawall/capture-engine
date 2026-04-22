@@ -1664,6 +1664,9 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     ResetFFXPresentCallbackOverlayBackend("DX12: FFX swapchain takeover");
     StreamlineHook::OnAuthoritativeFFXTakeover();
+    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+    DXGIShared::ResetStreamlineStartupTransitionState();
+    HookLogImportant("DX12: FFX swapchain takeover — cleared stale Streamline startup handoff/transition state");
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kAuthoritativeFFXTakeover,
                                 "DX12::AuthoritativeFFXTakeover", capturedQueue, nullptr,
                                 ce::fg_runtime::RuntimeMode::kFSRFG, true, true);
@@ -2448,6 +2451,17 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     }
 
     RenderOverlayViaFFXPresentCallback(desc);
+    if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+        const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
+        ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(),
+                                                     g_FGCompat.GetBaseFPS(), g_FGCompat.GetFGMultiplier(),
+                                                     "DX12_RenderOverlayViaFFXPresentCallback");
+        static std::atomic<int> s_ffxCallbackFGPublishLogCount{0};
+        if (s_ffxCallbackFGPublishLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant("FG publication: source=DX12_RenderOverlayViaFFXPresentCallback runtime=%s multiplier=%d",
+                             ce::fg_runtime::GetRuntimeModeName(plan.publishRuntimeMode), g_FGCompat.GetFGMultiplier());
+        }
+    }
     return result;
 }
 
