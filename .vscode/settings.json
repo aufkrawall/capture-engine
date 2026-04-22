@@ -3,9 +3,10 @@
     // clangd consumes our build-generated compile_commands.json automatically.
     "C_Cpp.intelliSenseEngine": "disabled",
 
-    // Point VS Code's clangd extension to the MSYS2-provided binary.
-    // Path is relative to the workspace root.
-    "clangd.path": "build/msys64/clang64/bin/clangd.exe",
+    // Point VS Code's clangd extension to the OpenCode-shipped binary.
+    // OpenCode bundles clangd under the user profile cache so it is always
+    // available even before the MSYS2 build environment is fully set up.
+    "clangd.path": "${env:USERPROFILE}/.cache/opencode/bin/clangd",
 
     "clangd.arguments": [
         "--background-index",

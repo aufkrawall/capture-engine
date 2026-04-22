@@ -52,6 +52,7 @@ __pycache__/
 .pyre/
 .hypothesis/
 .kilo/
+.opencode/
 *.pyc
 *.swp
 *.swo

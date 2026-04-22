@@ -58,7 +58,7 @@ Update rules:
 
 - **Fix**:
   1. `build.py` now extracts `write_compile_commands_json()` into a standalone function registered with `atexit`. The compilation database is therefore persisted even when the build fails mid-way, so LSP always has the freshest partial data instead of a stale complete database.
-  2. `.vscode/settings.json` now ships in the repo. It disables the Microsoft C/C++ IntelliSense engine, points `clangd.path` to `build/msys64/clang64/bin/clangd.exe` (relative to workspace root), and enables background index, clang-tidy integration, and inlay hints. VS Code users get working LSP immediately after the first build.
+  2. `.vscode/settings.json` now ships in the repo. It disables the Microsoft C/C++ IntelliSense engine, points `clangd.path` to the OpenCode-shipped binary at `${env:USERPROFILE}/.cache/opencode/bin/clangd`, and enables background index, clang-tidy integration, and inlay hints. This removes the dependency on the MSYS2 build environment being fully set up before LSP works.
   3. `build.py` `run_lint()` now invokes `run-clang-tidy` (parallel, `-j` equal to CPU count) using the generated `compile_commands.json`. It passes `-extra-arg=-w` to suppress frontend compiler warnings so only clang-tidy checks are emitted.
   4. `.clang-tidy` was added at repo root with a conservative check set: `bugprone-*`, `performance-*`, minus known-noisy checks. Warnings are reported but non-fatal for now (the existing codebase has ~1200 latent issues).
   5. The lint output is filtered to show only actual `warning:` lines (up to 15), omitting `run-clang-tidy` progress spam.
