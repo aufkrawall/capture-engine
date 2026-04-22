@@ -164,7 +164,8 @@ inline CombinedRuntimeSignalUpdate ResolveCombinedRuntimeSignalUpdate(bool reque
 inline bool ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
     bool startupTransitionWindowActive, bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback,
     bool safePostFSRBootstrapPath, bool startupActivationPending, bool postSLActiveButUnconfirmed,
-    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling) {
+    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling,
+    bool postSLConfirmedButRuntimeStateStabilizing) {
     if (startupTransitionWindowActive) {
         return true;
     }
@@ -178,66 +179,79 @@ inline bool ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
     // protection really ends.
     const bool startupProtectedComebackProof =
         explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
+    const bool protectedPostSLWindow = postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling ||
+                                       postSLConfirmedButRuntimeStateStabilizing;
     return hadFSRFGPhase && startupProtectedComebackProof &&
-           (startupActivationPending || postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling) &&
-           (!postSLConfirmedRendering || postSLConfirmedButStartupSettling);
+           (startupActivationPending || protectedPostSLWindow) &&
+           (!postSLConfirmedRendering || postSLConfirmedButStartupSettling ||
+            postSLConfirmedButRuntimeStateStabilizing);
 }
 
 inline bool ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
     bool startupTransitionWindowActive, bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback,
     bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering,
-    bool postSLConfirmedButStartupSettling) {
+    bool postSLConfirmedButStartupSettling, bool postSLConfirmedButRuntimeStateStabilizing) {
     if (startupTransitionWindowActive) {
         return true;
     }
 
     // The same stale OFF churn can also collapse a fresh pure-DLSS startup after
-    // expiry-driven PostSL activation but before the first confirmed render. Keep
-    // that half-armed explicit startup protected until confirmation/settling end.
+    // expiry-driven PostSL activation but before the first confirmed render. GTA's
+    // latest trace proves the first frame after settling ends can still carry the
+    // same stale OFF burst, so keep only the stale-OFF guard alive for a short
+    // post-settling stabilization window too.
+    const bool protectedPostSLWindow = postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling ||
+                                       postSLConfirmedButRuntimeStateStabilizing;
     return !hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback &&
-           (startupActivationPending || postSLActiveButUnconfirmed || postSLConfirmedButStartupSettling) &&
-           (!postSLConfirmedRendering || postSLConfirmedButStartupSettling);
+           (startupActivationPending || protectedPostSLWindow) &&
+           (!postSLConfirmedRendering || postSLConfirmedButStartupSettling ||
+            postSLConfirmedButRuntimeStateStabilizing);
 }
 
 inline bool ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
     bool startupTransitionWindowActive, bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback,
     bool safePostFSRBootstrapPath, bool startupActivationPending, bool postSLActiveButUnconfirmed,
-    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling) {
+    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling,
+    bool postSLConfirmedButRuntimeStateStabilizing) {
     return ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-               startupTransitionWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
-               safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
-               postSLConfirmedRendering, postSLConfirmedButStartupSettling) ||
-           ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
-               startupTransitionWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
-               startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
-               postSLConfirmedButStartupSettling);
+                startupTransitionWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
+                safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling,
+                postSLConfirmedButRuntimeStateStabilizing) ||
+            ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
+                startupTransitionWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
+                startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+                postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
 }
 
 inline bool ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
     bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback, bool safePostFSRBootstrapPath,
-    bool effectiveSignalActive, bool postSLConfirmedButStartupSettling) {
+    bool effectiveSignalActive, bool postSLConfirmedButStartupSettling,
+    bool postSLConfirmedButRuntimeStateStabilizing) {
     const bool startupProtectedComebackProof =
         explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
     return hadFSRFGPhase && startupProtectedComebackProof && effectiveSignalActive &&
-           !postSLConfirmedButStartupSettling;
+           !postSLConfirmedButStartupSettling && !postSLConfirmedButRuntimeStateStabilizing;
 }
 
 inline bool ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
     bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback, bool effectiveSignalActive,
-    bool postSLConfirmedButStartupSettling) {
+    bool postSLConfirmedButStartupSettling, bool postSLConfirmedButRuntimeStateStabilizing) {
     return !hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback && effectiveSignalActive &&
-           !postSLConfirmedButStartupSettling;
+           !postSLConfirmedButStartupSettling && !postSLConfirmedButRuntimeStateStabilizing;
 }
 
 inline bool ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
     bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback, bool safePostFSRBootstrapPath,
-    bool effectiveSignalActive, bool postSLConfirmedButStartupSettling) {
+    bool effectiveSignalActive, bool postSLConfirmedButStartupSettling,
+    bool postSLConfirmedButRuntimeStateStabilizing) {
     return ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-               hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
-               effectiveSignalActive, postSLConfirmedButStartupSettling) ||
-           ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-               hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, effectiveSignalActive,
-               postSLConfirmedButStartupSettling);
+                hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
+                effectiveSignalActive, postSLConfirmedButStartupSettling,
+                postSLConfirmedButRuntimeStateStabilizing) ||
+            ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
+                hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, effectiveSignalActive,
+                postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
 }
 
 inline bool ResolveCurrentComebackExplicitSetOptionsActivation(bool previousExplicitSetOptionsActivation,

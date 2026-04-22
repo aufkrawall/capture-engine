@@ -76,6 +76,10 @@ bool HookIsPostSLOverlayConfirmedButStartupSettling() {
     return false;
 }
 
+bool HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() {
+    return false;
+}
+
 bool HookHasFSRFGHistory() {
     return false;
 }

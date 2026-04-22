@@ -166,6 +166,7 @@ static std::atomic<uint32_t> g_PostSLLifecycleEpoch{0};
 // pre-SL rendering is NOT suppressed, allowing the overlay to render before SL.
 static std::atomic<bool> g_PostSLConfirmedRendering{false};
 static std::atomic<bool> g_PostSLSyntheticStartupActivatedButUnconfirmed{false};
+static std::atomic<bool> g_PostSLRuntimeStateStabilizationLogged{false};
 
 bool HookIsPostSLOverlayActiveButUnconfirmed() {
     return g_PostSLSyntheticStartupActivatedButUnconfirmed.load(std::memory_order_acquire) ||
@@ -213,6 +214,12 @@ static std::atomic<int> g_PostSLStableFrameCount{0};
 
 bool HookIsPostSLOverlayConfirmedButStartupSettling() {
     return ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(
+        g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+        g_PostSLStableFrameCount.load(std::memory_order_acquire));
+}
+
+bool HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() {
+    return ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(
         g_PostSLConfirmedRendering.load(std::memory_order_acquire),
         g_PostSLStableFrameCount.load(std::memory_order_acquire));
 }
@@ -1638,6 +1645,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
     g_PostSLStallCounter.store(0, std::memory_order_release);
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
+    g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
@@ -4246,6 +4254,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
             g_PostSLStallCounter.store(0, std::memory_order_release);
             g_PostSLStableFrameCount.store(0, std::memory_order_release);
+            g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
@@ -4276,6 +4285,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
             g_PostSLStallCounter.store(0, std::memory_order_release);
             g_PostSLStableFrameCount.store(0, std::memory_order_release);
+            g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
@@ -4401,6 +4411,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
     g_PostSLStallCounter.store(0, std::memory_order_release);
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
+    g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
     g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
@@ -8784,6 +8795,24 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                                     "DX12::PostSLOverlayRender", submittedQueue, pSwapChain,
                                     g_FGCompat.GetRuntimeMode(), g_FGCompat.IsFGActive(),
                                     HookHasExplicitStreamlineSetOptionsActivation());
+    }
+    const bool runtimeStateStabilizing =
+        ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(true, stableFrameCount);
+    const bool runtimeStateStabilizingPreviousFrame =
+        stableFrameCount > 1 &&
+        ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(true,
+                                                                                              stableFrameCount - 1);
+    if (runtimeStateStabilizing && !runtimeStateStabilizingPreviousFrame) {
+        g_PostSLRuntimeStateStabilizationLogged.store(true, std::memory_order_release);
+        HookLogImportant(
+            "DX12: PostSL confirmed startup rendering entered runtime-state stabilization "
+            "(stableFrames=%d first=%d last=%d)",
+            stableFrameCount, ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationFirstFrame(),
+            ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationLastFrame());
+    } else if (!runtimeStateStabilizing && runtimeStateStabilizingPreviousFrame) {
+        HookLogImportant("DX12: PostSL confirmed startup rendering left runtime-state stabilization "
+                         "(stableFrames=%d)",
+                         stableFrameCount);
     }
     if (ce::dx12_overlay_policy::ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
             DXGIShared::IsStreamlineStartupTransitionWindowActive(), stableFrameCount)) {

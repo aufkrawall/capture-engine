@@ -140,6 +140,11 @@ bool HookIsPostSLOverlayConfirmedRendering();
 // frames after the very first successful submit.
 bool HookIsPostSLOverlayConfirmedButStartupSettling();
 
+// DX12 exports this so Streamline stale-OFF suppression can survive a short
+// post-settling runtime-state jitter window without extending the wider
+// startup-routing / handoff-pending protection.
+bool HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
+
 // DX12 exports this so shared routing code can distinguish the pure-DLSS
 // cold-start family from the stricter post-FSR comeback path.
 bool HookHasFSRFGHistory();

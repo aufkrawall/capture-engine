@@ -287,92 +287,108 @@ TEST(StreamlineRuntimePolicyTest, SuppressSetOptionsOffDuringStartupTransitionWi
 
 TEST(StreamlineRuntimePolicyTest, StartupProtectedPostFSRComebackKeepsOffChurnDeferredWhileHalfArmed) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        true, true, false, false, false, false, false, false));
+        true, true, false, false, false, false, false, false, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, true, true, false, true, false, false, false));
+        false, true, true, false, true, false, false, false, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, true, true, false, false, true, false, false));
+        false, true, true, false, false, true, false, false, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, true, true, false, false, false, true, true));
+        false, true, true, false, false, false, true, true, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, true, false, true, true, false, false, false));
+        false, true, false, true, true, false, false, false, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, true, false, true, false, true, false, false));
+        false, true, false, true, false, true, false, false, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, true, false, true, false, false, true, true));
+        false, true, false, true, false, false, true, true, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
+        false, true, true, false, false, false, true, false, true));
 
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, false, true, false, true, false, false, false));
+        false, false, true, false, true, false, false, false, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, true, false, false, true, false, false, false));
+        false, true, false, false, true, false, false, false, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, true, true, false, false, false, true, false));
+        false, true, true, false, false, false, true, false, false));
 }
 
 TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackKeepsOffChurnDeferredWhileHalfArmed) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
-        true, false, false, false, false, false, false));
+        true, false, false, false, false, false, false, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
-        false, false, true, true, false, false, false));
+        false, false, true, true, false, false, false, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
-        false, false, true, false, true, false, false));
+        false, false, true, false, true, false, false, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
-        false, false, true, false, false, true, true));
+        false, false, true, false, false, true, true, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
+        false, false, true, false, false, true, false, true));
 
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
-        false, true, true, true, false, false, false));
+        false, true, true, true, false, false, false, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
-        false, false, false, true, false, false, false));
+        false, false, false, true, false, false, false, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPureDLSSComeback(
-        false, false, true, false, false, true, false));
+        false, false, true, false, false, true, false, false));
 }
 
 TEST(StreamlineRuntimePolicyTest, StartupProtectedPostFSRComebackDropsStaleSuppressedOffChurnOnceActive) {
     EXPECT_TRUE(
         ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, true, false, true, false));
+            true, true, false, true, false, false));
     EXPECT_TRUE(
         ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, false, true, true, false));
+            true, false, true, true, false, false));
 
     EXPECT_FALSE(
         ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            false, true, false, true, false));
+            false, true, false, true, false, false));
     EXPECT_FALSE(
         ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, false, false, true, false));
+            true, false, false, true, false, false));
     EXPECT_FALSE(
         ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, true, false, false, false));
+            true, true, false, false, false, false));
     EXPECT_FALSE(
         ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, true, false, true, true));
+            true, true, false, true, true, false));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+            true, true, false, true, false, true));
 }
 
 TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackDropsStaleSuppressedOffChurnOnceActive) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        false, true, true, false));
+        false, true, true, false, false));
 
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        true, true, true, false));
+        true, true, true, false, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        false, false, true, false));
+        false, false, true, false, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        false, true, false, false));
+        false, true, false, false, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        false, true, true, true));
+        false, true, true, true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
+        false, true, true, false, true));
 }
 
 TEST(StreamlineRuntimePolicyTest, StartupProtectedStreamlineComebackIncludesPureDLSSProtection) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
-        false, false, true, false, true, false, false, false));
+        false, false, true, false, true, false, false, false, false));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
-        false, true, false, true, false));
+        false, true, false, true, false, false));
+}
+
+TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackStaysDeferredDuringPostSettlingStabilization) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
+        false, false, true, false, false, false, true, false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
+        false, true, false, true, false, true));
 }
 
 TEST(StreamlineRuntimePolicyTest, CombinedRuntimeStateDefersHalfArmedStartupProtectedPostFSRComebackOffAfterWindowExpiry) {
     const bool deferOff = ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
-        false, true, false, true, true, false, false, false);
+        false, true, false, true, true, false, false, false, false);
     const auto update = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, deferOff, true, 2);
 
     EXPECT_TRUE(update.deferredOffDuringStartupWindow);

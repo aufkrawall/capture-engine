@@ -1392,6 +1392,27 @@ inline bool ShouldTreatConfirmedPostSLRenderingAsStartupSettling(bool postSLConf
     return postSLConfirmedRendering && stablePostSLFrameCount <= kConfirmedPostSLStartupSettleFrames;
 }
 
+inline constexpr int GetConfirmedPostSLRuntimeStateStabilizationFirstFrame() {
+    return 9;
+}
+
+inline constexpr int GetConfirmedPostSLRuntimeStateStabilizationLastFrame() {
+    return 12;
+}
+
+inline bool ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(bool postSLConfirmedRendering,
+                                                                         int stablePostSLFrameCount) {
+    // GTA's latest pure-DLSS startup still emits one more stale OFF churn burst on
+    // the first frame after the older settling guard ends. Keep only the
+    // Streamline stale-OFF protection alive for a few more confirmed PostSL
+    // frames so that short post-settling runtime-state jitter cannot collapse the
+    // just-proven DLSS FG session. This intentionally does NOT extend the wider
+    // DX12 startup-routing / handoff-pending protection.
+    return postSLConfirmedRendering &&
+           stablePostSLFrameCount >= GetConfirmedPostSLRuntimeStateStabilizationFirstFrame() &&
+           stablePostSLFrameCount <= GetConfirmedPostSLRuntimeStateStabilizationLastFrame();
+}
+
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,
                                                                     bool postSLConfirmedRendering,
                                                                     bool useTopLevelHandoffWrapperProgress) {
