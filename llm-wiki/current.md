@@ -3,7 +3,7 @@
 Last cross-checked: 2026-04-22
 
 Primary sources:
-- `llm-wiki/log.md`
+- `llm-wiki/log/recent.md`
 - `build.py`
 - `common/config.h`
 - `common/config.cpp`
@@ -24,12 +24,12 @@ Primary sources:
 - `tests/test_dxgi_shared.cpp`
 
 ## Purpose
-This page is the compact LLM entrypoint for current repo state. Read it before diving into long historical pages or `log.md`.
+This page is the compact LLM entrypoint for current repo state. Read it before diving into long historical pages or `log/recent.md`.
 
 ## Read This First
 - For current build and logging controls, start here, then read `build.py.md` or `regression-testing-and-logging.md` if needed.
-- For active DX12 / FG debugging, read this page, then `frame-generation-switching.md`, then the newest relevant `log.md` entry.
-- Use `log.md` as the historical archive, not the first stop for every task.
+- For active DX12 / FG debugging, read this page, then `frame-generation/guardrails.md`, then the newest relevant `log/recent.md` entry.
+- Use `log/recent.md` (and the relevant `log/archive-YYYY-Www*.md` for older history) as the historical archive, not the first stop for every task.
 
 ## Current Logging Model
 - `config.ini` now supports `log_level=off|error|warn|info|debug|trace`.
@@ -43,7 +43,7 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 - Keep high-value transition logs at `debug`.
 - Move byte dumps, per-instruction traces, and similar forensic detail to `trace` or dedicated side logs.
 - Prefer change logs and periodic summaries over steady-state heartbeat spam.
-- Preserve historical genesis in detailed pages and `log.md`; do not flatten history into only a short summary.
+- Preserve historical genesis in detailed pages and `log/recent.md` (or the relevant archive); do not flatten history into only a short summary.
 
 ## Current Hot Areas
 - The tree now has a first shared FG session/planner layer in `hook/common/fg_session_state.{h,cpp}`. It is not yet the full end-state from `fg-plan.md`, but it is now the central place that captures live FG session snapshots, computes a shadow/live action plan, emits structured `FG SNAPSHOT` / `FG EVENT` / `FG PLAN` / `FG TRANSITION` / `FG INVARIANT` / `FG LEGACY DECISION` logs, and keeps `session_manifest.txt` updated with `steam_overlay_loaded`, `streamline_loaded`, `ffx_loaded`, `fg_shadow_state_enabled`, and `fg_state_schema_version`.

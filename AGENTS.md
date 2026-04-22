@@ -15,7 +15,7 @@ Repository-specific instructions for coding agents working in this repo.
 - WE ALREADY HAD OUR OVERLAY WORKING IN BOTH GTA V ENHANCED AND TALOS REAWAKENED WITH FSR FG, IT DEFINITELY IS POSSIBLE! THE SAME IS TRUE FOR DLSS FG!
 
 ## llm-wiki Workflow
-- Always consult `llm-wiki/index.md` first, then the relevant `llm-wiki/*.md` pages, then `llm-wiki/log.md` for recent updates and stale-risk notes.
+- Always consult `llm-wiki/index.md` first, then the relevant `llm-wiki/*.md` pages, then `llm-wiki/log/recent.md` for recent updates and stale-risk notes. For older historical genesis, consult the relevant `llm-wiki/log/archive-YYYY-Www*.md` file.
 - `llm-wiki` must always be consulted.
 - `llm-wiki` must constantly be cross-checked for factual correctness against the real sources of truth: implementation, tests, build scripts, config files, and current behavior.
 - `llm-wiki`, code and code annotations must be mistrusted. They can all be correct or incorrect. If they contradict each other, we must think of a correct way to align all of them in a shared correct state.
