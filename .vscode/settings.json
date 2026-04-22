@@ -1,0 +1,25 @@
+{
+    // Disable the Microsoft C/C++ extension IntelliSense engine in favor of clangd.
+    // clangd consumes our build-generated compile_commands.json automatically.
+    "C_Cpp.intelliSenseEngine": "disabled",
+
+    // Point VS Code's clangd extension to the MSYS2-provided binary.
+    // Path is relative to the workspace root.
+    "clangd.path": "build/msys64/clang64/bin/clangd.exe",
+
+    "clangd.arguments": [
+        "--background-index",
+        "--compile-commands-dir=${workspaceFolder}",
+        "--clang-tidy",
+        "--header-insertion=iwyu",
+        "--completion-style=bundled",
+        "--pch-storage=memory",
+        "--cross-file-rename"
+    ],
+
+    // File-association helpers so VS Code treats headers consistently
+    "files.associations": {
+        "*.h": "cpp",
+        "*.inl": "cpp"
+    }
+}

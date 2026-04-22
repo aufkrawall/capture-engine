@@ -40,7 +40,8 @@ build/bin/UECC-*/
 
 # IDE/cache/temp files
 .vs/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 .cache/
 .ruff_cache/

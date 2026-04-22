@@ -1,0 +1,21 @@
+---
+# Minimal clang-tidy configuration for CaptureEngine.
+# Run automatically as part of `python build.py --lint` (and default mode).
+# Uses compile_commands.json — does NOT recompile.
+
+Checks: >
+  bugprone-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -performance-enum-size,
+  -performance-avoid-endl,
+  -performance-no-int-to-ptr
+
+CheckOptions:
+  - key:   bugprone-argument-comment.StrictMode
+    value: '0'
+
+HeaderFilterRegex: '.*'
+FormatStyle: file
