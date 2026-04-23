@@ -1088,6 +1088,13 @@ TEST(DXGISharedTest, PostFSRStreamlineTeardownWithoutSwapchainQueueWaitsForLiveN
         false, false, true, false, true, true, true, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
         false, false, true, false, true, true, true, false, false, true));
+
+    // When the command queue has settled to the primary game queue, overlay init
+    // should proceed even without a swapchain queue or preserved lastWorkingQueue.
+    // This prevents indefinite deferral after lastWorkingQueue was cleared during
+    // a prior failed FSR->DLSS comeback.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+        false, false, true, false, true, false, true, false, false, true));
 }
 
 TEST(DXGISharedTest, PostFSRStreamlineTeardownWithoutSwapchainQueueRequiresLastWorkingQueue) {

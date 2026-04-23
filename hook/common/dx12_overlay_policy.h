@@ -798,6 +798,17 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
         // reproduced Talos DEVICE_REMOVED on the first resumed non-FG overlay
         // submit. The only safe immediate recovery path is the last PostSL queue
         // that already proved it could render the live swapchain successfully.
+        //
+        // However, multi-queue games (e.g. Talos Principle) use separate DIRECT
+        // queues for ECL (render) and Present (swapchain).  The primary game queue
+        // is the first DIRECT queue observed and is always a valid non-wrapper queue.
+        // If the command queue has already settled back to the primary queue, that
+        // queue is proven safe even when the preserved PostSL last-working queue was
+        // cleared by an earlier failed comeback.  Treating it as "unsettled" strands
+        // the overlay for the entire grace period.
+        if (commandQueueMatchesPrimaryGameQueue) {
+            return false;
+        }
         return !hasPostSLLastWorkingQueue;
     }
 

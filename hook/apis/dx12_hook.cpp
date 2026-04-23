@@ -10088,13 +10088,15 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 goto skipOverlayInit;
             }
 
+            const bool commandQueueMatchesPrimaryGameQueue =
+                currentCommandQueue != nullptr &&
+                currentCommandQueue == g_PrimaryGameQueue.load(std::memory_order_acquire);
             if (ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
                     actualFGActive, streamlineFGRunning, recentStreamlineTeardown, currentSwapchainQueue != nullptr,
                     g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr, currentCommandQueue != nullptr,
                     currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
                     currentCommandQueue != nullptr && currentCommandQueue == g_OriginalGameQueue,
-                    currentCommandQueue != nullptr &&
-                        currentCommandQueue == g_PrimaryGameQueue.load(std::memory_order_acquire))) {
+                    commandQueueMatchesPrimaryGameQueue)) {
                 static std::atomic<int> s_recentSLTeardownInitDeferLogCount{0};
                 int logCount = s_recentSLTeardownInitDeferLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 20 || (logCount % 120) == 0) {
@@ -10106,6 +10108,21 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         g_SLOffHeuristicGrace.load(std::memory_order_acquire));
                 }
                 goto skipOverlayInit;
+            }
+
+            // One-shot diagnostic: when the primary-queue escape hatch allows overlay init
+            // despite a missing swapchain queue and cleared lastWorkingQueue, log it so
+            // future traces can distinguish "primaryQ safe" from "lastWorkingQ preserved".
+            if (recentStreamlineTeardown && currentSwapchainQueue == nullptr &&
+                g_PostSLLastWorkingQueue == nullptr && commandQueueMatchesPrimaryGameQueue) {
+                static std::atomic<int> s_primaryQEscapeHatchLogCount{0};
+                if (s_primaryQEscapeHatchLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                    HookLogImportant(
+                        "DX12: Allowing overlay init on primary game queue despite missing scQueue and lastWorkingQ "
+                        "after Streamline teardown (cmdQ=%p primaryQ=%p origQ=%p slOffGrace=%d)",
+                        currentCommandQueue, g_PrimaryGameQueue.load(std::memory_order_acquire), g_OriginalGameQueue,
+                        g_SLOffHeuristicGrace.load(std::memory_order_acquire));
+                }
             }
         }
 
