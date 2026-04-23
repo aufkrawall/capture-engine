@@ -1136,7 +1136,12 @@ inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase
         return false;
     }
 
-    if (!hasRealD3D12ECL) {
+    // If we have neither realECL nor SL wrapper, we have no viable submit path.
+    // But if the SL wrapper is already known, PostSL can bootstrap through it
+    // even before realECL has been reprobed (e.g. after FSR->OFF->DLSS where
+    // realECL was cleared during teardown).  The wrapper submit will capture
+    // g_RealQueueBehindSLWrapper, enabling the direct path on the next frame.
+    if (!hasRealD3D12ECL && !hasSLWrapperQueue) {
         return true;
     }
 

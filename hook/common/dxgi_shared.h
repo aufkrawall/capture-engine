@@ -400,10 +400,12 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
 
     // Post-FSR comeback still intentionally uses the older repeated-callback
     // stabilization path before PostSL fully confirms rendering, but only once
-    // the bootstrap topology itself is already safe. Explicit SetOptions(ON)
-    // proves the comeback is authoritative; it does not by itself prove that the
-    // first callback can safely enter PostSL on the recovered queue path.
-    return hadFSRFGPhase && explicitSetOptionsActivation && safePostFSRBootstrapPath &&
+    // the bootstrap topology itself is already safe.  We no longer require an
+    // explicit SetOptions(ON) edge here: the safe bootstrap path already proves
+    // the queue topology can handle the callback, and requiring both conditions
+    // can strand PostSL indefinitely when SetOptions has not yet been observed
+    // but the handoff queue is already live (FSR->OFF->DLSS transitions).
+    return hadFSRFGPhase && safePostFSRBootstrapPath &&
            (postSLStartupActivationPending || postSLActiveButUnconfirmed);
 }
 

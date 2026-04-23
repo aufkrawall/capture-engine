@@ -1065,6 +1065,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             if (postSLCallback) {
                 postSLCallback(pSwapChain);
             }
+        } else {
+            static std::atomic<int> s_skipPostSLCallbackLogCount{0};
+            int skipCount = s_skipPostSLCallbackLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (skipCount < 5 || (skipCount % 100) == 0) {
+                HookLogImportant(
+                    "DetourPresent: PostSL callback skipped on normal route despite startup present kept "
+                    "(startupPending=%d unconfirmed=%d hadFSR=%d explicitSetOptions=%d safeBootstrap=%d tid=0x%04X)",
+                    postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
+                    hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivation ? 1 : 0,
+                    safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
+            }
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
                 api == APIType::D3D12, keepStartupPresentOnNormalRoute, hadFSRFGPhase, postSLConfirmedRendering,
@@ -1612,6 +1623,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
             if (postSLCallback) {
                 postSLCallback(pSwapChain);
+            }
+        } else {
+            static std::atomic<int> s_skipPostSLCallbackLogCount1{0};
+            int skipCount = s_skipPostSLCallbackLogCount1.fetch_add(1, std::memory_order_relaxed);
+            if (skipCount < 5 || (skipCount % 100) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: PostSL callback skipped on normal route despite startup present kept "
+                    "(startupPending=%d unconfirmed=%d hadFSR=%d explicitSetOptions=%d safeBootstrap=%d tid=0x%04X)",
+                    postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
+                    hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivation ? 1 : 0,
+                    safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
             }
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
