@@ -1380,10 +1380,16 @@ void OnAuthoritativeFFXTakeover() {
     g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(true, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     g_StartupWindowOffExtensionPending.store(false, std::memory_order_release);
+    // A new FSR takeover resets the entire FG session context; any stale DLSS-only
+    // reactivation block from a previous epoch must not outlive the FSR phase.
+    const bool hadStaleExplicitSetOptionsBlock =
+        g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.exchange(false, std::memory_order_acq_rel);
     HookLogImportant(
         "Streamline Hook: Authoritative FFX takeover reset %zu viewport states and preserved %zu capability caches; "
-        "suppressing GetState-only reactivation for %llums and until safe post-FSR bootstrap or explicit enable",
-        resetViewportCount, preservedCapabilityCount, (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs);
+        "suppressing GetState-only reactivation for %llums and until safe post-FSR bootstrap or explicit enable "
+        "(clearedStaleBlock=%d)",
+        resetViewportCount, preservedCapabilityCount, (unsigned long long)kAuthoritativeFFXTakeoverGetStateSuppressMs,
+        hadStaleExplicitSetOptionsBlock ? 1 : 0);
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kAuthoritativeFFXTakeover,
                                 "StreamlineHook::OnAuthoritativeFFXTakeover", nullptr, nullptr,
                                 ce::fg_runtime::RuntimeMode::kFSRFG, true, true);

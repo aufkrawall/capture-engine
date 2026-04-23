@@ -3769,6 +3769,20 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             HookLogImportant("DX12: Swapchain returned to origGame queue %p — FG runtime ownership cleared", pQueue);
         }
 
+        // If the swapchain queue changed and FSR is no longer active, the old explicit
+        // native-FSR OFF teardown flag is stale — it referred to the previous queue's
+        // runtime-owned Present path, not this new one.  Keeping it true defers overlay
+        // init indefinitely when the game creates a new menu swapchain after FSR OFF.
+        if (g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) &&
+            !g_FGCompat.IsFSRFGApiActive() &&
+            g_FGCompat.GetRuntimeMode() != ce::fg_runtime::RuntimeMode::kFSRFG) {
+            ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+            HookLogImportant(
+                "DX12: Swapchain queue changed to %p while FSR is no longer active — cleared stale explicit native FSR "
+                "OFF teardown flag (origGame=%p runtime=%s)",
+                pQueue, g_OriginalGameQueue, ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()));
+        }
+
         HookLogImportant("DX12: Swapchain queue captured (queue=%p, origGame=%p, same=%d, fgOwned=%d)", pQueue,
                          g_OriginalGameQueue, (pQueue == g_OriginalGameQueue) ? 1 : 0,
                          g_FGRuntimeOwnsSwapchain ? 1 : 0);
