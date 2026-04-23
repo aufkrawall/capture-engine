@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <atomic>
 
+#include "../hook/common/hook_common.h"
 #include "../hook/common/fg_runtime_state.h"
 
 // Stubs for dxgi_shared.cpp dependencies
@@ -67,13 +68,25 @@ static std::atomic<bool> g_TestPreferredOverlayFGPublicationStateValid{false};
 static std::atomic<bool> g_TestPreferredOverlayFGPublicationStateActive{false};
 static std::atomic<int> g_TestPreferredOverlayFGPublicationStateRuntimeMode{
     static_cast<int>(ce::fg_runtime::RuntimeMode::kOff)};
+static std::atomic<uint64_t> g_TestOverlayFGPublicationSequence{0};
+static std::atomic<uint64_t> g_TestPreferredOverlayFGPublicationStateSequence{0};
 bool IsProcessTerminating() {
     return false;
+}
+
+uint64_t HookAllocateOverlayFGPublicationSequence() {
+    return g_TestOverlayFGPublicationSequence.fetch_add(1, std::memory_order_acq_rel) + 1;
 }
 
 void TestStubSetPreferredOverlayFGPublicationState(bool valid, bool active, ce::fg_runtime::RuntimeMode runtimeMode) {
     g_TestPreferredOverlayFGPublicationStateActive.store(active, std::memory_order_release);
     g_TestPreferredOverlayFGPublicationStateRuntimeMode.store(static_cast<int>(runtimeMode), std::memory_order_release);
+    if (valid) {
+        g_TestPreferredOverlayFGPublicationStateSequence.store(HookAllocateOverlayFGPublicationSequence(),
+                                                              std::memory_order_release);
+    } else {
+        g_TestPreferredOverlayFGPublicationStateSequence.store(0, std::memory_order_release);
+    }
     g_TestPreferredOverlayFGPublicationStateValid.store(valid, std::memory_order_release);
 }
 
@@ -117,14 +130,16 @@ bool HookHasRuntimeOwnedNativeFGPresentPath() {
     return false;
 }
 
-bool HookTryGetPreferredOverlayFGPublicationState(bool* active, ce::fg_runtime::RuntimeMode* runtimeMode) {
-    if (!active || !runtimeMode || !g_TestPreferredOverlayFGPublicationStateValid.load(std::memory_order_acquire)) {
+bool HookTryGetPreferredOverlayFGPublicationState(PreferredOverlayFGPublicationState* state) {
+    if (!state || !g_TestPreferredOverlayFGPublicationStateValid.load(std::memory_order_acquire)) {
         return false;
     }
 
-    *active = g_TestPreferredOverlayFGPublicationStateActive.load(std::memory_order_acquire);
-    *runtimeMode = static_cast<ce::fg_runtime::RuntimeMode>(
+    state->valid = true;
+    state->active = g_TestPreferredOverlayFGPublicationStateActive.load(std::memory_order_acquire);
+    state->runtimeMode = static_cast<ce::fg_runtime::RuntimeMode>(
         g_TestPreferredOverlayFGPublicationStateRuntimeMode.load(std::memory_order_acquire));
+    state->sequence = g_TestPreferredOverlayFGPublicationStateSequence.load(std::memory_order_acquire);
     return true;
 }
 

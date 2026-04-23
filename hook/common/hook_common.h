@@ -170,9 +170,18 @@ bool HookHasSafePostFSRBootstrapPath();
 // swapchain returns to origGame ownership.
 bool HookHasRuntimeOwnedNativeFGPresentPath();
 
+struct PreferredOverlayFGPublicationState {
+    bool valid = false;
+    bool active = false;
+    ce::fg_runtime::RuntimeMode runtimeMode;
+    uint64_t sequence = 0;
+};
+
+uint64_t HookAllocateOverlayFGPublicationSequence();
+
 // DX12 exports this so planner-driven overlay metric publishers can reuse the
 // latest locally-computed visible FG state instead of repainting a stale plan.
-bool HookTryGetPreferredOverlayFGPublicationState(bool* active, ce::fg_runtime::RuntimeMode* runtimeMode);
+bool HookTryGetPreferredOverlayFGPublicationState(PreferredOverlayFGPublicationState* state);
 void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::RuntimeMode runtimeMode,
                                                   const char* source);
 

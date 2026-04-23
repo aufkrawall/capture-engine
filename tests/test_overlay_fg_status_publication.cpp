@@ -139,6 +139,10 @@ TEST(OverlayFGStatusPublicationTest, PlannerDrivenPublicationPrefersVisibleState
     PreferredOverlayPublicationStateGuard guard;
     PerformanceMetrics metrics;
 
+    PublishPlanner(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 2, 144.0f, 72.0f);
+    ASSERT_TRUE(metrics.IsFGActive());
+    ASSERT_STREQ(metrics.GetFGTypeLabel(), "DLSS FG");
+
     TestStubSetPreferredOverlayFGPublicationState(true, true, ce::fg_runtime::RuntimeMode::kFSRFG);
     PublishPlanner(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 2, 144.0f, 72.0f);
     EXPECT_TRUE(metrics.IsFGActive());
@@ -146,6 +150,21 @@ TEST(OverlayFGStatusPublicationTest, PlannerDrivenPublicationPrefersVisibleState
 
     TestStubSetPreferredOverlayFGPublicationState(true, false, ce::fg_runtime::RuntimeMode::kOff);
     PublishPlanner(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 3, 180.0f, 60.0f);
+    EXPECT_FALSE(metrics.IsFGActive());
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
+    EXPECT_EQ(metrics.GetFGMultiplier(), 1);
+}
+
+TEST(OverlayFGStatusPublicationTest, PlannerDrivenPublicationLetsNewerPlannerOffBeatStaleVisibleOnState) {
+    PreferredOverlayPublicationStateGuard guard;
+    PerformanceMetrics metrics;
+
+    TestStubSetPreferredOverlayFGPublicationState(true, true, ce::fg_runtime::RuntimeMode::kDLSSFG);
+    PublishPlanner(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 2, 120.0f, 60.0f);
+    ASSERT_TRUE(metrics.IsFGActive());
+    ASSERT_STREQ(metrics.GetFGTypeLabel(), "DLSS FG");
+
+    PublishPlanner(metrics, false, ce::fg_runtime::RuntimeMode::kOff, 1, 0.0f, 0.0f);
     EXPECT_FALSE(metrics.IsFGActive());
     EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
     EXPECT_EQ(metrics.GetFGMultiplier(), 1);

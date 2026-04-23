@@ -177,6 +177,12 @@ static std::atomic<bool> g_PreferredOverlayFGPublicationStateValid{false};
 static std::atomic<bool> g_PreferredOverlayFGPublicationStateActive{false};
 static std::atomic<int> g_PreferredOverlayFGPublicationStateRuntimeMode{
     static_cast<int>(ce::fg_runtime::RuntimeMode::kOff)};
+static std::atomic<uint64_t> g_OverlayFGPublicationSequence{0};
+static std::atomic<uint64_t> g_PreferredOverlayFGPublicationStateSequence{0};
+
+uint64_t HookAllocateOverlayFGPublicationSequence() {
+    return g_OverlayFGPublicationSequence.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
 
 void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::RuntimeMode runtimeMode,
                                                   const char* source) {
@@ -184,31 +190,38 @@ void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::R
     const bool previousActive = g_PreferredOverlayFGPublicationStateActive.load(std::memory_order_acquire);
     const auto previousRuntimeMode = static_cast<ce::fg_runtime::RuntimeMode>(
         g_PreferredOverlayFGPublicationStateRuntimeMode.load(std::memory_order_acquire));
+    const uint64_t nextSequence = HookAllocateOverlayFGPublicationSequence();
 
     g_PreferredOverlayFGPublicationStateActive.store(active, std::memory_order_release);
     g_PreferredOverlayFGPublicationStateRuntimeMode.store(static_cast<int>(runtimeMode), std::memory_order_release);
+    g_PreferredOverlayFGPublicationStateSequence.store(nextSequence, std::memory_order_release);
     g_PreferredOverlayFGPublicationStateValid.store(true, std::memory_order_release);
 
     if (!previousValid || previousActive != active || previousRuntimeMode != runtimeMode) {
-        HookLogImportant("FG publication preferred state: source=%s runtime=%s active=%d",
-                         source ? source : "unknown", ce::fg_runtime::GetRuntimeModeName(runtimeMode), active ? 1 : 0);
+        HookLogImportant("FG publication preferred state: source=%s runtime=%s active=%d sequence=%llu",
+                         source ? source : "unknown", ce::fg_runtime::GetRuntimeModeName(runtimeMode), active ? 1 : 0,
+                         static_cast<unsigned long long>(nextSequence));
     }
 }
 
-bool HookTryGetPreferredOverlayFGPublicationState(bool* active, ce::fg_runtime::RuntimeMode* runtimeMode) {
-    if (!active || !runtimeMode) {
+bool HookTryGetPreferredOverlayFGPublicationState(PreferredOverlayFGPublicationState* state) {
+    if (!state) {
         return false;
     }
 
     if (g_PreferredOverlayFGPublicationStateValid.load(std::memory_order_acquire)) {
-        *active = g_PreferredOverlayFGPublicationStateActive.load(std::memory_order_acquire);
-        *runtimeMode = static_cast<ce::fg_runtime::RuntimeMode>(
+        state->valid = true;
+        state->active = g_PreferredOverlayFGPublicationStateActive.load(std::memory_order_acquire);
+        state->runtimeMode = static_cast<ce::fg_runtime::RuntimeMode>(
             g_PreferredOverlayFGPublicationStateRuntimeMode.load(std::memory_order_acquire));
+        state->sequence = g_PreferredOverlayFGPublicationStateSequence.load(std::memory_order_acquire);
         return true;
     }
 
-    *active = g_FGCompat.IsFGActive();
-    *runtimeMode = g_FGCompat.GetRuntimeMode();
+    state->valid = true;
+    state->active = g_FGCompat.IsFGActive();
+    state->runtimeMode = g_FGCompat.GetRuntimeMode();
+    state->sequence = 0;
     return true;
 }
 
