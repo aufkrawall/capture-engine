@@ -394,6 +394,42 @@ TEST_F(FpsLimiterTest, AuthoritativeFSRCanOverrideTransientDLSSAndYieldBackToCon
     EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::None);
 }
 
+TEST_F(FpsLimiterTest, AuthoritativeFSROffClearsStaleHeuristic) {
+    // Simulate a heuristic latched during an earlier queue-change window.
+    g_FGCompat.SetHeuristicFSRFGActive(true);
+    EXPECT_TRUE(g_FGCompat.IsHeuristicFSRFGActive());
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::FSR_FG);
+
+    // Authoritative FSR OFF must invalidate the stale heuristic so the overlay
+    // is not skipped indefinitely during post-FSR teardown / DLSS comeback.
+    g_FGCompat.SetFSRFGActive(false);
+    EXPECT_FALSE(g_FGCompat.IsHeuristicFSRFGActive());
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::None);
+}
+
+TEST_F(FpsLimiterTest, StaleHeuristicFSRClearedByAuthoritativeFSROffAllowsDLSSReactivation) {
+    // Simulate heuristic FSR latched during an active FSR phase, then FSR is
+    // turned off authoritatively.  The heuristic must be cleared so that the
+    // subsequent DLSS reactivation is not blocked.
+    g_FGCompat.SetFSRFGActive(true);
+    g_FGCompat.SetHeuristicFSRFGActive(true);
+    EXPECT_TRUE(g_FGCompat.IsHeuristicFSRFGActive());
+    EXPECT_TRUE(g_FGCompat.IsFSRFGApiActive());
+
+    // Authoritative FSR OFF must clear the heuristic.
+    g_FGCompat.SetFSRFGActive(false);
+    EXPECT_FALSE(g_FGCompat.IsHeuristicFSRFGActive());
+    EXPECT_FALSE(g_FGCompat.IsFSRFGApiActive());
+
+    // DLSS reactivation must now succeed because the stale heuristic is gone.
+    g_FGCompat.SetDLSSFGMultiplier(2);
+    g_FGCompat.SetDLSSFGActive(true);
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::DLSS_FG);
+
+    g_FGCompat.SetDLSSFGActive(false);
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::None);
+}
+
 // Test ParseLimiterMode
 TEST(LimiterModeParseTest, ParsesAllValues) {
     EXPECT_EQ(ParseLimiterMode("basic"), LimiterMode::kBasic);

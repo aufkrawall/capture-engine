@@ -198,6 +198,14 @@ void FGCompatibility::SetFSRFGActive(bool active) {
     } else {
         fsrFGMultiplier.store(0, std::memory_order_release);
         directFFXApiConfirmed.store(false, std::memory_order_release);
+        // Authoritative FSR OFF invalidates any stale heuristic.  A heuristic
+        // latched during an earlier queue-change window must not survive into
+        // the post-FSR teardown / DLSS comeback window or the overlay will be
+        // skipped indefinitely (runtime=FSR_FG → skip separate GPU work).
+        if (heuristicFSRFGActive.load(std::memory_order_acquire)) {
+            heuristicFSRFGActive.store(false, std::memory_order_release);
+            HookLog("FG: Clearing heuristic FSR FG state — authoritative FSR FG turned OFF");
+        }
     }
     if (wasActive != active) {
         HookLog("FG: FSR FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED", dormantMode.load() ? 1 : 0);
