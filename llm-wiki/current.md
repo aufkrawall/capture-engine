@@ -30,6 +30,7 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 - For current build and logging controls, start here, then read `build.py.md` or `regression-testing-and-logging.md` if needed.
 - For active DX12 / FG debugging, read this page, then `frame-generation/guardrails.md`, then the newest relevant `log/recent.md` entry.
 - Use `log/recent.md` (and the relevant `log/archive-YYYY-Www*.md` for older history) as the historical archive, not the first stop for every task.
+- Build-only `python build.py --skip-updates` runs now skip optional Python tooling bootstrap, and x86 test-app builds use the clang64 cross-driver with isolated per-task temp dirs so the old pip noise and x86 temp rename failures no longer appear on the normal build path.
 
 ## Current Logging Model
 - `config.ini` now supports `log_level=off|error|warn|info|debug|trace`.

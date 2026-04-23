@@ -169,6 +169,7 @@ VERIFICATION_CONTEXT: Optional[Dict[str, Any]] = None
 VERIFICATION_FINAL_EXIT_CODE = 0
 VERIFICATION_ATEXIT_REGISTERED = False
 VERIFICATION_FINALIZED = False
+WORKSPACE_TEMP_DIR = os.path.join(BUILD_DIR, "tmp")
 
 
 def append_linux_msys2_include(flags: List[str]) -> None:
@@ -260,6 +261,38 @@ def log(msg: str) -> None:
             f.write(formatted + "\n")
     except Exception:
         pass
+
+
+def get_workspace_temp_dir() -> str:
+    """Return a repo-local temp directory used by build subprocesses."""
+    os.makedirs(WORKSPACE_TEMP_DIR, exist_ok=True)
+    return WORKSPACE_TEMP_DIR
+
+
+def apply_workspace_temp_environment(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Route temp-file usage into the workspace instead of the profile Temp tree."""
+    temp_dir = get_workspace_temp_dir()
+    target_env = env if env is not None else os.environ
+    target_env["TMP"] = temp_dir
+    target_env["TEMP"] = temp_dir
+    target_env["TMPDIR"] = temp_dir
+    return target_env
+
+
+def sanitize_temp_component(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned or "task"
+
+
+def make_task_temp_environment(base_env: Dict[str, str], temp_key: str) -> Dict[str, str]:
+    task_env = base_env.copy()
+    task_temp_dir = os.path.join(get_workspace_temp_dir(), "testapps", sanitize_temp_component(temp_key))
+    os.makedirs(task_temp_dir, exist_ok=True)
+    task_env["TMP"] = task_temp_dir
+    task_env["TEMP"] = task_temp_dir
+    task_env["TMPDIR"] = task_temp_dir
+    return task_env
 
 
 def write_text_atomic(path: str, text: str) -> None:
@@ -427,18 +460,14 @@ def safe_extract_tar(archive: tarfile.TarFile, destination: str) -> None:
     archive.extractall(dest_abs, filter="data")
 
 
-def is_ci_environment() -> bool:
-    return any(os.environ.get(var) for var in ("CI", "GITHUB_ACTIONS", "TF_BUILD", "BUILD_BUILDID"))
-
-
 def is_virtual_environment() -> bool:
     return getattr(sys, "base_prefix", sys.prefix) != sys.prefix or hasattr(sys, "real_prefix")
 
 
-def should_bootstrap_python_tools(args: List[str]) -> bool:
-    if not is_ci_environment():
-        return True
-    return not args or "--lint" in args or "--format" in args
+def should_bootstrap_python_tools(
+    default_quality_mode: bool, verify_flag: bool, lint_flag: bool, format_flag: bool
+) -> bool:
+    return default_quality_mode or verify_flag or lint_flag or format_flag
 
 
 def _url_exists(url: str) -> bool:
@@ -1261,20 +1290,24 @@ def check_mingw_packages():
 
 def check_python_lsp_tools():
     """Check and install Python LSP/lint/format tools for better IDE support."""
+    bootstrap_env = apply_workspace_temp_environment(os.environ.copy())
+
     user_scripts_dir = os.path.join(site.getuserbase(), "Scripts" if IS_WINDOWS else "bin")
-    if user_scripts_dir not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = user_scripts_dir + os.pathsep + os.environ.get("PATH", "")
+    if user_scripts_dir not in bootstrap_env.get("PATH", ""):
+        bootstrap_env["PATH"] = user_scripts_dir + os.pathsep + bootstrap_env.get("PATH", "")
+    os.environ["PATH"] = bootstrap_env["PATH"]
 
     try:
         subprocess.run(
             [sys.executable, "-m", "pip", "--version"],
             capture_output=True,
             check=True,
+            env=bootstrap_env,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         log("pip not found. Bootstrapping with ensurepip...")
         try:
-            subprocess.run([sys.executable, "-m", "ensurepip", "--upgrade"], check=True)
+            subprocess.run([sys.executable, "-m", "ensurepip", "--upgrade"], check=True, env=bootstrap_env)
         except subprocess.CalledProcessError as e:
             log(f"Warning: Failed to bootstrap pip: {e}")
             log("  Optional Python tooling bootstrap skipped.")
@@ -1288,6 +1321,7 @@ def check_python_lsp_tools():
                 [sys.executable, "-m", tool, "--version"],
                 capture_output=True,
                 check=True,
+                env=bootstrap_env,
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
             log(f"{tool} not found. Installing via pip...")
@@ -1306,7 +1340,7 @@ def check_python_lsp_tools():
                 if IS_LINUX and not is_virtual_environment():
                     cmd.append("--break-system-packages")
                 cmd.append(tool)
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, env=bootstrap_env)
                 log(f"{tool} installed successfully.")
             except subprocess.CalledProcessError as e:
                 log(f"Warning: Failed to install {tool}: {e}")
@@ -2422,6 +2456,7 @@ def get_env():
             log("ERROR: MinGW compiler discovery failed on Linux host")
             sys.exit(1)
         env = os.environ.copy()
+        apply_workspace_temp_environment(env)
         env["PATH"] = compilers["x64"]["bin"] + os.pathsep + env.get("PATH", "")
         env["CC"] = compilers["x64"]["cc"]
         env["CXX"] = compilers["x64"]["cxx"]
@@ -2432,6 +2467,7 @@ def get_env():
     clang_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
     usr_bin = os.path.join(MSYS2_DIR, "usr", "bin")
     env = os.environ.copy()
+    apply_workspace_temp_environment(env)
     env["PATH"] = clang_bin + os.pathsep + usr_bin + os.pathsep + env.get("PATH", "")
     env["PKG_CONFIG_PATH"] = os.path.join(MSYS2_DIR, "clang64", "lib", "pkgconfig")
     env["CCACHE_DIR"] = os.path.join(MSYS2_DIR, ".ccache")
@@ -2448,6 +2484,7 @@ def get_env_x86():
         if not compilers["x86"]["cxx"]:
             raise RuntimeError("No mingw-w64 x86 compiler found on Linux host")
         env = os.environ.copy()
+        apply_workspace_temp_environment(env)
         x86_bin = compilers["x86"]["bin"]
         env["PATH"] = x86_bin + os.pathsep + env.get("PATH", "")
         env["CC"] = compilers["x86"]["cc"]
@@ -2462,6 +2499,7 @@ def get_env_x86():
     mingw32_bin = os.path.join(MSYS2_DIR, "mingw32", "bin")
     usr_bin = os.path.join(MSYS2_DIR, "usr", "bin")
     env = os.environ.copy()
+    apply_workspace_temp_environment(env)
     env["PATH"] = clang64_bin + os.pathsep + mingw32_bin + os.pathsep + usr_bin + os.pathsep + env.get("PATH", "")
     env["PKG_CONFIG_PATH"] = os.path.join(MSYS2_DIR, "mingw32", "lib", "pkgconfig")
     env["CCACHE_DIR"] = os.path.join(MSYS2_DIR, ".ccache")
@@ -3551,15 +3589,63 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     if IS_LINUX:
         clang_exe_x86 = get_compiler_exe("x86")
         have_x86 = clang_exe_x86 is not None
+        x86_arch_flags: List[str] = []
     else:
-        clang_exe_x86 = os.path.join(MSYS2_DIR, "mingw32", "bin", "clang++.exe")
-        have_x86 = os.path.exists(clang_exe_x86)
+        clang_exe_x86 = get_compiler_exe("x86")
+        have_x86 = clang_exe_x86 is not None and os.path.exists(clang_exe_x86)
+        x86_arch_flags = [
+            "--target=i686-w64-mingw32",
+            "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+            "-mstackrealign",
+            "-stdlib=libstdc++",
+            "-femulated-tls",
+        ]
 
     if env.get("CE_SANITIZE") == "1":
         have_x86 = False
         log("Sanitizer mode: skipping x86 test applications (ASan runtime unavailable)")
 
-    cflags_x86 = [f for f in cflags if f != "-flto"]
+    cflags_x86 = [
+        f
+        for f in make_cpp_cflags(
+            OPT_FLAGS_X86,
+            arch_flags=x86_arch_flags,
+            suppress_microsoft_exception_spec=True,
+        )
+        if f != "-flto"
+    ]
+
+    if not IS_LINUX and have_x86:
+        clangd_x86_flags = _clangd_extra_flags_for_arch("x86", clang_exe_x86)
+        x86_include_flags = [
+            flag for flag in clangd_x86_flags if flag.startswith("-isystem") or flag.startswith("-resource-dir=")
+        ]
+        if x86_include_flags:
+            cflags_x86.extend(x86_include_flags)
+
+    x86_linker_prefix: List[str] = []
+    if not IS_LINUX and have_x86:
+        x86_std_lib_path = ""
+        try:
+            res = subprocess.check_output(
+                [clang_exe_x86, "-print-libgcc-file-name", "--target=i686-w64-mingw32"],
+                encoding="utf-8",
+            ).strip()
+            x86_std_lib_path = os.path.dirname(res)
+        except Exception as e:
+            log(f"Warning: Failed to find x86 test app lib path: {e}")
+        if not x86_std_lib_path:
+            x86_std_lib_path = os.path.join(MSYS2_DIR, "mingw32", "lib")
+        x86_linker_prefix = [
+            "-Wl,--kill-at",
+            "-fuse-ld=lld",
+            "-stdlib=libstdc++",
+            "-static-libstdc++",
+            "-rtlib=libgcc",
+            "--unwindlib=libgcc",
+            "-lpthread",
+            "-L" + x86_std_lib_path,
+        ]
 
     tasks = []
 
@@ -3568,7 +3654,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         ccache_exe = None
 
     def add_task(desc, cmd, cwd=None, task_env=env):
-        tasks.append((desc, cmd, cwd, task_env))
+        tasks.append((desc, cmd, cwd, make_task_temp_environment(task_env, desc)))
 
     def make_cmd(compiler, flags, source, linker_flags, output):
         effective_linker_flags = list(linker_flags)
@@ -3577,6 +3663,9 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         if ccache_exe:
             return [ccache_exe, os.path.basename(compiler)] + flags + [source] + effective_linker_flags + ["-o", output]
         return cmd_base
+
+    def make_cmd_x86(compiler, flags, source, linker_flags, output):
+        return make_cmd(compiler, flags, source, x86_linker_prefix + list(linker_flags), output)
 
     vulkan_lib = get_linux_vulkan_import_lib_path("x64")
     vulkan_lib_x86 = get_linux_vulkan_import_lib_path("x86")
@@ -3609,7 +3698,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx12_exe_x86 = os.path.join(x86_bin_dir, "dx12_test.exe")
             add_task(
                 "dx12_test.exe (x86)",
-                make_cmd(clang_exe_x86, cflags_x86, dx12_src, dx12_ldflags, dx12_exe_x86),
+                make_cmd_x86(clang_exe_x86, cflags_x86, dx12_src, dx12_ldflags, dx12_exe_x86),
             )
 
     # DX11 Test App
@@ -3639,7 +3728,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx11_exe_x86 = os.path.join(x86_bin_dir, "dx11_test.exe")
             add_task(
                 "dx11_test.exe (x86)",
-                make_cmd(clang_exe_x86, cflags_x86, dx11_src, dx11_ldflags, dx11_exe_x86),
+                make_cmd_x86(clang_exe_x86, cflags_x86, dx11_src, dx11_ldflags, dx11_exe_x86),
             )
 
     # DX9 / DX9Ex Test Apps
@@ -3673,11 +3762,11 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx9ex_cflags_x86 = list(cflags_x86) + ["-DCE_TESTAPP_D3D9EX=1"]
             add_task(
                 "dx9_test.exe (x86)",
-                make_cmd(clang_exe_x86, cflags_x86, dx9_src, dx9_ldflags, dx9_exe_x86),
+                make_cmd_x86(clang_exe_x86, cflags_x86, dx9_src, dx9_ldflags, dx9_exe_x86),
             )
             add_task(
                 "dx9ex_test.exe (x86)",
-                make_cmd(clang_exe_x86, dx9ex_cflags_x86, dx9_src, dx9_ldflags, dx9ex_exe_x86),
+                make_cmd_x86(clang_exe_x86, dx9ex_cflags_x86, dx9_src, dx9_ldflags, dx9ex_exe_x86),
             )
 
     # DX10 Test App
@@ -3704,7 +3793,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx10_exe_x86 = os.path.join(x86_bin_dir, "dx10_test.exe")
             add_task(
                 "dx10_test.exe (x86)",
-                make_cmd(clang_exe_x86, cflags_x86, dx10_src, dx10_ldflags, dx10_exe_x86),
+                make_cmd_x86(clang_exe_x86, cflags_x86, dx10_src, dx10_ldflags, dx10_exe_x86),
             )
 
     # Vulkan Test App
@@ -3742,7 +3831,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                 ]
                 add_task(
                     "vulkan_test.exe (x86)",
-                    make_cmd(
+                    make_cmd_x86(
                         clang_exe_x86,
                         cflags_x86,
                         vulkan_src,
@@ -3775,8 +3864,10 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
         if have_x86:
             opengl_exe_x86 = os.path.join(x86_bin_dir, "opengl_test.exe")
-            cmd = [clang_exe_x86] + cflags_x86 + [opengl_src] + opengl_ldflags + ["-o", opengl_exe_x86]
-            add_task("opengl_test.exe (x86)", cmd)
+            add_task(
+                "opengl_test.exe (x86)",
+                make_cmd_x86(clang_exe_x86, cflags_x86, opengl_src, opengl_ldflags, opengl_exe_x86),
+            )
 
     # Legacy OpenGL Test App
     opengl_legacy_src = os.path.join(testapp_src_dir, "opengl_legacy_test.cpp")
@@ -3807,7 +3898,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             opengl_legacy_exe_x86 = os.path.join(x86_bin_dir, "opengl_legacy_test.exe")
             add_task(
                 "opengl_legacy_test.exe (x86)",
-                make_cmd(
+                make_cmd_x86(
                     clang_exe_x86,
                     cflags_x86,
                     opengl_legacy_src,
@@ -3839,7 +3930,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             directdraw7_exe_x86 = os.path.join(x86_bin_dir, "directdraw7_test.exe")
             add_task(
                 "directdraw7_test.exe (x86)",
-                make_cmd(
+                make_cmd_x86(
                     clang_exe_x86,
                     cflags_x86,
                     directdraw7_src,
@@ -3871,7 +3962,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx6_exe_x86 = os.path.join(x86_bin_dir, "dx6_test.exe")
             add_task(
                 "dx6_test.exe (x86)",
-                make_cmd(
+                make_cmd_x86(
                     clang_exe_x86,
                     cflags_x86,
                     dx6_src,
@@ -3903,7 +3994,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx7_exe_x86 = os.path.join(x86_bin_dir, "dx7_test.exe")
             add_task(
                 "dx7_test.exe (x86)",
-                make_cmd(
+                make_cmd_x86(
                     clang_exe_x86,
                     cflags_x86,
                     dx7_src,
@@ -3933,7 +4024,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx8_exe_x86 = os.path.join(x86_bin_dir, "dx8_test.exe")
             add_task(
                 "dx8_test.exe (x86)",
-                make_cmd(
+                make_cmd_x86(
                     clang_exe_x86,
                     cflags_x86,
                     dx8_src,
@@ -3945,6 +4036,8 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     # Execute all tasks in parallel
     if not tasks:
         return
+
+    log("Test app compiler temp directories are isolated per task to avoid parallel temp-file collisions")
 
     # Record tasks for compile_commands.json
     for desc, cmd, cwd, tenv in tasks:
@@ -5055,6 +5148,7 @@ def parse_flag_value(flag_name: str):
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
+    apply_workspace_temp_environment()
 
     global LOG_FILE, VERIFICATION_FINAL_EXIT_CODE
 
@@ -5175,11 +5269,11 @@ def main():
 
     setup_msys2(skip_updates=skip_updates)
     record_verification_step("toolchain_setup", "passed", details={"skip_updates": skip_updates})
-    if should_bootstrap_python_tools(args):
+    if should_bootstrap_python_tools(default_quality_mode, verify_flag, lint_flag, format_flag):
         check_python_lsp_tools()
         record_verification_step("python_tool_bootstrap", "passed")
     else:
-        log("Skipping optional Python tooling bootstrap in CI for non-lint build")
+        log("Skipping optional Python tooling bootstrap for this build")
         record_verification_step("python_tool_bootstrap", "skipped")
     env, clang_bin = get_env()
 

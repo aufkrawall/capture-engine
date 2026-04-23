@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-04-16
+Last cross-checked: 2026-04-23
 
 Primary sources:
 - `build.py`
@@ -29,6 +29,7 @@ Default quality mode currently:
 - runs the extra sanitizer regression cadence pass
 - does not run integration tests by default
 - rewrites `compile_commands.json` at the end of the build
+- Plain build-only runs such as `python build.py --skip-updates` now skip optional Python tooling bootstrap unless they are part of the default quality / verify / lint / format flows.
 
 ## Supported Flags
 
@@ -63,6 +64,7 @@ Default quality mode currently:
 - `--tests-only` does not imply `--run-tests` by itself; it only short-circuits the build after the unit-test build path. Use both when you want focused test execution.
 - `--sanitize-regression-child` disables spawning another nested sanitizer regression pass.
 - `--incremental` turns off the script's default force-rebuild mode.
+- `--skip-updates` no longer triggers optional Python tooling bootstrap by itself; build-only runs stay quiet unless the active mode explicitly requests lint / format / default-quality checks.
 - `--lint` alone exits after linting.
 - `--format` alone exits after formatting.
 
@@ -73,8 +75,6 @@ Default quality mode currently:
   - Overrides the MSYS2 base archive URL used during bootstrap.
 - `CE_PRODUCTION_BUILD`
   - Enables production build mode even without `--production`.
-- `CI`, `GITHUB_ACTIONS`, `TF_BUILD`, `BUILD_BUILDID`
-  - Affect Python tool bootstrapping. In CI, optional Python tooling bootstrap is skipped for non-lint / non-format builds.
 
 ### Internal environment variables set by the script
 - `FORCE_REBUILD`
@@ -101,6 +101,11 @@ Default quality mode currently:
 - `--tests-only` now takes effect before the normal product build phases, so focused test runs do not also rebuild the hook DLL, mediaengine DLL, captureengine.exe, Vulkan layer, and test apps.
 - `copy_test_runtime_dlls()` copies required MSYS2 and FFmpeg DLLs next to `tests/unit_tests.exe`, so direct execution works after a successful build.
 - On Linux, executing `unit_tests.exe` requires `wine64` or `wine` in `PATH`.
+
+## Test App Build Behavior
+- On Windows, x86 test apps now use the same clang64 cross-driver and x86 sysroot/runtime flag set as the main x86 build instead of the old `mingw32/bin/clang++.exe` one-step path.
+- Each test-app task gets its own temp subdirectory under `build/tmp/testapps/` so parallel x64/x86 jobs do not fight over compiler temp files and stale rename collisions.
+- The x86 test-app linker path now carries the same `libgcc`/`libstdc++` runtime selection as the main x86 build, which avoids the old `libunwind.a` lookup failure.
 
 ## Integration Test Behavior
 - Smoke mode currently runs three targets:
