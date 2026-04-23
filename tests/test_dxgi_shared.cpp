@@ -1423,6 +1423,22 @@ TEST(DXGISharedTest, PostSLNoWrapperVirtualBootstrapBlockedDuringActiveStreamlin
                                                                                                 false, false, false));
 }
 
+TEST(DXGISharedTest, PostSLNoWrapperVirtualBootstrapAllowedOnOriginalGameQueueDuringStreamlineFG) {
+    // After stale runtime-owned swapchain cleanup, the original game queue becomes
+    // the effective swapchain queue. PostSL must be able to bootstrap on it even
+    // when no SL wrapper queue or realECL is available.
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, false, false,
+                                                                                               false, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, false, true,
+                                                                                               false, false, true));
+
+    // Must still be blocked if a wrapper or real queue exists (those paths should be used instead).
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, true, false, false,
+                                                                                                false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(true, false, true, false,
+                                                                                                false, false, true));
+}
+
 TEST(DXGISharedTest, RecentPostSLTeardownActivityRefreshRequiresLiveStreamlineOrPostSLState) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, true, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(true, true, false, true));

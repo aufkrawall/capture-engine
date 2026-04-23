@@ -8793,7 +8793,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             } else {
                 if (!ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(
                         slFGAtDispatch, slQueue != nullptr, realQ != nullptr, realECL != nullptr,
-                        selectedQueueIsSwapchainQueue, selectedQueueOrigECLMatchesRealECL)) {
+                        selectedQueueIsSwapchainQueue, selectedQueueOrigECLMatchesRealECL,
+                        queue == g_OriginalGameQueue)) {
                     HookLogImportant(
                         "DX12: PostSL refusing no-wrapper virtual bootstrap during Streamline FG "
                         "(queue=%p scQueue=%p realQ=%p realECL=%p)",
@@ -13005,6 +13006,14 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                     "real-frame run (origGame=%p)",
                     staleRuntimeOwnedSwapchainQueue, g_OriginalGameQueue);
                 staleRuntimeOwnedSwapchainQueue->Release();
+            }
+            if (!g_SwapchainQueue && g_OriginalGameQueue) {
+                g_SwapchainQueue = g_OriginalGameQueue;
+                g_SwapchainQueue->AddRef();
+                g_SwapchainQueueCaptureTime = GetTickCount64();
+                HookLogImportant(
+                    "DX12: Restored g_SwapchainQueue to original game queue %p after stale runtime-owned cleanup",
+                    g_OriginalGameQueue);
             }
         }
         g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.store(true, std::memory_order_release);

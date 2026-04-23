@@ -1070,12 +1070,20 @@ inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQu
     return hasRealQueueBehindWrapper || hasRealD3D12ECL;
 }
 
-inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(bool streamlineFGActive, bool hasSLWrapperQueue,
-                                                                  bool hasRealQueueBehindWrapper, bool hasRealD3D12ECL,
-                                                                  bool selectedQueueIsSwapchainQueue,
-                                                                  bool selectedQueueOrigECLMatchesRealECL) {
+inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(
+    bool streamlineFGActive, bool hasSLWrapperQueue, bool hasRealQueueBehindWrapper, bool hasRealD3D12ECL,
+    bool selectedQueueIsSwapchainQueue, bool selectedQueueOrigECLMatchesRealECL,
+    bool selectedQueueIsOriginalGameQueue = false) {
     if (streamlineFGActive && !hasSLWrapperQueue && !hasRealQueueBehindWrapper && hasRealD3D12ECL &&
         selectedQueueIsSwapchainQueue && selectedQueueOrigECLMatchesRealECL) {
+        return true;
+    }
+
+    // When a stale runtime-owned swapchain was cleaned up after a long no-FG run,
+    // the original game queue becomes the effective swapchain queue. If DLSS FG
+    // later activates without a fresh authoritative handoff, PostSL must still be
+    // able to bootstrap on the original game queue.
+    if (streamlineFGActive && !hasSLWrapperQueue && !hasRealQueueBehindWrapper && selectedQueueIsOriginalGameQueue) {
         return true;
     }
 
