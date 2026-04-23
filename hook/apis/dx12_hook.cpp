@@ -10980,6 +10980,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // is already processing frames.
         if (currentSLFGRunning && !currentFGActive) {
             currentFGActive = true;
+            if (!ce::fg_runtime::IsRuntimeFGActive(currentRuntimeMode)) {
+                currentRuntimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG;
+            }
         }
 
         // When SL signal goes from ON→OFF, the ECL heuristic may briefly
@@ -11012,8 +11015,24 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
 
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
             const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
-            ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(),
-                                                         g_FGCompat.GetFGMultiplier(), "DX12::ProcessFrame");
+            // Publish the locally-computed FG state so per-frame suppression
+            // (e.g. SL-off grace period) is reflected in the overlay.
+            if (plan.publishFGActive != currentFGActive || plan.publishRuntimeMode != currentRuntimeMode) {
+                HookLogImportant(
+                    "DX12::ProcessFrame overlay divergence: plan(active=%d mode=%s) vs local(active=%d mode=%s)",
+                    plan.publishFGActive ? 1 : 0,
+                    ce::fg_runtime::GetRuntimeModeName(plan.publishRuntimeMode),
+                    currentFGActive ? 1 : 0,
+                    ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
+            }
+            ce::overlay_metrics::PublicationInput input;
+            input.effectiveFGActive = currentFGActive;
+            input.runtimeMode = currentRuntimeMode;
+            input.outputFPS = g_FGCompat.GetOutputFPS();
+            input.baseFPS = g_FGCompat.GetBaseFPS();
+            input.multiplier = g_FGCompat.GetFGMultiplier();
+            input.publicationSource = "DX12::ProcessFrame";
+            ce::overlay_metrics::PublishOverlayFGMetrics(perf, input);
         }
 
         ID3D12CommandQueue* transitionSwapchainQueue = nullptr;
