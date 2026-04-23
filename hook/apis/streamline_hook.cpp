@@ -180,6 +180,9 @@ std::atomic<void*> g_SLSetD3DDeviceTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateTarget{nullptr};
 std::atomic<void*> g_ReflexSetConstantsTarget{nullptr};
+std::atomic<void*> g_DLSSGSetOptionsImportFallbackAttemptedTarget{nullptr};
+std::atomic<void*> g_DLSSGGetStateImportFallbackAttemptedTarget{nullptr};
+std::atomic<void*> g_ReflexSetConstantsImportFallbackAttemptedTarget{nullptr};
 
 std::atomic<bool> g_SLGetFeatureFunctionHooked{false};
 std::atomic<bool> g_SLSetD3DDeviceHooked{false};
@@ -604,6 +607,81 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
     return true;
 }
 
+bool InstallFeatureImportFallbackIfPresent(const char* moduleBaseName, const char* functionName, void* detour,
+                                           void* exportedProc, void** originalSlot, const char* hookName) {
+    if (!moduleBaseName || !functionName || !detour || !exportedProc) {
+        return false;
+    }
+
+    if (originalSlot && *originalSlot == nullptr) {
+        *originalSlot = exportedProc;
+    }
+
+    void* patchedOriginal = nullptr;
+    if (!IATHook::PatchIATAllModules(moduleBaseName, functionName, detour, &patchedOriginal)) {
+        return false;
+    }
+
+    if (originalSlot && *originalSlot == nullptr) {
+        *originalSlot = patchedOriginal ? patchedOriginal : exportedProc;
+    }
+
+    HookLogImportant(
+        "Streamline Hook: Installed direct import fallback for %s via %s (export=%p original=%p)",
+        hookName ? hookName : functionName, moduleBaseName, exportedProc,
+        originalSlot ? *originalSlot : patchedOriginal);
+    return true;
+}
+
+bool TryGetOwningModulePath(void* address, char* modulePath, DWORD modulePathCapacity) {
+    if (!address || !modulePath || modulePathCapacity == 0) {
+        return false;
+    }
+
+    HMODULE ownerModule = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(address), &ownerModule) ||
+        !ownerModule) {
+        return false;
+    }
+
+    const DWORD pathLen = GetModuleFileNameA(ownerModule, modulePath, modulePathCapacity);
+    return pathLen > 0 && pathLen < modulePathCapacity;
+}
+
+bool TryInstallFeatureImportFallbackForOwningModule(void* function, const char* functionName, void* detour,
+                                                    void** originalSlot, std::atomic<void*>& attemptedTarget,
+                                                    const char* hookName) {
+    if (!function || !functionName || !detour) {
+        return false;
+    }
+
+    if (attemptedTarget.load(std::memory_order_acquire) == function) {
+        return false;
+    }
+
+    char ownerPath[MAX_PATH] = {};
+    if (!TryGetOwningModulePath(function, ownerPath, MAX_PATH)) {
+        attemptedTarget.store(function, std::memory_order_release);
+        return false;
+    }
+
+    attemptedTarget.store(function, std::memory_order_release);
+
+    const char* ownerBaseName = GetModuleBaseName(ownerPath);
+    if (!ownerBaseName || !ownerBaseName[0]) {
+        return false;
+    }
+
+    const bool installed = InstallFeatureImportFallbackIfPresent(ownerBaseName, functionName, detour, function,
+                                                                 originalSlot, hookName);
+    if (!installed) {
+        HookLog("Streamline Hook: Direct import fallback unavailable for %s owner=%s target=%p",
+                hookName ? hookName : functionName, ownerBaseName, function);
+    }
+    return installed;
+}
+
 bool MaybeHookDLSSGSetOptions(void*& function, bool fallbackToReturnedWrapper) {
     if (!function) {
         return false;
@@ -621,6 +699,12 @@ bool MaybeHookDLSSGSetOptions(void*& function, bool fallbackToReturnedWrapper) {
             InstallInlineHookOnce(reinterpret_cast<void*>(function), reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
                                   g_Original_slDLSSGSetOptions, g_DLSSGSetOptionsHooked, g_DLSSGSetOptionsTarget,
                                   "slDLSSGSetOptions");
+            if (!g_DLSSGSetOptionsHooked.load(std::memory_order_acquire)) {
+                TryInstallFeatureImportFallbackForOwningModule(
+                    function, "slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
+                    reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions),
+                    g_DLSSGSetOptionsImportFallbackAttemptedTarget, "slDLSSGSetOptions");
+            }
         }
     }
 
@@ -652,6 +736,12 @@ bool MaybeHookDLSSGGetState(void*& function, bool fallbackToReturnedWrapper) {
             InstallInlineHookOnce(reinterpret_cast<void*>(function), reinterpret_cast<void*>(Hooked_slDLSSGGetState),
                                   g_Original_slDLSSGGetState, g_DLSSGGetStateHooked, g_DLSSGGetStateTarget,
                                   "slDLSSGGetState");
+            if (!g_DLSSGGetStateHooked.load(std::memory_order_acquire)) {
+                TryInstallFeatureImportFallbackForOwningModule(
+                    function, "slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
+                    reinterpret_cast<void**>(&g_Original_slDLSSGGetState),
+                    g_DLSSGGetStateImportFallbackAttemptedTarget, "slDLSSGGetState");
+            }
         }
     }
 
@@ -683,6 +773,12 @@ bool MaybeHookReflexSetConstants(void*& function, bool fallbackToReturnedWrapper
             InstallInlineHookOnce(reinterpret_cast<void*>(function),
                                   reinterpret_cast<void*>(Hooked_slReflexSetConstants), g_Original_slReflexSetConstants,
                                   g_ReflexSetConstantsHooked, g_ReflexSetConstantsTarget, "slReflexSetConstants");
+            if (!g_ReflexSetConstantsHooked.load(std::memory_order_acquire)) {
+                TryInstallFeatureImportFallbackForOwningModule(
+                    function, "slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
+                    reinterpret_cast<void**>(&g_Original_slReflexSetConstants),
+                    g_ReflexSetConstantsImportFallbackAttemptedTarget, "slReflexSetConstants");
+            }
         }
     }
 
@@ -752,7 +848,15 @@ void RegisterDynamicHooksOnce() {
                                  reinterpret_cast<void**>(&g_Original_slGetFeatureFunction));
     IATHook::RegisterDynamicHook("slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
                                  reinterpret_cast<void**>(&g_Original_slSetD3DDevice));
-    HookLogImportant("Streamline Hook: Registered dynamic hooks for slGetFeatureFunction and slSetD3DDevice");
+    IATHook::RegisterDynamicHook("slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
+                                 reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions));
+    IATHook::RegisterDynamicHook("slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
+                                 reinterpret_cast<void**>(&g_Original_slDLSSGGetState));
+    IATHook::RegisterDynamicHook("slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
+                                 reinterpret_cast<void**>(&g_Original_slReflexSetConstants));
+    HookLogImportant(
+        "Streamline Hook: Registered dynamic hooks for slGetFeatureFunction, slSetD3DDevice, "
+        "slDLSSGSetOptions, slDLSSGGetState, and slReflexSetConstants");
 }
 
 bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
@@ -769,8 +873,14 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     const auto originalGetFeatureFunction =
         reinterpret_cast<PFN_slGetFeatureFunction>(GetProcAddress(module, "slGetFeatureFunction"));
     const auto originalSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(module, "slSetD3DDevice"));
+    const auto originalDLSSGSetOptions =
+        reinterpret_cast<PFN_slDLSSGSetOptions>(GetProcAddress(module, "slDLSSGSetOptions"));
+    const auto originalDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(GetProcAddress(module, "slDLSSGGetState"));
+    const auto originalReflexSetConstants =
+        reinterpret_cast<PFN_slReflexSetConstants>(GetProcAddress(module, "slReflexSetConstants"));
 
-    if (!originalGetFeatureFunction && !originalSetD3DDevice) {
+    if (!originalGetFeatureFunction && !originalSetD3DDevice && !originalDLSSGSetOptions && !originalDLSSGGetState &&
+        !originalReflexSetConstants) {
         return false;
     }
 
@@ -814,6 +924,27 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                                             reinterpret_cast<void*>(Hooked_slSetD3DDevice), &dummy);
             }
             g_IATPatchesMask.fetch_or(moduleBit, std::memory_order_acq_rel);
+        }
+
+        if (originalDLSSGSetOptions) {
+            hookedAnything |= InstallFeatureImportFallbackIfPresent(
+                moduleBaseName, "slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
+                reinterpret_cast<void*>(originalDLSSGSetOptions),
+                reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions), "slDLSSGSetOptions");
+        }
+
+        if (originalDLSSGGetState) {
+            hookedAnything |= InstallFeatureImportFallbackIfPresent(
+                moduleBaseName, "slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
+                reinterpret_cast<void*>(originalDLSSGGetState), reinterpret_cast<void**>(&g_Original_slDLSSGGetState),
+                "slDLSSGGetState");
+        }
+
+        if (originalReflexSetConstants) {
+            hookedAnything |= InstallFeatureImportFallbackIfPresent(
+                moduleBaseName, "slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
+                reinterpret_cast<void*>(originalReflexSetConstants),
+                reinterpret_cast<void**>(&g_Original_slReflexSetConstants), "slReflexSetConstants");
         }
     }
 
