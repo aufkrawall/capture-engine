@@ -1,6 +1,6 @@
 # Overlay FG Status
 
-Last cross-checked: 2026-04-19
+Last cross-checked: 2026-04-23
 
 Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
@@ -13,6 +13,7 @@ This page records how the current tree publishes visible FG status to the overla
 ## Facts
 - The current shared helper for FG publication is `PublishOverlayFGMetrics()`.
 - The main DXGI/DX12 publication call sites now publish from the planner-owned `FGActionPlan` rather than each caller independently deciding `(effectiveFGActive, runtimeMode)` ad hoc.
+- `DX12::ProcessFrame` is an exception: it publishes its locally-computed `(currentFGActive, currentRuntimeMode)` instead of the raw global `FGActionPlan`. This ensures that per-frame suppression (e.g., the SL-off grace period) is reflected in the visible overlay status instead of leaving a stale label on screen. When the local state diverges from the plan, a diagnostic log line is emitted.
 - That helper uses `ResolveOverlayFGMetricType()` to map `(effectiveFGActive, runtimeMode)` into the published FG type.
 - If frame generation is active but the resolved published type is `0`, the helper logs an invariant violation.
 - When FG is active, the helper currently publishes a multiplier of at least `2`.
