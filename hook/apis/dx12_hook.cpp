@@ -153,6 +153,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain);
 static std::atomic<bool> g_PostSLOverlayActive{false};
 static std::atomic<int> g_PostSLCooldownRemaining{0};
 static std::atomic<ULONGLONG> g_LastProcessFrameTickMs{0};
+static std::atomic<ULONGLONG> g_LastFFXPresentCallbackTickMs{0};
 // NOTE: DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending is now in DXGIShared::g_SharedState
 // so streamline_hook.cpp can check it from FlushSuppressedSetOptionsOffIfNeeded().
 static std::atomic<bool> g_PostSLSyntheticStartupTakeoverLogged{false};
@@ -2027,15 +2028,44 @@ static bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr) {
     return true;
 }
 
+static bool IsFFXPresentCallbackStalled() {
+    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
+    if (lastCallback != 0) {
+        constexpr ULONGLONG kStallThresholdMs = 2000;
+        return (now - lastCallback) > kStallThresholdMs;
+    }
+    // The callback has never fired since hook init.  If the runtime has owned
+    // the swapchain for several seconds without a single callback, treat it as
+    // stalled so the overlay does not stay invisible indefinitely.
+    if (g_FGRuntimeOwnsSwapchain && g_FGRuntimeOwnsSwapchainSince != 0) {
+        constexpr ULONGLONG kNeverFiredStallThresholdMs = 3000;
+        return (now - g_FGRuntimeOwnsSwapchainSince) > kNeverFiredStallThresholdMs;
+    }
+    return false;
+}
+
 static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** reason = nullptr) {
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
     const bool runtimeOwnedNativeFGPresentPath = HookHasRuntimeOwnedNativeFGPresentPath();
+    const bool ffxStalled = IsFFXPresentCallbackStalled();
     const bool skip = ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, authoritativeFSRActive,
-        runtimeOwnedNativeFGPresentPath);
+        runtimeOwnedNativeFGPresentPath, ffxStalled);
     if (!skip) {
+        if (ffxStalled) {
+            static std::atomic<int> s_stallFallbackLogCount{0};
+            if (s_stallFallbackLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
+                const ULONGLONG ownedSince = g_FGRuntimeOwnsSwapchainSince;
+                HookLogImportant(
+                    "DX12: FFX present callback appears stalled (lastCallback=%llu ownedFor=%llums) — allowing "
+                    "normal overlay rendering as fallback",
+                    lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0);
+            }
+        }
         if (reason) {
             *reason = nullptr;
         }
@@ -2415,6 +2445,8 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
 }
 
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* desc, void* userCtx) {
+    g_LastFFXPresentCallbackTickMs.store(GetTickCount64(), std::memory_order_release);
+
     ce::ffx_api::PresentCallback originalCallback = nullptr;
     void* originalUserContext = nullptr;
     {
@@ -3740,7 +3772,8 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             const bool preserveAuthoritativeFSR =
                 ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
                     true, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), runtimeMode,
-                    g_FGCompat.IsFSRFGApiActive(), HookHasRuntimeOwnedNativeFGPresentPath());
+                    g_FGCompat.IsFSRFGApiActive(), HookHasRuntimeOwnedNativeFGPresentPath(),
+                    IsFFXPresentCallbackStalled());
             if (preserveAuthoritativeFSR) {
                 HookLogImportant(
                     "DX12: Swapchain queue returned to origGame %p while authoritative/runtime-owned FSR state is "
@@ -4503,7 +4536,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         const bool preserveRuntimeOwnedFSRTakeover =
             ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
                 g_FGRuntimeOwnsSwapchain, false, runtimeMode, g_FGCompat.IsFSRFGApiActive(),
-                HookHasRuntimeOwnedNativeFGPresentPath());
+                HookHasRuntimeOwnedNativeFGPresentPath(), IsFFXPresentCallbackStalled());
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
 

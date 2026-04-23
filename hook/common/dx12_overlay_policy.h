@@ -523,8 +523,16 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool 
                                                                             bool streamlineFGRunning,
                                                                             fg_runtime::RuntimeMode runtimeMode,
                                                                             bool authoritativeFSRActive,
-                                                                            bool runtimeOwnedNativeFGPresentPath) {
+                                                                            bool runtimeOwnedNativeFGPresentPath,
+                                                                            bool ffxPresentCallbackStalled = false) {
     if (!runtimeOwnsSwapchain || streamlineFGRunning) {
+        return false;
+    }
+
+    // If the FFX present callback has stalled (has not fired within the stall
+    // threshold while the runtime owns the swapchain), fall back to normal
+    // overlay rendering rather than keeping the overlay invisible indefinitely.
+    if (ffxPresentCallbackStalled) {
         return false;
     }
 

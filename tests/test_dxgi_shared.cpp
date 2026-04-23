@@ -735,22 +735,43 @@ TEST(DXGISharedTest, DedicatedOverlayQueueStaysDisabledForRuntimeOwnedNativeFG) 
 
 TEST(DXGISharedTest, RuntimeOwnedNativeFSRSuppressesInjectedOverlayGpuWorkOnlyForFSRStates) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true));
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, false, true));
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, false, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true));
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kOff, false, true));
+        true, false, ce::fg_runtime::RuntimeMode::kOff, false, true, false));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true));
+        false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, true, ce::fg_runtime::RuntimeMode::kFSRFG, true, true));
+        true, true, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false));
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kOff, false, false));
+        true, false, ce::fg_runtime::RuntimeMode::kOff, false, false, false));
+}
+
+TEST(DXGISharedTest, FFXPresentCallbackStallAllowsNormalOverlayRendering) {
+    // When the FFX present callback is reported as stalled, the policy must
+    // stop suppressing normal overlay work even for active FSR states.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kOff, false, true, true));
+
+    // Streamline FG running still overrides everything — no skip regardless of stall.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, true, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, true));
+
+    // No runtime ownership also still means no skip.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, true));
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackOverlayBackendResetsOnlyForDeviceOrFormatChange) {
