@@ -730,6 +730,23 @@ def safe_delete_file(filepath: str, max_retries: int = 3, retry_delay: float = 0
     return False
 
 
+def clear_stale_hook_pdb_cache() -> None:
+    """Remove cached hook PDBs from the system symbol cache so cdb uses fresh ones."""
+    if not IS_WINDOWS:
+        return
+    sym_cache_dir = r"C:\ProgramData\dbg\sym"
+    if not os.path.isdir(sym_cache_dir):
+        return
+    for entry in os.listdir(sym_cache_dir):
+        if entry.startswith("capture_hook_") and entry.endswith(".pdb"):
+            pdb_cache_path = os.path.join(sym_cache_dir, entry)
+            try:
+                log(f"Removing stale PDB cache: {pdb_cache_path}")
+                shutil.rmtree(pdb_cache_path, ignore_errors=True)
+            except Exception as e:
+                log(f"[Warning] Failed to remove stale PDB cache {pdb_cache_path}: {e}")
+
+
 def safe_copy_file(src: str, dst: str) -> bool:
     """
     Safely copy a file, handling locked destination files gracefully.
@@ -4896,6 +4913,8 @@ def compile_project(
     tests_dir = os.path.join(PROJECT_ROOT, "tests")
     if os.path.exists(os.path.join(tests_dir, "unit_tests.exe")):
         copy_test_runtime_dlls(tests_dir)
+
+    clear_stale_hook_pdb_cache()
 
     log("Build Complete.")
 
