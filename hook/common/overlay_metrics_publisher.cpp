@@ -21,6 +21,19 @@ PublishedState& LastPublishedState() {
     return state;
 }
 
+struct PreferredOverrideState {
+    bool valid = false;
+    bool plannerFGActive = false;
+    fg_runtime::RuntimeMode plannerRuntimeMode = fg_runtime::RuntimeMode::kOff;
+    bool preferredFGActive = false;
+    fg_runtime::RuntimeMode preferredRuntimeMode = fg_runtime::RuntimeMode::kOff;
+};
+
+PreferredOverrideState& LastPreferredOverrideState() {
+    static PreferredOverrideState state;
+    return state;
+}
+
 }  // namespace
 
 void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const PublicationInput& input) {
@@ -62,14 +75,43 @@ void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const PublicationInput
 
 void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const fg_session::FGActionPlan& plan, float outputFPS,
                              float baseFPS, int multiplier, const char* publicationSource) {
-    PublishOverlayFGMetrics(metrics, {
-                                         .effectiveFGActive = plan.publishFGActive,
-                                         .runtimeMode = plan.publishRuntimeMode,
-                                         .outputFPS = outputFPS,
-                                         .baseFPS = baseFPS,
-                                         .multiplier = multiplier,
-                                         .publicationSource = publicationSource,
-                                     });
+    PublicationInput input{
+        .effectiveFGActive = plan.publishFGActive,
+        .runtimeMode = plan.publishRuntimeMode,
+        .outputFPS = outputFPS,
+        .baseFPS = baseFPS,
+        .multiplier = multiplier,
+        .publicationSource = publicationSource,
+    };
+
+    bool preferredFGActive = false;
+    fg_runtime::RuntimeMode preferredRuntimeMode = fg_runtime::RuntimeMode::kOff;
+    if (HookTryGetPreferredOverlayFGPublicationState(&preferredFGActive, &preferredRuntimeMode)) {
+        if (preferredFGActive != plan.publishFGActive || preferredRuntimeMode != plan.publishRuntimeMode) {
+            auto& lastOverride = LastPreferredOverrideState();
+            if (!lastOverride.valid || lastOverride.plannerFGActive != plan.publishFGActive ||
+                lastOverride.plannerRuntimeMode != plan.publishRuntimeMode ||
+                lastOverride.preferredFGActive != preferredFGActive ||
+                lastOverride.preferredRuntimeMode != preferredRuntimeMode) {
+                HookLogImportant(
+                    "FG publication preferred override: source=%s planner(active=%d mode=%s) "
+                    "preferred(active=%d mode=%s)",
+                    publicationSource ? publicationSource : "unknown", plan.publishFGActive ? 1 : 0,
+                    ce::fg_runtime::GetRuntimeModeName(plan.publishRuntimeMode), preferredFGActive ? 1 : 0,
+                    ce::fg_runtime::GetRuntimeModeName(preferredRuntimeMode));
+                lastOverride.valid = true;
+                lastOverride.plannerFGActive = plan.publishFGActive;
+                lastOverride.plannerRuntimeMode = plan.publishRuntimeMode;
+                lastOverride.preferredFGActive = preferredFGActive;
+                lastOverride.preferredRuntimeMode = preferredRuntimeMode;
+            }
+        }
+
+        input.effectiveFGActive = preferredFGActive;
+        input.runtimeMode = preferredRuntimeMode;
+    }
+
+    PublishOverlayFGMetrics(metrics, input);
 }
 
 }  // namespace ce::overlay_metrics

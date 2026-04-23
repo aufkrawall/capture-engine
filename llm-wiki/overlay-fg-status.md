@@ -12,8 +12,11 @@ This page records how the current tree publishes visible FG status to the overla
 
 ## Facts
 - The current shared helper for FG publication is `PublishOverlayFGMetrics()`.
-- The main DXGI/DX12 publication call sites now publish from the planner-owned `FGActionPlan` rather than each caller independently deciding `(effectiveFGActive, runtimeMode)` ad hoc.
-- `DX12::ProcessFrame` is an exception: it publishes its locally-computed `(currentFGActive, currentRuntimeMode)` instead of the raw global `FGActionPlan`. This ensures that per-frame suppression (e.g., the SL-off grace period) is reflected in the visible overlay status instead of leaving a stale label on screen. When the local state diverges from the plan, a diagnostic log line is emitted.
+- The main DXGI/DX12 publication call sites still route through the planner-aware `PublishOverlayFGMetrics(..., FGActionPlan, ...)` helper rather than each caller independently deciding `(effectiveFGActive, runtimeMode)` ad hoc.
+- That planner-aware helper now first asks DX12 for the latest preferred visible FG state. This lets the shared publisher keep using a common entrypoint while avoiding stale planner repaints when DX12 already computed a newer user-visible state.
+- `DX12::ProcessFrame` still computes the most authoritative per-frame visible FG state (`currentFGActive`, `currentRuntimeMode`) and publishes it directly. It now also seeds the shared preferred-publication cache so later planner-based refreshes cannot repaint an older label after `ProcessFrame` already corrected it.
+- `DX12_OnStreamlineFGStateChanged` and `DX12_RenderOverlayViaFFXPresentCallback` also seed that preferred-publication cache, so immediate transition/callback publications can reflect the latest visible state even before the next `ProcessFrame`.
+- When the planner disagrees with DX12's preferred visible state, the shared helper now emits `FG publication preferred override: ...` so future stale-label traces show exactly which refresh path tried to repaint an older state.
 - That helper uses `ResolveOverlayFGMetricType()` to map `(effectiveFGActive, runtimeMode)` into the published FG type.
 - If frame generation is active but the resolved published type is `0`, the helper logs an invariant violation.
 - When FG is active, the helper currently publishes a multiplier of at least `2`.
@@ -26,7 +29,7 @@ This page records how the current tree publishes visible FG status to the overla
   - `DLSS FG` to publish as `DLSS FG`
   - switching between those modes to update the visible label immediately
   - transitioning back to `off` to clear the published FG status back to the baseline `FG` label
-- `tests/test_overlay_fg_status_publication.cpp` now also covers the planner-driven publication overload directly, so publication correctness is no longer tested only through the legacy helper-input path.
+- `tests/test_overlay_fg_status_publication.cpp` now also covers the planner-driven publication overload directly, including the case where a stale planner `DLSS FG` publication is overridden by the latest DX12-visible `FSR FG` / `off` state.
 
 ## Practical Guidance
 - Route visible FG status publication through the shared helper instead of duplicating mapping logic in multiple runtime paths.
@@ -36,5 +39,5 @@ This page records how the current tree publishes visible FG status to the overla
 - If a runtime path can produce stale status for even a few frames, add a regression test before assuming the behavior is acceptable.
 
 ## Open Questions / Stale-Risk
-- Stale risk is medium to high because publication correctness depends on runtime classification and call ordering across multiple DX12 paths.
+- Stale risk is medium because publication correctness still depends on runtime classification and call ordering across multiple DX12 paths, but the shared preferred-visible-state cache now removes the most obvious stale repaint seam between `ProcessFrame` and later planner-based refreshes.
 - Re-check this page after any change to `ResolveOverlayFGMetricType()`, `PublishOverlayFGMetrics()`, or DX12 overlay routing that publishes FG state.

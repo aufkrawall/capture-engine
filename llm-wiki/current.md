@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-04-22
+Last cross-checked: 2026-04-23
 
 Primary sources:
 - `llm-wiki/log/recent.md`
@@ -48,7 +48,7 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 ## Current Hot Areas
 - The tree now has a first shared FG session/planner layer in `hook/common/fg_session_state.{h,cpp}`. It is not yet the full end-state from `fg-plan.md`, but it is now the central place that captures live FG session snapshots, computes a shadow/live action plan, emits structured `FG SNAPSHOT` / `FG EVENT` / `FG PLAN` / `FG TRANSITION` / `FG INVARIANT` / `FG LEGACY DECISION` logs, and keeps `session_manifest.txt` updated with `steam_overlay_loaded`, `streamline_loaded`, `ffx_loaded`, `fg_shadow_state_enabled`, and `fg_state_schema_version`.
 - `hook/common/dx12_fg_transition_model.cpp` is no longer an independent competing reducer. It now acts as a compatibility adapter over the planner-backed FG session snapshot so existing DX12 transition/replay tests and the current ProcessFrame transition logging keep their prior public contract while the new session/planner layer owns the richer state/logging/publication model.
-- Overlay FG publication is now planner-driven at the main DXGI/DX12 call sites. `hook/common/overlay_metrics_publisher.cpp` gained a planner-aware overload that publishes from `FGActionPlan.publishFGActive` / `publishRuntimeMode`, and focused tests now cover both the legacy helper input path and the planner-owned publication path.
+- Overlay FG publication is still planner-driven at the main DXGI/DX12 call sites, but the shared planner-aware helper now prefers a DX12-exported "latest visible FG state" cache when one exists. `DX12::ProcessFrame`, `DX12_OnStreamlineFGStateChanged`, and the native-FSR callback path seed that cache, which prevents later planner-based refreshes from repainting a stale `DLSS FG` / `FSR FG` label after DX12 already computed the correct visible state.
 - Focused regression coverage for the new layer currently lives in `tests/test_fg_session_state.cpp`, `tests/test_overlay_fg_status_publication.cpp`, `tests/test_dx12_fg_transition_sequences.cpp`, and `tests/test_dx12_fg_trace_replay.cpp`. The focused command `python build.py --run-tests --tests-only --skip-updates --gtest-filter=FGSessionStateTest.*:OverlayFGStatusPublicationTest.*:DX12FGTransitionSequencesFixture.*:DX12FGTraceReplayFixture.*` passed on 2026-04-19.
 - Real-game validation from `fg-plan.md` is still pending. The planner/session/logging slice landed with focused unit coverage and compile/test confirmation, but the mandatory GTA V Enhanced / Talos signoff runs with Steam off/on have not yet been executed in this chat.
 - DX12 / FG startup churn and queue ownership remain high-risk and change frequently.

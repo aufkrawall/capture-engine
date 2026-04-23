@@ -29,6 +29,9 @@ inline void RequestHookShutdown() {
 // Forward declare HookContext for accessor
 namespace ce {
 struct HookContext;
+namespace fg_runtime {
+enum class RuntimeMode : int;
+}
 }
 
 class PerformanceMetrics;
@@ -166,6 +169,12 @@ bool HookHasSafePostFSRBootstrapPath();
 // presentation, including the explicit native-FSR OFF teardown window before the
 // swapchain returns to origGame ownership.
 bool HookHasRuntimeOwnedNativeFGPresentPath();
+
+// DX12 exports this so planner-driven overlay metric publishers can reuse the
+// latest locally-computed visible FG state instead of repainting a stale plan.
+bool HookTryGetPreferredOverlayFGPublicationState(bool* active, ce::fg_runtime::RuntimeMode* runtimeMode);
+void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::RuntimeMode runtimeMode,
+                                                  const char* source);
 
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();

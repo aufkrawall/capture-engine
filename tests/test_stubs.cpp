@@ -5,6 +5,9 @@
 #include <d3d12.h>
 #include <dxgi.h>
 #include <windows.h>
+#include <atomic>
+
+#include "../hook/common/fg_runtime_state.h"
 
 // Stubs for dxgi_shared.cpp dependencies
 bool IsInWrapperPresent() {
@@ -60,8 +63,22 @@ extern "C" BOOL MiniDumpWriteDump(HANDLE, DWORD, HANDLE, int, void*, void*, void
 #include "config.h"
 static AppConfig g_LocalConfigInstance{};
 AppConfig* g_pLocalConfig = &g_LocalConfigInstance;
+static std::atomic<bool> g_TestPreferredOverlayFGPublicationStateValid{false};
+static std::atomic<bool> g_TestPreferredOverlayFGPublicationStateActive{false};
+static std::atomic<int> g_TestPreferredOverlayFGPublicationStateRuntimeMode{
+    static_cast<int>(ce::fg_runtime::RuntimeMode::kOff)};
 bool IsProcessTerminating() {
     return false;
+}
+
+void TestStubSetPreferredOverlayFGPublicationState(bool valid, bool active, ce::fg_runtime::RuntimeMode runtimeMode) {
+    g_TestPreferredOverlayFGPublicationStateActive.store(active, std::memory_order_release);
+    g_TestPreferredOverlayFGPublicationStateRuntimeMode.store(static_cast<int>(runtimeMode), std::memory_order_release);
+    g_TestPreferredOverlayFGPublicationStateValid.store(valid, std::memory_order_release);
+}
+
+void TestStubResetPreferredOverlayFGPublicationState() {
+    TestStubSetPreferredOverlayFGPublicationState(false, false, ce::fg_runtime::RuntimeMode::kOff);
 }
 
 bool HookIsPostSLOverlayActiveButUnconfirmed() {
@@ -98,6 +115,22 @@ bool HookHasSafePostFSRBootstrapPath() {
 
 bool HookHasRuntimeOwnedNativeFGPresentPath() {
     return false;
+}
+
+bool HookTryGetPreferredOverlayFGPublicationState(bool* active, ce::fg_runtime::RuntimeMode* runtimeMode) {
+    if (!active || !runtimeMode || !g_TestPreferredOverlayFGPublicationStateValid.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    *active = g_TestPreferredOverlayFGPublicationStateActive.load(std::memory_order_acquire);
+    *runtimeMode = static_cast<ce::fg_runtime::RuntimeMode>(
+        g_TestPreferredOverlayFGPublicationStateRuntimeMode.load(std::memory_order_acquire));
+    return true;
+}
+
+void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::RuntimeMode runtimeMode,
+                                                  const char*) {
+    TestStubSetPreferredOverlayFGPublicationState(true, active, runtimeMode);
 }
 
 // Stubs for streamline_hook.cpp (StreamlineHook namespace)

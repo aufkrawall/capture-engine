@@ -5,7 +5,16 @@
 #include "../hook/common/overlay_metrics_publisher.h"
 #include "../hook/common/performance_metrics.h"
 
+void TestStubSetPreferredOverlayFGPublicationState(bool valid, bool active, ce::fg_runtime::RuntimeMode runtimeMode);
+void TestStubResetPreferredOverlayFGPublicationState();
+
 namespace {
+
+struct PreferredOverlayPublicationStateGuard {
+    ~PreferredOverlayPublicationStateGuard() {
+        TestStubResetPreferredOverlayFGPublicationState();
+    }
+};
 
 const char* LabelForMetricType(int metricType) {
     switch (metricType) {
@@ -124,4 +133,20 @@ TEST(OverlayFGStatusPublicationTest, PlannerDrivenPublicationUsesPlannerRuntimeA
     PublishPlanner(metrics, false, ce::fg_runtime::RuntimeMode::kOff, 1, 0.0f, 0.0f);
     EXPECT_FALSE(metrics.IsFGActive());
     EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
+}
+
+TEST(OverlayFGStatusPublicationTest, PlannerDrivenPublicationPrefersVisibleStateOverStalePlan) {
+    PreferredOverlayPublicationStateGuard guard;
+    PerformanceMetrics metrics;
+
+    TestStubSetPreferredOverlayFGPublicationState(true, true, ce::fg_runtime::RuntimeMode::kFSRFG);
+    PublishPlanner(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 2, 144.0f, 72.0f);
+    EXPECT_TRUE(metrics.IsFGActive());
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "FSR FG");
+
+    TestStubSetPreferredOverlayFGPublicationState(true, false, ce::fg_runtime::RuntimeMode::kOff);
+    PublishPlanner(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 3, 180.0f, 60.0f);
+    EXPECT_FALSE(metrics.IsFGActive());
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
+    EXPECT_EQ(metrics.GetFGMultiplier(), 1);
 }

@@ -173,6 +173,44 @@ static std::atomic<bool> g_PostSLRuntimeStateStabilizationLogged{false};
 // stale Streamline OFF churn from the earlier epoch. Keep only the narrow
 // runtime-state stale-OFF guard extended for that new epoch.
 static std::atomic<bool> g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch{false};
+static std::atomic<bool> g_PreferredOverlayFGPublicationStateValid{false};
+static std::atomic<bool> g_PreferredOverlayFGPublicationStateActive{false};
+static std::atomic<int> g_PreferredOverlayFGPublicationStateRuntimeMode{
+    static_cast<int>(ce::fg_runtime::RuntimeMode::kOff)};
+
+void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::RuntimeMode runtimeMode,
+                                                  const char* source) {
+    const bool previousValid = g_PreferredOverlayFGPublicationStateValid.load(std::memory_order_acquire);
+    const bool previousActive = g_PreferredOverlayFGPublicationStateActive.load(std::memory_order_acquire);
+    const auto previousRuntimeMode = static_cast<ce::fg_runtime::RuntimeMode>(
+        g_PreferredOverlayFGPublicationStateRuntimeMode.load(std::memory_order_acquire));
+
+    g_PreferredOverlayFGPublicationStateActive.store(active, std::memory_order_release);
+    g_PreferredOverlayFGPublicationStateRuntimeMode.store(static_cast<int>(runtimeMode), std::memory_order_release);
+    g_PreferredOverlayFGPublicationStateValid.store(true, std::memory_order_release);
+
+    if (!previousValid || previousActive != active || previousRuntimeMode != runtimeMode) {
+        HookLogImportant("FG publication preferred state: source=%s runtime=%s active=%d",
+                         source ? source : "unknown", ce::fg_runtime::GetRuntimeModeName(runtimeMode), active ? 1 : 0);
+    }
+}
+
+bool HookTryGetPreferredOverlayFGPublicationState(bool* active, ce::fg_runtime::RuntimeMode* runtimeMode) {
+    if (!active || !runtimeMode) {
+        return false;
+    }
+
+    if (g_PreferredOverlayFGPublicationStateValid.load(std::memory_order_acquire)) {
+        *active = g_PreferredOverlayFGPublicationStateActive.load(std::memory_order_acquire);
+        *runtimeMode = static_cast<ce::fg_runtime::RuntimeMode>(
+            g_PreferredOverlayFGPublicationStateRuntimeMode.load(std::memory_order_acquire));
+        return true;
+    }
+
+    *active = g_FGCompat.IsFGActive();
+    *runtimeMode = g_FGCompat.GetRuntimeMode();
+    return true;
+}
 
 bool HookIsPostSLOverlayActiveButUnconfirmed() {
     return g_PostSLSyntheticStartupActivatedButUnconfirmed.load(std::memory_order_acquire) ||
@@ -2501,6 +2539,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     }
 
     RenderOverlayViaFFXPresentCallback(desc);
+    HookUpdatePreferredOverlayFGPublicationState(g_FGCompat.IsFGActive(), g_FGCompat.GetRuntimeMode(),
+                                                 "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
         const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
         ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(),
@@ -4249,6 +4289,11 @@ DWORD DX12_GetGamePresentThreadId() {
 }
 
 void DX12_OnStreamlineFGStateChanged(bool active) {
+    const auto visibleRuntimeMode = active ? ce::fg_runtime::RuntimeMode::kDLSSFG : g_FGCompat.GetRuntimeMode();
+    const bool visibleFGActive = active ? true : g_FGCompat.IsFGActive();
+    HookUpdatePreferredOverlayFGPublicationState(visibleFGActive, visibleRuntimeMode,
+                                                 "DX12_OnStreamlineFGStateChanged");
+
     ce::fg_session::EmitFGEvent(active ? ce::fg_session::FGEventKind::kStreamlineSetOptionsRuntimeUpdate
                                        : ce::fg_session::FGEventKind::kTransitionCooldownComplete,
                                 "DX12_OnStreamlineFGStateChanged", nullptr, nullptr,
@@ -11013,6 +11058,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             }
         }
 
+        HookUpdatePreferredOverlayFGPublicationState(currentFGActive, currentRuntimeMode, "DX12::ProcessFrame");
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
             const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
             // Publish the locally-computed FG state so per-frame suppression
