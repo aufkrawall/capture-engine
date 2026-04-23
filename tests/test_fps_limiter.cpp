@@ -544,15 +544,46 @@ TEST(OverlayCompatTest, InvalidForegroundWindowDoesNotCreatePostResumeCandidate)
     LONG height = 0;
     bool usingSameProcessForegroundWindow = false;
 
-    EXPECT_FALSE(ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
+    // When the foreground window is not usable but the game window itself is,
+    // we fall back to tracking the game window (e.g. controller pseudo-overlay
+    // stole focus while the game is still actively rendering).
+    EXPECT_TRUE(ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
         false, false, 1280, 720, 1280, 720, &width, &height, &usingSameProcessForegroundWindow));
     EXPECT_FALSE(usingSameProcessForegroundWindow);
     EXPECT_EQ(1280, width);
     EXPECT_EQ(720, height);
 
+    // If the same-process foreground window is explicitly offered but is too
+    // small, the candidate is rejected.
     EXPECT_FALSE(ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
         false, true, 1280, 720, 320, 200, &width, &height, &usingSameProcessForegroundWindow));
     EXPECT_FALSE(usingSameProcessForegroundWindow);
+
+    // If neither the game window nor the foreground window is usable, there is
+    // no candidate.
+    EXPECT_FALSE(ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
+        false, false, 320, 200, 320, 200, &width, &height, &usingSameProcessForegroundWindow));
+    EXPECT_FALSE(usingSameProcessForegroundWindow);
+}
+
+TEST(OverlayCompatTest, SwapchainWindowFallbackWhenForegroundIsExternal) {
+    LONG width = 0;
+    LONG height = 0;
+    bool usingSameProcessForegroundWindow = false;
+
+    // Controller pseudo-overlay (external process, zero-sized) is foreground.
+    // Game window is valid and should be tracked.
+    EXPECT_TRUE(ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
+        false, false, 3840, 2160, 0, 0, &width, &height, &usingSameProcessForegroundWindow));
+    EXPECT_FALSE(usingSameProcessForegroundWindow);
+    EXPECT_EQ(3840, width);
+    EXPECT_EQ(2160, height);
+
+    // The delay function should still work with the fallback dimensions.
+    EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayAfterStartupResume(
+        true, true, false, false, true, width, height, 0, 100));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayAfterStartupResume(
+        true, true, false, false, true, width, height, 100, 100));
 }
 
 TEST(OverlayCompatTest, StartupCompatibleAllocatorPoolCanShrinkForStartupOverlay) {

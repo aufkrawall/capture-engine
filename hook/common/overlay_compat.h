@@ -511,7 +511,13 @@ inline bool ResolveDX12OverlayStartupResumeForegroundWindowMetrics(bool exactWin
     }
 
     if (!usableSameProcessForegroundWindow) {
-        return false;
+        // The swapchain window is not the foreground window and there is no
+        // usable same-process foreground window (e.g. the controller's
+        // pseudo-overlay window is foreground but is zero-sized or belongs to
+        // a different process).  As long as the game window itself is still a
+        // usable size we can track it; the game is actively rendering and the
+        // only reason it is not foreground is an external window steal.
+        return HasUsableDX12OverlayStartupWindowSize(gameWidth, gameHeight);
     }
 
     if (!HasUsableDX12OverlayStartupWindowSize(foregroundWidth, foregroundHeight)) {

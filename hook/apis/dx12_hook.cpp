@@ -3249,6 +3249,13 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
         s_loggedSameProcessResumeWindow = stableWindow;
     } else if (!usingSameProcessForegroundWindow) {
         s_loggedSameProcessResumeWindow = nullptr;
+        if (s_loggedUnusableResumeGameWindow != gameWindow) {
+            HookLogImportant(
+                "DX12: Startup-overlay resume falling back to swapchain window %p (size=%ldx%ld) because "
+                "foreground window %p is not a usable same-process window",
+                gameWindow, width, height, foregroundWindow);
+            s_loggedUnusableResumeGameWindow = gameWindow;
+        }
     }
 
     if (s_resumeWindow != stableWindow || s_resumeStableSinceMs == 0) {
