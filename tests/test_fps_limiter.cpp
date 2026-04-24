@@ -437,8 +437,11 @@ TEST(LimiterModeParseTest, ParsesAllValues) {
     EXPECT_EQ(ParseLimiterMode("fallback"), LimiterMode::kFGFallback);
     EXPECT_EQ(ParseLimiterMode("native"), LimiterMode::kNative);
     EXPECT_EQ(ParseLimiterMode("reflex"), LimiterMode::kNative);
+    EXPECT_EQ(ParseLimiterMode(" Reflex "), LimiterMode::kNative);
+    EXPECT_EQ(ParseLimiterMode("nvidia-reflex"), LimiterMode::kNative);
     EXPECT_EQ(ParseLimiterMode("anti_lag2"), LimiterMode::kAntiLag2);
     EXPECT_EQ(ParseLimiterMode("antilag2"), LimiterMode::kAntiLag2);
+    EXPECT_EQ(ParseLimiterMode("Anti-Lag2"), LimiterMode::kAntiLag2);
     EXPECT_EQ(ParseLimiterMode("xell"), LimiterMode::kXeLL);
     EXPECT_EQ(ParseLimiterMode("intel"), LimiterMode::kXeLL);
     EXPECT_EQ(ParseLimiterMode("auto"), LimiterMode::kAuto);

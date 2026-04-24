@@ -460,6 +460,7 @@ public:
         bool isNativeMode =
             (effectiveMode == LimiterModeValues::kNative || effectiveMode == LimiterModeValues::kAntiLag2 ||
              effectiveMode == LimiterModeValues::kXeLL);
+        const bool explicitReflexMode = configuredMode == LimiterModeValues::kNative;
         if (fgActive && (effectiveMode == LimiterModeValues::kFGFallback || isNativeMode)) {
             effectiveTargetFps = targetFps / fgMultiplier;
             if (effectiveTargetFps < 1)
@@ -591,6 +592,39 @@ public:
                 return;
             } else {
                 g_ReflexLimiter.DisableHybridPacing();
+                const bool ceOwnedSleepCandidate = explicitReflexMode && !gameSleepObserved && !recentPresentGap;
+                bool ceOwnedSleepOk = false;
+                int64_t ceOwnedSleepUs = 0;
+                if (ceOwnedSleepCandidate) {
+                    LARGE_INTEGER sleepStart;
+                    LARGE_INTEGER sleepEnd;
+                    QueryPerformanceCounter(&sleepStart);
+                    ceOwnedSleepOk = g_ReflexLimiter.Sleep();
+                    QueryPerformanceCounter(&sleepEnd);
+                    ceOwnedSleepUs = ((sleepEnd.QuadPart - sleepStart.QuadPart) * 1000000) / qpcFrequency;
+                }
+
+                if (ceOwnedSleepOk) {
+                    reflexLimiterActive_ = true;
+                    reflexNativeSleepActive_ = false;
+                    loggedNativeFallback_ = false;
+                    lastActualWaitUs_ = ceOwnedSleepUs;
+                    if (!reflexLoggedSuccess_) {
+                        TraceLog("Apply: REFLEX ce-owned sleep target=%d waitUs=%lld push=%d", effectiveTargetFps,
+                                 ceOwnedSleepUs, reflexPushOk ? 1 : 0);
+                        HookLog(
+                            "FPS Limiter: Reflex explicit mode active (target=%d fps, CE-owned NvAPI Sleep, "
+                            "wait=%lldus)",
+                            effectiveTargetFps, ceOwnedSleepUs);
+                        reflexLoggedSuccess_ = true;
+                    }
+                    isActivelyLimiting_.store(true, std::memory_order_relaxed);
+                    LARGE_INTEGER retQpc;
+                    QueryPerformanceCounter(&retQpc);
+                    lastApplyReturnQpc = retQpc.QuadPart;
+                    return;
+                }
+
                 if (reflexNativeSleepActive_) {
                     reflexSleepBaselineCount_ = gameSleepCount;
                     reflexNativeSleepActive_ = false;
@@ -613,6 +647,11 @@ public:
                         HookLog(
                             "FPS Limiter: Reflex Sleep observed but waiting for a fresh stable Sleep streak; using "
                             "timer fallback");
+                    } else if (ceOwnedSleepCandidate) {
+                        HookLog(
+                            "FPS Limiter: Explicit Reflex sleep was unavailable; using timer fallback "
+                            "(push=%d waitUs=%lld)",
+                            reflexPushOk ? 1 : 0, ceOwnedSleepUs);
                     } else if (reflexPushOk) {
                         HookLog(
                             "FPS Limiter: Reflex armed but native Sleep cadence is not stable yet; using timer "

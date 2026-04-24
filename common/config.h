@@ -93,17 +93,29 @@ enum class LimiterMode : uint32_t {
 };
 
 inline LimiterMode ParseLimiterMode(const std::string& val) {
-    if (val == "basic")
+    std::string normalized = val;
+    normalized.erase(0, normalized.find_first_not_of(" \t\r\n\""));
+    const size_t last = normalized.find_last_not_of(" \t\r\n\"");
+    if (last != std::string::npos) {
+        normalized.erase(last + 1);
+    } else {
+        normalized.clear();
+    }
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    if (normalized == "basic")
         return LimiterMode::kBasic;
-    if (val == "fg_fallback" || val == "fallback")
+    if (normalized == "fg_fallback" || normalized == "fallback" || normalized == "fg-fallback")
         return LimiterMode::kFGFallback;
-    if (val == "native" || val == "reflex")
+    if (normalized == "native" || normalized == "reflex" || normalized == "nvidia" ||
+        normalized == "nvidia_reflex" || normalized == "nvidia-reflex")
         return LimiterMode::kNative;
-    if (val == "anti_lag2" || val == "antilag2")
+    if (normalized == "anti_lag2" || normalized == "antilag2" || normalized == "anti-lag2")
         return LimiterMode::kAntiLag2;
-    if (val == "xell" || val == "intel")
+    if (normalized == "xell" || normalized == "intel")
         return LimiterMode::kXeLL;
-    if (val == "auto")
+    if (normalized == "auto")
         return LimiterMode::kAuto;
     return LimiterMode::kAuto;  // Default to auto
 }

@@ -171,6 +171,7 @@ using PFN_slSetD3DDevice = slResult (*)(void* d3dDevice);
 using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle& viewport, const slDLSSGOptions& options);
 using PFN_slDLSSGGetState = slResult (*)(const slViewportHandle& viewport, slDLSSGState& state,
                                          const slDLSSGOptions* options);
+using PFN_slReflexSleep = slResult (*)(const void* frame);
 using PFN_slReflexSetOptions = slResult (*)(const slReflexOptions& options);
 using PFN_slReflexSetConstants = slResult (*)(const SLReflexConstants& consts);
 
@@ -195,10 +196,12 @@ std::atomic<void*> g_SLGetFeatureFunctionTarget{nullptr};
 std::atomic<void*> g_SLSetD3DDeviceTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateTarget{nullptr};
+std::atomic<void*> g_ReflexSleepTarget{nullptr};
 std::atomic<void*> g_ReflexSetOptionsTarget{nullptr};
 std::atomic<void*> g_ReflexSetConstantsTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsImportFallbackAttemptedTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateImportFallbackAttemptedTarget{nullptr};
+std::atomic<void*> g_ReflexSleepImportFallbackAttemptedTarget{nullptr};
 std::atomic<void*> g_ReflexSetOptionsImportFallbackAttemptedTarget{nullptr};
 std::atomic<void*> g_ReflexSetConstantsImportFallbackAttemptedTarget{nullptr};
 
@@ -206,6 +209,7 @@ std::atomic<bool> g_SLGetFeatureFunctionHooked{false};
 std::atomic<bool> g_SLSetD3DDeviceHooked{false};
 std::atomic<bool> g_DLSSGSetOptionsHooked{false};
 std::atomic<bool> g_DLSSGGetStateHooked{false};
+std::atomic<bool> g_ReflexSleepHooked{false};
 std::atomic<bool> g_ReflexSetOptionsHooked{false};
 std::atomic<bool> g_ReflexSetConstantsHooked{false};
 
@@ -229,6 +233,7 @@ PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
 PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
 PFN_slDLSSGGetState g_Original_slDLSSGGetState = nullptr;
+PFN_slReflexSleep g_Original_slReflexSleep = nullptr;
 PFN_slReflexSetOptions g_Original_slReflexSetOptions = nullptr;
 PFN_slReflexSetConstants g_Original_slReflexSetConstants = nullptr;
 
@@ -236,6 +241,7 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
 slResult Hooked_slSetD3DDevice(void* d3dDevice);
 slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options);
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options);
+slResult Hooked_slReflexSleep(const void* frame);
 slResult Hooked_slReflexSetOptions(const slReflexOptions& options);
 slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts);
 
@@ -888,6 +894,43 @@ bool MaybeHookDLSSGGetState(void*& function, bool fallbackToReturnedWrapper) {
     return g_DLSSGGetStateHooked.load(std::memory_order_acquire);
 }
 
+bool MaybeHookReflexSleep(void*& function, bool fallbackToReturnedWrapper) {
+    if (!function) {
+        return false;
+    }
+
+    if (function == reinterpret_cast<void*>(Hooked_slReflexSleep)) {
+        g_ReflexSleepHooked.store(true, std::memory_order_release);
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_FeatureHookMutex);
+        if (!g_ReflexSleepHooked.load(std::memory_order_acquire) ||
+            g_ReflexSleepTarget.load(std::memory_order_acquire) != function) {
+            InstallInlineHookOnce(reinterpret_cast<void*>(function), reinterpret_cast<void*>(Hooked_slReflexSleep),
+                                  g_Original_slReflexSleep, g_ReflexSleepHooked, g_ReflexSleepTarget,
+                                  "slReflexSleep");
+            if (!g_ReflexSleepHooked.load(std::memory_order_acquire)) {
+                TryInstallFeatureImportFallbackForOwningModule(
+                    function, "slReflexSleep", reinterpret_cast<void*>(Hooked_slReflexSleep),
+                    reinterpret_cast<void**>(&g_Original_slReflexSleep),
+                    g_ReflexSleepImportFallbackAttemptedTarget, "slReflexSleep");
+            }
+        }
+    }
+
+    if (fallbackToReturnedWrapper && !g_ReflexSleepHooked.load(std::memory_order_acquire)) {
+        if (!g_Original_slReflexSleep) {
+            g_Original_slReflexSleep = reinterpret_cast<PFN_slReflexSleep>(function);
+        }
+        function = reinterpret_cast<void*>(Hooked_slReflexSleep);
+        return true;
+    }
+
+    return g_ReflexSleepHooked.load(std::memory_order_acquire);
+}
+
 bool MaybeHookReflexSetOptions(void*& function, bool fallbackToReturnedWrapper) {
     if (!function) {
         return false;
@@ -996,6 +1039,14 @@ bool TryResolveReflexFeatureHooks() {
 
     bool hookedAnything = false;
 
+    if (!g_ReflexSleepHooked.load(std::memory_order_acquire)) {
+        void* function = nullptr;
+        const slResult result = g_Original_slGetFeatureFunction(kSLFeatureReflex, "slReflexSleep", function);
+        if (result == kSlResultOk && function) {
+            hookedAnything |= MaybeHookReflexSleep(function, false);
+        }
+    }
+
     if (!g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
         void* function = nullptr;
         const slResult result = g_Original_slGetFeatureFunction(kSLFeatureReflex, "slReflexSetOptions", function);
@@ -1012,7 +1063,8 @@ bool TryResolveReflexFeatureHooks() {
         }
     }
 
-    return hookedAnything || g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ||
+    return hookedAnything || g_ReflexSleepHooked.load(std::memory_order_acquire) ||
+           g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ||
            g_ReflexSetConstantsHooked.load(std::memory_order_acquire);
 }
 
@@ -1048,13 +1100,15 @@ void RegisterDynamicHooksOnce() {
                                  reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions));
     IATHook::RegisterDynamicHook("slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
                                  reinterpret_cast<void**>(&g_Original_slDLSSGGetState));
+    IATHook::RegisterDynamicHook("slReflexSleep", reinterpret_cast<void*>(Hooked_slReflexSleep),
+                                 reinterpret_cast<void**>(&g_Original_slReflexSleep));
     IATHook::RegisterDynamicHook("slReflexSetOptions", reinterpret_cast<void*>(Hooked_slReflexSetOptions),
                                  reinterpret_cast<void**>(&g_Original_slReflexSetOptions));
     IATHook::RegisterDynamicHook("slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
                                  reinterpret_cast<void**>(&g_Original_slReflexSetConstants));
     HookLogImportant(
         "Streamline Hook: Registered dynamic hooks for slGetFeatureFunction, slSetD3DDevice, "
-        "slDLSSGSetOptions, slDLSSGGetState, slReflexSetOptions, and slReflexSetConstants");
+        "slDLSSGSetOptions, slDLSSGGetState, slReflexSleep, slReflexSetOptions, and slReflexSetConstants");
 }
 
 bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
@@ -1074,13 +1128,14 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     const auto originalDLSSGSetOptions =
         reinterpret_cast<PFN_slDLSSGSetOptions>(GetProcAddress(module, "slDLSSGSetOptions"));
     const auto originalDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(GetProcAddress(module, "slDLSSGGetState"));
+    const auto originalReflexSleep = reinterpret_cast<PFN_slReflexSleep>(GetProcAddress(module, "slReflexSleep"));
     const auto originalReflexSetOptions =
         reinterpret_cast<PFN_slReflexSetOptions>(GetProcAddress(module, "slReflexSetOptions"));
     const auto originalReflexSetConstants =
         reinterpret_cast<PFN_slReflexSetConstants>(GetProcAddress(module, "slReflexSetConstants"));
 
     if (!originalGetFeatureFunction && !originalSetD3DDevice && !originalDLSSGSetOptions && !originalDLSSGGetState &&
-        !originalReflexSetOptions && !originalReflexSetConstants) {
+        !originalReflexSleep && !originalReflexSetOptions && !originalReflexSetConstants) {
         return false;
     }
 
@@ -1138,6 +1193,13 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                 moduleBaseName, "slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
                 reinterpret_cast<void*>(originalDLSSGGetState), reinterpret_cast<void**>(&g_Original_slDLSSGGetState),
                 "slDLSSGGetState");
+        }
+
+        if (originalReflexSleep) {
+            hookedAnything |= InstallFeatureImportFallbackIfPresent(
+                moduleBaseName, "slReflexSleep", reinterpret_cast<void*>(Hooked_slReflexSleep),
+                reinterpret_cast<void*>(originalReflexSleep), reinterpret_cast<void**>(&g_Original_slReflexSleep),
+                "slReflexSleep");
         }
 
         if (originalReflexSetOptions) {
@@ -1562,7 +1624,12 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
     }
     // Reflex feature hook — detect game activation of native Reflex
     else if (feature == kSLFeatureReflex) {
-        if (strcmp(functionName, "slReflexSetOptions") == 0) {
+        if (strcmp(functionName, "slReflexSleep") == 0) {
+            if (MaybeHookReflexSleep(function, true)) {
+                HookLogImportant("Streamline Hook: Intercepted slReflexSleep (returned=%p original=%p)",
+                                 function, g_Original_slReflexSleep);
+            }
+        } else if (strcmp(functionName, "slReflexSetOptions") == 0) {
             if (MaybeHookReflexSetOptions(function, true)) {
                 HookLogImportant("Streamline Hook: Intercepted slReflexSetOptions (returned=%p original=%p)",
                                  function, g_Original_slReflexSetOptions);
@@ -1587,6 +1654,29 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
     if (result == kSlResultOk) {
         TryResolveDLSSGFeatureHooks();
         TryResolveReflexFeatureHooks();
+    }
+    return result;
+}
+
+// Hook for Streamline Reflex sleep. This lets CE observe game-owned Reflex
+// pacing without patching NvAPI_D3D_Sleep inside nvapi64.dll.
+slResult Hooked_slReflexSleep(const void* frame) {
+    if (!g_Original_slReflexSleep) {
+        return kSlResultErrorInvalidState;
+    }
+
+    g_ReflexLimiter.ApplyHybridPacingBeforeNativeSleep();
+
+    const slResult result = g_Original_slReflexSleep(frame);
+    if (result == kSlResultOk) {
+        g_ReflexLimiter.MarkGameSleep("Streamline");
+        g_ReflexLimiter.MarkNativePacingSignal();
+    } else {
+        static std::atomic<int> s_reflexSleepFailLogCount{0};
+        const int failCount = s_reflexSleepFailLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (failCount < 5) {
+            HookLogImportant("Streamline Hook: slReflexSleep forward failed result=%d frame=%p", result, frame);
+        }
     }
     return result;
 }

@@ -3,21 +3,23 @@
 //
 // Resolves NvAPI_D3D_SetSleepMode and NvAPI_D3D_Sleep from nvapi64.dll and
 // proactively pushes minimumIntervalUs to enforce an FPS cap through the
-// driver's low-latency pipeline. This is the most compatible approach for
-// games using Reflex, as the driver handles frame pacing internally.
+// driver's low-latency pipeline. The normal CE-owned limiter path calls the
+// original NvAPI entrypoints directly and intentionally avoids patching
+// nvapi64.dll code bytes, because some DLSS FG integrations validate those
+// prologues during Reflex setup.
 //
 // Flow:
 //   1. Init() resolves NvAPI function pointers via nvapi_QueryInterface
-//   2. Installs GetProcAddress dynamic hook to intercept game's NvAPI calls
-//   3. SetDevice() provides the D3D device from our Present hooks
-//   4. SetTargetFps() + PushFpsLimit() pushes minimumIntervalUs to the driver
-//   5. The driver's NvAPI_D3D_Sleep() enforces the frame interval natively
+//   2. SetDevice() provides the D3D device from our Present hooks
+//   3. SetTargetFps() + PushFpsLimit() pushes minimumIntervalUs to the driver
+//   4. Sleep() can ask the driver's NvAPI_D3D_Sleep() to pace a CE-owned frame
+//   5. Optional inline detours exist only for explicit native-call diagnostics
 //
 // Game Activation Detection:
-//   When the game calls nvapi_QueryInterface(NVAPI_ID_D3D_SetSleepMode),
-//   our dynamic hook intercepts and returns a wrapper. The wrapper detects
-//   when the game sets bLowLatencyMode=true, marking gameActivated_=true.
-//   This enables auto mode to only use Reflex when the game has activated it.
+//   Modern Streamline Reflex activation and sleep calls are observed in
+//   streamline_hook.cpp. Direct NvAPI SetSleepMode/Sleep detours remain
+//   available but are not installed by default, because returning wrapper
+//   pointers or patching NvAPI prologues can trip integrity checks.
 
 // clang-format off
 #include <windows.h>
@@ -96,19 +98,16 @@ public:
         // validation, causing Reflex init to abort and DLSS FG to fail with the
         // pink-tint diagnostic.
         //
-        // We also defer the direct inline hooks on SetSleepMode/Sleep until
-        // the FPS limiter is actually configured (targetIntervalUs_ > 0).
-        // This keeps nvapi64.dll unmodified when the user is not using the
-        // FPS limiter, avoiding detection by integrity checks during DLSS FG
-        // initialization.  Activation detection for auto-mode still works via
-        // the Streamline slReflexSetOptions / slReflexSetConstants hooks;
-        // direct-nvapi activation detection is only needed when we are
-        // actively limiting.
-        EnsureNvAPIHooksInstalled();
+        // We also do not install the direct SetSleepMode/Sleep inline hooks
+        // merely because CE's limiter is configured. The explicit limiter can
+        // push and sleep through the original function pointers, while
+        // activation/sleep observation for Streamline Reflex happens through
+        // Streamline feature hooks. Keeping nvapi64.dll unmodified is the safer
+        // default for DLSS FG startup validation.
 
         available_.store(true, std::memory_order_release);
-        HookLogImportant("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p)", (void*)origSetSleepMode_,
-                         (void*)origSleep_);
+        HookLogImportant("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p, inlineHooks=%d)", (void*)origSetSleepMode_,
+                         (void*)origSleep_, AreInlineHooksInstalled() ? 1 : 0);
         return true;
     }
 
@@ -121,16 +120,34 @@ public:
         lastDevice_ = device;
     }
 
-    // Set the target FPS for Reflex-based limiting. 0 = disable override.
+    // Set the target FPS for Reflex-based limiting. 0 = disable override and
+    // actively clear the previously pushed driver interval when possible.
     void SetTargetFps(int fps) {
+        const uint32_t oldInterval = targetIntervalUs_.load(std::memory_order_acquire);
+        uint32_t newInterval = 0;
         if (fps <= 0) {
-            targetIntervalUs_.store(0, std::memory_order_release);
+            newInterval = 0;
         } else {
-            targetIntervalUs_.store(1000000 / fps, std::memory_order_release);
+            newInterval = 1000000 / fps;
         }
-        // If the user has just configured an FPS cap, ensure the inline hooks
-        // on SetSleepMode/Sleep are installed so we can intercept and override.
-        EnsureNvAPIHooksInstalled();
+
+        if (oldInterval == newInterval) {
+            return;
+        }
+
+        targetIntervalUs_.store(newInterval, std::memory_order_release);
+        lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+        ceOwnedSleepLogged_.store(false, std::memory_order_release);
+
+        if (newInterval == 0) {
+            if (oldInterval != 0) {
+                ClearFpsLimit();
+            }
+            return;
+        }
+
+        HookLogImportant("ReflexLimiter: Target FPS set to %d (intervalUs=%u, inlineHooks=%d)", fps, newInterval,
+                         AreInlineHooksInstalled() ? 1 : 0);
     }
 
     uint32_t GetTargetIntervalUs() const {
@@ -150,13 +167,14 @@ public:
         return now >= lastTick && (now - lastTick) <= maxAgeMs;
     }
 
-    void MarkGameSleep() {
+    void MarkGameSleep(const char* sourceName = nullptr) {
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG previous = lastGameSleepTick_.exchange(now, std::memory_order_acq_rel);
         gameSleepObserved_.store(true, std::memory_order_release);
         gameSleepCount_.fetch_add(1, std::memory_order_acq_rel);
         if (previous == 0) {
-            HookLogImportant("ReflexLimiter: Game called Reflex Sleep");
+            HookLogImportant("ReflexLimiter: Game called Reflex Sleep via %s",
+                             sourceName && sourceName[0] ? sourceName : "unknown");
         }
     }
 
@@ -199,6 +217,37 @@ public:
         hybridQpcFrequency_.store(0, std::memory_order_release);
     }
 
+    void ApplyHybridPacingBeforeNativeSleep() {
+        const int64_t intervalTicks = hybridIntervalTicks_.load(std::memory_order_acquire);
+        const int64_t qpcFrequency = hybridQpcFrequency_.load(std::memory_order_acquire);
+        if (intervalTicks <= 0 || qpcFrequency <= 0) {
+            return;
+        }
+
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+
+        int64_t targetTick = hybridTargetTick_.load(std::memory_order_acquire);
+        if (targetTick == 0) {
+            targetTick = now.QuadPart + intervalTicks / 2;
+        }
+
+        while (targetTick > now.QuadPart) {
+            const int64_t diffTicks = targetTick - now.QuadPart;
+            const int64_t diffUs = (diffTicks * 1000000) / qpcFrequency;
+            if (diffUs > 2000) {
+                ::Sleep(0);
+            } else if (diffUs > 500) {
+                SwitchToThread();
+            } else {
+                _mm_pause();
+            }
+            QueryPerformanceCounter(&now);
+        }
+
+        hybridTargetTick_.store(targetTick + intervalTicks, std::memory_order_release);
+    }
+
     // Returns true if we've successfully pushed an FPS limit via Reflex.
     // This means: functions resolved + device set + last push succeeded.
     bool IsActive() const {
@@ -211,13 +260,42 @@ public:
         return available_.load(std::memory_order_acquire);
     }
 
+    bool AreInlineHooksInstalled() const {
+        return directSetSleepModeHooked_ || directSleepHooked_;
+    }
+
+    bool ClearFpsLimit() {
+        auto forwardSetSleepMode = GetForwardSetSleepMode();
+        if (!forwardSetSleepMode || !lastDevice_) {
+            if (pushSucceeded_.exchange(false, std::memory_order_acq_rel)) {
+                HookLogImportant("ReflexLimiter: Could not clear FPS limit (SetSleepMode=%p, device=%p)",
+                                 (void*)forwardSetSleepMode, lastDevice_);
+            }
+            lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+            return false;
+        }
+
+        NV_SET_SLEEP_MODE_PARAMS params = BuildSleepModeParams(0, false);
+        NvAPI_Status status = forwardSetSleepMode(lastDevice_, &params);
+        if (status == NVAPI_OK) {
+            if (pushSucceeded_.exchange(false, std::memory_order_acq_rel)) {
+                HookLogImportant("ReflexLimiter: Cleared FPS limit (boost=%u markers=%u lowLatency=%u)",
+                                 params.bLowLatencyBoost, params.bUseMarkersToOptimize, params.bLowLatencyMode);
+            }
+            lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+            return true;
+        }
+
+        HookLogImportant("ReflexLimiter: Clear FPS limit failed (status=%d boost=%u markers=%u lowLatency=%u)",
+                         status, params.bLowLatencyBoost, params.bUseMarkersToOptimize, params.bLowLatencyMode);
+        pushSucceeded_.store(false, std::memory_order_release);
+        lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+        return false;
+    }
+
     // Directly push our FPS limit to the driver's Reflex pipeline.
     // Returns true if the SetSleepMode call succeeded.
     bool PushFpsLimit() {
-        // Ensure hooks are installed if the user has configured a cap but
-        // Init() ran before the cap was set.
-        EnsureNvAPIHooksInstalled();
-
         auto forwardSetSleepMode = GetForwardSetSleepMode();
         if (!forwardSetSleepMode || !lastDevice_) {
             if (!loggedMissingDevice_) {
@@ -232,25 +310,24 @@ public:
         loggedMissingDevice_ = false;
 
         uint32_t intervalUs = targetIntervalUs_.load(std::memory_order_acquire);
+        if (intervalUs == 0) {
+            ClearFpsLimit();
+            return false;
+        }
+
         if (pushSucceeded_.load(std::memory_order_acquire) &&
             lastPushedIntervalUs_.load(std::memory_order_acquire) == intervalUs) {
             return true;
         }
 
-        NV_SET_SLEEP_MODE_PARAMS params{};
-        if (hasLastSleepModeParams_.load(std::memory_order_acquire)) {
-            params = lastSleepModeParams_;
-        } else {
-            params.version = NV_SET_SLEEP_MODE_PARAMS_VER;
-            params.bLowLatencyMode = 1;
-        }
-        params.minimumIntervalUs = intervalUs;
+        NV_SET_SLEEP_MODE_PARAMS params = BuildSleepModeParams(intervalUs, true);
 
         NvAPI_Status status = forwardSetSleepMode(lastDevice_, &params);
         if (status == NVAPI_OK) {
             if (!pushSucceeded_.load(std::memory_order_acquire)) {
-                HookLog("ReflexLimiter: Pushed FPS limit (intervalUs=%u boost=%u markers=%u)", intervalUs,
-                        params.bLowLatencyBoost, params.bUseMarkersToOptimize);
+                HookLogImportant("ReflexLimiter: Pushed FPS limit (intervalUs=%u boost=%u markers=%u lowLatency=%u)",
+                                 intervalUs, params.bLowLatencyBoost, params.bUseMarkersToOptimize,
+                                 params.bLowLatencyMode);
             }
             lastPushedIntervalUs_.store(intervalUs, std::memory_order_release);
             pushSucceeded_.store(true, std::memory_order_release);
@@ -286,6 +363,9 @@ public:
         if (status == NVAPI_OK) {
             if (!pushOk && gameActivated_.load(std::memory_order_acquire)) {
                 HookLog("ReflexLimiter: Sleep succeeded using game-managed SetSleepMode state");
+            } else if (!ceOwnedSleepLogged_.exchange(true, std::memory_order_acq_rel)) {
+                HookLogImportant("ReflexLimiter: CE-owned NvAPI Sleep succeeded (pushOk=%d intervalUs=%u)",
+                                 pushOk ? 1 : 0, targetIntervalUs_.load(std::memory_order_acquire));
             }
             sleepSucceeded_.store(true, std::memory_order_release);
             return true;
@@ -448,6 +528,7 @@ public:
         directSleepTrampoline_ = nullptr;
         realSetSleepModeForHook_ = nullptr;
         realSleepForHook_ = nullptr;
+        ceOwnedSleepLogged_.store(false, std::memory_order_release);
     }
 
     // Get original function pointers (for pass-through when not overriding)
@@ -466,10 +547,10 @@ public:
         (void)realSleepForHook_;
         return;
 #else
-        // Defer hook installation until the FPS limiter is actually configured.
-        // When targetIntervalUs_ == 0 the user is not using Reflex-based limiting,
-        // so keeping nvapi64.dll unmodified avoids detection by integrity checks
-        // during DLSS FG initialization in titles like GTA V Enhanced.
+        // This method is intentionally not called by the default CE-owned Reflex
+        // limiter path. It remains available for direct NvAPI native-call
+        // diagnostics, but installing it patches nvapi64.dll code bytes and can
+        // be visible to DLSS FG / anti-tamper validation.
         if (targetIntervalUs_.load(std::memory_order_acquire) == 0) {
             static std::atomic<bool> s_loggedSkip{false};
             if (!s_loggedSkip.exchange(true, std::memory_order_relaxed)) {
@@ -522,6 +603,26 @@ public:
 #endif
 
 private:
+    NV_SET_SLEEP_MODE_PARAMS BuildSleepModeParams(uint32_t intervalUs, bool forceLowLatency) const {
+        NV_SET_SLEEP_MODE_PARAMS params{};
+        if (hasLastSleepModeParams_.load(std::memory_order_acquire)) {
+            params = lastSleepModeParams_;
+        } else {
+            params.version = NV_SET_SLEEP_MODE_PARAMS_VER;
+            params.bLowLatencyMode = gameActivated_.load(std::memory_order_acquire) ? 1 : 0;
+        }
+
+        if (params.version == 0) {
+            params.version = NV_SET_SLEEP_MODE_PARAMS_VER;
+        }
+
+        if (forceLowLatency) {
+            params.bLowLatencyMode = 1;
+        }
+        params.minimumIntervalUs = intervalUs;
+        return params;
+    }
+
     PFN_NvAPI_D3D_SetSleepMode GetForwardSetSleepMode() const {
         return realSetSleepModeForHook_ ? realSetSleepModeForHook_ : origSetSleepMode_;
     }
@@ -553,6 +654,7 @@ private:
     PFN_NvAPI_D3D_Sleep directSleepTrampoline_ = nullptr;
     bool loggedMissingDevice_ = false;
     bool loggedMissingSleepDevice_ = false;
+    std::atomic<bool> ceOwnedSleepLogged_{false};
     std::atomic<bool> hasLastSleepModeParams_{false};
     NV_SET_SLEEP_MODE_PARAMS lastSleepModeParams_{};
     std::atomic<int64_t> hybridQpcFrequency_{0};
@@ -605,36 +707,20 @@ inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_Sleep(IUnknown* pDev) {
         limiter.lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
     }
     limiter.lastDevice_ = pDev;
-    limiter.MarkGameSleep();
+    limiter.ApplyHybridPacingBeforeNativeSleep();
 
-    const int64_t intervalTicks = limiter.hybridIntervalTicks_.load(std::memory_order_acquire);
-    const int64_t qpcFrequency = limiter.hybridQpcFrequency_.load(std::memory_order_acquire);
-    if (intervalTicks > 0 && qpcFrequency > 0) {
-        LARGE_INTEGER now;
-        QueryPerformanceCounter(&now);
-
-        int64_t targetTick = limiter.hybridTargetTick_.load(std::memory_order_acquire);
-        if (targetTick == 0) {
-            targetTick = now.QuadPart + intervalTicks / 2;
+    NvAPI_Status status = forwardSleep(pDev);
+    if (status == NVAPI_OK) {
+        limiter.MarkGameSleep("NvAPI");
+        limiter.MarkNativePacingSignal();
+    } else {
+        static std::atomic<int> s_sleepFailLogCount{0};
+        const int failCount = s_sleepFailLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (failCount < 5) {
+            HookLogImportant("ReflexLimiter: NvAPI Sleep forward failed (status=%d)", status);
         }
-
-        while (targetTick > now.QuadPart) {
-            const int64_t diffTicks = targetTick - now.QuadPart;
-            const int64_t diffUs = (diffTicks * 1000000) / qpcFrequency;
-            if (diffUs > 2000) {
-                ::Sleep(0);
-            } else if (diffUs > 500) {
-                SwitchToThread();
-            } else {
-                _mm_pause();
-            }
-            QueryPerformanceCounter(&now);
-        }
-
-        limiter.hybridTargetTick_.store(targetTick + intervalTicks, std::memory_order_release);
     }
-
-    return forwardSleep(pDev);
+    return status;
 }
 
 #endif  // REFLEX_IAT_HOOK_AVAILABLE
