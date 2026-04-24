@@ -101,8 +101,9 @@ public:
         // This keeps nvapi64.dll unmodified when the user is not using the
         // FPS limiter, avoiding detection by integrity checks during DLSS FG
         // initialization.  Activation detection for auto-mode still works via
-        // the Streamline slReflexSetConstants hook; direct-nvapi activation
-        // detection is only needed when we are actively limiting.
+        // the Streamline slReflexSetOptions / slReflexSetConstants hooks;
+        // direct-nvapi activation detection is only needed when we are
+        // actively limiting.
         EnsureNvAPIHooksInstalled();
 
         available_.store(true, std::memory_order_release);

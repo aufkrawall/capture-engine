@@ -665,6 +665,18 @@ TEST(DXGISharedTest, OverlayFGMetricTypeFollowsEffectiveRuntimeState) {
               ce::dx12_overlay_policy::ResolveOverlayFGMetricType(true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
 }
 
+TEST(DXGISharedTest, OverlayFGPublishedTypeDifferenceIgnoresInactiveRuntimeLabels) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::DoOverlayFGPublishedTypesDiffer(
+        false, ce::fg_runtime::RuntimeMode::kOff, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+    EXPECT_FALSE(ce::dx12_overlay_policy::DoOverlayFGPublishedTypesDiffer(
+        true, ce::fg_runtime::RuntimeMode::kOff, false, ce::fg_runtime::RuntimeMode::kOff));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::DoOverlayFGPublishedTypesDiffer(
+        false, ce::fg_runtime::RuntimeMode::kOff, true, ce::fg_runtime::RuntimeMode::kDLSSFG));
+    EXPECT_TRUE(ce::dx12_overlay_policy::DoOverlayFGPublishedTypesDiffer(
+        true, ce::fg_runtime::RuntimeMode::kDLSSFG, true, ce::fg_runtime::RuntimeMode::kFSRFG));
+}
+
 TEST(DXGISharedTest, ZeroECLPresentsStillReachProcessFrameForRuntimeOwnedNonStreamlineSwapchains) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
         true, false, false, true, false, false, false, ce::fg_runtime::RuntimeMode::kOff));

@@ -112,10 +112,12 @@ void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const fg_session::FGAc
     if (HookTryGetPreferredOverlayFGPublicationState(&preferredState) && preferredState.valid) {
         const bool statesDiffer =
             preferredState.active != plan.publishFGActive || preferredState.runtimeMode != plan.publishRuntimeMode;
+        const bool publishedTypesDiffer = ce::dx12_overlay_policy::DoOverlayFGPublishedTypesDiffer(
+            plan.publishFGActive, plan.publishRuntimeMode, preferredState.active, preferredState.runtimeMode);
         const bool usePreferredState =
-            statesDiffer && preferredState.sequence >= lastPlanner.sequence;
+            statesDiffer && publishedTypesDiffer && preferredState.sequence >= lastPlanner.sequence;
 
-        if (statesDiffer) {
+        if (statesDiffer && publishedTypesDiffer) {
             auto& lastOverride = LastPreferredOverrideState();
             if (!lastOverride.valid || lastOverride.plannerFGActive != plan.publishFGActive ||
                 lastOverride.plannerRuntimeMode != plan.publishRuntimeMode ||

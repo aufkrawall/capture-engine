@@ -40,6 +40,22 @@ inline bool IsDLSSGModeEnabled(uint32_t mode) {
     return mode != 0;
 }
 
+inline bool IsStreamlineReflexLowLatencyModeEnabled(int32_t mode) {
+    return mode > 0;
+}
+
+inline bool IsStreamlineReflexFrameLimitActive(uint32_t frameLimitUs) {
+    return frameLimitUs > 0;
+}
+
+inline bool IsStreamlineReflexPacingSignalActive(int32_t mode, uint32_t frameLimitUs) {
+    return IsStreamlineReflexLowLatencyModeEnabled(mode) || IsStreamlineReflexFrameLimitActive(frameLimitUs);
+}
+
+inline bool ShouldOverrideStreamlineReflexFrameLimit(uint32_t targetIntervalUs) {
+    return targetIntervalUs > 0;
+}
+
 inline int ResolveDLSSFGMultiplier(bool active, uint32_t requestedGeneratedFrames) {
     if (!active) {
         return 0;

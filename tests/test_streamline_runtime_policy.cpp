@@ -277,6 +277,18 @@ TEST(StreamlineRuntimePolicyTest, ReflexActivationOnlyRequestsPrepareDuringFsrOw
         true, true, false, false));
 }
 
+TEST(StreamlineRuntimePolicyTest, ReflexFrameLimitIsPacingSignalEvenWhenLowLatencyModeIsOff) {
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineReflexPacingSignalActive(0, 0));
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineReflexPacingSignalActive(1, 0));
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineReflexPacingSignalActive(2, 0));
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineReflexPacingSignalActive(0, 8333));
+}
+
+TEST(StreamlineRuntimePolicyTest, ReflexFrameLimitOverrideFollowsConfiguredTarget) {
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldOverrideStreamlineReflexFrameLimit(0));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldOverrideStreamlineReflexFrameLimit(8333));
+}
+
 TEST(StreamlineRuntimePolicyTest, SuppressSetOptionsOffDuringStartupTransitionWindow) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(true, true));
 

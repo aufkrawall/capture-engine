@@ -375,6 +375,12 @@ inline int ResolveOverlayFGMetricType(bool effectiveFGActive, fg_runtime::Runtim
     }
 }
 
+inline bool DoOverlayFGPublishedTypesDiffer(bool lhsFGActive, fg_runtime::RuntimeMode lhsRuntimeMode,
+                                            bool rhsFGActive, fg_runtime::RuntimeMode rhsRuntimeMode) {
+    return ResolveOverlayFGMetricType(lhsFGActive, lhsRuntimeMode) !=
+           ResolveOverlayFGMetricType(rhsFGActive, rhsRuntimeMode);
+}
+
 inline bool IsPostFSRNonFGRecovery(bool hadFSRFGPhase, bool needsOffscreenOverlayAfterPostFSRNonFG, bool actualFGActive,
                                    bool streamlineFGRunning, bool hasSwapchainQueue) {
     return hadFSRFGPhase && needsOffscreenOverlayAfterPostFSRNonFG && !actualFGActive && !streamlineFGRunning &&

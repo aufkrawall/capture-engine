@@ -73,6 +73,9 @@ constexpr int kSLReflexModeOff = 0;
 constexpr int kSLReflexModeEnabled = 1;
 constexpr int kSLReflexModeLowLatency = 2;
 constexpr int kSLReflexModeLowLatencyWithBoost = 3;
+constexpr int kSLReflexOptionsModeOff = 0;
+constexpr int kSLReflexOptionsModeLowLatency = 1;
+constexpr int kSLReflexOptionsModeLowLatencyWithBoost = 2;
 
 // Streamline sl::ReflexConstants structure (matches Streamline SDK)
 struct SLReflexConstants {
@@ -106,6 +109,8 @@ constexpr slStructType kDLSSGStateStructType = {
     0xcc8ac8e1, 0xa179, 0x44f5, {0x97, 0xfa, 0xe7, 0x41, 0x12, 0xf9, 0xbc, 0x61}};
 constexpr slStructType kViewportHandleStructType = {
     0x171b6435, 0x9b3c, 0x4fc8, {0x99, 0x94, 0xfb, 0xe5, 0x25, 0x69, 0xaa, 0xa4}};
+constexpr slStructType kReflexOptionsStructType = {
+    0xf03af81a, 0x6d0b, 0x4902, {0xa6, 0x51, 0xc4, 0x96, 0x5e, 0x21, 0x54, 0x34}};
 
 struct slViewportHandle : slBaseStructure {
     slViewportHandle() : slBaseStructure(kViewportHandleStructType, kSLStructVersion1) {}
@@ -151,11 +156,22 @@ struct slDLSSGState : slBaseStructure {
     uint64_t lastPresentInputsProcessingCompletionFenceValue = 0;
 };
 
+struct slReflexOptions : slBaseStructure {
+    slReflexOptions() : slBaseStructure(kReflexOptionsStructType, kSLStructVersion1) {}
+
+    int32_t mode = kSLReflexOptionsModeOff;
+    uint32_t frameLimitUs = 0;
+    bool useMarkersToOptimize = false;
+    uint16_t virtualKey = 0;
+    uint32_t idThread = 0;
+};
+
 using PFN_slGetFeatureFunction = slResult (*)(uint32_t feature, const char* functionName, void*& function);
 using PFN_slSetD3DDevice = slResult (*)(void* d3dDevice);
 using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle& viewport, const slDLSSGOptions& options);
 using PFN_slDLSSGGetState = slResult (*)(const slViewportHandle& viewport, slDLSSGState& state,
                                          const slDLSSGOptions* options);
+using PFN_slReflexSetOptions = slResult (*)(const slReflexOptions& options);
 using PFN_slReflexSetConstants = slResult (*)(const SLReflexConstants& consts);
 
 struct ViewportFGState {
@@ -179,15 +195,18 @@ std::atomic<void*> g_SLGetFeatureFunctionTarget{nullptr};
 std::atomic<void*> g_SLSetD3DDeviceTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateTarget{nullptr};
+std::atomic<void*> g_ReflexSetOptionsTarget{nullptr};
 std::atomic<void*> g_ReflexSetConstantsTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsImportFallbackAttemptedTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateImportFallbackAttemptedTarget{nullptr};
+std::atomic<void*> g_ReflexSetOptionsImportFallbackAttemptedTarget{nullptr};
 std::atomic<void*> g_ReflexSetConstantsImportFallbackAttemptedTarget{nullptr};
 
 std::atomic<bool> g_SLGetFeatureFunctionHooked{false};
 std::atomic<bool> g_SLSetD3DDeviceHooked{false};
 std::atomic<bool> g_DLSSGSetOptionsHooked{false};
 std::atomic<bool> g_DLSSGGetStateHooked{false};
+std::atomic<bool> g_ReflexSetOptionsHooked{false};
 std::atomic<bool> g_ReflexSetConstantsHooked{false};
 
 std::unordered_map<uint32_t, ViewportFGState> g_ViewportStates;
@@ -210,12 +229,14 @@ PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
 PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
 PFN_slDLSSGGetState g_Original_slDLSSGGetState = nullptr;
+PFN_slReflexSetOptions g_Original_slReflexSetOptions = nullptr;
 PFN_slReflexSetConstants g_Original_slReflexSetConstants = nullptr;
 
 slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName, void*& function);
 slResult Hooked_slSetD3DDevice(void* d3dDevice);
 slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options);
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options);
+slResult Hooked_slReflexSetOptions(const slReflexOptions& options);
 slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts);
 
 const char* GetDLSSGModeName(uint32_t mode) {
@@ -304,6 +325,117 @@ slDLSSGOptions CloneDLSSGOptions(const slDLSSGOptions& source) {
 int GetEffectiveMultiplier(const slDLSSGOptions& options) {
     return ce::streamline_runtime_policy::ResolveDLSSFGMultiplier(
         ce::streamline_runtime_policy::IsDLSSGModeEnabled(options.mode), options.numFramesToGenerate);
+}
+
+struct ReflexSignalLogState {
+    bool valid = false;
+    int32_t mode = 0;
+    uint32_t frameLimitUs = 0;
+    uint32_t targetIntervalUs = 0;
+    bool pacingSignalActive = false;
+    bool runtimeDLSSFGApiActive = false;
+    bool runtimeFSRFGApiActive = false;
+    bool streamlineFGSignalActive = false;
+    ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kUnknown;
+};
+
+void LogStreamlineReflexSignalChange(const char* sourceName, int32_t mode, uint32_t frameLimitUs,
+                                     uint32_t targetIntervalUs) {
+    const bool pacingSignalActive =
+        ce::streamline_runtime_policy::IsStreamlineReflexPacingSignalActive(mode, frameLimitUs);
+    const bool lowLatencyModeEnabled =
+        ce::streamline_runtime_policy::IsStreamlineReflexLowLatencyModeEnabled(mode);
+    const bool frameLimitActive = ce::streamline_runtime_policy::IsStreamlineReflexFrameLimitActive(frameLimitUs);
+    const bool runtimeDLSSFGApiActive = g_FGCompat.IsDLSSFGApiActive();
+    const bool runtimeFSRFGApiActive = g_FGCompat.IsFSRFGApiActive();
+    const bool streamlineFGSignalActive = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+
+    static std::mutex s_reflexSignalLogMutex;
+    static ReflexSignalLogState s_optionsState;
+    static ReflexSignalLogState s_constantsState;
+    const bool isOptionsSource = sourceName && strcmp(sourceName, "slReflexSetOptions") == 0;
+
+    bool shouldLog = false;
+    {
+        std::lock_guard<std::mutex> lock(s_reflexSignalLogMutex);
+        auto& last = isOptionsSource ? s_optionsState : s_constantsState;
+        shouldLog = !last.valid || last.mode != mode || last.frameLimitUs != frameLimitUs ||
+                    last.targetIntervalUs != targetIntervalUs ||
+                    last.pacingSignalActive != pacingSignalActive ||
+                    last.runtimeDLSSFGApiActive != runtimeDLSSFGApiActive ||
+                    last.runtimeFSRFGApiActive != runtimeFSRFGApiActive ||
+                    last.streamlineFGSignalActive != streamlineFGSignalActive || last.runtimeMode != runtimeMode;
+        if (shouldLog) {
+            last.valid = true;
+            last.mode = mode;
+            last.frameLimitUs = frameLimitUs;
+            last.targetIntervalUs = targetIntervalUs;
+            last.pacingSignalActive = pacingSignalActive;
+            last.runtimeDLSSFGApiActive = runtimeDLSSFGApiActive;
+            last.runtimeFSRFGApiActive = runtimeFSRFGApiActive;
+            last.streamlineFGSignalActive = streamlineFGSignalActive;
+            last.runtimeMode = runtimeMode;
+        }
+    }
+
+    if (shouldLog) {
+        HookLogImportant(
+            "Streamline Hook: Reflex signal via %s mode=%d lowLatency=%d frameLimitUs=%u frameLimitActive=%d "
+            "pacingActive=%d ceCapActive=%d ceTargetIntervalUs=%u runtime=%s dlssApi=%d fsrApi=%d slSignal=%d",
+            sourceName ? sourceName : "unknown", mode, lowLatencyModeEnabled ? 1 : 0, frameLimitUs,
+            frameLimitActive ? 1 : 0, pacingSignalActive ? 1 : 0, targetIntervalUs > 0 ? 1 : 0,
+            targetIntervalUs, ce::fg_runtime::GetRuntimeModeName(runtimeMode), runtimeDLSSFGApiActive ? 1 : 0,
+            runtimeFSRFGApiActive ? 1 : 0, streamlineFGSignalActive ? 1 : 0);
+    }
+}
+
+void MaybePrepareForStreamlineEnableTransitionFromReflex(const char* sourceName) {
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const bool runtimeModeIsFSRFG = runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
+    const bool runtimeOwnsSwapchain = DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
+    if (ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(
+            true, g_FGCompat.IsFSRFGApiActive(), runtimeModeIsFSRFG, runtimeOwnsSwapchain)) {
+        HookLogImportant(
+            "Streamline Hook: Reflex activation requesting Streamline enable preparation via %s "
+            "(runtime=%s apiFSR=%d fgOwned=%d)",
+            sourceName ? sourceName : "unknown", ce::fg_runtime::GetRuntimeModeName(runtimeMode),
+            g_FGCompat.IsFSRFGApiActive() ? 1 : 0, runtimeOwnsSwapchain ? 1 : 0);
+        DX12_PrepareForStreamlineEnableTransition();
+    }
+}
+
+void HandleStreamlineReflexPacingSignal(const char* sourceName, int32_t mode, uint32_t frameLimitUs,
+                                        uint32_t targetIntervalUs) {
+    const bool lowLatencyModeEnabled =
+        ce::streamline_runtime_policy::IsStreamlineReflexLowLatencyModeEnabled(mode);
+    const bool frameLimitActive = ce::streamline_runtime_policy::IsStreamlineReflexFrameLimitActive(frameLimitUs);
+    const bool pacingSignalActive =
+        ce::streamline_runtime_policy::IsStreamlineReflexPacingSignalActive(mode, frameLimitUs);
+
+    LogStreamlineReflexSignalChange(sourceName, mode, frameLimitUs, targetIntervalUs);
+
+    if (pacingSignalActive) {
+        const bool activationEdge = !g_ReflexLimiter.IsGameActivated();
+        if (activationEdge) {
+            HookLogImportant(
+                "Streamline Hook: Game ACTIVATED Reflex pacing via %s (mode=%d lowLatency=%d frameLimitUs=%u "
+                "frameLimitActive=%d)",
+                sourceName ? sourceName : "unknown", mode, lowLatencyModeEnabled ? 1 : 0, frameLimitUs,
+                frameLimitActive ? 1 : 0);
+            if (lowLatencyModeEnabled) {
+                MaybePrepareForStreamlineEnableTransitionFromReflex(sourceName);
+            }
+        }
+        g_ReflexLimiter.SetGameActivated(true);
+        g_ReflexLimiter.MarkNativePacingSignal();
+    } else {
+        if (g_ReflexLimiter.IsGameActivated()) {
+            HookLogImportant("Streamline Hook: Game DEACTIVATED Reflex pacing via %s (mode=%d frameLimitUs=%u)",
+                             sourceName ? sourceName : "unknown", mode, frameLimitUs);
+        }
+        g_ReflexLimiter.SetGameActivated(false);
+    }
 }
 
 uint32_t GetCachedCapabilityMax(uint32_t viewportKey) {
@@ -756,6 +888,43 @@ bool MaybeHookDLSSGGetState(void*& function, bool fallbackToReturnedWrapper) {
     return g_DLSSGGetStateHooked.load(std::memory_order_acquire);
 }
 
+bool MaybeHookReflexSetOptions(void*& function, bool fallbackToReturnedWrapper) {
+    if (!function) {
+        return false;
+    }
+
+    if (function == reinterpret_cast<void*>(Hooked_slReflexSetOptions)) {
+        g_ReflexSetOptionsHooked.store(true, std::memory_order_release);
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_FeatureHookMutex);
+        if (!g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ||
+            g_ReflexSetOptionsTarget.load(std::memory_order_acquire) != function) {
+            InstallInlineHookOnce(reinterpret_cast<void*>(function), reinterpret_cast<void*>(Hooked_slReflexSetOptions),
+                                  g_Original_slReflexSetOptions, g_ReflexSetOptionsHooked,
+                                  g_ReflexSetOptionsTarget, "slReflexSetOptions");
+            if (!g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
+                TryInstallFeatureImportFallbackForOwningModule(
+                    function, "slReflexSetOptions", reinterpret_cast<void*>(Hooked_slReflexSetOptions),
+                    reinterpret_cast<void**>(&g_Original_slReflexSetOptions),
+                    g_ReflexSetOptionsImportFallbackAttemptedTarget, "slReflexSetOptions");
+            }
+        }
+    }
+
+    if (fallbackToReturnedWrapper && !g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
+        if (!g_Original_slReflexSetOptions) {
+            g_Original_slReflexSetOptions = reinterpret_cast<PFN_slReflexSetOptions>(function);
+        }
+        function = reinterpret_cast<void*>(Hooked_slReflexSetOptions);
+        return true;
+    }
+
+    return g_ReflexSetOptionsHooked.load(std::memory_order_acquire);
+}
+
 bool MaybeHookReflexSetConstants(void*& function, bool fallbackToReturnedWrapper) {
     if (!function) {
         return false;
@@ -820,6 +989,33 @@ bool TryResolveDLSSGFeatureHooks() {
            g_DLSSGGetStateHooked.load(std::memory_order_acquire);
 }
 
+bool TryResolveReflexFeatureHooks() {
+    if (!g_Original_slGetFeatureFunction) {
+        return false;
+    }
+
+    bool hookedAnything = false;
+
+    if (!g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
+        void* function = nullptr;
+        const slResult result = g_Original_slGetFeatureFunction(kSLFeatureReflex, "slReflexSetOptions", function);
+        if (result == kSlResultOk && function) {
+            hookedAnything |= MaybeHookReflexSetOptions(function, false);
+        }
+    }
+
+    if (!g_ReflexSetConstantsHooked.load(std::memory_order_acquire)) {
+        void* function = nullptr;
+        const slResult result = g_Original_slGetFeatureFunction(kSLFeatureReflex, "slReflexSetConstants", function);
+        if (result == kSlResultOk && function) {
+            hookedAnything |= MaybeHookReflexSetConstants(function, false);
+        }
+    }
+
+    return hookedAnything || g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ||
+           g_ReflexSetConstantsHooked.load(std::memory_order_acquire);
+}
+
 uint32_t QueryCapabilityMax(const slViewportHandle& viewport, const slDLSSGOptions* options) {
     if (!g_Original_slDLSSGGetState && !TryResolveDLSSGFeatureHooks()) {
         return 0;
@@ -852,11 +1048,13 @@ void RegisterDynamicHooksOnce() {
                                  reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions));
     IATHook::RegisterDynamicHook("slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
                                  reinterpret_cast<void**>(&g_Original_slDLSSGGetState));
+    IATHook::RegisterDynamicHook("slReflexSetOptions", reinterpret_cast<void*>(Hooked_slReflexSetOptions),
+                                 reinterpret_cast<void**>(&g_Original_slReflexSetOptions));
     IATHook::RegisterDynamicHook("slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
                                  reinterpret_cast<void**>(&g_Original_slReflexSetConstants));
     HookLogImportant(
         "Streamline Hook: Registered dynamic hooks for slGetFeatureFunction, slSetD3DDevice, "
-        "slDLSSGSetOptions, slDLSSGGetState, and slReflexSetConstants");
+        "slDLSSGSetOptions, slDLSSGGetState, slReflexSetOptions, and slReflexSetConstants");
 }
 
 bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
@@ -876,11 +1074,13 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     const auto originalDLSSGSetOptions =
         reinterpret_cast<PFN_slDLSSGSetOptions>(GetProcAddress(module, "slDLSSGSetOptions"));
     const auto originalDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(GetProcAddress(module, "slDLSSGGetState"));
+    const auto originalReflexSetOptions =
+        reinterpret_cast<PFN_slReflexSetOptions>(GetProcAddress(module, "slReflexSetOptions"));
     const auto originalReflexSetConstants =
         reinterpret_cast<PFN_slReflexSetConstants>(GetProcAddress(module, "slReflexSetConstants"));
 
     if (!originalGetFeatureFunction && !originalSetD3DDevice && !originalDLSSGSetOptions && !originalDLSSGGetState &&
-        !originalReflexSetConstants) {
+        !originalReflexSetOptions && !originalReflexSetConstants) {
         return false;
     }
 
@@ -938,6 +1138,13 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                 moduleBaseName, "slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
                 reinterpret_cast<void*>(originalDLSSGGetState), reinterpret_cast<void**>(&g_Original_slDLSSGGetState),
                 "slDLSSGGetState");
+        }
+
+        if (originalReflexSetOptions) {
+            hookedAnything |= InstallFeatureImportFallbackIfPresent(
+                moduleBaseName, "slReflexSetOptions", reinterpret_cast<void*>(Hooked_slReflexSetOptions),
+                reinterpret_cast<void*>(originalReflexSetOptions),
+                reinterpret_cast<void**>(&g_Original_slReflexSetOptions), "slReflexSetOptions");
         }
 
         if (originalReflexSetConstants) {
@@ -1355,7 +1562,12 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
     }
     // Reflex feature hook — detect game activation of native Reflex
     else if (feature == kSLFeatureReflex) {
-        if (strcmp(functionName, "slReflexSetConstants") == 0) {
+        if (strcmp(functionName, "slReflexSetOptions") == 0) {
+            if (MaybeHookReflexSetOptions(function, true)) {
+                HookLogImportant("Streamline Hook: Intercepted slReflexSetOptions (returned=%p original=%p)",
+                                 function, g_Original_slReflexSetOptions);
+            }
+        } else if (strcmp(functionName, "slReflexSetConstants") == 0) {
             if (MaybeHookReflexSetConstants(function, true)) {
                 HookLogImportant("Streamline Hook: Intercepted slReflexSetConstants (returned=%p original=%p)",
                                  function, g_Original_slReflexSetConstants);
@@ -1374,61 +1586,71 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
     const slResult result = g_Original_slSetD3DDevice(d3dDevice);
     if (result == kSlResultOk) {
         TryResolveDLSSGFeatureHooks();
+        TryResolveReflexFeatureHooks();
     }
     return result;
 }
 
-// Hook for slReflexSetConstants — detects when game activates Reflex via Streamline.
+// Hook for current Streamline Reflex options — detects low-latency and FPS limiter signals.
+slResult Hooked_slReflexSetOptions(const slReflexOptions& options) {
+    if (!g_Original_slReflexSetOptions) {
+        return kSlResultErrorInvalidState;
+    }
+
+    slReflexOptions adjustedOptions = options;
+    const uint32_t targetIntervalUs = g_ReflexLimiter.GetTargetIntervalUs();
+    const bool overrideFrameLimit =
+        ce::streamline_runtime_policy::ShouldOverrideStreamlineReflexFrameLimit(targetIntervalUs);
+    if (overrideFrameLimit) {
+        adjustedOptions.frameLimitUs = targetIntervalUs;
+    }
+    HandleStreamlineReflexPacingSignal("slReflexSetOptions", options.mode, adjustedOptions.frameLimitUs,
+                                       targetIntervalUs);
+
+    const slResult result = g_Original_slReflexSetOptions(adjustedOptions);
+    if (result == kSlResultOk && adjustedOptions.frameLimitUs != options.frameLimitUs) {
+        HookLogImportant("Streamline Hook: Overrode Reflex options frameLimitUs %u->%u (mode=%d)",
+                         options.frameLimitUs, adjustedOptions.frameLimitUs, adjustedOptions.mode);
+    } else if (result != kSlResultOk) {
+        static std::atomic<int> s_reflexSetOptionsFailLogCount{0};
+        const int failCount = s_reflexSetOptionsFailLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (failCount < 5) {
+            HookLogImportant("Streamline Hook: slReflexSetOptions forward failed result=%d mode=%d frameLimitUs=%u",
+                             result, options.mode, options.frameLimitUs);
+        }
+    }
+    return result;
+}
+
+// Hook for legacy slReflexSetConstants — detects when game activates Reflex via Streamline.
 slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
     if (!g_Original_slReflexSetConstants) {
         return kSlResultErrorInvalidState;
     }
 
     SLReflexConstants adjustedConsts = consts;
+    const uint32_t targetIntervalUs = g_ReflexLimiter.GetTargetIntervalUs();
+    HandleStreamlineReflexPacingSignal("slReflexSetConstants", consts.mode, consts.frameLimitUs, targetIntervalUs);
 
     // Detect game activation: mode is low-latency (enabled, low latency, or boost)
     if (consts.mode >= kSLReflexModeEnabled) {
-        const bool activationEdge = !g_ReflexLimiter.IsGameActivated();
-        const uint32_t targetIntervalUs = g_ReflexLimiter.GetTargetIntervalUs();
-        if (activationEdge) {
-            HookLogImportant(
-                "Streamline Hook: Game ACTIVATED Reflex via slReflexSetConstants (mode=%d, frameLimitUs=%u)",
-                consts.mode, consts.frameLimitUs);
-            HookLogImportant(
-                "Streamline Hook: Reflex path state during activation (capActive=%d targetIntervalUs=%u "
-                "incomingFrameLimitUs=%u)",
-                targetIntervalUs > 0 ? 1 : 0, targetIntervalUs, consts.frameLimitUs);
-            const auto runtimeMode = g_FGCompat.GetRuntimeMode();
-            const bool runtimeModeIsFSRFG = runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
-            const bool runtimeOwnsSwapchain = DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
-            if (ce::streamline_runtime_policy::ShouldRequestStreamlineEnablePreparationOnReflexActivation(
-                    true, g_FGCompat.IsFSRFGApiActive(), runtimeModeIsFSRFG, runtimeOwnsSwapchain)) {
-                HookLogImportant(
-                    "Streamline Hook: Reflex activation requesting Streamline enable preparation "
-                    "(runtime=%s apiFSR=%d fgOwned=%d)",
-                    ce::fg_runtime::GetRuntimeModeName(runtimeMode), g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
-                    runtimeOwnsSwapchain ? 1 : 0);
-                DX12_PrepareForStreamlineEnableTransition();
-            }
-        }
-        g_ReflexLimiter.SetGameActivated(true);
-
         if (targetIntervalUs > 0) {
             adjustedConsts.frameLimitUs = targetIntervalUs;
         }
-        g_ReflexLimiter.MarkNativePacingSignal();
-    } else if (consts.mode == kSLReflexModeOff) {
-        if (g_ReflexLimiter.IsGameActivated()) {
-            HookLogImportant("Streamline Hook: Game DEACTIVATED Reflex via slReflexSetConstants (mode=off)");
-        }
-        g_ReflexLimiter.SetGameActivated(false);
     }
 
     // Forward to the real slReflexSetConstants
     const slResult result = g_Original_slReflexSetConstants(adjustedConsts);
     if (result == kSlResultOk && adjustedConsts.frameLimitUs != consts.frameLimitUs) {
-        HookLog("Streamline Hook: Overrode Reflex frameLimitUs %u->%u (mode=%d)", consts.frameLimitUs,
-                adjustedConsts.frameLimitUs, adjustedConsts.mode);
+        HookLogImportant("Streamline Hook: Overrode Reflex constants frameLimitUs %u->%u (mode=%d)",
+                         consts.frameLimitUs, adjustedConsts.frameLimitUs, adjustedConsts.mode);
+    } else if (result != kSlResultOk) {
+        static std::atomic<int> s_reflexSetConstantsFailLogCount{0};
+        const int failCount = s_reflexSetConstantsFailLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (failCount < 5) {
+            HookLogImportant("Streamline Hook: slReflexSetConstants forward failed result=%d mode=%d frameLimitUs=%u",
+                             result, consts.mode, consts.frameLimitUs);
+        }
     }
     return result;
 }

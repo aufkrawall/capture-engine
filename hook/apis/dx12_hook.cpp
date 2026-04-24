@@ -11076,7 +11076,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
             // Publish the locally-computed FG state so per-frame suppression
             // (e.g. SL-off grace period) is reflected in the overlay.
-            if (plan.publishFGActive != currentFGActive || plan.publishRuntimeMode != currentRuntimeMode) {
+            if (ce::dx12_overlay_policy::DoOverlayFGPublishedTypesDiffer(
+                    plan.publishFGActive, plan.publishRuntimeMode, currentFGActive, currentRuntimeMode)) {
                 HookLogImportant(
                     "DX12::ProcessFrame overlay divergence: plan(active=%d mode=%s) vs local(active=%d mode=%s)",
                     plan.publishFGActive ? 1 : 0,

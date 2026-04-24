@@ -39,7 +39,8 @@ This page records how the current tree publishes visible FG status to the overla
 - Treat the visible overlay state as user-facing correctness, not cosmetic best effort.
 - When changing FG routing or detection, verify that label, multiplier, base FPS, and output FPS all move together instead of leaving a stale mixed state on screen.
 - When a visible label is stale but `PublishOverlayFGMetrics()` is publishing the wrong runtime, fix the upstream runtime-state ownership/heuristic boundary instead of papering over the label mapping.
-- When a visible label is stale and the log never shows the final authoritative OFF edge, inspect Streamline feature-hook coverage first (`slDLSSGSetOptions`, `slDLSSGGetState`, `slReflexSetConstants`) before revisiting publication-order logic, and verify that the fallback was armed on the actual owner module of the failing export rather than only on `sl.interposer.dll` / `sl.common.dll`.
+- When a visible label is stale and the log never shows the final authoritative OFF edge, inspect Streamline feature-hook coverage first (`slDLSSGSetOptions`, `slDLSSGGetState`, current `slReflexSetOptions`, and legacy `slReflexSetConstants`) before revisiting publication-order logic, and verify that the fallback was armed on the actual owner module of the failing export rather than only on `sl.interposer.dll` / `sl.common.dll`.
+- Inactive `Off` and inactive `STREAMLINE_NO_FG` both publish FG metric type `0`; do not treat that label-level equivalence as an overlay divergence. Use `DoOverlayFGPublishedTypesDiffer(...)` when deciding whether planner-vs-visible publication differences deserve override diagnostics.
 - If a runtime path can produce stale status for even a few frames, add a regression test before assuming the behavior is acceptable.
 
 ## Open Questions / Stale-Risk
