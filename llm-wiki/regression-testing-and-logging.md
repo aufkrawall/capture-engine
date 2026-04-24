@@ -57,7 +57,8 @@ Primary sources:
   - Native-FSR callback traces now also log callback-side HDR classification (`DX12: FFX present callback HDR check ... colorSpace=... isHDR=...`) and the FFX UI-composition contract (`premulAlpha=%d`) so visual FSR callback regressions can be distinguished from queue/routing failures.
 - `hook/apis/streamline_hook.cpp`
   - Logs pure observer-only FG transition pass-through versus staged observer-policy-only startup-policy handling.
-  - Logs current `slReflexSetOptions` and legacy `slReflexSetConstants` state changes, including incoming `frameLimitUs`, CE limiter target, Streamline/DLSS/FSR runtime flags, and the resolved runtime mode. A nonzero `frameLimitUs` is meaningful even when Reflex low-latency mode is off.
+  - Logs current `slReflexSetOptions` and legacy `slReflexSetConstants` state changes, including incoming and forwarded `frameLimitUs`, CE limiter target, Streamline/DLSS/FSR runtime flags, and the resolved runtime mode. A nonzero incoming `frameLimitUs` is meaningful even when Reflex low-latency mode is off; CE override values must not be treated as game-owned Reflex activation.
+  - Logs transition-level `slDLSSGSetOptions` requests with requested/forwarded mode, generated-frame override state, forwarded vs suppressed call state, result code, runtime mode, Streamline signal, and startup-protection flags. Use these lines to prove whether a final DLSSG OFF actually reached Streamline before chasing Reflex/NvAPI driver state.
 - `hook/common/dxgi_shared.cpp`
   - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths.
 - `hook/common/freeze_watchdog.cpp`

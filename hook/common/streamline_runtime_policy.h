@@ -28,6 +28,11 @@ struct CombinedRuntimeSignalUpdate {
     bool shouldExtendStartupTransitionWindow = false;
 };
 
+struct ReflexFrameLimitForwarding {
+    uint32_t frameLimitUs = 0;
+    bool overrideApplied = false;
+};
+
 struct ObserverOnlyHeuristicCleanup {
     bool clearRecentTeardownGrace = false;
     bool seedRecentTeardownGrace = false;
@@ -54,6 +59,15 @@ inline bool IsStreamlineReflexPacingSignalActive(int32_t mode, uint32_t frameLim
 
 inline bool ShouldOverrideStreamlineReflexFrameLimit(uint32_t targetIntervalUs) {
     return targetIntervalUs > 0;
+}
+
+inline ReflexFrameLimitForwarding ResolveStreamlineReflexFrameLimitForwarding(uint32_t incomingFrameLimitUs,
+                                                                              uint32_t targetIntervalUs) {
+    ReflexFrameLimitForwarding forwarding;
+    forwarding.frameLimitUs =
+        ShouldOverrideStreamlineReflexFrameLimit(targetIntervalUs) ? targetIntervalUs : incomingFrameLimitUs;
+    forwarding.overrideApplied = forwarding.frameLimitUs != incomingFrameLimitUs;
+    return forwarding;
 }
 
 inline int ResolveDLSSFGMultiplier(bool active, uint32_t requestedGeneratedFrames) {

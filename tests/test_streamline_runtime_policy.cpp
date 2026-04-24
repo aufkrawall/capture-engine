@@ -289,6 +289,19 @@ TEST(StreamlineRuntimePolicyTest, ReflexFrameLimitOverrideFollowsConfiguredTarge
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldOverrideStreamlineReflexFrameLimit(8333));
 }
 
+TEST(StreamlineRuntimePolicyTest, ReflexFrameLimitForwardingKeepsIncomingSignalOwnershipSeparate) {
+    const auto noOverride = ce::streamline_runtime_policy::ResolveStreamlineReflexFrameLimitForwarding(0, 0);
+    EXPECT_EQ(0u, noOverride.frameLimitUs);
+    EXPECT_FALSE(noOverride.overrideApplied);
+
+    const auto overridden = ce::streamline_runtime_policy::ResolveStreamlineReflexFrameLimitForwarding(0, 8333);
+    EXPECT_EQ(8333u, overridden.frameLimitUs);
+    EXPECT_TRUE(overridden.overrideApplied);
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineReflexPacingSignalActive(0, 0));
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineReflexFrameLimitActive(overridden.frameLimitUs));
+}
+
 TEST(StreamlineRuntimePolicyTest, SuppressSetOptionsOffDuringStartupTransitionWindow) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(true, true));
 
