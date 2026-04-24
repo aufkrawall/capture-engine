@@ -15,6 +15,7 @@ Primary sources:
 - `hook/apis/streamline_hook.cpp`
 - `hook/common/dxgi_shared.cpp`
 - `hook/common/overlay_metrics_publisher.cpp`
+- `hook/wrappers/iat_hook.cpp`
 - `tests/test_dx12_fg_trace_replay.cpp`
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_overlay_fg_status_publication.cpp`
@@ -22,6 +23,7 @@ Primary sources:
 - `tests/test_config.cpp`
 - `tests/test_config_override.cpp`
 - `tests/test_shared_runtime_state.cpp`
+- `tests/test_streamline_runtime_policy.cpp`
 
 ## Core Expectations
 - The repo is regression-paranoid. Fixes for one overlay or FG case are expected not to regress another one.
@@ -57,6 +59,8 @@ Primary sources:
   - Native-FSR callback traces now also log callback-side HDR classification (`DX12: FFX present callback HDR check ... colorSpace=... isHDR=...`) and the FFX UI-composition contract (`premulAlpha=%d`) so visual FSR callback regressions can be distinguished from queue/routing failures.
 - `hook/apis/streamline_hook.cpp`
   - Logs pure observer-only FG transition pass-through versus staged observer-policy-only startup-policy handling.
+  - Streamline feature-hook discovery now scans all loaded `sl.*.dll` modules, not only `sl.interposer.dll` / `sl.common.dll`, so feature-owner DLLs such as `sl.dlss_g.dll` can arm direct-import fallbacks even when export-inline patching fails.
+  - Direct-import fallback diagnostics now log owner-resolution failures and one-shot fallback-unavailable reasons. Use these lines to distinguish "no loaded module imports this feature directly yet" from a true hook-resolution failure.
   - Logs current `slReflexSetOptions` and legacy `slReflexSetConstants` state changes, including incoming and forwarded `frameLimitUs`, CE limiter target, Streamline/DLSS/FSR runtime flags, and the resolved runtime mode. A nonzero incoming `frameLimitUs` is meaningful even when Reflex low-latency mode is off; CE override values must not be treated as game-owned Reflex activation.
   - Logs transition-level `slDLSSGSetOptions` requests with requested/forwarded mode, generated-frame override state, forwarded vs suppressed call state, result code, runtime mode, Streamline signal, and startup-protection flags. Use these lines to prove whether a final DLSSG OFF actually reached Streamline before chasing Reflex/NvAPI driver state.
   - Logs source-specific suppression when post-settling `slDLSSGGetState` OFF polls are held through the 30-frame PostSL warmup proof window. In GTA `20260425_000339`, Reflex/NVAPI hooks were inactive, while the decisive collapse was a GetState OFF immediately after frame-12 stabilization ended.
@@ -99,6 +103,7 @@ Primary sources:
 - If you touch the confirmed-startup-settling guard itself, verify the exact boundary frame explicitly too: a post-FSR DLSS comeback that already reached `Post-SL overlay SUBMIT #8` must still remain startup-protected through that eighth confirmed frame, and must not immediately log `FG state transition ON->OFF via GetState` on the next stale runtime poll. Talos should continue past the same boundary into sustained PostSL submits.
 - If you touch the post-settling runtime-state stabilization window, verify that stale OFF churn stays deferred through frames 9-12 after first confirmed PostSL render, and that the first post-settling `GetState OFF` is still suppressed during that window. GTA `20260422_132835` proved that dropping stale OFF immediately when settling ends can collapse the just-proven DLSS FG session. The stabilization phase intentionally does not widen broader startup-routing or cooldown behavior; it only extends Streamline stale-OFF protection.
 - If you touch source-specific Streamline `GetState` OFF handling, verify the pure-DLSS frame 13-30 warmup-proof family separately from explicit `slDLSSGSetOptions(OFF)`: GetState OFF jitter may stay deferred until the PostSL warmup proof threshold, but deliberate SetOptions OFF suppression must not be widened by that rule. GTA `20260425_000339` proved that a GetState OFF at frame 13 can still collapse an otherwise submitting PostSL startup.
+- If you touch Streamline feature-module discovery or direct-import fallbacks, verify that all `sl.*.dll` feature owners are considered and that repeated scans are idempotent. Talos `20260425_002642` proved that a 2D-menu DLSS FG disable can be missed if CE never observes the explicit `slDLSSGSetOptions(OFF)` edge and only polls active `slDLSSGGetState`.
 - If you touch deferred startup-window OFF replay after a post-FSR comeback, verify the later `GetState`-only startup family too: once the shared DX12 policy already proves `safePostFSRBootstrapPath=1` on a fresh authoritative Streamline handoff, stale suppressed OFF churn must stay deferred past startup-window expiry for that comeback as well. Otherwise GTA can activate PostSL on the fresh handoff queue and then immediately replay the old OFF on the next line before first confirmed render.
 - If you touch heuristic FSR detection or queue-change/ECL-pattern activation, verify the fresh authoritative Streamline startup-handoff family too: on a fresh post-FSR Streamline handoff queue, CE must not relabel the path as `FSR_FG` while Streamline still reports `runtime=STREAMLINE_NO_FG active=0`. GTA `20260421_161500` proved that stale heuristic FSR on the fresh Streamline handoff queue can poison the later DLSS comeback back into the old unsafe `OFF->ON via GetState` / `synthetic re-entrant #1` / external `sl-sha-11cf43f.dmp` family.
 - If you touch Streamline startup-handoff lifetime or explicit-activation provenance, verify the mixed-order post-FSR startup family too: a fresh authoritative Streamline handoff must stay `streamlineStartupHandoffPending=1` while synthetic startup is still half-armed, and a later real `slDLSSGSetOptions(ON)` must still upgrade the current live comeback to explicit provenance even if `GetState` surfaced `active=1` first. GTA `20260421_170319` proved that losing either half can recreate the same bad shape: false queue-change `FSR_FG` relabel on the fresh Streamline handoff queue, then `OFF->ON via GetState`, `Treating Streamline-originated Present as synthetic re-entrant #1`, and repeated external `sl-sha-11cf43f.dmp` dumps.

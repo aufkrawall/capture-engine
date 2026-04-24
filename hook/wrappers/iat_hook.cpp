@@ -268,11 +268,16 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
 
                     if (strcmp(importByName->Name, functionName) == 0) {
                         // Found the function - patch the IAT entry
+                        const auto currentFunction = reinterpret_cast<void*>(iatEntry->u1.Function);
+                        if (currentFunction == hookFunction) {
+                            return false;
+                        }
+
                         DWORD oldProtect;
                         if (VirtualProtect(&iatEntry->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                             // Save original
                             if (outOriginal) {
-                                *outOriginal = reinterpret_cast<void*>(iatEntry->u1.Function);
+                                *outOriginal = currentFunction;
                             }
 
                             // Patch

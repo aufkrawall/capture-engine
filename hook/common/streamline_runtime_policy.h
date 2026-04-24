@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "../../common/shared_defs.h"
@@ -55,6 +56,96 @@ inline bool IsStreamlineReflexFrameLimitActive(uint32_t frameLimitUs) {
 
 inline bool IsStreamlineReflexPacingSignalActive(int32_t mode, uint32_t frameLimitUs) {
     return IsStreamlineReflexLowLatencyModeEnabled(mode) || IsStreamlineReflexFrameLimitActive(frameLimitUs);
+}
+
+inline char ToLowerAscii(char c) {
+    if (c >= 'A' && c <= 'Z') {
+        return static_cast<char>(c - 'A' + 'a');
+    }
+    return c;
+}
+
+inline size_t StringLength(const char* value) {
+    if (!value) {
+        return 0;
+    }
+
+    size_t length = 0;
+    while (value[length] != '\0') {
+        ++length;
+    }
+    return length;
+}
+
+inline bool EqualsIgnoreCaseAscii(const char* lhs, const char* rhs) {
+    if (!lhs || !rhs) {
+        return false;
+    }
+
+    while (*lhs != '\0' && *rhs != '\0') {
+        if (ToLowerAscii(*lhs) != ToLowerAscii(*rhs)) {
+            return false;
+        }
+        ++lhs;
+        ++rhs;
+    }
+
+    return *lhs == '\0' && *rhs == '\0';
+}
+
+inline bool HasPrefixIgnoreCaseAscii(const char* value, const char* prefix) {
+    if (!value || !prefix) {
+        return false;
+    }
+
+    while (*prefix != '\0') {
+        if (*value == '\0' || ToLowerAscii(*value) != ToLowerAscii(*prefix)) {
+            return false;
+        }
+        ++value;
+        ++prefix;
+    }
+    return true;
+}
+
+inline bool HasSuffixIgnoreCaseAscii(const char* value, const char* suffix) {
+    if (!value || !suffix) {
+        return false;
+    }
+
+    const size_t valueLength = StringLength(value);
+    const size_t suffixLength = StringLength(suffix);
+    if (valueLength < suffixLength) {
+        return false;
+    }
+
+    return EqualsIgnoreCaseAscii(value + valueLength - suffixLength, suffix);
+}
+
+inline const char* PathBaseName(const char* moduleNameOrPath) {
+    if (!moduleNameOrPath) {
+        return nullptr;
+    }
+
+    const char* baseName = moduleNameOrPath;
+    for (const char* cursor = moduleNameOrPath; *cursor != '\0'; ++cursor) {
+        if (*cursor == '\\' || *cursor == '/') {
+            baseName = cursor + 1;
+        }
+    }
+    return baseName;
+}
+
+inline bool IsStreamlineModuleNameForFeatureHooking(const char* moduleNameOrPath) {
+    const char* baseName = PathBaseName(moduleNameOrPath);
+    const size_t baseNameLength = StringLength(baseName);
+    return baseNameLength > 7 && HasPrefixIgnoreCaseAscii(baseName, "sl.") &&
+           HasSuffixIgnoreCaseAscii(baseName, ".dll");
+}
+
+inline bool IsStreamlineCoreModuleName(const char* moduleNameOrPath) {
+    const char* baseName = PathBaseName(moduleNameOrPath);
+    return EqualsIgnoreCaseAscii(baseName, "sl.interposer.dll") || EqualsIgnoreCaseAscii(baseName, "sl.common.dll");
 }
 
 inline bool ShouldOverrideStreamlineReflexFrameLimit(uint32_t targetIntervalUs) {

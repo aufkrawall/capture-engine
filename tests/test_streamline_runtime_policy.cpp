@@ -6,6 +6,30 @@
 
 namespace {
 
+TEST(StreamlineRuntimePolicyTest, StreamlineModuleFeatureHookingRecognizesFeatureDlls) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("sl.interposer.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("sl.common.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("sl.dlss_g.dll"));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("C:\\Game\\bin\\SL.Reflex.DLL"));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(nullptr));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("sl.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("sl.interposer.json"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("_nvngx.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("nvngx_dlssg.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("notsl.dlss_g.dll"));
+}
+
+TEST(StreamlineRuntimePolicyTest, StreamlineCoreModuleRecognitionStaysNarrow) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineCoreModuleName("C:\\Game\\sl.interposer.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineCoreModuleName("SL.COMMON.DLL"));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineCoreModuleName("sl.dlss_g.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineCoreModuleName("sl.reflex.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineCoreModuleName("nvngx_dlssg.dll"));
+}
+
 TEST(StreamlineRuntimePolicyTest, RequestedOptionsEnableBuildsActiveRuntimeUpdate) {
     const auto update =
         ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(true, true, 1, 1, 3);

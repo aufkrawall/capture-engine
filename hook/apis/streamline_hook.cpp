@@ -1,5 +1,6 @@
 #include "streamline_hook.h"
 #include <windows.h>
+#include <tlhelp32.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -189,6 +190,7 @@ std::mutex g_FeatureHookMutex;
 
 std::atomic<bool> g_DynamicHooksRegistered{false};
 std::atomic<bool> g_NoModulesLogged{false};
+std::atomic<bool> g_ModuleSnapshotFailureLogged{false};
 std::atomic<uint32_t> g_IATPatchesMask{0};
 std::atomic<uint32_t> g_InstalledModuleMask{0};
 
@@ -273,8 +275,7 @@ const char* GetModuleBaseName(const char* moduleNameOrPath) {
 }
 
 bool IsStreamlineModuleName(const char* moduleNameOrPath) {
-    const char* baseName = GetModuleBaseName(moduleNameOrPath);
-    return baseName && (!_stricmp(baseName, "sl.interposer.dll") || !_stricmp(baseName, "sl.common.dll"));
+    return ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath);
 }
 
 uint32_t GetModuleMaskBit(const char* moduleNameOrPath) {
@@ -886,6 +887,35 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
     return true;
 }
 
+void LogFeatureImportFallbackUnavailableOnce(const char* moduleBaseName, const char* functionName,
+                                             void* exportedProc, const char* hookName, const char* reason) {
+    const char* effectiveHookName = hookName ? hookName : functionName;
+    if (!moduleBaseName || !effectiveHookName) {
+        return;
+    }
+
+    static std::mutex s_logMutex;
+    static std::unordered_map<std::string, bool> s_loggedUnavailable;
+
+    std::string key = effectiveHookName;
+    key += '|';
+    key += moduleBaseName;
+    key += '|';
+    key += std::to_string(reinterpret_cast<uintptr_t>(exportedProc));
+
+    {
+        std::lock_guard<std::mutex> lock(s_logMutex);
+        if (s_loggedUnavailable.find(key) != s_loggedUnavailable.end()) {
+            return;
+        }
+        s_loggedUnavailable.emplace(key, true);
+    }
+
+    HookLogImportant(
+        "Streamline Hook: Direct import fallback unavailable for %s via %s (export=%p): %s",
+        effectiveHookName, moduleBaseName, exportedProc, reason ? reason : "no matching loaded import");
+}
+
 bool InstallFeatureImportFallbackIfPresent(const char* moduleBaseName, const char* functionName, void* detour,
                                            void* exportedProc, void** originalSlot, const char* hookName) {
     if (!moduleBaseName || !functionName || !detour || !exportedProc) {
@@ -898,6 +928,9 @@ bool InstallFeatureImportFallbackIfPresent(const char* moduleBaseName, const cha
 
     void* patchedOriginal = nullptr;
     if (!IATHook::PatchIATAllModules(moduleBaseName, functionName, detour, &patchedOriginal)) {
+        LogFeatureImportFallbackUnavailableOnce(
+            moduleBaseName, functionName, exportedProc, hookName,
+            "no loaded module currently imports this feature directly; retrying on later Streamline module scans");
         return false;
     }
 
@@ -912,8 +945,14 @@ bool InstallFeatureImportFallbackIfPresent(const char* moduleBaseName, const cha
     return true;
 }
 
-bool TryGetOwningModulePath(void* address, char* modulePath, DWORD modulePathCapacity) {
+bool TryGetOwningModulePath(void* address, char* modulePath, DWORD modulePathCapacity, DWORD* outError) {
+    if (outError) {
+        *outError = ERROR_SUCCESS;
+    }
     if (!address || !modulePath || modulePathCapacity == 0) {
+        if (outError) {
+            *outError = ERROR_INVALID_PARAMETER;
+        }
         return false;
     }
 
@@ -921,11 +960,20 @@ bool TryGetOwningModulePath(void* address, char* modulePath, DWORD modulePathCap
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCSTR>(address), &ownerModule) ||
         !ownerModule) {
+        if (outError) {
+            *outError = GetLastError();
+        }
         return false;
     }
 
     const DWORD pathLen = GetModuleFileNameA(ownerModule, modulePath, modulePathCapacity);
-    return pathLen > 0 && pathLen < modulePathCapacity;
+    if (pathLen == 0 || pathLen >= modulePathCapacity) {
+        if (outError) {
+            *outError = pathLen >= modulePathCapacity ? ERROR_INSUFFICIENT_BUFFER : GetLastError();
+        }
+        return false;
+    }
+    return true;
 }
 
 bool TryInstallFeatureImportFallbackForOwningModule(void* function, const char* functionName, void* detour,
@@ -940,8 +988,11 @@ bool TryInstallFeatureImportFallbackForOwningModule(void* function, const char* 
     }
 
     char ownerPath[MAX_PATH] = {};
-    if (!TryGetOwningModulePath(function, ownerPath, MAX_PATH)) {
+    DWORD ownerError = ERROR_SUCCESS;
+    if (!TryGetOwningModulePath(function, ownerPath, MAX_PATH, &ownerError)) {
         attemptedTarget.store(function, std::memory_order_release);
+        HookLogImportant("Streamline Hook: Direct import fallback owner resolution failed for %s target=%p error=%lu",
+                         hookName ? hookName : functionName, function, static_cast<unsigned long>(ownerError));
         return false;
     }
 
@@ -952,13 +1003,7 @@ bool TryInstallFeatureImportFallbackForOwningModule(void* function, const char* 
         return false;
     }
 
-    const bool installed = InstallFeatureImportFallbackIfPresent(ownerBaseName, functionName, detour, function,
-                                                                 originalSlot, hookName);
-    if (!installed) {
-        HookLog("Streamline Hook: Direct import fallback unavailable for %s owner=%s target=%p",
-                hookName ? hookName : functionName, ownerBaseName, function);
-    }
-    return installed;
+    return InstallFeatureImportFallbackIfPresent(ownerBaseName, functionName, detour, function, originalSlot, hookName);
 }
 
 bool MaybeHookDLSSGSetOptions(void*& function, bool fallbackToReturnedWrapper) {
@@ -1401,6 +1446,48 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         HookLogImportant("Streamline Hook: Installed hooks for %s (%p)", moduleBaseName, module);
     }
     return true;
+}
+
+bool ScanLoadedStreamlineModules() {
+    HANDLE snapshot =
+        CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        if (!g_ModuleSnapshotFailureLogged.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant("Streamline Hook: Failed to enumerate loaded modules for feature hooks error=%lu",
+                             static_cast<unsigned long>(error));
+        }
+        return false;
+    }
+
+    MODULEENTRY32 entry = {};
+    entry.dwSize = sizeof(entry);
+    if (!Module32First(snapshot, &entry)) {
+        const DWORD error = GetLastError();
+        CloseHandle(snapshot);
+        if (!g_ModuleSnapshotFailureLogged.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant("Streamline Hook: Loaded-module enumeration was empty for feature hooks error=%lu",
+                             static_cast<unsigned long>(error));
+        }
+        return false;
+    }
+
+    g_ModuleSnapshotFailureLogged.store(false, std::memory_order_release);
+
+    bool foundModule = false;
+    do {
+        const char* moduleNameOrPath = entry.szExePath[0] != '\0' ? entry.szExePath : entry.szModule;
+        if (!ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath)) {
+            continue;
+        }
+
+        foundModule = true;
+        g_FGCompat.SetStreamlineSupportPresent(true);
+        InstallHooksForModule(entry.hModule, moduleNameOrPath);
+    } while (Module32Next(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    return foundModule;
 }
 
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options) {
@@ -1951,26 +2038,11 @@ void Init() {
     std::lock_guard<std::mutex> lock(g_InitMutex);
     RegisterDynamicHooksOnce();
 
-    bool foundModule = false;
-    const struct {
-        const wchar_t* wideName;
-        const char* narrowName;
-    } modules[] = {
-        {L"sl.interposer.dll", "sl.interposer.dll"},
-        {L"sl.common.dll", "sl.common.dll"},
-    };
-
-    for (const auto& module : modules) {
-        if (HMODULE handle = GetModuleHandleW(module.wideName)) {
-            foundModule = true;
-            g_FGCompat.SetStreamlineSupportPresent(true);
-            InstallHooksForModule(handle, module.narrowName);
-        }
-    }
+    const bool foundModule = ScanLoadedStreamlineModules();
 
     if (!foundModule) {
         if (!g_NoModulesLogged.exchange(true, std::memory_order_acq_rel)) {
-            HookLog("Streamline Hook: No Streamline core modules loaded yet; waiting for module load");
+            HookLog("Streamline Hook: No Streamline modules loaded yet; waiting for module load");
         }
     } else {
         g_NoModulesLogged.store(false, std::memory_order_release);
