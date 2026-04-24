@@ -638,8 +638,14 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
     const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
-    const bool postSLConfirmedButRuntimeStateStabilizing =
+    const bool sourceWasSetOptions = source && strcmp(source, "SetOptions") == 0;
+    const bool sourceWasGetState = source && strcmp(source, "GetState") == 0;
+    const bool postSLConfirmedButRuntimeStateStabilizingBase =
         HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
+    const bool postSLConfirmedButGetStateOffWarmupProtected =
+        !active && sourceWasGetState && HookIsPostSLOverlayConfirmedButGetStateOffWarmupProtected();
+    const bool postSLConfirmedButRuntimeStateStabilizing =
+        postSLConfirmedButRuntimeStateStabilizingBase || postSLConfirmedButGetStateOffWarmupProtected;
     const bool explicitSetOptionsActivationForCurrentComeback =
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
     const bool hadFSRFGPhase = HookHasFSRFGHistory();
@@ -662,7 +668,6 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
         DXGIShared::ArmStreamlineStartupTransitionWindow();
         g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     }
-    const bool sourceWasSetOptions = source && strcmp(source, "SetOptions") == 0;
     const bool explicitSetOptionsActivation = explicitSetOptionsEnableSignal;
     const bool updatedExplicitSetOptionsActivation =
         ce::streamline_runtime_policy::ResolveCurrentComebackExplicitSetOptionsActivation(
@@ -698,8 +703,20 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
                                      : ce::fg_runtime::RuntimeMode::kStreamlineNoFG,
         signalUpdate.effectiveActive, updatedExplicitSetOptionsActivation);
     if (signalUpdate.deferredOffDuringStartupWindow && !startupWindowActive) {
-        if (!active && !postSLConfirmedButStartupSettling && postSLConfirmedButRuntimeStateStabilizing &&
-            source && strcmp(source, "GetState") == 0) {
+        if (!active && !postSLConfirmedButStartupSettling && sourceWasGetState &&
+            postSLConfirmedButGetStateOffWarmupProtected && !postSLConfirmedButRuntimeStateStabilizingBase) {
+            static std::atomic<bool> s_loggedGetStateWarmupProofSuppression{false};
+            if (!s_loggedGetStateWarmupProofSuppression.exchange(true, std::memory_order_relaxed)) {
+                HookLogImportant(
+                    "Streamline Hook: Suppressing post-stabilization GetState OFF during PostSL warmup proof "
+                    "(hadFSR=%d explicit=%d safeBootstrap=%d stableProtectionWindow=%d-%d)",
+                    hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
+                    safePostFSRBootstrapPath ? 1 : 0,
+                    ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationFirstFrame(),
+                    HookGetPostSLGetStateOffWarmupProtectionLastFrame());
+            }
+        } else if (!active && !postSLConfirmedButStartupSettling && postSLConfirmedButRuntimeStateStabilizingBase &&
+                   sourceWasGetState) {
             static std::atomic<bool> s_loggedPostSettlingGetStateSuppression{false};
             if (!s_loggedPostSettlingGetStateSuppression.exchange(true, std::memory_order_relaxed)) {
                 const int runtimeStateStabilizationLastFrame = HookGetPostSLRuntimeStateStabilizationLastFrame();

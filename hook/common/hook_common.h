@@ -149,6 +149,12 @@ bool HookIsPostSLOverlayConfirmedButStartupSettling();
 bool HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
 int HookGetPostSLRuntimeStateStabilizationLastFrame();
 
+// DX12 exports this narrower GetState-only warmup guard so Streamline can
+// ignore transient inactive GetState polls until PostSL reaches the broader
+// warmup proof threshold, without extending explicit SetOptions(OFF) suppression.
+bool HookIsPostSLOverlayConfirmedButGetStateOffWarmupProtected();
+int HookGetPostSLGetStateOffWarmupProtectionLastFrame();
+
 // DX12 exports this so shared routing code can distinguish the pure-DLSS
 // cold-start family from the stricter post-FSR comeback path.
 bool HookHasFSRFGHistory();

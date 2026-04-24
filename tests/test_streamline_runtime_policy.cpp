@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "../common/config.h"
+#include "../hook/common/dx12_overlay_policy.h"
 #include "../hook/common/streamline_runtime_policy.h"
 
 namespace {
@@ -409,6 +410,17 @@ TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackStaysDeferredD
         false, false, true, false, false, false, true, false, true));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
         false, true, false, true, false, true));
+}
+
+TEST(StreamlineRuntimePolicyTest, GetStateWarmupProtectionKeepsPureDLSSOffChurnDeferred) {
+    const bool getStateWarmupProtection =
+        ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(true, 13);
+
+    EXPECT_TRUE(getStateWarmupProtection);
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
+        false, false, true, false, false, false, true, false, getStateWarmupProtection));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
+        false, true, false, true, false, getStateWarmupProtection));
 }
 
 TEST(StreamlineRuntimePolicyTest, CombinedRuntimeStateDefersHalfArmedStartupProtectedPostFSRComebackOffAfterWindowExpiry) {

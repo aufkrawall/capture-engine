@@ -1484,6 +1484,23 @@ inline bool ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(bool po
                GetConfirmedPostSLRuntimeStateStabilizationLastFrame(extendForChurnedReactivation);
 }
 
+inline constexpr int GetConfirmedPostSLGetStateOffWarmupProtectionLastFrame() {
+    return GetConfirmedPostSLWarmupProofFrameThreshold();
+}
+
+inline bool ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(bool postSLConfirmedRendering,
+                                                              int stablePostSLFrameCount) {
+    // GTA can keep reporting transient inactive slDLSSGGetState data after the
+    // generic SetOptions stale-OFF guard has done its job and PostSL is already
+    // submitting successfully. Treat only GetState OFF as warmup jitter until
+    // the same 30-frame proof threshold used by the PostSL stall fallback is
+    // reached. This deliberately does not extend explicit slDLSSGSetOptions(OFF)
+    // suppression.
+    return postSLConfirmedRendering &&
+           stablePostSLFrameCount >= GetConfirmedPostSLRuntimeStateStabilizationFirstFrame() &&
+           stablePostSLFrameCount <= GetConfirmedPostSLGetStateOffWarmupProtectionLastFrame();
+}
+
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,
                                                                     bool postSLConfirmedRendering,
                                                                     bool useTopLevelHandoffWrapperProgress) {

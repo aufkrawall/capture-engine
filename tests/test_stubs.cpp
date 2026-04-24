@@ -114,6 +114,14 @@ int HookGetPostSLRuntimeStateStabilizationLastFrame() {
     return 12;
 }
 
+bool HookIsPostSLOverlayConfirmedButGetStateOffWarmupProtected() {
+    return false;
+}
+
+int HookGetPostSLGetStateOffWarmupProtectionLastFrame() {
+    return 30;
+}
+
 bool HookHasFSRFGHistory() {
     return false;
 }

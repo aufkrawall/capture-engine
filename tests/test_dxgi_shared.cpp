@@ -1919,6 +1919,17 @@ TEST(DXGISharedTest, ConfirmedPostSLRuntimeStateStabilizationStartsRightAfterSet
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(false, 9));
 }
 
+TEST(DXGISharedTest, GetStateOffWarmupProtectionExtendsToPostSLProofThreshold) {
+    EXPECT_EQ(30, ce::dx12_overlay_policy::GetConfirmedPostSLGetStateOffWarmupProtectionLastFrame());
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(true, 8));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(true, 9));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(true, 13));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(true, 30));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(true, 31));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(false, 13));
+}
+
 TEST(DXGISharedTest, ChurnedPostSLReactivationExtendsRuntimeStateStabilizationToWarmupProofThreshold) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldExtendConfirmedPostSLRuntimeStateStabilizationAfterReactivation(0));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldExtendConfirmedPostSLRuntimeStateStabilizationAfterReactivation(2));
