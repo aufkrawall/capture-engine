@@ -80,6 +80,18 @@ TEST(StreamlineRuntimePolicyTest, SuppressedSetOptionsOffDoesNotApplyLocalRuntim
         ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(false, false));
 }
 
+TEST(StreamlineRuntimePolicyTest, SuccessfulSetOptionsDisableClearsCachedStreamlineViewports) {
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(true, false, 0));
+
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(true, true, 0));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(false, false, 0));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(true, false, 1));
+}
+
 TEST(StreamlineRuntimePolicyTest, RequestedOptionsFallbacksToTwoXForInvalidGeneratedFrameCount) {
     const auto update =
         ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(true, true, 2, 0, 1);
@@ -163,6 +175,20 @@ TEST(StreamlineRuntimePolicyTest, EvaluateGetStateSuppressionBlocksFreshActivati
     EXPECT_FALSE(evaluation.update.shouldUpdate);
     EXPECT_FALSE(evaluation.update.active);
     EXPECT_TRUE(evaluation.suppressedFreshActivation);
+}
+
+TEST(StreamlineRuntimePolicyTest, AuthoritativeGetStateDisableClearsCachedStreamlineViewports) {
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForGetStateDisable(true, true, true, 0, 5));
+
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForGetStateDisable(true, true, false, 0, 5));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForGetStateDisable(true, true, true, 1, 5));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForGetStateDisable(true, true, true, 0, 0));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForGetStateDisable(false, true, true, 0, 5));
 }
 
 TEST(StreamlineRuntimePolicyTest, FreshGetStateActivationSuppressedWhileRuntimeStillInactive) {

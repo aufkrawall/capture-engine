@@ -819,12 +819,14 @@ bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state) {
 }
 
 void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplier, uint32_t generatedFrames,
-                                uint32_t capabilityMax, const char* source) {
+                                uint32_t capabilityMax, const char* source,
+                                bool clearAllViewportStatesForDisable = false) {
     ViewportFGState previousState{};
     bool hadPreviousState = false;
     bool stateChanged = false;
     bool anyActive = false;
     int combinedMultiplier = 0;
+    size_t clearedActiveViewportCount = 0;
 
     {
         std::lock_guard<std::mutex> lock(g_StateMutex);
@@ -836,6 +838,9 @@ void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplie
 
         if (active) {
             g_ViewportStates[viewportKey] = {true, multiplier, generatedFrames, capabilityMax};
+        } else if (clearAllViewportStatesForDisable) {
+            clearedActiveViewportCount = g_ViewportStates.size();
+            g_ViewportStates.clear();
         } else {
             g_ViewportStates.erase(viewportKey);
         }
@@ -861,9 +866,19 @@ void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplie
     const bool explicitSetOptionsEnableSignal = source && strcmp(source, "SetOptions") == 0 && active;
     ApplyCombinedStreamlineRuntimeState(anyActive, combinedMultiplier, explicitSetOptionsEnableSignal, source);
 
+    if (clearedActiveViewportCount > 0) {
+        HookLogImportant(
+            "Streamline Hook: Cleared %zu cached DLSSG viewport runtime state(s) after %s disable "
+            "(triggerViewport=%u generatedFrames=%u capabilityMax=%u)",
+            clearedActiveViewportCount, source ? source : "runtime", viewportKey, generatedFrames, capabilityMax);
+    }
+
     if (stateChanged) {
-        HookLog("Streamline Hook: Viewport %u state active=%d multiplier=%dx generatedFrames=%u capabilityMax=%u",
-                viewportKey, active ? 1 : 0, active ? multiplier : 0, generatedFrames, capabilityMax);
+        HookLog(
+            "Streamline Hook: Viewport %u state active=%d multiplier=%dx generatedFrames=%u capabilityMax=%u "
+            "source=%s clearAll=%d",
+            viewportKey, active ? 1 : 0, active ? multiplier : 0, generatedFrames, capabilityMax,
+            source ? source : "runtime", clearAllViewportStatesForDisable ? 1 : 0);
     }
 }
 
@@ -1637,6 +1652,11 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     const auto runtimeEvaluation = ce::streamline_runtime_policy::EvaluateViewportRuntimeUpdateFromGetState(
         result == kSlResultOk, options != nullptr, viewportWasActive, hasRuntimeFenceEvidence, suppressNewActivation,
         options ? options->mode : 0, options ? options->numFramesToGenerate : 0u, capabilityMax);
+    const bool clearAllViewportStatesForDisable =
+        runtimeEvaluation.update.shouldUpdate &&
+        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForGetStateDisable(
+            result == kSlResultOk, options != nullptr, hasRuntimeFenceEvidence, options ? options->mode : 0u,
+            capabilityMax);
     if (result == kSlResultOk && options != nullptr) {
         static std::atomic<int> s_getStateTraceLogCount{0};
         const int logCount = s_getStateTraceLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -1644,13 +1664,14 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
             HookLogImportant(
                 "Streamline Hook: slDLSSGGetState observed viewport=%u optionsMode=%s(%u) generated=%u "
                 "capabilityMax=%u presented=%u fence=%p fenceValue=%llu viewportWasActive=%d update=%d "
-                "updateActive=%d suppressNew=%d fenceEvidence=%d setOptionsHooked=%d setOptionsOriginal=%p",
+                "updateActive=%d clearAll=%d suppressNew=%d fenceEvidence=%d setOptionsHooked=%d "
+                "setOptionsOriginal=%p",
                 viewportKey, GetDLSSGModeName(options->mode), options->mode, options->numFramesToGenerate,
                 capabilityMax, state.numFramesActuallyPresented, state.inputsProcessingCompletionFence,
                 (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
                 viewportWasActive ? 1 : 0, runtimeEvaluation.update.shouldUpdate ? 1 : 0,
-                runtimeEvaluation.update.active ? 1 : 0, suppressNewActivation ? 1 : 0,
-                hasRuntimeFenceEvidence ? 1 : 0,
+                runtimeEvaluation.update.active ? 1 : 0, clearAllViewportStatesForDisable ? 1 : 0,
+                suppressNewActivation ? 1 : 0, hasRuntimeFenceEvidence ? 1 : 0,
                 g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
                 reinterpret_cast<void*>(g_Original_slDLSSGSetOptions));
         }
@@ -1658,7 +1679,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     if (runtimeEvaluation.update.shouldUpdate) {
         UpdateViewportRuntimeState(viewportKey, runtimeEvaluation.update.active, runtimeEvaluation.update.multiplier,
                                    runtimeEvaluation.update.generatedFrames, runtimeEvaluation.update.capabilityMax,
-                                   "GetState");
+                                   "GetState", clearAllViewportStatesForDisable);
     } else if (result == kSlResultOk && options != nullptr && runtimeEvaluation.suppressedFreshActivation) {
         static std::atomic<int> s_recentFfxTakeoverSuppressedGetStateLogCount{0};
         const int logCount = s_recentFfxTakeoverSuppressedGetStateLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -1976,8 +1997,12 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                                                                                           setOptionsCallSuppressed)) {
             const auto runtimeUpdate = ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(
                 true, true, adjustedOptions.mode, adjustedOptions.numFramesToGenerate, capabilityMax);
+            const bool clearAllViewportStatesForDisable =
+                ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(
+                    result == kSlResultOk, setOptionsCallSuppressed, adjustedOptions.mode);
             UpdateViewportRuntimeState(viewportKey, runtimeUpdate.active, runtimeUpdate.multiplier,
-                                       runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "SetOptions");
+                                       runtimeUpdate.generatedFrames, runtimeUpdate.capabilityMax, "SetOptions",
+                                       clearAllViewportStatesForDisable);
         } else if (setOptionsCallSuppressed) {
             static std::atomic<int> s_suppressedSetOptionsRuntimeSkipLogCount{0};
             const int logCount = s_suppressedSetOptionsRuntimeSkipLogCount.fetch_add(1, std::memory_order_relaxed);

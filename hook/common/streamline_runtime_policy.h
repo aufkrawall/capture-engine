@@ -213,6 +213,13 @@ inline bool ShouldApplyViewportRuntimeUpdateFromSetOptions(bool callSucceeded, b
     return callSucceeded && !setOptionsCallSuppressed;
 }
 
+inline bool ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(bool callSucceeded,
+                                                                    bool setOptionsCallSuppressed,
+                                                                    uint32_t mode) {
+    return ShouldApplyViewportRuntimeUpdateFromSetOptions(callSucceeded, setOptionsCallSuppressed) &&
+           !IsDLSSGModeEnabled(mode);
+}
+
 inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromGetState(
     bool callSucceeded, bool hasOptions, bool viewportWasActive, bool hasRuntimeFenceEvidence,
     bool suppressNewActivation, uint32_t mode, uint32_t requestedGeneratedFrames, uint32_t capabilityMax) {
@@ -246,6 +253,14 @@ inline GetStateRuntimeEvaluation EvaluateViewportRuntimeUpdateFromGetState(
     evaluation.suppressedFreshActivation =
         attemptedFreshActivation && suppressNewActivation && !evaluation.update.shouldUpdate;
     return evaluation;
+}
+
+inline bool ShouldClearAllViewportRuntimeStatesForGetStateDisable(bool callSucceeded, bool hasOptions,
+                                                                  bool hasRuntimeFenceEvidence, uint32_t mode,
+                                                                  uint32_t capabilityMax) {
+    // A disabled GetState with both a valid DLSSG state read and runtime fence evidence is an
+    // authoritative menu/runtime readback, not just an inactive sibling viewport probe.
+    return callSucceeded && hasOptions && hasRuntimeFenceEvidence && capabilityMax > 0 && !IsDLSSGModeEnabled(mode);
 }
 
 inline bool ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(bool persistentSetOptionsBlock,
