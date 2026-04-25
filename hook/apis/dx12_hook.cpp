@@ -1027,6 +1027,43 @@ static DX12Context GetDX12Context() {
     return DX12Context(g_Device.load(), g_CommandQueue.load());
 }
 
+// Keep native driver limiters in sync with the DX12 device we already discover
+// from queue/swapchain hooks. Ownership remains with the existing DX12 globals.
+static void DX12_PublishNativeLimiterDevice(ID3D12Device* device, ID3D12CommandQueue* queue, const char* source) {
+    if (!device)
+        return;
+
+    g_ReflexLimiter.SetDevice(static_cast<IUnknown*>(device));
+
+    bool ctxUpdated = false;
+    bool ctxApiConflict = false;
+    if (auto* ctx = ce::GetHookContext()) {
+        std::lock_guard<std::mutex> ctxLock(ctx->initMutex);
+        if (!ctx->shuttingDown.load(std::memory_order_acquire)) {
+            if (ctx->activeAPI == ce::ActiveGraphicsAPI::None) {
+                ctx->activeAPI = ce::ActiveGraphicsAPI::DX12;
+            }
+            if (ctx->activeAPI == ce::ActiveGraphicsAPI::DX12) {
+                ctx->graphicsData.dx12.device = device;
+                ctx->graphicsData.dx12.commandQueue = queue;
+                ctxUpdated = true;
+            } else {
+                ctxApiConflict = true;
+            }
+        }
+    }
+
+    static std::atomic<ID3D12Device*> s_lastPublishedDevice{nullptr};
+    static std::atomic<ID3D12CommandQueue*> s_lastPublishedQueue{nullptr};
+    ID3D12Device* previousDevice = s_lastPublishedDevice.exchange(device, std::memory_order_acq_rel);
+    ID3D12CommandQueue* previousQueue = s_lastPublishedQueue.exchange(queue, std::memory_order_acq_rel);
+    if (previousDevice != device || previousQueue != queue) {
+        HookLogImportant(
+            "DX12: Published native limiter device from %s (device=%p queue=%p ctxUpdated=%d ctxApiConflict=%d)",
+            source && source[0] ? source : "unknown", device, queue, ctxUpdated ? 1 : 0, ctxApiConflict ? 1 : 0);
+    }
+}
+
 static std::atomic<uint64_t> g_FrameIndex{0};
 static std::atomic<int> g_CommandListsExecutedThisFrame{0};
 static std::atomic<uint64_t> g_FGDebugFrameCount{0};
@@ -3807,6 +3844,7 @@ static __attribute__((noinline)) void DX12_SetCommandQueueInternal(ID3D12Command
 
         ID3D12Device* dev = nullptr;
         if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&dev)))) {
+            DX12_PublishNativeLimiterDevice(dev, pQueue, "command queue");
             if (g_Device.load() != dev) {
                 if (g_Device.load())
                     g_Device.load()->Release();
@@ -3872,6 +3910,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             HookLogImportant("DX12: SetSwapchainQueue — queue %p device %p DIFFERS from g_Device %p", pQueue, queueDev,
                              curDev);
         }
+        DX12_PublishNativeLimiterDevice(queueDev, pQueue, "swapchain queue");
         queueDev->Release();
     }
 

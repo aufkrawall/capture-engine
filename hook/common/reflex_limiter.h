@@ -116,8 +116,15 @@ public:
     void SetDevice(IUnknown* device) {
         if (device && lastDevice_ != device) {
             lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+            if (targetIntervalUs_.load(std::memory_order_acquire) != 0) {
+                HookLogImportant("ReflexLimiter: Device supplied for native pacing (device=%p)", device);
+            }
         }
         lastDevice_ = device;
+    }
+
+    bool HasDevice() const {
+        return lastDevice_ != nullptr;
     }
 
     // Set the target FPS for Reflex-based limiting. 0 = disable override and
@@ -299,8 +306,10 @@ public:
         auto forwardSetSleepMode = GetForwardSetSleepMode();
         if (!forwardSetSleepMode || !lastDevice_) {
             if (!loggedMissingDevice_) {
-                HookLog("ReflexLimiter: PushFpsLimit skipped (SetSleepMode=%p, device=%p)", (void*)forwardSetSleepMode,
-                        lastDevice_);
+                HookLogImportant(
+                    "ReflexLimiter: PushFpsLimit skipped (SetSleepMode=%p, device=%p, intervalUs=%u, available=%d)",
+                    (void*)forwardSetSleepMode, lastDevice_, targetIntervalUs_.load(std::memory_order_acquire),
+                    available_.load(std::memory_order_acquire) ? 1 : 0);
                 loggedMissingDevice_ = true;
             }
             pushSucceeded_.store(false, std::memory_order_release);
@@ -325,16 +334,25 @@ public:
         NvAPI_Status status = forwardSetSleepMode(lastDevice_, &params);
         if (status == NVAPI_OK) {
             if (!pushSucceeded_.load(std::memory_order_acquire)) {
-                HookLogImportant("ReflexLimiter: Pushed FPS limit (intervalUs=%u boost=%u markers=%u lowLatency=%u)",
-                                 intervalUs, params.bLowLatencyBoost, params.bUseMarkersToOptimize,
-                                 params.bLowLatencyMode);
+                HookLogImportant(
+                    "ReflexLimiter: Pushed FPS limit (device=%p intervalUs=%u boost=%u markers=%u lowLatency=%u "
+                    "version=0x%08X)",
+                    lastDevice_, intervalUs, params.bLowLatencyBoost, params.bUseMarkersToOptimize,
+                    params.bLowLatencyMode, params.version);
             }
             lastPushedIntervalUs_.store(intervalUs, std::memory_order_release);
             pushSucceeded_.store(true, std::memory_order_release);
             return true;
         }
-        if (pushSucceeded_.load(std::memory_order_acquire)) {
-            HookLog("ReflexLimiter: PushFpsLimit failed (status=%d)", status);
+        static std::atomic<int> s_pushFailLogCount{0};
+        const int failCount = s_pushFailLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (failCount < 5 || (failCount % 300) == 0) {
+            HookLogImportant(
+                "ReflexLimiter: PushFpsLimit failed (status=%d device=%p version=0x%08X intervalUs=%u boost=%u "
+                "markers=%u lowLatency=%u inlineHooks=%d gameActive=%d)",
+                status, lastDevice_, params.version, intervalUs, params.bLowLatencyBoost,
+                params.bUseMarkersToOptimize, params.bLowLatencyMode, AreInlineHooksInstalled() ? 1 : 0,
+                gameActivated_.load(std::memory_order_acquire) ? 1 : 0);
         }
         pushSucceeded_.store(false, std::memory_order_release);
         return false;
@@ -355,6 +373,13 @@ public:
 
         bool pushOk = PushFpsLimit();
         if (!pushOk && !gameActivated_.load(std::memory_order_acquire)) {
+            static std::atomic<int> s_sleepSkippedAfterPushFailLogCount{0};
+            const int skipCount = s_sleepSkippedAfterPushFailLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (skipCount < 5 || (skipCount % 300) == 0) {
+                HookLogImportant(
+                    "ReflexLimiter: Sleep skipped after failed FPS-limit push (device=%p intervalUs=%u gameActive=0)",
+                    lastDevice_, targetIntervalUs_.load(std::memory_order_acquire));
+            }
             sleepSucceeded_.store(false, std::memory_order_release);
             return false;
         }
@@ -370,8 +395,13 @@ public:
             sleepSucceeded_.store(true, std::memory_order_release);
             return true;
         }
-        if (sleepSucceeded_.load(std::memory_order_acquire)) {
-            HookLog("ReflexLimiter: Sleep failed (status=%d)", status);
+        static std::atomic<int> s_sleepFailLogCount{0};
+        const int failCount = s_sleepFailLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (failCount < 5 || (failCount % 300) == 0) {
+            HookLogImportant(
+                "ReflexLimiter: Sleep failed (status=%d device=%p pushOk=%d gameActive=%d intervalUs=%u)", status,
+                lastDevice_, pushOk ? 1 : 0, gameActivated_.load(std::memory_order_acquire) ? 1 : 0,
+                targetIntervalUs_.load(std::memory_order_acquire));
         }
         sleepSucceeded_.store(false, std::memory_order_release);
         return false;

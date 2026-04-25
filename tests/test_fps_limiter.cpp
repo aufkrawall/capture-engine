@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <thread>
 #include "../hook/common/fps_limiter.h"
 #include "../hook/common/freeze_watchdog.h"
@@ -303,6 +304,21 @@ TEST_F(FpsLimiterTest, InactiveLimiterClearsStaleReflexOverride) {
     limiter.Apply();
 
     EXPECT_EQ(g_ReflexLimiter.GetTargetIntervalUs(), 0u);
+}
+
+TEST_F(FpsLimiterTest, ReflexLimiterTracksPublishedDeviceForNativePacing) {
+    g_ReflexLimiter.Shutdown();
+    EXPECT_FALSE(g_ReflexLimiter.HasDevice());
+
+    auto* fakeDevice = reinterpret_cast<IUnknown*>(static_cast<uintptr_t>(0x1234));
+    g_ReflexLimiter.SetDevice(fakeDevice);
+
+    EXPECT_TRUE(g_ReflexLimiter.HasDevice());
+
+    g_ReflexLimiter.SetTargetFps(60);
+    EXPECT_EQ(g_ReflexLimiter.GetTargetIntervalUs(), 16666u);
+
+    g_ReflexLimiter.Shutdown();
 }
 
 TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {

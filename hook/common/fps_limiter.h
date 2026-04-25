@@ -562,6 +562,7 @@ public:
                 (gameSleepCount > reflexSleepBaselineCount_) ? (gameSleepCount - reflexSleepBaselineCount_) : 0;
             const bool reflexHandoffReady = gameSleepRecent && freshSleepCount >= 3 && !recentPresentGap;
             const bool reflexPushOk = g_ReflexLimiter.PushFpsLimit();
+            const bool reflexDeviceReady = g_ReflexLimiter.HasDevice();
 
             if (reflexHandoffReady) {
                 reflexLimiterActive_ = true;
@@ -610,12 +611,13 @@ public:
                     loggedNativeFallback_ = false;
                     lastActualWaitUs_ = ceOwnedSleepUs;
                     if (!reflexLoggedSuccess_) {
-                        TraceLog("Apply: REFLEX ce-owned sleep target=%d waitUs=%lld push=%d", effectiveTargetFps,
-                                 ceOwnedSleepUs, reflexPushOk ? 1 : 0);
+                        TraceLog("Apply: REFLEX ce-owned sleep target=%d waitUs=%lld push=%d device=%d",
+                                 effectiveTargetFps, ceOwnedSleepUs, reflexPushOk ? 1 : 0,
+                                 reflexDeviceReady ? 1 : 0);
                         HookLog(
                             "FPS Limiter: Reflex explicit mode active (target=%d fps, CE-owned NvAPI Sleep, "
-                            "wait=%lldus)",
-                            effectiveTargetFps, ceOwnedSleepUs);
+                            "wait=%lldus, device=%d)",
+                            effectiveTargetFps, ceOwnedSleepUs, reflexDeviceReady ? 1 : 0);
                         reflexLoggedSuccess_ = true;
                     }
                     isActivelyLimiting_.store(true, std::memory_order_relaxed);
@@ -636,9 +638,10 @@ public:
                 if (!loggedNativeFallback_) {
                     TraceLog(
                         "Apply: REFLEX timer fallback gameActive=%d gameSleep=%d push=%d sleepCount=%u fresh=%u "
-                        "recent=%d gap=%d",
+                        "recent=%d gap=%d device=%d",
                         gameActivated ? 1 : 0, gameSleepObserved ? 1 : 0, reflexPushOk ? 1 : 0, gameSleepCount,
-                        freshSleepCount, gameSleepRecent ? 1 : 0, recentPresentGap ? 1 : 0);
+                        freshSleepCount, gameSleepRecent ? 1 : 0, recentPresentGap ? 1 : 0,
+                        reflexDeviceReady ? 1 : 0);
                     if (recentPresentGap) {
                         HookLog(
                             "FPS Limiter: Recent Present gap detected during Reflex activation; holding timer fallback "
@@ -650,8 +653,8 @@ public:
                     } else if (ceOwnedSleepCandidate) {
                         HookLog(
                             "FPS Limiter: Explicit Reflex sleep was unavailable; using timer fallback "
-                            "(push=%d waitUs=%lld)",
-                            reflexPushOk ? 1 : 0, ceOwnedSleepUs);
+                            "(push=%d waitUs=%lld device=%d)",
+                            reflexPushOk ? 1 : 0, ceOwnedSleepUs, reflexDeviceReady ? 1 : 0);
                     } else if (reflexPushOk) {
                         HookLog(
                             "FPS Limiter: Reflex armed but native Sleep cadence is not stable yet; using timer "
