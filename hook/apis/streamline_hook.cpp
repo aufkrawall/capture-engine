@@ -191,6 +191,7 @@ std::mutex g_FeatureHookMutex;
 std::atomic<bool> g_DynamicHooksRegistered{false};
 std::atomic<bool> g_NoModulesLogged{false};
 std::atomic<bool> g_ModuleSnapshotFailureLogged{false};
+std::atomic<bool> g_ModuleSnapshotRetrySuccessLogged{false};
 std::atomic<uint32_t> g_IATPatchesMask{0};
 std::atomic<uint32_t> g_InstalledModuleMask{0};
 
@@ -1448,26 +1449,65 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     return true;
 }
 
-bool ScanLoadedStreamlineModules() {
-    HANDLE snapshot =
-        CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
-    if (snapshot == INVALID_HANDLE_VALUE) {
-        const DWORD error = GetLastError();
-        if (!g_ModuleSnapshotFailureLogged.exchange(true, std::memory_order_acq_rel)) {
-            HookLogImportant("Streamline Hook: Failed to enumerate loaded modules for feature hooks error=%lu",
-                             static_cast<unsigned long>(error));
+bool OpenLoadedModuleSnapshotWithRetry(HANDLE& snapshot, MODULEENTRY32& firstEntry, DWORD& error,
+                                       int& attempts, bool& failedOnFirstEntry) {
+    snapshot = INVALID_HANDLE_VALUE;
+    error = ERROR_SUCCESS;
+    attempts = 0;
+    failedOnFirstEntry = false;
+
+    constexpr int kMaxSnapshotAttempts = 4;
+    for (int attempt = 1; attempt <= kMaxSnapshotAttempts; ++attempt) {
+        attempts = attempt;
+        snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+        if (snapshot == INVALID_HANDLE_VALUE) {
+            error = GetLastError();
+            if (ce::streamline_runtime_policy::IsRetryableLoadedModuleSnapshotError(
+                    static_cast<uint32_t>(error)) &&
+                attempt < kMaxSnapshotAttempts) {
+                continue;
+            }
+            return false;
         }
-        return false;
+
+        firstEntry = {};
+        firstEntry.dwSize = sizeof(firstEntry);
+        if (Module32First(snapshot, &firstEntry)) {
+            error = ERROR_SUCCESS;
+            return true;
+        }
+
+        error = GetLastError();
+        failedOnFirstEntry = true;
+        CloseHandle(snapshot);
+        snapshot = INVALID_HANDLE_VALUE;
+        if (!ce::streamline_runtime_policy::IsRetryableLoadedModuleSnapshotError(static_cast<uint32_t>(error)) ||
+            attempt == kMaxSnapshotAttempts) {
+            return false;
+        }
     }
 
+    return false;
+}
+
+bool ScanLoadedStreamlineModules() {
+    HANDLE snapshot = INVALID_HANDLE_VALUE;
     MODULEENTRY32 entry = {};
-    entry.dwSize = sizeof(entry);
-    if (!Module32First(snapshot, &entry)) {
-        const DWORD error = GetLastError();
-        CloseHandle(snapshot);
+    DWORD error = ERROR_SUCCESS;
+    int attempts = 0;
+    bool failedOnFirstEntry = false;
+    if (!OpenLoadedModuleSnapshotWithRetry(snapshot, entry, error, attempts, failedOnFirstEntry)) {
         if (!g_ModuleSnapshotFailureLogged.exchange(true, std::memory_order_acq_rel)) {
-            HookLogImportant("Streamline Hook: Loaded-module enumeration was empty for feature hooks error=%lu",
-                             static_cast<unsigned long>(error));
+            HookLogImportant(
+                failedOnFirstEntry
+                    ? "Streamline Hook: Loaded-module enumeration was empty for feature hooks error=%lu attempts=%d "
+                      "retryable=%d"
+                    : "Streamline Hook: Failed to enumerate loaded modules for feature hooks error=%lu attempts=%d "
+                      "retryable=%d",
+                static_cast<unsigned long>(error), attempts,
+                ce::streamline_runtime_policy::IsRetryableLoadedModuleSnapshotError(static_cast<uint32_t>(error))
+                    ? 1
+                    : 0);
         }
         return false;
     }
@@ -1475,6 +1515,8 @@ bool ScanLoadedStreamlineModules() {
     g_ModuleSnapshotFailureLogged.store(false, std::memory_order_release);
 
     bool foundModule = false;
+    size_t streamlineModuleCount = 0;
+    size_t hookedModuleCount = 0;
     do {
         const char* moduleNameOrPath = entry.szExePath[0] != '\0' ? entry.szExePath : entry.szModule;
         if (!ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath)) {
@@ -1482,11 +1524,29 @@ bool ScanLoadedStreamlineModules() {
         }
 
         foundModule = true;
+        ++streamlineModuleCount;
         g_FGCompat.SetStreamlineSupportPresent(true);
-        InstallHooksForModule(entry.hModule, moduleNameOrPath);
+        if (InstallHooksForModule(entry.hModule, moduleNameOrPath)) {
+            ++hookedModuleCount;
+        }
     } while (Module32Next(snapshot, &entry));
 
+    const DWORD iterationError = GetLastError();
     CloseHandle(snapshot);
+
+    if (attempts > 1 && !g_ModuleSnapshotRetrySuccessLogged.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "Streamline Hook: Loaded-module snapshot recovered after transient retry (attempts=%d modules=%zu "
+            "hooked=%zu)",
+            attempts, streamlineModuleCount, hookedModuleCount);
+    }
+    if (iterationError != ERROR_SUCCESS && iterationError != ERROR_NO_MORE_FILES &&
+        !g_ModuleSnapshotFailureLogged.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "Streamline Hook: Loaded-module enumeration ended unexpectedly for feature hooks error=%lu "
+            "(modules=%zu hooked=%zu)",
+            static_cast<unsigned long>(iterationError), streamlineModuleCount, hookedModuleCount);
+    }
     return foundModule;
 }
 

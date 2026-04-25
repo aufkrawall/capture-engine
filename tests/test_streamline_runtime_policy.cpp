@@ -30,6 +30,14 @@ TEST(StreamlineRuntimePolicyTest, StreamlineCoreModuleRecognitionStaysNarrow) {
     EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineCoreModuleName("nvngx_dlssg.dll"));
 }
 
+TEST(StreamlineRuntimePolicyTest, LoadedModuleSnapshotRetryIsNarrow) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsRetryableLoadedModuleSnapshotError(24));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsRetryableLoadedModuleSnapshotError(0));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsRetryableLoadedModuleSnapshotError(5));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsRetryableLoadedModuleSnapshotError(299));
+}
+
 TEST(StreamlineRuntimePolicyTest, RequestedOptionsEnableBuildsActiveRuntimeUpdate) {
     const auto update =
         ce::streamline_runtime_policy::BuildViewportRuntimeUpdateFromRequestedOptions(true, true, 1, 1, 3);

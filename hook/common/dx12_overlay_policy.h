@@ -1154,6 +1154,19 @@ inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase
     return !hasRealQueueBehindWrapper && !hasSLWrapperQueue;
 }
 
+inline bool ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(
+    bool hadFSRFGPhase, bool hasRuntimeOwnedSwapchainQueue, bool commandQueueMatchesSwapchainQueue,
+    bool hasTrackedSwapchainQueueSubmitPath) {
+    // In 2D/menu-only FSR->DLSS handoffs Streamline can create the live
+    // runtime-owned swapchain queue before any wrapper ECL traffic appears. If
+    // that same queue is already the live command queue and CE has the queue's
+    // original ECL entrypoint tracked, PostSL can safely submit on that queue
+    // instead of waiting for a wrapper bootstrap that may not occur until 3D
+    // rendering resumes.
+    return hadFSRFGPhase && hasRuntimeOwnedSwapchainQueue && commandQueueMatchesSwapchainQueue &&
+           hasTrackedSwapchainQueueSubmitPath;
+}
+
 inline bool ShouldUsePostSLScQueueVirtualSubmit(bool hadFSRFGPhase, bool scQueueDiffers) {
     return scQueueDiffers && !hadFSRFGPhase;
 }

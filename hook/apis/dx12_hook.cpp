@@ -1168,13 +1168,13 @@ static std::atomic<ID3D12CommandQueue*> g_RealQueueBehindSLWrapper{nullptr};
 static std::atomic<bool> g_PostSLCallbackExecutionEnabled{false};
 static std::atomic<uint32_t> g_PostSLCallbackInFlight{0};
 static std::atomic<bool> g_PostSLDeferredQueueCleanupPending{false};
+static std::atomic<bool> g_SafePostFSRRuntimeOwnedSwapchainBootstrapLogged{false};
+
+static bool HasTrackedExecuteCommandListsOriginal(ID3D12CommandQueue* queue);
+static bool HookHasSafePostFSRBootstrapPathImpl();
 
 bool HookHasSafePostFSRBootstrapPath() {
-    return g_HadFSRFGPhase &&
-           !ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(
-               g_HadFSRFGPhase, g_RealQueueBehindSLWrapper.load(std::memory_order_acquire) != nullptr,
-               g_RealD3D12ECL.load(std::memory_order_acquire) != nullptr,
-               g_SLWrapperQueue.load(std::memory_order_acquire) != nullptr);
+    return HookHasSafePostFSRBootstrapPathImpl();
 }
 
 bool HookHasRuntimeOwnedNativeFGPresentPath() {
@@ -3479,6 +3479,65 @@ static ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue*
     return original;
 }
 
+static bool HasTrackedExecuteCommandListsOriginal(ID3D12CommandQueue* queue) {
+    if (!queue) {
+        return false;
+    }
+
+    void** vtbl = *reinterpret_cast<void***>(queue);
+    if (!vtbl) {
+        return false;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(g_ExecuteCommandListsHookStateMutex);
+    return g_ExecuteCommandListsOriginalByVTable.find(vtbl) != g_ExecuteCommandListsOriginalByVTable.end();
+}
+
+static bool HookHasSafePostFSRBootstrapPathImpl() {
+    if (!g_HadFSRFGPhase) {
+        return false;
+    }
+
+    const bool hasRealQueueBehindWrapper = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire) != nullptr;
+    const bool hasRealD3D12ECL = g_RealD3D12ECL.load(std::memory_order_acquire) != nullptr;
+    const bool hasSLWrapperQueue = g_SLWrapperQueue.load(std::memory_order_acquire) != nullptr;
+    const bool wrapperBootstrapSafe =
+        !ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(
+            g_HadFSRFGPhase, hasRealQueueBehindWrapper, hasRealD3D12ECL, hasSLWrapperQueue);
+    if (wrapperBootstrapSafe) {
+        return true;
+    }
+
+    ID3D12CommandQueue* swapchainQueue = nullptr;
+    ID3D12CommandQueue* commandQueue = nullptr;
+    ID3D12CommandQueue* originalGameQueue = nullptr;
+    bool hasTrackedSwapchainQueueSubmitPath = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        swapchainQueue = g_SwapchainQueue;
+        commandQueue = g_CommandQueue.load(std::memory_order_acquire);
+        originalGameQueue = g_OriginalGameQueue;
+        hasTrackedSwapchainQueueSubmitPath = HasTrackedExecuteCommandListsOriginal(swapchainQueue);
+    }
+    const bool hasRuntimeOwnedSwapchainQueue = swapchainQueue != nullptr && swapchainQueue != originalGameQueue;
+    const bool commandQueueMatchesSwapchainQueue =
+        commandQueue != nullptr && swapchainQueue != nullptr && commandQueue == swapchainQueue;
+    const bool runtimeOwnedSwapchainBootstrapSafe =
+        ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(
+            g_HadFSRFGPhase, hasRuntimeOwnedSwapchainQueue, commandQueueMatchesSwapchainQueue,
+            hasTrackedSwapchainQueueSubmitPath);
+    if (runtimeOwnedSwapchainBootstrapSafe &&
+        !g_SafePostFSRRuntimeOwnedSwapchainBootstrapLogged.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "DX12: Safe post-FSR bootstrap path available via runtime-owned Streamline swapchain queue "
+            "(scQueue=%p cmdQ=%p origGame=%p realECL=%p wrapper=%p realBehindWrapper=%p)",
+            swapchainQueue, commandQueue, originalGameQueue, (void*)g_RealD3D12ECL.load(std::memory_order_acquire),
+            g_SLWrapperQueue.load(std::memory_order_acquire),
+            g_RealQueueBehindSLWrapper.load(std::memory_order_acquire));
+    }
+    return runtimeOwnedSwapchainBootstrapSafe;
+}
+
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                                 IDXGISwapChain** ppSwapChain);
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd,
@@ -3993,6 +4052,7 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         const bool runtimeOwnershipJustActivated =
             DX12_SetSwapchainQueue(pQueue, authoritativeStreamlineRuntimeQueue, authoritativeFFXRuntimeQueue);
         if (freshAuthoritativeStreamlineHandoff) {
+            DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
             DXGIShared::ArmStreamlineStartupTransitionWindow();
             StreamlineHook::OnAuthoritativeStreamlineStartupHandoff();
             ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kAuthoritativeStreamlineStartupHandoff,
