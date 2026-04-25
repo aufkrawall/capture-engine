@@ -215,6 +215,18 @@ std::atomic<bool> g_DLSSGGetStateHooked{false};
 std::atomic<bool> g_ReflexSleepHooked{false};
 std::atomic<bool> g_ReflexSetOptionsHooked{false};
 std::atomic<bool> g_ReflexSetConstantsHooked{false};
+std::atomic<bool> g_DLSSGSetOptionsReturnedWrapperFallbackLogged{false};
+std::atomic<bool> g_DLSSGGetStateReturnedWrapperFallbackLogged{false};
+std::atomic<bool> g_ReflexSleepReturnedWrapperFallbackLogged{false};
+std::atomic<bool> g_ReflexSetOptionsReturnedWrapperFallbackLogged{false};
+std::atomic<bool> g_ReflexSetConstantsReturnedWrapperFallbackLogged{false};
+std::atomic<bool> g_DLSSGSetOptionsProactiveFallbackLogged{false};
+std::atomic<bool> g_DLSSGGetStateProactiveFallbackLogged{false};
+std::atomic<bool> g_DLSSGSetOptionsLookupLogged{false};
+std::atomic<bool> g_DLSSGGetStateLookupLogged{false};
+std::atomic<bool> g_ReflexSleepLookupLogged{false};
+std::atomic<bool> g_ReflexSetOptionsLookupLogged{false};
+std::atomic<bool> g_ReflexSetConstantsLookupLogged{false};
 
 std::unordered_map<uint32_t, ViewportFGState> g_ViewportStates;
 std::unordered_map<uint32_t, uint32_t> g_ViewportCapabilityMax;
@@ -1007,6 +1019,43 @@ bool TryInstallFeatureImportFallbackForOwningModule(void* function, const char* 
     return InstallFeatureImportFallbackIfPresent(ownerBaseName, functionName, detour, function, originalSlot, hookName);
 }
 
+void LogReturnedWrapperFallbackOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target, void* wrapper) {
+    if (loggedFlag.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    HookLogImportant(
+        "Streamline Hook: Using returned-pointer wrapper fallback for %s (target=%p wrapper=%p). "
+        "Inline export patching/direct import fallback is not active for this target yet; callers that obtain the "
+        "function via slGetFeatureFunction will still be intercepted.",
+        hookName ? hookName : "<unknown>", target, wrapper);
+}
+
+void LogProactiveFeatureHookGapOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target) {
+    if (loggedFlag.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    HookLogImportant(
+        "Streamline Hook: Proactively resolved %s at %p but could not patch the export/import path yet; "
+        "waiting for an intercepted slGetFeatureFunction lookup to return the wrapper fallback or for a later module "
+        "scan to find a direct import.",
+        hookName ? hookName : "<unknown>", target);
+}
+
+void LogFeatureLookupOutcomeOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* originalTarget,
+                                 void* returnedTarget, bool hookReady) {
+    if (loggedFlag.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    HookLogImportant(
+        "Streamline Hook: slGetFeatureFunction returned %s target=%p delivered=%p hookReady=%d "
+        "wrapperSubstituted=%d",
+        hookName ? hookName : "<unknown>", originalTarget, returnedTarget, hookReady ? 1 : 0,
+        originalTarget != returnedTarget ? 1 : 0);
+}
+
 bool MaybeHookDLSSGSetOptions(void*& function, bool fallbackToReturnedWrapper) {
     if (!function) {
         return false;
@@ -1037,6 +1086,8 @@ bool MaybeHookDLSSGSetOptions(void*& function, bool fallbackToReturnedWrapper) {
         if (!g_Original_slDLSSGSetOptions) {
             g_Original_slDLSSGSetOptions = reinterpret_cast<PFN_slDLSSGSetOptions>(function);
         }
+        LogReturnedWrapperFallbackOnce(g_DLSSGSetOptionsReturnedWrapperFallbackLogged, "slDLSSGSetOptions", function,
+                                       reinterpret_cast<void*>(Hooked_slDLSSGSetOptions));
         function = reinterpret_cast<void*>(Hooked_slDLSSGSetOptions);
         return true;
     }
@@ -1074,6 +1125,8 @@ bool MaybeHookDLSSGGetState(void*& function, bool fallbackToReturnedWrapper) {
         if (!g_Original_slDLSSGGetState) {
             g_Original_slDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(function);
         }
+        LogReturnedWrapperFallbackOnce(g_DLSSGGetStateReturnedWrapperFallbackLogged, "slDLSSGGetState", function,
+                                       reinterpret_cast<void*>(Hooked_slDLSSGGetState));
         function = reinterpret_cast<void*>(Hooked_slDLSSGGetState);
         return true;
     }
@@ -1111,6 +1164,8 @@ bool MaybeHookReflexSleep(void*& function, bool fallbackToReturnedWrapper) {
         if (!g_Original_slReflexSleep) {
             g_Original_slReflexSleep = reinterpret_cast<PFN_slReflexSleep>(function);
         }
+        LogReturnedWrapperFallbackOnce(g_ReflexSleepReturnedWrapperFallbackLogged, "slReflexSleep", function,
+                                       reinterpret_cast<void*>(Hooked_slReflexSleep));
         function = reinterpret_cast<void*>(Hooked_slReflexSleep);
         return true;
     }
@@ -1148,6 +1203,8 @@ bool MaybeHookReflexSetOptions(void*& function, bool fallbackToReturnedWrapper) 
         if (!g_Original_slReflexSetOptions) {
             g_Original_slReflexSetOptions = reinterpret_cast<PFN_slReflexSetOptions>(function);
         }
+        LogReturnedWrapperFallbackOnce(g_ReflexSetOptionsReturnedWrapperFallbackLogged, "slReflexSetOptions", function,
+                                       reinterpret_cast<void*>(Hooked_slReflexSetOptions));
         function = reinterpret_cast<void*>(Hooked_slReflexSetOptions);
         return true;
     }
@@ -1185,6 +1242,8 @@ bool MaybeHookReflexSetConstants(void*& function, bool fallbackToReturnedWrapper
         if (!g_Original_slReflexSetConstants) {
             g_Original_slReflexSetConstants = reinterpret_cast<PFN_slReflexSetConstants>(function);
         }
+        LogReturnedWrapperFallbackOnce(g_ReflexSetConstantsReturnedWrapperFallbackLogged, "slReflexSetConstants",
+                                       function, reinterpret_cast<void*>(Hooked_slReflexSetConstants));
         function = reinterpret_cast<void*>(Hooked_slReflexSetConstants);
         return true;
     }
@@ -1203,7 +1262,12 @@ bool TryResolveDLSSGFeatureHooks() {
         void* function = nullptr;
         const slResult result = g_Original_slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", function);
         if (result == kSlResultOk && function) {
-            hookedAnything |= MaybeHookDLSSGSetOptions(function, false);
+            const bool hooked = MaybeHookDLSSGSetOptions(function, false);
+            hookedAnything |= hooked;
+            if (!hooked && !g_DLSSGSetOptionsHooked.load(std::memory_order_acquire)) {
+                LogProactiveFeatureHookGapOnce(g_DLSSGSetOptionsProactiveFallbackLogged, "slDLSSGSetOptions",
+                                               function);
+            }
         }
     }
 
@@ -1211,7 +1275,11 @@ bool TryResolveDLSSGFeatureHooks() {
         void* function = nullptr;
         const slResult result = g_Original_slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGGetState", function);
         if (result == kSlResultOk && function) {
-            hookedAnything |= MaybeHookDLSSGGetState(function, false);
+            const bool hooked = MaybeHookDLSSGGetState(function, false);
+            hookedAnything |= hooked;
+            if (!hooked && !g_DLSSGGetStateHooked.load(std::memory_order_acquire)) {
+                LogProactiveFeatureHookGapOnce(g_DLSSGGetStateProactiveFallbackLogged, "slDLSSGGetState", function);
+            }
         }
     }
 
@@ -1569,6 +1637,24 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     const auto runtimeEvaluation = ce::streamline_runtime_policy::EvaluateViewportRuntimeUpdateFromGetState(
         result == kSlResultOk, options != nullptr, viewportWasActive, hasRuntimeFenceEvidence, suppressNewActivation,
         options ? options->mode : 0, options ? options->numFramesToGenerate : 0u, capabilityMax);
+    if (result == kSlResultOk && options != nullptr) {
+        static std::atomic<int> s_getStateTraceLogCount{0};
+        const int logCount = s_getStateTraceLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 8 || (logCount % 512) == 0) {
+            HookLogImportant(
+                "Streamline Hook: slDLSSGGetState observed viewport=%u optionsMode=%s(%u) generated=%u "
+                "capabilityMax=%u presented=%u fence=%p fenceValue=%llu viewportWasActive=%d update=%d "
+                "updateActive=%d suppressNew=%d fenceEvidence=%d setOptionsHooked=%d setOptionsOriginal=%p",
+                viewportKey, GetDLSSGModeName(options->mode), options->mode, options->numFramesToGenerate,
+                capabilityMax, state.numFramesActuallyPresented, state.inputsProcessingCompletionFence,
+                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
+                viewportWasActive ? 1 : 0, runtimeEvaluation.update.shouldUpdate ? 1 : 0,
+                runtimeEvaluation.update.active ? 1 : 0, suppressNewActivation ? 1 : 0,
+                hasRuntimeFenceEvidence ? 1 : 0,
+                g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+                reinterpret_cast<void*>(g_Original_slDLSSGSetOptions));
+        }
+    }
     if (runtimeEvaluation.update.shouldUpdate) {
         UpdateViewportRuntimeState(viewportKey, runtimeEvaluation.update.active, runtimeEvaluation.update.multiplier,
                                    runtimeEvaluation.update.generatedFrames, runtimeEvaluation.update.capabilityMax,
@@ -1942,34 +2028,34 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
     // DLSS Frame Generation feature hooks
     if (feature == kSLFeatureDLSSG) {
         if (strcmp(functionName, "slDLSSGSetOptions") == 0) {
-            MaybeHookDLSSGSetOptions(function, true);
-            if (HookDebugLoggingEnabled()) {
-                HookLog("Streamline Hook: Intercepted slDLSSGSetOptions lookup (returned=%p)", function);
-            }
+            void* originalFunction = function;
+            const bool hookReady = MaybeHookDLSSGSetOptions(function, true);
+            LogFeatureLookupOutcomeOnce(g_DLSSGSetOptionsLookupLogged, "slDLSSGSetOptions", originalFunction,
+                                        function, hookReady);
         } else if (strcmp(functionName, "slDLSSGGetState") == 0) {
-            MaybeHookDLSSGGetState(function, true);
-            if (HookDebugLoggingEnabled()) {
-                HookLog("Streamline Hook: Intercepted slDLSSGGetState lookup (returned=%p)", function);
-            }
+            void* originalFunction = function;
+            const bool hookReady = MaybeHookDLSSGGetState(function, true);
+            LogFeatureLookupOutcomeOnce(g_DLSSGGetStateLookupLogged, "slDLSSGGetState", originalFunction, function,
+                                        hookReady);
         }
     }
     // Reflex feature hook — detect game activation of native Reflex
     else if (feature == kSLFeatureReflex) {
         if (strcmp(functionName, "slReflexSleep") == 0) {
-            if (MaybeHookReflexSleep(function, true)) {
-                HookLogImportant("Streamline Hook: Intercepted slReflexSleep (returned=%p original=%p)",
-                                 function, g_Original_slReflexSleep);
-            }
+            void* originalFunction = function;
+            const bool hookReady = MaybeHookReflexSleep(function, true);
+            LogFeatureLookupOutcomeOnce(g_ReflexSleepLookupLogged, "slReflexSleep", originalFunction, function,
+                                        hookReady);
         } else if (strcmp(functionName, "slReflexSetOptions") == 0) {
-            if (MaybeHookReflexSetOptions(function, true)) {
-                HookLogImportant("Streamline Hook: Intercepted slReflexSetOptions (returned=%p original=%p)",
-                                 function, g_Original_slReflexSetOptions);
-            }
+            void* originalFunction = function;
+            const bool hookReady = MaybeHookReflexSetOptions(function, true);
+            LogFeatureLookupOutcomeOnce(g_ReflexSetOptionsLookupLogged, "slReflexSetOptions", originalFunction,
+                                        function, hookReady);
         } else if (strcmp(functionName, "slReflexSetConstants") == 0) {
-            if (MaybeHookReflexSetConstants(function, true)) {
-                HookLogImportant("Streamline Hook: Intercepted slReflexSetConstants (returned=%p original=%p)",
-                                 function, g_Original_slReflexSetConstants);
-            }
+            void* originalFunction = function;
+            const bool hookReady = MaybeHookReflexSetConstants(function, true);
+            LogFeatureLookupOutcomeOnce(g_ReflexSetConstantsLookupLogged, "slReflexSetConstants", originalFunction,
+                                        function, hookReady);
         }
     }
 
@@ -2106,6 +2192,32 @@ void Init() {
         }
     } else {
         g_NoModulesLogged.store(false, std::memory_order_release);
+    }
+}
+
+void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
+    if (!module || !ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad(moduleNameOrPath)) {
+        return;
+    }
+
+    g_NoModulesLogged.store(false, std::memory_order_release);
+    const bool inspectedModule = InstallHooksForModule(module, moduleNameOrPath);
+    const bool resolvedDLSSG = TryResolveDLSSGFeatureHooks();
+    const bool resolvedReflex = TryResolveReflexFeatureHooks();
+
+    if (inspectedModule || resolvedDLSSG || resolvedReflex) {
+        HookLogImportant(
+            "Streamline Hook: Fresh module load inspected %s (%p) "
+            "slGetFeatureFunctionHooked=%d slSetD3DDeviceHooked=%d dlssgSetOptionsHooked=%d "
+            "dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d reflexSetConstantsHooked=%d",
+            GetModuleBaseName(moduleNameOrPath), module,
+            g_SLGetFeatureFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_SLSetD3DDeviceHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0);
     }
 }
 

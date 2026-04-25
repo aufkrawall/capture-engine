@@ -787,6 +787,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
     return;
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
+  StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);
 
   // Detect nvapi64.dll loading — trigger Reflex limiter initialization immediately
   // so our dynamic hook is registered before the game calls GetProcAddress.

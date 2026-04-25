@@ -113,6 +113,26 @@ static FARPROC(WINAPI* oGetProcAddress)(HMODULE, LPCSTR) = nullptr;
 static std::mutex g_PatchLock;
 static std::vector<PatchedEntry> g_PatchedEntries;
 
+static bool TryGetTrackedOriginalForPatchedEntry(HMODULE targetModule, const char* sourceModule,
+                                                 const char* functionName, void* hookFunction, void** iatEntry,
+                                                 void** outOriginal) {
+    if (!targetModule || !sourceModule || !functionName || !hookFunction || !iatEntry) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_PatchLock);
+    for (const auto& entry : g_PatchedEntries) {
+        if (entry.targetModule == targetModule && _stricmp(entry.sourceModule.c_str(), sourceModule) == 0 &&
+            entry.functionName == functionName && entry.hookFunction == hookFunction && entry.iatEntry == iatEntry) {
+            if (outOriginal && entry.originalFunction) {
+                *outOriginal = entry.originalFunction;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 // ============================================================================
 // Module Validation
 // ============================================================================
@@ -270,6 +290,19 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
                         // Found the function - patch the IAT entry
                         const auto currentFunction = reinterpret_cast<void*>(iatEntry->u1.Function);
                         if (currentFunction == hookFunction) {
+                            void* originalFunction = nullptr;
+                            if (TryGetTrackedOriginalForPatchedEntry(
+                                    targetModule, sourceModule, functionName, hookFunction,
+                                    reinterpret_cast<void**>(&iatEntry->u1.Function), &originalFunction)) {
+                                if (outOriginal && originalFunction) {
+                                    *outOriginal = originalFunction;
+                                }
+                                WrapperLog("IAT: %s!%s in module %p already patched", sourceModule, functionName,
+                                           targetModule);
+                                return true;
+                            }
+                            WrapperLog("IAT: %s!%s in module %p already points at hook but original is not tracked",
+                                       sourceModule, functionName, targetModule);
                             return false;
                         }
 
@@ -315,6 +348,7 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
 
 bool PatchIATAllModules(const char* sourceModule, const char* functionName, void* hookFunction, void** outOriginal) {
     bool anyPatched = false;
+    void* firstOriginal = nullptr;
 
     // Get list of all loaded modules
     HMODULE modules[1024];
@@ -341,8 +375,8 @@ bool PatchIATAllModules(const char* sourceModule, const char* functionName, void
             }
 
             if (PatchIAT(modules[i], sourceModule, functionName, hookFunction, &orig)) {
-                if (outOriginal && !*outOriginal) {
-                    *outOriginal = orig;
+                if (!firstOriginal && orig) {
+                    firstOriginal = orig;
                 }
                 anyPatched = true;
             }
@@ -351,7 +385,15 @@ bool PatchIATAllModules(const char* sourceModule, const char* functionName, void
 
     // Also patch main exe
     if (!anyPatched) {
-        anyPatched = PatchIAT(nullptr, sourceModule, functionName, hookFunction, outOriginal);
+        void* orig = nullptr;
+        anyPatched = PatchIAT(nullptr, sourceModule, functionName, hookFunction, &orig);
+        if (anyPatched && orig) {
+            firstOriginal = orig;
+        }
+    }
+
+    if (outOriginal && firstOriginal) {
+        *outOriginal = firstOriginal;
     }
 
     return anyPatched;

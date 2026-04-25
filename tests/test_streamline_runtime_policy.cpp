@@ -30,6 +30,17 @@ TEST(StreamlineRuntimePolicyTest, StreamlineCoreModuleRecognitionStaysNarrow) {
     EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineCoreModuleName("nvngx_dlssg.dll"));
 }
 
+TEST(StreamlineRuntimePolicyTest, StreamlineModuleLoadInspectionIncludesFeatureDlls) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("sl.interposer.dll"));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("C:\\Game\\Plugins\\sl.dlss_g.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("C:/Game/bin/sl.reflex.dll"));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad(nullptr));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("_nvngx.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("nvngx_dlssg.dll"));
+}
+
 TEST(StreamlineRuntimePolicyTest, LoadedModuleSnapshotRetryIsNarrow) {
     EXPECT_TRUE(ce::streamline_runtime_policy::IsRetryableLoadedModuleSnapshotError(24));
 

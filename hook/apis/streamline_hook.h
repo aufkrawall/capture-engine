@@ -5,6 +5,7 @@
 namespace StreamlineHook {
 
 void Init();
+void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath);
 bool IsInitialized();
 void Shutdown();
 

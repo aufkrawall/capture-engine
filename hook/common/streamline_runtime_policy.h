@@ -148,6 +148,10 @@ inline bool IsStreamlineCoreModuleName(const char* moduleNameOrPath) {
     return EqualsIgnoreCaseAscii(baseName, "sl.interposer.dll") || EqualsIgnoreCaseAscii(baseName, "sl.common.dll");
 }
 
+inline bool ShouldInspectStreamlineModuleOnLoad(const char* moduleNameOrPath) {
+    return IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath);
+}
+
 inline bool IsRetryableLoadedModuleSnapshotError(uint32_t error) {
     // Toolhelp module snapshots can transiently fail while another thread is
     // loading/unloading a DLL. Windows reports that race as ERROR_BAD_LENGTH.
