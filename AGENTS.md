@@ -32,6 +32,8 @@
 - Prefer existing project utilities and standard-library functionality.
 - Treat crash dumps, logs, media files, captures, credentials, private keys, tokens, and user data as sensitive.
 - Do not commit secrets, dumps, large generated artifacts, or private user data.
+- Crash dump available? Analyze with cdb.exe in C:\Program Files\Windows Kits\10\Debuggers\x64
+- When prompt asks to analyze media file: ffmpeg and ffprobe .exe location is C:\Users\TestUser\Programme\build\captureproject\build\msys64\clang64\bin
 
 ## Non-Negotiable Project Constraints
 
@@ -77,10 +79,11 @@ We are paranoid about regressions.
 - Good regression coverage verifies behavior, not just code-path execution.
 - Always check if the code, including new one, has sufficient test unit coverage!
 
-## Debug Logging
+## Debugging and Debug Logging
 
-- We are paranoid about having enough diagnostic evidence, so always check if debug logging can be improved and increased in a meaningful way!
+- We are paranoid about having enough debug logging diagnostic evidence, so always check if debug logging can be improved and increased in a meaningful way!
 - Add logging e.g. where it helps identify root cause, state transitions, failure modes, or unexpected runtime conditions.
+- Also: Make sure we compile binaries with optimal debug symbols etc. , so crash dumps contain valuable information!
 
 ## `llm-wiki/` Workflow
 

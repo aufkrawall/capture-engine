@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-04-25
+Last cross-checked: 2026-04-30
 
 Primary sources:
 - `AGENTS.md`
@@ -14,12 +14,18 @@ Primary sources:
 - `hook/apis/dx12_hook.cpp`
 - `hook/apis/streamline_hook.cpp`
 - `hook/common/dxgi_shared.cpp`
+- `hook/common/fps_limiter.h`
+- `hook/common/fps_limiter_policy.h`
 - `hook/common/overlay_metrics_publisher.cpp`
+- `hook/wrappers/dxgi_swapchain_wrap.cpp`
 - `hook/wrappers/iat_hook.cpp`
+- `common/process_ipc.cpp`
+- `common/process_ipc.h`
 - `tests/test_dx12_fg_trace_replay.cpp`
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_overlay_fg_status_publication.cpp`
 - `tests/test_fps_limiter.cpp`
+- `tests/test_process_ipc.cpp`
 - `tests/test_config.cpp`
 - `tests/test_config_override.cpp`
 - `tests/test_shared_runtime_state.cpp`
@@ -40,7 +46,9 @@ Primary sources:
 - `tests/test_overlay_fg_status_publication.cpp`
   - Visible FG label and multiplier publication behavior.
 - `tests/test_fps_limiter.cpp`
-  - Despite the name, this currently includes important overlay compatibility policy tests.
+  - FPS limiter behavior and compatibility policy tests, including explicit Reflex limiter ABI/device/cadence coverage and GTA-safe game-owned Reflex handoff rules.
+- `tests/test_process_ipc.cpp`
+  - Named-pipe connection/reconnect coverage for the controller-to-child IPC path. Tests use unique override pipe names so local production services or stale pipe instances cannot determine pass/fail.
 - `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`
   - Config, override, and shared-memory coverage for `Overlay.observer_only`, `Overlay.observer_policy_only`, `Overlay.observer_startup_present_only`, and other runtime-visible overlay config fields.
 
@@ -61,6 +69,8 @@ Primary sources:
 - `hook/common/fps_limiter.h` / `hook/common/reflex_limiter.h`
   - Explicit Reflex limiter fallback logs now include whether a native device was available, and the Reflex limiter logs missing SetSleepMode/Sleep pointers, missing devices, SetSleepMode failures, and NvAPI Sleep failures with device/interval/game-active context.
   - The Reflex sleep-mode ABI should remain 44 bytes with `version=0x0001002C`. A `PushFpsLimit failed` line with `status=-9` and a larger version such as `0x00010038` means CE is sending an incompatible NvAPI struct and explicit Reflex mode will fall back to timer pacing even when `device=1`.
+  - Explicit Reflex mode without observed game-owned `slReflexSleep` should not rely on a microsecond CE-owned `NvAPI_D3D_Sleep` alone. On DXGI/DX12, Talos-style sessions should log `Apply: REFLEX post-present cadence ... sleepOk=...`, with the local wait happening after `Present` returns so the game starts the next simulation/render frame fresh. Older single-phase call sites may still log `Apply: REFLEX local cadence ...`; that is a fallback shape, not the desired Talos low-latency DXGI/DX12 path.
+  - Game-owned Reflex handoff remains intentionally stricter: require a fresh stable `slReflexSleep` streak and no recent present-gap churn before skipping CE's local cadence. This preserves GTA Reflex/DLSS FG switching behavior while allowing Talos-style explicit Reflex limiting when no game sleep calls are observed.
 - `hook/apis/streamline_hook.cpp`
   - Logs pure observer-only FG transition pass-through versus staged observer-policy-only startup-policy handling.
   - Streamline feature-hook discovery now scans all loaded `sl.*.dll` modules, not only `sl.interposer.dll` / `sl.common.dll`, so feature-owner DLLs such as `sl.dlss_g.dll` can arm direct-import fallbacks even when export-inline patching fails.
@@ -90,7 +100,7 @@ Primary sources:
 - If you need the full top-level log from the last verification/build run, use `build/verification/latest_build.log`; the nested sanitizer child now writes to its own dedicated log inside the same verification bundle.
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.
 - If you touch Streamline Reflex integration, verify both the current `slReflexSetOptions` path and the legacy `slReflexSetConstants` path. GTA `installed/captureengine/logs/20260424_020300` had no constants traffic, so tests/logging that only exercise the legacy path are not enough.
-- If you touch explicit Reflex limiter mode, verify that `fps_limiter_trace.log` does not merely report `limiter=reflex` while timer fallback is active. The trace should show either native/game sleep handoff or CE-owned NvAPI Sleep success, and fallback diagnostics should include `device=1`/`device=0` plus PushFpsLimit/Sleep status.
+- If you touch explicit Reflex limiter mode, verify that `fps_limiter_trace.log` does not merely report `limiter=reflex` while timer fallback is active. The trace should show either native/game sleep handoff or CE-owned cadence plus NvAPI Sleep success, and fallback diagnostics should include `device=1`/`device=0` plus PushFpsLimit/Sleep status. For DXGI/DX12 Talos latency validation, prefer the post-present shape (`Apply: REFLEX post-present cadence ...`) over a pre-Present local wait.
 - If you touch native-FSR callback rendering, verify both callback-side color/composition contracts explicitly: 10-bit UNORM outputs must not be treated as HDR without probing the real display color space, and callback-side diagnostics should still reveal the resolved HDR decision and whether FFX requested premultiplied-alpha UI composition.
 - If you touch native-FSR callback rendering or callback-side HDR setup, verify the weak-swapchain family too: once runtime-owned FSR callback rendering starts, the callback thread must not need to probe DXGI output state through a raw non-AddRef'd swapchain pointer that may already be stale. The callback path should be able to use cached trusted HDR/color-space state captured earlier from a live swapchain (`ProcessFrame` or `ffxConfigure(... swapChain=...)`), and the logs should make that explicit when it happens.
 - If you touch native-FSR callback-backend lifecycle or any normal-overlay cleanup path that can run during FSR suspension windows, verify the temporary suspend/resume family explicitly too: a transient `ffxConfigure(frameGenerationEnabled=0)` while the runtime-owned swapchain still owns Present must not unnecessarily tear down the dedicated callback backend, GTA/Talos traces should clearly show whether CE preserved or re-used that backend, and a quick resume on the same runtime-owned path must not reopen the `amd_fidelityfx_dx12!ffxQuery` deadlock family.
@@ -142,6 +152,7 @@ Primary sources:
 - Prefer fast focused unit tests while iterating, then run broader coverage before considering the work complete.
 - After build or test infrastructure changes, verify both direct `unit_tests.exe` execution and the `python build.py --run-tests` path.
 - After build/test workflow changes, verify the focused iteration path too: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=...` should stop before the expensive product builds and should show live compile/test progress instead of going silent for long periods.
+- If `ProcessIPCTest.*` fails at the initial `Connect(1000)` assertion, first distinguish a real IPC regression from environment leakage: tests should be using unique override pipe names, and the override pipe security descriptor should allow the test process to open the client side for both read and write. A plain production pipe name can collide with running helpers and make the test result meaningless.
 - If you touch perf CSV durability, verify that `perf_metrics_*.csv` gains rows during long-running and hang/crash sessions instead of relying on a clean-process shutdown to flush buffered data.
 
 ## Useful Commands

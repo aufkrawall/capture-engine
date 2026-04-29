@@ -1,10 +1,23 @@
 #include <gtest/gtest.h>
+#include <atomic>
 #include <chrono>
+#include <string>
 #include <thread>
 #include "../common/process_ipc.h"
 
+namespace {
+
+std::wstring MakeTestPipeName(const wchar_t* suffix) {
+    static std::atomic<uint32_t> counter{0};
+    return L"\\\\.\\pipe\\CaptureEngine_Test_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+           std::to_wstring(GetTickCount64()) + L"_" + std::to_wstring(counter.fetch_add(1)) + L"_" + suffix;
+}
+
+}  // namespace
+
 TEST(ProcessIPCTest, PollCommandCompletesPendingConnectionAcrossCalls) {
-    ProcessIPCServer server(ProcessMode::Media);
+    const std::wstring pipeName = MakeTestPipeName(L"poll");
+    ProcessIPCServer server(ProcessMode::Media, pipeName.c_str());
     if (!server.Init()) {
         GTEST_SKIP() << "Media IPC pipe is already in use in this shared environment";
     }
@@ -12,7 +25,7 @@ TEST(ProcessIPCTest, PollCommandCompletesPendingConnectionAcrossCalls) {
     ProcessCommand command = ProcessCommand::None;
     EXPECT_FALSE(server.PollCommand(command));
 
-    ProcessIPCClient client(ProcessMode::Media);
+    ProcessIPCClient client(ProcessMode::Media, pipeName.c_str());
     ASSERT_TRUE(client.Connect(1000));
 
     ProcessResponse response = ProcessResponse::None;
@@ -41,7 +54,8 @@ TEST(ProcessIPCTest, PollCommandCompletesPendingConnectionAcrossCalls) {
 }
 
 TEST(ProcessIPCTest, RecoversAfterClientDisconnect) {
-    ProcessIPCServer server(ProcessMode::Media);
+    const std::wstring pipeName = MakeTestPipeName(L"reconnect");
+    ProcessIPCServer server(ProcessMode::Media, pipeName.c_str());
     if (!server.Init()) {
         GTEST_SKIP() << "Media IPC pipe is already in use in this shared environment";
     }
@@ -49,7 +63,7 @@ TEST(ProcessIPCTest, RecoversAfterClientDisconnect) {
     ProcessCommand command = ProcessCommand::None;
     EXPECT_FALSE(server.PollCommand(command));
 
-    ProcessIPCClient firstClient(ProcessMode::Media);
+    ProcessIPCClient firstClient(ProcessMode::Media, pipeName.c_str());
     ASSERT_TRUE(firstClient.Connect(1000));
 
     bool connected = false;
@@ -79,7 +93,7 @@ TEST(ProcessIPCTest, RecoversAfterClientDisconnect) {
     ASSERT_TRUE(disconnected);
     EXPECT_FALSE(server.PollCommand(command));  // Rearm ConnectNamedPipe for the next client.
 
-    ProcessIPCClient secondClient(ProcessMode::Media);
+    ProcessIPCClient secondClient(ProcessMode::Media, pipeName.c_str());
     ASSERT_TRUE(secondClient.Connect(1000));
 
     ProcessResponse response = ProcessResponse::None;

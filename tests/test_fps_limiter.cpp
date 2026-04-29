@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <thread>
 #include "../hook/common/fps_limiter.h"
+#include "../hook/common/fps_limiter_policy.h"
 #include "../hook/common/freeze_watchdog.h"
 #include "../hook/common/overlay_compat.h"
 
@@ -333,6 +334,28 @@ TEST_F(FpsLimiterTest, ReflexSleepModeParamsMatchNvApiAbi) {
     EXPECT_EQ(offsetof(NV_SET_SLEEP_MODE_PARAMS, rsvd), 14u);
 }
 
+TEST(ReflexFpsLimiterPolicyTest, ExplicitReflexLocalCadenceSurvivesPresentGapWithoutGameSleep) {
+    const auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, false, false, 0, true);
+
+    EXPECT_TRUE(decision.useExplicitLocalCadence);
+    EXPECT_FALSE(decision.useGameSleepHandoff);
+    EXPECT_TRUE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, true));
+    EXPECT_FALSE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, false));
+}
+
+TEST(ReflexFpsLimiterPolicyTest, GameOwnedReflexHandoffStillRequiresFreshStableSleepWithoutGap) {
+    auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, 2, false);
+    EXPECT_FALSE(decision.useExplicitLocalCadence);
+    EXPECT_FALSE(decision.useGameSleepHandoff);
+
+    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, 3, true);
+    EXPECT_FALSE(decision.useGameSleepHandoff);
+
+    decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(false, true, true, 3, false);
+    EXPECT_TRUE(decision.useGameSleepHandoff);
+    EXPECT_FALSE(ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(decision, true));
+}
+
 TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
@@ -647,10 +670,10 @@ TEST(OverlayCompatTest, SwapchainWindowFallbackWhenForegroundIsExternal) {
     EXPECT_EQ(2160, height);
 
     // The delay function should still work with the fallback dimensions.
-    EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayAfterStartupResume(
-        true, true, false, false, true, width, height, 0, 100));
-    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayAfterStartupResume(
-        true, true, false, false, true, width, height, 100, 100));
+    EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayAfterStartupResume(true, true, false, false, true, width,
+                                                                             height, 0, 100));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayAfterStartupResume(true, true, false, false, true, width,
+                                                                              height, 100, 100));
 }
 
 TEST(OverlayCompatTest, StartupCompatibleAllocatorPoolCanShrinkForStartupOverlay) {

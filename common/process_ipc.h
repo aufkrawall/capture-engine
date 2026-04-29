@@ -83,6 +83,7 @@ const char* GetLogFileName(ProcessMode mode);
 class ProcessIPCServer {
 public:
     ProcessIPCServer(ProcessMode mode);
+    ProcessIPCServer(ProcessMode mode, const wchar_t* pipeNameOverride);
     ~ProcessIPCServer();
 
     bool Init();
@@ -101,10 +102,12 @@ public:
     }
 
 private:
+    const wchar_t* ResolvePipeName() const;
     void ResetConnectOverlappedLocked();
     void HandlePipeDisconnectLocked(bool logDisconnect);
 
     ProcessMode mode;
+    std::wstring pipeNameOverride;
     HANDLE hPipe;
     std::atomic<bool> connected;
     uint32_t lastSequence;
@@ -118,6 +121,7 @@ private:
 class ProcessIPCClient {
 public:
     ProcessIPCClient(ProcessMode targetMode);
+    ProcessIPCClient(ProcessMode targetMode, const wchar_t* pipeNameOverride);
     ~ProcessIPCClient();
 
     bool Connect(DWORD timeoutMs = 5000);
@@ -133,7 +137,10 @@ public:
     }
 
 private:
+    const wchar_t* ResolvePipeName() const;
+
     ProcessMode targetMode;
+    std::wstring pipeNameOverride;
     HANDLE hPipe;
     uint32_t sequence;
 };

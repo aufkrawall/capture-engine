@@ -1072,9 +1072,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 HookLogImportant(
                     "DetourPresent: PostSL callback skipped on normal route despite startup present kept "
                     "(startupPending=%d unconfirmed=%d hadFSR=%d explicitSetOptions=%d safeBootstrap=%d tid=0x%04X)",
-                    postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
-                    hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivation ? 1 : 0,
-                    safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
+                    postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0, hadFSRFGPhase ? 1 : 0,
+                    explicitSetOptionsActivation ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
             }
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
@@ -1412,10 +1411,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
     }
 
-    // FPS Limiter - apply frame pacing before present
+    // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
+    // cadence is finished after Present returns so the wait happens before the
+    // game starts building the next frame.
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply();
+        g_SharedFpsLimiter.Apply(true);
     }
 
     ProcessVSyncOverride(SyncInterval, Flags);
@@ -1465,6 +1466,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // stalls the GPU when Signal sits between our overlay ECL and Present.
     if (api == APIType::D3D12) {
         InvokeDX12FlushDeferredSignal();
+    }
+
+    if (SUCCEEDED(hr)) {
+        g_SharedFpsLimiter.ApplyPostPresent();
     }
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
@@ -1631,9 +1636,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 HookLogImportant(
                     "DetourPresent1: PostSL callback skipped on normal route despite startup present kept "
                     "(startupPending=%d unconfirmed=%d hadFSR=%d explicitSetOptions=%d safeBootstrap=%d tid=0x%04X)",
-                    postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
-                    hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivation ? 1 : 0,
-                    safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
+                    postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0, hadFSRFGPhase ? 1 : 0,
+                    explicitSetOptionsActivation ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
             }
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
@@ -1879,10 +1883,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         HandleDX11ProcessFrame(pSwapChain, true);
     }
 
-    // FPS Limiter - apply frame pacing before present
+    // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
+    // cadence is finished after Present returns so the wait happens before the
+    // game starts building the next frame.
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply();
+        g_SharedFpsLimiter.Apply(true);
     }
 
     ProcessVSyncOverride(SyncInterval, Flags);
@@ -1917,6 +1923,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     // Flush deferred overlay fence Signal AFTER Present.
     if (api == APIType::D3D12) {
         InvokeDX12FlushDeferredSignal();
+    }
+
+    if (SUCCEEDED(hr)) {
+        g_SharedFpsLimiter.ApplyPostPresent();
     }
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {

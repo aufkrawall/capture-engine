@@ -1,4 +1,5 @@
 #include "process_ipc.h"
+#include <sddl.h>
 #include <cstring>
 #include "logging.h"
 #include "raii_helpers.h"
@@ -110,8 +111,11 @@ const char* GetLogFileName(ProcessMode mode) {
 // ProcessIPCServer Implementation (Child processes)
 // ============================================================================
 
-ProcessIPCServer::ProcessIPCServer(ProcessMode mode)
+ProcessIPCServer::ProcessIPCServer(ProcessMode mode) : ProcessIPCServer(mode, nullptr) {}
+
+ProcessIPCServer::ProcessIPCServer(ProcessMode mode, const wchar_t* pipeNameOverride)
     : mode(mode),
+      pipeNameOverride(pipeNameOverride ? pipeNameOverride : L""),
       hPipe(INVALID_HANDLE_VALUE),
       connected(false),
       lastSequence(0),
@@ -127,6 +131,10 @@ void ProcessIPCServer::ResetConnectOverlappedLocked() {
     connectPending = false;
     connectOverlapped = {};
     connectOverlapped.hEvent = connectEvent;
+}
+
+const wchar_t* ProcessIPCServer::ResolvePipeName() const {
+    return !pipeNameOverride.empty() ? pipeNameOverride.c_str() : GetPipeName(mode);
 }
 
 void ProcessIPCServer::HandlePipeDisconnectLocked(bool logDisconnect) {
@@ -151,10 +159,24 @@ bool ProcessIPCServer::Init() {
     if (hPipe != INVALID_HANDLE_VALUE)
         return true;
 
-    const wchar_t* pipeName = GetPipeName(mode);
+    const wchar_t* pipeName = ResolvePipeName();
     if (!pipeName) {
         LogError("[IPC] Invalid process mode for server");
         return false;
+    }
+
+    SECURITY_ATTRIBUTES sa = {};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = FALSE;
+    PSECURITY_DESCRIPTOR pipeSecurity = nullptr;
+    const wchar_t* pipeSddl = pipeNameOverride.empty()
+                                  ? L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)(A;;GA;;;AU)(A;;GA;;;AC)S:(ML;;NW;;;LW)"
+                                  : L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)(A;;GA;;;AU)(A;;GA;;;AC)(A;;GA;;;WD)"
+                                    L"S:(ML;;NW;;;LW)";
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(pipeSddl, SDDL_REVISION_1, &pipeSecurity, NULL)) {
+        sa.lpSecurityDescriptor = pipeSecurity;
+    } else {
+        LogError("[IPC] Failed to create pipe security descriptor: %d", GetLastError());
     }
 
     // Create named pipe server
@@ -165,8 +187,10 @@ bool ProcessIPCServer::Init() {
                              sizeof(ProcessMessage),  // Output buffer
                              sizeof(ProcessMessage),  // Input buffer
                              0,                       // Default timeout
-                             NULL                     // Default security
-    );
+                             pipeSecurity ? &sa : NULL);
+    if (pipeSecurity) {
+        LocalFree(pipeSecurity);
+    }
 
     if (hPipe == INVALID_HANDLE_VALUE) {
         LogError("[IPC] Failed to create pipe: %d", GetLastError());
@@ -357,8 +381,11 @@ bool ProcessIPCServer::SendResponse(ProcessResponse response, const char* payloa
 // ProcessIPCClient Implementation (Controller)
 // ============================================================================
 
-ProcessIPCClient::ProcessIPCClient(ProcessMode targetMode)
+ProcessIPCClient::ProcessIPCClient(ProcessMode targetMode) : ProcessIPCClient(targetMode, nullptr) {}
+
+ProcessIPCClient::ProcessIPCClient(ProcessMode targetMode, const wchar_t* pipeNameOverride)
     : targetMode(targetMode),
+      pipeNameOverride(pipeNameOverride ? pipeNameOverride : L""),
       hPipe(INVALID_HANDLE_VALUE),
       sequence(0) {}
 
@@ -370,24 +397,44 @@ bool ProcessIPCClient::Connect(DWORD timeoutMs) {
     if (hPipe != INVALID_HANDLE_VALUE)
         return true;
 
-    const wchar_t* pipeName = GetPipeName(targetMode);
+    const wchar_t* pipeName = ResolvePipeName();
     if (!pipeName) {
         LogError("[IPC] Invalid target mode for client");
         return false;
     }
 
-    // Wait for pipe to become available
-    if (!WaitNamedPipeW(pipeName, timeoutMs)) {
-        // Pipe not available yet
-        return false;
-    }
+    const ULONGLONG startTick = GetTickCount64();
+    while (true) {
+        // Open pipe with FILE_FLAG_OVERLAPPED for async I/O support. Try this
+        // before WaitNamedPipeW: a server can have an overlapped ConnectNamedPipe
+        // pending while WaitNamedPipeW still reports no available instance.
+        hPipe = CreateFileW(pipeName, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+        if (hPipe != INVALID_HANDLE_VALUE) {
+            break;
+        }
 
-    // Open pipe with FILE_FLAG_OVERLAPPED for async I/O support
-    hPipe = CreateFileW(pipeName, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+        const DWORD pipeError = GetLastError();
+        if (pipeError != ERROR_PIPE_BUSY && pipeError != ERROR_FILE_NOT_FOUND) {
+            LogError("[IPC] Failed to connect to pipe: %d", pipeError);
+            return false;
+        }
 
-    if (hPipe == INVALID_HANDLE_VALUE) {
-        LogError("[IPC] Failed to connect to pipe: %d", GetLastError());
-        return false;
+        const ULONGLONG now = GetTickCount64();
+        if (now - startTick >= timeoutMs) {
+            LogError("[IPC] Timed out connecting to pipe: %d", pipeError);
+            return false;
+        }
+
+        DWORD waitMs = static_cast<DWORD>(timeoutMs - (now - startTick));
+        if (waitMs > 50) {
+            waitMs = 50;
+        }
+
+        if (pipeError == ERROR_PIPE_BUSY) {
+            WaitNamedPipeW(pipeName, waitMs);
+        } else {
+            SwitchToThread();
+        }
     }
 
     // Set message mode
@@ -403,6 +450,10 @@ bool ProcessIPCClient::Connect(DWORD timeoutMs) {
                                              : targetMode == ProcessMode::Limiter ? "limiter"
                                                                                   : "unknown");
     return true;
+}
+
+const wchar_t* ProcessIPCClient::ResolvePipeName() const {
+    return !pipeNameOverride.empty() ? pipeNameOverride.c_str() : GetPipeName(targetMode);
 }
 
 void ProcessIPCClient::Disconnect() {

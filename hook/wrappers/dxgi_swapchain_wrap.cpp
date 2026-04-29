@@ -927,12 +927,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         activeDebugSample->processFrameExternalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - processFrameStartUs);
     }
 
-    // FPS Limiter - apply frame pacing before present
-    // This applies to both DX11 and DX12
+    // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
+    // cadence is finished after Present returns so the wait happens before the
+    // game starts building the next frame.
+    // This applies to both DX11 and DX12.
     const int64_t limiterStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply();
+        g_SharedFpsLimiter.Apply(true);
     }
     if (activeDebugSample) {
         activeDebugSample->fpsLimiterUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - limiterStartUs);
@@ -987,6 +989,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     const int64_t presentCallStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
+    if (SUCCEEDED(hr)) {
+        g_SharedFpsLimiter.ApplyPostPresent();
+    }
     if (activeDebugSample) {
         activeDebugSample->presentCallUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - presentCallStartUs);
     }
@@ -1269,11 +1274,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         DX11_ProcessFrameExternal(pReal1Cached);
     }
 
-    // FPS Limiter - apply frame pacing before present
-    // This applies to both DX11 and DX12
+    // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
+    // cadence is finished after Present returns so the wait happens before the
+    // game starts building the next frame.
+    // This applies to both DX11 and DX12.
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply();
+        g_SharedFpsLimiter.Apply(true);
     }
 
     // Same SyncInterval=0 override as Present() — tear-free via vblank sync.
@@ -1290,6 +1297,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     }
 
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    if (SUCCEEDED(hr)) {
+        g_SharedFpsLimiter.ApplyPostPresent();
+    }
     return hr;
 }
 

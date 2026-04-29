@@ -9,6 +9,7 @@
 #include <mutex>
 #include "antilag2_limiter.h"
 #include "fg_detection.h"
+#include "fps_limiter_policy.h"
 #include "hook_common.h"
 #include "hook_context.h"
 #include "ipc_client.h"
@@ -36,6 +37,84 @@ constexpr uint32_t kXeLL = 5;      // Intel XeLL
 // - High-resolution waitable timer for sub-ms precision (Windows 10 1803+)
 // - 1ms timer resolution via timeBeginPeriod
 class FpsLimiter {
+private:
+    struct LocalCadenceResult {
+        int64_t scheduledWaitUs = 0;
+        int64_t actualWaitUs = 0;
+        uint32_t frameCount = 0;
+        bool emitStats = false;
+        double avgFps = 0;
+        double instantFps = 0;
+    };
+
+    LocalCadenceResult RunLocalCadence(int effectiveTargetFps) {
+        LocalCadenceResult result;
+        if (effectiveTargetFps <= 0) {
+            return result;
+        }
+
+        if (qpcFrequency == 0) {
+            LARGE_INTEGER freq;
+            QueryPerformanceFrequency(&freq);
+            qpcFrequency = freq.QuadPart;
+        }
+
+        int64_t intervalTicks = qpcFrequency / effectiveTargetFps;
+        int64_t phaseOffsetTicks = intervalTicks / 2;
+        if (phaseOffsetTicks < 1) {
+            phaseOffsetTicks = 1;
+        }
+
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+
+        if (localTargetTime_ == 0) {
+            // Start later in the current frame rather than a full frame ahead.
+            // This preserves the low-latency behavior expected from Reflex.
+            localTargetTime_ = now.QuadPart + phaseOffsetTicks;
+            localFrameCount_ = 0;
+            localStatsIntervalStart_ = now.QuadPart;
+            localStatsFrameCount_ = 0;
+        }
+
+        const int64_t waitTicks = localTargetTime_ - now.QuadPart;
+        result.scheduledWaitUs = (waitTicks > 0) ? (waitTicks * 1000000 / qpcFrequency) : 0;
+
+        LARGE_INTEGER beforeWait;
+        QueryPerformanceCounter(&beforeWait);
+        SmartWait(localTargetTime_);
+        LARGE_INTEGER afterWait;
+        QueryPerformanceCounter(&afterWait);
+        result.actualWaitUs = ((afterWait.QuadPart - beforeWait.QuadPart) * 1000000) / qpcFrequency;
+        lastActualWaitUs_ = result.actualWaitUs;
+
+        localTargetTime_ += intervalTicks;
+
+        QueryPerformanceCounter(&now);
+        if (localTargetTime_ < now.QuadPart - intervalTicks * 2) {
+            localTargetTime_ = now.QuadPart + phaseOffsetTicks;
+        }
+
+        localFrameCount_++;
+        localStatsFrameCount_++;
+        result.frameCount = localFrameCount_;
+
+        if (localFrameCount_ % 120 == 0) {
+            const int64_t intervalUs = ((now.QuadPart - localStatsIntervalStart_) * 1000000) / qpcFrequency;
+            result.avgFps = (intervalUs > 0) ? (localStatsFrameCount_ * 1000000.0 / intervalUs) : 0;
+            if (lastApplyEntryQpc_ != 0) {
+                const int64_t interFrameUs = ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
+                result.instantFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
+            }
+            result.emitStats = true;
+            localStatsIntervalStart_ = now.QuadPart;
+            localStatsFrameCount_ = 0;
+        }
+
+        lastApplyEntryQpc_ = now.QuadPart;
+        return result;
+    }
+
 public:
     void SetIPCClient(IPCClient* ipc) {
         this->ipc = ipc;
@@ -223,8 +302,68 @@ public:
         }
     }
 
-    // Called each frame before present
-    void Apply() {
+    void ApplyPostPresent() {
+        if (!reflexPostPresentCadencePending_) {
+            return;
+        }
+
+        reflexPostPresentCadencePending_ = false;
+        const int targetFps = reflexPostPresentTargetFps_;
+        if (targetFps <= 0) {
+            return;
+        }
+
+        EnsureTimerResolution();
+        isActivelyLimiting_.store(true, std::memory_order_relaxed);
+
+        const auto cadence = RunLocalCadence(targetFps);
+
+        LARGE_INTEGER sleepStart;
+        LARGE_INTEGER sleepEnd;
+        QueryPerformanceCounter(&sleepStart);
+        const bool ceOwnedSleepOk = g_ReflexLimiter.Sleep();
+        QueryPerformanceCounter(&sleepEnd);
+        const int64_t ceOwnedSleepUs = ((sleepEnd.QuadPart - sleepStart.QuadPart) * 1000000) / qpcFrequency;
+
+        reflexLimiterActive_ = true;
+        reflexNativeSleepActive_ = false;
+        loggedNativeFallback_ = false;
+        lastActualWaitUs_ = cadence.actualWaitUs + ceOwnedSleepUs;
+
+        if (!reflexLoggedSuccess_) {
+            TraceLog(
+                "Apply: REFLEX post-present cadence target=%d waitUs=%lld sleepUs=%lld sleepOk=%d push=%d "
+                "device=%d gap=%d",
+                targetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
+                reflexPostPresentPushOk_ ? 1 : 0, reflexPostPresentDeviceReady_ ? 1 : 0,
+                reflexPostPresentRecentGap_ ? 1 : 0);
+            HookLog(
+                "FPS Limiter: Reflex explicit mode active (target=%d fps, post-present local low-latency cadence + "
+                "CE-owned NvAPI Sleep, wait=%lldus, sleep=%lldus, sleepOk=%d, device=%d)",
+                targetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
+                reflexPostPresentDeviceReady_ ? 1 : 0);
+            reflexLoggedSuccess_ = true;
+        }
+
+        if (cadence.emitStats) {
+            TraceLog("Apply: REFLEX post-present stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
+                     cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps);
+            HookLog(
+                "FPS Limiter: Reflex post-present cadence (%u frames): lastWait=%lldus avgFps=%.1f "
+                "instFps=%.1f target=%d sleepOk=%d",
+                cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps,
+                ceOwnedSleepOk ? 1 : 0);
+        }
+
+        LARGE_INTEGER retQpc;
+        QueryPerformanceCounter(&retQpc);
+        lastApplyReturnQpc = retQpc.QuadPart;
+    }
+
+    // Called each frame before present. DXGI/DX12 call sites can allow explicit
+    // CE-owned Reflex pacing to defer its wait until after Present returns, so
+    // the blocked time sits before the next frame's simulation/render work.
+    void Apply(bool allowPostPresentReflexCadence = false) {
         SharedMemoryLayout* shm = nullptr;
         if (dbgShm) {
             shm = dbgShm;
@@ -479,6 +618,8 @@ public:
             lastApplyEntryQpc_ = 0;
             applyInterFrameSum_ = 0;
             applyInterFrameCount_ = 0;
+            reflexPostPresentCadencePending_ = false;
+            reflexPostPresentArmedLogged_ = false;
 
             const char* modeStr = "basic";
             if (effectiveMode == LimiterModeValues::kFGFallback)
@@ -560,7 +701,9 @@ public:
             reflexRecentPresentGap_ = recentPresentGap;
             const uint32_t freshSleepCount =
                 (gameSleepCount > reflexSleepBaselineCount_) ? (gameSleepCount - reflexSleepBaselineCount_) : 0;
-            const bool reflexHandoffReady = gameSleepRecent && freshSleepCount >= 3 && !recentPresentGap;
+            const auto reflexDecision = ce::fps_limiter_policy::ResolveReflexPacingDecision(
+                explicitReflexMode, gameSleepObserved, gameSleepRecent, freshSleepCount, recentPresentGap);
+            const bool reflexHandoffReady = reflexDecision.useGameSleepHandoff;
             const bool reflexPushOk = g_ReflexLimiter.PushFpsLimit();
             const bool reflexDeviceReady = g_ReflexLimiter.HasDevice();
 
@@ -593,34 +736,74 @@ public:
                 return;
             } else {
                 g_ReflexLimiter.DisableHybridPacing();
-                const bool ceOwnedSleepCandidate = explicitReflexMode && !gameSleepObserved && !recentPresentGap;
+                const bool ceOwnedSleepCandidate = reflexDecision.useExplicitLocalCadence;
                 bool ceOwnedSleepOk = false;
                 int64_t ceOwnedSleepUs = 0;
                 if (ceOwnedSleepCandidate) {
+                    EnsureTimerResolution();
+                    isActivelyLimiting_.store(true, std::memory_order_relaxed);
+                    if (ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(
+                            reflexDecision, allowPostPresentReflexCadence)) {
+                        reflexPostPresentCadencePending_ = true;
+                        reflexPostPresentTargetFps_ = effectiveTargetFps;
+                        reflexPostPresentPushOk_ = reflexPushOk;
+                        reflexPostPresentDeviceReady_ = reflexDeviceReady;
+                        reflexPostPresentRecentGap_ = recentPresentGap;
+                        reflexLimiterActive_ = true;
+                        reflexNativeSleepActive_ = false;
+                        loggedNativeFallback_ = false;
+                        lastActualWaitUs_ = 0;
+                        if (!reflexPostPresentArmedLogged_) {
+                            TraceLog("Apply: REFLEX post-present armed target=%d push=%d device=%d gap=%d",
+                                     effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0,
+                                     recentPresentGap ? 1 : 0);
+                            HookLog(
+                                "FPS Limiter: Reflex explicit mode armed for post-present pacing "
+                                "(target=%d fps, push=%d, device=%d)",
+                                effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0);
+                            reflexPostPresentArmedLogged_ = true;
+                        }
+                        LARGE_INTEGER retQpc;
+                        QueryPerformanceCounter(&retQpc);
+                        lastApplyReturnQpc = retQpc.QuadPart;
+                        return;
+                    }
+                    const auto cadence = RunLocalCadence(effectiveTargetFps);
+
                     LARGE_INTEGER sleepStart;
                     LARGE_INTEGER sleepEnd;
                     QueryPerformanceCounter(&sleepStart);
                     ceOwnedSleepOk = g_ReflexLimiter.Sleep();
                     QueryPerformanceCounter(&sleepEnd);
                     ceOwnedSleepUs = ((sleepEnd.QuadPart - sleepStart.QuadPart) * 1000000) / qpcFrequency;
-                }
 
-                if (ceOwnedSleepOk) {
                     reflexLimiterActive_ = true;
                     reflexNativeSleepActive_ = false;
                     loggedNativeFallback_ = false;
-                    lastActualWaitUs_ = ceOwnedSleepUs;
+                    lastActualWaitUs_ = cadence.actualWaitUs + ceOwnedSleepUs;
                     if (!reflexLoggedSuccess_) {
-                        TraceLog("Apply: REFLEX ce-owned sleep target=%d waitUs=%lld push=%d device=%d",
-                                 effectiveTargetFps, ceOwnedSleepUs, reflexPushOk ? 1 : 0,
-                                 reflexDeviceReady ? 1 : 0);
+                        TraceLog(
+                            "Apply: REFLEX local cadence target=%d waitUs=%lld sleepUs=%lld sleepOk=%d push=%d "
+                            "device=%d gap=%d",
+                            effectiveTargetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
+                            reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0, recentPresentGap ? 1 : 0);
                         HookLog(
-                            "FPS Limiter: Reflex explicit mode active (target=%d fps, CE-owned NvAPI Sleep, "
-                            "wait=%lldus, device=%d)",
-                            effectiveTargetFps, ceOwnedSleepUs, reflexDeviceReady ? 1 : 0);
+                            "FPS Limiter: Reflex explicit mode active (target=%d fps, local low-latency cadence + "
+                            "CE-owned NvAPI Sleep, wait=%lldus, sleep=%lldus, sleepOk=%d, device=%d)",
+                            effectiveTargetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
+                            reflexDeviceReady ? 1 : 0);
                         reflexLoggedSuccess_ = true;
                     }
-                    isActivelyLimiting_.store(true, std::memory_order_relaxed);
+                    if (cadence.emitStats) {
+                        TraceLog("Apply: REFLEX local stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
+                                 cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps,
+                                 effectiveTargetFps);
+                        HookLog(
+                            "FPS Limiter: Reflex local cadence (%u frames): lastWait=%lldus avgFps=%.1f "
+                            "instFps=%.1f target=%d sleepOk=%d",
+                            cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps,
+                            effectiveTargetFps, ceOwnedSleepOk ? 1 : 0);
+                    }
                     LARGE_INTEGER retQpc;
                     QueryPerformanceCounter(&retQpc);
                     lastApplyReturnQpc = retQpc.QuadPart;
@@ -640,8 +823,7 @@ public:
                         "Apply: REFLEX timer fallback gameActive=%d gameSleep=%d push=%d sleepCount=%u fresh=%u "
                         "recent=%d gap=%d device=%d",
                         gameActivated ? 1 : 0, gameSleepObserved ? 1 : 0, reflexPushOk ? 1 : 0, gameSleepCount,
-                        freshSleepCount, gameSleepRecent ? 1 : 0, recentPresentGap ? 1 : 0,
-                        reflexDeviceReady ? 1 : 0);
+                        freshSleepCount, gameSleepRecent ? 1 : 0, recentPresentGap ? 1 : 0, reflexDeviceReady ? 1 : 0);
                     if (recentPresentGap) {
                         HookLog(
                             "FPS Limiter: Recent Present gap detected during Reflex activation; holding timer fallback "
@@ -650,11 +832,6 @@ public:
                         HookLog(
                             "FPS Limiter: Reflex Sleep observed but waiting for a fresh stable Sleep streak; using "
                             "timer fallback");
-                    } else if (ceOwnedSleepCandidate) {
-                        HookLog(
-                            "FPS Limiter: Explicit Reflex sleep was unavailable; using timer fallback "
-                            "(push=%d waitUs=%lld device=%d)",
-                            reflexPushOk ? 1 : 0, ceOwnedSleepUs, reflexDeviceReady ? 1 : 0);
                     } else if (reflexPushOk) {
                         HookLog(
                             "FPS Limiter: Reflex armed but native Sleep cadence is not stable yet; using timer "
@@ -746,71 +923,20 @@ public:
         // adds ~3-4ms latency per frame and drops FPS well below target.
         // Instead, maintain a local cadence using SmartWait for sub-ms precision.
         if (usingCaptureSync) {
-            int64_t intervalTicks = qpcFrequency / effectiveTargetFps;
-            int64_t phaseOffsetTicks = intervalTicks / 2;
-            if (phaseOffsetTicks < 1) {
-                phaseOffsetTicks = 1;
-            }
-
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-
-            if (localTargetTime_ == 0) {
-                // Start the first paced present later in the current frame rather
-                // than a full frame ahead. This reduces the queued-frame behavior
-                // that shows up as high latency in Reflex hybrid mode.
-                localTargetTime_ = now.QuadPart + phaseOffsetTicks;
-                localFrameCount_ = 0;
-                localStatsIntervalStart_ = now.QuadPart;
-                localStatsFrameCount_ = 0;
-            }
-
-            // Wait until the target time
-            int64_t waitTicks = localTargetTime_ - now.QuadPart;
-            int64_t waitUs = (waitTicks > 0) ? (waitTicks * 1000000 / qpcFrequency) : 0;
-            LARGE_INTEGER beforeWait;
-            QueryPerformanceCounter(&beforeWait);
-            SmartWait(localTargetTime_);
-            LARGE_INTEGER afterWait;
-            QueryPerformanceCounter(&afterWait);
-            lastActualWaitUs_ = ((afterWait.QuadPart - beforeWait.QuadPart) * 1000000) / qpcFrequency;
-
-            // Advance target by fixed interval (preserves absolute cadence)
-            localTargetTime_ += intervalTicks;
-
-            // If we fell more than 2 frames behind, resync to avoid burst catch-up
-            QueryPerformanceCounter(&now);
-            if (localTargetTime_ < now.QuadPart - intervalTicks * 2) {
-                localTargetTime_ = now.QuadPart + phaseOffsetTicks;
-            }
-
-            // Track stats
-            localFrameCount_++;
-            localStatsFrameCount_++;
-
-            // Periodic stats logging (every 120 frames)
-            if (localFrameCount_ % 120 == 0) {
-                // Average FPS over the interval
-                int64_t intervalUs = ((now.QuadPart - localStatsIntervalStart_) * 1000000) / qpcFrequency;
-                double avgFps = (intervalUs > 0) ? (localStatsFrameCount_ * 1000000.0 / intervalUs) : 0;
-                // Instantaneous FPS (last frame only)
-                double instantFps = 0;
-                if (lastApplyEntryQpc_ != 0) {
-                    int64_t interFrameUs = ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
-                    instantFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
-                }
+            const auto cadence = RunLocalCadence(effectiveTargetFps);
+            if (cadence.emitStats) {
                 TraceLog("Apply: LOCAL stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
-                         localFrameCount_, waitUs, avgFps, instantFps, effectiveTargetFps);
+                         cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps,
+                         effectiveTargetFps);
                 HookLog(
                     "FPS Limiter: Local capture sync (%u frames): lastWait=%lldus avgFps=%.1f "
                     "instFps=%.1f target=%d",
-                    localFrameCount_, waitUs, avgFps, instantFps, effectiveTargetFps);
-                localStatsIntervalStart_ = now.QuadPart;
-                localStatsFrameCount_ = 0;
+                    cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps,
+                    effectiveTargetFps);
             }
-            lastApplyEntryQpc_ = now.QuadPart;
 
             // Record return time for dedup guard
+            LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
             lastApplyReturnQpc = now.QuadPart;
             return;
@@ -1038,6 +1164,12 @@ private:
         }
         reflexLimiterActive_ = false;
         reflexNativeSleepActive_ = false;
+        reflexPostPresentCadencePending_ = false;
+        reflexPostPresentTargetFps_ = 0;
+        reflexPostPresentPushOk_ = false;
+        reflexPostPresentDeviceReady_ = false;
+        reflexPostPresentRecentGap_ = false;
+        reflexPostPresentArmedLogged_ = false;
         reflexSleepBaselineCount_ = 0;
         reflexRecentPresentGap_ = false;
         reflexLoggedSuccess_ = false;
@@ -1069,6 +1201,12 @@ private:
     bool reflexNativeSleepActive_ = false;                   // True while recent game Sleep calls are pacing natively
     bool reflexLoggedSuccess_ = false;                       // True once we've logged successful Reflex activation
     bool loggedNativeFallback_ = false;                      // Avoid spam when native mode falls back to timer
+    bool reflexPostPresentCadencePending_ = false;           // True when explicit Reflex waits after Present returns
+    int reflexPostPresentTargetFps_ = 0;                     // Target for pending post-present Reflex cadence
+    bool reflexPostPresentPushOk_ = false;                   // Pre-present push state captured for diagnostics
+    bool reflexPostPresentDeviceReady_ = false;              // Device state captured for diagnostics
+    bool reflexPostPresentRecentGap_ = false;                // Present-gap state captured for diagnostics
+    bool reflexPostPresentArmedLogged_ = false;              // Avoid spam when arming post-present cadence
     uint32_t reflexSleepBaselineCount_ =
         0;  // Sleep count at the last disruption; native handoff needs a fresh streak after it
     bool reflexRecentPresentGap_ = false;          // Edge detector for recent large Present gaps

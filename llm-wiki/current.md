@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-04-29
+Last cross-checked: 2026-04-30
 
 Primary sources:
 - `llm-wiki/log/recent.md`
@@ -15,9 +15,13 @@ Primary sources:
 - `hook/apis/dx12_hook.cpp`
 - `hook/apis/streamline_hook.cpp`
 - `hook/common/fps_limiter.h`
+- `hook/common/fps_limiter_policy.h`
 - `hook/common/reflex_defs.h`
 - `hook/common/reflex_limiter.h`
+- `common/process_ipc.h`
+- `common/process_ipc.cpp`
 - `hook/common/dxgi_shared.cpp`
+- `hook/wrappers/dxgi_swapchain_wrap.cpp`
 - `hook/common/hook_common.h`
 - `hook/common/hook_common.cpp`
 - `hook/wrappers/inline_hook.cpp`
@@ -27,6 +31,7 @@ Primary sources:
 - `common/crash_dump_policy.h`
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_fps_limiter.cpp`
+- `tests/test_process_ipc.cpp`
 - `tests/test_streamline_runtime_policy.cpp`
 - `captureengine/wgc_capture.cpp`
 - `captureengine/media_main.cpp`
@@ -57,6 +62,9 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 
 ## Current Hot Areas
 - WGC capture now has opt-in performance experiments and expanded diagnostics for CPU/GPU saturation testing. Defaults are unchanged: dedicated split-device capture remains enabled and producer-side split-device `Flush()` remains enabled. `[General] wgc_skip_split_device_flush=false` can skip the post-copy flush while keeping keyed mutex synchronization, and `[General] wgc_same_device_capture=false` can attempt encoder-device reuse after WGC reinitialization. `[WGC Perf]` now reports keyed-mutex failures, split flush/skipped counts, fast pool-slot rewrites, slot rewrite age, and whether the current path is dedicated. See `wgc-capture.md` before changing WGC copy/device behavior.
+- Talos `installed/captureengine/logs/20260429_225939_talos_latencyhigh` showed the explicit Reflex limiter now capped at 60 fps, but NVIDIA overlay latency stayed above 70 ms because CE's local cadence wait happened immediately before `Present`, after the game had already simulated and rendered the frame. Current DXGI/DX12 Present paths now opt into two-phase explicit Reflex pacing: pre-Present arms the Reflex interval and vsync override, while the local cadence wait plus CE-owned `NvAPI_D3D_Sleep` runs after `Present` returns, before the game can build the next frame. The expected Talos trace is now `Apply: REFLEX post-present cadence ...` / `Apply: REFLEX post-present stats ...` rather than pre-Present `REFLEX local cadence`; non-DXGI call sites keep the previous single-phase fallback unless they explicitly opt in. GTA game-owned Reflex/DLSS FG handoff remains guarded by fresh stable game sleep with no recent present-gap churn.
+- Talos `installed/captureengine/logs/20260429_220822` on build `0.1.2647` exposed the next explicit Reflex limiter regression: config selected `general_limiter_mode=reflex` at 60 fps, `NvAPI_D3D_SetSleepMode` and CE-owned `NvAPI_D3D_Sleep` succeeded with a published device, but FPS still ran uncapped because the driver sleep returned in microseconds when the game never called `slReflexSleep`. The current tree now keeps GTA's game-owned Reflex/DLSS FG handoff guarded behind a fresh stable `slReflexSleep` streak with no present-gap churn, while explicit CE Reflex mode without observed game sleep uses CE's local cadence rather than trusting driver sleep alone. On DXGI/DX12 this cadence runs post-Present for latency (`Apply: REFLEX post-present cadence ...`); older single-phase call sites may still log `Apply: REFLEX local cadence ...`. Focused policy coverage lives in `tests/test_fps_limiter.cpp` / `hook/common/fps_limiter_policy.h`.
+- `ProcessIPCTest.*` is no longer allowed to depend on the production `CaptureEngine_Media` pipe name or the host default named-pipe DACL. Tests now create unique pipe names and the override path supplies an explicit local test descriptor, while production pipes use a narrower local interactive/authenticated/app-container descriptor. `ProcessIPCClient::Connect()` first attempts the open directly, then retries only the expected busy/not-found races, so pending overlapped `ConnectNamedPipe` states are covered without masking real access errors.
 - The tree now has a first shared FG session/planner layer in `hook/common/fg_session_state.{h,cpp}`. It is not yet the full end-state from `fg-plan.md`, but it is now the central place that captures live FG session snapshots, computes a shadow/live action plan, emits structured `FG SNAPSHOT` / `FG EVENT` / `FG PLAN` / `FG TRANSITION` / `FG INVARIANT` / `FG LEGACY DECISION` logs, and keeps `session_manifest.txt` updated with `steam_overlay_loaded`, `streamline_loaded`, `ffx_loaded`, `fg_shadow_state_enabled`, and `fg_state_schema_version`.
 - `hook/common/dx12_fg_transition_model.cpp` is no longer an independent competing reducer. It now acts as a compatibility adapter over the planner-backed FG session snapshot so existing DX12 transition/replay tests and the current ProcessFrame transition logging keep their prior public contract while the new session/planner layer owns the richer state/logging/publication model.
 - Overlay FG publication is still planner-driven at the main DXGI/DX12 call sites, but the shared planner-aware helper now compares the planner against a DX12-exported "latest visible FG state" cache using one shared publication-order sequence. `DX12::ProcessFrame`, `DX12_OnStreamlineFGStateChanged`, and the native-FSR callback path seed that cache, and planner state changes now enter the same ordering domain, so the newer side wins. This preserves the earlier stale-plan fix while also preventing an older cached visible `DLSS FG` state from repainting over a later planner `off` update during menu churn or shutdown-adjacent sequences.
