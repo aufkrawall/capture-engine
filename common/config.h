@@ -108,8 +108,8 @@ inline LimiterMode ParseLimiterMode(const std::string& val) {
         return LimiterMode::kBasic;
     if (normalized == "fg_fallback" || normalized == "fallback" || normalized == "fg-fallback")
         return LimiterMode::kFGFallback;
-    if (normalized == "native" || normalized == "reflex" || normalized == "nvidia" ||
-        normalized == "nvidia_reflex" || normalized == "nvidia-reflex")
+    if (normalized == "native" || normalized == "reflex" || normalized == "nvidia" || normalized == "nvidia_reflex" ||
+        normalized == "nvidia-reflex")
         return LimiterMode::kNative;
     if (normalized == "anti_lag2" || normalized == "antilag2" || normalized == "anti-lag2")
         return LimiterMode::kAntiLag2;
@@ -286,7 +286,9 @@ struct AppConfig {
     bool debugLogging = true;  // Legacy compatibility view: true when logLevel >= Debug
     LogLevel logLevel = LogLevel::Debug;
     std::string captureMethod;  // "inject", "wgc", "auto"
-    std::string logFilePath;    // Path to captureengine.log
+    bool wgcSkipSplitDeviceFlush = false;
+    bool wgcSameDeviceCapture = false;
+    std::string logFilePath;  // Path to captureengine.log
 
     std::string crashDumpDir;  // Directory for crash dumps
 

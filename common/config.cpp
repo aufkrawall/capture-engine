@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include "logging.h"
@@ -181,12 +182,12 @@ float ParseDlssSharpening(const std::string& val) {
         return -2.0f;
     if (_stricmp(val.c_str(), "off") == 0)
         return -1.0f;
-    try {
-        float f = std::stof(val);
-        return f;  // Clamp if necessary? Usually NGX handles 0.0-1.0
-    } catch (...) {
+    char* end = nullptr;
+    float f = std::strtof(val.c_str(), &end);
+    if (end == val.c_str()) {
         return -2.0f;
     }
+    return f;  // Clamp if necessary? Usually NGX handles 0.0-1.0
 }
 
 int ParseDlssFGFactor(const std::string& val) {
@@ -216,6 +217,52 @@ T ParseValue(const std::string& val) {
 // We will store it as string in struct, but utils might need parsing.
 // For now, config loader just stores strings for those fields.
 
+static bool ReadTextFile(const std::string& path, std::string& out) {
+    out.clear();
+    HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    LARGE_INTEGER size = {};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > 16 * 1024 * 1024) {
+        CloseHandle(file);
+        return false;
+    }
+
+    out.resize(static_cast<size_t>(size.QuadPart));
+    DWORD read = 0;
+    if (!out.empty() && !ReadFile(file, out.data(), static_cast<DWORD>(out.size()), &read, nullptr)) {
+        CloseHandle(file);
+        out.clear();
+        return false;
+    }
+    CloseHandle(file);
+    out.resize(read);
+    return true;
+}
+
+static bool TryParseInt(const std::string& value, int& out, int base = 10) {
+    char* end = nullptr;
+    long parsed = std::strtol(value.c_str(), &end, base);
+    if (end == value.c_str()) {
+        return false;
+    }
+    out = static_cast<int>(parsed);
+    return true;
+}
+
+static bool TryParseUInt32(const std::string& value, uint32_t& out, int base = 10) {
+    char* end = nullptr;
+    unsigned long parsed = std::strtoul(value.c_str(), &end, base);
+    if (end == value.c_str()) {
+        return false;
+    }
+    out = static_cast<uint32_t>(parsed);
+    return true;
+}
+
 // Helper to create default config if missing
 void CreateDefaultConfig(const std::string& path) {
     std::ofstream cfg(path);
@@ -239,6 +286,12 @@ debug_logging=true
 ;   wgc    = Windows Graphics Capture only (legacy aliases: screengrab, framegrab, desktop_dup)
 ;   auto   = WGC, unless application is on inject whitelist
 capture_method=auto
+; wgc_skip_split_device_flush - Experimental. Skip producer-side Flush() after split-device WGC CopyResource.
+; Leave false until GPU-bound validation confirms no corruption or encoder underfeed.
+wgc_skip_split_device_flush=false
+; wgc_same_device_capture - Experimental. Reuse the encoder D3D11 device for WGC instead of a dedicated capture device.
+; Leave false unless same-device validation improves capture/game pacing on your system.
+wgc_same_device_capture=false
 
 ; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay.
 ; Format: process:window:mode - see [Injection] section for full format documentation.
@@ -650,11 +703,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         std::string valStr = GetStr(section, key, "");
         if (valStr.empty())
             return def;
-        try {
-            return std::stoi(valStr);
-        } catch (...) {
-            return def;
-        }
+        int parsed = def;
+        return TryParseInt(valStr, parsed) ? parsed : def;
     };
 
     auto GetBool = [&](const char* section, const char* key, bool def) {
@@ -696,6 +746,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
     config.debugLogging = IsDebugLoggingEnabled(config.logLevel);
     config.captureMethod = NormalizeCaptureMethod(GetStr("General", "capture_method", "auto"));
+    config.wgcSkipSplitDeviceFlush = GetBool("General", "wgc_skip_split_device_flush", false);
+    config.wgcSameDeviceCapture = GetBool("General", "wgc_same_device_capture", false);
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
 
     // Performance (Priority Settings)
@@ -809,8 +861,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.gameWhitelist.clear();
     // We use a manual pass to support both comma-separated (legacy) and
     // newline-separated entries
-    std::ifstream cfgFile(path);
-    if (cfgFile.is_open()) {
+    std::string cfgText;
+    if (ReadTextFile(path, cfgText)) {
+        std::stringstream cfgFile(cfgText);
         std::string line;
         bool inInjection = false;
         bool inWhitelist = false;
@@ -937,9 +990,10 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             seg.erase(0, seg.find_first_not_of(" \t"));
             seg.erase(seg.find_last_not_of(" \t") + 1);
             if (!seg.empty()) {
-                try {
-                    res.push_back(std::stoi(seg));
-                } catch (...) {}
+                int parsed = 0;
+                if (TryParseInt(seg, parsed)) {
+                    res.push_back(parsed);
+                }
             }
         }
         if (res.empty())
@@ -955,16 +1009,15 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (clean.size() > 0 && clean[0] == '#')
             clean.erase(0, 1);
 
-        try {
-            uint32_t rgb = std::stoul(clean, nullptr, 16);
+        uint32_t rgb = 0;
+        if (TryParseUInt32(clean, rgb, 16)) {
             // Convert RRGGBB to 0xAABBGGRR (ImGui format)
             uint32_t r = (rgb >> 16) & 0xFF;
             uint32_t g = (rgb >> 8) & 0xFF;
             uint32_t b = rgb & 0xFF;
             return 0xFF000000 | (b << 16) | (g << 8) | r;
-        } catch (...) {
-            return defaultColor;
         }
+        return defaultColor;
     };
 
     // Overlay
@@ -1130,10 +1183,12 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         // Try to parse WxH format (e.g., "1920x1080")
         size_t xPos = res.find('x');
         if (xPos != std::string::npos) {
-            try {
-                config.video.scaling.outputWidth = std::stoi(res.substr(0, xPos));
-                config.video.scaling.outputHeight = std::stoi(res.substr(xPos + 1));
-            } catch (...) {
+            int parsedWidth = 0;
+            int parsedHeight = 0;
+            if (TryParseInt(res.substr(0, xPos), parsedWidth) && TryParseInt(res.substr(xPos + 1), parsedHeight)) {
+                config.video.scaling.outputWidth = parsedWidth;
+                config.video.scaling.outputHeight = parsedHeight;
+            } else {
                 // Invalid format, use native
                 config.video.scaling.outputWidth = 0;
                 config.video.scaling.outputHeight = 0;

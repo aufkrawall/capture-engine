@@ -11,6 +11,9 @@ debug_logging=true
 ;   wgc    = Windows Graphics Capture only (legacy aliases: screengrab, framegrab, desktop_dup)
 ;   auto   = WGC, unless application is on inject whitelist
 capture_method=auto
+; Experimental WGC performance flags. Keep false unless validating WGC under load.
+wgc_skip_split_device_flush=false
+wgc_same_device_capture=false
 
 [Injection]
 ; Entry format: process:window:mode

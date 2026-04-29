@@ -165,7 +165,9 @@ bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
 
 bool MediaEngineConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
     if (lhs.logLevel != rhs.logLevel || lhs.captureMethod != rhs.captureMethod ||
-        !MediaVideoConfigEquals(lhs.video, rhs.video) || lhs.audioSources.size() != rhs.audioSources.size()) {
+        lhs.wgcSkipSplitDeviceFlush != rhs.wgcSkipSplitDeviceFlush ||
+        lhs.wgcSameDeviceCapture != rhs.wgcSameDeviceCapture || !MediaVideoConfigEquals(lhs.video, rhs.video) ||
+        lhs.audioSources.size() != rhs.audioSources.size()) {
         return false;
     }
 
@@ -649,6 +651,8 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     }
 
     g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+    g_WgcCap->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
+    g_WgcCap->SetSameDeviceCapture(config.wgcSameDeviceCapture);
     if (config.video.useVFR) {
         g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
     } else {
@@ -1339,6 +1343,11 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastStaleOutOfOrderTsCount = 0;
     uint32_t lastCursorSkipCount = 0;
     uint32_t lastPoolDropCount = 0;
+    uint32_t lastKeyedAcquireFailCount = 0;
+    uint32_t lastKeyedReleaseFailCount = 0;
+    uint32_t lastSplitFlushCount = 0;
+    uint32_t lastSplitFlushSkippedCount = 0;
+    uint32_t lastPoolSlotFastRewriteCount = 0;
     uint32_t lastDuplicateCount = 0;
     uint32_t lastLateCount = 0;
     bool sessionPrimed = false;
@@ -1358,6 +1367,11 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastStaleOutOfOrderTsCount = 0;
             lastCursorSkipCount = 0;
             lastPoolDropCount = 0;
+            lastKeyedAcquireFailCount = 0;
+            lastKeyedReleaseFailCount = 0;
+            lastSplitFlushCount = 0;
+            lastSplitFlushSkippedCount = 0;
+            lastPoolSlotFastRewriteCount = 0;
             lastDuplicateCount = 0;
             lastLateCount = 0;
             lastDiagTime = 0;
@@ -1375,6 +1389,11 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastStaleOutOfOrderTsCount = g_WgcCap->GetStaleOutOfOrderTimestampCount();
             lastCursorSkipCount = g_WgcCap->GetCursorOnlySkipCount();
             lastPoolDropCount = g_WgcCap->GetPoolDropCount();
+            lastKeyedAcquireFailCount = g_WgcCap->GetKeyedMutexAcquireFailCount();
+            lastKeyedReleaseFailCount = g_WgcCap->GetKeyedMutexReleaseFailCount();
+            lastSplitFlushCount = g_WgcCap->GetSplitDeviceFlushCount();
+            lastSplitFlushSkippedCount = g_WgcCap->GetSplitDeviceFlushSkippedCount();
+            lastPoolSlotFastRewriteCount = g_WgcCap->GetPoolSlotFastRewriteCount();
             if (g_pSharedMem) {
                 lastDuplicateCount = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
                 lastLateCount = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
@@ -1396,6 +1415,11 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t currentStaleOutOfOrderTsCount = g_WgcCap->GetStaleOutOfOrderTimestampCount();
             uint32_t currentCursorSkipCount = g_WgcCap->GetCursorOnlySkipCount();
             uint32_t currentPoolDropCount = g_WgcCap->GetPoolDropCount();
+            uint32_t currentKeyedAcquireFailCount = g_WgcCap->GetKeyedMutexAcquireFailCount();
+            uint32_t currentKeyedReleaseFailCount = g_WgcCap->GetKeyedMutexReleaseFailCount();
+            uint32_t currentSplitFlushCount = g_WgcCap->GetSplitDeviceFlushCount();
+            uint32_t currentSplitFlushSkippedCount = g_WgcCap->GetSplitDeviceFlushSkippedCount();
+            uint32_t currentPoolSlotFastRewriteCount = g_WgcCap->GetPoolSlotFastRewriteCount();
             uint32_t inputFrames = currentInputCount - lastInputCount;
             uint32_t deliveredFrames = currentCount - lastCallbackCount;
             uint32_t hostDropDelta =
@@ -1407,6 +1431,11 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t staleOutOfOrderTsDelta = currentStaleOutOfOrderTsCount - lastStaleOutOfOrderTsCount;
             uint32_t cursorSkipDelta = currentCursorSkipCount - lastCursorSkipCount;
             uint32_t poolDropDelta = currentPoolDropCount - lastPoolDropCount;
+            uint32_t keyedAcquireFailDelta = currentKeyedAcquireFailCount - lastKeyedAcquireFailCount;
+            uint32_t keyedReleaseFailDelta = currentKeyedReleaseFailCount - lastKeyedReleaseFailCount;
+            uint32_t splitFlushDelta = currentSplitFlushCount - lastSplitFlushCount;
+            uint32_t splitFlushSkippedDelta = currentSplitFlushSkippedCount - lastSplitFlushSkippedCount;
+            uint32_t poolSlotFastRewriteDelta = currentPoolSlotFastRewriteCount - lastPoolSlotFastRewriteCount;
             uint32_t queuedFrames = deliveredFrames >= hostDropDelta ? (deliveredFrames - hostDropDelta) : 0;
             int64_t copyUs = g_WgcCap->GetLastCopyTimeUs();
             int64_t srcIntervalAvgUs = g_WgcCap->GetSourceIntervalAvgUs();
@@ -1414,6 +1443,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             int64_t srcJitterMaxUs = g_WgcCap->GetSourceJitterMaxUs();
             int64_t srcToCopyAvgUs = g_WgcCap->GetSourceToCopyLatencyAvgUs();
             int64_t srcToCopyMaxUs = g_WgcCap->GetSourceToCopyLatencyMaxUs();
+            int64_t poolSlotRewriteUs = g_WgcCap->GetLastPoolSlotRewriteUs();
             int64_t encodeUs = MediaEngine_GetLastFrameEncodeTimeUs();
             int64_t fenceUs = MediaEngine_GetLastFrameFenceWaitUs();
             uint32_t dupDelta = 0;
@@ -1479,14 +1509,16 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 "SrcAvg: %lldus | JitAvg: %lldus | JitMax: %lldus | Src->Copy: %lld/%lldus | Deliv: %u | "
                 "MinIn250/500: %u/%u | MinDel250/500: %u/%u | FreshMiss: %upm | BufAvg: %upm | BufMin: %u | "
                 "NoFresh: %u | NoReserve: %u | SelAvg: %uus "
-                "SelBias: %dus | Copy: %lldus | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | "
-                "Overload: 0x%X",
+                "SelBias: %dus | Copy: %lldus | SlotAge: %lldus FastSlot: %u | KMFail: %u/%u | Flush: %u/%u | "
+                "Dedicated: %d | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | Overload: 0x%X",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
                 staleDuplicateTsDelta, staleOutOfOrderTsDelta, cursorSkipDelta, poolDropDelta,
                 static_cast<uint32_t>(g_FrameQueue.Size()), encoderQueueDepth, dupDelta, lateDelta, srcIntervalAvgUs,
                 srcJitterAvgUs, srcJitterMaxUs, srcToCopyAvgUs, srcToCopyMaxUs, deliveredRatePerSec, inputMin250Fps,
                 inputMin500Fps, deliveredMin250Fps, deliveredMin500Fps, queueEmptyPermille, bufferedAtTickAvgPermille,
-                bufferedAtTickMin, starvedTicks, singleFrameTicks, cadenceSelAvgUs, cadenceSelBiasUs, copyUs, encodeUs,
+                bufferedAtTickMin, starvedTicks, singleFrameTicks, cadenceSelAvgUs, cadenceSelBiasUs, copyUs,
+                poolSlotRewriteUs, poolSlotFastRewriteDelta, keyedAcquireFailDelta, keyedReleaseFailDelta,
+                splitFlushDelta, splitFlushSkippedDelta, g_WgcCap->IsUsingDedicatedCaptureDevice() ? 1 : 0, encodeUs,
                 fenceUs, throttleTargetFps, (muxQueueBytes + 1023u) / 1024u, overloadFlags);
 
             lastInputCount = currentInputCount;
@@ -1499,6 +1531,11 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastStaleOutOfOrderTsCount = currentStaleOutOfOrderTsCount;
             lastCursorSkipCount = currentCursorSkipCount;
             lastPoolDropCount = currentPoolDropCount;
+            lastKeyedAcquireFailCount = currentKeyedAcquireFailCount;
+            lastKeyedReleaseFailCount = currentKeyedReleaseFailCount;
+            lastSplitFlushCount = currentSplitFlushCount;
+            lastSplitFlushSkippedCount = currentSplitFlushSkippedCount;
+            lastPoolSlotFastRewriteCount = currentPoolSlotFastRewriteCount;
             lastDiagTime = now;
         }
     }
@@ -4801,6 +4838,14 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         LogInfo("[Media] Shared memory not available - using WGC mode");
     }
 
+    auto applyWgcOptions = [&]() {
+        if (!g_WgcCap) {
+            return;
+        }
+        g_WgcCap->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
+        g_WgcCap->SetSameDeviceCapture(config.wgcSameDeviceCapture);
+    };
+
     if (IsPreferredScreenGrab() || isAutoCaptureConfig()) {
         if (!ensureMediaEngineReady()) {
             timeEndPeriod(1);
@@ -4819,6 +4864,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
             if (WGCCapture::IsSupported()) {
                 g_WgcCap = std::make_unique<WGCCapture>();
+                applyWgcOptions();
                 if (g_WgcCap->Init(d3dDevice)) {
                     // Connect encoder bottleneck flag to WGC for throttle
                     g_WgcCap->SetThrottleFlag(nullptr);
@@ -4864,6 +4910,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     };
     auto ensureWgcStandby = [&]() -> bool {
         if (g_WgcCap) {
+            applyWgcOptions();
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
             g_WgcCap->SetThrottleFlag(nullptr);
             return true;
@@ -4872,6 +4919,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
         g_WgcCap = std::make_unique<WGCCapture>();
+        applyWgcOptions();
         if (!g_WgcCap->Init(d3dDevice)) {
             g_WgcCap.reset();
             return false;
@@ -4952,6 +5000,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         ApplyMediaProcessPriority(config);
         if (g_WgcCap) {
+            applyWgcOptions();
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
         }
         if (mediaEngineReady) {
@@ -4994,6 +5043,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap) {
+            applyWgcOptions();
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
             g_WgcCap->SetThrottleFlag(nullptr);
             SetPreferredScreenGrab(true);
@@ -5006,6 +5056,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         g_WgcCap.reset();
         g_WgcCap = std::make_unique<WGCCapture>();
+        applyWgcOptions();
         bool initOk = false;
         if (targetMonitor) {
             initOk = g_WgcCap->InitForMonitor(d3dDevice, targetMonitor);
@@ -5039,6 +5090,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         if (currentCapturedWindow == targetWindow && g_WgcCap && !currentTargetPrefersInject) {
+            applyWgcOptions();
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
             g_WgcCap->SetThrottleFlag(nullptr);
             SetPreferredScreenGrab(true);
@@ -5052,6 +5104,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         g_WgcCap.reset();
         g_WgcCap = std::make_unique<WGCCapture>();
+        applyWgcOptions();
         if (g_WgcCap->InitForWindow(d3dDevice, targetWindow)) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
             g_WgcCap->SetThrottleFlag(nullptr);

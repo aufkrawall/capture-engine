@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-04-16
+Last cross-checked: 2026-04-29
 
 Primary sources:
 - `AGENTS.md`
@@ -48,6 +48,8 @@ Primary sources:
   - Current visible FG status publication rules for the overlay.
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
+- `wgc-capture.md`
+  - Windows Graphics Capture device/copy path, experimental WGC performance flags, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-04-29. Stale-risk: medium.
 - `log.md`
   - Stub pointing to `log/recent.md` (recent activity) and `log/archive-YYYY-Www*.md` (weekly archives).
 

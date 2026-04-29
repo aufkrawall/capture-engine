@@ -272,7 +272,13 @@ def get_workspace_temp_dir() -> str:
 def apply_workspace_temp_environment(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Route temp-file usage into the workspace instead of the profile Temp tree."""
     temp_dir = get_workspace_temp_dir()
-    target_env = env if env is not None else os.environ
+    if env is None:
+        os.environ["TMP"] = temp_dir
+        os.environ["TEMP"] = temp_dir
+        os.environ["TMPDIR"] = temp_dir
+        return dict(os.environ)
+
+    target_env = env
     target_env["TMP"] = temp_dir
     target_env["TEMP"] = temp_dir
     target_env["TMPDIR"] = temp_dir
@@ -3615,7 +3621,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         if f != "-flto"
     ]
 
-    if not IS_LINUX and have_x86:
+    if not IS_LINUX and have_x86 and clang_exe_x86 is not None:
         clangd_x86_flags = _clangd_extra_flags_for_arch("x86", clang_exe_x86)
         x86_include_flags = [
             flag for flag in clangd_x86_flags if flag.startswith("-isystem") or flag.startswith("-resource-dir=")
@@ -3624,7 +3630,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             cflags_x86.extend(x86_include_flags)
 
     x86_linker_prefix: List[str] = []
-    if not IS_LINUX and have_x86:
+    if not IS_LINUX and have_x86 and clang_exe_x86 is not None:
         x86_std_lib_path = ""
         try:
             res = subprocess.check_output(

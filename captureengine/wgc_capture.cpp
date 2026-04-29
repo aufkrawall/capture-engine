@@ -12,6 +12,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <vector>
 #include "../common/frame_timing_utils.h"
 #include "../common/logging.h"
 #include "../common/rate_window_utils.h"
@@ -289,6 +290,7 @@ public:
     int32_t cachedHeight_ = 0;
 
     std::mutex frameMutex_;
+    std::mutex frameProcessingMutex_;
     std::mutex callbackDrainMutex_;
     int64_t lastFrameTime_ = 0;
     bool frameReady_ = false;
@@ -347,6 +349,13 @@ public:
     std::atomic<uint32_t> normalizedDuplicateTimestampCount_{0};
     std::atomic<uint32_t> cursorOnlySkipCount_{0};
     std::atomic<uint32_t> poolDropCount_{0};
+    std::atomic<uint32_t> keyedMutexAcquireFailCount_{0};
+    std::atomic<uint32_t> keyedMutexReleaseFailCount_{0};
+    std::atomic<uint32_t> splitDeviceFlushCount_{0};
+    std::atomic<uint32_t> splitDeviceFlushSkippedCount_{0};
+    std::atomic<uint32_t> poolSlotFastRewriteCount_{0};
+    std::atomic<int64_t> lastPoolSlotRewriteUs_{0};
+    std::atomic<int64_t> poolSlotLastWriteQpc_[TEXTURE_POOL_SIZE] = {};
     bool dirtyRegionModeEnabled_ = false;
     HCURSOR lastCursorHandle_ = nullptr;
     POINT lastCursorScreenPos_ = {};
@@ -387,6 +396,8 @@ public:
     UINT outputBitsPerColor_ = 8;
     DXGI_COLOR_SPACE_TYPE outputColorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     std::atomic<bool> resetNeeded_{false};
+    bool skipSplitDeviceFlush_ = false;
+    bool sameDeviceCapture_ = false;
     std::mutex resetReasonMutex_;
     std::string resetReason_;
     winrt::event_token itemClosedToken_{};
@@ -482,6 +493,9 @@ public:
         poolHeight_ = 0;
         poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
         poolWriteIndex_.store(0, std::memory_order_relaxed);
+        for (int i = 0; i < TEXTURE_POOL_SIZE; ++i) {
+            poolSlotLastWriteQpc_[i].store(0, std::memory_order_relaxed);
+        }
     }
 
     void EnableMultithreadProtection(ID3D11Device* device, const char* label) {
@@ -512,6 +526,19 @@ public:
 
         encoderDevice_ = encoderDevice;
         usingDedicatedCaptureDevice_ = false;
+
+        if (sameDeviceCapture_) {
+            d3dDevice_ = encoderDevice_;
+            d3dDevice_->GetImmediateContext(&d3dContext_);
+            if (!d3dContext_) {
+                LogError("[WGC] Failed to acquire same-device D3D11 immediate context");
+                d3dDevice_ = nullptr;
+                return false;
+            }
+            EnableMultithreadProtection(d3dDevice_, "same-device capture");
+            LogInfo("[WGC] Same-device capture enabled; reusing encoder D3D11 device");
+            return true;
+        }
 
         IDXGIDevice* dxgiDevice = nullptr;
         IDXGIAdapter* adapter = nullptr;
@@ -585,6 +612,15 @@ public:
         normalizedDuplicateTimestampCount_.store(0, std::memory_order_relaxed);
         cursorOnlySkipCount_.store(0, std::memory_order_relaxed);
         poolDropCount_.store(0, std::memory_order_relaxed);
+        keyedMutexAcquireFailCount_.store(0, std::memory_order_relaxed);
+        keyedMutexReleaseFailCount_.store(0, std::memory_order_relaxed);
+        splitDeviceFlushCount_.store(0, std::memory_order_relaxed);
+        splitDeviceFlushSkippedCount_.store(0, std::memory_order_relaxed);
+        poolSlotFastRewriteCount_.store(0, std::memory_order_relaxed);
+        lastPoolSlotRewriteUs_.store(0, std::memory_order_relaxed);
+        for (int i = 0; i < TEXTURE_POOL_SIZE; ++i) {
+            poolSlotLastWriteQpc_[i].store(0, std::memory_order_relaxed);
+        }
         lastCopyUs_.store(0, std::memory_order_relaxed);
         lastDeliveredSourceQpc_.store(0, std::memory_order_relaxed);
         lastObservedRawSourceQpc_.store(0, std::memory_order_relaxed);
@@ -1215,6 +1251,7 @@ public:
             if (writeMutex) {
                 const HRESULT kmHr = writeMutex->AcquireSync(0, 0);
                 if (kmHr != S_OK) {
+                    keyedMutexAcquireFailCount_.fetch_add(1, std::memory_order_relaxed);
                     continue;
                 }
                 mutexAcquired = true;
@@ -1226,9 +1263,15 @@ public:
 
             d3dContext_->CopyResource(copyTarget, sourceTexture);
             if (mutexAcquired) {
-                d3dContext_->Flush();
+                if (skipSplitDeviceFlush_) {
+                    splitDeviceFlushSkippedCount_.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    d3dContext_->Flush();
+                    splitDeviceFlushCount_.fetch_add(1, std::memory_order_relaxed);
+                }
                 const HRESULT releaseHr = writeMutex->ReleaseSync(0);
                 if (releaseHr != S_OK) {
+                    keyedMutexReleaseFailCount_.fetch_add(1, std::memory_order_relaxed);
                     LogWarn("[WGC] Shared texture ReleaseSync failed for slot %u: 0x%08lX", idx,
                             (unsigned long)releaseHr);
                     continue;
@@ -1240,6 +1283,18 @@ public:
             int64_t copyUs = 0;
             if (qpcFreq_ > 0) {
                 copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq_;
+            }
+            const int64_t previousSlotWriteQpc =
+                poolSlotLastWriteQpc_[idx].exchange(copyEnd.QuadPart, std::memory_order_relaxed);
+            if (previousSlotWriteQpc > 0 && copyEnd.QuadPart > previousSlotWriteQpc && qpcFreq_ > 0) {
+                const int64_t slotRewriteUs = ((copyEnd.QuadPart - previousSlotWriteQpc) * 1000000) / qpcFreq_;
+                lastPoolSlotRewriteUs_.store(slotRewriteUs, std::memory_order_relaxed);
+                if (slotRewriteUs < 5000) {
+                    const uint32_t fastRewrite = poolSlotFastRewriteCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (fastRewrite <= 5) {
+                        LogWarn("[WGC] Texture pool slot %u rewritten after %lldus", idx, (long long)slotRewriteUs);
+                    }
+                }
             }
             lastCopyUs_.store(copyUs, std::memory_order_relaxed);
             const int64_t timingSourceQpc = rawSourceFrameQpc > 0 ? rawSourceFrameQpc : sourceFrameQpc;
@@ -1450,8 +1505,10 @@ public:
         // collection to encoder wakeups.
         if (!frameCallback_.load(std::memory_order_acquire)) {
             bool processedFrame = false;
+            std::vector<WGCCapturedFrame> drainedFrames;
+            drainedFrames.reserve(4);
             {
-                std::lock_guard<std::mutex> lock(frameMutex_);
+                std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
                 while (alive_.load(std::memory_order_acquire)) {
                     auto winrtFrame = sender.TryGetNextFrame();
                     if (!winrtFrame) {
@@ -1460,9 +1517,16 @@ public:
 
                     WGCCapturedFrame frame{};
                     if (ProcessCapturedFrame(std::move(winrtFrame), &frame) && frame.texture) {
-                        EnqueueFrameInternal(std::move(frame));
+                        drainedFrames.push_back(std::move(frame));
                         processedFrame = true;
                     }
+                }
+            }
+
+            if (!drainedFrames.empty()) {
+                std::lock_guard<std::mutex> lock(frameMutex_);
+                for (auto& frame : drainedFrames) {
+                    EnqueueFrameInternal(std::move(frame));
                 }
             }
 
@@ -1478,12 +1542,15 @@ public:
         }
 
         bool processedFrame = false;
-        while (alive_.load(std::memory_order_acquire)) {
-            auto winrtFrame = sender.TryGetNextFrame();
-            if (!winrtFrame) {
-                break;
+        {
+            std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
+            while (alive_.load(std::memory_order_acquire)) {
+                auto winrtFrame = sender.TryGetNextFrame();
+                if (!winrtFrame) {
+                    break;
+                }
+                processedFrame = ProcessCapturedFrame(std::move(winrtFrame), nullptr) || processedFrame;
             }
-            processedFrame = ProcessCapturedFrame(std::move(winrtFrame), nullptr) || processedFrame;
         }
 
         if (processedFrame && frameArrivedEvent_) {
@@ -2302,6 +2369,62 @@ uint32_t WGCCapture::GetNormalizedDuplicateTimestampCount() const {
 #endif
 }
 
+uint32_t WGCCapture::GetKeyedMutexAcquireFailCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->keyedMutexAcquireFailCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetKeyedMutexReleaseFailCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->keyedMutexReleaseFailCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSplitDeviceFlushCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->splitDeviceFlushCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSplitDeviceFlushSkippedCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->splitDeviceFlushSkippedCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPoolSlotFastRewriteCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->poolSlotFastRewriteCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetLastPoolSlotRewriteUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->lastPoolSlotRewriteUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+bool WGCCapture::IsUsingDedicatedCaptureDevice() const {
+#if HAS_WGC
+    return impl_ ? impl_->usingDedicatedCaptureDevice_ : false;
+#else
+    return false;
+#endif
+}
+
 void WGCCapture::ResetStats() {
     droppedFrames.store(0, std::memory_order_relaxed);
 #if HAS_WGC
@@ -2482,5 +2605,29 @@ void WGCCapture::SetThrottleFlag(const std::atomic<bool>* flag) {
     if (impl_) {
         impl_->throttleFlag_ = flag;
     }
+#endif
+}
+
+void WGCCapture::SetSkipSplitDeviceFlush(bool enabled) {
+#if HAS_WGC
+    if (impl_) {
+        impl_->skipSplitDeviceFlush_ = enabled;
+    }
+#else
+    (void)enabled;
+#endif
+}
+
+void WGCCapture::SetSameDeviceCapture(bool enabled) {
+#if HAS_WGC
+    if (impl_) {
+        const bool changed = impl_->sameDeviceCapture_ != enabled;
+        impl_->sameDeviceCapture_ = enabled;
+        if (changed && impl_->d3dDevice_) {
+            impl_->FlagResetNeeded("same-device capture option changed");
+        }
+    }
+#else
+    (void)enabled;
 #endif
 }

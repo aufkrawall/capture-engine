@@ -1,7 +1,46 @@
 #include <gtest/gtest.h>
-#include <filesystem>
-#include <fstream>
+#include <windows.h>
 #include "../common/config.h"
+
+namespace {
+std::string MakeTestPath(const char* filename) {
+    char buffer[MAX_PATH] = {};
+    DWORD length = GetFullPathNameA(filename, MAX_PATH, buffer, nullptr);
+    if (length == 0 || length >= MAX_PATH) {
+        return filename;
+    }
+    return buffer;
+}
+
+void WriteTextFile(const std::string& path, const std::string& content) {
+    HANDLE file = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(file, INVALID_HANDLE_VALUE);
+    DWORD written = 0;
+    ASSERT_TRUE(WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr));
+    CloseHandle(file);
+    ASSERT_EQ(written, content.size());
+}
+
+std::string ReadTextFile(const std::string& path) {
+    HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    EXPECT_NE(file, INVALID_HANDLE_VALUE);
+    if (file == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+
+    LARGE_INTEGER size = {};
+    EXPECT_TRUE(GetFileSizeEx(file, &size));
+    std::string content(static_cast<size_t>(size.QuadPart), '\0');
+    DWORD read = 0;
+    if (!content.empty()) {
+        EXPECT_TRUE(ReadFile(file, content.data(), static_cast<DWORD>(content.size()), &read, nullptr));
+        content.resize(read);
+    }
+    CloseHandle(file);
+    return content;
+}
+}  // namespace
 
 class ConfigTest : public ::testing::Test {
 protected:
@@ -10,8 +49,7 @@ protected:
     std::string tempConfigFile;
 
     void SetUp() override {
-        // Get absolute path
-        tempConfigFile = (std::filesystem::current_path() / "test_config.ini").string();
+        tempConfigFile = MakeTestPath("test_config.ini");
 
         // Clean up before test
         remove(tempConfigFile.c_str());
@@ -23,9 +61,7 @@ protected:
     }
 
     void WriteConfig(const std::string& content) {
-        std::ofstream out(tempConfigFile);
-        out << content;
-        out.close();
+        WriteTextFile(tempConfigFile, content);
     }
 };
 
@@ -35,7 +71,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     // applicable Or just ensure it doesn't find a file. LoadConfig creates a
     // default file if missing, so we should check THAT file or the loaded values.
 
-    std::string missingFile = (std::filesystem::current_path() / "nonexistent.ini").string();
+    std::string missingFile = MakeTestPath("nonexistent.ini");
     remove(missingFile.c_str());
 
     LoadConfig(missingFile, config);
@@ -44,6 +80,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_TRUE(config.debugLogging);
     EXPECT_EQ(config.logLevel, LogLevel::Debug);
     EXPECT_EQ(config.captureMethod, "auto");
+    EXPECT_FALSE(config.wgcSkipSplitDeviceFlush);
+    EXPECT_FALSE(config.wgcSameDeviceCapture);
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
@@ -51,12 +89,12 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_TRUE(config.overlay.captureIncludeOverlay);
     EXPECT_TRUE(config.overlay.screenshotIncludeOverlay);
 
-    std::ifstream generated(missingFile);
-    ASSERT_TRUE(generated.is_open());
-    std::string generatedText((std::istreambuf_iterator<char>(generated)), std::istreambuf_iterator<char>());
-    generated.close();
+    std::string generatedText = ReadTextFile(missingFile);
+    ASSERT_FALSE(generatedText.empty());
     EXPECT_NE(generatedText.find("; capture_method - Values: inject, wgc, auto"), std::string::npos);
     EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_skip_split_device_flush=false"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_same_device_capture=false"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);
@@ -129,6 +167,19 @@ TEST_F(ConfigTest, ParseExplicitWgcCaptureMethod) {
     LoadConfig(tempConfigFile, config);
 
     EXPECT_EQ(config.captureMethod, "wgc");
+}
+
+TEST_F(ConfigTest, ParseWgcExperimentalFlags) {
+    WriteConfig(
+        "[General]\n"
+        "wgc_skip_split_device_flush=true\n"
+        "wgc_same_device_capture=true\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.wgcSkipSplitDeviceFlush);
+    EXPECT_TRUE(config.wgcSameDeviceCapture);
 }
 
 TEST_F(ConfigTest, LegacyWgcAliasesNormalizeToWgc) {
@@ -306,7 +357,7 @@ protected:
     std::string tempConfigFile;
 
     void SetUp() override {
-        tempConfigFile = (std::filesystem::current_path() / "test_whitelist_entry.ini").string();
+        tempConfigFile = MakeTestPath("test_whitelist_entry.ini");
         remove(tempConfigFile.c_str());
     }
 
@@ -315,9 +366,7 @@ protected:
     }
 
     void WriteConfig(const std::string& content) {
-        std::ofstream out(tempConfigFile);
-        out << content;
-        out.close();
+        WriteTextFile(tempConfigFile, content);
     }
 };
 

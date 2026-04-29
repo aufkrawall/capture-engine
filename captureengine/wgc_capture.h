@@ -129,6 +129,13 @@ public:
     uint32_t GetCursorOnlySkipCount() const;
     uint32_t GetPoolDropCount() const;
     uint32_t GetNormalizedDuplicateTimestampCount() const;
+    uint32_t GetKeyedMutexAcquireFailCount() const;
+    uint32_t GetKeyedMutexReleaseFailCount() const;
+    uint32_t GetSplitDeviceFlushCount() const;
+    uint32_t GetSplitDeviceFlushSkippedCount() const;
+    uint32_t GetPoolSlotFastRewriteCount() const;
+    int64_t GetLastPoolSlotRewriteUs() const;
+    bool IsUsingDedicatedCaptureDevice() const;
 
     // Throttle capture rate to avoid wasting GPU bandwidth on excess frames.
     // Set to target recording FPS. 0 disables throttle.
@@ -158,6 +165,10 @@ public:
     // When *throttleFlag is true, CopyResource is skipped but TryGetNextFrame
     // is still drained to return WGC buffers.
     void SetThrottleFlag(const std::atomic<bool>* flag);
+
+    // Experimental WGC performance controls. Defaults preserve legacy behavior.
+    void SetSkipSplitDeviceFlush(bool enabled);
+    void SetSameDeviceCapture(bool enabled);
 
 private:
     class Impl;  // PIMPL to hide WinRT dependencies

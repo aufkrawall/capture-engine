@@ -28,6 +28,9 @@ Primary sources:
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_fps_limiter.cpp`
 - `tests/test_streamline_runtime_policy.cpp`
+- `captureengine/wgc_capture.cpp`
+- `captureengine/media_main.cpp`
+- `tests/test_config.cpp`
 
 ## Purpose
 This page is the compact LLM entrypoint for current repo state. Read it before diving into long historical pages or `log/recent.md`.
@@ -53,6 +56,7 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 - Preserve historical genesis in detailed pages and `log/recent.md` (or the relevant archive); do not flatten history into only a short summary.
 
 ## Current Hot Areas
+- WGC capture now has opt-in performance experiments and expanded diagnostics for CPU/GPU saturation testing. Defaults are unchanged: dedicated split-device capture remains enabled and producer-side split-device `Flush()` remains enabled. `[General] wgc_skip_split_device_flush=false` can skip the post-copy flush while keeping keyed mutex synchronization, and `[General] wgc_same_device_capture=false` can attempt encoder-device reuse after WGC reinitialization. `[WGC Perf]` now reports keyed-mutex failures, split flush/skipped counts, fast pool-slot rewrites, slot rewrite age, and whether the current path is dedicated. See `wgc-capture.md` before changing WGC copy/device behavior.
 - The tree now has a first shared FG session/planner layer in `hook/common/fg_session_state.{h,cpp}`. It is not yet the full end-state from `fg-plan.md`, but it is now the central place that captures live FG session snapshots, computes a shadow/live action plan, emits structured `FG SNAPSHOT` / `FG EVENT` / `FG PLAN` / `FG TRANSITION` / `FG INVARIANT` / `FG LEGACY DECISION` logs, and keeps `session_manifest.txt` updated with `steam_overlay_loaded`, `streamline_loaded`, `ffx_loaded`, `fg_shadow_state_enabled`, and `fg_state_schema_version`.
 - `hook/common/dx12_fg_transition_model.cpp` is no longer an independent competing reducer. It now acts as a compatibility adapter over the planner-backed FG session snapshot so existing DX12 transition/replay tests and the current ProcessFrame transition logging keep their prior public contract while the new session/planner layer owns the richer state/logging/publication model.
 - Overlay FG publication is still planner-driven at the main DXGI/DX12 call sites, but the shared planner-aware helper now compares the planner against a DX12-exported "latest visible FG state" cache using one shared publication-order sequence. `DX12::ProcessFrame`, `DX12_OnStreamlineFGStateChanged`, and the native-FSR callback path seed that cache, and planner state changes now enter the same ordering domain, so the newer side wins. This preserves the earlier stale-plan fix while also preventing an older cached visible `DLSS FG` state from repainting over a later planner `off` update during menu churn or shutdown-adjacent sequences.
