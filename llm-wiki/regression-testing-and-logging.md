@@ -60,6 +60,7 @@ Primary sources:
   - Native-FSR callback traces now also log callback-side HDR classification (`DX12: FFX present callback HDR check ... colorSpace=... isHDR=...`) and the FFX UI-composition contract (`premulAlpha=%d`) so visual FSR callback regressions can be distinguished from queue/routing failures.
 - `hook/common/fps_limiter.h` / `hook/common/reflex_limiter.h`
   - Explicit Reflex limiter fallback logs now include whether a native device was available, and the Reflex limiter logs missing SetSleepMode/Sleep pointers, missing devices, SetSleepMode failures, and NvAPI Sleep failures with device/interval/game-active context.
+  - The Reflex sleep-mode ABI should remain 44 bytes with `version=0x0001002C`. A `PushFpsLimit failed` line with `status=-9` and a larger version such as `0x00010038` means CE is sending an incompatible NvAPI struct and explicit Reflex mode will fall back to timer pacing even when `device=1`.
 - `hook/apis/streamline_hook.cpp`
   - Logs pure observer-only FG transition pass-through versus staged observer-policy-only startup-policy handling.
   - Streamline feature-hook discovery now scans all loaded `sl.*.dll` modules, not only `sl.interposer.dll` / `sl.common.dll`, so feature-owner DLLs such as `sl.dlss_g.dll` can arm direct-import fallbacks even when export-inline patching fails.

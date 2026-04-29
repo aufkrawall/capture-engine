@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <thread>
 #include "../hook/common/fps_limiter.h"
@@ -319,6 +320,17 @@ TEST_F(FpsLimiterTest, ReflexLimiterTracksPublishedDeviceForNativePacing) {
     EXPECT_EQ(g_ReflexLimiter.GetTargetIntervalUs(), 16666u);
 
     g_ReflexLimiter.Shutdown();
+}
+
+TEST_F(FpsLimiterTest, ReflexSleepModeParamsMatchNvApiAbi) {
+    EXPECT_EQ(sizeof(NV_SET_SLEEP_MODE_PARAMS), 44u);
+    EXPECT_EQ(NV_SET_SLEEP_MODE_PARAMS_VER, 0x0001002Cu);
+    EXPECT_EQ(offsetof(NV_SET_SLEEP_MODE_PARAMS, bLowLatencyMode), 4u);
+    EXPECT_EQ(offsetof(NV_SET_SLEEP_MODE_PARAMS, bLowLatencyBoost), 5u);
+    EXPECT_EQ(offsetof(NV_SET_SLEEP_MODE_PARAMS, minimumIntervalUs), 8u);
+    EXPECT_EQ(offsetof(NV_SET_SLEEP_MODE_PARAMS, bUseMarkersToOptimize), 12u);
+    EXPECT_EQ(offsetof(NV_SET_SLEEP_MODE_PARAMS, bUseMinQueueTime), 13u);
+    EXPECT_EQ(offsetof(NV_SET_SLEEP_MODE_PARAMS, rsvd), 14u);
 }
 
 TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
