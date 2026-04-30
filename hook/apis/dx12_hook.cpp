@@ -1106,7 +1106,8 @@ static std::atomic<int> g_LastKnownSwapchainColorSpace{-1};
 
 static void UpdateLastKnownSwapchainHDRStateCache(DXGI_FORMAT format, bool isActualHDR, int outputColorSpace) {
     const bool trustedHDRState =
-        !ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(static_cast<int>(format)) || outputColorSpace != -1;
+        !ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(static_cast<int>(format)) ||
+        outputColorSpace != -1;
     g_LastKnownSwapchainColorSpace.store(outputColorSpace, std::memory_order_release);
     g_LastKnownSwapchainIsHDR.store(isActualHDR, std::memory_order_release);
     g_LastKnownSwapchainHDRStateValid.store(trustedHDRState, std::memory_order_release);
@@ -2320,9 +2321,8 @@ void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain) {
     }
 
     int outputColorSpace = -1;
-    const bool isActualHDR = ResolveSwapchainOutputHDRState(dxgiSwapChain, desc.BufferDesc.Format,
-                                                            "DX12: Cached runtime-owned callback HDR source",
-                                                            &outputColorSpace);
+    const bool isActualHDR = ResolveSwapchainOutputHDRState(
+        dxgiSwapChain, desc.BufferDesc.Format, "DX12: Cached runtime-owned callback HDR source", &outputColorSpace);
     UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace);
 }
 
@@ -2416,8 +2416,10 @@ static bool EnsureOverlayAdapterReadyForFFXPresentCallback(
         static std::atomic<int> s_ffxPresentOverlayReuseLogCount{0};
         const int reuseLogCount = s_ffxPresentOverlayReuseLogCount.fetch_add(1, std::memory_order_relaxed);
         if (reuseLogCount < 10 || (reuseLogCount % 300) == 0) {
-            HookLog("DX12: Reusing FFX present callback overlay adapter for runtime-owned FSR (device=%p fmt=%d frameId=%llu)",
-                    dx12Device, static_cast<int>(resourceDesc.Format), static_cast<unsigned long long>(desc->frameID));
+            HookLog(
+                "DX12: Reusing FFX present callback overlay adapter for runtime-owned FSR (device=%p fmt=%d "
+                "frameId=%llu)",
+                dx12Device, static_cast<int>(resourceDesc.Format), static_cast<unsigned long long>(desc->frameID));
         }
     }
 
@@ -2603,8 +2605,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
         const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
-        ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(),
-                                                     g_FGCompat.GetBaseFPS(), g_FGCompat.GetFGMultiplier(),
+        ce::overlay_metrics::PublishOverlayFGMetrics(perf, plan, g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(),
+                                                     g_FGCompat.GetFGMultiplier(),
                                                      "DX12_RenderOverlayViaFFXPresentCallback");
         static std::atomic<int> s_ffxCallbackFGPublishLogCount{0};
         if (s_ffxCallbackFGPublishLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
@@ -2808,8 +2810,7 @@ static bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule 
     }
 
     if (ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(
-            actualFGActive, fsrFGActive, streamlineFGRunning, runtimeOwnsSwapchain,
-            runtimeOwnedNativeFGPresentPath)) {
+            actualFGActive, fsrFGActive, streamlineFGRunning, runtimeOwnsSwapchain, runtimeOwnedNativeFGPresentPath)) {
         static std::atomic<int> s_runtimeOwnedDedicatedQueueDisableLogCount{0};
         int logCount = s_runtimeOwnedDedicatedQueueDisableLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
@@ -3308,21 +3309,21 @@ static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRend
     const bool exactWindowForeground = (foregroundWindow == gameWindow);
     const ULONGLONG now = GetTickCount64();
     const bool usableSameProcessForegroundWindow =
-        !exactWindowForeground &&
-        ce::overlay_compat::IsUsableSameProcessForegroundWindow(foregroundWindow, expectedProcessId, &foregroundWidth,
-                                                                &foregroundHeight);
+        !exactWindowForeground && ce::overlay_compat::IsUsableSameProcessForegroundWindow(
+                                      foregroundWindow, expectedProcessId, &foregroundWidth, &foregroundHeight);
     bool usingSameProcessForegroundWindow = false;
     const bool trackableForegroundWindow = ce::overlay_compat::ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
         exactWindowForeground, usableSameProcessForegroundWindow, width, height, foregroundWidth, foregroundHeight,
         &width, &height, &usingSameProcessForegroundWindow);
     if (!trackableForegroundWindow) {
-        if (s_loggedUnusableResumeGameWindow != gameWindow || s_loggedUnusableResumeForegroundWindow != foregroundWindow) {
+        if (s_loggedUnusableResumeGameWindow != gameWindow ||
+            s_loggedUnusableResumeForegroundWindow != foregroundWindow) {
             HookLogImportant(
                 "DX12: Startup-overlay resume still waiting for a usable foreground window "
                 "(swapchainWindow=%p foregroundWindow=%p exact=%d sameProcessUsable=%d gameSize=%ldx%ld "
                 "foregroundSize=%ldx%ld)",
-                gameWindow, foregroundWindow, exactWindowForeground ? 1 : 0,
-                usableSameProcessForegroundWindow ? 1 : 0, width, height, foregroundWidth, foregroundHeight);
+                gameWindow, foregroundWindow, exactWindowForeground ? 1 : 0, usableSameProcessForegroundWindow ? 1 : 0,
+                width, height, foregroundWidth, foregroundHeight);
             s_loggedUnusableResumeGameWindow = gameWindow;
             s_loggedUnusableResumeForegroundWindow = foregroundWindow;
         }
@@ -3538,9 +3539,8 @@ static bool HookHasSafePostFSRBootstrapPathImpl() {
     const bool hasRealQueueBehindWrapper = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire) != nullptr;
     const bool hasRealD3D12ECL = g_RealD3D12ECL.load(std::memory_order_acquire) != nullptr;
     const bool hasSLWrapperQueue = g_SLWrapperQueue.load(std::memory_order_acquire) != nullptr;
-    const bool wrapperBootstrapSafe =
-        !ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(
-            g_HadFSRFGPhase, hasRealQueueBehindWrapper, hasRealD3D12ECL, hasSLWrapperQueue);
+    const bool wrapperBootstrapSafe = !ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(
+        g_HadFSRFGPhase, hasRealQueueBehindWrapper, hasRealD3D12ECL, hasSLWrapperQueue);
     if (wrapperBootstrapSafe) {
         return true;
     }
@@ -3975,8 +3975,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
         // runtime-owned Present path, not this new one.  Keeping it true defers overlay
         // init indefinitely when the game creates a new menu swapchain after FSR OFF.
         if (g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) &&
-            !g_FGCompat.IsFSRFGApiActive() &&
-            g_FGCompat.GetRuntimeMode() != ce::fg_runtime::RuntimeMode::kFSRFG) {
+            !g_FGCompat.IsFSRFGApiActive() && g_FGCompat.GetRuntimeMode() != ce::fg_runtime::RuntimeMode::kFSRFG) {
             ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
             HookLogImportant(
                 "DX12: Swapchain queue changed to %p while FSR is no longer active — cleared stale explicit native FSR "
@@ -7202,8 +7201,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         const int previousStallCount = g_PostSLStallCounter.exchange(0, std::memory_order_acq_rel);
         const bool previousRuntimeStateStabilizationLogged =
             g_PostSLRuntimeStateStabilizationLogged.exchange(false, std::memory_order_acq_rel);
-        const bool extendRuntimeStateStabilization = ce::dx12_overlay_policy::
-            ShouldExtendConfirmedPostSLRuntimeStateStabilizationAfterReactivation(previousStableFrameCount);
+        const bool extendRuntimeStateStabilization =
+            ce::dx12_overlay_policy::ShouldExtendConfirmedPostSLRuntimeStateStabilizationAfterReactivation(
+                previousStableFrameCount);
         g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(extendRuntimeStateStabilization,
                                                                        std::memory_order_release);
         // Clean up dedicated queue from previous epochs (no longer used — virtual
@@ -7357,8 +7357,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         dev = g_Device.load(std::memory_order_acquire);
 
     if (dev && ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(
-                   cachedSLFGActive, active, g_State.overlayInit, processFrameRecentlySeen,
-                   startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering)) {
+                   cachedSLFGActive, active, g_State.overlayInit, processFrameRecentlySeen, startupActivationPending,
+                   postSLActiveButUnconfirmed, postSLConfirmedRendering)) {
         if (!pSwapChain) {
             static int s_nullBootstrapLog = 0;
             if (s_nullBootstrapLog < 5) {
@@ -7367,74 +7367,74 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             }
         } else {
             DXGI_SWAP_CHAIN_DESC bootstrapDesc = {};
-        const HRESULT descHr = pSwapChain->GetDesc(&bootstrapDesc);
-        if (SUCCEEDED(descHr)) {
-            IDXGISwapChain3* bootstrapSc3 = nullptr;
-            const HRESULT sc3Hr = pSwapChain->QueryInterface(IID_PPV_ARGS(&bootstrapSc3));
-            if (SUCCEEDED(sc3Hr) && bootstrapSc3) {
-                ID3D12CommandQueue* bootstrapScQueue = nullptr;
-                ID3D12CommandQueue* bootstrapCmdQueue = nullptr;
-                ID3D12CommandQueue* bootstrapOrigQueue = nullptr;
-                {
-                    std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-                    bootstrapScQueue = g_SwapchainQueue;
-                    bootstrapCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
-                    bootstrapOrigQueue = g_OriginalGameQueue;
-                }
-
-                g_State.cachedWidth = bootstrapDesc.BufferDesc.Width;
-                g_State.cachedHeight = bootstrapDesc.BufferDesc.Height;
-                g_State.format = bootstrapDesc.BufferDesc.Format;
-
-                HookLogImportant(
-                    "DX12: PostSL bootstrap — rebuilding torn-down overlay state after dormant reactivation "
-                    "(fmt=%d buffers=%u hwnd=%p scQueue=%p cmdQueue=%p origQueue=%p)",
-                    (int)bootstrapDesc.BufferDesc.Format, bootstrapDesc.BufferCount, bootstrapDesc.OutputWindow,
-                    bootstrapScQueue, bootstrapCmdQueue, bootstrapOrigQueue);
-
-                if (InitImGui(dev, (int)bootstrapDesc.BufferCount, bootstrapDesc.BufferDesc.Format,
-                              bootstrapDesc.OutputWindow)) {
-                    int actualBufferCount = (int)bootstrapDesc.BufferCount;
-                    if (actualBufferCount > 8) {
-                        actualBufferCount = 8;
-                    }
-                    CreateRTVs(dev, bootstrapSc3, actualBufferCount);
-
-                    ID3D12CommandQueue* bootstrapQueue = bootstrapScQueue;
-                    if (!bootstrapQueue) {
-                        bootstrapQueue = bootstrapCmdQueue;
-                    }
-                    if (!bootstrapQueue) {
-                        bootstrapQueue = bootstrapOrigQueue;
+            const HRESULT descHr = pSwapChain->GetDesc(&bootstrapDesc);
+            if (SUCCEEDED(descHr)) {
+                IDXGISwapChain3* bootstrapSc3 = nullptr;
+                const HRESULT sc3Hr = pSwapChain->QueryInterface(IID_PPV_ARGS(&bootstrapSc3));
+                if (SUCCEEDED(sc3Hr) && bootstrapSc3) {
+                    ID3D12CommandQueue* bootstrapScQueue = nullptr;
+                    ID3D12CommandQueue* bootstrapCmdQueue = nullptr;
+                    ID3D12CommandQueue* bootstrapOrigQueue = nullptr;
+                    {
+                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                        bootstrapScQueue = g_SwapchainQueue;
+                        bootstrapCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
+                        bootstrapOrigQueue = g_OriginalGameQueue;
                     }
 
-                    if (bootstrapQueue && g_State.rtvDescHeap) {
-                        HookLogImportant(
-                            "DX12: PostSL bootstrap — inline InitOverlaySync (queue=%p overlayInit=%d syncInit=%d)",
-                            bootstrapQueue, g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0);
-                        InitOverlaySync(dev, (int)bootstrapDesc.BufferCount, bootstrapQueue);
-                        dev = g_State.syncDevice;
-                        if (!dev) {
-                            dev = g_Device.load(std::memory_order_acquire);
+                    g_State.cachedWidth = bootstrapDesc.BufferDesc.Width;
+                    g_State.cachedHeight = bootstrapDesc.BufferDesc.Height;
+                    g_State.format = bootstrapDesc.BufferDesc.Format;
+
+                    HookLogImportant(
+                        "DX12: PostSL bootstrap — rebuilding torn-down overlay state after dormant reactivation "
+                        "(fmt=%d buffers=%u hwnd=%p scQueue=%p cmdQueue=%p origQueue=%p)",
+                        (int)bootstrapDesc.BufferDesc.Format, bootstrapDesc.BufferCount, bootstrapDesc.OutputWindow,
+                        bootstrapScQueue, bootstrapCmdQueue, bootstrapOrigQueue);
+
+                    if (InitImGui(dev, (int)bootstrapDesc.BufferCount, bootstrapDesc.BufferDesc.Format,
+                                  bootstrapDesc.OutputWindow)) {
+                        int actualBufferCount = (int)bootstrapDesc.BufferCount;
+                        if (actualBufferCount > 8) {
+                            actualBufferCount = 8;
+                        }
+                        CreateRTVs(dev, bootstrapSc3, actualBufferCount);
+
+                        ID3D12CommandQueue* bootstrapQueue = bootstrapScQueue;
+                        if (!bootstrapQueue) {
+                            bootstrapQueue = bootstrapCmdQueue;
+                        }
+                        if (!bootstrapQueue) {
+                            bootstrapQueue = bootstrapOrigQueue;
+                        }
+
+                        if (bootstrapQueue && g_State.rtvDescHeap) {
+                            HookLogImportant(
+                                "DX12: PostSL bootstrap — inline InitOverlaySync (queue=%p overlayInit=%d syncInit=%d)",
+                                bootstrapQueue, g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0);
+                            InitOverlaySync(dev, (int)bootstrapDesc.BufferCount, bootstrapQueue);
+                            dev = g_State.syncDevice;
+                            if (!dev) {
+                                dev = g_Device.load(std::memory_order_acquire);
+                            }
+                        } else {
+                            HookLogImportant(
+                                "DX12: PostSL bootstrap — waiting for missing init prerequisites (queue=%p rtvHeap=%p)",
+                                bootstrapQueue, g_State.rtvDescHeap);
                         }
                     } else {
-                        HookLogImportant(
-                            "DX12: PostSL bootstrap — waiting for missing init prerequisites (queue=%p rtvHeap=%p)",
-                            bootstrapQueue, g_State.rtvDescHeap);
+                        HookLogImportant("DX12: PostSL bootstrap — InitImGui failed (fmt=%d buffers=%u hwnd=%p)",
+                                         (int)bootstrapDesc.BufferDesc.Format, bootstrapDesc.BufferCount,
+                                         bootstrapDesc.OutputWindow);
                     }
-                } else {
-                    HookLogImportant("DX12: PostSL bootstrap — InitImGui failed (fmt=%d buffers=%u hwnd=%p)",
-                                     (int)bootstrapDesc.BufferDesc.Format, bootstrapDesc.BufferCount,
-                                     bootstrapDesc.OutputWindow);
-                }
 
-                bootstrapSc3->Release();
+                    bootstrapSc3->Release();
+                } else {
+                    HookLogImportant("DX12: PostSL bootstrap — swapchain3 query failed hr=0x%08X", (unsigned)sc3Hr);
+                }
             } else {
-                HookLogImportant("DX12: PostSL bootstrap — swapchain3 query failed hr=0x%08X", (unsigned)sc3Hr);
+                HookLogImportant("DX12: PostSL bootstrap — swapchain desc unavailable hr=0x%08X", (unsigned)descHr);
             }
-        } else {
-            HookLogImportant("DX12: PostSL bootstrap — swapchain desc unavailable hr=0x%08X", (unsigned)descHr);
-        }
         }
     }
 
@@ -9103,15 +9103,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     const bool extendRuntimeStateStabilization =
         g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.load(std::memory_order_acquire);
     const int runtimeStateStabilizationLastFrame =
-        ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationLastFrame(
-            extendRuntimeStateStabilization);
+        ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationLastFrame(extendRuntimeStateStabilization);
     const bool runtimeStateStabilizing =
         ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(
             true, stableFrameCount, extendRuntimeStateStabilization);
     const bool runtimeStateStabilizingPreviousFrame =
-        stableFrameCount > 1 &&
-        ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(
-            true, stableFrameCount - 1, extendRuntimeStateStabilization);
+        stableFrameCount > 1 && ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(
+                                    true, stableFrameCount - 1, extendRuntimeStateStabilization);
     if (runtimeStateStabilizing && !runtimeStateStabilizingPreviousFrame) {
         g_PostSLRuntimeStateStabilizationLogged.store(true, std::memory_order_release);
         HookLogImportant(
@@ -9120,10 +9118,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             stableFrameCount, ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationFirstFrame(),
             runtimeStateStabilizationLastFrame, extendRuntimeStateStabilization ? 1 : 0, s_reactivationEpoch);
     } else if (!runtimeStateStabilizing && runtimeStateStabilizingPreviousFrame) {
-        HookLogImportant("DX12: PostSL confirmed startup rendering left runtime-state stabilization "
-                         "(stableFrames=%d last=%d extended=%d epoch=%d)",
-                         stableFrameCount, runtimeStateStabilizationLastFrame,
-                         extendRuntimeStateStabilization ? 1 : 0, s_reactivationEpoch);
+        HookLogImportant(
+            "DX12: PostSL confirmed startup rendering left runtime-state stabilization "
+            "(stableFrames=%d last=%d extended=%d epoch=%d)",
+            stableFrameCount, runtimeStateStabilizationLastFrame, extendRuntimeStateStabilization ? 1 : 0,
+            s_reactivationEpoch);
     }
     if (ce::dx12_overlay_policy::ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
             DXGIShared::IsStreamlineStartupTransitionWindowActive(), stableFrameCount)) {
@@ -9481,6 +9480,13 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
     // CPU Prerender Limit - Apply before any rendering
     float prerenderLimit = GetActivePrerenderLimit();
+    if (prerenderLimit < 0.0f && g_SharedFpsLimiter.WantsExplicitReflexFrameQueueClamp()) {
+        static std::atomic<int> s_reflexPrerenderLogCount{0};
+        if (s_reflexPrerenderLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant("DX12: Implicit prerender limit 1 for explicit Reflex FPS limiter");
+        }
+        prerenderLimit = 1.0f;
+    }
     if (prerenderLimit >= 0.0f) {
         int64_t prerenderStartUs = PerfLogger::GetQpcUs();
         ApplyPrerenderLimitDX12(prerenderLimit);
@@ -10280,8 +10286,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // One-shot diagnostic: when the primary-queue escape hatch allows overlay init
             // despite a missing swapchain queue and cleared lastWorkingQueue, log it so
             // future traces can distinguish "primaryQ safe" from "lastWorkingQ preserved".
-            if (recentStreamlineTeardown && currentSwapchainQueue == nullptr &&
-                g_PostSLLastWorkingQueue == nullptr && commandQueueMatchesPrimaryGameQueue) {
+            if (recentStreamlineTeardown && currentSwapchainQueue == nullptr && g_PostSLLastWorkingQueue == nullptr &&
+                commandQueueMatchesPrimaryGameQueue) {
                 static std::atomic<int> s_primaryQEscapeHatchLogCount{0};
                 if (s_primaryQEscapeHatchLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
                     HookLogImportant(
@@ -10437,9 +10443,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     s_nextRetryFrame = 0;
 
                     int outputColorSpace = -1;
-                    const bool isActualHDR = ResolveSwapchainOutputHDRState(
-                        static_cast<IDXGISwapChain*>(sc3), desc.BufferDesc.Format, "DX12: Display HDR check",
-                        &outputColorSpace);
+                    const bool isActualHDR =
+                        ResolveSwapchainOutputHDRState(static_cast<IDXGISwapChain*>(sc3), desc.BufferDesc.Format,
+                                                       "DX12: Display HDR check", &outputColorSpace);
                     UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace);
                     g_OverlayAdapter.SetHDR(isActualHDR, (int)desc.BufferDesc.Format);
 
@@ -11025,8 +11031,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             HookIsPostSLOverlayActiveButUnconfirmed(),
                             g_PostSLConfirmedRendering.load(std::memory_order_acquire),
                             HookIsPostSLOverlayConfirmedButStartupSettling());
-                    const bool keepStartupHandoffPending =
-                        ce::dx12_overlay_policy::ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
+                    const bool keepStartupHandoffPending = ce::dx12_overlay_policy::
+                        ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
                             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                                 std::memory_order_acquire),
                             HookIsPostSLOverlayActiveButUnconfirmed(),
@@ -11185,14 +11191,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
             // Publish the locally-computed FG state so per-frame suppression
             // (e.g. SL-off grace period) is reflected in the overlay.
-            if (ce::dx12_overlay_policy::DoOverlayFGPublishedTypesDiffer(
-                    plan.publishFGActive, plan.publishRuntimeMode, currentFGActive, currentRuntimeMode)) {
+            if (ce::dx12_overlay_policy::DoOverlayFGPublishedTypesDiffer(plan.publishFGActive, plan.publishRuntimeMode,
+                                                                         currentFGActive, currentRuntimeMode)) {
                 HookLogImportant(
                     "DX12::ProcessFrame overlay divergence: plan(active=%d mode=%s) vs local(active=%d mode=%s)",
-                    plan.publishFGActive ? 1 : 0,
-                    ce::fg_runtime::GetRuntimeModeName(plan.publishRuntimeMode),
-                    currentFGActive ? 1 : 0,
-                    ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
+                    plan.publishFGActive ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(plan.publishRuntimeMode),
+                    currentFGActive ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
             }
             ce::overlay_metrics::PublicationInput input;
             input.effectiveFGActive = currentFGActive;
@@ -11738,8 +11742,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                 g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
                             }
                             g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
-                            DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(
-                                !keepStartupHandoffPending, std::memory_order_release);
+                            DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
+                                                                                            std::memory_order_release);
                             if (!preserveSyntheticStartupState) {
                                 DXGIShared::ResetStreamlineStartupTransitionState();
                             }
@@ -11890,7 +11894,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             s_syntheticStartupSceneCooldownSkipLogCount.fetch_add(1, std::memory_order_relaxed);
                         if (logCount < 10 || (logCount % 100) == 0) {
                             HookLogImportant(
-                                "DX12: Suppressing scene transition cooldown during half-armed synthetic PostSL startup "
+                                "DX12: Suppressing scene transition cooldown during half-armed synthetic PostSL "
+                                "startup "
                                 "(gap=%.0fms pending=%d unconfirmed=%d confirmed=%d settling=%d)",
                                 deltaMs, startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
                                 postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0);
@@ -13541,8 +13546,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                         "DX12: ECL hook skipping PostSL callback — activationSwapchain is nullptr, "
                         "deferring until ProcessFrame refreshes swapchain "
                         "(allowExpiry=%d visibleTick=%d)",
-                        allowExpiryTriggeredStartupActivation ? 1 : 0,
-                        visibleOverlayStartupProgressTick ? 1 : 0);
+                        allowExpiryTriggeredStartupActivation ? 1 : 0, visibleOverlayStartupProgressTick ? 1 : 0);
                     ++s_nullSwapchainSkipLog;
                 }
                 if (startupTransitionWindowJustExpired) {
@@ -13556,7 +13560,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                         "(startupWindowExpired=1 activationPending=1 callbackInstalled=1 cachedSwapchain=%p)",
                         activationSwapchain);
                 } else {
-                    const int logCount = s_visibleOverlayStartupProgressLogCount.fetch_add(1, std::memory_order_relaxed);
+                    const int logCount =
+                        s_visibleOverlayStartupProgressLogCount.fetch_add(1, std::memory_order_relaxed);
                     if (logCount < 10 || (logCount % 120) == 0) {
                         HookLogImportant(
                             "DX12: ECL hook continuing visible-overlay PostSL startup progress while render remains "

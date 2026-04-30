@@ -133,6 +133,7 @@ bool IsVulkanPrimary();
 PerformanceMetrics* GetPerformanceMetrics();
 uint32_t GetLatestSourceFrameIndex();
 void SetLatestSourceFrameIndex(uint32_t frameIndex);
+void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain);
 
 // Exported handlers for specific APIs (implemented in their respective hook
 // files)
@@ -405,8 +406,7 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
     // the queue topology can handle the callback, and requiring both conditions
     // can strand PostSL indefinitely when SetOptions has not yet been observed
     // but the handoff queue is already live (FSR->OFF->DLSS transitions).
-    return hadFSRFGPhase && safePostFSRBootstrapPath &&
-           (postSLStartupActivationPending || postSLActiveButUnconfirmed);
+    return hadFSRFGPhase && safePostFSRBootstrapPath && (postSLStartupActivationPending || postSLActiveButUnconfirmed);
 }
 
 inline bool ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(

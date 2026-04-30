@@ -146,6 +146,9 @@ public:
     bool IsActivelyLimiting() const {
         return isActivelyLimiting_.load(std::memory_order_relaxed);
     }
+    bool WantsExplicitReflexFrameQueueClamp() const {
+        return explicitReflexFrameQueueClamp_.load(std::memory_order_relaxed);
+    }
 
     // Ensure 1ms timer resolution is enabled
     void EnsureTimerResolution() {
@@ -372,6 +375,7 @@ public:
         }
 
         if (!shm) {
+            explicitReflexFrameQueueClamp_.store(false, std::memory_order_relaxed);
             applyTraceCount_++;
             if (applyTraceCount_ <= 3)
                 TraceLog("Apply: no shm ipc=%p", (void*)ipc);
@@ -469,6 +473,7 @@ public:
 
         if (!limiterActive) {
             isActivelyLimiting_.store(false, std::memory_order_relaxed);
+            explicitReflexFrameQueueClamp_.store(false, std::memory_order_relaxed);
             lastActualWaitUs_ = 0;
             loggedNativeFallback_ = false;
             ResetReflexNativePacingState();
@@ -587,6 +592,7 @@ public:
             effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
         }
         if (effectiveMode != LimiterModeValues::kNative) {
+            explicitReflexFrameQueueClamp_.store(false, std::memory_order_relaxed);
             loggedNativeFallback_ = false;
             reflexSleepBaselineCount_ = 0;
             reflexRecentPresentGap_ = false;
@@ -703,6 +709,9 @@ public:
                 (gameSleepCount > reflexSleepBaselineCount_) ? (gameSleepCount - reflexSleepBaselineCount_) : 0;
             const auto reflexDecision = ce::fps_limiter_policy::ResolveReflexPacingDecision(
                 explicitReflexMode, gameSleepObserved, gameSleepRecent, freshSleepCount, recentPresentGap);
+            const bool reflexQueueClamp =
+                ce::fps_limiter_policy::ShouldClampFrameQueueForExplicitReflex(reflexDecision);
+            explicitReflexFrameQueueClamp_.store(reflexQueueClamp, std::memory_order_relaxed);
             const bool reflexHandoffReady = reflexDecision.useGameSleepHandoff;
             const bool reflexPushOk = g_ReflexLimiter.PushFpsLimit();
             const bool reflexDeviceReady = g_ReflexLimiter.HasDevice();
@@ -754,13 +763,14 @@ public:
                         loggedNativeFallback_ = false;
                         lastActualWaitUs_ = 0;
                         if (!reflexPostPresentArmedLogged_) {
-                            TraceLog("Apply: REFLEX post-present armed target=%d push=%d device=%d gap=%d",
+                            TraceLog("Apply: REFLEX post-present armed target=%d push=%d device=%d gap=%d queue=%d",
                                      effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0,
-                                     recentPresentGap ? 1 : 0);
+                                     recentPresentGap ? 1 : 0, reflexQueueClamp ? 1 : 0);
                             HookLog(
                                 "FPS Limiter: Reflex explicit mode armed for post-present pacing "
-                                "(target=%d fps, push=%d, device=%d)",
-                                effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0);
+                                "(target=%d fps, push=%d, device=%d, queueClamp=%d)",
+                                effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0,
+                                reflexQueueClamp ? 1 : 0);
                             reflexPostPresentArmedLogged_ = true;
                         }
                         LARGE_INTEGER retQpc;
@@ -784,14 +794,15 @@ public:
                     if (!reflexLoggedSuccess_) {
                         TraceLog(
                             "Apply: REFLEX local cadence target=%d waitUs=%lld sleepUs=%lld sleepOk=%d push=%d "
-                            "device=%d gap=%d",
+                            "device=%d gap=%d queue=%d",
                             effectiveTargetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
-                            reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0, recentPresentGap ? 1 : 0);
+                            reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0, recentPresentGap ? 1 : 0,
+                            reflexQueueClamp ? 1 : 0);
                         HookLog(
                             "FPS Limiter: Reflex explicit mode active (target=%d fps, local low-latency cadence + "
-                            "CE-owned NvAPI Sleep, wait=%lldus, sleep=%lldus, sleepOk=%d, device=%d)",
+                            "CE-owned NvAPI Sleep, wait=%lldus, sleep=%lldus, sleepOk=%d, device=%d, queueClamp=%d)",
                             effectiveTargetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
-                            reflexDeviceReady ? 1 : 0);
+                            reflexDeviceReady ? 1 : 0, reflexQueueClamp ? 1 : 0);
                         reflexLoggedSuccess_ = true;
                     }
                     if (cadence.emitStats) {
@@ -810,6 +821,7 @@ public:
                     return;
                 }
 
+                explicitReflexFrameQueueClamp_.store(false, std::memory_order_relaxed);
                 if (reflexNativeSleepActive_) {
                     reflexSleepBaselineCount_ = gameSleepCount;
                     reflexNativeSleepActive_ = false;
@@ -847,6 +859,8 @@ public:
             // handed off. Otherwise later game-managed Reflex calls can inherit
             // our old interval after FG turns off.
             ResetReflexNativePacingState();
+        } else {
+            explicitReflexFrameQueueClamp_.store(false, std::memory_order_relaxed);
         }
 
         // =====================================================================
@@ -1139,6 +1153,7 @@ public:
         lastEffectiveMode_ = LimiterModeValues::kAuto;
         lastApplyReturnQpc = 0;
         isActivelyLimiting_.store(false, std::memory_order_relaxed);
+        explicitReflexFrameQueueClamp_.store(false, std::memory_order_relaxed);
         localTargetTime_ = 0;
         localFrameCount_ = 0;
         localStatsIntervalStart_ = 0;
@@ -1162,6 +1177,7 @@ private:
             g_ReflexLimiter.SetTargetFps(0);
             g_ReflexLimiter.DisableHybridPacing();
         }
+        explicitReflexFrameQueueClamp_.store(false, std::memory_order_relaxed);
         reflexLimiterActive_ = false;
         reflexNativeSleepActive_ = false;
         reflexPostPresentCadencePending_ = false;
@@ -1219,6 +1235,8 @@ private:
     uint32_t localStatsFrameCount_ = 0;            // Frame count within current stats interval
     int64_t lastActualWaitUs_ = 0;                 // Last Apply() actual wait time in μs
     std::atomic<bool> isActivelyLimiting_{false};  // True when limiter is actively pacing frames
+    std::atomic<bool> explicitReflexFrameQueueClamp_{
+        false};  // True while CE-owned explicit Reflex pacing should clamp queued frames
     uint32_t applyWaitCount_ = 0;
     uint32_t applySuccessCount_ = 0;
     int64_t lastApplyEntryQpc_ = 0;

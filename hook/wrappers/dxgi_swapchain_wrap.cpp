@@ -935,6 +935,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply(true);
+        DXGIShared::ApplyPresentFrameLatencyOverrides(pRealCached);
     }
     if (activeDebugSample) {
         activeDebugSample->fpsLimiterUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - limiterStartUs);
@@ -1281,6 +1282,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply(true);
+        DXGIShared::ApplyPresentFrameLatencyOverrides(pReal1Cached);
     }
 
     // Same SyncInterval=0 override as Present() — tear-free via vblank sync.

@@ -13,14 +13,19 @@ inline ReflexPacingDecision ResolveReflexPacingDecision(bool explicitReflexMode,
                                                         bool gameSleepRecent, uint32_t freshSleepCount,
                                                         bool recentPresentGap) {
     ReflexPacingDecision decision;
+    (void)gameSleepObserved;
     decision.useGameSleepHandoff = gameSleepRecent && freshSleepCount >= 3 && !recentPresentGap;
-    decision.useExplicitLocalCadence = explicitReflexMode && !gameSleepObserved;
+    decision.useExplicitLocalCadence = explicitReflexMode && !decision.useGameSleepHandoff;
     return decision;
 }
 
 inline bool ShouldRunExplicitReflexCadencePostPresent(const ReflexPacingDecision& decision,
                                                       bool callSiteSupportsPostPresentCadence) {
     return decision.useExplicitLocalCadence && callSiteSupportsPostPresentCadence;
+}
+
+inline bool ShouldClampFrameQueueForExplicitReflex(const ReflexPacingDecision& decision) {
+    return decision.useExplicitLocalCadence;
 }
 
 }  // namespace ce::fps_limiter_policy

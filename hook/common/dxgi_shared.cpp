@@ -434,37 +434,143 @@ bool IsVulkanPrimary() {
     return false;
 }
 
-// Apply backbuffer_count and cpu_prerender_limit overrides to an existing swapchain.
-// Called on each Present for each swapchain until overrides are successfully applied.
-// Apply cpu_prerender_limit via SetMaximumFrameLatency.
-// NOTE: backbuffer_count is now handled at swapchain creation time (DetourCreateSwapChainForHwndGlobal)
-// and at resize time (DetourResizeBuffers), not here.
-static void ApplySwapChainOverrides(IDXGISwapChain* pSwapChain) {
-    static std::atomic<uint64_t> g_swapchainOverridesDone{0};
-
-    // Check if already done for this swapchain
-    uint64_t scKey = reinterpret_cast<uint64_t>(pSwapChain);
-    uint64_t doneVal = g_swapchainOverridesDone.load(std::memory_order_acquire);
-    if (doneVal == scKey)
-        return;  // Already successfully applied
-
+static UINT ResolvePresentFrameLatencyOverride(const char** sourceOut, bool* isImplicitReflexOut) {
     const auto& cfg = GetActiveGraphicsConfig();
 
-    // Apply cpu_prerender_limit via SetMaximumFrameLatency
+    if (cfg.frameLatency > 0) {
+        if (sourceOut)
+            *sourceOut = "frame_latency";
+        if (isImplicitReflexOut)
+            *isImplicitReflexOut = false;
+        return static_cast<UINT>(cfg.frameLatency);
+    }
     if (cfg.cpuPrerenderLimit > 0) {
-        IDXGISwapChain2* sc2 = nullptr;
-        if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain2), (void**)&sc2))) {
-            UINT requested = static_cast<UINT>(cfg.cpuPrerenderLimit);
-            sc2->SetMaximumFrameLatency(requested);
-            HookLogImportant("ApplySwapChainOverrides: SetMaximumFrameLatency(%u) OK", requested);
-            sc2->Release();
-        } else {
-            HookLogImportant("ApplySwapChainOverrides: IDXGISwapChain2 not available for frame latency");
+        if (sourceOut)
+            *sourceOut = "cpu_prerender_limit";
+        if (isImplicitReflexOut)
+            *isImplicitReflexOut = false;
+        return static_cast<UINT>(cfg.cpuPrerenderLimit);
+    }
+    if (g_SharedFpsLimiter.WantsExplicitReflexFrameQueueClamp()) {
+        if (sourceOut)
+            *sourceOut = "explicit_reflex_limiter";
+        if (isImplicitReflexOut)
+            *isImplicitReflexOut = true;
+        return 1;
+    }
+
+    if (sourceOut)
+        *sourceOut = nullptr;
+    if (isImplicitReflexOut)
+        *isImplicitReflexOut = false;
+    return 0;
+}
+
+// Apply present-queue latency overrides to an existing swapchain.  The explicit
+// Reflex limiter uses this as a temporary queue clamp so CE-owned NvAPI Sleep
+// does not leave an extra flip queue frame behind the game simulation.
+// NOTE: backbuffer_count is handled at swapchain creation and resize time.
+void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain)
+        return;
+
+    const char* source = nullptr;
+    bool implicitReflex = false;
+    UINT requested = ResolvePresentFrameLatencyOverride(&source, &implicitReflex);
+    if (requested > 16)
+        requested = 16;
+
+    static std::mutex s_latencyOverrideMutex;
+    static uint64_t s_lastSwapchain = 0;
+    static UINT s_lastRequested = 0;
+    static bool s_autoApplied = false;
+    static uint64_t s_autoSwapchain = 0;
+    static UINT s_autoPreviousLatency = 0;
+
+    const uint64_t scKey = reinterpret_cast<uint64_t>(pSwapChain);
+
+    if (requested == 0) {
+        std::lock_guard<std::mutex> lock(s_latencyOverrideMutex);
+        if (!s_autoApplied || s_autoSwapchain != scKey) {
+            return;
         }
     }
 
-    // Mark as done after first attempt
-    g_swapchainOverridesDone.store(scKey, std::memory_order_release);
+    IDXGISwapChain2* sc2 = nullptr;
+    if (FAILED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain2), (void**)&sc2)) || !sc2) {
+        static std::atomic<int> s_qiFailLogCount{0};
+        if (requested > 0 && s_qiFailLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant("ApplyPresentFrameLatencyOverrides: IDXGISwapChain2 unavailable for %s",
+                             source ? source : "override");
+        }
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(s_latencyOverrideMutex);
+
+    if (requested == 0) {
+        if (s_autoApplied && s_autoSwapchain == scKey && s_autoPreviousLatency > 0) {
+            HRESULT hr = sc2->SetMaximumFrameLatency(s_autoPreviousLatency);
+            HookLogImportant(
+                "ApplyPresentFrameLatencyOverrides: restored SetMaximumFrameLatency(%u) after explicit Reflex "
+                "limiter (hr=0x%08X)",
+                s_autoPreviousLatency, hr);
+        }
+        if (s_autoApplied && s_autoSwapchain == scKey) {
+            s_autoApplied = false;
+            s_autoSwapchain = 0;
+            s_autoPreviousLatency = 0;
+            s_lastSwapchain = 0;
+            s_lastRequested = 0;
+        }
+        sc2->Release();
+        return;
+    }
+
+    if (s_lastSwapchain == scKey && s_lastRequested == requested) {
+        if (implicitReflex && !s_autoApplied) {
+            UINT currentLatency = 0;
+            if (SUCCEEDED(sc2->GetMaximumFrameLatency(&currentLatency)) && currentLatency > 0) {
+                s_autoApplied = true;
+                s_autoSwapchain = scKey;
+                s_autoPreviousLatency = currentLatency;
+            }
+        } else if (!implicitReflex && s_autoApplied && s_autoSwapchain == scKey) {
+            s_autoApplied = false;
+            s_autoSwapchain = 0;
+            s_autoPreviousLatency = 0;
+        }
+        sc2->Release();
+        return;
+    }
+
+    UINT previousLatency = 0;
+    if (implicitReflex) {
+        sc2->GetMaximumFrameLatency(&previousLatency);
+    }
+
+    HRESULT hr = sc2->SetMaximumFrameLatency(requested);
+    if (SUCCEEDED(hr)) {
+        HookLogImportant("ApplyPresentFrameLatencyOverrides: SetMaximumFrameLatency(%u) OK (%s, previous=%u)",
+                         requested, source ? source : "override", previousLatency);
+    } else {
+        HookLogImportant("ApplyPresentFrameLatencyOverrides: SetMaximumFrameLatency(%u) failed hr=0x%08X (%s)",
+                         requested, hr, source ? source : "override");
+    }
+
+    s_lastSwapchain = scKey;
+    s_lastRequested = requested;
+    if (implicitReflex && SUCCEEDED(hr)) {
+        s_autoApplied = true;
+        s_autoSwapchain = scKey;
+        s_autoPreviousLatency = previousLatency;
+    } else if (!implicitReflex) {
+        s_autoApplied = false;
+        s_autoSwapchain = 0;
+        s_autoPreviousLatency = 0;
+    }
+
+    sc2->Release();
 }
 
 PerformanceMetrics* GetPerformanceMetrics() {
@@ -1194,7 +1300,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
-    ApplySwapChainOverrides(pSwapChain);
+    ApplyPresentFrameLatencyOverrides(pSwapChain);
 
     if (wrappedSwapchain) {
         static int s_wrappedPassCount = 0;
@@ -1374,6 +1480,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();
+                ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
             ProcessVSyncOverride(SyncInterval, Flags);
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
@@ -1395,6 +1502,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();
+                ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
             ProcessVSyncOverride(SyncInterval, Flags);
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
@@ -1417,6 +1525,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply(true);
+        ApplyPresentFrameLatencyOverrides(pSwapChain);
     }
 
     ProcessVSyncOverride(SyncInterval, Flags);
@@ -1757,6 +1866,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
+    // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
+    ApplyPresentFrameLatencyOverrides(pSwapChain);
+
     void* pWrapper = nullptr;
     if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
         ((IUnknown*)pWrapper)->Release();
@@ -1848,6 +1960,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();
+                ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
             ProcessVSyncOverride(SyncInterval, Flags);
             return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
@@ -1869,6 +1982,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();
+                ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
             ProcessVSyncOverride(SyncInterval, Flags);
             return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
@@ -1889,6 +2003,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply(true);
+        ApplyPresentFrameLatencyOverrides(pSwapChain);
     }
 
     ProcessVSyncOverride(SyncInterval, Flags);

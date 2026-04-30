@@ -988,6 +988,17 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 static void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain);
 static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
 static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
+static float ResolveDX11PrerenderLimit() {
+    float prerenderLimit = GetActivePrerenderLimit();
+    if (prerenderLimit < 0.0f && g_SharedFpsLimiter.WantsExplicitReflexFrameQueueClamp()) {
+        static std::atomic<int> s_reflexPrerenderLogCount{0};
+        if (s_reflexPrerenderLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant("DX11: Implicit prerender limit 1 for explicit Reflex FPS limiter");
+        }
+        prerenderLimit = 1.0f;
+    }
+    return prerenderLimit;
+}
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     // Performance metrics for this frame
@@ -1095,7 +1106,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     }
 
     // CPU Prerender Limit
-    float prerenderLimit = GetActivePrerenderLimit();
+    float prerenderLimit = ResolveDX11PrerenderLimit();
     if (prerenderLimit >= 0.0f) {
         int64_t prerenderStartUs = PerfLogger::GetQpcUs();
         ApplyPrerenderLimit(pSwapChain, prerenderLimit);
@@ -1210,7 +1221,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
     }
 
     // CPU Prerender Limit
-    float prerenderLimit = GetActivePrerenderLimit();
+    float prerenderLimit = ResolveDX11PrerenderLimit();
     if (prerenderLimit >= 0.0f) {
         ApplyPrerenderLimit(pSwapChain, prerenderLimit);
     }
