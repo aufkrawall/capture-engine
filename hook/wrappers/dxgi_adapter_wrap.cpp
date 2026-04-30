@@ -201,8 +201,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc(DXGI_ADAPTER_DESC* pDesc) {
     // SpecialK approach: Report real values, trust games to handle them correctly
     HRESULT hr = m_pReal->GetDesc(pDesc);
     if (SUCCEEDED(hr) && pDesc) {
+        // CRITICAL: Cast SIZE_T to unsigned long long. On x86, SIZE_T is 4 bytes but
+        // %llu reads 8 bytes from va_args, causing subsequent %S to read stack garbage
+        // instead of the Description pointer → wcslen(NULL) crash (BioShock Infinite).
         WrapperLog("DXGI Adapter: GetDesc - VRAM: %llu MB, Shared: %llu MB, Name: %S",
-                   pDesc->DedicatedVideoMemory / (1024 * 1024), pDesc->SharedSystemMemory / (1024 * 1024),
+                   (unsigned long long)(pDesc->DedicatedVideoMemory / (1024 * 1024)),
+                   (unsigned long long)(pDesc->SharedSystemMemory / (1024 * 1024)),
                    pDesc->Description);
     } else {
         WrapperLog("DXGI Adapter: GetDesc FAILED hr=0x%08X", hr);
@@ -224,8 +228,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc1(DXGI_ADAPTER_DESC1* pDesc) 
     // FIX: Pass through to real adapter without VRAM override
     HRESULT hr = m_pReal1->GetDesc1(pDesc);
     if (SUCCEEDED(hr) && pDesc) {
-        WrapperLog("DXGI Adapter: GetDesc1 - VRAM: %llu MB, Flags: 0x%08X", pDesc->DedicatedVideoMemory / (1024 * 1024),
-                   pDesc->Flags);
+        // Cast SIZE_T to unsigned long long for %llu (SIZE_T is 4 bytes on x86)
+        WrapperLog("DXGI Adapter: GetDesc1 - VRAM: %llu MB, Flags: 0x%08X",
+                   (unsigned long long)(pDesc->DedicatedVideoMemory / (1024 * 1024)), pDesc->Flags);
     } else {
         WrapperLog("DXGI Adapter: GetDesc1 FAILED hr=0x%08X", hr);
     }
@@ -242,8 +247,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc2(DXGI_ADAPTER_DESC2* pDesc) 
     // FIX: Pass through to real adapter without VRAM override
     HRESULT hr = m_pReal2->GetDesc2(pDesc);
     if (SUCCEEDED(hr) && pDesc) {
-        WrapperLog("DXGI Adapter: GetDesc2 - VRAM: %llu MB, Flags: 0x%08X", pDesc->DedicatedVideoMemory / (1024 * 1024),
-                   pDesc->Flags);
+        // Cast SIZE_T to unsigned long long for %llu (SIZE_T is 4 bytes on x86)
+        WrapperLog("DXGI Adapter: GetDesc2 - VRAM: %llu MB, Flags: 0x%08X",
+                   (unsigned long long)(pDesc->DedicatedVideoMemory / (1024 * 1024)), pDesc->Flags);
     } else {
         WrapperLog("DXGI Adapter: GetDesc2 FAILED hr=0x%08X", hr);
     }
