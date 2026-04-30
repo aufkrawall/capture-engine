@@ -8,6 +8,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
+#include <winver.h>
 #include "crash_dump_policy.h"
 #include "logging.h"
 
@@ -679,6 +681,34 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         snprintf(avDetail, sizeof(avDetail), "Access Violation: %s address 0x%p",
                  accessType == 0 ? "READ from" : (accessType == 1 ? "WRITE to" : "DEP at"), (void*)faultAddr);
         TraceCrash(avDetail);
+
+        // If fault address looks like a vtable slot (code address + small offset),
+        // log the relationship using register values
+        CONTEXT* ctx = pExceptionPointers->ContextRecord;
+#ifdef _WIN64
+        if (ctx->Rax != 0 && faultAddr >= ctx->Rax && faultAddr < ctx->Rax + 0x1000) {
+            char vtableInfo[256];
+            snprintf(vtableInfo, sizeof(vtableInfo), "VTable hint: RAX=0x%016llX, slot at offset +0x%llX (slot %llu)",
+                     (unsigned long long)ctx->Rax, (unsigned long long)(faultAddr - ctx->Rax),
+                     (unsigned long long)((faultAddr - ctx->Rax) / sizeof(void*)));
+            TraceCrash(vtableInfo);
+        }
+#else
+        if (ctx->Eax != 0 && faultAddr >= ctx->Eax && faultAddr < ctx->Eax + 0x1000) {
+            char vtableInfo[256];
+            snprintf(vtableInfo, sizeof(vtableInfo), "VTable hint: EAX=0x%08lX, slot at offset +0x%lX (slot %lu)",
+                     (unsigned long)ctx->Eax, (unsigned long)(faultAddr - ctx->Eax),
+                     (unsigned long)((faultAddr - ctx->Eax) / sizeof(void*)));
+            TraceCrash(vtableInfo);
+        }
+        if (ctx->Ecx != 0 && faultAddr >= ctx->Ecx && faultAddr < ctx->Ecx + 0x1000) {
+            char vtableInfo[256];
+            snprintf(vtableInfo, sizeof(vtableInfo), "VTable hint: ECX=0x%08lX, slot at offset +0x%lX (slot %lu)",
+                     (unsigned long)ctx->Ecx, (unsigned long)(faultAddr - ctx->Ecx),
+                     (unsigned long)((faultAddr - ctx->Ecx) / sizeof(void*)));
+            TraceCrash(vtableInfo);
+        }
+#endif
     }
 
     // Log crash address with module info
@@ -720,6 +750,51 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
                  ctx->Eip, ctx->Esp, ctx->Ebp, ctx->Eax, ctx->Ecx, ctx->Edx);
 #endif
         TraceCrash(regBuf);
+    }
+
+    // Log instruction bytes at crash site for offline disassembly
+    {
+        unsigned char instrBytes[16] = {};
+        SIZE_T bytesRead = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), pExceptionPointers->ExceptionRecord->ExceptionAddress, instrBytes,
+                              sizeof(instrBytes), &bytesRead) &&
+            bytesRead > 0) {
+            char instrBuf[128] = "Crash instr:";
+            char hex[8];
+            for (SIZE_T i = 0; i < bytesRead && i < 16; i++) {
+                snprintf(hex, sizeof(hex), " %02X", instrBytes[i]);
+                strcat(instrBuf, hex);
+            }
+            TraceCrash(instrBuf);
+        }
+    }
+
+    // Log module version for the crash module
+    {
+        HMODULE hVerMod = NULL;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)pExceptionPointers->ExceptionRecord->ExceptionAddress, &hVerMod) &&
+            hVerMod) {
+            char verPath[MAX_PATH] = {};
+            if (GetModuleFileNameA(hVerMod, verPath, MAX_PATH)) {
+                DWORD verHandle = 0;
+                DWORD verSize = GetFileVersionInfoSizeA(verPath, &verHandle);
+                if (verSize > 0) {
+                    std::vector<char> verData(static_cast<size_t>(verSize));
+                    if (GetFileVersionInfoA(verPath, verHandle, verSize, verData.data())) {
+                        VS_FIXEDFILEINFO* fileInfo = nullptr;
+                        UINT len = 0;
+                        if (VerQueryValueA(verData.data(), "\\", (LPVOID*)&fileInfo, &len) && fileInfo) {
+                            char verBuf[128];
+                            snprintf(verBuf, sizeof(verBuf), "Module version: %u.%u.%u.%u",
+                                     HIWORD(fileInfo->dwFileVersionMS), LOWORD(fileInfo->dwFileVersionMS),
+                                     HIWORD(fileInfo->dwFileVersionLS), LOWORD(fileInfo->dwFileVersionLS));
+                            TraceCrash(verBuf);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     OutputDebugStringA("[CrashHandler] CRASH DETECTED! Spawning worker for minidump...\n");

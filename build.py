@@ -4887,6 +4887,7 @@ def compile_project(
                 "-lbcrypt",
                 "-lwintrust",
                 "-lpdh",
+                "-lversion",
                 "-lntdll",
                 "-ladvapi32",
                 # FFmpeg for HDR screenshot encoding (AVIF via SVT-AV1) — delay-loaded so SetDllDirectory works

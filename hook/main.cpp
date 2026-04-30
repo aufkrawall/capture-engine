@@ -1387,7 +1387,16 @@ void CheckAndInstallHooks() {
 #ifdef ENABLE_D3D12_WRAPPER
     const bool shouldInitDX12Hook = d3d12DeviceCreated;
 #else
+#  ifdef _WIN64
     const bool shouldInitDX12Hook = true;
+#  else
+    // x86: only init DX12 hooks if a D3D12 device was actually created.
+    // d3d12.dll is often loaded by D3D11On12 even in pure DX11 x86 games,
+    // and DX12 hook init installs DXGI factory vtable hooks + inline hooks
+    // on CreateSwapChainForHwnd that can interfere with DX11 swapchain
+    // creation and third-party overlays.
+    const bool shouldInitDX12Hook = d3d12DeviceCreated;
+#  endif
 #endif
     const bool suppressDX12HookForDXVK = dxvkD3D11WrapperLoaded && !d3d12DeviceCreated;
     if (!s_vulkanActive && !g_DX12Hook && hD3D12 && shouldInitDX12Hook && !suppressDX12HookForDXVK) {
@@ -1416,7 +1425,11 @@ void CheckAndInstallHooks() {
     } else if (!s_vulkanActive && !g_DX12Hook && hD3D12 && !shouldInitDX12Hook) {
       static bool s_loggedWaitingForRealDX12Use = false;
       if (!s_loggedWaitingForRealDX12Use) {
+#  ifdef _WIN64
         HookLog("DX12 hook init deferred: waiting for confirmed D3D12 device creation");
+#  else
+        HookLog("DX12 hook init skipped (x86): d3d12.dll present but no D3D12 device created");
+#  endif
         s_loggedWaitingForRealDX12Use = true;
       }
     } else if (!s_vulkanActive && !g_DX12Hook && !hD3D12) {
@@ -1449,6 +1462,16 @@ void CheckAndInstallHooks() {
   bool d3d11Or10DeviceCreated = !dxvkD3D11WrapperLoaded && WasD3D11Or10DeviceCreated();
   bool d3d12DeviceCreated = WasD3D12DeviceCreated();
 
+  // Log third-party overlay presence for diagnostics
+  {
+    HMODULE hGameoverlay = GetModuleHandleA("gameoverlayrenderer.dll");
+    if (hGameoverlay) {
+      char overlayPath[MAX_PATH] = {};
+      GetModuleFileNameA(hGameoverlay, overlayPath, MAX_PATH);
+      HookLog("Third-party overlay detected: gameoverlayrenderer.dll (%s)", overlayPath);
+    }
+  }
+
   // NOTE: Skip D3D11 hooks for Vulkan games to prevent DXGI interference
   // Also avoid DX11 hook install in legacy D3D processes unless actual
   // D3D11/D3D10 device creation was observed (prevents DX9 interop false
@@ -1461,8 +1484,13 @@ void CheckAndInstallHooks() {
             d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0,
             legacyD3DLoaded ? 1 : 0);
     g_DX11Hook = new DX11Hook();
+    LARGE_INTEGER _t1, _t2, _freq;
+    QueryPerformanceFrequency(&_freq);
+    QueryPerformanceCounter(&_t1);
     g_DX11Hook->Init();
-    HookLog("D3D10/11 hooks installed");
+    QueryPerformanceCounter(&_t2);
+    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+    HookLog("D3D10/11 hooks installed (init=%.1f ms)", _initMs);
   }
 
   // For other APIs, skip if D3D12 was actually used (not just loaded).
@@ -1480,8 +1508,13 @@ void CheckAndInstallHooks() {
         s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
     HookLog("Detected d3d9.dll. Installing DX9 hooks...");
     g_DX9Hook = new DX9Hook();
+    LARGE_INTEGER _t1, _t2, _freq;
+    QueryPerformanceFrequency(&_freq);
+    QueryPerformanceCounter(&_t1);
     g_DX9Hook->Init();
-    HookLog("DX9 hooks installed (hook ptr=%p)", (void*)g_DX9Hook);
+    QueryPerformanceCounter(&_t2);
+    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+    HookLog("DX9 hooks installed (hook ptr=%p, init=%.1f ms)", (void*)g_DX9Hook, _initMs);
   } else if (!g_DX9Hook && GetModuleHandleA("d3d9.dll")) {
     EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d, dxvkD3D9=%d)",
              s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
@@ -1496,22 +1529,37 @@ void CheckAndInstallHooks() {
     HookLog("Detected ddraw.dll. Installing DirectDraw hooks... (dx12Used=%d)",
             dx12ActuallyUsed ? 1 : 0);
     g_DDrawHook = new DDrawHook();
+    LARGE_INTEGER _t1, _t2, _freq;
+    QueryPerformanceFrequency(&_freq);
+    QueryPerformanceCounter(&_t1);
     g_DDrawHook->Init();
-    HookLog("DDraw hooks installed");
+    QueryPerformanceCounter(&_t2);
+    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+    HookLog("DDraw hooks installed (init=%.1f ms)", _initMs);
   }
 
   if (!g_DX8Hook && !dx12ActuallyUsed && GetModuleHandleA("d3d8.dll")) {
     HookLog("Detected d3d8.dll. Installing DX8 hooks...");
     g_DX8Hook = new DX8Hook();
+    LARGE_INTEGER _t1, _t2, _freq;
+    QueryPerformanceFrequency(&_freq);
+    QueryPerformanceCounter(&_t1);
     g_DX8Hook->Init();
-    HookLog("DX8 hooks installed");
+    QueryPerformanceCounter(&_t2);
+    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+    HookLog("DX8 hooks installed (init=%.1f ms)", _initMs);
   }
 
   if (!g_OpenGLHook && !dx12ActuallyUsed && GetModuleHandleA("opengl32.dll")) {
     HookLog("Detected opengl32.dll. Installing OpenGL hooks...");
     g_OpenGLHook = new OpenGLHook();
+    LARGE_INTEGER _t1, _t2, _freq;
+    QueryPerformanceFrequency(&_freq);
+    QueryPerformanceCounter(&_t1);
     g_OpenGLHook->Init();
-    HookLog("OpenGL hooks installed");
+    QueryPerformanceCounter(&_t2);
+    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+    HookLog("OpenGL hooks installed (init=%.1f ms)", _initMs);
   }
 
   // Vulkan is handled by VK_LAYER_CE_overlay (ICD layer)
