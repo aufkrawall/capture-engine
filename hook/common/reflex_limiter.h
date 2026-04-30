@@ -123,6 +123,7 @@ public:
     void SetDevice(IUnknown* device) {
         if (device && lastDevice_ != device) {
             lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
+            manualRearmBeforeNextPush_.store(true, std::memory_order_release);
             if (targetIntervalUs_.load(std::memory_order_acquire) != 0) {
                 HookLogImportant("ReflexLimiter: Device supplied for native pacing (device=%p)", device);
             }
@@ -152,6 +153,7 @@ public:
         targetIntervalUs_.store(newInterval, std::memory_order_release);
         lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
         ceOwnedSleepLogged_.store(false, std::memory_order_release);
+        manualRearmBeforeNextPush_.store(newInterval != 0, std::memory_order_release);
 
         if (newInterval == 0) {
             if (oldInterval != 0) {
@@ -283,6 +285,17 @@ public:
     bool IsManualLimiterConfiguredOrActive() const;
     void EnsureGameOwnedReflexHooks();
 
+#ifdef CE_UNIT_TESTS
+    void TestInstallSetSleepModeForUnitTest(PFN_NvAPI_D3D_SetSleepMode setSleepMode, IUnknown* device) {
+        Shutdown();
+        origSetSleepMode_ = setSleepMode;
+        realSetSleepModeForHook_ = setSleepMode;
+        lastDevice_ = device;
+        available_.store(setSleepMode != nullptr, std::memory_order_release);
+        inited_.store(setSleepMode != nullptr, std::memory_order_release);
+    }
+#endif
+
     bool ClearFpsLimit() {
         auto forwardSetSleepMode = GetForwardSetSleepMode();
         if (!forwardSetSleepMode || !lastDevice_) {
@@ -334,6 +347,13 @@ public:
         if (intervalUs == 0) {
             ClearFpsLimit();
             return false;
+        }
+
+        if (manualLimiterConfiguredOrActive_.load(std::memory_order_acquire) &&
+            manualRearmBeforeNextPush_.exchange(false, std::memory_order_acq_rel)) {
+            ForceLowLatencyResetBeforeManualPush(forwardSetSleepMode, intervalUs);
+            pushSucceeded_.store(false, std::memory_order_release);
+            lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
         }
 
         if (pushSucceeded_.load(std::memory_order_acquire) &&
@@ -558,6 +578,7 @@ public:
         origSleep_ = nullptr;
         origQueryInterface_ = nullptr;
         manualLimiterConfiguredOrActive_.store(false, std::memory_order_release);
+        manualRearmBeforeNextPush_.store(false, std::memory_order_release);
         lastNativePacingSignalTick_.store(0, std::memory_order_release);
         lastGameSleepTick_.store(0, std::memory_order_release);
         gameSleepObserved_.store(false, std::memory_order_release);
@@ -680,6 +701,31 @@ private:
         return realSleepForHook_ ? realSleepForHook_ : origSleep_;
     }
 
+    void ForceLowLatencyResetBeforeManualPush(PFN_NvAPI_D3D_SetSleepMode forwardSetSleepMode, uint32_t nextIntervalUs) {
+        if (!forwardSetSleepMode || !lastDevice_) {
+            return;
+        }
+
+        NV_SET_SLEEP_MODE_PARAMS params = BuildSleepModeParams(0, false);
+        params.bLowLatencyMode = 0;
+        params.bLowLatencyBoost = 0;
+        params.bUseMarkersToOptimize = 0;
+        params.minimumIntervalUs = 0;
+
+        const NvAPI_Status status = forwardSetSleepMode(lastDevice_, &params);
+        if (status == NVAPI_OK) {
+            HookLogImportant(
+                "ReflexLimiter: Re-armed manual FPS limit with low-latency reset before push "
+                "(device=%p nextIntervalUs=%u version=0x%08X)",
+                lastDevice_, nextIntervalUs, params.version);
+        } else {
+            HookLogImportant(
+                "ReflexLimiter: Manual FPS-limit low-latency reset failed before push "
+                "(status=%d device=%p nextIntervalUs=%u version=0x%08X)",
+                status, lastDevice_, nextIntervalUs, params.version);
+        }
+    }
+
     std::atomic<bool> inited_{false};
     std::atomic<bool> available_{false};
     std::atomic<bool> pushSucceeded_{false};
@@ -690,6 +736,7 @@ private:
     PFN_NvAPI_D3D_SetSleepMode origSetSleepMode_ = nullptr;
     PFN_NvAPI_D3D_Sleep origSleep_ = nullptr;
     std::atomic<bool> manualLimiterConfiguredOrActive_{false};
+    std::atomic<bool> manualRearmBeforeNextPush_{false};
     std::atomic<uint32_t> targetIntervalUs_{0};
     std::atomic<ULONGLONG> lastNativePacingSignalTick_{0};
     std::atomic<ULONGLONG> lastGameSleepTick_{0};

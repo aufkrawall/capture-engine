@@ -334,6 +334,67 @@ TEST_F(FpsLimiterTest, ReflexSleepModeParamsMatchNvApiAbi) {
     EXPECT_EQ(offsetof(NV_SET_SLEEP_MODE_PARAMS, rsvd), 14u);
 }
 
+namespace {
+static NV_SET_SLEEP_MODE_PARAMS g_TestSetSleepModeParams[4]{};
+static std::atomic<int> g_TestSetSleepModeCallCount{0};
+
+NvAPI_Status __cdecl TestManualRearmSetSleepMode(IUnknown*, NV_SET_SLEEP_MODE_PARAMS* params) {
+    const int index = g_TestSetSleepModeCallCount.fetch_add(1, std::memory_order_acq_rel);
+    constexpr int kParamCount =
+        static_cast<int>(sizeof(g_TestSetSleepModeParams) / sizeof(g_TestSetSleepModeParams[0]));
+    if (index >= 0 && index < kParamCount && params) {
+        g_TestSetSleepModeParams[index] = *params;
+    }
+    return NVAPI_OK;
+}
+
+void ResetManualRearmSetSleepModeRecorder() {
+    g_TestSetSleepModeCallCount.store(0, std::memory_order_release);
+    for (auto& params : g_TestSetSleepModeParams) {
+        params = {};
+    }
+}
+}  // namespace
+
+TEST_F(FpsLimiterTest, ManualReflexFirstPushRearmsLowLatencyModeBeforeLimit) {
+    ResetManualRearmSetSleepModeRecorder();
+
+    auto* fakeDevice = reinterpret_cast<IUnknown*>(static_cast<uintptr_t>(0x5678));
+    g_ReflexLimiter.TestInstallSetSleepModeForUnitTest(&TestManualRearmSetSleepMode, fakeDevice);
+    g_ReflexLimiter.SetManualLimiterConfiguredOrActive(true);
+    g_ReflexLimiter.SetTargetFps(60);
+
+    EXPECT_TRUE(g_ReflexLimiter.PushFpsLimit());
+
+    ASSERT_EQ(g_TestSetSleepModeCallCount.load(std::memory_order_acquire), 2);
+    EXPECT_EQ(g_TestSetSleepModeParams[0].bLowLatencyMode, 0u);
+    EXPECT_EQ(g_TestSetSleepModeParams[0].minimumIntervalUs, 0u);
+    EXPECT_EQ(g_TestSetSleepModeParams[1].bLowLatencyMode, 1u);
+    EXPECT_EQ(g_TestSetSleepModeParams[1].minimumIntervalUs, 16666u);
+
+    EXPECT_TRUE(g_ReflexLimiter.PushFpsLimit());
+    EXPECT_EQ(g_TestSetSleepModeCallCount.load(std::memory_order_acquire), 2);
+
+    g_ReflexLimiter.Shutdown();
+}
+
+TEST_F(FpsLimiterTest, NonManualReflexPushDoesNotForceLowLatencyReset) {
+    ResetManualRearmSetSleepModeRecorder();
+
+    auto* fakeDevice = reinterpret_cast<IUnknown*>(static_cast<uintptr_t>(0x5678));
+    g_ReflexLimiter.TestInstallSetSleepModeForUnitTest(&TestManualRearmSetSleepMode, fakeDevice);
+    g_ReflexLimiter.SetManualLimiterConfiguredOrActive(false);
+    g_ReflexLimiter.SetTargetFps(60);
+
+    EXPECT_TRUE(g_ReflexLimiter.PushFpsLimit());
+
+    ASSERT_EQ(g_TestSetSleepModeCallCount.load(std::memory_order_acquire), 1);
+    EXPECT_EQ(g_TestSetSleepModeParams[0].bLowLatencyMode, 1u);
+    EXPECT_EQ(g_TestSetSleepModeParams[0].minimumIntervalUs, 16666u);
+
+    g_ReflexLimiter.Shutdown();
+}
+
 TEST(ReflexFpsLimiterPolicyTest, ExplicitReflexLocalCadenceSurvivesPresentGapWithoutGameSleep) {
     const auto decision = ce::fps_limiter_policy::ResolveReflexPacingDecision(true, false, false, 0, true);
 
