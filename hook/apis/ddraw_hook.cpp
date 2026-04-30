@@ -1957,6 +1957,25 @@ void DDrawHook::Init() {
         return;
     }
 
+    // Skip DDraw hooks when a higher-level D3D API (d3d9, d3d8) is already loaded.
+    // ddraw.dll is often loaded as a transitive system dependency even in DX9+ games,
+    // and bootstrapping DDraw hooks (which internally creates a D3D9 device via
+    // DirectDrawCreateEx -> Windows DDraw-on-D3D9 mapping) can crash when third-party
+    // overlays (Steam, Discord, etc.) have already hooked Direct3DCreate9 and their
+    // internal state is not prepared for a synthetic device creation on a worker thread.
+    //
+    // BioShockInfinite crash family (2026-04-30):
+    //   gameoverlayrenderer!OverlayHookD3D3+0x8ba7: FF 50 50 (call [eax+0x50])
+    //   Access violation reading vtable slot at 0x6284d010 from EAX=0x6284CFC0
+    //   Triggered by DDraw bootstrap calling DirectDrawCreateEx on the hook thread
+    //   while Steam overlay controls the D3D9 vtable.
+    if (GetModuleHandleA("d3d9.dll") || GetModuleHandleA("d3d8.dll")) {
+        HookLog("DDraw: Skipping DDraw hooks (higher-level D3D API present; d3d9=%d d3d8=%d)",
+                GetModuleHandleA("d3d9.dll") ? 1 : 0,
+                GetModuleHandleA("d3d8.dll") ? 1 : 0);
+        return;
+    }
+
     // Check if ddraw.dll is loaded
     HMODULE ddrawModule = GetModuleHandleA("ddraw.dll");
     if (!ddrawModule) {
