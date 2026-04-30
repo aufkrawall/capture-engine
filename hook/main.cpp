@@ -810,6 +810,25 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
     SetEvent(g_hCheckHooksEvent);
 }
 
+static void ArmManualReflexQueryHookIfConfigured(const char *source) {
+  if (!g_ReflexLimiter.IsManualLimiterConfiguredOrActive())
+    return;
+
+  // Games can cache NvAPI function pointers long before CE's first Present.
+  // Arm the filtered QueryInterface path as soon as config/shared-memory state
+  // proves manual Reflex mode is wanted, while keeping the existing caller
+  // filter inside the Reflex limiter.
+  g_ReflexLimiter.SetManualLimiterConfiguredOrActive(true);
+
+  static std::atomic<bool> s_loggedEarlyManualReflexArm{false};
+  if (!s_loggedEarlyManualReflexArm.exchange(true, std::memory_order_acq_rel)) {
+    HookLogImportant(
+        "ReflexLimiter: Early filtered nvapi_QueryInterface hook armed from %s "
+        "manual Reflex configuration",
+        source && source[0] ? source : "current");
+  }
+}
+
 LPSTR WINAPI HookedGetCommandLineA() {
   LPSTR original = OriginalGetCommandLineA.load(std::memory_order_acquire)();
 
@@ -1542,6 +1561,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     LoadConfig(configPath, *g_pLocalConfig);
     // Prime the graphics override state immediately
     GetActiveGraphicsConfig();
+    ArmManualReflexQueryHookIfConfigured("config.ini");
 
     // Load wrapper DLLs for all graphics APIs
     {
@@ -1697,6 +1717,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     if (g_IPC->GetSharedMem()) {
       g_pSharedMem = g_IPC->GetSharedMem();
       g_pSharedMem->SetSourcePid(GetCurrentProcessId());
+      ArmManualReflexQueryHookIfConfigured("shared memory");
     }
 
     // Initialize HookContext and sync with legacy globals

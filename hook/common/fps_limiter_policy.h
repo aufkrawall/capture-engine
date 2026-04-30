@@ -31,4 +31,11 @@ inline bool ShouldReturnNvApiReflexWrapper(bool manualReflexLimiterConfiguredOrA
            !callerIsSystemModule && !callerIsCaptureHookModule;
 }
 
+inline bool IsManualReflexLimiterConfigured(bool generalEnabled, int generalFps, uint32_t generalMode,
+                                            bool captureSyncEnabled, uint32_t captureSyncMode,
+                                            uint32_t nativeModeValue) {
+    return (generalEnabled && generalFps > 0 && generalMode == nativeModeValue) ||
+           (captureSyncEnabled && captureSyncMode == nativeModeValue);
+}
+
 }  // namespace ce::fps_limiter_policy

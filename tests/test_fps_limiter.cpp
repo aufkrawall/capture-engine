@@ -440,6 +440,20 @@ TEST(ReflexFpsLimiterPolicyTest, NvApiReflexWrapperIsOnlyReturnedForManualGameCa
     EXPECT_FALSE(ce::fps_limiter_policy::ShouldReturnNvApiReflexWrapper(true, false, false, false, true));
 }
 
+TEST(ReflexFpsLimiterPolicyTest, ManualReflexConfigCanArmQueryHookBeforeNvApiLoads) {
+    constexpr uint32_t kBasicMode = static_cast<uint32_t>(LimiterMode::kBasic);
+    constexpr uint32_t kNativeMode = static_cast<uint32_t>(LimiterMode::kNative);
+
+    EXPECT_TRUE(
+        ce::fps_limiter_policy::IsManualReflexLimiterConfigured(true, 60, kNativeMode, false, kBasicMode, kNativeMode));
+    EXPECT_TRUE(
+        ce::fps_limiter_policy::IsManualReflexLimiterConfigured(false, 0, kBasicMode, true, kNativeMode, kNativeMode));
+    EXPECT_FALSE(
+        ce::fps_limiter_policy::IsManualReflexLimiterConfigured(true, 0, kNativeMode, false, kBasicMode, kNativeMode));
+    EXPECT_FALSE(
+        ce::fps_limiter_policy::IsManualReflexLimiterConfigured(true, 60, kBasicMode, false, kBasicMode, kNativeMode));
+}
+
 TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;

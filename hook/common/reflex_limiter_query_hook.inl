@@ -29,10 +29,10 @@ inline bool ReflexLimiter::IsManualLimiterConfiguredOrActive() const {
             return false;
         }
         constexpr uint32_t kNativeMode = static_cast<uint32_t>(LimiterMode::kNative);
-        return (shm->fpsLimiter.GetGeneralEnabled() && shm->fpsLimiter.GetGeneralFps() > 0 &&
-                shm->fpsLimiter.GetGeneralLimiterMode() == kNativeMode) ||
-               (shm->fpsLimiter.GetCaptureSyncEnabled() &&
-                shm->fpsLimiter.GetCaptureSyncLimiterMode() == kNativeMode);
+        return ce::fps_limiter_policy::IsManualReflexLimiterConfigured(
+            shm->fpsLimiter.GetGeneralEnabled(), shm->fpsLimiter.GetGeneralFps(),
+            shm->fpsLimiter.GetGeneralLimiterMode(), shm->fpsLimiter.GetCaptureSyncEnabled(),
+            shm->fpsLimiter.GetCaptureSyncLimiterMode(), kNativeMode);
     };
 
     if (g_IPC && sharedMemoryWantsManualReflex(g_IPC->GetSharedMem())) {
@@ -43,8 +43,9 @@ inline bool ReflexLimiter::IsManualLimiterConfiguredOrActive() const {
     }
     if (g_pLocalConfig) {
         const auto& fps = g_pLocalConfig->fpsLimiter;
-        return (fps.generalEnabled && fps.generalFps > 0 && fps.generalLimiterMode == LimiterMode::kNative) ||
-               (fps.captureSyncEnabled && fps.captureSyncLimiterMode == LimiterMode::kNative);
+        return ce::fps_limiter_policy::IsManualReflexLimiterConfigured(
+            fps.generalEnabled, fps.generalFps, static_cast<uint32_t>(fps.generalLimiterMode), fps.captureSyncEnabled,
+            static_cast<uint32_t>(fps.captureSyncLimiterMode), static_cast<uint32_t>(LimiterMode::kNative));
     }
 #endif
 
