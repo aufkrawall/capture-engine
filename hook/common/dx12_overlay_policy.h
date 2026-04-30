@@ -375,8 +375,8 @@ inline int ResolveOverlayFGMetricType(bool effectiveFGActive, fg_runtime::Runtim
     }
 }
 
-inline bool DoOverlayFGPublishedTypesDiffer(bool lhsFGActive, fg_runtime::RuntimeMode lhsRuntimeMode,
-                                            bool rhsFGActive, fg_runtime::RuntimeMode rhsRuntimeMode) {
+inline bool DoOverlayFGPublishedTypesDiffer(bool lhsFGActive, fg_runtime::RuntimeMode lhsRuntimeMode, bool rhsFGActive,
+                                            fg_runtime::RuntimeMode rhsRuntimeMode) {
     return ResolveOverlayFGMetricType(lhsFGActive, lhsRuntimeMode) !=
            ResolveOverlayFGMetricType(rhsFGActive, rhsRuntimeMode);
 }
@@ -525,12 +525,9 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
     return fsrFGActive || runtimeOwnsSwapchain || runtimeOwnedNativeFGPresentPath;
 }
 
-inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(bool runtimeOwnsSwapchain,
-                                                                            bool streamlineFGRunning,
-                                                                            fg_runtime::RuntimeMode runtimeMode,
-                                                                            bool authoritativeFSRActive,
-                                                                            bool runtimeOwnedNativeFGPresentPath,
-                                                                            bool ffxPresentCallbackStalled = false) {
+inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+    bool runtimeOwnsSwapchain, bool streamlineFGRunning, fg_runtime::RuntimeMode runtimeMode,
+    bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath, bool ffxPresentCallbackStalled = false) {
     if (!runtimeOwnsSwapchain || streamlineFGRunning) {
         return false;
     }
@@ -1005,8 +1002,7 @@ inline bool ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandof
     // next off-recovery back onto a stale queue if the new comeback tears down
     // before first confirmation.
     return hadFSRFGPhase && hasSwapchainQueue && swapchainQueueDiffersFromOriginalGameQueue &&
-           streamlineStartupHandoffPending && hasPostSLLastWorkingQueue &&
-           !swapchainQueueMatchesPostSLLastWorkingQueue;
+           streamlineStartupHandoffPending && hasPostSLLastWorkingQueue && !swapchainQueueMatchesPostSLLastWorkingQueue;
 }
 
 inline bool ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(bool hadFSRFGPhase, bool hasSwapchainQueue,
@@ -1087,10 +1083,11 @@ inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQu
     return hasRealQueueBehindWrapper || hasRealD3D12ECL;
 }
 
-inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(
-    bool streamlineFGActive, bool hasSLWrapperQueue, bool hasRealQueueBehindWrapper, bool hasRealD3D12ECL,
-    bool selectedQueueIsSwapchainQueue, bool selectedQueueOrigECLMatchesRealECL,
-    bool selectedQueueIsOriginalGameQueue = false) {
+inline bool ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(bool streamlineFGActive, bool hasSLWrapperQueue,
+                                                                  bool hasRealQueueBehindWrapper, bool hasRealD3D12ECL,
+                                                                  bool selectedQueueIsSwapchainQueue,
+                                                                  bool selectedQueueOrigECLMatchesRealECL,
+                                                                  bool selectedQueueIsOriginalGameQueue = false) {
     if (streamlineFGActive && !hasSLWrapperQueue && !hasRealQueueBehindWrapper && hasRealD3D12ECL &&
         selectedQueueIsSwapchainQueue && selectedQueueOrigECLMatchesRealECL) {
         return true;
@@ -1154,9 +1151,10 @@ inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase
     return !hasRealQueueBehindWrapper && !hasSLWrapperQueue;
 }
 
-inline bool ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(
-    bool hadFSRFGPhase, bool hasRuntimeOwnedSwapchainQueue, bool commandQueueMatchesSwapchainQueue,
-    bool hasTrackedSwapchainQueueSubmitPath) {
+inline bool ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(bool hadFSRFGPhase,
+                                                                        bool hasRuntimeOwnedSwapchainQueue,
+                                                                        bool commandQueueMatchesSwapchainQueue,
+                                                                        bool hasTrackedSwapchainQueueSubmitPath) {
     // In 2D/menu-only FSR->DLSS handoffs Streamline can create the live
     // runtime-owned swapchain queue before any wrapper ECL traffic appears. If
     // that same queue is already the live command queue and CE has the queue's
@@ -1199,8 +1197,7 @@ inline bool ShouldTreatPostSLAsReactivated(bool postSLActive, bool wasActiveInCu
 }
 
 inline bool ShouldResetPostSLStartupProgressOnReactivation(bool postSLConfirmedRendering, int stablePostSLFrameCount,
-                                                           int postSLStallCount,
-                                                           bool runtimeStateStabilizationLogged) {
+                                                           int postSLStallCount, bool runtimeStateStabilizationLogged) {
     // A second PostSL reactivation inside the same DLSS startup family must
     // start a fresh per-epoch settling/stabilization window. Reusing confirmed
     // progress from an older epoch lets the stale-OFF guard expire too early on
@@ -1458,8 +1455,7 @@ inline constexpr int GetConfirmedPostSLWarmupProofFrameThreshold() {
     return 30;
 }
 
-inline bool ShouldExtendConfirmedPostSLRuntimeStateStabilizationAfterReactivation(
-    int previousStablePostSLFrameCount) {
+inline bool ShouldExtendConfirmedPostSLRuntimeStateStabilizationAfterReactivation(int previousStablePostSLFrameCount) {
     // A reactivation that interrupts confirmed PostSL startup before the same
     // repo-wide warmup proof threshold is reached means the older epoch never
     // fully matured into the long-running FG callback pattern. The next epoch
@@ -1474,8 +1470,7 @@ inline constexpr int GetConfirmedPostSLRuntimeStateStabilizationFirstFrame() {
     return 9;
 }
 
-inline constexpr int GetConfirmedPostSLRuntimeStateStabilizationLastFrame(
-    bool extendForChurnedReactivation = false) {
+inline constexpr int GetConfirmedPostSLRuntimeStateStabilizationLastFrame(bool extendForChurnedReactivation = false) {
     return extendForChurnedReactivation ? GetConfirmedPostSLWarmupProofFrameThreshold() : 12;
 }
 
@@ -1493,8 +1488,7 @@ inline bool ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(bool po
     // extend the wider DX12 startup-routing / handoff-pending protection.
     return postSLConfirmedRendering &&
            stablePostSLFrameCount >= GetConfirmedPostSLRuntimeStateStabilizationFirstFrame() &&
-           stablePostSLFrameCount <=
-               GetConfirmedPostSLRuntimeStateStabilizationLastFrame(extendForChurnedReactivation);
+           stablePostSLFrameCount <= GetConfirmedPostSLRuntimeStateStabilizationLastFrame(extendForChurnedReactivation);
 }
 
 inline constexpr int GetConfirmedPostSLGetStateOffWarmupProtectionLastFrame() {
@@ -1592,10 +1586,9 @@ inline bool ShouldKeepSyntheticStartupStateUntilConfirmedRender(bool startupActi
     return startupActivationPending || postSLActiveButUnconfirmed;
 }
 
-inline bool ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(bool startupActivationPending,
-                                                                                    bool postSLActiveButUnconfirmed,
-                                                                                    bool postSLConfirmedRendering,
-                                                                                    bool postSLConfirmedButStartupSettling) {
+inline bool ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
+    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering,
+    bool postSLConfirmedButStartupSettling) {
     return ShouldKeepSyntheticStartupStateUntilConfirmedRender(startupActivationPending, postSLActiveButUnconfirmed,
                                                                postSLConfirmedRendering,
                                                                postSLConfirmedButStartupSettling);
@@ -1660,12 +1653,10 @@ inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOw
     return callerFromFFXFGModule;
 }
 
-inline bool ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(bool hadFSRFGPhase,
-                                                                                  bool explicitSetOptionsActivation,
-                                                                                  bool hasSwapchainQueue,
-                                                                                  bool swapchainQueueDiffersFromOriginalGameQueue,
-                                                                                  bool streamlineStartupHandoffPending,
-                                                                                  bool runtimeOwnedNativeFGPresentPath) {
+inline bool ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
+    bool hadFSRFGPhase, bool explicitSetOptionsActivation, bool hasSwapchainQueue,
+    bool swapchainQueueDiffersFromOriginalGameQueue, bool streamlineStartupHandoffPending,
+    bool runtimeOwnedNativeFGPresentPath) {
     // After a real FSR -> DLSS comeback, the preserved non-origGame swapchain queue
     // can already belong to the new authoritative Streamline handoff. In that
     // state, a stale native-FSR Present-ownership latch from the prior runtime must

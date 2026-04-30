@@ -80,6 +80,5 @@ TEST(CrashDumpPolicyTest, SupplementalExternalCrashDumpBuildsStableDestinationFi
         "crash_external_103327d5-227b-4bb7-b529-7c8a38cccdbf.dmp");
     EXPECT_EQ(policy::BuildSupplementalCrashDumpFileNameFromExternalSource("sl-sha-11cf43f"),
               "crash_external_sl-sha-11cf43f.dmp");
-    EXPECT_EQ(policy::BuildSupplementalCrashDumpFileNameFromExternalSource(nullptr),
-              "crash_external_dump.dmp");
+    EXPECT_EQ(policy::BuildSupplementalCrashDumpFileNameFromExternalSource(nullptr), "crash_external_dump.dmp");
 }

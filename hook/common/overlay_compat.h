@@ -489,13 +489,10 @@ inline bool IsUsableSameProcessForegroundWindow(HWND foregroundWindow, DWORD exp
     return HasUsableDX12OverlayStartupWindowSize(localWidth, localHeight);
 }
 
-inline bool ResolveDX12OverlayStartupResumeForegroundWindowMetrics(bool exactWindowForeground,
-                                                                   bool usableSameProcessForegroundWindow,
-                                                                   LONG gameWidth, LONG gameHeight,
-                                                                   LONG foregroundWidth, LONG foregroundHeight,
-                                                                   LONG* resolvedWidth = nullptr,
-                                                                   LONG* resolvedHeight = nullptr,
-                                                                   bool* usingSameProcessForegroundWindow = nullptr) {
+inline bool ResolveDX12OverlayStartupResumeForegroundWindowMetrics(
+    bool exactWindowForeground, bool usableSameProcessForegroundWindow, LONG gameWidth, LONG gameHeight,
+    LONG foregroundWidth, LONG foregroundHeight, LONG* resolvedWidth = nullptr, LONG* resolvedHeight = nullptr,
+    bool* usingSameProcessForegroundWindow = nullptr) {
     if (resolvedWidth) {
         *resolvedWidth = gameWidth;
     }

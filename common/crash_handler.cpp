@@ -128,8 +128,7 @@ void ArchiveInstalledCrashArtifactsForDumpDirectory(const std::string& dumpDir) 
 }  // namespace
 
 bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD processId,
-                                MINIDUMP_TYPE preferredDumpType,
-                                PMINIDUMP_EXCEPTION_INFORMATION exceptionParam,
+                                MINIDUMP_TYPE preferredDumpType, PMINIDUMP_EXCEPTION_INFORMATION exceptionParam,
                                 PMINIDUMP_USER_STREAM_INFORMATION userStreamParam,
                                 PMINIDUMP_CALLBACK_INFORMATION callbackParam) {
     if (!g_pMiniDumpWriteDump) {

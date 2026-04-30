@@ -7,8 +7,8 @@
 #include <windows.h>
 #include <atomic>
 
-#include "../hook/common/hook_common.h"
 #include "../hook/common/fg_runtime_state.h"
+#include "../hook/common/hook_common.h"
 
 // Stubs for dxgi_shared.cpp dependencies
 bool IsInWrapperPresent() {
@@ -83,7 +83,7 @@ void TestStubSetPreferredOverlayFGPublicationState(bool valid, bool active, ce::
     g_TestPreferredOverlayFGPublicationStateRuntimeMode.store(static_cast<int>(runtimeMode), std::memory_order_release);
     if (valid) {
         g_TestPreferredOverlayFGPublicationStateSequence.store(HookAllocateOverlayFGPublicationSequence(),
-                                                              std::memory_order_release);
+                                                               std::memory_order_release);
     } else {
         g_TestPreferredOverlayFGPublicationStateSequence.store(0, std::memory_order_release);
     }
@@ -151,8 +151,7 @@ bool HookTryGetPreferredOverlayFGPublicationState(PreferredOverlayFGPublicationS
     return true;
 }
 
-void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::RuntimeMode runtimeMode,
-                                                  const char*) {
+void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::RuntimeMode runtimeMode, const char*) {
     TestStubSetPreferredOverlayFGPublicationState(true, active, runtimeMode);
 }
 

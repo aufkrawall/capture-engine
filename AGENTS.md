@@ -2,6 +2,13 @@
 
 - Always compile with `python build.py --skip-updates` after any code changes!
 - Always git commit after code changes, so the worktree is not dirty! But before committing, compile must be successful and also all test unit runs must finish successfully!
+- When committing changes, use plain git commands directly:
+git status
+git add -A
+git commit -m "<message>"
+
+Do not use shell wrappers, PowerShell scripts, Python subprocess wrappers, or complex command chains for git commits. These commands are allowlisted by Codex rules and should be run as direct git commands.
+
 - DO NOT PUSH TO A REMOTE unless explicitly requested.
 - Always consult the llm-wiki for context of code or context of a bug report!
 - Always keep the llm-wiki linted and updated after any code changes!

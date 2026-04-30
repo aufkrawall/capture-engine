@@ -26,15 +26,19 @@
 // clang-format on
 #include <intrin.h>
 #include <atomic>
+#include <cstring>
 #include "../apis/dx12_hook.h"
 #include "fg_detection.h"
+#include "fps_limiter_policy.h"
 #include "hook_common.h"
+#include "overlay_compat.h"
 #include "reflex_defs.h"
 #include "streamline_runtime_policy.h"
 
 // IAT hook infrastructure for game activation detection.
 // Only available in the Hook DLL build, not in the Vulkan Layer.
 #if defined(BUILDING_CAPTURE_HOOK) && !defined(VK_LAYER_CE_OVERLAY)
+#include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
 #define REFLEX_IAT_HOOK_AVAILABLE 1
 #else
@@ -92,11 +96,13 @@ public:
         realSetSleepModeForHook_ = origSetSleepMode_;
         realSleepForHook_ = origSleep_;
 
-        // NOTE: We intentionally do NOT hook nvapi_QueryInterface.
-        // In some titles (e.g. GTA V Enhanced) the inline hook patch on
+        // NOTE: We intentionally do NOT inline-hook nvapi_QueryInterface.
+        // In some titles (e.g. GTA V Enhanced) a code-byte patch on
         // nvapi_QueryInterface is detected by Streamline/DLSS FG or anti-tamper
         // validation, causing Reflex init to abort and DLSS FG to fail with the
-        // pink-tint diagnostic.
+        // pink-tint diagnostic. Explicit/manual Reflex limiting can still use a
+        // caller-filtered IAT/GetProcAddress hook so game-owned Sleep calls see
+        // wrappers while Streamline/DLSS FG modules keep original driver pointers.
         //
         // We also do not install the direct SetSleepMode/Sleep inline hooks
         // merely because CE's limiter is configured. The explicit limiter can
@@ -106,6 +112,7 @@ public:
         // default for DLSS FG startup validation.
 
         available_.store(true, std::memory_order_release);
+        EnsureGameOwnedReflexHooks();
         HookLogImportant("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p, inlineHooks=%d)", (void*)origSetSleepMode_,
                          (void*)origSleep_, AreInlineHooksInstalled() ? 1 : 0);
         return true;
@@ -155,6 +162,7 @@ public:
 
         HookLogImportant("ReflexLimiter: Target FPS set to %d (intervalUs=%u, inlineHooks=%d)", fps, newInterval,
                          AreInlineHooksInstalled() ? 1 : 0);
+        EnsureGameOwnedReflexHooks();
     }
 
     uint32_t GetTargetIntervalUs() const {
@@ -271,6 +279,10 @@ public:
         return directSetSleepModeHooked_ || directSleepHooked_;
     }
 
+    void SetManualLimiterConfiguredOrActive(bool configured);
+    bool IsManualLimiterConfiguredOrActive() const;
+    void EnsureGameOwnedReflexHooks();
+
     bool ClearFpsLimit() {
         auto forwardSetSleepMode = GetForwardSetSleepMode();
         if (!forwardSetSleepMode || !lastDevice_) {
@@ -293,8 +305,8 @@ public:
             return true;
         }
 
-        HookLogImportant("ReflexLimiter: Clear FPS limit failed (status=%d boost=%u markers=%u lowLatency=%u)",
-                         status, params.bLowLatencyBoost, params.bUseMarkersToOptimize, params.bLowLatencyMode);
+        HookLogImportant("ReflexLimiter: Clear FPS limit failed (status=%d boost=%u markers=%u lowLatency=%u)", status,
+                         params.bLowLatencyBoost, params.bUseMarkersToOptimize, params.bLowLatencyMode);
         pushSucceeded_.store(false, std::memory_order_release);
         lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
         return false;
@@ -350,8 +362,8 @@ public:
             HookLogImportant(
                 "ReflexLimiter: PushFpsLimit failed (status=%d device=%p version=0x%08X intervalUs=%u boost=%u "
                 "markers=%u lowLatency=%u inlineHooks=%d gameActive=%d)",
-                status, lastDevice_, params.version, intervalUs, params.bLowLatencyBoost,
-                params.bUseMarkersToOptimize, params.bLowLatencyMode, AreInlineHooksInstalled() ? 1 : 0,
+                status, lastDevice_, params.version, intervalUs, params.bLowLatencyBoost, params.bUseMarkersToOptimize,
+                params.bLowLatencyMode, AreInlineHooksInstalled() ? 1 : 0,
                 gameActivated_.load(std::memory_order_acquire) ? 1 : 0);
         }
         pushSucceeded_.store(false, std::memory_order_release);
@@ -398,10 +410,10 @@ public:
         static std::atomic<int> s_sleepFailLogCount{0};
         const int failCount = s_sleepFailLogCount.fetch_add(1, std::memory_order_relaxed);
         if (failCount < 5 || (failCount % 300) == 0) {
-            HookLogImportant(
-                "ReflexLimiter: Sleep failed (status=%d device=%p pushOk=%d gameActive=%d intervalUs=%u)", status,
-                lastDevice_, pushOk ? 1 : 0, gameActivated_.load(std::memory_order_acquire) ? 1 : 0,
-                targetIntervalUs_.load(std::memory_order_acquire));
+            HookLogImportant("ReflexLimiter: Sleep failed (status=%d device=%p pushOk=%d gameActive=%d intervalUs=%u)",
+                             status, lastDevice_, pushOk ? 1 : 0,
+                             gameActivated_.load(std::memory_order_acquire) ? 1 : 0,
+                             targetIntervalUs_.load(std::memory_order_acquire));
         }
         sleepSucceeded_.store(false, std::memory_order_release);
         return false;
@@ -419,9 +431,8 @@ public:
             static std::atomic<int> s_versionMismatchLogCount{0};
             int logCount = s_versionMismatchLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 5) {
-                HookLogImportant(
-                    "ReflexLimiter: SetSleepMode version mismatch (got=0x%08X expected=0x%08X size=%zu)",
-                    pParams->version, NV_SET_SLEEP_MODE_PARAMS_VER, sizeof(NV_SET_SLEEP_MODE_PARAMS));
+                HookLogImportant("ReflexLimiter: SetSleepMode version mismatch (got=0x%08X expected=0x%08X size=%zu)",
+                                 pParams->version, NV_SET_SLEEP_MODE_PARAMS_VER, sizeof(NV_SET_SLEEP_MODE_PARAMS));
             }
         }
 
@@ -436,9 +447,8 @@ public:
             static std::atomic<int> s_sizeMismatchLogCount{0};
             int logCount = s_sizeMismatchLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 5) {
-                HookLogImportant(
-                    "ReflexLimiter: SetSleepMode struct size mismatch (caller=%u our=%u version=0x%08X)",
-                    callerSize, ourSize, pParams->version);
+                HookLogImportant("ReflexLimiter: SetSleepMode struct size mismatch (caller=%u our=%u version=0x%08X)",
+                                 callerSize, ourSize, pParams->version);
             }
         }
         uint32_t copySize = (callerSize < ourSize) ? callerSize : ourSize;
@@ -547,6 +557,7 @@ public:
         origSetSleepMode_ = nullptr;
         origSleep_ = nullptr;
         origQueryInterface_ = nullptr;
+        manualLimiterConfiguredOrActive_.store(false, std::memory_order_release);
         lastNativePacingSignalTick_.store(0, std::memory_order_release);
         lastGameSleepTick_.store(0, std::memory_order_release);
         gameSleepObserved_.store(false, std::memory_order_release);
@@ -569,8 +580,6 @@ public:
         return origSleep_;
     }
 
-
-
     void EnsureNvAPIHooksInstalled() {
 #if !REFLEX_IAT_HOOK_AVAILABLE
         (void)realSetSleepModeForHook_;
@@ -584,8 +593,7 @@ public:
         if (targetIntervalUs_.load(std::memory_order_acquire) == 0) {
             static std::atomic<bool> s_loggedSkip{false};
             if (!s_loggedSkip.exchange(true, std::memory_order_relaxed)) {
-                HookLogImportant(
-                    "ReflexLimiter: Deferring SetSleepMode/Sleep inline hooks — no FPS cap configured");
+                HookLogImportant("ReflexLimiter: Deferring SetSleepMode/Sleep inline hooks — no FPS cap configured");
             }
             return;
         }
@@ -626,6 +634,8 @@ public:
     // Detour for NvAPI_D3D_SetSleepMode — detects game activation.
     // Only available in the Hook DLL build.
 #if REFLEX_IAT_HOOK_AVAILABLE
+    static void* __cdecl ReflexDetour_QueryInterface(uint32_t functionId);
+
     static NvAPI_Status __cdecl ReflexDetour_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* pParams);
 
     // Detour for NvAPI_D3D_Sleep — detects whether the game actually uses native pacing.
@@ -633,6 +643,15 @@ public:
 #endif
 
 private:
+    static bool IsSystemModulePath(const char* path);
+    static bool IsCaptureHookModulePath(const char* path);
+
+#if REFLEX_IAT_HOOK_AVAILABLE
+    void RegisterQueryInterfaceHook();
+    bool ShouldReturnWrapperToCaller(const void* callerAddress, char* callerPath, size_t callerPathLen,
+                                     const char** reasonOut) const;
+#endif
+
     NV_SET_SLEEP_MODE_PARAMS BuildSleepModeParams(uint32_t intervalUs, bool forceLowLatency) const {
         NV_SET_SLEEP_MODE_PARAMS params{};
         if (hasLastSleepModeParams_.load(std::memory_order_acquire)) {
@@ -670,6 +689,7 @@ private:
     PFN_NvAPI_QueryInterface origQueryInterface_ = nullptr;
     PFN_NvAPI_D3D_SetSleepMode origSetSleepMode_ = nullptr;
     PFN_NvAPI_D3D_Sleep origSleep_ = nullptr;
+    std::atomic<bool> manualLimiterConfiguredOrActive_{false};
     std::atomic<uint32_t> targetIntervalUs_{0};
     std::atomic<ULONGLONG> lastNativePacingSignalTick_{0};
     std::atomic<ULONGLONG> lastGameSleepTick_{0};
@@ -694,6 +714,8 @@ private:
 
 // Global instance (forward-declared for static detour methods)
 inline ReflexLimiter g_ReflexLimiter;
+
+#include "reflex_limiter_query_hook.inl"
 
 // ============================================================================
 // Static detour method definitions (after g_ReflexLimiter declaration)

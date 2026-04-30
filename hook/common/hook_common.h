@@ -32,7 +32,7 @@ struct HookContext;
 namespace fg_runtime {
 enum class RuntimeMode : int;
 }
-}
+}  // namespace ce
 
 class PerformanceMetrics;
 

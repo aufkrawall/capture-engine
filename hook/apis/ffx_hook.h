@@ -46,8 +46,8 @@ inline bool SnapshotMatchesExpectedInlineDetour(const void* target, const unsign
     }
 
 #ifdef _WIN64
-    if (codeSize < 14 || code[0] != 0xFF || code[1] != 0x25 || code[2] != 0x00 || code[3] != 0x00 ||
-        code[4] != 0x00 || code[5] != 0x00) {
+    if (codeSize < 14 || code[0] != 0xFF || code[1] != 0x25 || code[2] != 0x00 || code[3] != 0x00 || code[4] != 0x00 ||
+        code[5] != 0x00) {
         return false;
     }
 

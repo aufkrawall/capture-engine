@@ -9480,13 +9480,6 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
     // CPU Prerender Limit - Apply before any rendering
     float prerenderLimit = GetActivePrerenderLimit();
-    if (prerenderLimit < 0.0f && g_SharedFpsLimiter.WantsExplicitReflexFrameQueueClamp()) {
-        static std::atomic<int> s_reflexPrerenderLogCount{0};
-        if (s_reflexPrerenderLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            HookLogImportant("DX12: Implicit prerender limit 1 for explicit Reflex FPS limiter");
-        }
-        prerenderLimit = 1.0f;
-    }
     if (prerenderLimit >= 0.0f) {
         int64_t prerenderStartUs = PerfLogger::GetQpcUs();
         ApplyPrerenderLimitDX12(prerenderLimit);

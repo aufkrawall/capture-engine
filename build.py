@@ -3481,10 +3481,7 @@ def run_lint(env):
             log("Skipping clang-tidy (run-clang-tidy script or compile_commands.json missing)")
             lint_details["clang_tidy_skipped"] = True
     else:
-        log(
-            "clang-tidy not found. Install via MSYS2: "
-            "pacman -S mingw-w64-clang-x86_64-clang-tools-extra"
-        )
+        log("clang-tidy not found. Install via MSYS2: " "pacman -S mingw-w64-clang-x86_64-clang-tools-extra")
         lint_details["clang_tidy_missing"] = True
 
     record_verification_step(

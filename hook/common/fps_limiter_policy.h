@@ -24,8 +24,11 @@ inline bool ShouldRunExplicitReflexCadencePostPresent(const ReflexPacingDecision
     return decision.useExplicitLocalCadence && callSiteSupportsPostPresentCadence;
 }
 
-inline bool ShouldClampFrameQueueForExplicitReflex(const ReflexPacingDecision& decision) {
-    return decision.useExplicitLocalCadence;
+inline bool ShouldReturnNvApiReflexWrapper(bool manualReflexLimiterConfiguredOrActive, bool callerIsStreamlineRuntime,
+                                           bool callerIsThirdPartyOverlay, bool callerIsSystemModule,
+                                           bool callerIsCaptureHookModule) {
+    return manualReflexLimiterConfiguredOrActive && !callerIsStreamlineRuntime && !callerIsThirdPartyOverlay &&
+           !callerIsSystemModule && !callerIsCaptureHookModule;
 }
 
 }  // namespace ce::fps_limiter_policy

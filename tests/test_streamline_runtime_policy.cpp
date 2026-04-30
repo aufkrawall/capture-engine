@@ -10,8 +10,7 @@ TEST(StreamlineRuntimePolicyTest, StreamlineModuleFeatureHookingRecognizesFeatur
     EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("sl.interposer.dll"));
     EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("sl.common.dll"));
     EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("sl.dlss_g.dll"));
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("C:\\Game\\bin\\SL.Reflex.DLL"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("C:\\Game\\bin\\SL.Reflex.DLL"));
 
     EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(nullptr));
     EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking("sl.dll"));
@@ -32,8 +31,7 @@ TEST(StreamlineRuntimePolicyTest, StreamlineCoreModuleRecognitionStaysNarrow) {
 
 TEST(StreamlineRuntimePolicyTest, StreamlineModuleLoadInspectionIncludesFeatureDlls) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("sl.interposer.dll"));
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("C:\\Game\\Plugins\\sl.dlss_g.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("C:\\Game\\Plugins\\sl.dlss_g.dll"));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("C:/Game/bin/sl.reflex.dll"));
 
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad(nullptr));
@@ -71,21 +69,16 @@ TEST(StreamlineRuntimePolicyTest, RequestedOptionsOffBuildsInactiveRuntimeUpdate
 }
 
 TEST(StreamlineRuntimePolicyTest, SuppressedSetOptionsOffDoesNotApplyLocalRuntimeUpdate) {
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(true, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(true, true));
 
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(true, false));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(false, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(false, false));
 }
 
 TEST(StreamlineRuntimePolicyTest, SuccessfulSetOptionsDisableClearsCachedStreamlineViewports) {
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(true, false, 0));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(true, false, 0));
 
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(true, true, 0));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(true, true, 0));
     EXPECT_FALSE(
         ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(false, false, 0));
     EXPECT_FALSE(
@@ -427,28 +420,21 @@ TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackKeepsOffChurnD
 }
 
 TEST(StreamlineRuntimePolicyTest, StartupProtectedPostFSRComebackDropsStaleSuppressedOffChurnOnceActive) {
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, true, false, true, false, false));
-    EXPECT_TRUE(
-        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, false, true, true, false, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+        true, true, false, true, false, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+        true, false, true, true, false, false));
 
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            false, true, false, true, false, false));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, false, false, true, false, false));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, true, false, false, false, false));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, true, false, true, true, false));
-    EXPECT_FALSE(
-        ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-            true, true, false, true, false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+        false, true, false, true, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+        true, false, false, true, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+        true, true, false, false, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+        true, true, false, true, true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
+        true, true, false, true, false, true));
 }
 
 TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackDropsStaleSuppressedOffChurnOnceActive) {
@@ -492,7 +478,8 @@ TEST(StreamlineRuntimePolicyTest, GetStateWarmupProtectionKeepsPureDLSSOffChurnD
         false, true, false, true, false, getStateWarmupProtection));
 }
 
-TEST(StreamlineRuntimePolicyTest, CombinedRuntimeStateDefersHalfArmedStartupProtectedPostFSRComebackOffAfterWindowExpiry) {
+TEST(StreamlineRuntimePolicyTest,
+     CombinedRuntimeStateDefersHalfArmedStartupProtectedPostFSRComebackOffAfterWindowExpiry) {
     const bool deferOff = ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(
         false, true, false, true, true, false, false, false, false);
     const auto update = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(false, deferOff, true, 2);

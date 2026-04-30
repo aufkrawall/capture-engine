@@ -128,14 +128,13 @@ TEST(FFXHookValidationTest, SnapshotRejectsChangedDetourTarget) {
 #endif
     FillInlineDetourSnapshot(snapshot, snapshot.data(), reinterpret_cast<void*>(&DummyFFXDetour));
 
-    EXPECT_FALSE(FFXHook::detail::SnapshotMatchesExpectedInlineDetour(
-        snapshot.data(), snapshot.data(), snapshot.size(), reinterpret_cast<void*>(&OtherDummyFFXDetour)));
+    EXPECT_FALSE(FFXHook::detail::SnapshotMatchesExpectedInlineDetour(snapshot.data(), snapshot.data(), snapshot.size(),
+                                                                      reinterpret_cast<void*>(&OtherDummyFFXDetour)));
 }
 
 TEST(FFXHookValidationTest, ProbeHandlesUnreadableTargetGracefully) {
-    const auto probeResult =
-        FFXHook::detail::ProbeExpectedInlineDetourInstalled(reinterpret_cast<void*>(static_cast<uintptr_t>(1)),
-                                                            reinterpret_cast<void*>(&DummyFFXDetour));
+    const auto probeResult = FFXHook::detail::ProbeExpectedInlineDetourInstalled(
+        reinterpret_cast<void*>(static_cast<uintptr_t>(1)), reinterpret_cast<void*>(&DummyFFXDetour));
     EXPECT_EQ(probeResult.state, FFXHook::detail::InlineDetourProbeState::kUnreadableTarget);
     EXPECT_NE(probeResult.win32Error, ERROR_SUCCESS);
 }

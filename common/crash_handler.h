@@ -1,7 +1,9 @@
 #pragma once
 
+// clang-format off
 #include <windows.h>
 #include <dbghelp.h>
+// clang-format on
 #include <string>
 
 // Installs the unhandled exception filter to generate Minidumps

@@ -132,8 +132,7 @@ void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const fg_session::FGAc
                     publicationSource ? publicationSource : "unknown", plan.publishFGActive ? 1 : 0,
                     ce::fg_runtime::GetRuntimeModeName(plan.publishRuntimeMode), preferredState.active ? 1 : 0,
                     ce::fg_runtime::GetRuntimeModeName(preferredState.runtimeMode),
-                    usePreferredState ? "preferred" : "planner",
-                    static_cast<unsigned long long>(lastPlanner.sequence),
+                    usePreferredState ? "preferred" : "planner", static_cast<unsigned long long>(lastPlanner.sequence),
                     static_cast<unsigned long long>(preferredState.sequence));
                 lastOverride.valid = true;
                 lastOverride.plannerFGActive = plan.publishFGActive;

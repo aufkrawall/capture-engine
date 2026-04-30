@@ -372,6 +372,11 @@ bool PatchIATAllModules(const char* sourceModule, const char* functionName, void
                     // mutual infinite recursion: our wrapper -> overlay hook -> our wrapper...
                     continue;
                 }
+                if (_stricmp(functionName, "nvapi_QueryInterface") == 0 &&
+                    (ce::overlay_compat::IsStreamlineFrameGenerationModulePath(szModName) ||
+                     ce::overlay_compat::IsFFXFrameGenerationModulePath(szModName))) {
+                    continue;
+                }
             }
 
             if (PatchIAT(modules[i], sourceModule, functionName, hookFunction, &orig)) {
@@ -953,8 +958,13 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                 if (GetModuleFileNameA(callerMod, callerPath, sizeof(callerPath))) {
                     for (char* p = callerPath; *p; ++p)
                         *p = (char)tolower((unsigned char)*p);
+                    const bool nvapiQueryInterface = _stricmp(lpProcName, "nvapi_QueryInterface") == 0;
                     if (strstr(callerPath, "\\system32\\") || strstr(callerPath, "\\syswow64\\") ||
-                        ce::overlay_compat::IsThirdPartyOverlayModulePath(callerPath)) {
+                        ce::overlay_compat::IsThirdPartyOverlayModulePath(callerPath) ||
+                        (nvapiQueryInterface &&
+                         (strstr(callerPath, "capture_hook") || strstr(callerPath, "d3d12_wrappers") ||
+                          ce::overlay_compat::IsStreamlineFrameGenerationModulePath(callerPath) ||
+                          ce::overlay_compat::IsFFXFrameGenerationModulePath(callerPath)))) {
                         return proc;
                     }
                 }
