@@ -43,6 +43,9 @@ public:
     IDXGISwapChain* GetReal() const {
         return m_pReal;
     }
+    // Check if the wrapper is in a zombie state (destroying or shutdown).
+    // Called by forwarding methods to safely reject calls during destruction.
+    bool IsWrapperZombie() const;
 
     // ========================================================================
     // IUnknown

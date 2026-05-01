@@ -278,7 +278,7 @@ public:
     }
 
     bool AreInlineHooksInstalled() const {
-        return directSetSleepModeHooked_ || directSleepHooked_;
+        return directSetSleepModeHooked_ || directSleepHooked_ || directQueryInterfaceHooked_;
     }
 
     void SetManualLimiterConfiguredOrActive(bool configured);
@@ -591,6 +591,8 @@ public:
         realSetSleepModeForHook_ = nullptr;
         realSleepForHook_ = nullptr;
         ceOwnedSleepLogged_.store(false, std::memory_order_release);
+        directQueryInterfaceHooked_ = false;
+        directQueryInterfaceTrampoline_ = nullptr;
     }
 
     // Get original function pointers (for pass-through when not overriding)
@@ -747,8 +749,10 @@ private:
     PFN_NvAPI_D3D_Sleep realSleepForHook_ = nullptr;                // Real Sleep for detour forwarding
     bool directSetSleepModeHooked_ = false;
     bool directSleepHooked_ = false;
+    bool directQueryInterfaceHooked_ = false;  // Inline hook on nvapi_QueryInterface (IAT fallback)
     PFN_NvAPI_D3D_SetSleepMode directSetSleepModeTrampoline_ = nullptr;
     PFN_NvAPI_D3D_Sleep directSleepTrampoline_ = nullptr;
+    PFN_NvAPI_QueryInterface directQueryInterfaceTrampoline_ = nullptr;  // Trampoline for QueryInterface inline hook
     bool loggedMissingDevice_ = false;
     bool loggedMissingSleepDevice_ = false;
     std::atomic<bool> ceOwnedSleepLogged_{false};
@@ -806,6 +810,17 @@ inline NvAPI_Status __cdecl ReflexLimiter::ReflexDetour_Sleep(IUnknown* pDev) {
         limiter.lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);
     }
     limiter.lastDevice_ = pDev;
+
+    static std::atomic<int> s_sleepInterceptLog{0};
+    const int interceptLogCount = s_sleepInterceptLog.fetch_add(1, std::memory_order_relaxed);
+    if (interceptLogCount < 10) {
+        HookLogImportant(
+            "ReflexLimiter: Sleep intercepted via inline hook (device=%p, forward=%p, directHooked=%d, "
+            "sleepCount=%u, gameActivated=%d)",
+            pDev, forwardSleep, limiter.directSleepHooked_ ? 1 : 0, limiter.GetGameSleepCount(),
+            limiter.IsGameActivated() ? 1 : 0);
+    }
+
     limiter.ApplyHybridPacingBeforeNativeSleep();
 
     NvAPI_Status status = forwardSleep(pDev);

@@ -419,22 +419,35 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
     CleanupOverlayResources();
     if (m_pD3D12Queue)
         m_pD3D12Queue->Release();
-    if (m_pReal4)
-        m_pReal4->Release();
-    if (m_pReal3)
-        m_pReal3->Release();
-    if (m_pReal2)
-        m_pReal2->Release();
-    if (m_pReal1)
-        m_pReal1->Release();
-    // CRITICAL FIX: Check m_pRealCached if m_pReal was nulled by
-    // DestructionCallback This prevents device reference leaks when swapchain is
-    // destroyed externally
-    IDXGISwapChain* pRealToRelease = m_pReal ? m_pReal : m_pRealCached;
-    if (pRealToRelease) {
-        // Remove private data before releasing
-        pRealToRelease->SetPrivateData(IID_CWrapDXGISwapChain, 0, nullptr);
-        pRealToRelease->Release();
+    // CRITICAL FIX: Null out all real swapchain pointers BEFORE releasing them.
+    // If another thread calls forwarding methods on this wrapper (e.g.
+    // SetPrivateData) during destruction, m_pReal==nullptr is caught by guards
+    // instead of accessing already-freed memory.
+    IDXGISwapChain* pRealToFree = m_pReal ? m_pReal : m_pRealCached;
+    m_pReal = nullptr;
+    m_pRealCached = nullptr;
+    // Save interface pointers for release after nulling
+    IDXGISwapChain1* pReal1ToFree = m_pReal1;
+    IDXGISwapChain2* pReal2ToFree = m_pReal2;
+    IDXGISwapChain3* pReal3ToFree = m_pReal3;
+    IDXGISwapChain4* pReal4ToFree = m_pReal4;
+    m_pReal1 = nullptr;
+    m_pReal2 = nullptr;
+    m_pReal3 = nullptr;
+    m_pReal4 = nullptr;
+    // Release interface references (nulled above, so no thread can see them)
+    if (pReal4ToFree)
+        pReal4ToFree->Release();
+    if (pReal3ToFree)
+        pReal3ToFree->Release();
+    if (pReal2ToFree)
+        pReal2ToFree->Release();
+    if (pReal1ToFree)
+        pReal1ToFree->Release();
+    // Remove wrapper↔real mapping and release final reference
+    if (pRealToFree) {
+        pRealToFree->SetPrivateData(IID_CWrapDXGISwapChain, 0, nullptr);
+        pRealToFree->Release();
     }
     // CRITICAL FIX: Always release device reference, even if swapchain was
     // destroyed
@@ -642,18 +655,31 @@ void SetSwapchainWrapperShutdown() {
 // IDXGIObject Implementation
 // ============================================================================
 
+inline bool CWrapDXGISwapChain::IsWrapperZombie() const {
+    return m_RefCount == 0 || m_DestructorCalled.load(std::memory_order_acquire) ||
+           g_WrapperShutdown.load(std::memory_order_acquire);
+}
+
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetPrivateData(REFGUID Name, UINT DataSize, const void* pData) {
+    if (!m_pReal || IsWrapperZombie()) [[unlikely]]
+        return DXGI_ERROR_DEVICE_REMOVED;
     return m_pReal->SetPrivateData(Name, DataSize, pData);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetPrivateDataInterface(REFGUID Name, const IUnknown* pUnknown) {
+    if (!m_pReal || IsWrapperZombie()) [[unlikely]]
+        return DXGI_ERROR_DEVICE_REMOVED;
     return m_pReal->SetPrivateDataInterface(Name, pUnknown);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetPrivateData(REFGUID Name, UINT* pDataSize, void* pData) {
+    if (!m_pReal || IsWrapperZombie()) [[unlikely]]
+        return DXGI_ERROR_DEVICE_REMOVED;
     if (IsUnwrapAttemptGUID(Name))
         return DXGI_ERROR_NOT_FOUND;
     return m_pReal->GetPrivateData(Name, pDataSize, pData);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetParent(REFIID riid, void** ppParent) {
+    if (!m_pReal || IsWrapperZombie()) [[unlikely]]
+        return DXGI_ERROR_DEVICE_REMOVED;
     return m_pReal->GetParent(riid, ppParent);
 }
 

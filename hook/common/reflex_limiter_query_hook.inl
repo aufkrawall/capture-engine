@@ -56,6 +56,25 @@ inline void ReflexLimiter::EnsureGameOwnedReflexHooks() {
 #if REFLEX_IAT_HOOK_AVAILABLE
     if (IsManualLimiterConfiguredOrActive()) {
         RegisterQueryInterfaceHook();
+        if (origQueryInterface_ && !directQueryInterfaceHooked_) {
+            void* trampoline = nullptr;
+            if (InlineHook::Install(reinterpret_cast<void*>(origQueryInterface_),
+                                    reinterpret_cast<void*>(&ReflexDetour_QueryInterface), &trampoline)) {
+                directQueryInterfaceHooked_ = true;
+                directQueryInterfaceTrampoline_ = reinterpret_cast<PFN_NvAPI_QueryInterface>(trampoline);
+                origQueryInterface_ = directQueryInterfaceTrampoline_;
+                HookLogImportant(
+                    "ReflexLimiter: Inline hook installed on NvAPI_QueryInterface as IAT fallback "
+                    "(trampoline=%p detour=%p orig=%p)",
+                    trampoline, &ReflexDetour_QueryInterface, reinterpret_cast<void*>(origQueryInterface_));
+            } else {
+                static std::atomic<int> s_hookFailLog{0};
+                if (s_hookFailLog.fetch_add(1, std::memory_order_relaxed) < 3) {
+                    HookLogImportant("ReflexLimiter: Failed to install inline hook on NvAPI_QueryInterface");
+                }
+            }
+        }
+        EnsureNvAPIHooksInstalled();
     }
 #endif
 }

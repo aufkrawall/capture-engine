@@ -320,10 +320,16 @@ public:
 
         LARGE_INTEGER sleepStart;
         LARGE_INTEGER sleepEnd;
-        QueryPerformanceCounter(&sleepStart);
-        const bool ceOwnedSleepOk = g_ReflexLimiter.Sleep();
-        QueryPerformanceCounter(&sleepEnd);
-        const int64_t ceOwnedSleepUs = ((sleepEnd.QuadPart - sleepStart.QuadPart) * 1000000) / qpcFrequency;
+        bool ceOwnedSleepOk = false;
+        int64_t ceOwnedSleepUs = 0;
+        if (!reflexPostPresentSkipSleep_) {
+            QueryPerformanceCounter(&sleepStart);
+            ceOwnedSleepOk = g_ReflexLimiter.Sleep();
+            QueryPerformanceCounter(&sleepEnd);
+            ceOwnedSleepUs = ((sleepEnd.QuadPart - sleepStart.QuadPart) * 1000000) / qpcFrequency;
+        } else {
+            ceOwnedSleepOk = true;
+        }
 
         reflexLimiterActive_ = true;
         reflexNativeSleepActive_ = false;
@@ -331,28 +337,59 @@ public:
         lastActualWaitUs_ = cadence.actualWaitUs + ceOwnedSleepUs;
 
         if (!reflexLoggedSuccess_) {
-            TraceLog(
-                "Apply: REFLEX post-present cadence target=%d waitUs=%lld sleepUs=%lld sleepOk=%d push=%d "
-                "device=%d gap=%d",
-                targetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
-                reflexPostPresentPushOk_ ? 1 : 0, reflexPostPresentDeviceReady_ ? 1 : 0,
-                reflexPostPresentRecentGap_ ? 1 : 0);
-            HookLog(
-                "FPS Limiter: Reflex explicit mode active (target=%d fps, post-present local low-latency cadence + "
-                "CE-owned NvAPI Sleep, wait=%lldus, sleep=%lldus, sleepOk=%d, device=%d)",
-                targetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
-                reflexPostPresentDeviceReady_ ? 1 : 0);
+            if (!reflexPostPresentSkipSleep_) {
+                TraceLog(
+                    "Apply: REFLEX post-present cadence target=%d waitUs=%lld sleepUs=%lld sleepOk=%d push=%d "
+                    "device=%d gap=%d",
+                    targetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
+                    reflexPostPresentPushOk_ ? 1 : 0, reflexPostPresentDeviceReady_ ? 1 : 0,
+                    reflexPostPresentRecentGap_ ? 1 : 0);
+                HookLog(
+                    "FPS Limiter: Reflex explicit mode active (target=%d fps, post-present local low-latency cadence + "
+                    "CE-owned NvAPI Sleep, wait=%lldus, sleep=%lldus, sleepOk=%d, device=%d)",
+                    targetFps, cadence.actualWaitUs, ceOwnedSleepUs, ceOwnedSleepOk ? 1 : 0,
+                    reflexPostPresentDeviceReady_ ? 1 : 0);
+            } else {
+                TraceLog(
+                    "Apply: REFLEX post-present cadence target=%d waitUs=%lld sleep=skip push=%d "
+                    "device=%d gap=%d",
+                    targetFps, cadence.actualWaitUs,
+                    reflexPostPresentPushOk_ ? 1 : 0, reflexPostPresentDeviceReady_ ? 1 : 0,
+                    reflexPostPresentRecentGap_ ? 1 : 0);
+                HookLog(
+                    "FPS Limiter: Reflex explicit mode active (target=%d fps, post-present local cadence only, "
+                    "skipping CE-owned NvAPI Sleep for game-owned Reflex, wait=%lldus, device=%d)",
+                    targetFps, cadence.actualWaitUs, reflexPostPresentDeviceReady_ ? 1 : 0);
+            }
             reflexLoggedSuccess_ = true;
         }
 
         if (cadence.emitStats) {
-            TraceLog("Apply: REFLEX post-present stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
-                     cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps);
-            HookLog(
-                "FPS Limiter: Reflex post-present cadence (%u frames): lastWait=%lldus avgFps=%.1f "
-                "instFps=%.1f target=%d sleepOk=%d",
-                cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps,
-                ceOwnedSleepOk ? 1 : 0);
+            if (!reflexPostPresentSkipSleep_) {
+                TraceLog("Apply: REFLEX post-present stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
+                         cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps);
+                HookLog(
+                    "FPS Limiter: Reflex post-present cadence (%u frames): lastWait=%lldus avgFps=%.1f "
+                    "instFps=%.1f target=%d sleepOk=%d",
+                    cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps,
+                    ceOwnedSleepOk ? 1 : 0);
+            } else {
+                const bool diagGameSleepRecent = g_ReflexLimiter.HasRecentGameSleep(250);
+                const bool diagGameActivated = g_ReflexLimiter.IsGameActivated();
+                const uint32_t diagSleepCount = g_ReflexLimiter.GetGameSleepCount();
+                const bool diagInlineHooks = g_ReflexLimiter.AreInlineHooksInstalled();
+                TraceLog("Apply: REFLEX post-present stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d "
+                         "sleep=skip gameAct=%d sleepRecent=%d sleepCount=%u inlineHooks=%d",
+                         cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps,
+                         diagGameActivated ? 1 : 0, diagGameSleepRecent ? 1 : 0, diagSleepCount,
+                         diagInlineHooks ? 1 : 0);
+                HookLog(
+                    "FPS Limiter: Reflex post-present cadence (%u frames): lastWait=%lldus avgFps=%.1f "
+                    "instFps=%.1f target=%d sleep=skip gameAct=%d sleepRecent=%d sleepCount=%u inlineHooks=%d",
+                    cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps,
+                    diagGameActivated ? 1 : 0, diagGameSleepRecent ? 1 : 0, diagSleepCount,
+                    diagInlineHooks ? 1 : 0);
+            }
         }
 
         LARGE_INTEGER retQpc;
@@ -622,6 +659,7 @@ public:
             applyInterFrameSum_ = 0;
             applyInterFrameCount_ = 0;
             reflexPostPresentCadencePending_ = false;
+            reflexPostPresentSkipSleep_ = false;
             reflexPostPresentArmedLogged_ = false;
 
             const char* modeStr = "basic";
@@ -752,18 +790,21 @@ public:
                         reflexPostPresentPushOk_ = reflexPushOk;
                         reflexPostPresentDeviceReady_ = reflexDeviceReady;
                         reflexPostPresentRecentGap_ = recentPresentGap;
+                        reflexPostPresentSkipSleep_ = reflexPushOk;
                         reflexLimiterActive_ = true;
                         reflexNativeSleepActive_ = false;
                         loggedNativeFallback_ = false;
                         lastActualWaitUs_ = 0;
                         if (!reflexPostPresentArmedLogged_) {
-                            TraceLog("Apply: REFLEX post-present armed target=%d push=%d device=%d gap=%d",
+                            TraceLog("Apply: REFLEX post-present armed target=%d push=%d device=%d gap=%d "
+                                     "skipSleep=%d",
                                      effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0,
-                                     recentPresentGap ? 1 : 0);
+                                     recentPresentGap ? 1 : 0, reflexPostPresentSkipSleep_ ? 1 : 0);
                             HookLog(
                                 "FPS Limiter: Reflex explicit mode armed for post-present pacing "
-                                "(target=%d fps, push=%d, device=%d)",
-                                effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0);
+                                "(target=%d fps, push=%d, device=%d, skipSleep=%d)",
+                                effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0,
+                                reflexPostPresentSkipSleep_ ? 1 : 0);
                             reflexPostPresentArmedLogged_ = true;
                         }
                         LARGE_INTEGER retQpc;
@@ -824,9 +865,10 @@ public:
                 if (!loggedNativeFallback_) {
                     TraceLog(
                         "Apply: REFLEX timer fallback gameActive=%d gameSleep=%d push=%d sleepCount=%u fresh=%u "
-                        "recent=%d gap=%d device=%d",
+                        "recent=%d gap=%d device=%d inlineHooks=%d",
                         gameActivated ? 1 : 0, gameSleepObserved ? 1 : 0, reflexPushOk ? 1 : 0, gameSleepCount,
-                        freshSleepCount, gameSleepRecent ? 1 : 0, recentPresentGap ? 1 : 0, reflexDeviceReady ? 1 : 0);
+                        freshSleepCount, gameSleepRecent ? 1 : 0, recentPresentGap ? 1 : 0, reflexDeviceReady ? 1 : 0,
+                        g_ReflexLimiter.AreInlineHooksInstalled() ? 1 : 0);
                     if (recentPresentGap) {
                         HookLog(
                             "FPS Limiter: Recent Present gap detected during Reflex activation; holding timer fallback "
@@ -838,11 +880,24 @@ public:
                     } else if (reflexPushOk) {
                         HookLog(
                             "FPS Limiter: Reflex armed but native Sleep cadence is not stable yet; using timer "
-                            "fallback");
+                            "fallback (gameSleep=%d sleepRecent=%d sleepCount=%u fresh=%u inlineHooks=%d)",
+                            gameSleepObserved ? 1 : 0, gameSleepRecent ? 1 : 0, gameSleepCount, freshSleepCount,
+                            g_ReflexLimiter.AreInlineHooksInstalled() ? 1 : 0);
                     } else {
                         HookLog("FPS Limiter: Reflex native mode unavailable at runtime; using timer fallback");
                     }
                     loggedNativeFallback_ = true;
+                } else {
+                    static uint32_t s_fallbackDiagCounter = 0;
+                    s_fallbackDiagCounter++;
+                    if (s_fallbackDiagCounter % 600 == 0) {
+                        HookLog(
+                            "FPS Limiter: Reflex timer fallback diagnostic (frame %u): gameActive=%d sleepObserved=%d "
+                            "sleepRecent=%d sleepCount=%u fresh=%u push=%d gap=%d inlineHooks=%d",
+                            s_fallbackDiagCounter, gameActivated ? 1 : 0, gameSleepObserved ? 1 : 0,
+                            gameSleepRecent ? 1 : 0, gameSleepCount, freshSleepCount, reflexPushOk ? 1 : 0,
+                            recentPresentGap ? 1 : 0, g_ReflexLimiter.AreInlineHooksInstalled() ? 1 : 0);
+                    }
                 }
             }
         } else if (reflexLimiterActive_ || reflexNativeSleepActive_ || g_ReflexLimiter.GetTargetIntervalUs() != 0) {
@@ -1175,6 +1230,7 @@ private:
         reflexPostPresentPushOk_ = false;
         reflexPostPresentDeviceReady_ = false;
         reflexPostPresentRecentGap_ = false;
+        reflexPostPresentSkipSleep_ = false;
         reflexPostPresentArmedLogged_ = false;
         reflexSleepBaselineCount_ = 0;
         reflexRecentPresentGap_ = false;
@@ -1212,6 +1268,7 @@ private:
     bool reflexPostPresentPushOk_ = false;                   // Pre-present push state captured for diagnostics
     bool reflexPostPresentDeviceReady_ = false;              // Device state captured for diagnostics
     bool reflexPostPresentRecentGap_ = false;                // Present-gap state captured for diagnostics
+    bool reflexPostPresentSkipSleep_ = false;                // Skip CE-owned Sleep in ApplyPostPresent (game owns Reflex)
     bool reflexPostPresentArmedLogged_ = false;              // Avoid spam when arming post-present cadence
     uint32_t reflexSleepBaselineCount_ =
         0;  // Sleep count at the last disruption; native handoff needs a fresh streak after it
