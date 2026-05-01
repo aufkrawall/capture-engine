@@ -33,6 +33,31 @@ extern "C" __declspec(dllimport) void DX12_WaitForOverlayCompletion(ID3D12Comman
 #include "../common/fps_limiter.h"
 #include "../common/freeze_watchdog.h"
 
+// Thread-local VEH guard for safely calling DXGI methods that might AV
+// during shutdown (the swapchain's internal hash table may have been freed).
+class ScopedAvGuard {
+    PVOID handle_;
+    static LONG CALLBACK Handler(PEXCEPTION_POINTERS ep) {
+        if (ep->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION) {
+            // Skip the crashing instruction (5 bytes for MOV with SIB+disp8)
+            // and set rax/Rax=0 so the caller sees "entry not found" and handles
+            // it gracefully (creates a new entry or returns error).
+#ifdef _WIN64
+            ep->ContextRecord->Rax = 0;
+            ep->ContextRecord->Rip += 5;
+#else
+            ep->ContextRecord->Eax = DXGI_ERROR_DEVICE_REMOVED;
+            ep->ContextRecord->Eip += 5;
+#endif
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+public:
+    ScopedAvGuard() { handle_ = AddVectoredExceptionHandler(1, Handler); }
+    ~ScopedAvGuard() { RemoveVectoredExceptionHandler(handle_); }
+};
+
 #ifndef BUILDING_CAPTURE_HOOK
 // Dynamically import from capture_hook to update shared state across DLL
 // boundaries (for d3d12_wrappers.dll)
@@ -446,7 +471,10 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
         pReal1ToFree->Release();
     // Remove wrapper↔real mapping and release final reference
     if (pRealToFree) {
-        pRealToFree->SetPrivateData(IID_CWrapDXGISwapChain, 0, nullptr);
+        {
+            ScopedAvGuard guard;
+            pRealToFree->SetPrivateData(IID_CWrapDXGISwapChain, 0, nullptr);
+        }
         pRealToFree->Release();
     }
     // CRITICAL FIX: Always release device reference, even if swapchain was
@@ -671,11 +699,13 @@ inline bool CWrapDXGISwapChain::IsWrapperZombie() const {
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetPrivateData(REFGUID Name, UINT DataSize, const void* pData) {
     if (!m_pReal || IsWrapperZombie()) [[unlikely]]
         return DXGI_ERROR_DEVICE_REMOVED;
+    ScopedAvGuard guard;
     return m_pReal->SetPrivateData(Name, DataSize, pData);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetPrivateDataInterface(REFGUID Name, const IUnknown* pUnknown) {
     if (!m_pReal || IsWrapperZombie()) [[unlikely]]
         return DXGI_ERROR_DEVICE_REMOVED;
+    ScopedAvGuard guard;
     return m_pReal->SetPrivateDataInterface(Name, pUnknown);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetPrivateData(REFGUID Name, UINT* pDataSize, void* pData) {
@@ -683,11 +713,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetPrivateData(REFGUID Name, UINT*
         return DXGI_ERROR_DEVICE_REMOVED;
     if (IsUnwrapAttemptGUID(Name))
         return DXGI_ERROR_NOT_FOUND;
+    ScopedAvGuard guard;
     return m_pReal->GetPrivateData(Name, pDataSize, pData);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetParent(REFIID riid, void** ppParent) {
     if (!m_pReal || IsWrapperZombie()) [[unlikely]]
         return DXGI_ERROR_DEVICE_REMOVED;
+    ScopedAvGuard guard;
     return m_pReal->GetParent(riid, ppParent);
 }
 
