@@ -608,6 +608,12 @@ ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::Release() {
             "SwapChain: External refs reached 0, preparing for destruction "
             "(wrapper=%p)",
             this);
+        // CRITICAL: Mark releasing BEFORE calling CleanupOverlayResources and
+        // m_pReal->Release(). During these calls, D3D12/DXGI cleanup can trigger
+        // re-entrant calls back through the wrapper (e.g. SetPrivateData via
+        // Streamline interposer callbacks). IsWrapperZombie() checks this flag
+        // and rejects forwarding to the already-destroyed swapchain.
+        m_Releasing.store(true, std::memory_order_release);
         CleanupOverlayResources();
     }
 
@@ -656,7 +662,9 @@ void SetSwapchainWrapperShutdown() {
 // ============================================================================
 
 inline bool CWrapDXGISwapChain::IsWrapperZombie() const {
-    return m_RefCount == 0 || m_DestructorCalled.load(std::memory_order_acquire) ||
+    return m_Releasing.load(std::memory_order_acquire) ||
+           m_RefCount == 0 ||
+           m_DestructorCalled.load(std::memory_order_acquire) ||
            g_WrapperShutdown.load(std::memory_order_acquire);
 }
 

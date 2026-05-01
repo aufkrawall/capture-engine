@@ -178,6 +178,11 @@ private:
     // SAFETY: Track if destructor has already run (prevents double-free during
     // shutdown)
     std::atomic<bool> m_DestructorCalled{false};
+    // SAFETY: Set when Release() detects external refs reached 0 and begins
+    // swapchain destruction. Guards against re-entrant calls (e.g. D3D12/DXGI
+    // cleanup calling back into the wrapper via SetPrivateData) before the
+    // actual destructor runs.
+    std::atomic<bool> m_Releasing{false};
 
     // Swapchain state tracking
     struct SwapChainState {
