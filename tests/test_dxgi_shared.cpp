@@ -352,6 +352,23 @@ TEST(DXGISharedTest, EarlyDX12TempSwapchainHookInstallDefersForStartupOverlayBef
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(true, false));
 }
 
+// Regression: 64-bit DX12 test app overlay missing when injection wait window
+// allowed the game to create its swapchain before hooks installed, AND a
+// third-party overlay (e.g. nvspcap64.dll) deferred the eager temp-swapchain
+// Present hook install.  The deferred Present hooks were never reinstalled
+// because FindAndWrapPreExistingSwapchains() was a no-op and the
+// CreateSwapChainForHwnd detours never fired for the pre-existing swapchain.
+// After the fix, FindAndWrapPreExistingSwapchains() detects missing Present
+// hooks and retries the temp-swapchain installation.  Validate that the
+// detection API returns correct initial state.
+TEST(DXGISharedTest, FindAndWrapPreExistingSwapchainsCanDetectMissingPresentHooks) {
+    // HasPresentInlineHooks/DetourHooks uses global state that is only
+    // populated by InstallPresentInlineHooks (requires real D3D12 device).
+    // Verify the global state safely returns false before any hook install.
+    EXPECT_FALSE(DXGIShared::HasPresentInlineHooks());
+    EXPECT_FALSE(DXGIShared::HasPresentDetourHooks());
+}
+
 TEST(DXGISharedTest, StartupOverlayCompatibilityModeDependsOnObservedOverlayStateNotProcessName) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUseStartupOverlayCompatibilityMode(true, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseStartupOverlayCompatibilityMode(true, false, true, false));

@@ -4272,7 +4272,11 @@ void DX12Hook::Init() {
         HookLog("DX12Hook: Installing Present hooks eagerly (no D3D12 wrapper)");
         HookSwapchainVTableViaTempSwapchain();
     }
-    HookLog("DX12Hook: Initialized (factory + Present hooks installed)");
+    if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
+        HookLog("DX12Hook: Initialized (factory + Present hooks installed)");
+    } else {
+        HookLogImportant("DX12Hook: Initialized (factory hooks installed; Present hooks deferred to FindAndWrapPreExistingSwapchains)");
+    }
 #endif
 
     FindAndWrapPreExistingSwapchains();
@@ -4290,17 +4294,39 @@ void DX12Hook::EnsurePresentHooks() {
 }
 
 static void FindAndWrapPreExistingSwapchains() {
-    // Pre-existing swapchains (created before injection) are now handled via
-    // inline hooks on Present/Present1. The inline hook approach:
-    // 1. Patches the function code in memory (not the vtable)
-    // 2. Creates a trampoline that executes the original instructions
-    // 3. Calling the trampoline GUARANTEED bypasses the hook - no re-entry
+    if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
+        HookLog("DX12: Pre-existing swapchain support via inline Present hooks already active");
+        return;
+    }
+
+    // Present hooks were deferred during DX12Hook::Init() because a third-party
+    // overlay (e.g. nvspcap64.dll) was loaded before the game's first real D3D12
+    // device existed.  The eager temp-swapchain approach was skipped to avoid
+    // recursing through the overlay's startup hook chain.
     //
-    // This works for both pre-existing swapchains AND wrapped swapchains.
-    // For wrapped swapchains, DetourPresent detects the wrapper and passes
-    // through. For pre-existing swapchains, DetourPresent processes the frame
-    // normally.
-    HookLog("DX12: Pre-existing swapchain support enabled via inline Present hooks");
+    // If the game has already created its swapchain during the injection window,
+    // the CreateSwapChainForHwnd detours will never fire, and Present hooks
+    // would remain uninstalled forever — the overlay would never render.
+    //
+    // Try installing Present hooks now via a second temp swapchain.  The
+    // g_CreatingTempSwapchain guard prevents our own CreateSwapChainForHwnd
+    // hooks from processing the temp swapchain's queue, and calling
+    // oCreateSwapChainForHwndGlobal bypasses our hooks entirely.  At this point
+    // the overlay's startup hook chain should be settled, so the recursion risk
+    // is minimal.
+    HookLogImportant(
+        "DX12: Present hooks not installed during init — installing via "
+        "postponed temp swapchain for pre-existing swapchain coverage");
+    HookSwapchainVTableViaTempSwapchain();
+
+    if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
+        HookLogImportant("DX12: Present hooks installed via postponed temp swapchain");
+    } else {
+        HookLogImportant(
+            "DX12: Postponed temp swapchain also failed — pre-existing "
+            "swapchains will not have overlay until a real CreateSwapChainForHwnd "
+            "call is intercepted");
+    }
 }
 
 static void EnsurePresentInlineHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source) {

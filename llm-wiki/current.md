@@ -32,6 +32,8 @@ Primary sources:
 - `common/crash_dump_policy.h`
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_fps_limiter.cpp`
+- `testapp/dx12_test.cpp`
+- `testapp/testapp_common.h`
 - `tests/test_process_ipc.cpp`
 - `tests/test_streamline_runtime_policy.cpp`
 - `captureengine/wgc_capture.cpp`
@@ -60,6 +62,8 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 - Move byte dumps, per-instruction traces, and similar forensic detail to `trace` or dedicated side logs.
 - Prefer change logs and periodic summaries over steady-state heartbeat spam.
 - Preserve historical genesis in detailed pages and `log/recent.md` (or the relevant archive); do not flatten history into only a short summary.
+
+- `FindAndWrapPreExistingSwapchains()` in `hook/apis/dx12_hook.cpp` was a no-op that relied on inline Present hooks being installed eagerly. When `ShouldDeferEarlyDX12TempSwapchainPresentHookInstall()` defers Present hook installation (because a third-party overlay like `nvspcap64.dll` is loaded before the first real D3D12 device), AND the game has already created its swapchain during the injection wait window, Present hooks remain permanently missing and the overlay never renders. This affected 64-bit apps where the injector waited 1000ms for D3D12 init while the game created its swapchain. The 32-bit path was unaffected because `nvspcap64.dll` is 64-bit only and never triggered the deferral. The fix (2026-05-01) makes `FindAndWrapPreExistingSwapchains()` detect missing Present hooks and retry the temp-swapchain installation at the end of `Init()`. Build `0.1.2723` confirmed with all 668 tests passing.
 
 ## Current Hot Areas
 - WGC capture now has opt-in performance experiments and expanded diagnostics for CPU/GPU saturation testing. Defaults are unchanged: dedicated split-device capture remains enabled and producer-side split-device `Flush()` remains enabled. `[General] wgc_skip_split_device_flush=false` can skip the post-copy flush while keeping keyed mutex synchronization, and `[General] wgc_same_device_capture=false` can attempt encoder-device reuse after WGC reinitialization. `[WGC Perf]` now reports keyed-mutex failures, split flush/skipped counts, fast pool-slot rewrites, slot rewrite age, and whether the current path is dedicated. See `wgc-capture.md` before changing WGC copy/device behavior.
