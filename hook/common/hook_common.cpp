@@ -684,15 +684,6 @@ void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags) {
     // at vblank rate; the wrapper path adds DXGI_PRESENT_ALLOW_TEARING for swap chains
     // it created with that flag. Here we only set SyncInterval=0 since we don't know
     // if the swap chain supports ALLOW_TEARING.
-    if (g_SharedFpsLimiter.IsActivelyLimiting()) {
-        SyncInterval = 0;
-        // Flip-model swapchains require DXGI_PRESENT_ALLOW_TEARING to actually
-        // return immediately at SyncInterval=0 — without it Present can still
-        // block for a vblank, defeating the limiter's frame pacing.
-        Flags |= 0x200;  // DXGI_PRESENT_ALLOW_TEARING
-        return;
-    }
-
     VSyncOverride override = GetVSyncOverride();
 
     // DXGI spec: ALLOW_TEARING is only valid with SyncInterval == 0.
