@@ -1092,7 +1092,12 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     // Process VSync Override
     VSyncOverride override = GetDX11VSyncOverride();
     if (override.shouldOverride) {
-        SyncInterval = override.presentInterval;
+        // Skip forcing VSync when the FPS limiter is actively pacing frames.
+        // The limiter's sleep-before-Present controls frame timing; SyncInterval=1
+        // would add a vblank wait after and override our target FPS.
+        if (!g_SharedFpsLimiter.IsActivelyLimiting()) {
+            SyncInterval = override.presentInterval;
+        }
         if (override.useMailbox) {
             Flags |= DXGI_PRESENT_ALLOW_TEARING;
         }
@@ -1210,7 +1215,9 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
     // Process VSync Override
     VSyncOverride override = GetDX11VSyncOverride();
     if (override.shouldOverride) {
-        SyncInterval = override.presentInterval;
+        if (!g_SharedFpsLimiter.IsActivelyLimiting()) {
+            SyncInterval = override.presentInterval;
+        }
         if (override.useMailbox) {
             PresentFlags |= DXGI_PRESENT_ALLOW_TEARING;
         }

@@ -344,7 +344,7 @@ bool SupportsCodecPixelFormat(const AVCodec* codec, AVPixelFormat pixFmt) {
         return false;
     }
 
-#if LIBAVCODEC_VERSION_MAJOR >= 61
+#if LIBAVCODEC_VERSION_MAJOR >= 62
     const void* configs = nullptr;
     int numConfigs = 0;
     const int ret = avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, &configs, &numConfigs);
