@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-04-30
+Last cross-checked: 2026-05-02 — All known inject/overlay issues resolved across DX9, DX10, DX11, and DX12 test apps and BioShock Infinite (Steam DX11 32-bit). GTA5 Enhanced (DX12) crash confirmed fixed after reverting LdrRegisterDllNotification. See `llm-wiki/log/recent.md` for full fix timeline.
 
 Primary sources:
 - `llm-wiki/log/recent.md`
@@ -29,6 +29,8 @@ Primary sources:
 - `hook/wrappers/inline_hook.cpp`
 - `hook/wrappers/iat_hook.cpp`
 - `hook/main.cpp`
+- `hook/wrappers/wrapper_hooks.cpp`
+- `hook/common/dxgi_shared.h`
 - `common/crash_handler.cpp`
 - `common/crash_dump_policy.h`
 - `tests/test_dxgi_shared.cpp`

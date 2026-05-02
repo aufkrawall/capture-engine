@@ -67,7 +67,7 @@ Copyright (c) 2026 aufkrawall
 - Prefer read-only inspection before invasive instrumentation or binary mutation; prefer already installed tools.
 - Dumps: use `cdb.exe` from `C:\Program Files\Windows Kits\10\Debuggers\x64`; consider `dumpchk.exe` for readability and `symchk.exe` for symbols.
 - Use WinDbg/WinDbgX only when interactive dump debugging is useful.
-- Visual Studio/MSVC: use `dumpbin.exe` for PE/COFF headers, imports, exports, dependencies, sections, symbols, and disassembly.
+- Visual Studio/MSVC: use `dumpbin.exe` for PE/COFF headers, imports, exports, dependencies, sections, symbols, and disassembly. dumpbin.exe location: C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64
 - Use `undname.exe` for MSVC C++ decorated symbols, `link.exe /dump` as a dumpbin-style fallback, and `lib.exe /list` for library contents.
 - Do not use `editbin.exe` unless explicitly requested; it mutates binaries.
 - Windows Debugging Tools: use `gflags.exe` only with explicit intent because it changes debug/runtime settings; use `umdh.exe` for heap/leak investigations.
