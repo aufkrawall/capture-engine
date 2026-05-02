@@ -77,11 +77,22 @@ private:
             localStatsFrameCount_ = 0;
         }
 
-        const int64_t waitTicks = localTargetTime_ - now.QuadPart;
+        const         int64_t waitTicks = localTargetTime_ - now.QuadPart;
         result.scheduledWaitUs = (waitTicks > 0) ? (waitTicks * 1000000 / qpcFrequency) : 0;
 
         LARGE_INTEGER beforeWait;
         QueryPerformanceCounter(&beforeWait);
+        int64_t smartDiff = localTargetTime_ - beforeWait.QuadPart;
+        static int s_smartDiffLog = 0;
+        if (s_smartDiffLog < 5 && effectiveTargetFps > 60) {
+            HookLogImportant(
+                "LIMDIAG: SmartWait enter localTarget=0x%llx now=0x%llx diff=%lld "
+                "targetFps=%d intervalTicks=%lld phase=%lld timerState=%s",
+                (long long)localTargetTime_, (long long)now.QuadPart,
+                (long long)smartDiff, effectiveTargetFps, (long long)intervalTicks,
+                (long long)phaseOffsetTicks, highResTimer ? "ok" : "none");
+            s_smartDiffLog++;
+        }
         SmartWait(localTargetTime_);
         LARGE_INTEGER afterWait;
         QueryPerformanceCounter(&afterWait);
