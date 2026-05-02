@@ -1067,8 +1067,13 @@ public:
             if (requestEvent)
                 SetEvent(requestEvent);
 
-            // Wait for release from limiter process
-            if (releaseEvent) {
+            // Wait for release from limiter process.
+            // Skip for general (non-capture) mode: the local cadence (RunLocalCadence)
+            // provides timer-based pacing without relying on the limiter process.
+            // The event-based wait with a 3x frame-interval timeout causes a
+            // ~21ms wait per frame (at 140fps target) even when the event never
+            // signals, artificially capping FPS to ~40 regardless of the target.
+            if (releaseEvent && usingCaptureSync) {
                 haveReleaseEvent = true;
                 // Calculate appropriate timeout based on target frame interval
                 // Use 3x frame interval for safety margin
