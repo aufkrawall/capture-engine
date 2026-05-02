@@ -1949,7 +1949,6 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                     viewportKey);
             }
         } else if (!pureObserverOnly && requestedDisabled &&
-                   !safePostFSRBootstrapPath &&
                    ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(
                        result == kSlResultOk, setOptionsCallSuppressed)) {
             g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);

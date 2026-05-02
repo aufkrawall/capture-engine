@@ -8852,8 +8852,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
         const bool useWrapperSubmitAfterFSR = ce::dx12_overlay_policy::ShouldUsePostSLWrapperSubmitAfterFSR(
             g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue, slQueue != nullptr,
-            preferSelectedSwapchainQueueSubmitAfterFSR) &&
-            (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed) || slQueue != nullptr);
+            preferSelectedSwapchainQueueSubmitAfterFSR);
 
         if (useWrapperSubmitAfterFSR) {
             // After an FSR phase, keep swapchain-touching PostSL work on the SL
@@ -9788,30 +9787,15 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
             // After FSR->DLSS->off with scQueue intentionally unset, reuse the
             // last queue that already proved it could render the live swapchain.
-            // CAUTION: g_PostSLLastWorkingQueue may point to Streamline's wrapper
-            // queue which Streamline destroys during FG teardown.  When FG is no
-            // longer running, use the original game queue instead.
-            if (g_PostSLLastWorkingQueue &&
-                !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed)) {
-                gameQueue = g_OriginalGameQueue;
-                static std::atomic<int> s_offFALLBACKLogCount{0};
-                if (s_offFALLBACKLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            gameQueue = g_PostSLLastWorkingQueue;
+            if (lastWorkingQueueStillActiveDuringRecentTeardown) {
+                static std::atomic<int> s_postFSRProcessFrameLastWorkingRouteLogCount{0};
+                int logCount = s_postFSRProcessFrameLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
-                        "DX12: PostFSR inactive — FG not running, falling back to origGame %p "
-                        "instead of stale lastWorking %p",
-                        g_OriginalGameQueue, g_PostSLLastWorkingQueue);
-                }
-            } else {
-                gameQueue = g_PostSLLastWorkingQueue;
-                if (lastWorkingQueueStillActiveDuringRecentTeardown) {
-                    static std::atomic<int> s_postFSRProcessFrameLastWorkingRouteLogCount{0};
-                    int logCount = s_postFSRProcessFrameLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
-                    if (logCount < 10 || (logCount % 300) == 0) {
-                        HookLogImportant(
-                            "DX12: ProcessFrame — post-FSR inactive recovery keeping preserved PostSL lastWorking queue %p "
-                            "while teardown traffic is still active (cmdQ=%p origQ=%p primaryQ=%p)",
-                            g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
-                    }
+                        "DX12: ProcessFrame — post-FSR inactive recovery keeping preserved PostSL lastWorking queue %p "
+                        "while teardown traffic is still active (cmdQ=%p origQ=%p primaryQ=%p)",
+                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
                 }
             }
         } else if (routingDecision ==
