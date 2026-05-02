@@ -14,6 +14,7 @@
 #include "logging.h"
 #include "overlay_compat.h"
 #include "overlay_metrics_publisher.h"
+#include "perf_logger.h"
 #include "performance_metrics.h"
 
 #include <d3d10.h>
@@ -1444,6 +1445,29 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
     UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent");
+
+    // Initialize performance metrics for CSV logging early so the scope guard
+    // captures total frame time even if HandleDX11/12ProcessFrame or the FPS
+    // limiter takes non-trivial time.
+    const int64_t perfMetricsQpcUs = PerfLogger::GetQpcUs();
+    static uint64_t s_perfFrameNum = 0;
+    ++s_perfFrameNum;
+    auto perfGuard = ce::make_scope_guard([&]() {
+        if (PerfLogger::Get().IsEnabled()) {
+            FrameMetrics perfMetrics;
+            perfMetrics.qpcUs = perfMetricsQpcUs;
+            perfMetrics.totalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - perfMetricsQpcUs);
+            perfMetrics.frameNum = s_perfFrameNum;
+            if (api == APIType::D3D12)
+                strncpy(perfMetrics.api, "DX12", sizeof(perfMetrics.api) - 1);
+            else if (api == APIType::D3D11)
+                strncpy(perfMetrics.api, "DX11", sizeof(perfMetrics.api) - 1);
+            else
+                strncpy(perfMetrics.api, "DXGI", sizeof(perfMetrics.api) - 1);
+            perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
+            PerfLogger::Get().LogFrame(perfMetrics);
+        }
+    });
 
     if (!IsShuttingDown() && (oPresentTrampoline || oPresent)) {
         if (api == APIType::D3D12) {
