@@ -298,9 +298,6 @@ std::atomic<LoadLibraryW_t> OriginalLoadLibraryW{nullptr};
 std::atomic<LoadLibraryExA_t> OriginalLoadLibraryExA{nullptr};
 std::atomic<LoadLibraryExW_t> OriginalLoadLibraryExW{nullptr};
 std::atomic<LdrLoadDll_t> OriginalLdrLoadDll{nullptr};
-typedef NTSTATUS(NTAPI *LdrRegisterDllNotification_t)(ULONG, PVOID, PVOID, PVOID);
-typedef VOID(NTAPI *LdrDllNotificationCallback_t)(ULONG, PVOID, PVOID, PVOID);
-std::atomic<PVOID> g_DllNotificationCookie{nullptr};
 
 namespace {
 template <typename T>
@@ -811,50 +808,6 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
 
   if (g_hCheckHooksEvent)
     SetEvent(g_hCheckHooksEvent);
-}
-
-// LdrRegisterDllNotification callback — fires on every module load.
-// Signals the HookThread to re-check hooks so D3D11 IAT retry happens
-// promptly when d3d11.dll loads, without waiting for the 1s periodic check.
-static VOID NTAPI DllLoadNotificationCallback(ULONG NotificationReason,
-                                              PVOID NotificationData,
-                                              PVOID Context) {
-  (void)Context;
-  if (NotificationReason != 1)  // LDR_DLL_NOTIFICATION_REASON_LOADED
-    return;
-  if (g_hCheckHooksEvent)
-    SetEvent(g_hCheckHooksEvent);
-}
-
-static void RegisterDllLoadNotification() {
-  if (g_DllNotificationCookie.load(std::memory_order_acquire))
-    return;  // already registered
-  HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-  if (!hNtdll)
-    return;
-  auto pLdrRegisterDllNotification =
-      (LdrRegisterDllNotification_t)GetProcAddress(hNtdll, "LdrRegisterDllNotification");
-  if (!pLdrRegisterDllNotification)
-    return;
-  PVOID cookie = nullptr;
-  if (pLdrRegisterDllNotification(0, (PVOID)DllLoadNotificationCallback, nullptr, &cookie) == 0) {
-    g_DllNotificationCookie.store(cookie, std::memory_order_release);
-    HookLog("Registered LdrRegisterDllNotification callback");
-  }
-}
-
-static void UnregisterDllLoadNotification() {
-  PVOID cookie = g_DllNotificationCookie.exchange(nullptr, std::memory_order_acq_rel);
-  if (!cookie)
-    return;
-  HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-  if (!hNtdll)
-    return;
-  auto pLdrUnregisterDllNotification =
-      (LdrRegisterDllNotification_t)GetProcAddress(hNtdll, "LdrUnregisterDllNotification");
-  if (pLdrUnregisterDllNotification)
-    pLdrUnregisterDllNotification(0, 0, nullptr, cookie);
-  HookLog("Unregistered LdrRegisterDllNotification callback");
 }
 
 static void ArmManualReflexQueryHookIfConfigured(const char *source) {
@@ -1765,13 +1718,6 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // Logic without event...
   }
 
-  // Register DLL load notification so CheckAndInstallHooks runs promptly
-  // when d3d11.dll (or any other graphics DLL) loads, without waiting for
-  // the 1-second periodic check.  This is critical for DX11 games whose
-  // D3D11 device creation happens shortly after the DLL loads — without it
-  // the IAT retry may be too late.
-  RegisterDllLoadNotification();
-
   // --- BLACKLISTED PROCESSES ---
   if (g_ProcessCategory == ProcessCategory::Blacklisted) {
     CloseCheckHooksEvent();
@@ -2046,7 +1992,6 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   }
 
   // Cleanup Event
-  UnregisterDllLoadNotification();
   CloseCheckHooksEvent();
 
   // Self-unload to release file lock when host requests exit or dies
