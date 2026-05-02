@@ -9652,7 +9652,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 int cooldownFrames = 90;  // ~1.5s at 60fps — longer than normal transition
                 if (ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
                         commandQueueSettledToPrimary, g_HadFSRFGPhase, slOffSwapchainGrace > 0)) {
-                    cooldownFrames = 15;
+                    // Post-FSR non-FG recovery: Streamline teardown may still be
+                    // destabilizing GPU resources.  Use an extended cooldown so the
+                    // overlay stays completely idle until the GPU is fully settled.
+                    // The first overlay GPU submit after the cooldown can still cause
+                    // DEVICE_REMOVED if Streamline teardown isn't complete, so we give
+                    // a generous 15-second window.
+                    cooldownFrames = ce::dx12_overlay_policy::ResolvePostFSRExtendedCooldownFrames(
+                        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed));
                 }
                 g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
                     g_FGTransitionCooldown, cooldownFrames,
@@ -10548,6 +10555,36 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 HRESULT cooldownDevHr = cooldownDev->GetDeviceRemovedReason();
                 if (FAILED(cooldownDevHr)) {
                     HookLogImportant("DX12: WARNING — device already dead at cooldown end! hr=0x%08X", cooldownDevHr);
+                    // Device is dead — skip all overlay GPU work.  The game is about
+                    // to show ERR_GFX_STATE and exit; any GPU submit would just add a
+                    // secondary crash on top of an already-fatal device removal.
+                    g_DeviceRemoved.store(true, std::memory_order_release);
+                    g_PostSLOverlayActive.store(false, std::memory_order_release);
+                }
+            }
+            if (g_DeviceRemoved.load(std::memory_order_relaxed)) {
+                allowOverlayRender = false;
+            }
+            // Device is still alive but FG transition may not be settled yet.
+            // If Streamline FG was active during the transition but is now off
+            // (or does not match the cooldown-start state), the overlay's
+            // offscreen compositing on the original game queue can still cause a
+            // GPU hang because the backbuffer state is indeterminate after FG
+            // teardown.  Skip reinit GPU work on this frame; the next Present
+            // will retry after the transition has had more time to settle.
+            if (allowOverlayRender && g_DeviceRemoved.load(std::memory_order_relaxed) == false) {
+                auto* freshDev = g_Device.load(std::memory_order_acquire);
+                if (freshDev) {
+                    HRESULT freshHr = freshDev->GetDeviceRemovedReason();
+                    if (FAILED(freshHr)) {
+                        HookLogImportant(
+                            "DX12: Cooldown ended but device removed — halting overlays "
+                            "(hr=0x%08X)",
+                            (unsigned)freshHr);
+                        g_DeviceRemoved.store(true, std::memory_order_release);
+                        g_PostSLOverlayActive.store(false, std::memory_order_release);
+                        allowOverlayRender = false;
+                    }
                 }
             }
         }

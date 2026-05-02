@@ -343,6 +343,17 @@ inline int ResolveTransitionCooldownFrames(int existingCooldownFrames, int reque
     return existingCooldownFrames > requestedCooldownFrames ? existingCooldownFrames : requestedCooldownFrames;
 }
 
+// Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown
+// leaves GPU resources in an indeterminate state; the overlay's first GPU
+// submit (offscreen compositing on the original game queue) can trigger
+// DEVICE_REMOVED even after the frame-based cooldown expires.  Return a
+// generous time-based cooldown (in frames at ~60fps) when SL FG is off.
+// When SL FG is running (re-entering DLSS FG), use the standard shorter
+// cooldown so the overlay resumes promptly.
+inline int ResolvePostFSRExtendedCooldownFrames(bool slFGRunning) {
+    return slFGRunning ? 15 : 900;  // ~250ms for FG-on, ~15s for FG-off
+}
+
 struct OverlayMetricsBindingDecision {
     bool bindMetrics;
     bool refreshFrameMetadata;
