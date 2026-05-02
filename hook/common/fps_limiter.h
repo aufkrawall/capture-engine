@@ -1075,8 +1075,6 @@ public:
             // signals, artificially capping FPS to ~40 regardless of the target.
             if (releaseEvent && usingCaptureSync) {
                 haveReleaseEvent = true;
-                // Calculate appropriate timeout based on target frame interval
-                // Use 3x frame interval for safety margin
                 DWORD frameTimeMs = 1000 / effectiveTargetFps;
                 DWORD timeoutMs = frameTimeMs * 3;
                 if (timeoutMs < 10)
@@ -1085,7 +1083,9 @@ public:
                     timeoutMs = 100;
 
                 waitResult = WaitForSingleObject(releaseEvent, timeoutMs);
-            } else if (dbgShm) {
+            }
+            if (!usingCaptureSync) {
+                haveReleaseEvent = true;
                 waitResult = WAIT_OBJECT_0;
             }
         }
