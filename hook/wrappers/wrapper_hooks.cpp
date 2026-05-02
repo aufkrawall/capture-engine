@@ -640,10 +640,15 @@ static bool s_D3D9Initialized = false;
 static bool s_DDrawInitialized = false;
 
 bool InitializeWrapperHooks() {
-    if (g_WrappersActive)
-        return true;
+    // Do NOT return early when g_WrappersActive is true from a previous
+    // partial initialization (e.g. DllMain ran before D3D11.dll was loaded).
+    // The per-category !s_*Initialized guards below let us retry categories
+    // whose DLLs weren't available on the first call.  g_WrappersActive only
+    // prevents double-running the category-independent setup below.
 
-    EarlyLog("Wrapper: Initializing wrapper hooks (IAT mode)...");
+    if (!g_WrappersActive) {
+        EarlyLog("Wrapper: Initializing wrapper hooks (IAT mode)...");
+    }
 
     bool anySuccess = false;
 
