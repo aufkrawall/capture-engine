@@ -147,6 +147,16 @@ public:
         return isActivelyLimiting_.load(std::memory_order_relaxed);
     }
 
+    // Check whether the general FPS limiter is configured (enabled + fps > 0)
+    // using shared-memory values, without requiring the limiter to be actively
+    // pacing yet.  Used during device creation where shared memory is available
+    // but the limiter Apply() hasn't run.
+    static bool IsGeneralConfigured(SharedMemoryLayout* shm) {
+        if (!shm)
+            return false;
+        return shm->fpsLimiter.GetGeneralEnabled() && shm->fpsLimiter.GetGeneralFps() > 0;
+    }
+
     // Ensure 1ms timer resolution is enabled
     void EnsureTimerResolution() {
         std::lock_guard<std::mutex> lock(timerStateMutex_);

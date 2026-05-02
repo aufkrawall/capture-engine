@@ -1747,8 +1747,14 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* d
 
     VSyncOverride vsync = GetVSyncOverride();
     if (vsync.shouldOverride && vsync.presentInterval > 0) {
-        dwFlags &= ~D3DPRESENT_FORCEIMMEDIATE;
-        dwFlags &= ~D3DPRESENT_DONOTWAIT;
+        // Skip VSync override when the FPS limiter is actively pacing frames.
+        // The limiter's sleep-before-Present controls frame timing; VSync would
+        // add a vblank wait after the limiter's delay and override our target FPS.
+        // Only the limiter should own frame pacing when it is active.
+        if (!g_SharedFpsLimiter.IsActivelyLimiting()) {
+            dwFlags &= ~D3DPRESENT_FORCEIMMEDIATE;
+            dwFlags &= ~D3DPRESENT_DONOTWAIT;
+        }
     }
 
     const bool topLevelPresent = (g_PresentRecurse == 0);
@@ -1797,8 +1803,10 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(IDirect3DSwapC
 
     VSyncOverride vsync = GetVSyncOverride();
     if (vsync.shouldOverride && vsync.presentInterval > 0) {
-        dwFlags &= ~D3DPRESENT_FORCEIMMEDIATE;
-        dwFlags &= ~D3DPRESENT_DONOTWAIT;
+        if (!g_SharedFpsLimiter.IsActivelyLimiting()) {
+            dwFlags &= ~D3DPRESENT_FORCEIMMEDIATE;
+            dwFlags &= ~D3DPRESENT_DONOTWAIT;
+        }
     }
 
     IDirect3DDevice9* device = nullptr;
@@ -5479,7 +5487,9 @@ static HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device, D3DPRESEN
 
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
-            pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+            if (!g_SharedFpsLimiter.IsActivelyLimiting()) {
+    pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+}
 
             // Avoid being pinned to an undesired refresh rate (e.g. 100Hz) in
             // exclusive fullscreen.
@@ -5565,7 +5575,9 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
 
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
-            pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+            if (!g_SharedFpsLimiter.IsActivelyLimiting()) {
+    pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+}
 
             if (!pPresentationParameters->Windowed && vsync.presentInterval > 0 &&
                 pPresentationParameters->FullScreen_RefreshRateInHz != 0) {
@@ -5961,7 +5973,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
 
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
-            pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+            if (!g_SharedFpsLimiter.IsActivelyLimiting()) {
+    pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+}
 
             if (!pPresentationParameters->Windowed && vsync.presentInterval > 0 &&
                 pPresentationParameters->FullScreen_RefreshRateInHz != 0) {
@@ -6196,7 +6210,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
 
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
-            pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+            if (!g_SharedFpsLimiter.IsActivelyLimiting()) {
+    pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+}
 
             if (!pPresentationParameters->Windowed && vsync.presentInterval > 0 &&
                 pPresentationParameters->FullScreen_RefreshRateInHz != 0) {
