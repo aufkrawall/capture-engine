@@ -9,7 +9,7 @@ Primary sources:
 `build.py` is the canonical build entry point. It parses flags manually from `sys.argv`; there is no `argparse`-generated help output to rely on.
 
 ## Default Mode
-Running `python build.py` with no flags enables the repo's default quality mode.
+Running `python build.py --skip-updates`.
 
 ## Canonical Post-Change Verification
 Use one command for normal post-change verification:

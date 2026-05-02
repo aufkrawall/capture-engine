@@ -34,11 +34,17 @@ inline APIType SelectPrimarySwapChainAPIType(bool hasD3D12Device, bool hasD3D11D
     if (hasD3D12Device) {
         return APIType::D3D12;
     }
-    if (hasD3D11Device) {
-        return APIType::D3D11;
-    }
+    // On Windows 10+ the D3D10 runtime is implemented on top of D3D11
+    // (D3D10-on-D3D11).  A D3D10 device's swapchain will QI for both
+    // ID3D11Device (translation layer) and ID3D10Device (native), while a
+    // native D3D11 device's swapchain will QI for ID3D11Device but NOT for
+    // ID3D10Device.  When both succeed the device is D3D10-on-D3D11 —
+    // functionally D3D10 — so prefer D3D10 over D3D11.
     if (hasD3D10Device) {
         return APIType::D3D10;
+    }
+    if (hasD3D11Device) {
+        return APIType::D3D11;
     }
     return APIType::Unknown;
 }

@@ -540,25 +540,26 @@ APIType DetectAPIType(IDXGISwapChain* pSwapChain) {
         hasD3D12Device = true;
     }
 
-    if (!hasD3D12Device) {
-        ID3D11Device* d11Device = nullptr;
-        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&d11Device)) && d11Device) {
-            d11Device->Release();
-            hasD3D11Device = true;
-        }
+    // Always try all three — do NOT short-circuit when D3D11 succeeds.
+    // On Windows 10+ the D3D10 runtime is implemented on D3D11
+    // (D3D10-on-D3D11).  A D3D10 device will QI for BOTH ID3D11Device
+    // and ID3D10Device, so checking D3D11 first and skipping D3D10
+    // would wrongly classify the swapchain as D3D11.
+    ID3D11Device* d11Device = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&d11Device)) && d11Device) {
+        d11Device->Release();
+        hasD3D11Device = true;
     }
 
-    if (!hasD3D12Device && !hasD3D11Device) {
-        ID3D10Device* d10Device = nullptr;
-        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&d10Device)) && d10Device) {
-            d10Device->Release();
+    ID3D10Device* d10Device = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&d10Device)) && d10Device) {
+        d10Device->Release();
+        hasD3D10Device = true;
+    } else {
+        ID3D10Device1* d10Device1 = nullptr;
+        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&d10Device1)) && d10Device1) {
+            d10Device1->Release();
             hasD3D10Device = true;
-        } else {
-            ID3D10Device1* d10Device1 = nullptr;
-            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&d10Device1)) && d10Device1) {
-                d10Device1->Release();
-                hasD3D10Device = true;
-            }
         }
     }
 

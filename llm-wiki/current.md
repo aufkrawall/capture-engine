@@ -12,6 +12,7 @@ Primary sources:
 - `captureengine/main.cpp`
 - `captureengine/inject_main.cpp`
 - `captureengine/sensor_service.cpp`
+- `hook/apis/dx11_hook.cpp`
 - `hook/apis/dx12_hook.cpp`
 - `hook/apis/streamline_hook.cpp`
 - `hook/common/fps_limiter.h`

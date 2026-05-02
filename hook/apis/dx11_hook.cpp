@@ -111,25 +111,27 @@ static DXGIShared::APIType DetectSwapChainAPITypeForDX11Hook(IDXGISwapChain* swa
         hasD3D12Device = true;
     }
 
-    if (!hasD3D12Device) {
-        ID3D11Device* d3d11Device = nullptr;
-        if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D11Device), (void**)&d3d11Device)) && d3d11Device) {
-            d3d11Device->Release();
-            hasD3D11Device = true;
-        }
+    // Always try all three — do NOT short-circuit when D3D11 succeeds.
+    // On Windows 10+ the D3D10 runtime is implemented on D3D11
+    // (D3D10-on-D3D11).  A D3D10 device will QI for BOTH ID3D11Device
+    // and ID3D10Device, so checking D3D11 first and skipping D3D10
+    // would wrongly classify the swapchain as D3D11.  Let
+    // SelectPrimarySwapChainAPIType make the final decision.
+    ID3D11Device* d3d11Device = nullptr;
+    if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D11Device), (void**)&d3d11Device)) && d3d11Device) {
+        d3d11Device->Release();
+        hasD3D11Device = true;
     }
 
-    if (!hasD3D12Device && !hasD3D11Device) {
-        ID3D10Device* d3d10Device = nullptr;
-        if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&d3d10Device)) && d3d10Device) {
-            d3d10Device->Release();
+    ID3D10Device* d3d10Device = nullptr;
+    if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&d3d10Device)) && d3d10Device) {
+        d3d10Device->Release();
+        hasD3D10Device = true;
+    } else {
+        ID3D10Device1* d3d10Device1 = nullptr;
+        if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&d3d10Device1)) && d3d10Device1) {
+            d3d10Device1->Release();
             hasD3D10Device = true;
-        } else {
-            ID3D10Device1* d3d10Device1 = nullptr;
-            if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&d3d10Device1)) && d3d10Device1) {
-                d3d10Device1->Release();
-                hasD3D10Device = true;
-            }
         }
     }
 
@@ -923,6 +925,16 @@ static void STDMETHODCALLTYPE DetourCSSetSamplers11(ID3D11DeviceContext* context
 // Global original function pointer - set by IAT patching
 PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain = NULL;
 
+// Local copy of the real original D3D11CreateDeviceAndSwapChain function address.
+// HookExport calls PatchIATAllModules which overwrites the shared
+// oD3D11CreateDeviceAndSwapChain (also used by wrapper_hooks.cpp) with the
+// address of Wrapped_D3D11CreateDeviceAndSwapChain — causing the DX11 detour
+// to call back into the wrapper instead of the real function, leading to
+// infinite IAT recursion and stack overflow (0xC00000FD).
+// Save the real GetProcAddress result separately so DetourD3D11CreateDeviceAndSwapChain
+// can always reach the actual d3d11.dll code.
+static PFN_D3D11CreateDeviceAndSwapChain s_oRealD3D11CreateDeviceAndSwapChain = NULL;
+
 typedef HRESULT(WINAPI* PFN_D3D10CreateDeviceAndSwapChain)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT,
                                                            DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**, ID3D10Device**);
 static PFN_D3D10CreateDeviceAndSwapChain oD3D10CreateDeviceAndSwapChain = NULL;
@@ -1300,9 +1312,16 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
             pFinalDesc = &desc;
     }
 
+    // Use the local copy of the real original.  The shared oD3D11CreateDeviceAndSwapChain
+    // (from dx11_hook.h) may have been overwritten by HookExport -> PatchIATAllModules,
+    // which sets it to Wrapped_D3D11CreateDeviceAndSwapChain when a prior IAT hook exists.
+    // Calling that would re-enter the wrapper -> infinite recursion -> stack overflow.
+    PFN_D3D11CreateDeviceAndSwapChain realOriginal = s_oRealD3D11CreateDeviceAndSwapChain
+                                                         ? s_oRealD3D11CreateDeviceAndSwapChain
+                                                         : oD3D11CreateDeviceAndSwapChain;
     HRESULT hr =
-        oD3D11CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
-                                       pFinalDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
+        realOriginal(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
+                     pFinalDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
 
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
         // Wrap the swapchain returned by D3D11CreateDeviceAndSwapChain so our
@@ -3849,6 +3868,9 @@ void DX11Hook::Init() {
         void* pTarget = (void*)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
         if (pTarget) {
             HookLog("DX11: Hook target at %p", pTarget);
+            // Save the real original BEFORE HookExport overwrites the shared
+            // oD3D11CreateDeviceAndSwapChain (shared with wrapper_hooks.cpp).
+            s_oRealD3D11CreateDeviceAndSwapChain = reinterpret_cast<PFN_D3D11CreateDeviceAndSwapChain>(pTarget);
             bool created = CustomHook::HookExport(
                                "d3d11.dll", "D3D11CreateDeviceAndSwapChain", (void*)DetourD3D11CreateDeviceAndSwapChain,
                                (void**)&oD3D11CreateDeviceAndSwapChain) == CustomHook::Status::Success;
@@ -3960,9 +3982,11 @@ void DX11Hook::Init() {
             ID3D11DeviceContext* ctx = nullptr;
             IDXGISwapChain* sc = nullptr;
 
-            HRESULT hr = oD3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                                        D3D11_CREATE_DEVICE_BGRA_SUPPORT, flReq, 1, D3D11_SDK_VERSION,
-                                                        &scd, &sc, &dev, &flOut, &ctx);
+            HRESULT hr = (s_oRealD3D11CreateDeviceAndSwapChain ? s_oRealD3D11CreateDeviceAndSwapChain
+                                                                 : oD3D11CreateDeviceAndSwapChain)
+                             (nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                              D3D11_CREATE_DEVICE_BGRA_SUPPORT, flReq, 1, D3D11_SDK_VERSION,
+                              &scd, &sc, &dev, &flOut, &ctx);
             if (SUCCEEDED(hr) && sc) {
                 InstallVTableHooks(dev, ctx, sc);
                 CWrapDXGISwapChain* wrappedSc = nullptr;
