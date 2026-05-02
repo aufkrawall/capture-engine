@@ -1215,7 +1215,9 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
     // Process VSync Override
     VSyncOverride override = GetDX11VSyncOverride();
     if (override.shouldOverride) {
-        if (!g_SharedFpsLimiter.IsActivelyLimiting()) {
+        if (g_SharedFpsLimiter.IsActivelyLimiting()) {
+            SyncInterval = 0;
+        } else {
             SyncInterval = override.presentInterval;
         }
         if (override.useMailbox) {

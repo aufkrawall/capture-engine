@@ -1133,7 +1133,10 @@ public:
                         TraceLog("Apply: TIMEOUT missed=%u", missedFrames);
                         HookLog("FPS Limiter: TIMEOUT waiting for release (missed=%u)", missedFrames);
                     }
-                    return;
+                    // Fall through to local cadence (SmartWait) as fallback
+                    // when the limiter process's event is not available.
+                    // WAS: return; — this skipped SmartWait entirely, making the
+                    // limiter ineffective when the limiter process doesn't respond.
                 }
             } else {
                 if (!loggedNoEvent_) {
