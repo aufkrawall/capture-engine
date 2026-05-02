@@ -8852,7 +8852,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
         const bool useWrapperSubmitAfterFSR = ce::dx12_overlay_policy::ShouldUsePostSLWrapperSubmitAfterFSR(
             g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue, slQueue != nullptr,
-            preferSelectedSwapchainQueueSubmitAfterFSR);
+            preferSelectedSwapchainQueueSubmitAfterFSR) &&
+            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed);
 
         if (useWrapperSubmitAfterFSR) {
             // After an FSR phase, keep swapchain-touching PostSL work on the SL
