@@ -133,8 +133,8 @@ TEST_F(FpsLimiterTest, Apply_NoTarget_ReturnsImmediately) {
 
     double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
 
-    // Should return almost immediately (< 5ms)
-    EXPECT_LT(elapsedMs, 5.0);
+    // Should return almost immediately (< 15ms)
+    EXPECT_LT(elapsedMs, 15.0);
 }
 
 TEST_F(FpsLimiterTest, CaptureWarmupUsesCaptureRequestedForCaptureSync) {

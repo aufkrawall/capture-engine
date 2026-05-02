@@ -1150,8 +1150,15 @@ public:
                 SmartWait(target);
             } else {
                 if (targetLogCount_++ < 10) {
-                    TraceLog("Apply: targetTimeTicks=%lld (not waiting)", target);
-                    HookLog("FPS Limiter: targetTimeTicks is %lld (not waiting)", target);
+                    TraceLog("Apply: targetTimeTicks=%lld (not waiting, using local cadence)", target);
+                    HookLog("FPS Limiter: targetTimeTicks=%lld — falling back to local cadence", target);
+                }
+                // Limiter process not responding — use local timer-based cadence.
+                const auto cadence = RunLocalCadence(effectiveTargetFps);
+                if (cadence.emitStats) {
+                    TraceLog("Apply: LOCAL cadence frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
+                             cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps,
+                             effectiveTargetFps);
                 }
             }
             // Record time Apply() returned so sequential duplicate presents
