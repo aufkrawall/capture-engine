@@ -1476,9 +1476,17 @@ void CheckAndInstallHooks() {
   // Also avoid DX11 hook install in legacy D3D processes unless actual
   // D3D11/D3D10 device creation was observed (prevents DX9 interop false
   // positives when recording starts).
+  //
+  // Many DX11 games load d3d9.dll as a transitive dependency (for audio
+  // codecs, Windows version checks, etc.) without using it for rendering.
+  // The old (!d3d12DeviceCreated && !legacyD3DLoaded) fallback was too
+  // conservative — it prevented DX11 hook installation in DX11 games that
+  // happened to have d3d9.dll loaded.  Now we install DX11 hooks whenever
+  // d3d11/d3d10 is present and D3D12 was NOT actually used (legacyD3DLoaded
+  // is no longer a blocker: a true DX9-only game never hits DX11 hook paths
+  // because it never calls D3D11 functions).
   if (!s_vulkanActive && !g_DX11Hook && d3d11Or10DllPresent &&
-      (d3d11Or10DeviceCreated ||
-       (!d3d12DeviceCreated && !legacyD3DLoaded))) {
+      (d3d11Or10DeviceCreated || !d3d12DeviceCreated)) {
     HookLog("Detected D3D10/11. Installing hooks... (D3D11/10 API called: %d, "
             "D3D12 API called: %d, LegacyD3D loaded: %d)",
             d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0,
