@@ -168,8 +168,15 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);
 bool HasPresentInlineHooks();
 bool HasPresentDetourHooks();
 
-inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool thirdPartyOverlayLoaded, bool hasPresentDetourHooks) {
-    return !thirdPartyOverlayLoaded || hasPresentDetourHooks;
+// Returns true when DXGI swapchain hooks should be installed despite a
+// third-party overlay being loaded.  Third-party overlays (e.g. Steam) may
+// install inline hooks on the Present function code in dxgi.dll.  Our vtable
+// hooks on the swapchain object bypass those inline hooks entirely, so there
+// is no recursion risk.  Always install — the vtable path is safe regardless
+// of overlay presence.
+inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool /*thirdPartyOverlayLoaded*/,
+                                                             bool /*hasPresentDetourHooks*/) {
+    return true;
 }
 
 inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable, bool trackedVtableMatchesCurrent,
