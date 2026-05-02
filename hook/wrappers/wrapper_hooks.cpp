@@ -673,8 +673,10 @@ bool InitializeWrapperHooks() {
     if (!s_D3D11Initialized) {
         EarlyLog("Wrapper: Initializing D3D11 hooks...");
         s_D3D11Initialized = IATHook::InitializeD3D11Hooks();
-        if (s_D3D11Initialized)
+        if (s_D3D11Initialized) {
             anySuccess = true;
+            HookLogImportant("Wrapper: D3D11 IAT hooks installed (retry)");
+        }
     }
 
     if (!s_D3D12Initialized) {

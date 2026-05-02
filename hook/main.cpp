@@ -298,6 +298,9 @@ std::atomic<LoadLibraryW_t> OriginalLoadLibraryW{nullptr};
 std::atomic<LoadLibraryExA_t> OriginalLoadLibraryExA{nullptr};
 std::atomic<LoadLibraryExW_t> OriginalLoadLibraryExW{nullptr};
 std::atomic<LdrLoadDll_t> OriginalLdrLoadDll{nullptr};
+typedef NTSTATUS(NTAPI *LdrRegisterDllNotification_t)(ULONG, PVOID, PVOID, PVOID);
+typedef VOID(NTAPI *LdrDllNotificationCallback_t)(ULONG, PVOID, PVOID, PVOID);
+std::atomic<PVOID> g_DllNotificationCookie{nullptr};
 
 namespace {
 template <typename T>
@@ -808,6 +811,50 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
 
   if (g_hCheckHooksEvent)
     SetEvent(g_hCheckHooksEvent);
+}
+
+// LdrRegisterDllNotification callback — fires on every module load.
+// Signals the HookThread to re-check hooks so D3D11 IAT retry happens
+// promptly when d3d11.dll loads, without waiting for the 1s periodic check.
+static VOID NTAPI DllLoadNotificationCallback(ULONG NotificationReason,
+                                              PVOID NotificationData,
+                                              PVOID Context) {
+  (void)Context;
+  if (NotificationReason != 1)  // LDR_DLL_NOTIFICATION_REASON_LOADED
+    return;
+  if (g_hCheckHooksEvent)
+    SetEvent(g_hCheckHooksEvent);
+}
+
+static void RegisterDllLoadNotification() {
+  if (g_DllNotificationCookie.load(std::memory_order_acquire))
+    return;  // already registered
+  HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+  if (!hNtdll)
+    return;
+  auto pLdrRegisterDllNotification =
+      (LdrRegisterDllNotification_t)GetProcAddress(hNtdll, "LdrRegisterDllNotification");
+  if (!pLdrRegisterDllNotification)
+    return;
+  PVOID cookie = nullptr;
+  if (pLdrRegisterDllNotification(0, (PVOID)DllLoadNotificationCallback, nullptr, &cookie) == 0) {
+    g_DllNotificationCookie.store(cookie, std::memory_order_release);
+    HookLog("Registered LdrRegisterDllNotification callback");
+  }
+}
+
+static void UnregisterDllLoadNotification() {
+  PVOID cookie = g_DllNotificationCookie.exchange(nullptr, std::memory_order_acq_rel);
+  if (!cookie)
+    return;
+  HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+  if (!hNtdll)
+    return;
+  auto pLdrUnregisterDllNotification =
+      (LdrRegisterDllNotification_t)GetProcAddress(hNtdll, "LdrUnregisterDllNotification");
+  if (pLdrUnregisterDllNotification)
+    pLdrUnregisterDllNotification(0, 0, nullptr, cookie);
+  HookLog("Unregistered LdrRegisterDllNotification callback");
 }
 
 static void ArmManualReflexQueryHookIfConfigured(const char *source) {
@@ -1485,20 +1532,37 @@ void CheckAndInstallHooks() {
   // d3d11/d3d10 is present and D3D12 was NOT actually used (legacyD3DLoaded
   // is no longer a blocker: a true DX9-only game never hits DX11 hook paths
   // because it never calls D3D11 functions).
-  if (!s_vulkanActive && !g_DX11Hook && d3d11Or10DllPresent &&
-      (d3d11Or10DeviceCreated || !d3d12DeviceCreated)) {
-    HookLog("Detected D3D10/11. Installing hooks... (D3D11/10 API called: %d, "
-            "D3D12 API called: %d, LegacyD3D loaded: %d)",
-            d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0,
-            legacyD3DLoaded ? 1 : 0);
-    g_DX11Hook = new DX11Hook();
-    LARGE_INTEGER _t1, _t2, _freq;
-    QueryPerformanceFrequency(&_freq);
-    QueryPerformanceCounter(&_t1);
-    g_DX11Hook->Init();
-    QueryPerformanceCounter(&_t2);
-    double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
-    HookLog("D3D10/11 hooks installed (init=%.1f ms)", _initMs);
+  {
+    static int s_dx11CheckCount = 0;
+    ++s_dx11CheckCount;
+    bool dx11CondVulkanOk = !s_vulkanActive;
+    bool dx11CondNoHookYet  = !g_DX11Hook;
+    bool dx11CondDllPresent = d3d11Or10DllPresent;
+    bool dx11CondDeviceOk   = (d3d11Or10DeviceCreated || !d3d12DeviceCreated);
+    bool dx11CondAll        = dx11CondVulkanOk && dx11CondNoHookYet && dx11CondDllPresent && dx11CondDeviceOk;
+    if (s_dx11CheckCount <= 5 || dx11CondAll) {
+      HookLogImportant(
+          "DX11 check #%d: vulkan=%d noHook=%d dllPresent=%d device=%d legacy=%d "
+          "d3d12Created=%d => %s",
+          s_dx11CheckCount, s_vulkanActive ? 1 : 0, g_DX11Hook ? 1 : 0,
+          d3d11Or10DllPresent ? 1 : 0, d3d11Or10DeviceCreated ? 1 : 0,
+          legacyD3DLoaded ? 1 : 0, d3d12DeviceCreated ? 1 : 0,
+          dx11CondAll ? "INSTALL" : "skip");
+    }
+    if (dx11CondAll) {
+      HookLog("Detected D3D10/11. Installing hooks... (D3D11/10 API called: %d, "
+              "D3D12 API called: %d, LegacyD3D loaded: %d)",
+              d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0,
+              legacyD3DLoaded ? 1 : 0);
+      g_DX11Hook = new DX11Hook();
+      LARGE_INTEGER _t1, _t2, _freq;
+      QueryPerformanceFrequency(&_freq);
+      QueryPerformanceCounter(&_t1);
+      g_DX11Hook->Init();
+      QueryPerformanceCounter(&_t2);
+      double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
+      HookLog("D3D10/11 hooks installed (init=%.1f ms)", _initMs);
+    }
   }
 
   // For other APIs, skip if D3D12 was actually used (not just loaded).
@@ -1700,6 +1764,13 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   if (!g_hCheckHooksEvent) {
     // Logic without event...
   }
+
+  // Register DLL load notification so CheckAndInstallHooks runs promptly
+  // when d3d11.dll (or any other graphics DLL) loads, without waiting for
+  // the 1-second periodic check.  This is critical for DX11 games whose
+  // D3D11 device creation happens shortly after the DLL loads — without it
+  // the IAT retry may be too late.
+  RegisterDllLoadNotification();
 
   // --- BLACKLISTED PROCESSES ---
   if (g_ProcessCategory == ProcessCategory::Blacklisted) {
@@ -1975,6 +2046,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   }
 
   // Cleanup Event
+  UnregisterDllLoadNotification();
   CloseCheckHooksEvent();
 
   // Self-unload to release file lock when host requests exit or dies
