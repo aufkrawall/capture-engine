@@ -1,5 +1,0 @@
-steam_overlay_loaded=0
-streamline_loaded=0
-ffx_loaded=0
-fg_shadow_state_enabled=1
-fg_state_schema_version=1

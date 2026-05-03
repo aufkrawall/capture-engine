@@ -65,6 +65,9 @@ __pycache__/
 obj/
 nul
 
+# Generated analysis output
+analysis_logs/
+
 # Machine-local/generated project files
 telemetry-id
 compile_commands.json
@@ -75,5 +78,6 @@ common/build_version.h
 
 
 CLAUDE.md
+tests/logs/session_manifest.txt
 common/config.h.tmp0
 hook/common/hook_common.h.tmp0
