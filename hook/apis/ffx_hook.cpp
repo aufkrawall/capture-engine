@@ -9,6 +9,7 @@
 #include "../common/fg_detection.h"
 #include "../common/fg_session_state.h"
 #include "../common/hook_common.h"
+#include "../common/dxgi_shared.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
 #include "dx12_hook.h"
@@ -173,6 +174,14 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* context, ffxCreateContextDes
         return 1;  // Error
     }
 
+    // During the Streamline startup window, skip CE-side processing to avoid
+    // interfering with SL's critical initialization (creating a temporary
+    // COMPUTE queue or accessing SL state during DllMain can crash SL with
+    // a null pointer call).
+    if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
+        return g_Original_ffxCreateContext(context, desc, memCb);
+    }
+
     // Call original first
     ffxReturnCode_t result = g_Original_ffxCreateContext(context, desc, memCb);
 
@@ -209,6 +218,12 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
     if (!g_Original_ffxDestroyContext) {
         HookLog("FFX Hook: ffxDestroyContext called but original not set!");
         return 1;  // Error
+    }
+
+    // During the Streamline startup window, skip CE-side processing (same as
+    // ffxCreateContext guard) to avoid interfering with SL's initialization.
+    if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
+        return g_Original_ffxDestroyContext(context, memCb);
     }
 
     // CRITICAL FIX: Check if this is an FG context before decrementing
@@ -267,6 +282,13 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     if (!g_Original_ffxConfigure) {
         HookLog("FFX Hook: ffxConfigure called but original not set!");
         return 1;  // Error
+    }
+
+    // During the Streamline startup window, skip CE-side processing to avoid
+    // accessing DX12 swapchain state (HDR, callback bridges) while SL's
+    // critical initialization is still in progress.  Just forward the call.
+    if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
+        return g_Original_ffxConfigure(context, desc);
     }
 
     ce::ffx_api::ConfigureDescFrameGeneration localConfig = {};

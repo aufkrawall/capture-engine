@@ -8,25 +8,27 @@ Copyright (c) 2026 aufkrawall
 ## Critical workflow
 
 - Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason not to.
-- After code changes, run `python build.py --skip-updates`; do not use `python build.py --version`.
+- After code changes, run `python build.py --skip-updates`; do not use `python build.py --version`!
 - Before committing, run relevant tests/unit tests and ensure build/test results succeed.
 - Commit completed code changes with plain git commands only: `git status`, `git add -A`, `git commit -m "<message>"`.
-- Do not push unless explicitly requested.
-- Always consult `llm-wiki/` for substantial code, bug, build, test, config, debugging, or behavior work.
-- Keep `llm-wiki/` linted/quality-checked and updated when durable project knowledge changes. So always update it after code changes!
+- Do not push unless explicitly requested!
+- Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work!
+- Keep `llm-wiki/` linted / quality-checked and updated when durable project knowledge changes.
+- Always update `llm-wiki/` after code changes!
 - Mistrust code, code annotations and llm-wiki. Each of them might be stale our outdated. Come to your on conclusion and act based on that!
-- Always consider regression tests and useful debug logging for every bug fix!
+- Always consider adding regression tests and adding useful debug logging for every bug fix!
 
 ## Engineering rules
 
 - Prefer root-cause fixes over workarounds; do not hide, ignore, weaken, or paper over failures.
-- Make the smallest maintainable change that fully fixes the issue; match local subsystem patterns.
-- Avoid broad rewrites, unrelated cleanup, formatting churn, opportunistic refactors, or new dependencies unless justified.
+- Make the smallest maintainable change that fully fixes the issue.
 - Keep source files roughly 600-800 lines maximum; split files when needed.
 - Do not make tests pass by deleting coverage, weakening assertions, suppressing errors, or changing expected behavior without justification.
-- Do not introduce racy, timing-sensitive, or fragile behavior.
+- Do not introduce nor accept racy, timing-sensitive, or fragile behavior.
 - Do not use sleeps, wait tables, polling delays, or timing bandaids as crash/race fixes.
-- Prefer existing project utilities and standard-library functionality.
+- Perform thorough thinking about actual root causes of crashes and other issues!
+- Do not try just mitigating fallout except of proper and solid root cause fixes!
+- If the result after thorough thinking is that proper fixes require bigger changes, they generally should be performed!
 - Treat dumps, logs, media, captures, credentials, private keys, tokens, symbols, and user data as sensitive.
 - Do not commit secrets, dumps, logs, captures, private-symbol PDBs, large generated artifacts, or private user data.
 
@@ -41,6 +43,8 @@ Copyright (c) 2026 aufkrawall
 - Switching between FG modes must work gracefully in Talos and GTA validation scenarios.
 - Switching must work in all directions/combinations: no crashes, no lost overlay rendering, and correct visible FG status.
 - The overlay already worked in GTA V Enhanced and Talos Reawakened with FSR FG; expect the same to be possible with DLSS FG.
+- The overlay must not be suspended unnecessarily long, also not during FG switching transitions.
+- Ideally, the overlay gets never visibly suspended / does never disappear not even temporarily!
 
 ## Build, diagnostics, and tests
 
@@ -49,8 +53,8 @@ Copyright (c) 2026 aufkrawall
 - Do not perform broad repo-wide diagnostic cleanup unless required by the change.
 - Use LSP quick-fixes only when safe, deterministic, and behavior-preserving.
 - If LSP is unavailable, stale, or misconfigured, state that and fall back to canonical build/test/lint commands.
-- Treat LSP as advisory; `python build.py` and tests remain authoritative.
-- We are paranoid about having sufficient regression tests! Add focused regression tests where feasible, especially tests that would have failed before the fix.
+- We are paranoid about having sufficient regression tests!
+- Add focused regression tests where feasible, especially tests that would have failed before the fix.
 - If no regression-test infrastructure exists for the area, consider adding suitable unit infrastructure such as GoogleTest.
 - Do not add sleeps or timing assumptions to tests.
 - Good tests verify behavior, not only code-path execution.
@@ -58,13 +62,13 @@ Copyright (c) 2026 aufkrawall
 
 ## Debugging and logging
 
-- We are paranoid about having sufficient debug logging! Add additional debug logging when it helps diagnose root cause, state transitions, failure modes, unexpected runtime conditions, or future regressions.
+- We are paranoid about having sufficient debug logging!
+- Add additional debug logging when it helps diagnose root cause, state transitions, failure modes, unexpected runtime conditions, or future regressions.
 - Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information.
-- For media analysis, `ffmpeg.exe` and `ffprobe.exe` are in `C:\Users\TestUser\Programme\build\captureproject\build\msys64\clang64\bin`.
+- For media analysis, `ffmpeg.exe` and `ffprobe.exe` are in `C:\Users\%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin`.
 
 ## Windows debugging and binary analysis tools
 
-- Prefer read-only inspection before invasive instrumentation or binary mutation; prefer already installed tools.
 - Dumps: use `cdb.exe` from `C:\Program Files\Windows Kits\10\Debuggers\x64`; consider `dumpchk.exe` for readability and `symchk.exe` for symbols.
 - Use WinDbg/WinDbgX only when interactive dump debugging is useful.
 - Visual Studio/MSVC: use `dumpbin.exe` for PE/COFF headers, imports, exports, dependencies, sections, symbols, and disassembly. dumpbin.exe location: C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64

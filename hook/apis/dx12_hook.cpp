@@ -110,6 +110,13 @@ static std::atomic<ExecuteCommandListsPtr> g_SLBypassECL{nullptr};
 // vtable ECL hook when submitting overlay command lists.
 static std::atomic<ExecuteCommandListsPtr> g_RealD3D12ECL{nullptr};
 
+// Deferred ECL probe flag: set when ProbeRealD3D12ECL is skipped due to
+// the Streamline startup window being active.  The probe runs after the
+// startup window expires to avoid creating a temporary COMPUTE queue
+// during Streamline's critical initialization (which can crash Streamline
+// with a null pointer call on some games/configs).
+static std::atomic<bool> g_ProbeRealD3D12ECLDeferred{false};
+
 #if defined(__clang__) || defined(__GNUC__)
 #define CE_RETURN_ADDRESS() __builtin_extract_return_addr(__builtin_return_address(0))
 #elif defined(_MSC_VER)
@@ -4102,11 +4109,22 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
                 ID3D12Device* handoffDevice = nullptr;
                 const HRESULT handoffDeviceHr = pQueue->GetDevice(IID_PPV_ARGS(&handoffDevice));
                 if (SUCCEEDED(handoffDeviceHr) && handoffDevice) {
-                    ProbeRealD3D12ECL(handoffDevice);
-                    HookLogImportant(
-                        "%s: Re-probed real D3D12 ECL for fresh authoritative Streamline handoff after FSR "
-                        "(queue=%p realECL=%p dev=%p)",
-                        context, pQueue, (void*)g_RealD3D12ECL.load(std::memory_order_acquire), handoffDevice);
+                    // Defer probe if the Streamline startup window is active — creating
+                    // a temporary COMPUTE queue during SL's critical init can crash SL
+                    // with a null pointer call (same as the other probe deferral sites).
+                    if (!DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
+                        ProbeRealD3D12ECL(handoffDevice);
+                        HookLogImportant(
+                            "%s: Re-probed real D3D12 ECL for fresh authoritative Streamline handoff after FSR "
+                            "(queue=%p realECL=%p dev=%p)",
+                            context, pQueue, (void*)g_RealD3D12ECL.load(std::memory_order_acquire), handoffDevice);
+                    } else {
+                        g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
+                        HookLogImportant(
+                            "%s: Deferred realECL reprobe for fresh authoritative Streamline handoff after FSR "
+                            "(queue=%p dev=%p, startup window active)",
+                            context, pQueue, handoffDevice);
+                    }
                     handoffDevice->Release();
                 } else {
                     HookLogImportant(
@@ -7172,10 +7190,18 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             }
 
             auto* probeDev = g_Device.load(std::memory_order_acquire);
+            const bool startupWindowActiveForProbe = DXGIShared::IsStreamlineStartupTransitionWindowActive();
             if (!g_RealD3D12ECL.load(std::memory_order_acquire) && probeDev && IsStreamlineLoaded()) {
-                ProbeRealD3D12ECL(probeDev);
-                HookLogImportant("DX12: PostSL synthetic startup activation probed realECL=%p",
-                                 (void*)g_RealD3D12ECL.load(std::memory_order_acquire));
+                if (!startupWindowActiveForProbe) {
+                    ProbeRealD3D12ECL(probeDev);
+                    HookLogImportant("DX12: PostSL synthetic startup activation probed realECL=%p",
+                                     (void*)g_RealD3D12ECL.load(std::memory_order_acquire));
+                } else {
+                    g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
+                    HookLogImportant(
+                        "DX12: PostSL synthetic startup activation deferred ECL probe "
+                        "(startup window active, will probe after window expires)");
+                }
             }
 
             ID3D12CommandQueue* directQueue = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
@@ -8960,11 +8986,34 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             const bool allowWrapperBootstrap = ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(
                 g_HadFSRFGPhase, realQ != nullptr, realECL != nullptr);
             if (!allowWrapperBootstrap) {
-                HookLogImportant(
-                    "DX12: PostSL refusing SL wrapper bootstrap without direct path (queue=%p scQueue=%p wrapper=%p)",
-                    queue, scQueue, (void*)slQueue);
-                bb->Release();
-                return;
+                // For pure-DLSS startup (no FSR history), the real ECL might not
+                // be available yet if the deferred ECL probe hasn't fired (it's
+                // deferred until the Streamline startup window expires, and the
+                // window may still be active when PostSL first renders).  In this
+                // case, selectedQueueOrigECL is still valid (saved from the vtable
+                // hook on the swapchain queue).  Fall back to submitting through
+                // selectedQueueOrigECL on the queue itself rather than refusing
+                // and dropping every overlay frame.
+                if (!g_HadFSRFGPhase && selectedQueueOrigECL && selectedQueueIsSwapchainQueue) {
+                    submittedQueue = queue;
+                    selectedQueueOrigECL(queue, 1, lists);
+                    usedOrigECL = true;
+                    static int s_pureDLSSBootstrapFallbackLog = 0;
+                    if (s_pureDLSSBootstrapFallbackLog < 10) {
+                        HookLogImportant(
+                            "DX12: PostSL pure-DLSS bootstrap fallback via selectedQueueOrigECL on %p "
+                            "(realECL not yet probed, scQueue=%p)",
+                            queue, scQueue);
+                    }
+                    s_pureDLSSBootstrapFallbackLog++;
+                } else {
+                    HookLogImportant(
+                        "DX12: PostSL refusing SL wrapper bootstrap without direct path "
+                        "(queue=%p scQueue=%p wrapper=%p)",
+                        queue, scQueue, (void*)slQueue);
+                    bb->Release();
+                    return;
+                }
             }
 
             // Bootstrap: submit through SL's wrapper to capture real queue on first call
@@ -9377,6 +9426,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             return;
         }
     }
+
+    // Deferred ECL probe: if ProbeRealD3D12ECL was skipped due to the Streamline
+    // startup window being active, run it now that the window has expired.
+    DX12_ServiceDeferredECLProbe();
 
     // Post-FG-OFF frame counter: log every ProcessFrame for first 50 calls after FG
     // transition.  If Present stops being called, this gap will be visible in the log.
@@ -11057,11 +11110,20 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // Probe real D3D12 ECL when SL FG first activates — PostSL needs it
                 // to bypass SL's COM wrapper.  The inner transition handler also does
                 // this, but the epoch sync skips it for transitions already handled here.
+                // Defer if Streamline startup window is active to avoid creating a
+                // temporary COMPUTE queue during Streamline's critical initialization.
                 auto* dev = g_Device.load(std::memory_order_acquire);
+                const bool startupWindowActiveForProbe = DXGIShared::IsStreamlineStartupTransitionWindowActive();
                 if (dev && IsStreamlineLoaded()) {
-                    ProbeRealD3D12ECL(dev);
-                    auto* probed = (void*)g_RealD3D12ECL.load(std::memory_order_acquire);
-                    HookLogImportant("DX12: [outer] SL FG ON — probed realECL=%p (dev=%p)", probed, dev);
+                    if (!startupWindowActiveForProbe) {
+                        ProbeRealD3D12ECL(dev);
+                        auto* probed = (void*)g_RealD3D12ECL.load(std::memory_order_acquire);
+                        HookLogImportant("DX12: [outer] SL FG ON — probed realECL=%p (dev=%p)", probed, dev);
+                    } else {
+                        g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
+                        HookLogImportant(
+                            "DX12: [outer] SL FG ON — deferred ECL probe (startup window active, dev=%p)", dev);
+                    }
                 } else {
                     HookLogImportant("DX12: [outer] SL FG ON — skipped ECL probe (dev=%p, SL=%d)", dev,
                                      IsStreamlineLoaded() ? 1 : 0);
@@ -13595,6 +13657,11 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                                                         nowMs - lastVisibleOverlayStartupProgressTriggerMs >= 16);
 
         if (allowExpiryTriggeredStartupActivation || visibleOverlayStartupProgressTick) {
+            // If the deferred ECL probe is pending and the startup window has expired,
+            // try to probe now.  ProcessFrame may not be running (synthetic re-entrant
+            // Present path), so the deferred probe check in ProcessFrame would never fire.
+            DX12_ServiceDeferredECLProbe();
+
             if (!activationSwapchain) {
                 static int s_nullSwapchainSkipLog = 0;
                 if (s_nullSwapchainSkipLog < 5) {
@@ -13902,6 +13969,24 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     // Never hook our own overlay queue to avoid re-entry in ECL
     if (queue == g_State.overlayQueue)
         return;
+
+    // Skip vtable hooking on SL wrapper queues during Streamline startup.
+    // During pure-DLSS cold start, Streamline creates COM wrapper queues that
+    // inherit the shared vtable.  Hooking vtable[10] on these wrappers and then
+    // intercepting their ECL calls during Streamline's critical initialization
+    // phase can crash Streamline (null pointer call at RIP=0).  The non-origGame
+    // check covers these transient wrapper queues without affecting the game queue
+    // or the swapchain queue that we need for overlay/heartbeat.
+    if (queue != g_OriginalGameQueue && queue != g_SwapchainQueue &&
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed) &&
+        DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
+        static int s_skipSLWrapperVTableHookLog = 0;
+        if (s_skipSLWrapperVTableHookLog < 10) {
+            HookLogImportant("DX12: Skipping vtable hook for non-origGame queue %p during SL startup window", queue);
+        }
+        s_skipSLWrapperVTableHookLog++;
+        return;
+    }
 
     // We ALWAYS hook the queue for freeze detection heartbeat
     // The overlay rendering is skipped separately in ProcessFrameExternal if
@@ -14303,6 +14388,25 @@ void DX12Hook::ClassifyFrame(int commandListCount) {
 }
 
 // FIXED: Clean up the global hook instance if allocated
+// Service the deferred ECL probe: if ProbeRealD3D12ECL was skipped because
+// the Streamline startup window was active, try to probe now that the window
+// has expired.  Safe to call from any thread at any time.
+void DX12_ServiceDeferredECLProbe() {
+    if (!g_ProbeRealD3D12ECLDeferred.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
+        return;
+    }
+    auto* srvDev = g_Device.load(std::memory_order_acquire);
+    if (srvDev && IsStreamlineLoaded()) {
+        ProbeRealD3D12ECL(srvDev);
+        auto* srvProbed = (void*)g_RealD3D12ECL.load(std::memory_order_acquire);
+        g_ProbeRealD3D12ECLDeferred.store(false, std::memory_order_release);
+        HookLogImportant("DX12: ServiceDeferredECLProbe — realECL=%p", srvProbed);
+    }
+}
+
 DWORD WINAPI UnloadThread(LPVOID lpParam) {
     Sleep(200);
     if (g_dx12HookInstance) {

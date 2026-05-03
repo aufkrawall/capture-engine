@@ -42,6 +42,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain*) {}
 void DX12_OnSwapchainResizeBegin() {}
 void DX12_OnSwapchainResizeEnd() {}
 void DX12_SignalFSR4SwapchainRecreated() {}
+void DX12_ServiceDeferredECLProbe() {}
 
 // DX12_SetCommandQueue is extern "C" in the header
 extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}

@@ -1728,7 +1728,11 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     // SL may overwrite our Present vtable hook asynchronously during FG
     // activation (not necessarily inside slDLSSGSetOptions).  This check
     // runs every frame the game polls FG state and will re-patch if needed.
-    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+    // Skip vtable repair while PostSL has not yet confirmed rendering, to
+    // avoid calling through Steam's overlay hook chain during SL's DllMain
+    // (which can crash gameoverlayrenderer64 with a null pointer).
+    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
+        HookIsPostSLOverlayConfirmedRendering()) {
         DXGIShared::RepairVTableHooksIfNeeded();
     }
 

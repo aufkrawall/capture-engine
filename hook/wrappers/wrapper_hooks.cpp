@@ -11,6 +11,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#define CE_WRAPPER_RETURN_ADDRESS() __builtin_return_address(0)
 
 // Forward declaration from dx12_hook.cpp
 extern void EnsureDX12Hook();
@@ -21,7 +22,26 @@ extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 #include "../apis/dx12_hook.h"  // Access to g_DX12Hook implementation
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
+#include "../common/streamline_runtime_policy.h"
 #include "d3d10_device_wrap.h"
+
+// Returns true if the given return address is inside a Streamline module
+// (sl.common, sl.interposer, sl.dlss_g, etc.).  SL creates internal DXGI
+// factories during DllMain for its own plumbing.  Wrapping those and installing
+// Present hooks triggers Steam's overlay on the SL worker thread where Steam is
+// uninitialized, causing a null pointer crash inside OverlayHookD3D3.
+static bool IsCallerFromStreamlineModule(const void* returnAddress) {
+    HMODULE callerMod = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<const char*>(returnAddress), &callerMod) ||
+        !callerMod) {
+        return false;
+    }
+    char callerPath[MAX_PATH] = {};
+    return GetModuleFileNameA(callerMod, callerPath, sizeof(callerPath)) &&
+           ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(callerPath);
+}
 #include "d3d11_device_wrap.h"
 #include "d3d9_device_wrap.h"
 #include "d3d9_wrap.h"
@@ -180,15 +200,32 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
         return E_FAIL;
     }
 
-    if (!oCreateDXGIFactory)
+    // CRITICAL: Use the unhooked DXGI export (original RVA from disk) instead of
+    // oCreateDXGIFactory. Steam overlays EAT-hook dxgi.dll exports so that
+    // GetProcAddress returns Steam's OverlayHookD3D3 trampoline.  Calling through
+    // oCreateDXGIFactory during SL's DllMain goes through Steam's uninitialized
+    // overlay code and crashes (0xC0000005 at RIP=0).  GetUnhookedDXGIExport
+    // reads the original on-disk RVA and applies it to the loaded dxgi.dll base,
+    // giving the real function entry that bypasses Steam's EAT hook entirely.
+    static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory>(GetUnhookedDXGIExport("CreateDXGIFactory"));
+    if (!unhookedFn)
         return E_FAIL;
 
     t_inFactory = true;
     IDXGIFactory* pRealFactory = nullptr;
-    HRESULT hr = oCreateDXGIFactory(riid, (void**)&pRealFactory);
+    HRESULT hr = unhookedFn(riid, (void**)&pRealFactory);
     t_inFactory = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
+        // Skip wrapping when called from a Streamline module — SL creates
+        // internal DXGI factories during DllMain for its own plumbing.
+        // Wrapping them installs Present hooks that trigger Steam's overlay
+        // on the SL worker thread where Steam is uninitialized → RIP=0.
+        if (IsCallerFromStreamlineModule(CE_WRAPPER_RETURN_ADDRESS())) {
+            *ppFactory = pRealFactory;
+            return hr;
+        }
+
         // Wrap with CWrapDXGIFactory2 (handles all factory versions)
         IDXGIFactory2* pRealFactory2 = nullptr;
         if (SUCCEEDED(pRealFactory->QueryInterface(IID_PPV_ARGS(&pRealFactory2)))) {
@@ -222,15 +259,21 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
         return E_FAIL;
     }
 
-    if (!oCreateDXGIFactory1)
+    static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory1>(GetUnhookedDXGIExport("CreateDXGIFactory1"));
+    if (!unhookedFn)
         return E_FAIL;
 
     t_inFactory1 = true;
     IDXGIFactory1* pRealFactory = nullptr;
-    HRESULT hr = oCreateDXGIFactory1(riid, (void**)&pRealFactory);
+    HRESULT hr = unhookedFn(riid, (void**)&pRealFactory);
     t_inFactory1 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
+        if (IsCallerFromStreamlineModule(CE_WRAPPER_RETURN_ADDRESS())) {
+            *ppFactory = pRealFactory;
+            return hr;
+        }
+
         // Wrap with CWrapDXGIFactory2
         IDXGIFactory2* pRealFactory2 = nullptr;
         if (SUCCEEDED(pRealFactory->QueryInterface(IID_PPV_ARGS(&pRealFactory2)))) {
@@ -253,10 +296,10 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
 
 HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
     // Guard against mutual recursion with third-party overlay hooks (e.g., Steam).
-    // When oCreateDXGIFactory2 points to a Steam EAT hook that has stored us as its
-    // "original" (via our GetProcAddress interception), each call cycles back here.
-    // On re-entry, bypass the hook chain by calling the real dxgi.dll function
-    // directly using the original on-disk export RVA.
+    // When Steam EAT-hooks dxgi.dll, oCreateDXGIFactory2 points to Steam's
+    // trampoline (OverlayHookD3D3).  Calling it during SL's DllMain crashes
+    // Steam's uninitialized overlay code.  Always use the unhooked export
+    // (original on-disk RVA) to bypass Steam's EAT hook entirely.
     thread_local bool t_inFactory2 = false;
     if (t_inFactory2) {
         static auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory2>(GetUnhookedDXGIExport("CreateDXGIFactory2"));
@@ -266,15 +309,21 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
         return E_FAIL;
     }
 
-    if (!oCreateDXGIFactory2)
+    static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory2>(GetUnhookedDXGIExport("CreateDXGIFactory2"));
+    if (!unhookedFn)
         return E_FAIL;
 
     t_inFactory2 = true;
     IDXGIFactory2* pRealFactory = nullptr;
-    HRESULT hr = oCreateDXGIFactory2(Flags, riid, (void**)&pRealFactory);
+    HRESULT hr = unhookedFn(Flags, riid, (void**)&pRealFactory);
     t_inFactory2 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
+        if (IsCallerFromStreamlineModule(CE_WRAPPER_RETURN_ADDRESS())) {
+            *ppFactory = pRealFactory;
+            return hr;
+        }
+
         // Wrap with CWrapDXGIFactory2
         auto* pWrapper = new CWrapDXGIFactory2(pRealFactory);
         pRealFactory->Release();

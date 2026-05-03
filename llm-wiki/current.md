@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-05-02 — All known inject/overlay issues resolved across DX9, DX10, DX11, and DX12 test apps and BioShock Infinite (Steam DX11 32-bit). GTA5 Enhanced (DX12) crash confirmed fixed after reverting LdrRegisterDllNotification. See `llm-wiki/log/recent.md` for full fix timeline.
+Last cross-checked: 2026-05-03 — All known inject/overlay issues resolved across DX9, DX10, DX11, and DX12 test apps and BioShock Infinite (Steam DX11 32-bit). GTA5 Enhanced (DX12) crash confirmed fixed after reverting LdrRegisterDllNotification. Talos DLSS FG cold-start crash (0xC0000005 RIP=0) fixed: `ProbeRealD3D12ECL` deferred during Streamline startup window at all three probe sites (third site at line 4112 in `CaptureSwapchainQueueFromCreateDevice` was missing the guard); `DX12_ServiceDeferredECLProbe()` provides guaranteed firing from synthetic Present routing; and all three FFX hook handlers (`ffxCreateContext`/`ffxDestroyContext`/`ffxConfigure`) skip CE-side processing during the SL startup window to prevent null-pointer calls through SL's internal function resolution. See `llm-wiki/log/recent.md` for full fix timeline (build `0.1.2762`).
 
 Primary sources:
 - `llm-wiki/log/recent.md`

@@ -90,6 +90,7 @@ void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallb
                                       void* originalUserContext);
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
 void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);
+void DX12_ServiceDeferredECLProbe();
 void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled);
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* callbackDesc,
                                                  void* userCtx);

@@ -1,5 +1,6 @@
 #include "dxgi_shared.h"
 #include "../../common/raii_helpers.h"
+#include "../apis/dx12_hook.h"
 #include "../apis/streamline_hook.h"
 #include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
@@ -1193,6 +1194,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         if (api == APIType::D3D12) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline synthetic Present");
         }
+
+        // Service the deferred ECL probe: ProcessFrame may be dormant during
+        // synthetic re-entrant Present routing, so the ProcessFrame-based
+        // deferred probe check would never fire here.  The ECL detour also
+        // services it, but may not fire if PostSL submits are being skipped.
+        DX12_ServiceDeferredECLProbe();
 
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
         if (presentBypass) {
@@ -2591,6 +2598,19 @@ void RemovePresentHooks() {
 }
 
 void RepairVTableHooksIfNeeded() {
+    // CRITICAL: Do NOT access the swapchain vtable during Streamline's critical
+    // initialization window.  Inside Hooked_slDLSSGGetState (called during
+    // sl_common!slGetPluginFunction from SL's DllMain), reading the vtable
+    // triggers Steam's overlay hook chain (gameoverlayrenderer64!OverlayHookD3D3)
+    // which may still be partially initialized and crash with a null function
+    // pointer call (RIP=0, RAX=0).  This guard is state-based (PostSL confirmed
+    // rendering) rather than timer-based because SL's background DllMain duration
+    // varies and can exceed the startup window timer.
+    if (g_StreamlineFGRunning.load(std::memory_order_acquire) &&
+        !HookIsPostSLOverlayConfirmedRendering()) {
+        return;
+    }
+
     if (!s_hookedVTable) {
         static std::atomic<uint32_t> s_nullLogCount{0};
         if (s_nullLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
