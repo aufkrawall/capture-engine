@@ -9,9 +9,10 @@ Copyright (c) 2026 aufkrawall
 
 - Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason not to.
 - After code changes, run `python build.py --skip-updates`; do not use `python build.py --version`!
+- Always git commit after code changes!
 - Before committing, run relevant tests/unit tests and ensure build/test results succeed.
 - Commit completed code changes with plain git commands only: `git status`, `git add -A`, `git commit -m "<message>"`.
-- Do not push to cloud unless explicitly requested, just commit locally!
+- Do not push to cloud unless explicitly requested, generally just commit locally!
 - Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work!
 - Keep `llm-wiki/` linted / quality-checked and updated when durable project knowledge changes.
 - Always update `llm-wiki/` after code changes!
@@ -66,6 +67,14 @@ Copyright (c) 2026 aufkrawall
 - Add additional debug logging when it helps diagnose root cause, state transitions, failure modes, unexpected runtime conditions, or future regressions.
 - Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information.
 - For media analysis, `ffmpeg.exe` and `ffprobe.exe` are in `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin`.
+
+## cdb dump analysis
+
+When analyzing crash dumps for the Talos DLSS FG crash family (0xC0000005 RIP=0), use the correct symbol path that includes both the Microsoft symbol server AND the local PDB directory:
+```
+cdb -z crash.dmp -y "srv*;C:\Users\TestUser\Programme\build\captureproject\installed\captureengine" -c ".ecxr; k; q"
+```
+The `srv*`-only path misses CE's local PDBs and produces incomplete stack traces.
 
 ## Windows debugging and binary analysis tools
 

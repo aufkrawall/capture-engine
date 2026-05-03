@@ -1499,6 +1499,48 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
+    // CRITICAL: SL DllMain startup window guard.  SL modules can call Present
+    // during DllMain (e.g., sl_dlss_g!DllMain -> internal -> sl_common).  The
+    // swapchain's vtable[8] points to DetourPresent because the D3D12 vtable is
+    // shared by all swapchain objects.  Routing through CallOriginalPresent ->
+    // oPresent (= real dxgi!Present body) hits Steam's inline E9 JMP
+    // (OverlayHookD3D3), which crashes because Steam TLS is uninitialized on
+    // the SL loader thread -> RIP=0.
+    // Bypass Steam overlay entirely for SL module Present calls during the
+    // unconfirmed PostSL startup window.
+    if (callerFromStreamlineModule && steamOverlayLoaded && api == APIType::D3D12 &&
+        !postSLConfirmedRendering && !observerOnlyMode) {
+        PFN_Present bypass = EnsurePresentBypassTrampoline();
+        if (bypass) {
+            static std::atomic<int> s_slDllMainBypassLogCount{0};
+            int bypassNum = s_slDllMainBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (bypassNum <= 15) {
+                HookLogImportant(
+                    "DetourPresent: SL DllMain startup bypass #%d (tid=0x%04X)",
+                    bypassNum, GetCurrentThreadId());
+            }
+            HRESULT bypassHr = bypass(pSwapChain, SyncInterval, Flags);
+            if (api == APIType::D3D12) {
+                InvokeDX12FlushDeferredSignal();
+            }
+            if (SUCCEEDED(bypassHr)) {
+                g_SharedFpsLimiter.ApplyPostPresent();
+            }
+            if (bypassHr == DXGI_ERROR_DEVICE_REMOVED || bypassHr == DXGI_ERROR_DEVICE_RESET) {
+                if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
+                    HookLog("DXGI: Device removed (hr=0x%08X), disabling hooks", bypassHr);
+                }
+            }
+            return bypassHr;
+        }
+        static std::atomic<int> s_slDllMainBypassNoBypassLogCount{0};
+        if (s_slDllMainBypassNoBypassLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant(
+                "DetourPresent: SL DllMain startup condition met but bypass trampoline unavailable (tid=0x%04X)",
+                GetCurrentThreadId());
+        }
+    }
+
     HRESULT hr;
     if (s_slRoutingActive.load(std::memory_order_acquire)) {
         ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
@@ -1975,6 +2017,40 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     if (api == APIType::D3D12) {
         InvokeDX12WaitForOverlayCompletion(nullptr);
+    }
+
+    // CRITICAL: SL DllMain startup window guard — same as DetourPresent.
+    if (callerFromStreamlineModule && steamOverlayLoaded && api == APIType::D3D12 &&
+        !postSLConfirmedRendering && !observerOnlyMode) {
+        PFN_Present1 bypass = EnsurePresent1BypassTrampoline();
+        if (bypass) {
+            static std::atomic<int> s_slDllMainBypassLogCount1{0};
+            int bypassNum = s_slDllMainBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (bypassNum <= 15) {
+                HookLogImportant(
+                    "DetourPresent1: SL DllMain startup bypass #%d (tid=0x%04X)",
+                    bypassNum, GetCurrentThreadId());
+            }
+            HRESULT bypassHr = bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+            if (api == APIType::D3D12) {
+                InvokeDX12FlushDeferredSignal();
+            }
+            if (SUCCEEDED(bypassHr)) {
+                g_SharedFpsLimiter.ApplyPostPresent();
+            }
+            if (bypassHr == DXGI_ERROR_DEVICE_REMOVED || bypassHr == DXGI_ERROR_DEVICE_RESET) {
+                if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
+                    HookLog("DXGI: Device removed (hr=0x%08X), disabling hooks", bypassHr);
+                }
+            }
+            return bypassHr;
+        }
+        static std::atomic<int> s_slDllMainBypassNoBypassLogCount1{0};
+        if (s_slDllMainBypassNoBypassLogCount1.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant(
+                "DetourPresent1: SL DllMain startup condition met but bypass trampoline unavailable (tid=0x%04X)",
+                GetCurrentThreadId());
+        }
     }
 
     HRESULT hr;
@@ -2783,6 +2859,22 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             HookLog("CallOriginalPresent: fallback oPresent=%p (slLoaded=%d)", presentOriginal, slLoaded);
         }
         return presentOriginal(pSwapChain, SyncInterval, Flags);
+    }
+
+    // Last resort: if the bypass trampoline exists but was skipped
+    // (ShouldForceSteamDX12Bypass returned false), try it directly.
+    // This handles the case where SL DllMain sets runtime mode to
+    // DLSSFG before FG actually starts running, causing the bypass
+    // check to fail.
+    if (presentBypass) {
+        static int s_copBypassFallbackCount = 0;
+        if (s_copBypassFallbackCount++ < 10) {
+            HookLogImportant(
+                "CallOriginalPresent: LAST RESORT bypass trampoline at %p (oPresent=%p, oPresentTrampoline=%p, "
+                "slLoaded=%d)",
+                presentBypass, presentOriginal, presentTrampoline, slLoaded);
+        }
+        return presentBypass(pSwapChain, SyncInterval, Flags);
     }
 
     HookLog("CallOriginalPresent: NO PATH AVAILABLE (oPresent=%p, oPresentTrampoline=%p, slLoaded=%d)", presentOriginal,

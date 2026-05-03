@@ -241,7 +241,7 @@ inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isStea
     }
 
     const bool streamlineNeedsBypass =
-        streamlineLoaded && !streamlineFGRunning && runtimeMode != ce::fg_runtime::RuntimeMode::kDLSSFG;
+        streamlineLoaded && !streamlineFGRunning;
     const bool smoothMotionNeedsBypass = nvPresentLoaded;
     return streamlineNeedsBypass || smoothMotionNeedsBypass;
 }

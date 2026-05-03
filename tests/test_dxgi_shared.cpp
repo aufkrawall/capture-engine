@@ -68,8 +68,8 @@ TEST(DXGISharedTest, SteamDX12BypassStaysEnabledUntilStreamlineFGActuallyRuns) {
         true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false));
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(
         true, true, true, false, false, true, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, true,
-                                                                ce::fg_runtime::RuntimeMode::kDLSSFG, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, true,
+                                                               ce::fg_runtime::RuntimeMode::kDLSSFG, false, false));
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, true,
                                                                 ce::fg_runtime::RuntimeMode::kOff, true, false));
 }
