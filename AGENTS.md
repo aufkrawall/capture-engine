@@ -68,17 +68,15 @@ Copyright (c) 2026 aufkrawall
 - Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information.
 - For media analysis, `ffmpeg.exe` and `ffprobe.exe` are in `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin`.
 
-## cdb dump analysis
+## Windows debugging and binary analysis tools
 
-When analyzing crash dumps for the Talos DLSS FG crash family (0xC0000005 RIP=0), use the correct symbol path that includes both the Microsoft symbol server AND the local PDB directory:
+- When analyzing crash dumps, use the correct symbol path that includes both the Microsoft symbol server AND the local PDB directory:
 ```
-cdb -z crash.dmp -y "srv*;C:\Users\TestUser\Programme\build\captureproject\installed\captureengine" -c ".ecxr; k; q"
+cdb -z crash.dmp -y "srv*;%USERPROFILE%\Programme\build\captureproject\installed\captureengine" -c ".ecxr; k; q"
 ```
 The `srv*`-only path misses CE's local PDBs and produces incomplete stack traces.
 
-## Windows debugging and binary analysis tools
-
-Prefer these installed Windows tools for `.dmp`, symbol, PE/COFF, Sysinternals, and media/capture analysis. The paths below reflect the current tool report; versioned Visual Studio/MSVC components may still vary after toolchain updates.
+- Installed Windows tools for `.dmp`, symbol, PE/COFF, Sysinternals, and media/capture analysis. The paths below reflect the current tool report; versioned Visual Studio/MSVC components may still vary after toolchain updates.
 
 | Tool | Purpose | Installed/default path |
 | --- | --- | --- |

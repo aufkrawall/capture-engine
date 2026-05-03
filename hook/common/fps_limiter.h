@@ -1068,12 +1068,18 @@ public:
                 SetEvent(requestEvent);
 
             // Wait for release from limiter process.
-            // Skip for general (non-capture) mode: the local cadence (RunLocalCadence)
-            // provides timer-based pacing without relying on the limiter process.
-            // The event-based wait with a 3x frame-interval timeout causes a
-            // ~21ms wait per frame (at 140fps target) even when the event never
-            // signals, artificially capping FPS to ~40 regardless of the target.
-            if (releaseEvent && usingCaptureSync) {
+            // For both capture-sync and general mode: the limiter process writes
+            // targetTimeTicks to shared memory and signals releaseEvent.  We must
+            // wait for it to get a fresh target, otherwise we always read 0 (or
+            // stale values) and fall through to RunLocalCadence, which breaks
+            // live-switching from Reflex→basic mode because the local cadence
+            // lags behind the actual frame-present cadence.
+            //
+            // Timeout = 3x target frame interval, clamped to [10, 100]ms.
+            // If the limiter process is alive (normal case) it responds in <1ms.
+            // On timeout (limiter crashed), the fallback to RunLocalCadence below
+            // still provides basic pacing via local SmartWait.
+            if (releaseEvent) {
                 haveReleaseEvent = true;
                 DWORD frameTimeMs = 1000 / effectiveTargetFps;
                 DWORD timeoutMs = frameTimeMs * 3;
@@ -1083,10 +1089,6 @@ public:
                     timeoutMs = 100;
 
                 waitResult = WaitForSingleObject(releaseEvent, timeoutMs);
-            }
-            if (!usingCaptureSync) {
-                haveReleaseEvent = true;
-                waitResult = WAIT_OBJECT_0;
             }
         }
 
@@ -1152,6 +1154,12 @@ public:
 
             int64_t target = shm->fpsLimiter.targetTimeTicks.load(std::memory_order_acquire);
             if (target > 0) {
+                const int64_t targetDiffUs =
+                    ((target - nowQpc.QuadPart) * 1000000) / qpcFrequency;
+                if (targetHitLogCount_++ < 10) {
+                    TraceLog("Apply: SmartWait targetTimeTicks=%lld diffUs=%lld", target, targetDiffUs);
+                    HookLog("FPS Limiter: SmartWait to targetTimeTicks=%lld (diffUs=%lld)", target, targetDiffUs);
+                }
                 SmartWait(target);
             } else {
                 if (targetLogCount_++ < 10) {
@@ -1219,6 +1227,7 @@ public:
         // CRITICAL FIX: Reset per-instance log counters on shutdown
         timeoutLogCount_ = 0;
         targetLogCount_ = 0;
+        targetHitLogCount_ = 0;
         lastTargetFps_ = 0;
         lastUsedCaptureSync_ = false;
         lastEffectiveMode_ = LimiterModeValues::kAuto;
@@ -1279,6 +1288,7 @@ private:
     // CRITICAL FIX: Per-instance log counters (was static, never reset)
     int timeoutLogCount_ = 0;
     int targetLogCount_ = 0;
+    int targetHitLogCount_ = 0;
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
     uint32_t lastEffectiveMode_ = LimiterModeValues::kAuto;  // Track mode changes for logging
