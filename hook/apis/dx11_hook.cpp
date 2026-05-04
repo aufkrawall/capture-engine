@@ -1169,6 +1169,20 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
         {D3D11ShaderStage::Compute, "CS"},
     };
 
+    // Diagnostic: check if the context has any samplers bound
+    {
+        ID3D11SamplerState* diagSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+        ctx->PSGetSamplers(0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT, diagSamplers);
+        int boundCount = 0;
+        for (UINT i = 0; i < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) {
+            if (diagSamplers[i]) {
+                boundCount++;
+                diagSamplers[i]->Release();
+            }
+        }
+        HookLogImportant("DX11: Deferred AF sweep ctx=%p boundSamplers=%d", (void*)ctx, boundCount);
+    }
+
     int totalApplied = 0;
     for (const auto& si : stages) {
         ID3D11SamplerState* samplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
