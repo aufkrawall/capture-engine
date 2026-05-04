@@ -28,6 +28,13 @@ extern void DX12_OnSwapchainResizeEnd();
 extern "C" __declspec(dllimport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
 extern "C" __declspec(dllimport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 
+// Query-based CPU prerender limit for D3D11 (implemented in dx11_hook.cpp)
+extern void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
+
+// Wrapper diagnostic counters
+static std::atomic<int> g_WrapperPrerenderFrames{0};
+static std::atomic<int> g_WrapperPrerenderWaits{0};
+
 // FG detection for FSR FG/DLSS FG compatibility
 #include "../common/fg_detection.h"
 #include "../common/fps_limiter.h"
@@ -1002,6 +1009,23 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply(true);
         DXGIShared::ApplyPresentFrameLatencyOverrides(pRealCached);
+    }
+
+    // Query-based CPU prerender limit for D3D11 (wrapper path).
+    // Only applies when SetMaximumFrameLatency failed or is unavailable,
+    // and the game is not D3D12.
+    if (!m_IsD3D12 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        float prerenderLimit = GetActivePrerenderLimit();
+        if (prerenderLimit >= 0.0f) {
+            int64_t prerenderStartUs = PerfLogger::GetQpcUs();
+            ApplyPrerenderLimit(pRealCached, prerenderLimit);
+            int64_t waitUs = PerfLogger::GetQpcUs() - prerenderStartUs;
+            g_WrapperPrerenderFrames.fetch_add(1, std::memory_order_relaxed);
+            int idx = g_WrapperPrerenderWaits.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 12) {
+                WrapperLog("Wrapper: Prerender limit limit=%.2f wait=%lldus (#%d)", prerenderLimit, (long long)waitUs, idx + 1);
+            }
+        }
     }
     if (activeDebugSample) {
         activeDebugSample->fpsLimiterUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - limiterStartUs);

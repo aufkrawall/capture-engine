@@ -1085,7 +1085,7 @@ void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
 void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 static void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain);
 static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
-static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
+
 static float ResolveDX11PrerenderLimit() {
     return GetActivePrerenderLimit();
 }
@@ -3453,7 +3453,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 }
 
 // --- Prerender Limit Support ---
-static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
+void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
     if (limit < 0.0f)
         return;
 

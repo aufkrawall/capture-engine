@@ -8,6 +8,171 @@
 #include "d3d11_devicecontext_wrap.h"
 #include "d3d11_device_wrap.h"
 #include "hook_common.h"
+#include "../common/sampler_override_utils.h"
+#include <atomic>
+#include <shared_mutex>
+#include <vector>
+
+// Simple cached-replacement-sampler map for the wrapper path.
+// Keyed by original sampler pointer, stores the replacement.
+// Thread-safe with shared_mutex.
+struct WrapperSamplerEntry {
+    ID3D11SamplerState* original;
+    ID3D11SamplerState* replacement;
+};
+static std::vector<WrapperSamplerEntry> g_WrapperSamplerCache;
+static std::shared_mutex g_WrapperSamplerCacheMutex;
+static uint64_t g_WrapperSamplerConfigHash = 0;
+static std::vector<ID3D11SamplerState*> g_WrapperReplacementSamplers;
+
+// Diagnostic counters
+static std::atomic<int> g_WrapperAFApplied{0};
+static std::atomic<int> g_WrapperAFSkipNoMips{0};
+static std::atomic<int> g_WrapperAFSkipBorder{0};
+static std::atomic<int> g_WrapperAFSkipReduction{0};
+static std::atomic<int> g_WrapperAFSkipComparison{0};
+static std::atomic<int> g_WrapperAFReplaced{0};
+
+static void ClearWrapperSamplerCache() {
+    for (auto* s : g_WrapperReplacementSamplers) {
+        if (s) s->Release();
+    }
+    g_WrapperReplacementSamplers.clear();
+    g_WrapperSamplerCache.clear();
+    g_WrapperSamplerConfigHash = 0;
+}
+
+static uint64_t HashWrapperSamplerConfig(const GraphicsConfig& gfx) {
+    return ce::sampler_override::HashSamplerOverrideConfig(gfx);
+}
+
+static ID3D11SamplerState* FindWrapperReplacement(ID3D11SamplerState* original) {
+    std::shared_lock<std::shared_mutex> lock(g_WrapperSamplerCacheMutex);
+    for (const auto& entry : g_WrapperSamplerCache) {
+        if (entry.original == original) return entry.replacement;
+    }
+    return nullptr;
+}
+
+static void AddWrapperReplacement(ID3D11SamplerState* original, ID3D11SamplerState* replacement) {
+    std::unique_lock<std::shared_mutex> lock(g_WrapperSamplerCacheMutex);
+    for (auto& entry : g_WrapperSamplerCache) {
+        if (entry.original == original) {
+            entry.replacement = replacement;
+            return;
+        }
+    }
+    g_WrapperSamplerCache.push_back({original, replacement});
+}
+
+// Check if a sampler desc allows forced AF (same logic as SamplerAllowsForcedAF in dx11_hook.cpp)
+static bool WrapperSamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
+    if (!ce::sampler_override::IsAnisotropicOverrideEnabled(gfx))
+        return false;
+    if (desc.MaxLOD == 0.0f || desc.MinLOD == desc.MaxLOD) {
+        int idx = g_WrapperAFSkipNoMips.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12)
+            WrapperLog("Wrapper: AF skip (no mips) MaxLOD=%.1f MinLOD=%.1f", desc.MaxLOD, desc.MinLOD);
+        return false;
+    }
+    if (desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
+        desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
+        int idx = g_WrapperAFSkipBorder.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12)
+            WrapperLog("Wrapper: AF skip (border address) U=%d V=%d W=%d", desc.AddressU, desc.AddressV, desc.AddressW);
+        return false;
+    }
+    if (ce::sampler_override::IsD3D11ReductionFilter(desc.Filter)) {
+        int idx = g_WrapperAFSkipReduction.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 6)
+            WrapperLog("Wrapper: AF skip (reduction filter) Filter=0x%X", desc.Filter);
+        return false;
+    }
+    if (desc.ComparisonFunc != D3D11_COMPARISON_NEVER) {
+        int idx = g_WrapperAFSkipComparison.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 6)
+            WrapperLog("Wrapper: AF skip (comparison func) Func=%d", desc.ComparisonFunc);
+        return false;
+    }
+    return true;
+}
+
+// Apply AF override to a sampler desc at bind-time (create-time already handles disable/bias).
+// This is the bind-time AF enablement path for the wrapper, similar to the vtable hook path.
+static bool WrapperApplyBindTimeAF(D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
+    if (!WrapperSamplerAllowsForcedAF(desc, gfx))
+        return false;
+
+    const UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
+    const D3D11_FILTER newFilter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
+    if (desc.Filter != newFilter || desc.MaxAnisotropy != maxAniso) {
+        const D3D11_FILTER origFilter = desc.Filter;
+        const UINT origAniso = desc.MaxAnisotropy;
+        desc.Filter = newFilter;
+        desc.MaxAnisotropy = maxAniso;
+        int idx = g_WrapperAFApplied.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 48) {
+            WrapperLog("Wrapper: AF bind-time override Filter=0x%X->0x%X Aniso=%u->%u (#%d)",
+                       origFilter, desc.Filter, origAniso, desc.MaxAnisotropy, idx + 1);
+        }
+        return true;
+    }
+    return false;
+}
+
+// Get or create a replacement sampler with AF override applied.
+// Uses the real device to create the replacement.
+static ID3D11SamplerState* GetOrCreateWrapperReplacementSampler(ID3D11Device* realDevice,
+                                                                ID3D11SamplerState* original,
+                                                                const GraphicsConfig& gfx) {
+    if (!realDevice || !original)
+        return original;
+
+    // Check config hash to invalidate cache on config changes
+    {
+        uint64_t hash = HashWrapperSamplerConfig(gfx);
+        std::unique_lock<std::shared_mutex> lock(g_WrapperSamplerCacheMutex);
+        if (g_WrapperSamplerConfigHash != hash) {
+            lock.unlock();
+            ClearWrapperSamplerCache();
+            lock.lock();
+            g_WrapperSamplerConfigHash = hash;
+        }
+    }
+
+    if (ID3D11SamplerState* cached = FindWrapperReplacement(original))
+        return cached;
+
+    D3D11_SAMPLER_DESC desc = {};
+    original->GetDesc(&desc);
+
+    if (!WrapperApplyBindTimeAF(desc, gfx)) {
+        AddWrapperReplacement(original, original);
+        return original;
+    }
+
+    ID3D11SamplerState* replacement = nullptr;
+    HRESULT hr = realDevice->CreateSamplerState(&desc, &replacement);
+    if (FAILED(hr) || !replacement) {
+        int idx = g_WrapperAFReplaced.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12)
+            WrapperLog("Wrapper: AF replacement creation FAILED hr=0x%08X", hr);
+        AddWrapperReplacement(original, original);
+        return original;
+    }
+
+    AddWrapperReplacement(original, replacement);
+    {
+        std::unique_lock<std::shared_mutex> lock(g_WrapperSamplerCacheMutex);
+        g_WrapperReplacementSamplers.push_back(replacement);
+    }
+    int idx = g_WrapperAFReplaced.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 48) {
+        WrapperLog("Wrapper: Created AF replacement sampler Filter=0x%X Aniso=%u Bias=%.2f (#%d)",
+                   desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, idx + 1);
+    }
+    return replacement;
+}
 
 // ============================================================================
 // Constructor / Destructor
@@ -159,35 +324,176 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11DeviceContext::SetPrivateDataInterface(REFGU
 // ID3D11DeviceContext - Sampler State (INTERCEPTED for AF/mip enforcement)
 // ============================================================================
 
+// Helper: apply bind-time AF override to an array of samplers for a given stage.
+// Returns true if any replacement was made.
+static bool ApplyWrapperSamplerOverrides(ID3D11Device* realDevice, UINT startSlot, UINT numSamplers,
+                                         ID3D11SamplerState* const* ppSamplers,
+                                         ID3D11SamplerState** replaced, UINT maxSamplers) {
+    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire) || !realDevice || !ppSamplers || numSamplers == 0)
+        return false;
+
+    const auto& gfx = GetActiveGraphicsConfig();
+    if (!ce::sampler_override::IsAnisotropicOverrideEnabled(gfx))
+        return false;
+
+    bool anyReplaced = false;
+    for (UINT i = 0; i < numSamplers && (startSlot + i) < maxSamplers; ++i) {
+        ID3D11SamplerState* replacement = GetOrCreateWrapperReplacementSampler(realDevice, ppSamplers[i], gfx);
+        replaced[startSlot + i] = replacement;
+        if (replacement != ppSamplers[i])
+            anyReplaced = true;
+    }
+    return anyReplaced;
+}
+
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                              ID3D11SamplerState* const* ppSamplers) {
-    // Sampler overrides are applied during CreateSamplerState interception.
-    m_pReal->PSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+                                                               ID3D11SamplerState* const* ppSamplers) {
+    if (!ppSamplers || NumSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        m_pReal->PSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11Device* realDevice = nullptr;
+    m_pReal->GetDevice(&realDevice);
+    if (!realDevice) {
+        m_pReal->PSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    for (UINT i = 0; i < NumSamplers && (StartSlot + i) < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) {
+        replaced[StartSlot + i] = ppSamplers[i];
+    }
+
+    ApplyWrapperSamplerOverrides(realDevice, StartSlot, NumSamplers, ppSamplers, replaced,
+                                 D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    m_pReal->PSSetSamplers(StartSlot, NumSamplers, replaced);
+    realDevice->Release();
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::VSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                              ID3D11SamplerState* const* ppSamplers) {
-    m_pReal->VSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+                                                               ID3D11SamplerState* const* ppSamplers) {
+    if (!ppSamplers || NumSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        m_pReal->VSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11Device* realDevice = nullptr;
+    m_pReal->GetDevice(&realDevice);
+    if (!realDevice) {
+        m_pReal->VSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    for (UINT i = 0; i < NumSamplers && (StartSlot + i) < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) {
+        replaced[StartSlot + i] = ppSamplers[i];
+    }
+
+    ApplyWrapperSamplerOverrides(realDevice, StartSlot, NumSamplers, ppSamplers, replaced,
+                                 D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    m_pReal->VSSetSamplers(StartSlot, NumSamplers, replaced);
+    realDevice->Release();
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::GSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                              ID3D11SamplerState* const* ppSamplers) {
-    m_pReal->GSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+                                                               ID3D11SamplerState* const* ppSamplers) {
+    if (!ppSamplers || NumSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        m_pReal->GSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11Device* realDevice = nullptr;
+    m_pReal->GetDevice(&realDevice);
+    if (!realDevice) {
+        m_pReal->GSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    for (UINT i = 0; i < NumSamplers && (StartSlot + i) < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) {
+        replaced[StartSlot + i] = ppSamplers[i];
+    }
+
+    ApplyWrapperSamplerOverrides(realDevice, StartSlot, NumSamplers, ppSamplers, replaced,
+                                 D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    m_pReal->GSSetSamplers(StartSlot, NumSamplers, replaced);
+    realDevice->Release();
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::HSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                              ID3D11SamplerState* const* ppSamplers) {
-    m_pReal->HSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+                                                               ID3D11SamplerState* const* ppSamplers) {
+    if (!ppSamplers || NumSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        m_pReal->HSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11Device* realDevice = nullptr;
+    m_pReal->GetDevice(&realDevice);
+    if (!realDevice) {
+        m_pReal->HSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    for (UINT i = 0; i < NumSamplers && (StartSlot + i) < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) {
+        replaced[StartSlot + i] = ppSamplers[i];
+    }
+
+    ApplyWrapperSamplerOverrides(realDevice, StartSlot, NumSamplers, ppSamplers, replaced,
+                                 D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    m_pReal->HSSetSamplers(StartSlot, NumSamplers, replaced);
+    realDevice->Release();
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                              ID3D11SamplerState* const* ppSamplers) {
-    m_pReal->DSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+                                                               ID3D11SamplerState* const* ppSamplers) {
+    if (!ppSamplers || NumSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        m_pReal->DSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11Device* realDevice = nullptr;
+    m_pReal->GetDevice(&realDevice);
+    if (!realDevice) {
+        m_pReal->DSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    for (UINT i = 0; i < NumSamplers && (StartSlot + i) < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) {
+        replaced[StartSlot + i] = ppSamplers[i];
+    }
+
+    ApplyWrapperSamplerOverrides(realDevice, StartSlot, NumSamplers, ppSamplers, replaced,
+                                 D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    m_pReal->DSSetSamplers(StartSlot, NumSamplers, replaced);
+    realDevice->Release();
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::CSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                              ID3D11SamplerState* const* ppSamplers) {
-    m_pReal->CSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+                                                               ID3D11SamplerState* const* ppSamplers) {
+    if (!ppSamplers || NumSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        m_pReal->CSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11Device* realDevice = nullptr;
+    m_pReal->GetDevice(&realDevice);
+    if (!realDevice) {
+        m_pReal->CSSetSamplers(StartSlot, NumSamplers, ppSamplers);
+        return;
+    }
+
+    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    for (UINT i = 0; i < NumSamplers && (StartSlot + i) < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) {
+        replaced[StartSlot + i] = ppSamplers[i];
+    }
+
+    ApplyWrapperSamplerOverrides(realDevice, StartSlot, NumSamplers, ppSamplers, replaced,
+                                 D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    m_pReal->CSSetSamplers(StartSlot, NumSamplers, replaced);
+    realDevice->Release();
 }
 
 // ============================================================================
