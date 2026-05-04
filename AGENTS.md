@@ -61,7 +61,8 @@ Copyright (c) 2026 aufkrawall
 
 ## Windows debugging and binary analysis tools
 
-- When analyzing crash dumps, use the correct symbol path that includes both the Microsoft symbol server AND the local PDB directory:
+- Always analyze available .dmp crash dumps when they exist!
+Use the correct symbol path that includes both the Microsoft symbol server AND the local PDB directory:
 ```
 cdb -z crash.dmp -y "srv*;%USERPROFILE%\Programme\build\captureproject\installed\captureengine" -c ".ecxr; k; q"
 ```
