@@ -41,6 +41,7 @@ Copyright (c) 2026 aufkrawall
 - Switching between FG modes must work gracefully both in Talos and GTA validation scenarios: in all directions/combinations, no crashes, no lost overlay rendering, and correct visible FG status!
 - The overlay must not be suspended unnecessarily long, also not during FG switching transitions!
 - Ideally, the overlay never gets visibly suspended / does never disappear, not even temporarily!
+- Inject, overlay etc. must work optimally and gracefully also when other overlay injects like Steam, Rockstar Social etc. are active at the same time!
 
 ## Build, diagnostics, and tests
 

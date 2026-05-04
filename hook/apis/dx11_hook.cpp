@@ -1270,8 +1270,14 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
             if (srvs[i]) srvs[i]->Release();
     }
 
-    HookLogImportant("DX11: Deferred AF sweep complete — %d samplers overridden", totalApplied);
-    g_DeferredAFApplied = true;
+    if (totalApplied > 0) {
+        HookLogImportant("DX11: Deferred AF sweep complete — %d samplers overridden", totalApplied);
+        g_DeferredAFApplied = true;
+    } else {
+        // No samplers found yet — retry on next Present. The game may not have
+        // bound any samplers at the time of the first Present.
+        HookLogImportant("DX11: Deferred AF sweep found no samplers — will retry");
+    }
     ctx->Release();
     dev->Release();
 }
