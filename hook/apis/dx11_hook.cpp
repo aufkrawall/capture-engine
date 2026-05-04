@@ -679,7 +679,7 @@ static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const Graphics
     if (desc.MaxLOD == 0.0f || desc.MinLOD == desc.MaxLOD) {
         int idx = g_DiagSamplerSkipNoMips.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
-            HookLog("DX11: AF skip sampler (no mips) MaxLOD=%.1f MinLOD=%.1f", desc.MaxLOD, desc.MinLOD);
+            HookLogImportant("DX11: AF skip sampler (no mips) MaxLOD=%.1f MinLOD=%.1f", desc.MaxLOD, desc.MinLOD);
         }
         return false;
     }
@@ -687,7 +687,7 @@ static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const Graphics
         desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
         int idx = g_DiagSamplerSkipBorder.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
-            HookLog("DX11: AF skip sampler (border address) U=%d V=%d W=%d",
+            HookLogImportant("DX11: AF skip sampler (border address) U=%d V=%d W=%d",
                     desc.AddressU, desc.AddressV, desc.AddressW);
         }
         return false;
@@ -695,14 +695,14 @@ static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const Graphics
     if (ce::sampler_override::IsD3D11ReductionFilter(desc.Filter)) {
         int idx = g_DiagSamplerSkipReduction.fetch_add(1, std::memory_order_relaxed);
         if (idx < 6) {
-            HookLog("DX11: AF skip sampler (reduction filter) Filter=0x%X", desc.Filter);
+            HookLogImportant("DX11: AF skip sampler (reduction filter) Filter=0x%X", desc.Filter);
         }
         return false;
     }
     if (desc.ComparisonFunc != D3D11_COMPARISON_NEVER) {
         int idx = g_DiagSamplerSkipComparison.fetch_add(1, std::memory_order_relaxed);
         if (idx < 6) {
-            HookLog("DX11: AF skip sampler (comparison func) Func=%d", desc.ComparisonFunc);
+            HookLogImportant("DX11: AF skip sampler (comparison func) Func=%d", desc.ComparisonFunc);
         }
         return false;
     }
@@ -720,7 +720,7 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
     if (slot >= 8) {
         int idx = g_DiagSamplerSkipSlot.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
-            HookLog("DX11: AF skip sampler (slot %u >= 8, stage=%d)", slot, (int)stage);
+            HookLogImportant("DX11: AF skip sampler (slot %u >= 8, stage=%d)", slot, (int)stage);
         }
         return false;
     }
@@ -732,7 +732,7 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
     if (!view) {
         int idx = g_DiagSamplerSkipNoSRV.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
-            HookLog("DX11: AF skip sampler (no SRV at slot %u, stage=%d)", slot, (int)stage);
+            HookLogImportant("DX11: AF skip sampler (no SRV at slot %u, stage=%d)", slot, (int)stage);
         }
         return false;
     }
@@ -742,7 +742,7 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
     if (!SupportsD3D11SamplingFormat(device, srvDesc.Format)) {
         int idx = g_DiagSamplerSkipFormat.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
-            HookLog("DX11: AF skip sampler (unsupported format %d at slot %u, stage=%d)",
+            HookLogImportant("DX11: AF skip sampler (unsupported format %d at slot %u, stage=%d)",
                     srvDesc.Format, slot, (int)stage);
         }
         view->Release();
@@ -753,7 +753,7 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
     if (!shouldForce) {
         int idx = g_DiagSamplerSkipSingleMip.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
-            HookLog("DX11: AF skip sampler (single mip at slot %u, stage=%d)", slot, (int)stage);
+            HookLogImportant("DX11: AF skip sampler (single mip at slot %u, stage=%d)", slot, (int)stage);
         }
     }
     view->Release();
@@ -773,7 +773,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
                                   : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
                 desc.MaxAnisotropy = 1;
                 modified = true;
-                HookLog("DX11: AF override OFF Filter=0x%X->0x%X Aniso=%u->1",
+                HookLogImportant("DX11: AF override OFF Filter=0x%X->0x%X Aniso=%u->1",
                         desc.Filter, desc.Filter, desc.MaxAnisotropy);
             }
         } else if (allowAnisotropicOverride) {
@@ -787,7 +787,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
                 modified = true;
                 int idx = g_DiagSamplerAFApplied.fetch_add(1, std::memory_order_relaxed);
                 if (idx < 48) {
-                    HookLog("DX11: AF override ON Filter=0x%X->0x%X Aniso=%u->%u (#%d)",
+                    HookLogImportant("DX11: AF override ON Filter=0x%X->0x%X Aniso=%u->%u (#%d)",
                             origFilter, desc.Filter, origAniso, desc.MaxAnisotropy, idx + 1);
                 }
             }
@@ -803,7 +803,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
                 modified = true;
                 int idx = g_DiagSamplerMipOverride.fetch_add(1, std::memory_order_relaxed);
                 if (idx < 12) {
-                    HookLog("DX11: Mip override trilinear applied (#%d)", idx + 1);
+                    HookLogImportant("DX11: Mip override trilinear applied (#%d)", idx + 1);
                 }
             }
         } else if (mip == "bilinear") {
@@ -812,7 +812,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
                 modified = true;
                 int idx = g_DiagSamplerMipOverride.fetch_add(1, std::memory_order_relaxed);
                 if (idx < 12) {
-                    HookLog("DX11: Mip override bilinear applied (#%d)", idx + 1);
+                    HookLogImportant("DX11: Mip override bilinear applied (#%d)", idx + 1);
                 }
             }
         }
@@ -826,7 +826,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
         modified = true;
         int idx = g_DiagSamplerMipBiasApplied.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24) {
-            HookLog("DX11: Mip bias override Bias=%.2f->%.2f (#%d)", originalBias, desc.MipLODBias, idx + 1);
+            HookLogImportant("DX11: Mip bias override Bias=%.2f->%.2f (#%d)", originalBias, desc.MipLODBias, idx + 1);
         }
     }
 
@@ -835,7 +835,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
         if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
             desc.MipLODBias += sgBias;
             modified = true;
-            HookLog("DX11: SGSSAA bias applied (%.2f, total=%.2f)", sgBias, desc.MipLODBias);
+            HookLogImportant("DX11: SGSSAA bias applied (%.2f, total=%.2f)", sgBias, desc.MipLODBias);
         }
     }
 
@@ -843,7 +843,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
         if (desc.MipLODBias < -0.5f) {
             desc.MipLODBias = -0.5f;
             modified = true;
-            HookLog("DX11: Unity mip bias clamp -0.5 applied");
+            HookLogImportant("DX11: Unity mip bias clamp -0.5 applied");
         }
     }
 
@@ -851,7 +851,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
     if (finalizedBias != desc.MipLODBias) {
         desc.MipLODBias = finalizedBias;
         modified = true;
-        HookLog("DX11: Finalized mip bias %.2f->%.2f", desc.MipLODBias, finalizedBias);
+        HookLogImportant("DX11: Finalized mip bias %.2f->%.2f", desc.MipLODBias, finalizedBias);
     }
 
     return modified;
@@ -900,7 +900,7 @@ static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* 
     if (FAILED(hr) || !replacement) {
         int idx = g_DiagSamplerReplacementCreated.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
-            HookLog("DX11: Replacement sampler creation FAILED hr=0x%08X (stage=%d slot=%u)", hr, (int)stage, slot);
+            HookLogImportant("DX11: Replacement sampler creation FAILED hr=0x%08X (stage=%d slot=%u)", hr, (int)stage, slot);
         }
         AddReplacementSampler11(original, original);
         return original;
@@ -3459,7 +3459,7 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
 
     ID3D11Device* dev = nullptr;
     if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
-        HookLog("DX11: Prerender limit FAILED - GetDevice failed");
+        HookLogImportant("DX11: Prerender limit FAILED - GetDevice failed");
         return;
     }
 
@@ -3476,7 +3476,7 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
                 g_PrerenderQueries.push_back(q);
             }
         }
-        HookLog("DX11: Created manual prerender query ring buffer (size: %d, limit=%.2f)", (int)g_PrerenderQueries.size(), limit);
+        HookLogImportant("DX11: Created manual prerender query ring buffer (size: %d, limit=%.2f)", (int)g_PrerenderQueries.size(), limit);
     }
 
     if (!g_PrerenderQueries.empty()) {
@@ -3493,8 +3493,8 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
             int64_t waitUs = PerfLogger::GetQpcUs() - waitStart;
             int idx = g_DiagPrerenderWaits.fetch_add(1, std::memory_order_relaxed);
             if (idx < 12) {
-                HookLog("DX11: Prerender serial wait frame=%llu wait=%lldus (#%d)",
-                        (unsigned long long)g_PrerenderFrameIndex, (long long)waitUs, idx + 1);
+                HookLogImportant("DX11: Prerender serial wait frame=%llu wait=%lldus (#%d)",
+                                 (unsigned long long)g_PrerenderFrameIndex, (long long)waitUs, idx + 1);
             }
         } else {
             // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
@@ -3514,8 +3514,8 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
                 int64_t waitUs = PerfLogger::GetQpcUs() - waitStart;
                 int idx = g_DiagPrerenderWaits.fetch_add(1, std::memory_order_relaxed);
                 if (idx < 12) {
-                    HookLog("DX11: Prerender buffered wait lookback=%d frame=%llu wait=%lldus (#%d)",
-                            lookback, (unsigned long long)g_PrerenderFrameIndex, (long long)waitUs, idx + 1);
+                    HookLogImportant("DX11: Prerender buffered wait lookback=%d frame=%llu wait=%lldus (#%d)",
+                                     lookback, (unsigned long long)g_PrerenderFrameIndex, (long long)waitUs, idx + 1);
                 }
             }
         }
@@ -3535,7 +3535,7 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
                     idleGapUs = 10000;
                 int idx = g_DiagPrerenderWaits.fetch_add(1, std::memory_order_relaxed);
                 if (idx < 6) {
-                    HookLog("DX11: Prerender fractional idle gap fps=%.1f gap=%lldus (#%d)", fps, (long long)idleGapUs, idx + 1);
+                    HookLogImportant("DX11: Prerender fractional idle gap fps=%.1f gap=%lldus (#%d)", fps, (long long)idleGapUs, idx + 1);
                 }
                 PrecisionSleep(idleGapUs);
             }

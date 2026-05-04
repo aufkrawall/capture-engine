@@ -136,8 +136,8 @@ void WrapperLog(const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
-    // Log to EarlyLog (which goes to hook_debug.log)
-    EarlyLog("%s", buf);
+    // Log to HookLogImportant (bypasses the shared-memory log level filter)
+    HookLogImportant("%s", buf);
 }
 
 // ============================================================================
