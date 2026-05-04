@@ -1252,8 +1252,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         int diagIdx = s_prerenderDiagLog.fetch_add(1, std::memory_order_relaxed);
         if (diagIdx < 20) {
             float pl = GetActivePrerenderLimit();
-            HookLog("DetourPresent: prerender check api=%d overridesActive=%d prerenderLimit=%.2f",
-                    (int)api, g_GraphicsOverridesActive.load(std::memory_order_acquire) ? 1 : 0, pl);
+            HookLogImportant("DetourPresent: prerender check api=%d overridesActive=%d prerenderLimit=%.2f",
+                             (int)api, g_GraphicsOverridesActive.load(std::memory_order_acquire) ? 1 : 0, pl);
         }
     }
     if (api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
@@ -1901,8 +1901,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         int diagIdx = s_prerenderDiagLog1.fetch_add(1, std::memory_order_relaxed);
         if (diagIdx < 20) {
             float pl = GetActivePrerenderLimit();
-            HookLog("DetourPresent1: prerender check api=%d overridesActive=%d prerenderLimit=%.2f",
-                    (int)api, g_GraphicsOverridesActive.load(std::memory_order_acquire) ? 1 : 0, pl);
+            HookLogImportant("DetourPresent1: prerender check api=%d overridesActive=%d prerenderLimit=%.2f",
+                             (int)api, g_GraphicsOverridesActive.load(std::memory_order_acquire) ? 1 : 0, pl);
         }
     }
     if (api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
