@@ -81,6 +81,12 @@ static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
 static int64_t g_LastSleepUs = 0;
 
+// Deferred sampler override sweep: applied once on first Present for games
+// that create samplers once at startup and never rebind (e.g. BioShock Infinite).
+// The create-time path skips AF enablement (no SRV context), so we sweep all
+// bound samplers at Present time where we can inspect SRVs for mip count.
+static bool g_DeferredAFApplied = false;
+
 // Sampler override diagnostic counters (rate-limited logging)
 static std::atomic<int> g_DiagSamplerAllowsAF{0};
 static std::atomic<int> g_DiagSamplerSkipNoMips{0};
@@ -1086,6 +1092,167 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 static void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain);
 static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
 
+
+
+void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
+    if (g_DeferredAFApplied)
+        return;
+    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
+        return;
+
+    ID3D11Device* dev = nullptr;
+    if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev))))
+        return;
+
+    ID3D11DeviceContext* ctx = nullptr;
+    dev->GetImmediateContext(&ctx);
+    if (!ctx) {
+        dev->Release();
+        return;
+    }
+
+    const auto& gfx = GetActiveGraphicsConfig();
+    if (!ce::sampler_override::IsAnisotropicOverrideEnabled(gfx)) {
+        g_DeferredAFApplied = true;
+        ctx->Release();
+        dev->Release();
+        return;
+    }
+
+    const UINT maxSamplers = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;
+    const UINT maxSRVs = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+
+    struct StageSweep {
+        D3D11ShaderStage stage;
+        const char* name;
+    };
+
+    StageSweep stages[] = {
+        {D3D11ShaderStage::Pixel, "PS"},
+        {D3D11ShaderStage::Vertex, "VS"},
+        {D3D11ShaderStage::Geometry, "GS"},
+        {D3D11ShaderStage::Hull, "HS"},
+        {D3D11ShaderStage::Domain, "DS"},
+        {D3D11ShaderStage::Compute, "CS"},
+    };
+
+    int totalApplied = 0;
+    for (const auto& si : stages) {
+        ID3D11SamplerState* samplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+        ID3D11ShaderResourceView* srvs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+
+        switch (si.stage) {
+            case D3D11ShaderStage::Pixel:
+                ctx->PSGetSamplers(0, maxSamplers, samplers);
+                ctx->PSGetShaderResources(0, maxSRVs, srvs);
+                break;
+            case D3D11ShaderStage::Vertex:
+                ctx->VSGetSamplers(0, maxSamplers, samplers);
+                ctx->VSGetShaderResources(0, maxSRVs, srvs);
+                break;
+            case D3D11ShaderStage::Geometry:
+                ctx->GSGetSamplers(0, maxSamplers, samplers);
+                ctx->GSGetShaderResources(0, maxSRVs, srvs);
+                break;
+            case D3D11ShaderStage::Hull:
+                ctx->HSGetSamplers(0, maxSamplers, samplers);
+                ctx->HSGetShaderResources(0, maxSRVs, srvs);
+                break;
+            case D3D11ShaderStage::Domain:
+                ctx->DSGetSamplers(0, maxSamplers, samplers);
+                ctx->DSGetShaderResources(0, maxSRVs, srvs);
+                break;
+            case D3D11ShaderStage::Compute:
+                ctx->CSGetSamplers(0, maxSamplers, samplers);
+                ctx->CSGetShaderResources(0, maxSRVs, srvs);
+                break;
+        }
+
+        ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+        bool anyReplaced = false;
+        for (UINT slot = 0; slot < maxSamplers; ++slot) {
+            replaced[slot] = samplers[slot];
+            if (!samplers[slot])
+                continue;
+
+            if (IsReplacementSampler11(samplers[slot]))
+                continue;
+
+            if (ID3D11SamplerState* cached = FindReplacementSampler11(samplers[slot])) {
+                replaced[slot] = cached;
+                if (cached != samplers[slot])
+                    anyReplaced = true;
+                continue;
+            }
+
+            D3D11_SAMPLER_DESC desc = {};
+            samplers[slot]->GetDesc(&desc);
+
+            if (!SamplerAllowsForcedAF(desc, gfx))
+                continue;
+
+            if (slot >= 8)
+                continue;
+
+            ID3D11ShaderResourceView* view = (slot < maxSRVs) ? srvs[slot] : nullptr;
+            if (!view)
+                continue;
+
+            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            view->GetDesc(&srvDesc);
+            if (!SupportsD3D11SamplingFormat(dev, srvDesc.Format))
+                continue;
+
+            if (!ViewHasMultipleVisibleMips(view))
+                continue;
+
+            const UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
+            const D3D11_FILTER newFilter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
+            if (desc.Filter == newFilter && desc.MaxAnisotropy == maxAniso)
+                continue;
+
+            desc.Filter = newFilter;
+            desc.MaxAnisotropy = maxAniso;
+
+            ID3D11SamplerState* replacement = nullptr;
+            HRESULT hr = dev->CreateSamplerState(&desc, &replacement);
+            if (FAILED(hr) || !replacement)
+                continue;
+
+            AddReplacementSampler11(samplers[slot], replacement);
+            AddToReplacementSet11(replacement);
+            replaced[slot] = replacement;
+            anyReplaced = true;
+            totalApplied++;
+            HookLogImportant("DX11: Deferred AF override slot=%u stage=%s Filter=0x%X Aniso=%u",
+                            slot, si.name, desc.Filter, desc.MaxAnisotropy);
+        }
+
+        if (anyReplaced) {
+            switch (si.stage) {
+                case D3D11ShaderStage::Pixel:   ctx->PSSetSamplers(0, maxSamplers, replaced); break;
+                case D3D11ShaderStage::Vertex:  ctx->VSSetSamplers(0, maxSamplers, replaced); break;
+                case D3D11ShaderStage::Geometry: ctx->GSSetSamplers(0, maxSamplers, replaced); break;
+                case D3D11ShaderStage::Hull:    ctx->HSSetSamplers(0, maxSamplers, replaced); break;
+                case D3D11ShaderStage::Domain:  ctx->DSSetSamplers(0, maxSamplers, replaced); break;
+                case D3D11ShaderStage::Compute: ctx->CSSetSamplers(0, maxSamplers, replaced); break;
+            }
+        }
+
+        for (UINT i = 0; i < maxSamplers; ++i)
+            if (samplers[i]) samplers[i]->Release();
+        for (UINT i = 0; i < maxSRVs; ++i)
+            if (srvs[i]) srvs[i]->Release();
+    }
+
+    HookLogImportant("DX11: Deferred AF sweep complete — %d samplers overridden", totalApplied);
+    g_DeferredAFApplied = true;
+    ctx->Release();
+    dev->Release();
+}
+
+
+
 static float ResolveDX11PrerenderLimit() {
     return GetActivePrerenderLimit();
 }
@@ -1190,6 +1357,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     }
 
     // Non-wrapper path: Draw overlay via vtable hook
+    // Also apply deferred AF sweep (for games that create samplers once at startup)
+    ApplyDeferredSamplerOverrides11(pSwapChain);
     int64_t overlayStartUs = PerfLogger::GetQpcUs();
     HandleDX11ProcessFrame(pSwapChain, true);
     perfMetrics.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
@@ -3547,7 +3716,17 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
 }
 
 namespace DXGIShared {
+// Deferred AF sweep: called once on first Present to apply AF to samplers
+// that were created before g_GraphicsOverridesActive was set, or that were
+// created with AF disabled because the create-time path skips AF enablement.
+// Walks each shader stage, retrieves bound samplers and SRVs, and creates
+// replacement samplers with AF where the texture has multiple mip levels.
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
+    // Deferred AF sweep: apply AF to samplers that were created before the
+    // config was active, inspecting SRVs for mip count to avoid applying AF
+    // to single-mip textures (which can cause corruption on some GPUs).
+    ApplyDeferredSamplerOverrides11(pSwapChain);
+
     ::HandleDX11ProcessFrame(pSwapChain, isRealFrame);
 }
 
@@ -3571,12 +3750,13 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     }
 
     const auto& gfx = GetActiveGraphicsConfig();
-    // Enable AF at create-time as well as bind-time. Many games (e.g. BioShock
-    // Infinite) create samplers once at startup and never rebind them, so the
-    // bind-only AF path never fires. Create-time AF enablement is slightly
-    // broader (no SRV mip-count check), but the same mip/border/reduction/
-    // comparison filters apply.
-    const bool modified = ApplySamplerOverrides11(desc, gfx, true);
+    // Create-time: only handle AF disable and mip/bias adjustments.
+    // AF enablement is deferred to the bind-time path (PSSetSamplers etc.)
+    // which inspects the SRV's mip count via ViewHasMultipleVisibleMips.
+    // Some games (e.g. BioShock Infinite) create samplers once and never
+    // rebind; for those, ApplyPendingSamplerOverrides11 on first Present
+    // handles the deferred AF sweep.
+    const bool modified = ApplySamplerOverrides11(desc, gfx, false);
 
     HRESULT hr;
     if (modified) {
