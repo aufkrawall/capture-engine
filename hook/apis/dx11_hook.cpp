@@ -710,20 +710,18 @@ static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const Graphics
         }
         return false;
     }
-    // Skip comparison samplers with BORDER address mode — these are shadow maps.
-    // Regular detail textures with comparison filtering (e.g. parallax occlusion
-    // mapping) use WRAP or CLAMP address and should still get AF.
+    // Skip ALL comparison samplers. Blackwell GPUs produce green/red dot
+    // corruption when AF is applied to comparison samplers, even when the
+    // texture has proper mip chains. This includes detail textures using
+    // comparison filtering (e.g. parallax occlusion mapping).
     if (desc.ComparisonFunc != D3D11_COMPARISON_NEVER) {
-        if (desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER ||
-            desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
-            desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
-            int idx = g_DiagSamplerSkipComparison.fetch_add(1, std::memory_order_relaxed);
-            if (idx < 6) {
-                HookLogImportant("DX11: AF skip sampler (shadow map) Func=%d Addr=%d/%d/%d",
-                                desc.ComparisonFunc, desc.AddressU, desc.AddressV, desc.AddressW);
-            }
-            return false;
+        int idx = g_DiagSamplerSkipComparison.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 6) {
+            HookLogImportant("DX11: AF skip sampler (comparison) Func=%d Addr=%d/%d/%d MinLOD=%.1f MaxLOD=%.1f",
+                            desc.ComparisonFunc, desc.AddressU, desc.AddressV, desc.AddressW,
+                            desc.MinLOD, desc.MaxLOD);
         }
+        return false;
     }
     return true;
 }
