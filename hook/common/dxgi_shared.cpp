@@ -1530,55 +1530,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
-    // CRITICAL: SL module Present call guard.  SL modules (sl_dlss_g, sl_common,
-    // sl.interposer) can call Present on:
-    //   1. The SL DllMain loader thread during DllMain (sl_dlss_g!DllMain ->
-    //      internal -> sl_common!slGetPluginFunction -> Present)
-    //   2. SL worker threads during FG processing (sl_dlss_g worker thread ->
-    //      sl_common -> Present)
-    //
-    // The swapchain's vtable[8] always points to DetourPresent because the D3D12
-    // vtable is shared by all swapchain objects from the same factory.  Routing
-    // through CallOriginalPresent -> oPresent (= real dxgi!Present body) hits
-    // Steam's inline E9 JMP (OverlayHookD3D3), which crashes because Steam TLS
-    // is uninitialized on SL threads -> RIP=0, RAX=0.
-    //
-    // We use stack-walking (HasStreamlineModuleInCurrentStack) rather than the
-    // immediate caller check (callerFromStreamlineModule) because the immediate
-    // caller is often inside CE's own code (vtable dispatch, trampoline), not
-    // in an SL module.  The stack walk reliably detects SL threads.
-    const bool slThreadInStack = HasStreamlineModuleInCurrentStack();
-    if (slThreadInStack && steamOverlayLoaded && api == APIType::D3D12 && !observerOnlyMode) {
-        PFN_Present bypass = EnsurePresentBypassTrampoline();
-        if (bypass) {
-            static std::atomic<int> s_slThreadBypassLogCount{0};
-            int bypassNum = s_slThreadBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (bypassNum <= 30) {
-                HookLogImportant(
-                    "DetourPresent: SL thread Steam bypass #%d (tid=0x%04X, confirmed=%d)",
-                    bypassNum, GetCurrentThreadId(), postSLConfirmedRendering ? 1 : 0);
-            }
-            HRESULT bypassHr = bypass(pSwapChain, SyncInterval, Flags);
-            if (api == APIType::D3D12) {
-                InvokeDX12FlushDeferredSignal();
-            }
-            if (SUCCEEDED(bypassHr)) {
-                g_SharedFpsLimiter.ApplyPostPresent();
-            }
-            if (bypassHr == DXGI_ERROR_DEVICE_REMOVED || bypassHr == DXGI_ERROR_DEVICE_RESET) {
-                if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
-                    HookLog("DXGI: Device removed (hr=0x%08X), disabling hooks", bypassHr);
-                }
-            }
-            return bypassHr;
-        }
-        static std::atomic<int> s_slThreadBypassNoBypassLogCount{0};
-        if (s_slThreadBypassNoBypassLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            HookLogImportant(
-                "DetourPresent: SL thread Steam condition met but bypass trampoline unavailable (tid=0x%04X)",
-                GetCurrentThreadId());
-        }
-    }
+    // CRITICAL: SL module Present call guard — handled in CallOriginalPresent.
 
     HRESULT hr;
     if (s_slRoutingActive.load(std::memory_order_acquire)) {
@@ -2066,39 +2018,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
-    // CRITICAL: SL thread Steam bypass — same stack-walk detection as DetourPresent.
-    const bool slThreadInStack = HasStreamlineModuleInCurrentStack();
-    if (slThreadInStack && steamOverlayLoaded && api == APIType::D3D12 && !observerOnlyMode) {
-        PFN_Present1 bypass = EnsurePresent1BypassTrampoline();
-        if (bypass) {
-            static std::atomic<int> s_slThreadBypassLogCount1{0};
-            int bypassNum = s_slThreadBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (bypassNum <= 30) {
-                HookLogImportant(
-                    "DetourPresent1: SL thread Steam bypass #%d (tid=0x%04X)",
-                    bypassNum, GetCurrentThreadId());
-            }
-            HRESULT bypassHr = bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
-            if (api == APIType::D3D12) {
-                InvokeDX12FlushDeferredSignal();
-            }
-            if (SUCCEEDED(bypassHr)) {
-                g_SharedFpsLimiter.ApplyPostPresent();
-            }
-            if (bypassHr == DXGI_ERROR_DEVICE_REMOVED || bypassHr == DXGI_ERROR_DEVICE_RESET) {
-                if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
-                    HookLog("DXGI: Device removed (hr=0x%08X), disabling hooks", bypassHr);
-                }
-            }
-            return bypassHr;
-        }
-        static std::atomic<int> s_slThreadBypassNoBypassLogCount1{0};
-        if (s_slThreadBypassNoBypassLogCount1.fetch_add(1, std::memory_order_relaxed) < 5) {
-            HookLogImportant(
-                "DetourPresent1: SL thread Steam condition met but bypass trampoline unavailable (tid=0x%04X)",
-                GetCurrentThreadId());
-        }
-    }
+    // CRITICAL: SL thread Steam bypass — handled in CallOriginalPresent1.
 
     HRESULT hr;
     if (s_slRoutingActive.load(std::memory_order_acquire) && oPresent1) {
