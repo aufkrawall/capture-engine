@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-04-30
+Last cross-checked: 2026-05-04
 
 Primary sources:
 - `AGENTS.md`
@@ -46,6 +46,8 @@ Primary sources:
   - Stub pointing to `frame-generation/guardrails.md` (invariants) and `frame-generation/case-studies.md` (chronological deep-dive).
 - `overlay-fg-status.md`
   - Current visible FG status publication rules for the overlay.
+- `debug-tools.md`
+  - Available Windows debug tools (cdb, windbg, Sysinternals) and their installed paths.
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
 - `wgc-capture.md`
