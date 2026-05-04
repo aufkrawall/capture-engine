@@ -3571,11 +3571,12 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     }
 
     const auto& gfx = GetActiveGraphicsConfig();
-    // D3D11 samplers are decoupled from textures, so create-time AF enablement is
-    // too broad for compatibility-sensitive titles. Keep AF disable and mip/bias
-    // adjustments here, and only allow AF enablement from the bind-time path that
-    // can inspect the currently tracked SRV.
-    const bool modified = ApplySamplerOverrides11(desc, gfx, false);
+    // Enable AF at create-time as well as bind-time. Many games (e.g. BioShock
+    // Infinite) create samplers once at startup and never rebind them, so the
+    // bind-only AF path never fires. Create-time AF enablement is slightly
+    // broader (no SRV mip-count check), but the same mip/border/reduction/
+    // comparison filters apply.
+    const bool modified = ApplySamplerOverrides11(desc, gfx, true);
 
     HRESULT hr;
     if (modified) {
@@ -3588,7 +3589,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
                     hr, desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
             }
         } else {
-            HookLog("DX11: CreateSamplerState modified Filter=0x%X Aniso=%u Bias=%.2f (original Aniso=%u Bias=%.2f)",
+            HookLogImportant("DX11: CreateSamplerState modified Filter=0x%X Aniso=%u Bias=%.2f (original Aniso=%u Bias=%.2f)",
                     desc.Filter, desc.MaxAnisotropy, desc.MipLODBias,
                     pSamplerDesc->MaxAnisotropy, pSamplerDesc->MipLODBias);
         }
