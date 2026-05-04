@@ -3588,10 +3588,6 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
                     "(hr=0x%08X). Filter=0x%X Bias=%.2f Aniso=%u",
                     hr, desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
             }
-        } else {
-            HookLogImportant("DX11: CreateSamplerState modified Filter=0x%X Aniso=%u Bias=%.2f (original Aniso=%u Bias=%.2f)",
-                    desc.Filter, desc.MaxAnisotropy, desc.MipLODBias,
-                    pSamplerDesc->MaxAnisotropy, pSamplerDesc->MipLODBias);
         }
     } else {
         hr = oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
