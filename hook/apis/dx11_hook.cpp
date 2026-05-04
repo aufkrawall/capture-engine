@@ -85,7 +85,11 @@ static int64_t g_LastSleepUs = 0;
 // that create samplers once at startup and never rebind (e.g. BioShock Infinite).
 // The create-time path skips AF enablement (no SRV context), so we sweep all
 // bound samplers at Present time where we can inspect SRVs for mip count.
+// Uses its own replacement cache (separate from the vtable hook's cache) so
+// it works for both vtable-hook and wrapper-architecture games.
 static bool g_DeferredAFApplied = false;
+static std::vector<std::pair<ID3D11SamplerState*, ID3D11SamplerState*>> g_DeferredAFReplacements;
+static std::shared_mutex g_DeferredAFMutex;
 
 // Sampler override diagnostic counters (rate-limited logging)
 static std::atomic<int> g_DiagSamplerAllowsAF{0};
@@ -1119,6 +1123,28 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
         return;
     }
 
+    // Helper: check if a sampler is already a deferred replacement
+    auto IsDeferredReplacement = [](ID3D11SamplerState* s) -> bool {
+        std::shared_lock<std::shared_mutex> lock(g_DeferredAFMutex);
+        for (const auto& pair : g_DeferredAFReplacements)
+            if (pair.second == s) return true;
+        return false;
+    };
+
+    // Helper: find a cached deferred replacement
+    auto FindDeferredReplacement = [](ID3D11SamplerState* original) -> ID3D11SamplerState* {
+        std::shared_lock<std::shared_mutex> lock(g_DeferredAFMutex);
+        for (const auto& pair : g_DeferredAFReplacements)
+            if (pair.first == original) return pair.second;
+        return nullptr;
+    };
+
+    // Helper: add a deferred replacement
+    auto AddDeferredReplacement = [](ID3D11SamplerState* original, ID3D11SamplerState* replacement) {
+        std::unique_lock<std::shared_mutex> lock(g_DeferredAFMutex);
+        g_DeferredAFReplacements.push_back({original, replacement});
+    };
+
     const UINT maxSamplers = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;
     const UINT maxSRVs = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
 
@@ -1175,10 +1201,10 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
             if (!samplers[slot])
                 continue;
 
-            if (IsReplacementSampler11(samplers[slot]))
+            if (IsDeferredReplacement(samplers[slot]))
                 continue;
 
-            if (ID3D11SamplerState* cached = FindReplacementSampler11(samplers[slot])) {
+            if (ID3D11SamplerState* cached = FindDeferredReplacement(samplers[slot])) {
                 replaced[slot] = cached;
                 if (cached != samplers[slot])
                     anyReplaced = true;
@@ -1219,8 +1245,7 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
             if (FAILED(hr) || !replacement)
                 continue;
 
-            AddReplacementSampler11(samplers[slot], replacement);
-            AddToReplacementSet11(replacement);
+            AddDeferredReplacement(samplers[slot], replacement);
             replaced[slot] = replacement;
             anyReplaced = true;
             totalApplied++;
