@@ -1247,15 +1247,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     // Query-based CPU prerender limit for D3D11 (fallback when IDXGISwapChain2 is unavailable).
     // Applied for all D3D11 games regardless of wrapper/vtable path.
-    {
-        static std::atomic<int> s_prerenderDiagLog{0};
-        int diagIdx = s_prerenderDiagLog.fetch_add(1, std::memory_order_relaxed);
-        if (diagIdx < 20) {
-            float pl = GetActivePrerenderLimit();
-            HookLogImportant("DetourPresent: prerender check api=%d overridesActive=%d prerenderLimit=%.2f",
-                             (int)api, g_GraphicsOverridesActive.load(std::memory_order_acquire) ? 1 : 0, pl);
-        }
-    }
     if (api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
         float prerenderLimit = GetActivePrerenderLimit();
         if (prerenderLimit >= 0.0f) {
@@ -1896,15 +1887,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     ApplyPresentFrameLatencyOverrides(pSwapChain);
 
     // Query-based CPU prerender limit for D3D11 (fallback when IDXGISwapChain2 is unavailable).
-    {
-        static std::atomic<int> s_prerenderDiagLog1{0};
-        int diagIdx = s_prerenderDiagLog1.fetch_add(1, std::memory_order_relaxed);
-        if (diagIdx < 20) {
-            float pl = GetActivePrerenderLimit();
-            HookLogImportant("DetourPresent1: prerender check api=%d overridesActive=%d prerenderLimit=%.2f",
-                             (int)api, g_GraphicsOverridesActive.load(std::memory_order_acquire) ? 1 : 0, pl);
-        }
-    }
     if (api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
         float prerenderLimit = GetActivePrerenderLimit();
         if (prerenderLimit >= 0.0f) {

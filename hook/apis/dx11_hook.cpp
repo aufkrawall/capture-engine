@@ -3781,13 +3781,21 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     }
 
     const auto& gfx = GetActiveGraphicsConfig();
-    // Create-time: only handle AF disable and mip/bias adjustments.
-    // AF enablement is deferred to the bind-time path (PSSetSamplers etc.)
-    // which inspects the SRV's mip count via ViewHasMultipleVisibleMips.
-    // Some games (e.g. BioShock Infinite) create samplers once and never
-    // rebind; for those, ApplyPendingSamplerOverrides11 on first Present
-    // handles the deferred AF sweep.
-    const bool modified = ApplySamplerOverrides11(desc, gfx, false);
+    // Enable AF at create-time. The bind-time path (PSSetSamplers etc.) and
+    // deferred Present-time sweep can't reach wrapper-architecture games that
+    // create samplers once and never rebind (e.g. BioShock Infinite).
+    // SamplerAllowsForcedAF already filters out single-mip, border, reduction,
+    // and comparison samplers to avoid Blackwell corruption.
+    const bool modified = ApplySamplerOverrides11(desc, gfx, true);
+
+    {
+        static std::atomic<int> s_createAFLog{0};
+        int idx = s_createAFLog.fetch_add(1, std::memory_order_relaxed);
+        if (modified && idx < 48) {
+            HookLogImportant("DX11: CreateSamplerState AF Filter=0x%X->0x%X Aniso=%u Bias=%.2f (#%d)",
+                            pSamplerDesc->Filter, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, idx + 1);
+        }
+    }
 
     HRESULT hr;
     if (modified) {
