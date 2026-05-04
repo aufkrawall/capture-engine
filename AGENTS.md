@@ -7,65 +7,55 @@ Copyright (c) 2026 aufkrawall
 
 ## Critical workflow
 
-- Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason not to.
+- Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason not to!
 - After code changes, run `python build.py --skip-updates`; do not use `python build.py --version`!
 - Always git commit after code changes!
 - Before committing, run relevant tests/unit tests and ensure build/test results succeed.
-- Commit completed code changes with plain git commands only: `git status`, `git add -A`, `git commit -m "<message>"`.
+- Commit completed code changes with plain git commands only: `git status`, `git add -A`, `git commit -m "<message>"`!
 - Do not push to cloud unless explicitly requested, generally just commit locally!
 - Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work!
-- Keep `llm-wiki/` linted / quality-checked and updated when durable project knowledge changes.
+- Keep `llm-wiki/` linted / quality-checked and updated when durable project knowledge changes!
 - Always update `llm-wiki/` after code changes!
-- Mistrust code, code annotations and llm-wiki. Each of them might be stale our outdated. Come to your on conclusion and act based on that!
-- Always consider adding regression tests and adding useful debug logging for every bug fix!
+- Mistrust code, code annotations and llm-wiki! Each of them might be stale our outdated! Come to your on conclusion and act based on that!
+- When fixing a bug or implementing a feature, generally always add new regression test units, or adjust existing ones!
+- When fixing a bug or implementing a feature, generally always increase or improve debug logging to make bug diagnosis easier!
 
 ## Engineering rules
 
-- Prefer root-cause fixes over workarounds; do not hide, ignore, weaken, or paper over failures.
-- Make the smallest maintainable change that fully fixes the issue.
-- Keep source files roughly 600-800 lines maximum; split files when needed.
-- Do not make tests pass by deleting coverage, weakening assertions, suppressing errors, or changing expected behavior without justification.
-- Do not introduce nor accept racy, timing-sensitive, or fragile behavior.
-- Do not use sleeps, wait tables, polling delays, or timing bandaids as crash/race fixes.
-- Perform thorough thinking about actual root causes of crashes and other issues!
-- Do not try just mitigating fallout except of proper and solid root cause fixes!
-- If the result after thorough thinking is that proper fixes require bigger changes, they generally should be performed!
-- Treat dumps, logs, media, captures, credentials, private keys, tokens, symbols, and user data as sensitive.
-- Do not commit secrets, dumps, logs, captures, private-symbol PDBs, large generated artifacts, or private user data.
+- Prefer root-cause fixes over workarounds; do not hide, ignore, weaken, or paper over failures!
+- Perform thorough thinking about actual root causes of crashes and other issues for proper fixes!
+- If the result after thorough thinking is that proper fixes require bigger changes, they generally should be implemented!
+- Do not just mitigate fallout, take the hard route of proper and solid root cause fixes!
+- Do not use sleeps, wait tables, polling delays, or timing bandaids as crash/race fixes!
+- Do not introduce nor accept racy, timing-sensitive, or fragile behavior!
+- Keep source files roughly 600-800 lines maximum; split up files when needed!
+- Treat dumps, logs, media, captures, credentials, private keys, tokens, symbols, and user data as sensitive!
+- Do not commit secrets, dumps, logs, captures, private-symbol PDBs, large generated artifacts, user names or private user data!
 
 ## Non-negotiable project constraints
 
-- Do not disable features to avoid fixing bugs.
-- Do not add game-specific compatibility hacks.
-- Do not use timing bandaids for races or crashes.
-- Do not use D3D11On12 for the DX12 overlay; use native DX12.
-- Do not disable the overlay with FSR FG or DLSS FG to prevent crashes; find proper fixes.
-- Overlay, injection, and frame-generation fixes must stay generic.
-- Switching between FG modes must work gracefully in Talos and GTA validation scenarios.
-- Switching must work in all directions/combinations: no crashes, no lost overlay rendering, and correct visible FG status.
-- The overlay already worked in GTA V Enhanced and Talos Reawakened with FSR FG; expect the same to be possible with DLSS FG.
-- The overlay must not be suspended unnecessarily long, also not during FG switching transitions.
-- Ideally, the overlay gets never visibly suspended / does never disappear not even temporarily!
+- Do not disable features to avoid fixing bugs!
+- Do not add game-specific compatibility hacks, we only accept generic solutions for all components!
+- Do not use D3D11On12 for the DX12 overlay; use native DX12!
+- Do not disable the overlay with FSR FG or DLSS FG to prevent crashes; find proper fixes!
+- Switching between FG modes must work gracefully both in Talos and GTA validation scenarios: in all directions/combinations, no crashes, no lost overlay rendering, and correct visible FG status!
+- The overlay must not be suspended unnecessarily long, also not during FG switching transitions!
+- Ideally, the overlay never gets visibly suspended / does never disappear, not even temporarily!
 
 ## Build, diagnostics, and tests
 
-- Keep relevant LSP, formatter, and linter diagnostics active for touched files when available.
-- Fix introduced LSP errors/warnings; also fix safe, localized pre-existing diagnostics in touched files.
-- Do not perform broad repo-wide diagnostic cleanup unless required by the change.
-- Use LSP quick-fixes only when safe, deterministic, and behavior-preserving.
-- If LSP is unavailable, stale, or misconfigured, state that and fall back to canonical build/test/lint commands.
-- We are paranoid about having sufficient regression tests!
-- Add focused regression tests where feasible, especially tests that would have failed before the fix.
-- If no regression-test infrastructure exists for the area, consider adding suitable unit infrastructure such as GoogleTest.
-- Do not add sleeps or timing assumptions to tests.
-- Good tests verify behavior, not only code-path execution.
-- Check whether touched/new code has sufficient unit coverage.
+- Fix pre-existing, as well as introduced LSP errors/warnings along they way!
+- We are paranoid about having sufficient regression tests, better too many than too few!
+- Add focused regression tests where possible, especially tests that would have failed before the fix!
+- If no regression-test infrastructure exists for the area, consider adding suitable unit infrastructure such as GoogleTest!
+- Do not add sleeps or timing assumptions to tests!
+- Check whether touched/new code has sufficient unit coverage, and add new test units accordingly!
 
 ## Debugging and logging
 
 - We are paranoid about having sufficient debug logging!
-- Add additional debug logging when it helps diagnose root cause, state transitions, failure modes, unexpected runtime conditions, or future regressions.
-- Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information.
+- Add additional debug logging when it helps diagnose issue root causes, state transitions, failure modes, unexpected runtime conditions, or future regressions!
+- Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information!
 - For media analysis, `ffmpeg.exe` and `ffprobe.exe` are in `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin`.
 
 ## Windows debugging and binary analysis tools
@@ -76,33 +66,12 @@ cdb -z crash.dmp -y "srv*;%USERPROFILE%\Programme\build\captureproject\installed
 ```
 The `srv*`-only path misses CE's local PDBs and produces incomplete stack traces.
 
-- Installed Windows tools for `.dmp`, symbol, PE/COFF, Sysinternals, and media/capture analysis. The paths below reflect the current tool report; versioned Visual Studio/MSVC components may still vary after toolchain updates.
+- Common installed Windows tools for `.dmp` files, symbol, PE/COFF:
 
 | Tool | Purpose | Installed/default path |
 | --- | --- | --- |
 | `cdb.exe` | Command-line `.dmp` debugging and stack inspection | `C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe` |
 | `windbg.exe` | Interactive `.dmp` debugging | `C:\Program Files\Windows Kits\10\Debuggers\x64\windbg.exe` |
-| `WinDbgX.exe` | Interactive WinDbg Preview `.dmp` debugging | `%LOCALAPPDATA%\Microsoft\WindowsApps\WinDbgX.exe` |
-| `dumpchk.exe` | Validate dump readability and basic dump metadata | `C:\Program Files\Windows Kits\10\Debuggers\x64\dumpchk.exe` |
-| `symchk.exe` | Verify/download symbols for binaries and dumps | `C:\Program Files\Windows Kits\10\Debuggers\x64\symchk.exe` |
-| `dbh.exe` | Inspect symbols and PDB contents | `C:\Program Files\Windows Kits\10\Debuggers\x64\dbh.exe` |
-| `pdbcopy.exe` | Copy/strip PDBs for symbol handling | `C:\Program Files\Windows Kits\10\Debuggers\x64\pdbcopy.exe` |
-| `symstore.exe` | Add/query files in a symbol store | `C:\Program Files\Windows Kits\10\Debuggers\x64\symstore.exe` |
-| `gflags.exe` | Configure debug/runtime flags; use only with explicit intent | `C:\Program Files\Windows Kits\10\Debuggers\x64\gflags.exe` |
-| `umdh.exe` | Heap snapshot and leak investigation | `C:\Program Files\Windows Kits\10\Debuggers\x64\umdh.exe` |
-| `dumpbin.exe` | Inspect PE/COFF headers, imports, exports, sections, symbols, and disassembly | `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dumpbin.exe` |
-| `undname.exe` | Undecorate MSVC C++ symbols | `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\undname.exe` |
-| `link.exe /dump` | `dumpbin`-style fallback inspection | `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\link.exe` |
-| `lib.exe /list` | List static library contents | `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\lib.exe` |
-| `editbin.exe` | PE/COFF mutation; do not use unless explicitly requested | `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\editbin.exe` |
-| `procdump.exe` | Capture process dumps | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.Sysinternals.Suite_Microsoft.Winget.Source_8wekyb3d8bbwe\procdump.exe` |
-| `procmon.exe` | Trace process, registry, file, and network activity | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.Sysinternals.Suite_Microsoft.Winget.Source_8wekyb3d8bbwe\procmon.exe` |
-| `procexp.exe` | Inspect processes, handles, DLLs, and threads | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.Sysinternals.Suite_Microsoft.Winget.Source_8wekyb3d8bbwe\procexp.exe` |
-| `vmmap.exe` | Inspect process virtual memory layout | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.Sysinternals.Suite_Microsoft.Winget.Source_8wekyb3d8bbwe\vmmap.exe` |
-| `handle.exe` | Find open handles | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.Sysinternals.Suite_Microsoft.Winget.Source_8wekyb3d8bbwe\handle.exe` |
-| `listdlls.exe` | List loaded DLLs for a process | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.Sysinternals.Suite_Microsoft.Winget.Source_8wekyb3d8bbwe\listdlls.exe` |
-| `sigcheck.exe` | Inspect signatures, versions, hashes, and VirusTotal metadata | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.Sysinternals.Suite_Microsoft.Winget.Source_8wekyb3d8bbwe\sigcheck.exe` |
-| `strings.exe` | Extract printable strings from binaries or dumps | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.Sysinternals.Suite_Microsoft.Winget.Source_8wekyb3d8bbwe\strings.exe` |
 | `ffmpeg.exe` | Media conversion/inspection helper for captures | `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin\ffmpeg.exe` |
 | `ffprobe.exe` | Media metadata/probing helper for captures | `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin\ffprobe.exe` |
 
@@ -120,6 +89,7 @@ The `srv*`-only path misses CE's local PDBs and produces incomplete stack traces
 - Do not dump raw logs or long command output unless it establishes durable knowledge.
 - Update the wiki when durable knowledge changes: architecture, behavior, build/test/package/deploy/debug workflows, bugs/root causes, invariants, conventions, rejected approaches, follow-ups, or code style.
 - Do not update the wiki for trivial edits with no future-useful context.
+- `llm-wiki/debug-tools.md` contains additional available debug commands and tool paths.
 - `llm-wiki/index.md` is a compact routing table with page link, purpose, last verified date, and stale-risk.
 - Durable topic pages should include summary, source anchors, invariants, diagnostics/failure modes, open questions/stale-risk, and last verified details.
 - `llm-wiki/log/recent.md` is newest-first rolling memory; archive older entries when it gets too long.
