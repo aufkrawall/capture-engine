@@ -6399,9 +6399,9 @@ void DX9Hook::Init() {
     const char* skipReason = nullptr;
     if (GetModuleHandleA("d3d12.dll") && !isTestApp) {
         skipReason = "d3d12.dll (DX12 game)";
-    } else if ((GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll")) && !isTestApp) {
-        // DX10 usually implies D3D10 is primary, unless it's a test app
-        skipReason = "d3d10.dll (DX10 game)";
+    } else if ((GetModuleHandleA("d3d11.dll") || GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll")) && !isTestApp) {
+        // DX11/DX10 usually implies D3D11/D3D10 is primary, unless it's a test app
+        skipReason = GetModuleHandleA("d3d11.dll") ? "d3d11.dll (DX11 game)" : "d3d10.dll (DX10 game)";
     } else if (GetModuleHandleA("vulkan-1.dll") && !isTestApp) {
         skipReason = "vulkan-1.dll (Vulkan game)";
     }

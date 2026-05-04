@@ -1526,7 +1526,10 @@ void CheckAndInstallHooks() {
   // NOTE: Skip D3D9 hooks for Vulkan games, except DXVK D3D9. That path still
   // needs the DX9 hook for game-thread Present pacing and overlay integration
   // while Vulkan remains the primary capture path.
-  if ((!s_vulkanActive || dxvkD3D9WrapperLoaded) && !g_DX9Hook && !dx12ActuallyUsed &&
+  // Also skip D3D9 hooks for DX11 games — d3d9.dll is often a transitive system
+  // dependency (audio codecs, Windows version checks) in DX11 titles.
+  const bool dx11DllLoaded = GetModuleHandleA("d3d11.dll") != nullptr;
+  if ((!s_vulkanActive || dxvkD3D9WrapperLoaded) && !g_DX9Hook && !dx12ActuallyUsed && !dx11DllLoaded &&
       GetModuleHandleA("d3d9.dll")) {
     EarlyLog(
         "DX9 Hook Check: Installing DX9 hooks (d3d9.dll loaded, vulkanActive=%d, dx12Used=%d, dxvkD3D9=%d)",
@@ -1541,8 +1544,8 @@ void CheckAndInstallHooks() {
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
     HookLog("DX9 hooks installed (hook ptr=%p, init=%.1f ms)", (void*)g_DX9Hook, _initMs);
   } else if (!g_DX9Hook && GetModuleHandleA("d3d9.dll")) {
-    EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d, dxvkD3D9=%d)",
-             s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
+    EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d, dx11Loaded=%d, dxvkD3D9=%d)",
+             s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0, dx11DllLoaded ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
   }
 
   // DirectDraw titles can still load or probe D3D12 through DXGI/driver helper

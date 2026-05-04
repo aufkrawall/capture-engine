@@ -81,6 +81,23 @@ static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
 static int64_t g_LastSleepUs = 0;
 
+// Sampler override diagnostic counters (rate-limited logging)
+static std::atomic<int> g_DiagSamplerAllowsAF{0};
+static std::atomic<int> g_DiagSamplerSkipNoMips{0};
+static std::atomic<int> g_DiagSamplerSkipBorder{0};
+static std::atomic<int> g_DiagSamplerSkipReduction{0};
+static std::atomic<int> g_DiagSamplerSkipComparison{0};
+static std::atomic<int> g_DiagSamplerSkipSlot{0};
+static std::atomic<int> g_DiagSamplerSkipNoSRV{0};
+static std::atomic<int> g_DiagSamplerSkipFormat{0};
+static std::atomic<int> g_DiagSamplerSkipSingleMip{0};
+static std::atomic<int> g_DiagSamplerAFApplied{0};
+static std::atomic<int> g_DiagSamplerReplacementCreated{0};
+static std::atomic<int> g_DiagSamplerMipBiasApplied{0};
+static std::atomic<int> g_DiagSamplerMipOverride{0};
+static std::atomic<int> g_DiagPrerenderFrames{0};
+static std::atomic<int> g_DiagPrerenderWaits{0};
+
 // Cross-function tracking for FSR4/FG swapchain recreation detection
 // Shared between DetourCreateSwapChain and DetourCreateSwapChainForHwnd
 static bool g_FirstGameSwapchainCreated = false;
@@ -660,16 +677,33 @@ static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const Graphics
         return false;
     }
     if (desc.MaxLOD == 0.0f || desc.MinLOD == desc.MaxLOD) {
+        int idx = g_DiagSamplerSkipNoMips.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12) {
+            HookLog("DX11: AF skip sampler (no mips) MaxLOD=%.1f MinLOD=%.1f", desc.MaxLOD, desc.MinLOD);
+        }
         return false;
     }
     if (desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
         desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
+        int idx = g_DiagSamplerSkipBorder.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12) {
+            HookLog("DX11: AF skip sampler (border address) U=%d V=%d W=%d",
+                    desc.AddressU, desc.AddressV, desc.AddressW);
+        }
         return false;
     }
     if (ce::sampler_override::IsD3D11ReductionFilter(desc.Filter)) {
+        int idx = g_DiagSamplerSkipReduction.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 6) {
+            HookLog("DX11: AF skip sampler (reduction filter) Filter=0x%X", desc.Filter);
+        }
         return false;
     }
     if (desc.ComparisonFunc != D3D11_COMPARISON_NEVER) {
+        int idx = g_DiagSamplerSkipComparison.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 6) {
+            HookLog("DX11: AF skip sampler (comparison func) Func=%d", desc.ComparisonFunc);
+        }
         return false;
     }
     return true;
@@ -684,6 +718,10 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
     // D3D11 does not guarantee sampler-slot == SRV-slot. Keep this runtime AF path
     // to the common low slots where most games pair sN/tN conventionally.
     if (slot >= 8) {
+        int idx = g_DiagSamplerSkipSlot.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12) {
+            HookLog("DX11: AF skip sampler (slot %u >= 8, stage=%d)", slot, (int)stage);
+        }
         return false;
     }
     if (slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
@@ -692,17 +730,32 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
 
     ID3D11ShaderResourceView* view = GetTrackedShaderResourceView11(context, stage, slot);
     if (!view) {
+        int idx = g_DiagSamplerSkipNoSRV.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12) {
+            HookLog("DX11: AF skip sampler (no SRV at slot %u, stage=%d)", slot, (int)stage);
+        }
         return false;
     }
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     view->GetDesc(&srvDesc);
     if (!SupportsD3D11SamplingFormat(device, srvDesc.Format)) {
+        int idx = g_DiagSamplerSkipFormat.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12) {
+            HookLog("DX11: AF skip sampler (unsupported format %d at slot %u, stage=%d)",
+                    srvDesc.Format, slot, (int)stage);
+        }
         view->Release();
         return false;
     }
 
     const bool shouldForce = ViewHasMultipleVisibleMips(view);
+    if (!shouldForce) {
+        int idx = g_DiagSamplerSkipSingleMip.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12) {
+            HookLog("DX11: AF skip sampler (single mip at slot %u, stage=%d)", slot, (int)stage);
+        }
+    }
     view->Release();
     return shouldForce;
 }
@@ -720,14 +773,23 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
                                   : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
                 desc.MaxAnisotropy = 1;
                 modified = true;
+                HookLog("DX11: AF override OFF Filter=0x%X->0x%X Aniso=%u->1",
+                        desc.Filter, desc.Filter, desc.MaxAnisotropy);
             }
         } else if (allowAnisotropicOverride) {
             const UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
             const D3D11_FILTER newFilter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
             if (desc.Filter != newFilter || desc.MaxAnisotropy != maxAniso) {
+                const D3D11_FILTER origFilter = desc.Filter;
+                const UINT origAniso = desc.MaxAnisotropy;
                 desc.Filter = newFilter;
                 desc.MaxAnisotropy = maxAniso;
                 modified = true;
+                int idx = g_DiagSamplerAFApplied.fetch_add(1, std::memory_order_relaxed);
+                if (idx < 48) {
+                    HookLog("DX11: AF override ON Filter=0x%X->0x%X Aniso=%u->%u (#%d)",
+                            origFilter, desc.Filter, origAniso, desc.MaxAnisotropy, idx + 1);
+                }
             }
         }
     }
@@ -739,11 +801,19 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
             if (desc.Filter != D3D11_FILTER_MIN_MAG_MIP_LINEAR) {
                 desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
                 modified = true;
+                int idx = g_DiagSamplerMipOverride.fetch_add(1, std::memory_order_relaxed);
+                if (idx < 12) {
+                    HookLog("DX11: Mip override trilinear applied (#%d)", idx + 1);
+                }
             }
         } else if (mip == "bilinear") {
             if (desc.Filter != D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT) {
                 desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
                 modified = true;
+                int idx = g_DiagSamplerMipOverride.fetch_add(1, std::memory_order_relaxed);
+                if (idx < 12) {
+                    HookLog("DX11: Mip override bilinear applied (#%d)", idx + 1);
+                }
             }
         }
     }
@@ -754,6 +824,10 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
     desc.MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
     if (desc.MipLODBias != originalBias) {
         modified = true;
+        int idx = g_DiagSamplerMipBiasApplied.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 24) {
+            HookLog("DX11: Mip bias override Bias=%.2f->%.2f (#%d)", originalBias, desc.MipLODBias, idx + 1);
+        }
     }
 
     if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
@@ -761,6 +835,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
         if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
             desc.MipLODBias += sgBias;
             modified = true;
+            HookLog("DX11: SGSSAA bias applied (%.2f, total=%.2f)", sgBias, desc.MipLODBias);
         }
     }
 
@@ -768,6 +843,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
         if (desc.MipLODBias < -0.5f) {
             desc.MipLODBias = -0.5f;
             modified = true;
+            HookLog("DX11: Unity mip bias clamp -0.5 applied");
         }
     }
 
@@ -775,6 +851,7 @@ static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConf
     if (finalizedBias != desc.MipLODBias) {
         desc.MipLODBias = finalizedBias;
         modified = true;
+        HookLog("DX11: Finalized mip bias %.2f->%.2f", desc.MipLODBias, finalizedBias);
     }
 
     return modified;
@@ -821,12 +898,21 @@ static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* 
     device->Release();
 
     if (FAILED(hr) || !replacement) {
+        int idx = g_DiagSamplerReplacementCreated.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12) {
+            HookLog("DX11: Replacement sampler creation FAILED hr=0x%08X (stage=%d slot=%u)", hr, (int)stage, slot);
+        }
         AddReplacementSampler11(original, original);
         return original;
     }
 
     AddReplacementSampler11(original, replacement);
     AddToReplacementSet11(replacement);
+    int idx = g_DiagSamplerReplacementCreated.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 48) {
+        HookLog("DX11: Created replacement sampler (stage=%d slot=%u Filter=0x%X Aniso=%u Bias=%.2f) #%d",
+                (int)stage, slot, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, idx + 1);
+    }
     return replacement;
 }
 
@@ -3372,8 +3458,10 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
         return;
 
     ID3D11Device* dev = nullptr;
-    if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev))))
+    if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
+        HookLog("DX11: Prerender limit FAILED - GetDevice failed");
         return;
+    }
 
     ID3D11DeviceContext* ctx = nullptr;
     dev->GetImmediateContext(&ctx);
@@ -3388,7 +3476,7 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
                 g_PrerenderQueries.push_back(q);
             }
         }
-        HookLog("DX11: Created manual prerender query ring buffer (size: %d)", (int)g_PrerenderQueries.size());
+        HookLog("DX11: Created manual prerender query ring buffer (size: %d, limit=%.2f)", (int)g_PrerenderQueries.size(), limit);
     }
 
     if (!g_PrerenderQueries.empty()) {
@@ -3398,8 +3486,15 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
             // Strict Serial: Wait for current frame
             ID3D11Query* q = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
             ctx->End(q);
+            int64_t waitStart = PerfLogger::GetQpcUs();
             while (ctx->GetData(q, nullptr, 0, 0) == S_FALSE) {
                 SwitchToThread();
+            }
+            int64_t waitUs = PerfLogger::GetQpcUs() - waitStart;
+            int idx = g_DiagPrerenderWaits.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 12) {
+                HookLog("DX11: Prerender serial wait frame=%llu wait=%lldus (#%d)",
+                        (unsigned long long)g_PrerenderFrameIndex, (long long)waitUs, idx + 1);
             }
         } else {
             // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
@@ -3412,28 +3507,36 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
 
             if (g_PrerenderFrameIndex >= (uint64_t)lookback) {
                 ID3D11Query* waitQ = g_PrerenderQueries[(g_PrerenderFrameIndex - lookback) % g_PrerenderQueries.size()];
+                int64_t waitStart = PerfLogger::GetQpcUs();
                 while (ctx->GetData(waitQ, nullptr, 0, 0) == S_FALSE) {
                     SwitchToThread();
+                }
+                int64_t waitUs = PerfLogger::GetQpcUs() - waitStart;
+                int idx = g_DiagPrerenderWaits.fetch_add(1, std::memory_order_relaxed);
+                if (idx < 12) {
+                    HookLog("DX11: Prerender buffered wait lookback=%d frame=%llu wait=%lldus (#%d)",
+                            lookback, (unsigned long long)g_PrerenderFrameIndex, (long long)waitUs, idx + 1);
                 }
             }
         }
         g_PrerenderFrameIndex++;
+        g_DiagPrerenderFrames.fetch_add(1, std::memory_order_relaxed);
 
         // Strict Serial + Fixed Idle Gap for fractional limits
         if (isFractional) {
-            // effectiveLimit already set to 0 for Strict Serial above
-
-            // After the wait completes, calculate and apply a fixed idle gap
             float fps = 60.0f;
             if (auto* m = DXGIShared::GetPerformanceMetrics())
                 fps = m->GetCurrentFPS();
             double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
 
-            // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
             int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - limit) * 0.10);
             if (idleGapUs > 0) {
                 if (idleGapUs > 10000)
-                    idleGapUs = 10000;  // Cap at 10ms
+                    idleGapUs = 10000;
+                int idx = g_DiagPrerenderWaits.fetch_add(1, std::memory_order_relaxed);
+                if (idx < 6) {
+                    HookLog("DX11: Prerender fractional idle gap fps=%.1f gap=%lldus (#%d)", fps, (long long)idleGapUs, idx + 1);
+                }
                 PrecisionSleep(idleGapUs);
             }
         }
@@ -3477,11 +3580,17 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     HRESULT hr;
     if (modified) {
         hr = oCreateSamplerState(pDevice, &desc, ppSamplerState);
-        if (FAILED(hr) && debug) {
-            EarlyLog(
-                "DX11: CreateSamplerState FAILED with modified desc "
-                "(hr=0x%08X). Filter=0x%X Bias=%.2f Aniso=%u",
-                hr, desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
+        if (FAILED(hr)) {
+            if (debug) {
+                EarlyLog(
+                    "DX11: CreateSamplerState FAILED with modified desc "
+                    "(hr=0x%08X). Filter=0x%X Bias=%.2f Aniso=%u",
+                    hr, desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
+            }
+        } else {
+            HookLog("DX11: CreateSamplerState modified Filter=0x%X Aniso=%u Bias=%.2f (original Aniso=%u Bias=%.2f)",
+                    desc.Filter, desc.MaxAnisotropy, desc.MipLODBias,
+                    pSamplerDesc->MaxAnisotropy, pSamplerDesc->MipLODBias);
         }
     } else {
         hr = oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
@@ -4019,6 +4128,27 @@ void DX11Hook::Init() {
 void DX11Hook::Shutdown() {
     HookLog("DX11Hook::Shutdown()");
 
+    // Log diagnostic summary for sampler/prerender overrides
+    {
+        int afApplied = g_DiagSamplerAFApplied.load(std::memory_order_relaxed);
+        int afReplaced = g_DiagSamplerReplacementCreated.load(std::memory_order_relaxed);
+        int afNoMips = g_DiagSamplerSkipNoMips.load(std::memory_order_relaxed);
+        int afBorder = g_DiagSamplerSkipBorder.load(std::memory_order_relaxed);
+        int afReduction = g_DiagSamplerSkipReduction.load(std::memory_order_relaxed);
+        int afComparison = g_DiagSamplerSkipComparison.load(std::memory_order_relaxed);
+        int afSlot = g_DiagSamplerSkipSlot.load(std::memory_order_relaxed);
+        int afNoSRV = g_DiagSamplerSkipNoSRV.load(std::memory_order_relaxed);
+        int afFormat = g_DiagSamplerSkipFormat.load(std::memory_order_relaxed);
+        int afSingleMip = g_DiagSamplerSkipSingleMip.load(std::memory_order_relaxed);
+        int mipBias = g_DiagSamplerMipBiasApplied.load(std::memory_order_relaxed);
+        int mipOverride = g_DiagSamplerMipOverride.load(std::memory_order_relaxed);
+        int prerenderFrames = g_DiagPrerenderFrames.load(std::memory_order_relaxed);
+        int prerenderWaits = g_DiagPrerenderWaits.load(std::memory_order_relaxed);
+        HookLog("DX11: Override summary: AF_applied=%d AF_replaced=%d AF_skip(noMips=%d border=%d reduction=%d comp=%d slot=%d noSRV=%d fmt=%d singleMip=%d) mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
+                afApplied, afReplaced, afNoMips, afBorder, afReduction, afComparison, afSlot, afNoSRV, afFormat, afSingleMip,
+                mipBias, mipOverride, prerenderFrames, prerenderWaits);
+    }
+
     // Cleanup OverlayAdapter
     if (g_OverlayAdapter.IsInitialized()) {
         g_OverlayAdapter.Shutdown();
@@ -4056,6 +4186,26 @@ void DX11Hook::Shutdown() {
 }
 
 void DX11Hook::OnHostDisconnect() {
+    // Log diagnostic summary for sampler/prerender overrides
+    {
+        int afApplied = g_DiagSamplerAFApplied.load(std::memory_order_relaxed);
+        int afReplaced = g_DiagSamplerReplacementCreated.load(std::memory_order_relaxed);
+        int afNoMips = g_DiagSamplerSkipNoMips.load(std::memory_order_relaxed);
+        int afBorder = g_DiagSamplerSkipBorder.load(std::memory_order_relaxed);
+        int afReduction = g_DiagSamplerSkipReduction.load(std::memory_order_relaxed);
+        int afComparison = g_DiagSamplerSkipComparison.load(std::memory_order_relaxed);
+        int afSlot = g_DiagSamplerSkipSlot.load(std::memory_order_relaxed);
+        int afNoSRV = g_DiagSamplerSkipNoSRV.load(std::memory_order_relaxed);
+        int afFormat = g_DiagSamplerSkipFormat.load(std::memory_order_relaxed);
+        int afSingleMip = g_DiagSamplerSkipSingleMip.load(std::memory_order_relaxed);
+        int mipBias = g_DiagSamplerMipBiasApplied.load(std::memory_order_relaxed);
+        int mipOverride = g_DiagSamplerMipOverride.load(std::memory_order_relaxed);
+        int prerenderFrames = g_DiagPrerenderFrames.load(std::memory_order_relaxed);
+        int prerenderWaits = g_DiagPrerenderWaits.load(std::memory_order_relaxed);
+        HookLog("DX11: Override summary: AF_applied=%d AF_replaced=%d AF_skip(noMips=%d border=%d reduction=%d comp=%d slot=%d noSRV=%d fmt=%d singleMip=%d) mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
+                afApplied, afReplaced, afNoMips, afBorder, afReduction, afComparison, afSlot, afNoSRV, afFormat, afSingleMip,
+                mipBias, mipOverride, prerenderFrames, prerenderWaits);
+    }
     HookLog("DX11Hook::OnHostDisconnect() - ready for reconnection");
     // DX11 capture is synchronous, nothing to stop
     // Just cleanup for potential new session
