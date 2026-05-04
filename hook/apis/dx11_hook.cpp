@@ -1241,18 +1241,10 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
             if (slot >= 8)
                 continue;
 
-            ID3D11ShaderResourceView* view = (slot < maxSRVs) ? srvs[slot] : nullptr;
-            if (!view)
-                continue;
-
-            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-            view->GetDesc(&srvDesc);
-            if (!SupportsD3D11SamplingFormat(dev, srvDesc.Format))
-                continue;
-
-            if (!ViewHasMultipleVisibleMips(view))
-                continue;
-
+            // Note: we skip the ViewHasMultipleVisibleMips check here because
+            // SRVs may not be bound at Present time (the game unbinds them before
+            // calling Present). SamplerAllowsForcedAF already filters out the
+            // Blackwell-corruption-causing comparison samplers.
             const UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
             const D3D11_FILTER newFilter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
             if (desc.Filter == newFilter && desc.MaxAnisotropy == maxAniso)
