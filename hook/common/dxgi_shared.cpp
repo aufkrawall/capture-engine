@@ -1,5 +1,6 @@
 #include "dxgi_shared.h"
 #include "../../common/raii_helpers.h"
+#include "../apis/dx11_hook.h"
 #include "../apis/dx12_hook.h"
 #include "../apis/streamline_hook.h"
 #include "../wrappers/inline_hook.h"
@@ -1244,6 +1245,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
     ApplyPresentFrameLatencyOverrides(pSwapChain);
 
+    // Query-based CPU prerender limit for D3D11 (fallback when IDXGISwapChain2 is unavailable).
+    // Applied for all D3D11 games regardless of wrapper/vtable path.
+    if (api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        float prerenderLimit = GetActivePrerenderLimit();
+        if (prerenderLimit >= 0.0f) {
+            ApplyPrerenderLimit(pSwapChain, prerenderLimit);
+        }
+    }
+
     if (wrappedSwapchain) {
         static int s_wrappedPassCount = 0;
         if (s_wrappedPassCount < 5) {
@@ -1875,6 +1885,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
     ApplyPresentFrameLatencyOverrides(pSwapChain);
+
+    // Query-based CPU prerender limit for D3D11 (fallback when IDXGISwapChain2 is unavailable).
+    if (api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        float prerenderLimit = GetActivePrerenderLimit();
+        if (prerenderLimit >= 0.0f) {
+            ApplyPrerenderLimit(pSwapChain, prerenderLimit);
+        }
+    }
 
     void* pWrapper = nullptr;
     if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {

@@ -6414,12 +6414,9 @@ void DX9Hook::Init() {
     LogDirect("skipReason=%s, inlineHooksReady=%d, oPresent=%p", skipReason ? skipReason : "null",
               inlineHooksReady ? 1 : 0, (void*)oPresent);
 
-    if (skipReason && inlineHooksReady) {
-        LogDirect("DX9: Skipping active init (inline hooks ready)");
+    if (skipReason) {
+        LogDirect("DX9: Skipping active init (%s, inlineHooksReady=%d)", skipReason, inlineHooksReady ? 1 : 0);
         return;
-    }
-    if (skipReason && !inlineHooksReady) {
-        LogDirect("DX9: Running active init fallback (skipReason but no inline hooks)");
     }
 
     // CRITICAL: If inline hooks failed, try to find existing D3D9 devices FIRST

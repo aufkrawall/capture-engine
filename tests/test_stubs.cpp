@@ -49,6 +49,7 @@ extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}
 
 // Stubs for DX11
 extern "C" void DX11_ProcessFrameExternal(IDXGISwapChain*) {}
+void ApplyPrerenderLimit(IDXGISwapChain*, float) {}
 
 // Stubs for custom_overlay_dx12.cpp
 HRESULT D3D12SerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**,
