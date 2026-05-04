@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -709,12 +710,26 @@ static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const Graphics
         }
         return false;
     }
+    // Skip comparison samplers that are likely shadow maps: BORDER address (shadow
+    // map sampler) or infinite LOD range (MinLOD=0, MaxLOD=FLT_MAX, typical shadow
+    // map configuration). Regular detail textures with comparison filtering (e.g.
+    // parallax occlusion mapping) and WRAP/CLAMP address should still get AF.
     if (desc.ComparisonFunc != D3D11_COMPARISON_NEVER) {
-        int idx = g_DiagSamplerSkipComparison.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 6) {
-            HookLogImportant("DX11: AF skip sampler (comparison func) Func=%d", desc.ComparisonFunc);
+        bool isShadowMap = (desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER ||
+                            desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
+                            desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER);
+        if (!isShadowMap && (desc.MinLOD == 0.0f && desc.MaxLOD >= std::numeric_limits<float>::max() * 0.5f)) {
+            isShadowMap = true;
         }
-        return false;
+        if (isShadowMap) {
+            int idx = g_DiagSamplerSkipComparison.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 6) {
+                HookLogImportant("DX11: AF skip sampler (shadow map) Func=%d Addr=%d/%d/%d MinLOD=%.1f MaxLOD=%.1f",
+                                desc.ComparisonFunc, desc.AddressU, desc.AddressV, desc.AddressW,
+                                desc.MinLOD, desc.MaxLOD);
+            }
+            return false;
+        }
     }
     return true;
 }
