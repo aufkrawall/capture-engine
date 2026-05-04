@@ -3791,9 +3791,18 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     {
         static std::atomic<int> s_createAFLog{0};
         int idx = s_createAFLog.fetch_add(1, std::memory_order_relaxed);
-        if (modified && idx < 48) {
-            HookLogImportant("DX11: CreateSamplerState AF Filter=0x%X->0x%X Aniso=%u Bias=%.2f (#%d)",
-                            pSamplerDesc->Filter, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, idx + 1);
+        if (idx < 48) {
+            if (modified) {
+                HookLogImportant("DX11: CreateSamplerState AF ON origFilter=0x%X newFilter=0x%X Aniso=%u Bias=%.2f Addr=%d/%d/%d Comp=%d MinLOD=%.1f MaxLOD=%.1f (#%d)",
+                                pSamplerDesc->Filter, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias,
+                                pSamplerDesc->AddressU, pSamplerDesc->AddressV, pSamplerDesc->AddressW,
+                                pSamplerDesc->ComparisonFunc, pSamplerDesc->MinLOD, pSamplerDesc->MaxLOD, idx + 1);
+            } else {
+                HookLogImportant("DX11: CreateSamplerState AF SKIP Filter=0x%X Aniso=%u Addr=%d/%d/%d Comp=%d MinLOD=%.1f MaxLOD=%.1f (#%d)",
+                                pSamplerDesc->Filter, pSamplerDesc->MaxAnisotropy,
+                                pSamplerDesc->AddressU, pSamplerDesc->AddressV, pSamplerDesc->AddressW,
+                                pSamplerDesc->ComparisonFunc, pSamplerDesc->MinLOD, pSamplerDesc->MaxLOD, idx + 1);
+            }
         }
     }
 
