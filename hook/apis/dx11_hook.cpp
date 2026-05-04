@@ -3781,12 +3781,14 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     }
 
     const auto& gfx = GetActiveGraphicsConfig();
-    // Enable AF at create-time. The bind-time path (PSSetSamplers etc.) and
-    // deferred Present-time sweep can't reach wrapper-architecture games that
-    // create samplers once and never rebind (e.g. BioShock Infinite).
-    // SamplerAllowsForcedAF already filters out single-mip, border, reduction,
-    // and comparison samplers to avoid Blackwell corruption.
-    const bool modified = ApplySamplerOverrides11(desc, gfx, true);
+    // Enable AF at create-time for samplers that pass SamplerAllowsForcedAF.
+    // The bind-time path (PSSetSamplers etc.) and deferred Present-time sweep
+    // can't reach wrapper-architecture games that create samplers once and
+    // never rebind (e.g. BioShock Infinite).
+    // SamplerAllowsForcedAF filters out single-mip, border, reduction, and
+    // comparison samplers to avoid Blackwell corruption.
+    const bool allowAF = SamplerAllowsForcedAF(desc, gfx);
+    const bool modified = ApplySamplerOverrides11(desc, gfx, allowAF);
 
     {
         static std::atomic<int> s_createAFLog{0};
