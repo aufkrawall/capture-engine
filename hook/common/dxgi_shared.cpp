@@ -349,14 +349,30 @@ static bool HasStartupBlockingOverlayModuleInCurrentStack() {
     return false;
 }
 
-// Check whether any Streamline module (sl.interposer, sl.common, sl.dlss_g)
-// appears in the current call stack.  SL worker threads call Present during
-// FG processing, and Steam's overlay Present hook (OverlayHookD3D3) crashes
-// on those threads because Steam TLS is uninitialized (RIP=0, RAX=0).
-// This is a broader check than IsCodeAddressFromStreamlineModule which only
-// checks the immediate caller — we need to detect SL threads even when the
-// immediate caller is inside CE's own hook trampoline or vtable dispatch.
-static bool HasStreamlineModuleInCurrentStack() {
+// Check whether the current thread is an SL worker thread (created by
+// sl_dlss_g or sl.common) rather than the game's main Present thread.
+// SL worker threads call Present during FG processing, and Steam's overlay
+// Present hook (OverlayHookD3D3) crashes on those threads because Steam TLS
+// is uninitialized (RIP=0, RAX=0).
+//
+// We distinguish SL worker threads from game threads by checking:
+// 1. The thread is NOT the current Present owner (g_presentThreadId) — the
+//    game's Present thread should never be bypassed.
+// 2. At least one SL module appears in the call stack.
+//
+// This avoids the problem of HasStreamlineModuleInCurrentStack being too
+// broad — game threads that use SL through API calls also have SL modules
+// in their stack, but they are the Present owner and should NOT be bypassed.
+static bool IsSLWorkerThread() {
+    // Fast path: if the current thread is the Present owner, it's the game
+    // thread, not an SL worker thread.
+    DWORD currentId = GetCurrentThreadId();
+    DWORD presentOwner = g_presentThreadId.load(std::memory_order_acquire);
+    if (presentOwner == currentId) {
+        return false;
+    }
+
+    // Check for SL modules in the stack.
     constexpr USHORT kMaxFrames = 24;
     void* stackFrames[kMaxFrames] = {};
     const USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
@@ -2804,7 +2820,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // (original dxgi!Present bytes from disk) to skip Steam's hook entirely.
     static std::atomic<int> s_copSlThreadBypassCount{0};
     static std::atomic<int> s_copSlFastPathCount{0};
-    if (slLoaded && HasStreamlineModuleInCurrentStack()) {
+    if (slLoaded && IsSLWorkerThread()) {
         if (presentBypass) {
             int bypassNum = s_copSlThreadBypassCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (bypassNum <= 10 || (bypassNum % 1000) == 0) {
@@ -2917,7 +2933,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     }
 
     // CRITICAL: SL worker thread guard — same as CallOriginalPresent.
-    if (slLoaded && HasStreamlineModuleInCurrentStack()) {
+    if (slLoaded && IsSLWorkerThread()) {
         if (present1Bypass) {
             static int s_cop1SlThreadBypassCount = 0;
             if (s_cop1SlThreadBypassCount++ < 10) {
