@@ -94,7 +94,7 @@ inline bool IsStreamlineStartupHandoffPending() {
     return g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
 }
 
-static constexpr ULONGLONG kStreamlineStartupTransitionGraceMs = 4000;
+static constexpr ULONGLONG kStreamlineStartupTransitionGraceMs = 10000;
 
 inline void ArmStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
     g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);

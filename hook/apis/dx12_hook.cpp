@@ -9162,6 +9162,14 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         g_PostSLConfirmedRendering.store(true, std::memory_order_release);
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
         g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+        // kStreamlineStartupTransitionGraceMs from the SL FG activation arm covers the
+        // remaining window.  SL's DllMain can call Present briefly after PostSL confirms
+        // — the transition window keeps the Steam overlay bypass active so that Present
+        // bypasses Steam's inline E9 JMP on dxgi!Present (Steam TLS is uninitialized on
+        // the SL thread → RIP=0).  The window expires naturally from the arm time; the
+        // old ShouldClear... check at ~line 9220 is removed because it cleared the window
+        // too aggressively on the same call where confirmed became true, re-exposing the
+        // DllMain race window.
         HookLogImportant("DX12: PostSL CONFIRMED rendering via re-entrant Present — suppressing pre-SL draw");
     }
     // Reset stall counter — PostSL is actively rendering, no need for pre-SL fallback
@@ -9199,15 +9207,6 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             stableFrameCount, runtimeStateStabilizationLastFrame, extendRuntimeStateStabilization ? 1 : 0,
             s_reactivationEpoch);
     }
-    if (ce::dx12_overlay_policy::ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
-            DXGIShared::IsStreamlineStartupTransitionWindowActive(), stableFrameCount)) {
-        DXGIShared::ClearStreamlineStartupTransitionWindow();
-        HookLogImportant(
-            "DX12: PostSL confirmed stable startup rendering — cleared startup transition window "
-            "(stableFrames=%d epoch=%d)",
-            stableFrameCount, s_reactivationEpoch);
-    }
-
     // Track last working queue — survives FG transitions so we can prefer
     // a proven-safe queue when PostSL re-activates after FSR→DLSS switch.
     if (SUCCEEDED(postDevReason) && submittedQueue != g_PostSLLastWorkingQueue &&
