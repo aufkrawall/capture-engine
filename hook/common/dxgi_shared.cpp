@@ -2940,14 +2940,33 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     //   DetourPresent → vtable[8](SteamPresent) → Steam → DetourPresent → ...
     // oPresent = the saved original from vtable[8] at hook install time.
     //
-    // NOTE: When Steam overlay is loaded and SL has overwritten Steam's E9 JMP
-    // on dxgi!Present with its own, calling oPresent (dxgi!Present) goes through
-    // SL's JMP, not Steam's.  Steam's overlay is lost during DLSS FG.
-    // We cannot safely invoke Steam's overlay hook (g_externalOverlayPresentHook)
-    // because Steam's OverlayHookD3D3 calls into Streamline's slGetPluginFunction
-    // via D3D12 operations, causing RIP=0 crashes from re-entrant SL API access.
-    // Steam overlay is therefore unavailable during active DLSS FG.
+    // When Steam overlay is loaded and SL has overwritten Steam's E9 JMP on
+    // dxgi!Present with its own, calling oPresent (dxgi!Present) goes through
+    // SL's JMP, not Steam's.  Steam's overlay is lost.  To restore Steam's
+    // overlay, we temporarily restore Steam's E9 JMP on dxgi!Present, call
+    // oPresent (which now goes through Steam's overlay), then re-install SL's
+    // E9 JMP.  The Steam overlay hook is protected against NULL function pointer
+    // crashes from re-entrant slGetFeatureFunction calls (see
+    // Hooked_slGetFeatureFunction in streamline_hook.cpp).
     if (slLoaded && presentOriginal && presentOriginal != DetourPresent) {
+        const bool steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
+        if (steamOverlayLoaded && g_externalOverlayPresentHook && presentBypass) {
+            static std::atomic<int> s_copSteamInvokeCount{0};
+            int steamNum = s_copSteamInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (steamNum <= 10 || (steamNum % 500) == 0) {
+                HookLogImportant(
+                    "CallOriginalPresent: Invoking Steam overlay for SL fast-path #%d "
+                    "(steamHook=%p bypass=%p tid=0x%04X)",
+                    steamNum, (void*)g_externalOverlayPresentHook, (void*)presentBypass, GetCurrentThreadId());
+            }
+            // Call Steam's overlay hook to render Steam's overlay.  Steam renders
+            // and calls Present through its trampoline (saved original dxgi!Present
+            // bytes), which goes to the real dxgi!Present (starting at byte 6,
+            // past any E9 JMP).  This presents the frame with Steam's overlay but
+            // WITHOUT going through SL's FG processing.  SL misses one frame of FG
+            // interpolation, but recovers on the next game-thread Present.
+            return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+        }
         static std::atomic<int> s_copFastPathCount{0};
         int fastPathNum = s_copFastPathCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (fastPathNum <= 10 || (fastPathNum % 1000) == 0) {

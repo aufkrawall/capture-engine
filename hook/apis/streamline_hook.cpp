@@ -2018,6 +2018,21 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
     }
 
     const slResult result = g_Original_slGetFeatureFunction(feature, functionName, function);
+    // Safety: if the original returned success but gave us NULL, the caller
+    // would call through NULL → RIP=0 crash.  This can happen when third-party
+    // overlays (e.g., Steam's OverlayHookD3D3) call slGetFeatureFunction
+    // re-entrantly from within Streamline's own code during FG processing.
+    // Return an error so the caller handles the missing function gracefully.
+    if (result == kSlResultOk && !function) {
+        static std::atomic<int> s_nullFunctionLogCount{0};
+        if (s_nullFunctionLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+            HookLogImportant(
+                "Streamline Hook: slGetFeatureFunction returned OK with NULL function "
+                "(feature=%u name=%s) — returning error to prevent null call crash",
+                feature, functionName ? functionName : "null");
+        }
+        return kSlResultErrorInvalidState;
+    }
     if (result != kSlResultOk || !functionName || !function) {
         return result;
     }
