@@ -1201,9 +1201,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
             // Invoke Steam's overlay explicitly before bypass when SL FG is active,
             // since SL's E9 JMP overwrites Steam's and the bypass (disk bytes) has none.
-            // Skip Steam overlay when the Present originates from an SL module
-            // (callerFromStreamlineModule) — Steam's code is unsafe in SL's call chain.
-            if (g_externalOverlayPresentHook && steamOverlayLoaded && !callerFromStreamlineModule) {
+            // Skip Steam overlay only during the SL DllMain phase
+            // (callerFromStreamlineModule && !s_slRoutingActive) — Steam's TLS may be
+            // uninitialized inside DllMain.  Once SL FG routing is active
+            // (s_slRoutingActive), Steam is safe to call from SL-originated Presents.
+            const bool steamOverlaySafeConfirmed =
+                !(callerFromStreamlineModule && !s_slRoutingActive.load(std::memory_order_relaxed));
+            if (g_externalOverlayPresentHook && steamOverlayLoaded && steamOverlaySafeConfirmed) {
                 static std::atomic<int> s_steamConfirmedStandaloneInvokeCount{0};
                 int steamNum = s_steamConfirmedStandaloneInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (steamNum <= 10 || (steamNum % 500) == 0) {
@@ -1214,13 +1218,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 }
                 return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
             }
-            if (g_externalOverlayPresentHook && steamOverlayLoaded && callerFromStreamlineModule) {
-                static std::atomic<int> s_steamConfirmedStandaloneSkippedSLCount{0};
-                int skipNum = s_steamConfirmedStandaloneSkippedSLCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (g_externalOverlayPresentHook && steamOverlayLoaded && !steamOverlaySafeConfirmed) {
+                static std::atomic<int> s_steamConfirmedStandaloneSkippedDllMainCount{0};
+                int skipNum = s_steamConfirmedStandaloneSkippedDllMainCount.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (skipNum <= 5) {
                     HookLogImportant(
-                        "DetourPresent: Skipping Steam overlay for confirmed standalone bypass (SL call chain unsafe) "
-                        "#%d (tid=0x%04X)",
+                        "DetourPresent: Skipping Steam overlay for confirmed standalone bypass "
+                        "(SL DllMain phase, unsafe) #%d (tid=0x%04X)",
                         skipNum, GetCurrentThreadId());
                 }
             }
@@ -1265,14 +1269,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         // JMP to dxgi!Present+5) which presents the frame.  We then return
         // Steam's result without calling bypass separately.
         //
-        // CRITICAL: Skip Steam overlay when the Present originates from a
-        // Streamline module (callerFromStreamlineModule).  Steam's overlay
-        // code is not safe to invoke from within SL's call chain (e.g., SL
-        // DllMain, sl_common!slGetPluginFunction) — it can crash with RIP=0
-        // because Steam's internal TLS or callbacks are uninitialized.  The
-        // bypass (oPresentBypass/EnsurePresentBypassTrampoline) below handles
-        // these safely by calling the real Present directly.
-        if (g_externalOverlayPresentHook && steamOverlayLoaded && !callerFromStreamlineModule) {
+        // Skip Steam overlay only during the SL DllMain phase, detected by
+        // callerFromStreamlineModule && !s_slRoutingActive.  During DllMain,
+        // Steam's internal TLS/callbacks may be uninitialized, causing RIP=0
+        // crashes.  Once SL FG routing is active (s_slRoutingActive=true),
+        // Steam is safe to call even from SL-originated Presents.  The bypass
+        // (oPresentBypass/EnsurePresentBypassTrampoline) is always safe.
+        const bool steamOverlaySafe = !(callerFromStreamlineModule && !s_slRoutingActive.load(std::memory_order_relaxed));
+        if (g_externalOverlayPresentHook && steamOverlayLoaded && steamOverlaySafe) {
             static std::atomic<int> s_steamOverlayCallCount{0};
             int steamNum = s_steamOverlayCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (steamNum <= 10 || (steamNum % 500) == 0) {
@@ -1283,13 +1287,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             }
             return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
         }
-        if (g_externalOverlayPresentHook && steamOverlayLoaded && callerFromStreamlineModule) {
-            static std::atomic<int> s_steamOverlaySkippedSLCount{0};
-            int skipNum = s_steamOverlaySkippedSLCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (g_externalOverlayPresentHook && steamOverlayLoaded && !steamOverlaySafe) {
+            static std::atomic<int> s_steamOverlaySkippedDLMainCount{0};
+            int skipNum = s_steamOverlaySkippedDLMainCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (skipNum <= 5) {
                 HookLogImportant(
-                    "DetourPresent: Skipping Steam overlay for SL re-entrant Present (SL call chain unsafe) "
-                    "#%d (tid=0x%04X)",
+                    "DetourPresent: Skipping Steam overlay for SL re-entrant Present "
+                    "(SL DllMain phase, unsafe) #%d (tid=0x%04X)",
                     skipNum, GetCurrentThreadId());
             }
         }
