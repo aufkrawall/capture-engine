@@ -62,4 +62,80 @@ TEST(SamplerOverrideUtilsTest, AnisotropicOverrideEnabledOnlyForExplicitNonOffMo
     EXPECT_TRUE(IsAnisotropicOverrideEnabled(gfx));
 }
 
+TEST(SamplerOverrideUtilsTest, D3D11ForcedAFIgnoresComparisonFuncOnNonComparisonFilters) {
+    GraphicsConfig gfx;
+    gfx.anisotropicFiltering = "16x";
+
+    D3D11_SAMPLER_DESC desc = {};
+    desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
+    desc.MinLOD = 0.0f;
+    desc.MaxLOD = D3D11_FLOAT32_MAX;
+
+    EXPECT_EQ(ClassifyD3D11SamplerForForcedAF(desc, gfx), D3D11ForcedAFSamplerDecision::Allow);
+    EXPECT_TRUE(D3D11SamplerAllowsForcedAF(desc, gfx));
+
+    desc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    EXPECT_EQ(ClassifyD3D11SamplerForForcedAF(desc, gfx), D3D11ForcedAFSamplerDecision::ComparisonFilter);
+}
+
+TEST(SamplerOverrideUtilsTest, D3D11ForcedAFRejectsUnsafeSamplerDescriptors) {
+    GraphicsConfig gfx;
+    gfx.anisotropicFiltering = "16x";
+
+    D3D11_SAMPLER_DESC desc = {};
+    desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.MinLOD = 0.0f;
+    desc.MaxLOD = D3D11_FLOAT32_MAX;
+
+    desc.MaxLOD = 0.0f;
+    EXPECT_EQ(ClassifyD3D11SamplerForForcedAF(desc, gfx), D3D11ForcedAFSamplerDecision::FixedLOD);
+
+    desc.MaxLOD = D3D11_FLOAT32_MAX;
+    desc.AddressU = D3D11_TEXTURE_ADDRESS_BORDER;
+    EXPECT_EQ(ClassifyD3D11SamplerForForcedAF(desc, gfx), D3D11ForcedAFSamplerDecision::BorderAddress);
+
+    desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.Filter = D3D11_FILTER_MINIMUM_MIN_MAG_MIP_LINEAR;
+    EXPECT_EQ(ClassifyD3D11SamplerForForcedAF(desc, gfx), D3D11ForcedAFSamplerDecision::ReductionFilter);
+}
+
+TEST(SamplerOverrideUtilsTest, D3D11ForcedAFTexturePolicyAllowsOnlyMaterialLikeMipmappedTexture2D) {
+    D3D11Texture2DForcedAFInfo info = {};
+    info.format = DXGI_FORMAT_BC7_UNORM;
+    info.viewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    info.width = 1024;
+    info.height = 1024;
+    info.mipLevels = 0;
+    info.mostDetailedMip = 0;
+    info.viewMipLevels = UINT_MAX;
+    info.arraySize = 1;
+    info.sampleCount = 1;
+    info.bindFlags = D3D11_BIND_SHADER_RESOURCE;
+    info.formatSupported = true;
+
+    EXPECT_TRUE(D3D11Texture2DAllowsForcedAF(info));
+
+    info.bindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    EXPECT_EQ(ClassifyD3D11Texture2DForForcedAF(info), D3D11ForcedAFResourceDecision::RenderTargetResource);
+
+    info.bindFlags = D3D11_BIND_SHADER_RESOURCE;
+    info.viewMipLevels = 1;
+    EXPECT_EQ(ClassifyD3D11Texture2DForForcedAF(info), D3D11ForcedAFResourceDecision::SingleVisibleMip);
+
+    info.viewMipLevels = UINT_MAX;
+    info.format = DXGI_FORMAT_R8G8B8A8_UINT;
+    EXPECT_EQ(ClassifyD3D11Texture2DForForcedAF(info), D3D11ForcedAFResourceDecision::ProblematicFormat);
+
+    info.format = DXGI_FORMAT_BC7_UNORM;
+    info.viewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+    EXPECT_EQ(ClassifyD3D11Texture2DForForcedAF(info), D3D11ForcedAFResourceDecision::UnsupportedViewDimension);
+}
+
 }  // namespace

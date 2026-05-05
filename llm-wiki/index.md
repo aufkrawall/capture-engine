@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-04
+Last cross-checked: 2026-05-05
 
 Primary sources:
 - `AGENTS.md`
@@ -42,6 +42,8 @@ Primary sources:
   - Current DX12 injection timing, hook bootstrap, and pseudo-overlay handoff behavior.
 - `dx12-overlay-third-party-coexistence.md`
   - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS.
+- `dx11-forced-af.md`
+  - Current Blackwell-safe D3D11 forced anisotropic filtering policy, runtime sampler/SRV tracking, diagnostics, and stale-risk.
 - `frame-generation-switching.md`
   - Stub pointing to `frame-generation/guardrails.md` (invariants) and `frame-generation/case-studies.md` (chronological deep-dive).
 - `overlay-fg-status.md`

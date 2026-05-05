@@ -341,6 +341,17 @@ private:
     CWrapD3D11Device* m_pDevice;
     LONG m_RefCount;
     int m_Version;
+    ID3D11ShaderResourceView* m_TrackedSRVs[6][D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+    ID3D11SamplerState* m_TrackedSamplers[6][D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
 
     void PromoteInterfaces();
+    void ClearForcedAFTracking();
+    void TrackShaderResources(UINT stageIndex, UINT startSlot, UINT numViews,
+                              ID3D11ShaderResourceView* const* views);
+    void TrackSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* samplers);
+    void RefreshShaderResources(UINT stageIndex, UINT startSlot, UINT numViews);
+    ID3D11SamplerState* ResolveForcedAFSampler(UINT stageIndex, UINT slot, ID3D11Device* realDevice,
+                                               ID3D11SamplerState* original);
+    void ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots);
+    void SetRealSampler(UINT stageIndex, UINT slot, ID3D11SamplerState* sampler);
 };

@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <shared_mutex>
@@ -82,15 +83,9 @@ static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
 static int64_t g_LastSleepUs = 0;
 
-// Deferred sampler override sweep: applied once on first Present for games
-// that create samplers once at startup and never rebind (e.g. BioShock Infinite).
-// The create-time path skips AF enablement (no SRV context), so we sweep all
-// bound samplers at Present time where we can inspect SRVs for mip count.
-// Uses its own replacement cache (separate from the vtable hook's cache) so
-// it works for both vtable-hook and wrapper-architecture games.
+// Deferred state bootstrap: used once after Present hook installation so games
+// that bound samplers before our vtable hooks still get a tracked logical state.
 static bool g_DeferredAFApplied = false;
-static std::vector<std::pair<ID3D11SamplerState*, ID3D11SamplerState*>> g_DeferredAFReplacements;
-static std::shared_mutex g_DeferredAFMutex;
 
 // Sampler override diagnostic counters (rate-limited logging)
 static std::atomic<int> g_DiagSamplerAllowsAF{0};
@@ -102,8 +97,10 @@ static std::atomic<int> g_DiagSamplerSkipSlot{0};
 static std::atomic<int> g_DiagSamplerSkipNoSRV{0};
 static std::atomic<int> g_DiagSamplerSkipFormat{0};
 static std::atomic<int> g_DiagSamplerSkipSingleMip{0};
+static std::atomic<int> g_DiagSamplerSkipUnsafeResource{0};
 static std::atomic<int> g_DiagSamplerAFApplied{0};
 static std::atomic<int> g_DiagSamplerReplacementCreated{0};
+static std::atomic<int> g_DiagSamplerRebound{0};
 static std::atomic<int> g_DiagSamplerMipBiasApplied{0};
 static std::atomic<int> g_DiagSamplerMipOverride{0};
 static std::atomic<int> g_DiagPrerenderFrames{0};
@@ -313,7 +310,13 @@ static ID3D10Device* g_CachedD3D10Device = nullptr;
 static std::vector<ID3D10SamplerState*> g_ReplacementSamplers10;  // Prevent recursive replacements
 static uint64_t g_SamplerConfigHash10 = 0;
 
-static std::vector<std::pair<ID3D11SamplerState*, ID3D11SamplerState*>> g_SamplerCache11;
+struct D3D11SamplerCacheEntry {
+    ID3D11Device* device;
+    D3D11_SAMPLER_DESC desc;
+    ID3D11SamplerState* sampler;
+};
+
+static std::vector<D3D11SamplerCacheEntry> g_SamplerCache11;
 static std::shared_mutex g_SamplerCacheMutex11;
 static std::vector<ID3D11SamplerState*> g_ReplacementSamplers11;
 static uint64_t g_SamplerConfigHash11 = 0;
@@ -391,28 +394,38 @@ static void EnsureSamplerCacheFresh10(const GraphicsConfig& gfx) {
     g_SamplerConfigHash10 = configHash;
 }
 
-static ID3D11SamplerState* FindReplacementSampler11(ID3D11SamplerState* original) {
+static bool SameSamplerDesc11(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b) {
+    return a.Filter == b.Filter && a.AddressU == b.AddressU && a.AddressV == b.AddressV && a.AddressW == b.AddressW &&
+           a.MipLODBias == b.MipLODBias && a.MaxAnisotropy == b.MaxAnisotropy &&
+           a.ComparisonFunc == b.ComparisonFunc &&
+           std::memcmp(a.BorderColor, b.BorderColor, sizeof(a.BorderColor)) == 0 && a.MinLOD == b.MinLOD &&
+           a.MaxLOD == b.MaxLOD;
+}
+
+static ID3D11SamplerState* FindReplacementSampler11(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc) {
     std::shared_lock<std::shared_mutex> lock(g_SamplerCacheMutex11);
     for (const auto& entry : g_SamplerCache11) {
-        if (entry.first == original) {
-            return entry.second;
+        if (entry.device == device && SameSamplerDesc11(entry.desc, desc)) {
+            return entry.sampler;
         }
     }
     return nullptr;
 }
 
-static void AddReplacementSampler11(ID3D11SamplerState* original, ID3D11SamplerState* replacement) {
+static void AddReplacementSampler11(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc,
+                                    ID3D11SamplerState* replacement) {
     std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex11);
     for (auto& entry : g_SamplerCache11) {
-        if (entry.first == original) {
-            entry.second = replacement;
+        if (entry.device == device && SameSamplerDesc11(entry.desc, desc)) {
+            entry.sampler = replacement;
             return;
         }
     }
-    g_SamplerCache11.push_back({original, replacement});
+    g_SamplerCache11.push_back({device, desc, replacement});
 }
 
 static bool IsReplacementSampler11(ID3D11SamplerState* sampler) {
+    std::shared_lock<std::shared_mutex> lock(g_SamplerCacheMutex11);
     for (auto* replacement : g_ReplacementSamplers11) {
         if (replacement == sampler) {
             return true;
@@ -422,6 +435,7 @@ static bool IsReplacementSampler11(ID3D11SamplerState* sampler) {
 }
 
 static void AddToReplacementSet11(ID3D11SamplerState* sampler) {
+    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex11);
     g_ReplacementSamplers11.push_back(sampler);
 }
 
@@ -453,6 +467,7 @@ static void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx) {
 
 struct D3D11StageState {
     ID3D11ShaderResourceView* srvs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+    ID3D11SamplerState* samplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
 };
 
 struct D3D11PerContextState {
@@ -480,6 +495,78 @@ static size_t GetStageIndex(D3D11ShaderStage stage) {
     }
 }
 
+static const char* GetStageName11(D3D11ShaderStage stage) {
+    switch (stage) {
+        case D3D11ShaderStage::Pixel:
+            return "PS";
+        case D3D11ShaderStage::Vertex:
+            return "VS";
+        case D3D11ShaderStage::Geometry:
+            return "GS";
+        case D3D11ShaderStage::Hull:
+            return "HS";
+        case D3D11ShaderStage::Domain:
+            return "DS";
+        case D3D11ShaderStage::Compute:
+        default:
+            return "CS";
+    }
+}
+
+static void GetStageShaderResources11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
+                                      UINT numViews, ID3D11ShaderResourceView** views) {
+    if (!context || !views || numViews == 0) {
+        return;
+    }
+    switch (stage) {
+        case D3D11ShaderStage::Pixel:
+            context->PSGetShaderResources(startSlot, numViews, views);
+            break;
+        case D3D11ShaderStage::Vertex:
+            context->VSGetShaderResources(startSlot, numViews, views);
+            break;
+        case D3D11ShaderStage::Geometry:
+            context->GSGetShaderResources(startSlot, numViews, views);
+            break;
+        case D3D11ShaderStage::Hull:
+            context->HSGetShaderResources(startSlot, numViews, views);
+            break;
+        case D3D11ShaderStage::Domain:
+            context->DSGetShaderResources(startSlot, numViews, views);
+            break;
+        case D3D11ShaderStage::Compute:
+            context->CSGetShaderResources(startSlot, numViews, views);
+            break;
+    }
+}
+
+static void GetStageSamplers11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
+                               ID3D11SamplerState** samplers) {
+    if (!context || !samplers || numSamplers == 0) {
+        return;
+    }
+    switch (stage) {
+        case D3D11ShaderStage::Pixel:
+            context->PSGetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case D3D11ShaderStage::Vertex:
+            context->VSGetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case D3D11ShaderStage::Geometry:
+            context->GSGetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case D3D11ShaderStage::Hull:
+            context->HSGetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case D3D11ShaderStage::Domain:
+            context->DSGetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case D3D11ShaderStage::Compute:
+            context->CSGetSamplers(startSlot, numSamplers, samplers);
+            break;
+    }
+}
+
 static void ReleaseTrackedShaderResources11Unlocked() {
     for (auto& [context, state] : g_D3D11ContextStates) {
         (void)context;
@@ -488,6 +575,12 @@ static void ReleaseTrackedShaderResources11Unlocked() {
                 if (view) {
                     view->Release();
                     view = nullptr;
+                }
+            }
+            for (ID3D11SamplerState*& sampler : stageState.samplers) {
+                if (sampler) {
+                    sampler->Release();
+                    sampler = nullptr;
                 }
             }
         }
@@ -530,6 +623,36 @@ static void UpdateStageShaderResources(ID3D11DeviceContext* context, D3D11Shader
     }
 }
 
+static void UpdateStageSamplers(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
+                                ID3D11SamplerState* const* ppSamplers) {
+    if (!context) {
+        return;
+    }
+    if (startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
+    D3D11PerContextState& contextState = g_D3D11ContextStates[context];
+    D3D11StageState& state = contextState.stages[GetStageIndex(stage)];
+    const UINT maxSamplers = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
+    const UINT actualSamplers = (numSamplers < maxSamplers) ? numSamplers : maxSamplers;
+
+    for (UINT i = 0; i < actualSamplers; ++i) {
+        const UINT slot = startSlot + i;
+        if (state.samplers[slot]) {
+            state.samplers[slot]->Release();
+            state.samplers[slot] = nullptr;
+        }
+
+        ID3D11SamplerState* sampler = ppSamplers ? ppSamplers[i] : nullptr;
+        if (sampler) {
+            sampler->AddRef();
+        }
+        state.samplers[slot] = sampler;
+    }
+}
+
 static ID3D11ShaderResourceView* GetTrackedShaderResourceView11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
                                                                 UINT slot) {
     if (!context || slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
@@ -547,6 +670,71 @@ static ID3D11ShaderResourceView* GetTrackedShaderResourceView11(ID3D11DeviceCont
         view->AddRef();
     }
     return view;
+}
+
+static ID3D11SamplerState* GetTrackedSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot) {
+    if (!context || slot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
+    auto it = g_D3D11ContextStates.find(context);
+    if (it == g_D3D11ContextStates.end()) {
+        return nullptr;
+    }
+
+    ID3D11SamplerState* sampler = it->second.stages[GetStageIndex(stage)].samplers[slot];
+    if (sampler) {
+        sampler->AddRef();
+    }
+    return sampler;
+}
+
+static void RefreshStageShaderResourcesFromContext11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
+                                                     UINT startSlot, UINT numViews) {
+    if (!context || startSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT || numViews == 0) {
+        return;
+    }
+    const UINT maxViews = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - startSlot;
+    const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
+    ID3D11ShaderResourceView* views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+    GetStageShaderResources11(context, stage, startSlot, actualViews, views);
+    UpdateStageShaderResources(context, stage, startSlot, actualViews, views);
+    for (UINT i = 0; i < actualViews; ++i) {
+        if (views[i]) {
+            views[i]->Release();
+        }
+    }
+}
+
+static void RefreshStageSamplersFromContext11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
+                                              UINT numSamplers) {
+    if (!context || startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT || numSamplers == 0) {
+        return;
+    }
+    const UINT maxSamplers = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
+    const UINT actualSamplers = (numSamplers < maxSamplers) ? numSamplers : maxSamplers;
+    ID3D11SamplerState* samplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    ID3D11SamplerState* logicalSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    GetStageSamplers11(context, stage, startSlot, actualSamplers, samplers);
+    for (UINT i = 0; i < actualSamplers; ++i) {
+        logicalSamplers[i] = samplers[i];
+        if (samplers[i] && IsReplacementSampler11(samplers[i])) {
+            ID3D11SamplerState* trackedOriginal = GetTrackedSampler11(context, stage, startSlot + i);
+            if (trackedOriginal) {
+                logicalSamplers[i] = trackedOriginal;
+            }
+        }
+    }
+    UpdateStageSamplers(context, stage, startSlot, actualSamplers, logicalSamplers);
+    for (UINT i = 0; i < actualSamplers; ++i) {
+        if (logicalSamplers[i] && logicalSamplers[i] != samplers[i]) {
+            logicalSamplers[i]->Release();
+        }
+        if (samplers[i]) {
+            samplers[i]->Release();
+        }
+    }
 }
 
 static bool SupportsD3D11SamplingFormat(ID3D11Device* device, DXGI_FORMAT format) {
@@ -571,78 +759,31 @@ static bool SupportsD3D11SamplingFormat(ID3D11Device* device, DXGI_FORMAT format
     return result;
 }
 
-static bool IsPotentiallyProblematicDXGIFormat(DXGI_FORMAT format) {
-    switch (format) {
-        case DXGI_FORMAT_UNKNOWN:
-        case DXGI_FORMAT_R32_UINT:
-        case DXGI_FORMAT_R32_SINT:
-        case DXGI_FORMAT_R32G32_UINT:
-        case DXGI_FORMAT_R32G32_SINT:
-        case DXGI_FORMAT_R32G32B32_UINT:
-        case DXGI_FORMAT_R32G32B32_SINT:
-        case DXGI_FORMAT_R32G32B32A32_UINT:
-        case DXGI_FORMAT_R32G32B32A32_SINT:
-        case DXGI_FORMAT_R16_UINT:
-        case DXGI_FORMAT_R16_SINT:
-        case DXGI_FORMAT_R16G16_UINT:
-        case DXGI_FORMAT_R16G16_SINT:
-        case DXGI_FORMAT_R16G16B16A16_UINT:
-        case DXGI_FORMAT_R16G16B16A16_SINT:
-        case DXGI_FORMAT_R8_UINT:
-        case DXGI_FORMAT_R8_SINT:
-        case DXGI_FORMAT_R8G8_UINT:
-        case DXGI_FORMAT_R8G8_SINT:
-        case DXGI_FORMAT_R8G8B8A8_UINT:
-        case DXGI_FORMAT_R8G8B8A8_SINT:
-        case DXGI_FORMAT_BC4_TYPELESS:
-        case DXGI_FORMAT_BC5_TYPELESS:
-        case DXGI_FORMAT_BC6H_TYPELESS:
-        case DXGI_FORMAT_BC7_TYPELESS:
-        case DXGI_FORMAT_R16_TYPELESS:
-        case DXGI_FORMAT_R32_TYPELESS:
-        case DXGI_FORMAT_R24G8_TYPELESS:
-        case DXGI_FORMAT_R32G8X24_TYPELESS:
-        case DXGI_FORMAT_R16G16_TYPELESS:
-        case DXGI_FORMAT_R32G32_TYPELESS:
-        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
-        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
-        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
-        case DXGI_FORMAT_R32G32B32A32_TYPELESS:
-        case DXGI_FORMAT_D16_UNORM:
-        case DXGI_FORMAT_D24_UNORM_S8_UINT:
-        case DXGI_FORMAT_D32_FLOAT:
-        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
-            return true;
-        default:
-            return false;
-    }
-}
-
-static bool ViewHasMultipleVisibleMips(ID3D11ShaderResourceView* view) {
+static ce::sampler_override::D3D11ForcedAFResourceDecision ClassifyViewForForcedAF11(ID3D11Device* device,
+                                                                                     ID3D11ShaderResourceView* view) {
+    using ce::sampler_override::D3D11ForcedAFResourceDecision;
     if (!view) {
-        return false;
+        return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
     }
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     view->GetDesc(&srvDesc);
+    if (!SupportsD3D11SamplingFormat(device, srvDesc.Format)) {
+        return D3D11ForcedAFResourceDecision::UnsupportedFormat;
+    }
 
     ID3D11Resource* resource = nullptr;
     view->GetResource(&resource);
     if (!resource) {
-        return false;
+        return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
     }
 
-    bool hasMultipleVisibleMips = false;
+    D3D11ForcedAFResourceDecision decision = D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
 
     ID3D11Texture2D* texture2D = nullptr;
     if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture2D))) && texture2D) {
         D3D11_TEXTURE2D_DESC textureDesc = {};
         texture2D->GetDesc(&textureDesc);
-
-        const bool singleSample = textureDesc.SampleDesc.Count <= 1;
-        const bool isArrayResource = textureDesc.ArraySize > 1;
-        const UINT totalMipLevels =
-            ce::sampler_override::ResolveFullMipCount2D(textureDesc.Width, textureDesc.Height, textureDesc.MipLevels);
 
         UINT mostDetailedMip = 0;
         UINT viewMipLevels = UINT_MAX;
@@ -651,79 +792,73 @@ static bool ViewHasMultipleVisibleMips(ID3D11ShaderResourceView* view) {
                 mostDetailedMip = srvDesc.Texture2D.MostDetailedMip;
                 viewMipLevels = srvDesc.Texture2D.MipLevels;
                 break;
-            case D3D11_SRV_DIMENSION_TEXTURE2DARRAY:
-                mostDetailedMip = srvDesc.Texture2DArray.MostDetailedMip;
-                viewMipLevels = srvDesc.Texture2DArray.MipLevels;
-                break;
-            case D3D11_SRV_DIMENSION_TEXTURECUBE:
-                mostDetailedMip = srvDesc.TextureCube.MostDetailedMip;
-                viewMipLevels = srvDesc.TextureCube.MipLevels;
-                break;
-            case D3D11_SRV_DIMENSION_TEXTURECUBEARRAY:
-                mostDetailedMip = srvDesc.TextureCubeArray.MostDetailedMip;
-                viewMipLevels = srvDesc.TextureCubeArray.MipLevels;
-                break;
             default:
                 viewMipLevels = 0;
                 break;
         }
 
-        const UINT visibleMipLevels =
-            ce::sampler_override::ResolveVisibleMipCount(totalMipLevels, mostDetailedMip, viewMipLevels);
-        const bool safeDimension = !isArrayResource;
-        const bool safeUsage = (textureDesc.BindFlags & D3D11_BIND_DEPTH_STENCIL) == 0 &&
-                               (textureDesc.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE) == 0;
-        const bool safeFormat = !IsPotentiallyProblematicDXGIFormat(textureDesc.Format);
-
-        hasMultipleVisibleMips = singleSample && safeDimension && safeUsage && safeFormat && visibleMipLevels > 1;
+        ce::sampler_override::D3D11Texture2DForcedAFInfo info = {};
+        info.format = textureDesc.Format;
+        info.viewDimension = srvDesc.ViewDimension;
+        info.width = textureDesc.Width;
+        info.height = textureDesc.Height;
+        info.mipLevels = textureDesc.MipLevels;
+        info.mostDetailedMip = mostDetailedMip;
+        info.viewMipLevels = viewMipLevels;
+        info.arraySize = textureDesc.ArraySize;
+        info.sampleCount = textureDesc.SampleDesc.Count;
+        info.bindFlags = textureDesc.BindFlags;
+        info.miscFlags = textureDesc.MiscFlags;
+        info.formatSupported = true;
+        decision = ce::sampler_override::ClassifyD3D11Texture2DForForcedAF(info);
         texture2D->Release();
     }
 
     resource->Release();
-    return hasMultipleVisibleMips;
+    return decision;
 }
 
 static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
-    if (!ce::sampler_override::IsAnisotropicOverrideEnabled(gfx)) {
-        return false;
-    }
-    if (desc.MaxLOD == 0.0f || desc.MinLOD == desc.MaxLOD) {
-        int idx = g_DiagSamplerSkipNoMips.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 12) {
-            HookLogImportant("DX11: AF skip sampler (no mips) MaxLOD=%.1f MinLOD=%.1f", desc.MaxLOD, desc.MinLOD);
+    using ce::sampler_override::D3D11ForcedAFSamplerDecision;
+    const D3D11ForcedAFSamplerDecision decision = ce::sampler_override::ClassifyD3D11SamplerForForcedAF(desc, gfx);
+    switch (decision) {
+        case D3D11ForcedAFSamplerDecision::Allow:
+            return true;
+        case D3D11ForcedAFSamplerDecision::OverrideDisabled:
+            return false;
+        case D3D11ForcedAFSamplerDecision::FixedLOD: {
+            int idx = g_DiagSamplerSkipNoMips.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 12) {
+                HookLogImportant("DX11: AF skip sampler (fixed/no mips) Filter=0x%X MaxLOD=%.1f MinLOD=%.1f",
+                                 desc.Filter, desc.MaxLOD, desc.MinLOD);
+            }
+            return false;
         }
-        return false;
-    }
-    if (desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
-        desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
-        int idx = g_DiagSamplerSkipBorder.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 12) {
-            HookLogImportant("DX11: AF skip sampler (border address) U=%d V=%d W=%d",
-                    desc.AddressU, desc.AddressV, desc.AddressW);
+        case D3D11ForcedAFSamplerDecision::BorderAddress: {
+            int idx = g_DiagSamplerSkipBorder.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 12) {
+                HookLogImportant("DX11: AF skip sampler (border address) Filter=0x%X U=%d V=%d W=%d", desc.Filter,
+                                 desc.AddressU, desc.AddressV, desc.AddressW);
+            }
+            return false;
         }
-        return false;
-    }
-    if (ce::sampler_override::IsD3D11ReductionFilter(desc.Filter)) {
-        int idx = g_DiagSamplerSkipReduction.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 6) {
-            HookLogImportant("DX11: AF skip sampler (reduction filter) Filter=0x%X", desc.Filter);
+        case D3D11ForcedAFSamplerDecision::ReductionFilter: {
+            int idx = g_DiagSamplerSkipReduction.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 6) {
+                HookLogImportant("DX11: AF skip sampler (reduction filter) Filter=0x%X", desc.Filter);
+            }
+            return false;
         }
-        return false;
-    }
-    // Skip ALL comparison samplers. Blackwell GPUs produce green/red dot
-    // corruption when AF is applied to comparison samplers, even when the
-    // texture has proper mip chains. This includes detail textures using
-    // comparison filtering (e.g. parallax occlusion mapping).
-    if (desc.ComparisonFunc != D3D11_COMPARISON_NEVER) {
-        int idx = g_DiagSamplerSkipComparison.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 6) {
-            HookLogImportant("DX11: AF skip sampler (comparison) Func=%d Addr=%d/%d/%d MinLOD=%.1f MaxLOD=%.1f",
-                            desc.ComparisonFunc, desc.AddressU, desc.AddressV, desc.AddressW,
-                            desc.MinLOD, desc.MaxLOD);
+        case D3D11ForcedAFSamplerDecision::ComparisonFilter: {
+            int idx = g_DiagSamplerSkipComparison.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 12) {
+                HookLogImportant("DX11: AF skip sampler (comparison filter) Filter=0x%X Func=%d Addr=%d/%d/%d",
+                                 desc.Filter, desc.ComparisonFunc, desc.AddressU, desc.AddressV, desc.AddressW);
+            }
+            return false;
         }
-        return false;
     }
-    return true;
+    return false;
 }
 
 static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11DeviceContext* context,
@@ -747,30 +882,35 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
 
     ID3D11ShaderResourceView* view = GetTrackedShaderResourceView11(context, stage, slot);
     if (!view) {
+        RefreshStageShaderResourcesFromContext11(context, stage, slot, 1);
+        view = GetTrackedShaderResourceView11(context, stage, slot);
+    }
+    if (!view) {
         int idx = g_DiagSamplerSkipNoSRV.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
-            HookLogImportant("DX11: AF skip sampler (no SRV at slot %u, stage=%d)", slot, (int)stage);
+            HookLogImportant("DX11: AF skip sampler (no SRV at slot %u, stage=%s)", slot, GetStageName11(stage));
         }
         return false;
     }
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     view->GetDesc(&srvDesc);
-    if (!SupportsD3D11SamplingFormat(device, srvDesc.Format)) {
-        int idx = g_DiagSamplerSkipFormat.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 12) {
-            HookLogImportant("DX11: AF skip sampler (unsupported format %d at slot %u, stage=%d)",
-                    srvDesc.Format, slot, (int)stage);
-        }
-        view->Release();
-        return false;
-    }
-
-    const bool shouldForce = ViewHasMultipleVisibleMips(view);
+    const auto resourceDecision = ClassifyViewForForcedAF11(device, view);
+    const bool shouldForce = resourceDecision == ce::sampler_override::D3D11ForcedAFResourceDecision::Allow;
     if (!shouldForce) {
-        int idx = g_DiagSamplerSkipSingleMip.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 12) {
-            HookLogImportant("DX11: AF skip sampler (single mip at slot %u, stage=%d)", slot, (int)stage);
+        std::atomic<int>* counter = &g_DiagSamplerSkipUnsafeResource;
+        const char* reason = "unsafe resource";
+        if (resourceDecision == ce::sampler_override::D3D11ForcedAFResourceDecision::UnsupportedFormat) {
+            counter = &g_DiagSamplerSkipFormat;
+            reason = "unsupported format";
+        } else if (resourceDecision == ce::sampler_override::D3D11ForcedAFResourceDecision::SingleVisibleMip) {
+            counter = &g_DiagSamplerSkipSingleMip;
+            reason = "single visible mip";
+        }
+        int idx = counter->fetch_add(1, std::memory_order_relaxed);
+        if (idx < 24) {
+            HookLogImportant("DX11: AF skip sampler (%s, decision=%d format=%d slot=%u stage=%s)", reason,
+                             (int)resourceDecision, srvDesc.Format, slot, GetStageName11(stage));
         }
     }
     view->Release();
@@ -887,14 +1027,9 @@ static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* 
     const auto& gfx = GetActiveGraphicsConfig();
     EnsureSamplerCacheFresh11(gfx);
 
-    if (ID3D11SamplerState* cached = FindReplacementSampler11(original)) {
-        return cached;
-    }
-
     ID3D11Device* device = nullptr;
     context->GetDevice(&device);
     if (!device) {
-        AddReplacementSampler11(original, original);
         return original;
     }
 
@@ -904,9 +1039,13 @@ static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* 
     const bool allowAnisotropicOverride = ShouldForceAnisotropyForStageSlot(device, context, stage, slot, desc, gfx);
     const bool modified = ApplySamplerOverrides11(desc, gfx, allowAnisotropicOverride);
     if (!modified) {
-        AddReplacementSampler11(original, original);
         device->Release();
         return original;
+    }
+
+    if (ID3D11SamplerState* cached = FindReplacementSampler11(device, desc)) {
+        device->Release();
+        return cached;
     }
 
     ID3D11SamplerState* replacement = nullptr;
@@ -919,11 +1058,10 @@ static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* 
         if (idx < 12) {
             HookLogImportant("DX11: Replacement sampler creation FAILED hr=0x%08X (stage=%d slot=%u)", hr, (int)stage, slot);
         }
-        AddReplacementSampler11(original, original);
         return original;
     }
 
-    AddReplacementSampler11(original, replacement);
+    AddReplacementSampler11(device, desc, replacement);
     AddToReplacementSet11(replacement);
     int idx = g_DiagSamplerReplacementCreated.fetch_add(1, std::memory_order_relaxed);
     if (idx < 48) {
@@ -933,62 +1071,112 @@ static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* 
     return replacement;
 }
 
+static int ReconcileStageSamplers11(SetSamplers11_t originalFn, ID3D11DeviceContext* context, D3D11ShaderStage stage,
+                                    UINT startSlot, UINT numSlots) {
+    if (!originalFn || !context || !g_GraphicsOverridesActive.load(std::memory_order_acquire) || g_InOverlayRender) {
+        return 0;
+    }
+    if (startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT || numSlots == 0) {
+        return 0;
+    }
+
+    const UINT maxSlots = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
+    const UINT actualSlots = (numSlots < maxSlots) ? numSlots : maxSlots;
+    int rebound = 0;
+    for (UINT i = 0; i < actualSlots; ++i) {
+        const UINT slot = startSlot + i;
+        ID3D11SamplerState* logicalSampler = GetTrackedSampler11(context, stage, slot);
+        if (!logicalSampler) {
+            continue;
+        }
+
+        ID3D11SamplerState* currentSampler = nullptr;
+        GetStageSamplers11(context, stage, slot, 1, &currentSampler);
+        ID3D11SamplerState* desiredSampler = GetOrCreateReplacementSampler11(context, stage, slot, logicalSampler);
+        if (currentSampler != desiredSampler) {
+            originalFn(context, slot, 1, &desiredSampler);
+            ++rebound;
+            int idx = g_DiagSamplerRebound.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 48) {
+                D3D11_SAMPLER_DESC desc = {};
+                desiredSampler->GetDesc(&desc);
+                HookLogImportant("DX11: AF reconciled sampler stage=%s slot=%u Filter=0x%X Aniso=%u Bias=%.2f (#%d)",
+                                 GetStageName11(stage), slot, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias,
+                                 idx + 1);
+            }
+        }
+        if (currentSampler) {
+            currentSampler->Release();
+        }
+        logicalSampler->Release();
+    }
+    return rebound;
+}
+
 static void SetSamplersWithOverrides11(SetSamplers11_t originalFn, ID3D11DeviceContext* context, D3D11ShaderStage stage,
                                        UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* ppSamplers) {
     if (!originalFn) {
         return;
     }
-    if (!ppSamplers || numSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire) ||
-        g_InOverlayRender) {
+    if (!ppSamplers || numSamplers == 0 || startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT ||
+        !g_GraphicsOverridesActive.load(std::memory_order_acquire) || g_InOverlayRender) {
         originalFn(context, startSlot, numSamplers, ppSamplers);
         return;
     }
 
     const UINT maxSamplers = static_cast<UINT>(D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
-    const UINT actualNum = (numSamplers < maxSamplers) ? numSamplers : maxSamplers;
+    const UINT actualNum = (numSamplers < (maxSamplers - startSlot)) ? numSamplers : (maxSamplers - startSlot);
+    UpdateStageSamplers(context, stage, startSlot, actualNum, ppSamplers);
+
     ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
     for (UINT i = 0; i < actualNum; ++i) {
         const UINT slot = startSlot + i;
         replaced[i] = GetOrCreateReplacementSampler11(context, stage, slot, ppSamplers[i]);
     }
 
-    originalFn(context, startSlot, numSamplers, replaced);
+    originalFn(context, startSlot, actualNum, replaced);
 }
 
 static void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    UpdateStageShaderResources(context, D3D11ShaderStage::Pixel, startSlot, numViews, ppShaderResourceViews);
     oPSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Pixel, startSlot, numViews);
+    ReconcileStageSamplers11(oPSSetSamplers11, context, D3D11ShaderStage::Pixel, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourVSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    UpdateStageShaderResources(context, D3D11ShaderStage::Vertex, startSlot, numViews, ppShaderResourceViews);
     oVSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Vertex, startSlot, numViews);
+    ReconcileStageSamplers11(oVSSetSamplers11, context, D3D11ShaderStage::Vertex, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourGSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    UpdateStageShaderResources(context, D3D11ShaderStage::Geometry, startSlot, numViews, ppShaderResourceViews);
     oGSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Geometry, startSlot, numViews);
+    ReconcileStageSamplers11(oGSSetSamplers11, context, D3D11ShaderStage::Geometry, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourHSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    UpdateStageShaderResources(context, D3D11ShaderStage::Hull, startSlot, numViews, ppShaderResourceViews);
     oHSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Hull, startSlot, numViews);
+    ReconcileStageSamplers11(oHSSetSamplers11, context, D3D11ShaderStage::Hull, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourDSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    UpdateStageShaderResources(context, D3D11ShaderStage::Domain, startSlot, numViews, ppShaderResourceViews);
     oDSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Domain, startSlot, numViews);
+    ReconcileStageSamplers11(oDSSetSamplers11, context, D3D11ShaderStage::Domain, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourCSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    UpdateStageShaderResources(context, D3D11ShaderStage::Compute, startSlot, numViews, ppShaderResourceViews);
     oCSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Compute, startSlot, numViews);
+    ReconcileStageSamplers11(oCSSetSamplers11, context, D3D11ShaderStage::Compute, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourPSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
@@ -1130,166 +1318,41 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
         return;
     }
 
-    // Helper: check if a sampler is already a deferred replacement
-    auto IsDeferredReplacement = [](ID3D11SamplerState* s) -> bool {
-        std::shared_lock<std::shared_mutex> lock(g_DeferredAFMutex);
-        for (const auto& pair : g_DeferredAFReplacements)
-            if (pair.second == s) return true;
-        return false;
-    };
-
-    // Helper: find a cached deferred replacement
-    auto FindDeferredReplacement = [](ID3D11SamplerState* original) -> ID3D11SamplerState* {
-        std::shared_lock<std::shared_mutex> lock(g_DeferredAFMutex);
-        for (const auto& pair : g_DeferredAFReplacements)
-            if (pair.first == original) return pair.second;
-        return nullptr;
-    };
-
-    // Helper: add a deferred replacement
-    auto AddDeferredReplacement = [](ID3D11SamplerState* original, ID3D11SamplerState* replacement) {
-        std::unique_lock<std::shared_mutex> lock(g_DeferredAFMutex);
-        g_DeferredAFReplacements.push_back({original, replacement});
-    };
-
-    const UINT maxSamplers = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;
-    const UINT maxSRVs = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
-
     struct StageSweep {
         D3D11ShaderStage stage;
-        const char* name;
+        SetSamplers11_t setSamplers;
     };
 
     StageSweep stages[] = {
-        {D3D11ShaderStage::Pixel, "PS"},
-        {D3D11ShaderStage::Vertex, "VS"},
-        {D3D11ShaderStage::Geometry, "GS"},
-        {D3D11ShaderStage::Hull, "HS"},
-        {D3D11ShaderStage::Domain, "DS"},
-        {D3D11ShaderStage::Compute, "CS"},
+        {D3D11ShaderStage::Pixel, oPSSetSamplers11},
+        {D3D11ShaderStage::Vertex, oVSSetSamplers11},
+        {D3D11ShaderStage::Geometry, oGSSetSamplers11},
+        {D3D11ShaderStage::Hull, oHSSetSamplers11},
+        {D3D11ShaderStage::Domain, oDSSetSamplers11},
+        {D3D11ShaderStage::Compute, oCSSetSamplers11},
     };
 
-    // Diagnostic: check if the context has any samplers bound
-    {
-        ID3D11SamplerState* diagSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-        ctx->PSGetSamplers(0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT, diagSamplers);
-        int boundCount = 0;
-        for (UINT i = 0; i < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) {
-            if (diagSamplers[i]) {
-                boundCount++;
-                diagSamplers[i]->Release();
-            }
-        }
-        HookLogImportant("DX11: Deferred AF sweep ctx=%p boundSamplers=%d", (void*)ctx, boundCount);
-    }
-
-    int totalApplied = 0;
+    int totalBoundSamplers = 0;
+    int totalRebound = 0;
     for (const auto& si : stages) {
-        ID3D11SamplerState* samplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-        ID3D11ShaderResourceView* srvs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
-
-        switch (si.stage) {
-            case D3D11ShaderStage::Pixel:
-                ctx->PSGetSamplers(0, maxSamplers, samplers);
-                ctx->PSGetShaderResources(0, maxSRVs, srvs);
-                break;
-            case D3D11ShaderStage::Vertex:
-                ctx->VSGetSamplers(0, maxSamplers, samplers);
-                ctx->VSGetShaderResources(0, maxSRVs, srvs);
-                break;
-            case D3D11ShaderStage::Geometry:
-                ctx->GSGetSamplers(0, maxSamplers, samplers);
-                ctx->GSGetShaderResources(0, maxSRVs, srvs);
-                break;
-            case D3D11ShaderStage::Hull:
-                ctx->HSGetSamplers(0, maxSamplers, samplers);
-                ctx->HSGetShaderResources(0, maxSRVs, srvs);
-                break;
-            case D3D11ShaderStage::Domain:
-                ctx->DSGetSamplers(0, maxSamplers, samplers);
-                ctx->DSGetShaderResources(0, maxSRVs, srvs);
-                break;
-            case D3D11ShaderStage::Compute:
-                ctx->CSGetSamplers(0, maxSamplers, samplers);
-                ctx->CSGetShaderResources(0, maxSRVs, srvs);
-                break;
-        }
-
-        ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-        bool anyReplaced = false;
-        for (UINT slot = 0; slot < maxSamplers; ++slot) {
-            replaced[slot] = samplers[slot];
-            if (!samplers[slot])
-                continue;
-
-            if (IsDeferredReplacement(samplers[slot]))
-                continue;
-
-            if (ID3D11SamplerState* cached = FindDeferredReplacement(samplers[slot])) {
-                replaced[slot] = cached;
-                if (cached != samplers[slot])
-                    anyReplaced = true;
-                continue;
-            }
-
-            D3D11_SAMPLER_DESC desc = {};
-            samplers[slot]->GetDesc(&desc);
-
-            if (!SamplerAllowsForcedAF(desc, gfx))
-                continue;
-
-            if (slot >= 8)
-                continue;
-
-            // Note: we skip the ViewHasMultipleVisibleMips check here because
-            // SRVs may not be bound at Present time (the game unbinds them before
-            // calling Present). SamplerAllowsForcedAF already filters out the
-            // Blackwell-corruption-causing comparison samplers.
-            const UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
-            const D3D11_FILTER newFilter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
-            if (desc.Filter == newFilter && desc.MaxAnisotropy == maxAniso)
-                continue;
-
-            desc.Filter = newFilter;
-            desc.MaxAnisotropy = maxAniso;
-
-            ID3D11SamplerState* replacement = nullptr;
-            HRESULT hr = dev->CreateSamplerState(&desc, &replacement);
-            if (FAILED(hr) || !replacement)
-                continue;
-
-            AddDeferredReplacement(samplers[slot], replacement);
-            replaced[slot] = replacement;
-            anyReplaced = true;
-            totalApplied++;
-            HookLogImportant("DX11: Deferred AF override slot=%u stage=%s Filter=0x%X Aniso=%u",
-                            slot, si.name, desc.Filter, desc.MaxAnisotropy);
-        }
-
-        if (anyReplaced) {
-            switch (si.stage) {
-                case D3D11ShaderStage::Pixel:   ctx->PSSetSamplers(0, maxSamplers, replaced); break;
-                case D3D11ShaderStage::Vertex:  ctx->VSSetSamplers(0, maxSamplers, replaced); break;
-                case D3D11ShaderStage::Geometry: ctx->GSSetSamplers(0, maxSamplers, replaced); break;
-                case D3D11ShaderStage::Hull:    ctx->HSSetSamplers(0, maxSamplers, replaced); break;
-                case D3D11ShaderStage::Domain:  ctx->DSSetSamplers(0, maxSamplers, replaced); break;
-                case D3D11ShaderStage::Compute: ctx->CSSetSamplers(0, maxSamplers, replaced); break;
+        RefreshStageShaderResourcesFromContext11(ctx, si.stage, 0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT);
+        RefreshStageSamplersFromContext11(ctx, si.stage, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+        for (UINT slot = 0; slot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++slot) {
+            ID3D11SamplerState* sampler = GetTrackedSampler11(ctx, si.stage, slot);
+            if (sampler) {
+                ++totalBoundSamplers;
+                sampler->Release();
             }
         }
-
-        for (UINT i = 0; i < maxSamplers; ++i)
-            if (samplers[i]) samplers[i]->Release();
-        for (UINT i = 0; i < maxSRVs; ++i)
-            if (srvs[i]) srvs[i]->Release();
+        totalRebound += ReconcileStageSamplers11(si.setSamplers, ctx, si.stage, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
     }
 
-    if (totalApplied > 0) {
-        HookLogImportant("DX11: Deferred AF sweep complete — %d samplers overridden", totalApplied);
+    if (totalBoundSamplers > 0) {
+        HookLogImportant("DX11: Deferred AF bootstrap complete ctx=%p boundSamplers=%d rebound=%d", (void*)ctx,
+                         totalBoundSamplers, totalRebound);
         g_DeferredAFApplied = true;
     } else {
-        // No samplers found yet — retry on next Present. The game may not have
-        // bound any samplers at the time of the first Present.
-        HookLogImportant("DX11: Deferred AF sweep found no samplers — will retry");
+        HookLogImportant("DX11: Deferred AF bootstrap found no samplers — will retry");
     }
     ctx->Release();
     dev->Release();
@@ -1401,7 +1464,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     }
 
     // Non-wrapper path: Draw overlay via vtable hook
-    // Also apply deferred AF sweep (for games that create samplers once at startup)
+    // Also bootstrap forced-AF state for games that bound samplers before hooks.
     ApplyDeferredSamplerOverrides11(pSwapChain);
     int64_t overlayStartUs = PerfLogger::GetQpcUs();
     HandleDX11ProcessFrame(pSwapChain, true);
@@ -3760,15 +3823,9 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
 }
 
 namespace DXGIShared {
-// Deferred AF sweep: called once on first Present to apply AF to samplers
-// that were created before g_GraphicsOverridesActive was set, or that were
-// created with AF disabled because the create-time path skips AF enablement.
-// Walks each shader stage, retrieves bound samplers and SRVs, and creates
-// replacement samplers with AF where the texture has multiple mip levels.
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
-    // Deferred AF sweep: apply AF to samplers that were created before the
-    // config was active, inspecting SRVs for mip count to avoid applying AF
-    // to single-mip textures (which can cause corruption on some GPUs).
+    // Deferred AF bootstrap: capture already-bound samplers/SRVs once so later
+    // SRV changes can reconcile forced AF with resource context.
     ApplyDeferredSamplerOverrides11(pSwapChain);
 
     ::HandleDX11ProcessFrame(pSwapChain, isRealFrame);
@@ -3794,13 +3851,10 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     }
 
     const auto& gfx = GetActiveGraphicsConfig();
-    // Enable AF at create-time for samplers that pass SamplerAllowsForcedAF.
-    // The bind-time path (PSSetSamplers etc.) and deferred Present-time sweep
-    // can't reach wrapper-architecture games that create samplers once and
-    // never rebind (e.g. BioShock Infinite).
-    // SamplerAllowsForcedAF filters out single-mip, border, reduction, and
-    // comparison samplers to avoid Blackwell corruption.
-    const bool allowAF = SamplerAllowsForcedAF(desc, gfx);
+    // AF enablement needs SRV/resource context on Blackwell. Create-time still
+    // handles AF-off, mip mapping, and mip-bias changes, but forced AF-on is
+    // applied later by the bind-state reconciler.
+    const bool allowAF = false;
     const bool modified = ApplySamplerOverrides11(desc, gfx, allowAF);
 
     {
@@ -3808,12 +3862,12 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
         int idx = s_createAFLog.fetch_add(1, std::memory_order_relaxed);
         if (idx < 48) {
             if (modified) {
-                HookLogImportant("DX11: CreateSamplerState AF ON origFilter=0x%X newFilter=0x%X Aniso=%u Bias=%.2f Addr=%d/%d/%d Comp=%d MinLOD=%.1f MaxLOD=%.1f (#%d)",
+                HookLogImportant("DX11: CreateSamplerState override origFilter=0x%X newFilter=0x%X Aniso=%u Bias=%.2f Addr=%d/%d/%d Comp=%d MinLOD=%.1f MaxLOD=%.1f (#%d)",
                                 pSamplerDesc->Filter, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias,
                                 pSamplerDesc->AddressU, pSamplerDesc->AddressV, pSamplerDesc->AddressW,
                                 pSamplerDesc->ComparisonFunc, pSamplerDesc->MinLOD, pSamplerDesc->MaxLOD, idx + 1);
             } else {
-                HookLogImportant("DX11: CreateSamplerState AF SKIP Filter=0x%X Aniso=%u Addr=%d/%d/%d Comp=%d MinLOD=%.1f MaxLOD=%.1f (#%d)",
+                HookLogImportant("DX11: CreateSamplerState deferred AF Filter=0x%X Aniso=%u Addr=%d/%d/%d Comp=%d MinLOD=%.1f MaxLOD=%.1f (#%d)",
                                 pSamplerDesc->Filter, pSamplerDesc->MaxAnisotropy,
                                 pSamplerDesc->AddressU, pSamplerDesc->AddressV, pSamplerDesc->AddressW,
                                 pSamplerDesc->ComparisonFunc, pSamplerDesc->MinLOD, pSamplerDesc->MaxLOD, idx + 1);

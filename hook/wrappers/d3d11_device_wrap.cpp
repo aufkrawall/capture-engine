@@ -81,7 +81,8 @@ void CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
 
     const auto& gfx = GetActiveGraphicsConfig();
 
-    // Anisotropic Filtering
+    // Forced AF-on needs SRV/resource context on Blackwell. Create-time only
+    // handles disabling existing AF and mip-bias changes.
     const std::string& af = gfx.anisotropicFiltering;
     if (af != "default" && !af.empty()) {
         if (af == "off") {
@@ -90,14 +91,6 @@ void CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
                 pDesc->Filter =
                     wasComparison ? D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
                 pDesc->MaxAnisotropy = 1;
-            }
-        } else {
-            UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
-
-            if (pDesc->AddressU != D3D11_TEXTURE_ADDRESS_BORDER && pDesc->AddressV != D3D11_TEXTURE_ADDRESS_BORDER &&
-                pDesc->AddressW != D3D11_TEXTURE_ADDRESS_BORDER) {
-                pDesc->Filter = ce::sampler_override::GetForcedAnisotropicFilter(pDesc->Filter);
-                pDesc->MaxAnisotropy = maxAniso;
             }
         }
     }
