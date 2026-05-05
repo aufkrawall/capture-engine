@@ -349,53 +349,36 @@ static bool HasStartupBlockingOverlayModuleInCurrentStack() {
     return false;
 }
 
-// Check whether the current call is from an SL module context that would
-// crash if routed through Steam's overlay Present hook.  Steam's
-// OverlayHookD3D3 crashes (RIP=0, RAX=0) when called on threads where
-// Steam TLS is uninitialized, which includes:
+// Check whether the current call should bypass Steam's overlay Present hook
+// to avoid a crash (RIP=0, RAX=0) on threads where Steam TLS is
+// uninitialized.  This includes:
 //   1. SL DllMain loader thread during sl_dlss_g!DllMain
 //   2. SL worker threads during FG processing
 //
 // During DllMain, CaptureStackBackTrace may fail (loader lock), so we
-// use a simpler approach: check the immediate caller via
-// CE_CAPTURE_RETURN_ADDRESS().  This is safe during DllMain.
+// avoid stack walking and instead rely on the PostSL confirmation state
+// and the Present owner check.
 //
-// We use a two-phase check:
-//   Phase 1 (startup, PostSL not confirmed): bypass if the immediate
-//     caller is from an SL module.  During DllMain, no Present owner
-//     exists, so we rely on !postSLConfirmedRendering to gate.
+// We use a two-phase approach:
+//   Phase 1 (startup, PostSL not confirmed): bypass unconditionally
+//     when SL is loaded.  During startup, the game isn't rendering with
+//     SL yet, so bypassing Steam overlay is safe — the bypass trampoline
+//     is the real dxgi!Present.  Once PostSL confirms, Steam overlay
+//     works normally.
 //   Phase 2 (PostSL confirmed): bypass only for SL worker threads —
-//     threads that are NOT the Present owner but have SL modules in
-//     their stack.  This avoids bypassing the game's Present thread
-//     which also has SL modules in its stack through API calls.
+//     threads that are NOT the Present owner.  The game's Present thread
+//     also has SL modules in its stack through API calls but IS the
+//     Present owner and should NOT be bypassed.
 static bool ShouldBypassSteamForSLContext() {
-    // Phase 1: startup window — check the immediate caller.
-    // This works during DllMain where CaptureStackBackTrace may fail.
-    // CE_CAPTURE_RETURN_ADDRESS() reads the return address from the
-    // stack, which is safe under the loader lock.
+    // Phase 1: startup window — bypass when PostSL is not confirmed.
+    // During DllMain, CaptureStackBackTrace may fail, so we don't check
+    // the stack.  The bypass trampoline is safe to use during startup
+    // because the game isn't rendering with SL yet.
     if (!HookIsPostSLOverlayConfirmedRendering()) {
-        void* caller = CE_CAPTURE_RETURN_ADDRESS();
-        if (caller && IsCodeAddressFromStreamlineModule(caller)) {
-            return true;
-        }
-        // Also check via stack walk as fallback (works outside DllMain).
-        constexpr USHORT kMaxFrames = 24;
-        void* stackFrames[kMaxFrames] = {};
-        USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
-        for (USHORT i = 0; i < frameCount; ++i) {
-            char modulePath[MAX_PATH] = {};
-            if (TryGetModulePathFromCodeAddress(stackFrames[i], modulePath, sizeof(modulePath)) &&
-                ce::overlay_compat::IsStreamlineFrameGenerationModulePath(modulePath)) {
-                return true;
-            }
-        }
-        return false;
+        return true;
     }
 
     // Phase 2: PostSL confirmed — only bypass for SL worker threads.
-    // SL worker threads are NOT the Present owner but have SL modules
-    // in their stack.  The game's Present thread also has SL modules
-    // in its stack (through API calls) but IS the Present owner.
     DWORD currentId = GetCurrentThreadId();
     DWORD presentOwner = g_presentThreadId.load(std::memory_order_acquire);
     if (presentOwner == 0 || presentOwner == currentId) {
