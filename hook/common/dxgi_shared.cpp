@@ -787,8 +787,26 @@ static bool ShouldKeepSLPresentRoutingDisabledNow(ce::fg_runtime::RuntimeMode* r
 static void DetectSLPresentHook() {
     if (s_slRoutingActive.load(std::memory_order_acquire))
         return;
-    if (!oPresent || !oPresentTrampoline)
+    if (!oPresent || !oPresentTrampoline) {
+        // Vtable hook path (externally hooked Present): oPresentTrampoline is
+        // NULL because we use vtable hooking instead of inline hooking when an
+        // external E9 JMP (e.g. Steam overlay) is detected on dxgi!Present.
+        // In this path, oPresent is Steam's hook function (saved from vtable[8]),
+        // not the dxgi!Present function bytes.  SL routing detection via E9 JMP
+        // on oPresent bytes does not apply here — SL's hook chain is reached
+        // through CallOriginalPresent's explicit Steam overlay invoke logic,
+        // not through s_slRoutingActive.
+        // Log once so post-mortem analysis can distinguish the vtable path from
+        // a missing inline hook bug.
+        static std::atomic<uint32_t> s_vtablePathLogCount{0};
+        if (s_vtablePathLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+            HookLogImportant(
+                "DetectSLPresentHook: Skipping — vtable hook path (oPresent=%p, oPresentTrampoline=NULL). "
+                "SL routing detection deferred to CallOriginalPresent Steam overlay invoke logic.",
+                oPresent);
+        }
         return;
+    }
 
     // If oPresent is our own trampoline, SL hasn't hooked the vtable yet.
     // The vtable repair code sets oPresent to SL's hook when detected.
@@ -1032,6 +1050,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool explicitSetOptionsActivation = api == APIType::D3D12 && HookHasExplicitStreamlineSetOptionsActivation();
     const bool safePostFSRBootstrapPath = api == APIType::D3D12 && HookHasSafePostFSRBootstrapPath();
     const bool steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
+    // Log Steam overlay state once for diagnostics.
+    static std::atomic<uint32_t> s_steamStateLogCount{0};
+    if (s_steamStateLogCount.fetch_add(1, std::memory_order_relaxed) == 0) {
+        const char* overlayModuleName = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+        HookLogImportant(
+            "DetourPresent: Steam overlay state: steamLoaded=%d overlayModule=%s g_externalOverlayHook=%p "
+            "oPresentTrampoline=%p oPresentBypass=%p slLoaded=%d streamlineFGRunning=%d",
+            steamOverlayLoaded ? 1 : 0, overlayModuleName ? overlayModuleName : "none",
+            (void*)g_externalOverlayPresentHook, (void*)oPresentTrampoline, (void*)oPresentBypass,
+            IsSLInterposerLoaded() ? 1 : 0, g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0);
+    }
     const bool staleThirdPartyPresentHookRisk =
         api == APIType::D3D12 &&
         ShouldForceSteamDX12Bypass(pSwapChain, EnsurePresentBypassTrampoline() != nullptr, IsSLInterposerLoaded());
@@ -2664,11 +2693,23 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         // Save the external overlay hook target (Steam's OverlayHookD3D3) so we
         // can invoke it explicitly later when SL FG routing bypasses Steam's JMP.
         // This is done BEFORE SL overwrites the JMP with its own.
+        // If the JMP target is not resolved (e.g. non-E9 JMP or unknown pattern),
+        // g_externalOverlayPresentHook stays NULL and Steam overlay will not
+        // be explicitly invoked on the forced-bypass path — the overlay module
+        // must hook a different Present entry point (e.g. vtable[8] or Present1).
         {
             void* hookTarget = ResolveE9JmpTarget(presentAddr);
             if (hookTarget) {
                 g_externalOverlayPresentHook = (PFN_Present)hookTarget;
-                HookLog("InstallPresentInlineHooks: External E9 JMP target = %p (saved)", hookTarget);
+                HookLog("InstallPresentInlineHooks: External E9 JMP target = %p (saved, Steam overlay hook available)",
+                        hookTarget);
+            } else {
+                HookLogImportant(
+                    "InstallPresentInlineHooks: Could not resolve E9 JMP target at %p "
+                    "(bytes: %02X %02X %02X %02X %02X) — external overlay hook not saved",
+                    presentAddr, ((const uint8_t*)presentAddr)[0], ((const uint8_t*)presentAddr)[1],
+                    ((const uint8_t*)presentAddr)[2], ((const uint8_t*)presentAddr)[3],
+                    ((const uint8_t*)presentAddr)[4]);
             }
         }
 
@@ -2916,10 +2957,29 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     const char* forcedBypassOverlay = nullptr;
     if (ShouldForceSteamDX12Bypass(pSwapChain, presentBypass != nullptr, slLoaded, &forcedBypassOverlay)) {
+        // When bypass is forced (SL loaded but FG not running), the bypass
+        // trampoline reads original disk bytes, skipping ALL E9 JMP hooks
+        // including Steam's overlay.  Invoke Steam's overlay hook explicitly
+        // before the bypass so Steam overlay renders even while the bypass
+        // path is active.  Steam's hook renders its overlay and presents the
+        // frame through Steam's own trampoline, so we return directly.
+        const bool steamOverlayLoaded = IsSteamOverlayModule(forcedBypassOverlay);
+        if (steamOverlayLoaded && g_externalOverlayPresentHook) {
+            static std::atomic<int> s_forcedBypassSteamInvokeCount{0};
+            int steamNum = s_forcedBypassSteamInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (steamNum <= 10 || (steamNum % 500) == 0) {
+                HookLogImportant(
+                    "CallOriginalPresent: Invoking Steam overlay for forced-bypass path #%d "
+                    "(steamHook=%p bypass=%p overlay=%s tid=0x%04X)",
+                    steamNum, (void*)g_externalOverlayPresentHook, (void*)presentBypass,
+                    forcedBypassOverlay ? forcedBypassOverlay : "unknown", GetCurrentThreadId());
+            }
+            return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+        }
         static int s_forcedBypassLogCount = 0;
         if (s_forcedBypassLogCount++ < 10) {
-            HookLogImportant("CallOriginalPresent: forcing DXGI bypass for Steam overlay %s while FG is inactive",
-                             forcedBypassOverlay);
+            HookLogImportant("CallOriginalPresent: forcing DXGI bypass (no Steam hook) for %s while FG is inactive",
+                             forcedBypassOverlay ? forcedBypassOverlay : "overlay");
         }
         return presentBypass(pSwapChain, SyncInterval, Flags);
     }
@@ -3041,10 +3101,25 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
 
     const char* forcedBypassOverlay = nullptr;
     if (ShouldForceSteamDX12Bypass(pSwapChain, present1Bypass != nullptr, slLoaded, &forcedBypassOverlay)) {
-        static int s_forcedBypassLogCount = 0;
-        if (s_forcedBypassLogCount++ < 10) {
-            HookLogImportant("CallOriginalPresent1: forcing DXGI bypass for Steam overlay %s while FG is inactive",
-                             forcedBypassOverlay);
+        // Same forced-bypass Steam overlay fix as CallOriginalPresent:
+        // invoke Steam's overlay hook explicitly before the bypass trampoline.
+        const bool steamOverlayLoaded = IsSteamOverlayModule(forcedBypassOverlay);
+        if (steamOverlayLoaded && g_externalOverlayPresentHook) {
+            static std::atomic<int> s_forcedBypass1SteamInvokeCount{0};
+            int steamNum = s_forcedBypass1SteamInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (steamNum <= 10 || (steamNum % 500) == 0) {
+                HookLogImportant(
+                    "CallOriginalPresent1: Invoking Steam overlay for forced-bypass path #%d "
+                    "(steamHook=%p bypass=%p overlay=%s tid=0x%04X)",
+                    steamNum, (void*)g_externalOverlayPresentHook, (void*)present1Bypass,
+                    forcedBypassOverlay ? forcedBypassOverlay : "unknown", GetCurrentThreadId());
+            }
+            return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+        }
+        static int s_forcedBypass1LogCount = 0;
+        if (s_forcedBypass1LogCount++ < 10) {
+            HookLogImportant("CallOriginalPresent1: forcing DXGI bypass (no Steam hook) for %s while FG is inactive",
+                             forcedBypassOverlay ? forcedBypassOverlay : "overlay");
         }
         return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
     }
