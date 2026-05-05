@@ -1516,13 +1516,21 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // the DllMain thread calls Present through our vtable[8] hook.  Routing through
     // CallOriginalPresent -> oPresent hits Steam's inline E9 JMP on dxgi!Present,
     // and Steam's OverlayHookD3D3 crashes because Steam TLS is uninitialized on the
-    // DllMain thread -> RIP=0.  Bypass Steam overlay when PostSL is not confirmed
-    // OR during the startup transition window (4000ms after SL loads).  The startup
-    // transition window covers the race condition where PostSL confirms rendering
-    // while the DllMain thread is still calling Present.
-    const bool inStartupWindow = !HookIsPostSLOverlayConfirmedRendering() ||
-        IsStreamlineStartupTransitionWindowActive();
-    if (inStartupWindow && steamOverlayLoaded) {
+    // DllMain thread -> RIP=0.
+    //
+    // Root-cause fix: detect SL-originated Present calls via _ReturnAddress() at
+    // DetourPresent entry (captured at line ~978).  When the caller is inside an
+    // SL module AND SL's FG routing is not yet active, Steam TLS may be
+    // uninitialized — bypass unconditionally.  No timer, grace period, or PostSL
+    // confirmation state dependency.
+    //
+    // The !s_slRoutingActive guard ensures we only bypass during the DllMain
+    // phase.  Once SL FG routing is active, SL's own E9 JMP handles SL-internal
+    // Present calls and the vtable hook should route through SL routing (line
+    // ~1545), not bypass.
+    if (callerFromStreamlineModule &&
+        !s_slRoutingActive.load(std::memory_order_relaxed) &&
+        steamOverlayLoaded) {
         PFN_Present bypass = EnsurePresentBypassTrampoline();
         if (bypass) {
             static std::atomic<int> s_startupBypassCount{0};
