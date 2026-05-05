@@ -1201,7 +1201,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
             // Invoke Steam's overlay explicitly before bypass when SL FG is active,
             // since SL's E9 JMP overwrites Steam's and the bypass (disk bytes) has none.
-            if (g_externalOverlayPresentHook && steamOverlayLoaded) {
+            // Skip Steam overlay when the Present originates from an SL module
+            // (callerFromStreamlineModule) — Steam's code is unsafe in SL's call chain.
+            if (g_externalOverlayPresentHook && steamOverlayLoaded && !callerFromStreamlineModule) {
                 static std::atomic<int> s_steamConfirmedStandaloneInvokeCount{0};
                 int steamNum = s_steamConfirmedStandaloneInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (steamNum <= 10 || (steamNum % 500) == 0) {
@@ -1211,6 +1213,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                         steamNum, (void*)g_externalOverlayPresentHook, GetCurrentThreadId());
                 }
                 return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+            }
+            if (g_externalOverlayPresentHook && steamOverlayLoaded && callerFromStreamlineModule) {
+                static std::atomic<int> s_steamConfirmedStandaloneSkippedSLCount{0};
+                int skipNum = s_steamConfirmedStandaloneSkippedSLCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (skipNum <= 5) {
+                    HookLogImportant(
+                        "DetourPresent: Skipping Steam overlay for confirmed standalone bypass (SL call chain unsafe) "
+                        "#%d (tid=0x%04X)",
+                        skipNum, GetCurrentThreadId());
+                }
             }
             PFN_Present presentBypass = EnsurePresentBypassTrampoline();
             if (presentBypass) {
@@ -1252,7 +1264,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         // its overlay and calls its trampoline (saved dxgi!Present bytes +
         // JMP to dxgi!Present+5) which presents the frame.  We then return
         // Steam's result without calling bypass separately.
-        if (g_externalOverlayPresentHook && steamOverlayLoaded) {
+        //
+        // CRITICAL: Skip Steam overlay when the Present originates from a
+        // Streamline module (callerFromStreamlineModule).  Steam's overlay
+        // code is not safe to invoke from within SL's call chain (e.g., SL
+        // DllMain, sl_common!slGetPluginFunction) — it can crash with RIP=0
+        // because Steam's internal TLS or callbacks are uninitialized.  The
+        // bypass (oPresentBypass/EnsurePresentBypassTrampoline) below handles
+        // these safely by calling the real Present directly.
+        if (g_externalOverlayPresentHook && steamOverlayLoaded && !callerFromStreamlineModule) {
             static std::atomic<int> s_steamOverlayCallCount{0};
             int steamNum = s_steamOverlayCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (steamNum <= 10 || (steamNum % 500) == 0) {
@@ -1262,6 +1282,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     steamNum, (void*)g_externalOverlayPresentHook, GetCurrentThreadId());
             }
             return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+        }
+        if (g_externalOverlayPresentHook && steamOverlayLoaded && callerFromStreamlineModule) {
+            static std::atomic<int> s_steamOverlaySkippedSLCount{0};
+            int skipNum = s_steamOverlaySkippedSLCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (skipNum <= 5) {
+                HookLogImportant(
+                    "DetourPresent: Skipping Steam overlay for SL re-entrant Present (SL call chain unsafe) "
+                    "#%d (tid=0x%04X)",
+                    skipNum, GetCurrentThreadId());
+            }
         }
 
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();

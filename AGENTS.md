@@ -9,6 +9,7 @@ Copyright (c) 2026 aufkrawall
 
 - Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason not to!
 - After code changes, run `python build.py --skip-updates`; do not use `python build.py --version`!
+- For test-only runs without recompilation, use `python build.py --no-build --run-tests --skip-updates`
 - Always git commit after code changes!
 - Before committing, run relevant tests/unit tests and ensure build/test results succeed.
 - Commit completed code changes with plain git commands only: `git status`, `git add -A`, `git commit -m "<message>"`!
