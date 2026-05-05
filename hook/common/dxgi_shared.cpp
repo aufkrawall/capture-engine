@@ -365,10 +365,15 @@ static bool HasStartupBlockingOverlayModuleInCurrentStack() {
 // in their stack, but they are the Present owner and should NOT be bypassed.
 static bool IsSLWorkerThread() {
     // Fast path: if the current thread is the Present owner, it's the game
-    // thread, not an SL worker thread.
+    // thread, not an SL worker thread.  If no one owns Present yet
+    // (g_presentThreadId == 0), we can't determine the thread type, so
+    // conservatively assume it's NOT an SL worker thread — this avoids
+    // bypassing during DllMain (sl_dlss_g!DllMain) which also has SL
+    // modules in its stack but is the game's loader thread, not an SL
+    // worker thread.
     DWORD currentId = GetCurrentThreadId();
     DWORD presentOwner = g_presentThreadId.load(std::memory_order_acquire);
-    if (presentOwner == currentId) {
+    if (presentOwner == 0 || presentOwner == currentId) {
         return false;
     }
 
