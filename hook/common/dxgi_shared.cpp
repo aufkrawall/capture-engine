@@ -356,39 +356,40 @@ static bool HasStartupBlockingOverlayModuleInCurrentStack() {
 //   1. SL DllMain loader thread during sl_dlss_g!DllMain
 //   2. SL worker threads during FG processing
 //
+// During DllMain, CaptureStackBackTrace may fail (loader lock), so we
+// use a simpler approach: check the immediate caller via
+// CE_CAPTURE_RETURN_ADDRESS().  This is safe during DllMain.
+//
 // We use a two-phase check:
-//   Phase 1 (startup, PostSL not confirmed): bypass if ANY SL module is
-//     in the stack.  During DllMain, no Present owner exists, so we rely
-//     on !postSLConfirmedRendering to gate.
-//   Phase 2 (PostSL confirmed): bypass only for SL worker threads — threads
-//     that are NOT the Present owner but have SL modules in their stack.
-//     This avoids bypassing the game's Present thread which also has SL
-//     modules in its stack through API calls.
+//   Phase 1 (startup, PostSL not confirmed): bypass if the immediate
+//     caller is from an SL module.  During DllMain, no Present owner
+//     exists, so we rely on !postSLConfirmedRendering to gate.
+//   Phase 2 (PostSL confirmed): bypass only for SL worker threads —
+//     threads that are NOT the Present owner but have SL modules in
+//     their stack.  This avoids bypassing the game's Present thread
+//     which also has SL modules in its stack through API calls.
 static bool ShouldBypassSteamForSLContext() {
-    constexpr USHORT kMaxFrames = 24;
-    void* stackFrames[kMaxFrames] = {};
-    const USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
-
-    // Check for SL modules in the stack.
-    bool hasSLModule = false;
-    for (USHORT i = 0; i < frameCount; ++i) {
-        char modulePath[MAX_PATH] = {};
-        if (TryGetModulePathFromCodeAddress(stackFrames[i], modulePath, sizeof(modulePath)) &&
-            ce::overlay_compat::IsStreamlineFrameGenerationModulePath(modulePath)) {
-            hasSLModule = true;
-            break;
-        }
-    }
-    if (!hasSLModule) {
-        return false;
-    }
-
-    // Phase 1: startup window — bypass if SL modules are in the stack.
-    // During DllMain, no Present owner exists yet, so we can't distinguish
-    // DllMain from worker threads.  The !postSLConfirmedRendering gate
-    // ensures we only bypass during the startup window.
+    // Phase 1: startup window — check the immediate caller.
+    // This works during DllMain where CaptureStackBackTrace may fail.
+    // CE_CAPTURE_RETURN_ADDRESS() reads the return address from the
+    // stack, which is safe under the loader lock.
     if (!HookIsPostSLOverlayConfirmedRendering()) {
-        return true;
+        void* caller = CE_CAPTURE_RETURN_ADDRESS();
+        if (caller && IsCodeAddressFromStreamlineModule(caller)) {
+            return true;
+        }
+        // Also check via stack walk as fallback (works outside DllMain).
+        constexpr USHORT kMaxFrames = 24;
+        void* stackFrames[kMaxFrames] = {};
+        USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
+        for (USHORT i = 0; i < frameCount; ++i) {
+            char modulePath[MAX_PATH] = {};
+            if (TryGetModulePathFromCodeAddress(stackFrames[i], modulePath, sizeof(modulePath)) &&
+                ce::overlay_compat::IsStreamlineFrameGenerationModulePath(modulePath)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Phase 2: PostSL confirmed — only bypass for SL worker threads.
@@ -397,10 +398,19 @@ static bool ShouldBypassSteamForSLContext() {
     // in its stack (through API calls) but IS the Present owner.
     DWORD currentId = GetCurrentThreadId();
     DWORD presentOwner = g_presentThreadId.load(std::memory_order_acquire);
-    if (presentOwner != 0 && presentOwner != currentId) {
-        return true;
+    if (presentOwner == 0 || presentOwner == currentId) {
+        return false;
     }
-
+    constexpr USHORT kMaxFrames = 24;
+    void* stackFrames[kMaxFrames] = {};
+    USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        char modulePath[MAX_PATH] = {};
+        if (TryGetModulePathFromCodeAddress(stackFrames[i], modulePath, sizeof(modulePath)) &&
+            ce::overlay_compat::IsStreamlineFrameGenerationModulePath(modulePath)) {
+            return true;
+        }
+    }
     return false;
 }
 
