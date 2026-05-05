@@ -5223,6 +5223,7 @@ def main():
     lint_flag = "--lint" in sys.argv
     format_flag = "--format" in sys.argv
     ccache_flag = "--ccache" in sys.argv
+    no_build_flag = "--no-build" in sys.argv
     gtest_filter = parse_flag_value("--gtest-filter")
     tests_only_flag = "--tests-only" in sys.argv
     sanitize_flag = "--sanitize" in sys.argv
@@ -5389,14 +5390,26 @@ def main():
             # non-sanitized unless --sanitize was explicitly requested.
             run_sanitizer_regression_pass(skip_updates=skip_updates, ccache_flag=ccache_flag)
 
-    compile_project(
-        env,
-        clang_bin,
-        skip_updates=skip_updates,
-        should_run_tests=run_tests_flag,
-        gtest_filter=gtest_filter,
-        tests_only=tests_only_flag,
-    )
+    if no_build_flag:
+        log("Build skipped (--no-build)")
+        if run_tests_flag:
+            tests_dir = os.path.join(PROJECT_ROOT, "tests")
+            test_exe = os.path.join(tests_dir, "unit_tests.exe")
+            if not os.path.exists(test_exe):
+                log(f"Error: {test_exe} not found. Build first without --no-build.")
+                sys.exit(1)
+            copy_test_runtime_dlls(tests_dir)
+            if not run_tests(env, test_exe, gtest_filter=gtest_filter):
+                sys.exit(1)
+    else:
+        compile_project(
+            env,
+            clang_bin,
+            skip_updates=skip_updates,
+            should_run_tests=run_tests_flag,
+            gtest_filter=gtest_filter,
+            tests_only=tests_only_flag,
+        )
     record_verification_step(
         "build",
         "passed",
@@ -5406,6 +5419,7 @@ def main():
             "run_integration": run_integration_flag,
             "skip_updates": skip_updates,
             "sanitize": sanitize_flag,
+            "no_build": no_build_flag,
         },
     )
 
