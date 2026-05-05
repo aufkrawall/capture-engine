@@ -41,8 +41,16 @@ private:
     struct LocalCadenceResult {
         int64_t scheduledWaitUs = 0;
         int64_t actualWaitUs = 0;
+        int64_t lateUs = 0;
         uint32_t frameCount = 0;
+        uint32_t statsWaitedFrames = 0;
+        uint32_t statsLateFrames = 0;
+        uint32_t statsResetFrames = 0;
+        int64_t statsAvgLateUs = 0;
+        int64_t statsMaxLateUs = 0;
         bool emitStats = false;
+        bool waited = false;
+        bool resetCadence = false;
         double avgFps = 0;
         double instantFps = 0;
     };
@@ -75,10 +83,26 @@ private:
             localFrameCount_ = 0;
             localStatsIntervalStart_ = now.QuadPart;
             localStatsFrameCount_ = 0;
+            localStatsWaitedFrames_ = 0;
+            localStatsLateFrames_ = 0;
+            localStatsResetFrames_ = 0;
+            localStatsLateUsSum_ = 0;
+            localStatsMaxLateUs_ = 0;
         }
 
-        const         int64_t waitTicks = localTargetTime_ - now.QuadPart;
-        result.scheduledWaitUs = (waitTicks > 0) ? (waitTicks * 1000000 / qpcFrequency) : 0;
+        const int64_t waitTicks = localTargetTime_ - now.QuadPart;
+        if (waitTicks > 0) {
+            result.waited = true;
+            result.scheduledWaitUs = waitTicks * 1000000 / qpcFrequency;
+            ++localStatsWaitedFrames_;
+        } else if (waitTicks < 0) {
+            result.lateUs = (-waitTicks * 1000000) / qpcFrequency;
+            ++localStatsLateFrames_;
+            localStatsLateUsSum_ += result.lateUs;
+            if (result.lateUs > localStatsMaxLateUs_) {
+                localStatsMaxLateUs_ = result.lateUs;
+            }
+        }
 
         LARGE_INTEGER beforeWait;
         QueryPerformanceCounter(&beforeWait);
@@ -93,6 +117,8 @@ private:
         QueryPerformanceCounter(&now);
         if (localTargetTime_ < now.QuadPart - intervalTicks * 2) {
             localTargetTime_ = now.QuadPart + phaseOffsetTicks;
+            result.resetCadence = true;
+            ++localStatsResetFrames_;
         }
 
         localFrameCount_++;
@@ -106,9 +132,20 @@ private:
                 const int64_t interFrameUs = ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
                 result.instantFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
             }
+            result.statsWaitedFrames = localStatsWaitedFrames_;
+            result.statsLateFrames = localStatsLateFrames_;
+            result.statsResetFrames = localStatsResetFrames_;
+            result.statsMaxLateUs = localStatsMaxLateUs_;
+            result.statsAvgLateUs =
+                (localStatsLateFrames_ > 0) ? (localStatsLateUsSum_ / static_cast<int64_t>(localStatsLateFrames_)) : 0;
             result.emitStats = true;
             localStatsIntervalStart_ = now.QuadPart;
             localStatsFrameCount_ = 0;
+            localStatsWaitedFrames_ = 0;
+            localStatsLateFrames_ = 0;
+            localStatsResetFrames_ = 0;
+            localStatsLateUsSum_ = 0;
+            localStatsMaxLateUs_ = 0;
         }
 
         lastApplyEntryQpc_ = now.QuadPart;
@@ -537,6 +574,11 @@ public:
                 localFrameCount_ = 0;
                 localStatsIntervalStart_ = 0;
                 localStatsFrameCount_ = 0;
+                localStatsWaitedFrames_ = 0;
+                localStatsLateFrames_ = 0;
+                localStatsResetFrames_ = 0;
+                localStatsLateUsSum_ = 0;
+                localStatsMaxLateUs_ = 0;
             }
             if (!loggedInactive_) {
                 TraceLog("Apply: INACTIVE capReq=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d",
@@ -665,6 +707,11 @@ public:
             localFrameCount_ = 0;
             localStatsIntervalStart_ = 0;
             localStatsFrameCount_ = 0;
+            localStatsWaitedFrames_ = 0;
+            localStatsLateFrames_ = 0;
+            localStatsResetFrames_ = 0;
+            localStatsLateUsSum_ = 0;
+            localStatsMaxLateUs_ = 0;
             lastApplyEntryQpc_ = 0;
             applyInterFrameSum_ = 0;
             applyInterFrameCount_ = 0;
@@ -988,26 +1035,69 @@ public:
         if (effectiveTargetFps <= 0)
             effectiveTargetFps = 60;
 
+        const bool localCadenceFirstFrame = localTargetTime_ == 0;
+        if (!usingCaptureSync && !localCadenceFirstFrame && lastApplyReturnQpc != 0) {
+            LARGE_INTEGER activeDedupQpc;
+            QueryPerformanceCounter(&activeDedupQpc);
+            int64_t activeDedupTicks = qpcFrequency / 500;  // 2ms maximum duplicate window.
+            int64_t intervalTicks = qpcFrequency / effectiveTargetFps;
+            if (intervalTicks < 1) {
+                intervalTicks = 1;
+            }
+            const int64_t intervalBoundTicks = intervalTicks / 3;
+            if (intervalBoundTicks > 0 && intervalBoundTicks < activeDedupTicks) {
+                activeDedupTicks = intervalBoundTicks;
+            }
+            const int64_t minDedupTicks = qpcFrequency / 2000;  // 0.5ms minimum for timer jitter.
+            if (activeDedupTicks < minDedupTicks) {
+                activeDedupTicks = minDedupTicks;
+            }
+
+            const int64_t sinceReturnTicks = activeDedupQpc.QuadPart - lastApplyReturnQpc;
+            if (sinceReturnTicks >= 0 && sinceReturnTicks < activeDedupTicks) {
+                applyActiveDedupCount_++;
+                lastActualWaitUs_ = 0;
+                const int64_t sinceReturnUs = (sinceReturnTicks * 1000000) / qpcFrequency;
+                const int64_t activeDedupUs = (activeDedupTicks * 1000000) / qpcFrequency;
+                if (applyActiveDedupCount_ <= 12 || (applyActiveDedupCount_ % 600) == 0) {
+                    TraceLog(
+                        "Apply: ACTIVE dedup sync=%s mode=%u configured=%u target=%d effective=%d "
+                        "sinceReturnUs=%lld thresholdUs=%lld activeDedup=%u inactiveDedup=%u",
+                        usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps,
+                        effectiveTargetFps, sinceReturnUs, activeDedupUs, applyActiveDedupCount_, applyDedupCount_);
+                }
+                return;
+            }
+        }
+
         // Timer fallback/basic/FG fallback pacing is hook-local.  Waiting for
         // the helper process here is fragile because per-game config can enable
         // the limiter after startup; an unanswered event used to cost one full
         // timeout per frame before local fallback ran.
-        const bool localCadenceFirstFrame = localTargetTime_ == 0;
         const auto cadence = RunLocalCadence(effectiveTargetFps);
         if (localCadenceFirstFrame) {
-            TraceLog("Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d events=%d/%d",
+            TraceLog("Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d events=%d/%d "
+                     "firstWaitUs=%lld firstLateUs=%lld",
                      usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps,
-                     effectiveTargetFps, releaseEvent ? 1 : 0, requestEvent ? 1 : 0);
+                     effectiveTargetFps, releaseEvent ? 1 : 0, requestEvent ? 1 : 0, cadence.scheduledWaitUs,
+                     cadence.lateUs);
             HookLog("FPS Limiter: Local timer cadence active (sync=%s, mode=%u, target=%d, effective=%d)",
                     usingCaptureSync ? "capture" : "general", effectiveMode, targetFps, effectiveTargetFps);
         }
         if (cadence.emitStats) {
-            TraceLog("Apply: LOCAL timer stats frames=%u scheduledWaitUs=%lld actualWaitUs=%lld avgFps=%.1f "
-                     "instFps=%.1f target=%d dedup=%u",
-                     cadence.frameCount, cadence.scheduledWaitUs, cadence.actualWaitUs, cadence.avgFps,
-                     cadence.instantFps, effectiveTargetFps, applyDedupCount_);
-            HookLog("FPS Limiter: Local timer stats (%u frames): lastWait=%lldus avgFps=%.1f instFps=%.1f target=%d",
-                    cadence.frameCount, cadence.actualWaitUs, cadence.avgFps, cadence.instantFps, effectiveTargetFps);
+            TraceLog("Apply: LOCAL timer stats frames=%u scheduledWaitUs=%lld actualWaitUs=%lld lateUs=%lld "
+                     "avgFps=%.1f instFps=%.1f target=%d waited=%u late=%u avgLateUs=%lld maxLateUs=%lld "
+                     "resets=%u dedup=%u activeDedup=%u",
+                     cadence.frameCount, cadence.scheduledWaitUs, cadence.actualWaitUs, cadence.lateUs,
+                     cadence.avgFps, cadence.instantFps, effectiveTargetFps, cadence.statsWaitedFrames,
+                     cadence.statsLateFrames, cadence.statsAvgLateUs, cadence.statsMaxLateUs,
+                     cadence.statsResetFrames, applyDedupCount_, applyActiveDedupCount_);
+            HookLog(
+                "FPS Limiter: Local timer stats (%u frames): lastWait=%lldus late=%lldus avgFps=%.1f "
+                "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u activeDedup=%u",
+                cadence.frameCount, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps, cadence.instantFps,
+                effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames, cadence.statsResetFrames,
+                applyActiveDedupCount_);
         }
 
         // Record time Apply() returned so sequential duplicate presents
@@ -1062,6 +1152,11 @@ public:
         localFrameCount_ = 0;
         localStatsIntervalStart_ = 0;
         localStatsFrameCount_ = 0;
+        localStatsWaitedFrames_ = 0;
+        localStatsLateFrames_ = 0;
+        localStatsResetFrames_ = 0;
+        localStatsLateUsSum_ = 0;
+        localStatsMaxLateUs_ = 0;
         nativeApiRecheckCounter_ = 0;
         reflexDeviceProvided_ = false;
         reflexNativeSleepActive_ = false;
@@ -1140,8 +1235,14 @@ private:
     uint32_t localFrameCount_ = 0;                 // Frame count for local capture sync stats
     int64_t localStatsIntervalStart_ = 0;          // QPC start of current stats interval
     uint32_t localStatsFrameCount_ = 0;            // Frame count within current stats interval
+    uint32_t localStatsWaitedFrames_ = 0;          // Frames in current interval where local cadence waited
+    uint32_t localStatsLateFrames_ = 0;            // Frames in current interval that arrived after the target
+    uint32_t localStatsResetFrames_ = 0;           // Cadence resets caused by long gaps or slow frames
+    int64_t localStatsLateUsSum_ = 0;              // Sum of late frame time in current interval
+    int64_t localStatsMaxLateUs_ = 0;              // Worst late frame time in current interval
     int64_t lastActualWaitUs_ = 0;                 // Last Apply() actual wait time in μs
     std::atomic<bool> isActivelyLimiting_{false};  // True when limiter is actively pacing frames
+    uint32_t applyActiveDedupCount_ = 0;
     uint32_t applyWaitCount_ = 0;
     uint32_t applySuccessCount_ = 0;
     int64_t lastApplyEntryQpc_ = 0;

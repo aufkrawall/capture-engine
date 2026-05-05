@@ -3,7 +3,9 @@
 #include <d3d10.h>
 #include <d3d11.h>
 #include <d3d12.h>
+#include <array>
 #include <algorithm>
+#include <cstddef>
 #include <climits>
 #include <cstdint>
 #include <cstring>
@@ -57,6 +59,224 @@ inline D3D11_FILTER GetForcedAnisotropicFilter(D3D11_FILTER originalFilter) {
 
 inline UINT ResolveFullMipCount2D(UINT width, UINT height, UINT mipLevels);
 inline UINT ResolveVisibleMipCount(UINT totalMipLevels, UINT mostDetailedMip, UINT viewMipLevels);
+
+struct D3D11ShaderSamplerUsage {
+    std::array<std::array<bool, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT>,
+               D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT>
+        samplerTextures = {};
+    std::array<bool, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT> samplerUsesImplicitSample = {};
+    std::array<bool, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT> samplerUsesExplicitSample = {};
+    bool sawSampleInstruction = false;
+    bool sawUnsupportedRegister = false;
+};
+
+inline char LowerAscii(char c) {
+    if (c >= 'A' && c <= 'Z') {
+        return static_cast<char>(c - 'A' + 'a');
+    }
+    return c;
+}
+
+inline bool IsD3D11AsmIdentifierChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+inline bool IsD3D11AsmWhitespace(char c) {
+    return c == ' ' || c == '\t' || c == '\r';
+}
+
+inline bool D3D11AsmLineStartsWithSample(const char* line, size_t length) {
+    size_t pos = 0;
+    while (pos < length && IsD3D11AsmWhitespace(line[pos])) {
+        ++pos;
+    }
+    static constexpr char kSample[] = "sample";
+    for (size_t i = 0; i < 6; ++i) {
+        if (pos + i >= length || LowerAscii(line[pos + i]) != kSample[i]) {
+            return false;
+        }
+    }
+    const size_t after = pos + 6;
+    if (after >= length) {
+        return true;
+    }
+    const char next = line[after];
+    return IsD3D11AsmWhitespace(next) || next == '_';
+}
+
+inline bool D3D11AsmLineIsImplicitSample(const char* line, size_t length) {
+    size_t pos = 0;
+    while (pos < length && IsD3D11AsmWhitespace(line[pos])) {
+        ++pos;
+    }
+    const size_t after = pos + 6;
+    return after < length && IsD3D11AsmWhitespace(line[after]);
+}
+
+inline bool ParseD3D11AsmRegisterAt(const char* text, size_t length, size_t pos, char prefix, UINT* outRegister) {
+    if (!text || !outRegister || pos >= length || LowerAscii(text[pos]) != prefix) {
+        return false;
+    }
+    if (pos > 0 && IsD3D11AsmIdentifierChar(text[pos - 1])) {
+        return false;
+    }
+    size_t digitPos = pos + 1;
+    if (digitPos >= length || text[digitPos] < '0' || text[digitPos] > '9') {
+        return false;
+    }
+
+    UINT value = 0;
+    while (digitPos < length && text[digitPos] >= '0' && text[digitPos] <= '9') {
+        value = value * 10u + static_cast<UINT>(text[digitPos] - '0');
+        ++digitPos;
+    }
+    if (digitPos < length && IsD3D11AsmIdentifierChar(text[digitPos])) {
+        return false;
+    }
+    *outRegister = value;
+    return true;
+}
+
+inline void AddD3D11ShaderSamplerTextureUse(D3D11ShaderSamplerUsage& usage, UINT samplerSlot, UINT textureSlot) {
+    usage.sawSampleInstruction = true;
+    if (samplerSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT ||
+        textureSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+        usage.sawUnsupportedRegister = true;
+        return;
+    }
+    usage.samplerTextures[samplerSlot][textureSlot] = true;
+}
+
+inline void MarkD3D11ShaderSamplerSampleOpcode(D3D11ShaderSamplerUsage& usage, UINT samplerSlot, bool implicitSample) {
+    usage.sawSampleInstruction = true;
+    if (samplerSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+        usage.sawUnsupportedRegister = true;
+        return;
+    }
+    if (implicitSample) {
+        usage.samplerUsesImplicitSample[samplerSlot] = true;
+    } else {
+        usage.samplerUsesExplicitSample[samplerSlot] = true;
+    }
+}
+
+inline D3D11ShaderSamplerUsage ParseD3D11ShaderSamplerUsage(const char* disassembly, size_t length) {
+    D3D11ShaderSamplerUsage usage = {};
+    if (!disassembly || length == 0) {
+        return usage;
+    }
+
+    size_t lineStart = 0;
+    while (lineStart < length) {
+        size_t lineEnd = lineStart;
+        while (lineEnd < length && disassembly[lineEnd] != '\n') {
+            ++lineEnd;
+        }
+        const size_t lineLength = lineEnd - lineStart;
+        const char* line = disassembly + lineStart;
+
+        if (D3D11AsmLineStartsWithSample(line, lineLength)) {
+            const bool implicitSample = D3D11AsmLineIsImplicitSample(line, lineLength);
+            bool textureSlots[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+            bool samplerSlots[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+            bool sawTexture = false;
+            bool sawSampler = false;
+
+            for (size_t pos = 0; pos < lineLength; ++pos) {
+                UINT reg = 0;
+                if (ParseD3D11AsmRegisterAt(line, lineLength, pos, 't', &reg)) {
+                    sawTexture = true;
+                    if (reg < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+                        textureSlots[reg] = true;
+                    } else {
+                        usage.sawUnsupportedRegister = true;
+                    }
+                } else if (ParseD3D11AsmRegisterAt(line, lineLength, pos, 's', &reg)) {
+                    sawSampler = true;
+                    if (reg < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+                        samplerSlots[reg] = true;
+                    } else {
+                        usage.sawUnsupportedRegister = true;
+                    }
+                }
+            }
+
+            if (sawTexture && sawSampler) {
+                usage.sawSampleInstruction = true;
+                for (UINT sampler = 0; sampler < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++sampler) {
+                    if (!samplerSlots[sampler]) {
+                        continue;
+                    }
+                    MarkD3D11ShaderSamplerSampleOpcode(usage, sampler, implicitSample);
+                    for (UINT texture = 0; texture < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++texture) {
+                        if (textureSlots[texture]) {
+                            AddD3D11ShaderSamplerTextureUse(usage, sampler, texture);
+                        }
+                    }
+                }
+            }
+        }
+
+        lineStart = (lineEnd < length) ? lineEnd + 1 : length;
+    }
+    return usage;
+}
+
+inline bool D3D11ShaderSamplerUsesExplicitSample(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
+    return samplerSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT && usage.samplerUsesExplicitSample[samplerSlot];
+}
+
+inline bool D3D11ShaderSamplerUsesOnlyImplicitSample(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
+    return samplerSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT && usage.samplerUsesImplicitSample[samplerSlot] &&
+           !usage.samplerUsesExplicitSample[samplerSlot];
+}
+
+inline bool D3D11ShaderSamplerUsesTexture(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot, UINT textureSlot) {
+    return samplerSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT &&
+           textureSlot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT &&
+           usage.samplerTextures[samplerSlot][textureSlot];
+}
+
+inline bool D3D11ShaderSamplerUsesAnyTexture(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
+    if (samplerSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+        return false;
+    }
+    for (bool usesTexture : usage.samplerTextures[samplerSlot]) {
+        if (usesTexture) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline UINT CountD3D11ShaderSamplerTextureUses(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot,
+                                               UINT* firstTextureSlot = nullptr,
+                                               UINT* lastTextureSlot = nullptr) {
+    if (firstTextureSlot) {
+        *firstTextureSlot = UINT_MAX;
+    }
+    if (lastTextureSlot) {
+        *lastTextureSlot = UINT_MAX;
+    }
+    if (samplerSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+        return 0;
+    }
+
+    UINT count = 0;
+    for (UINT texture = 0; texture < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++texture) {
+        if (!usage.samplerTextures[samplerSlot][texture]) {
+            continue;
+        }
+        if (firstTextureSlot && *firstTextureSlot == UINT_MAX) {
+            *firstTextureSlot = texture;
+        }
+        if (lastTextureSlot) {
+            *lastTextureSlot = texture;
+        }
+        ++count;
+    }
+    return count;
+}
 
 enum class D3D11ForcedAFSamplerDecision {
     Allow,

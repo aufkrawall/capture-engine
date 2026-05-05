@@ -11,6 +11,8 @@
 #include "../common/sampler_override_utils.h"
 #include <atomic>
 #include <cstring>
+#include <d3dcompiler.h>
+#include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
 #include <vector>
@@ -33,10 +35,100 @@ static std::atomic<int> g_WrapperAFSkipNoMips{0};
 static std::atomic<int> g_WrapperAFSkipBorder{0};
 static std::atomic<int> g_WrapperAFSkipReduction{0};
 static std::atomic<int> g_WrapperAFSkipComparison{0};
+static std::atomic<int> g_WrapperAFSkipStage{0};
 static std::atomic<int> g_WrapperAFSkipNoSRV{0};
 static std::atomic<int> g_WrapperAFSkipUnsafeResource{0};
+static std::atomic<int> g_WrapperAFSkipNoShader{0};
+static std::atomic<int> g_WrapperAFSkipNoShaderMetadata{0};
+static std::atomic<int> g_WrapperAFSkipShaderUnused{0};
+static std::atomic<int> g_WrapperAFSkipExplicitSample{0};
+static std::atomic<int> g_WrapperAFAllowed{0};
 static std::atomic<int> g_WrapperAFReplaced{0};
 static std::atomic<int> g_WrapperAFReconciled{0};
+static std::atomic<int> g_WrapperPixelShaderMetadataCreated{0};
+static std::atomic<int> g_WrapperPixelShaderMetadataFailed{0};
+
+struct WrapperPixelShaderAFMetadata {
+    ce::sampler_override::D3D11ShaderSamplerUsage usage = {};
+    bool available = false;
+    bool disassembleFailed = false;
+};
+
+static std::mutex g_WrapperPixelShaderMetadataMutex;
+static std::unordered_map<ID3D11PixelShader*, WrapperPixelShaderAFMetadata> g_WrapperPixelShaderMetadata;
+
+static UINT CountWrapperPixelShaderUsagePairs(const ce::sampler_override::D3D11ShaderSamplerUsage& usage,
+                                              UINT* samplerCount = nullptr) {
+    UINT pairs = 0;
+    UINT samplers = 0;
+    for (UINT sampler = 0; sampler < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++sampler) {
+        const UINT samplerPairs = ce::sampler_override::CountD3D11ShaderSamplerTextureUses(usage, sampler);
+        if (samplerPairs != 0) {
+            ++samplers;
+            pairs += samplerPairs;
+        }
+    }
+    if (samplerCount) {
+        *samplerCount = samplers;
+    }
+    return pairs;
+}
+
+void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void* shaderBytecode,
+                                          SIZE_T bytecodeLength) {
+    if (!shader) {
+        return;
+    }
+
+    WrapperPixelShaderAFMetadata metadata = {};
+    ID3DBlob* disassembly = nullptr;
+    HRESULT hr = E_INVALIDARG;
+    if (shaderBytecode && bytecodeLength != 0) {
+        hr = D3DDisassemble(shaderBytecode, bytecodeLength, D3D_DISASM_ENABLE_DEFAULT_VALUE_PRINTS, nullptr,
+                            &disassembly);
+    }
+    if (SUCCEEDED(hr) && disassembly) {
+        metadata.usage = ce::sampler_override::ParseD3D11ShaderSamplerUsage(
+            static_cast<const char*>(disassembly->GetBufferPointer()), disassembly->GetBufferSize());
+        metadata.available = true;
+        disassembly->Release();
+    } else {
+        metadata.disassembleFailed = true;
+        int idx = g_WrapperPixelShaderMetadataFailed.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12) {
+            WrapperLog("Wrapper: AF pixel-shader disassembly failed hr=0x%08X bytecode=%zu (#%d)", hr,
+                       static_cast<size_t>(bytecodeLength), idx + 1);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_WrapperPixelShaderMetadataMutex);
+        g_WrapperPixelShaderMetadata[shader] = metadata;
+    }
+
+    int idx = g_WrapperPixelShaderMetadataCreated.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 48) {
+        UINT samplerCount = 0;
+        const UINT pairCount = CountWrapperPixelShaderUsagePairs(metadata.usage, &samplerCount);
+        WrapperLog("Wrapper: AF pixel-shader metadata shader=%p available=%d failed=%d samplers=%u pairs=%u "
+                   "unsupported=%d (#%d)",
+                   shader, metadata.available ? 1 : 0, metadata.disassembleFailed ? 1 : 0, samplerCount, pairCount,
+                   metadata.usage.sawUnsupportedRegister ? 1 : 0, idx + 1);
+    }
+}
+
+static bool GetWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, WrapperPixelShaderAFMetadata* outMetadata) {
+    if (!shader || !outMetadata) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_WrapperPixelShaderMetadataMutex);
+    auto it = g_WrapperPixelShaderMetadata.find(shader);
+    if (it == g_WrapperPixelShaderMetadata.end()) {
+        return false;
+    }
+    *outMetadata = it->second;
+    return true;
+}
 
 static constexpr UINT kWrapperStagePS = 0;
 static constexpr UINT kWrapperStageVS = 1;
@@ -197,14 +289,22 @@ static bool SupportsWrapperD3D11SamplingFormat(ID3D11Device* device, DXGI_FORMAT
 }
 
 static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewForForcedAF(
-    ID3D11Device* device, ID3D11ShaderResourceView* view) {
+    ID3D11Device* device, ID3D11ShaderResourceView* view,
+    ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr) {
     using ce::sampler_override::D3D11ForcedAFResourceDecision;
     if (!view)
         return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     view->GetDesc(&srvDesc);
-    if (!SupportsWrapperD3D11SamplingFormat(device, srvDesc.Format))
+    const bool formatSupported = SupportsWrapperD3D11SamplingFormat(device, srvDesc.Format);
+    if (outInfo) {
+        *outInfo = {};
+        outInfo->format = srvDesc.Format;
+        outInfo->viewDimension = srvDesc.ViewDimension;
+        outInfo->formatSupported = formatSupported;
+    }
+    if (!formatSupported)
         return D3D11ForcedAFResourceDecision::UnsupportedFormat;
 
     ID3D11Resource* resource = nullptr;
@@ -240,6 +340,9 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewFo
         info.bindFlags = textureDesc.BindFlags;
         info.miscFlags = textureDesc.MiscFlags;
         info.formatSupported = true;
+        if (outInfo) {
+            *outInfo = info;
+        }
         decision = ce::sampler_override::ClassifyD3D11Texture2DForForcedAF(info);
         texture2D->Release();
     }
@@ -312,7 +415,9 @@ CWrapD3D11DeviceContext::CWrapD3D11DeviceContext(ID3D11DeviceContext* pReal, CWr
       m_pReal4(nullptr),
       m_pDevice(pDevice),
       m_RefCount(1),
-      m_Version(0) {
+      m_Version(0),
+      m_CurrentPixelShader(nullptr),
+      m_PixelSamplerStateDirty(false) {
     std::memset(m_TrackedSRVs, 0, sizeof(m_TrackedSRVs));
     std::memset(m_TrackedSamplers, 0, sizeof(m_TrackedSamplers));
     if (pReal) {
@@ -379,6 +484,10 @@ void CWrapD3D11DeviceContext::ClearForcedAFTracking() {
             }
         }
     }
+    if (m_CurrentPixelShader) {
+        m_CurrentPixelShader->Release();
+        m_CurrentPixelShader = nullptr;
+    }
 }
 
 void CWrapD3D11DeviceContext::TrackShaderResources(UINT stageIndex, UINT startSlot, UINT numViews,
@@ -395,6 +504,9 @@ void CWrapD3D11DeviceContext::TrackShaderResources(UINT stageIndex, UINT startSl
         if (m_TrackedSRVs[stageIndex][slot])
             m_TrackedSRVs[stageIndex][slot]->Release();
         m_TrackedSRVs[stageIndex][slot] = view;
+    }
+    if (stageIndex == kWrapperStagePS) {
+        m_PixelSamplerStateDirty = true;
     }
 }
 
@@ -415,6 +527,36 @@ void CWrapD3D11DeviceContext::TrackSamplers(UINT stageIndex, UINT startSlot, UIN
         if (m_TrackedSamplers[stageIndex][slot])
             m_TrackedSamplers[stageIndex][slot]->Release();
         m_TrackedSamplers[stageIndex][slot] = sampler;
+    }
+    if (stageIndex == kWrapperStagePS) {
+        m_PixelSamplerStateDirty = true;
+    }
+}
+
+void CWrapD3D11DeviceContext::TrackPixelShader(ID3D11PixelShader* shader) {
+    if (m_CurrentPixelShader == shader) {
+        return;
+    }
+    m_PixelSamplerStateDirty = true;
+    if (shader) {
+        shader->AddRef();
+    }
+    if (m_CurrentPixelShader) {
+        m_CurrentPixelShader->Release();
+    }
+    m_CurrentPixelShader = shader;
+}
+
+void CWrapD3D11DeviceContext::RefreshPixelShader() {
+    if (!m_pReal) {
+        return;
+    }
+    ID3D11PixelShader* shader = nullptr;
+    UINT classInstanceCount = 0;
+    m_pReal->PSGetShader(&shader, nullptr, &classInstanceCount);
+    TrackPixelShader(shader);
+    if (shader) {
+        shader->Release();
     }
 }
 
@@ -457,37 +599,124 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
         return original;
     if (IsWrapperReplacement(original))
         return original;
-    if (slot >= 8) {
+
+    const auto& gfx = GetActiveGraphicsConfig();
+    if (!ce::sampler_override::IsAnisotropicOverrideEnabled(gfx))
+        return original;
+
+    if (stageIndex != kWrapperStagePS) {
+        int idx = g_WrapperAFSkipStage.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12)
+            WrapperLog("Wrapper: AF skip (non-pixel stage=%s slot=%u)", WrapperStageName(stageIndex), slot);
+        return original;
+    }
+    if (slot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
         return original;
     }
 
-    const auto& gfx = GetActiveGraphicsConfig();
+    if (!m_CurrentPixelShader) {
+        RefreshPixelShader();
+    }
+    if (!m_CurrentPixelShader) {
+        int idx = g_WrapperAFSkipNoShader.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12)
+            WrapperLog("Wrapper: AF skip (no active pixel shader slot=%u)", slot);
+        return original;
+    }
+
+    WrapperPixelShaderAFMetadata metadata = {};
+    const bool hasMetadata = GetWrapperPixelShaderAFMetadata(m_CurrentPixelShader, &metadata);
+    if (!hasMetadata || !metadata.available) {
+        int idx = g_WrapperAFSkipNoShaderMetadata.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 24)
+            WrapperLog("Wrapper: AF skip (no pixel-shader sample metadata slot=%u has=%d failed=%d)", slot,
+                       hasMetadata ? 1 : 0, metadata.disassembleFailed ? 1 : 0);
+        return original;
+    }
+
+    if (!ce::sampler_override::D3D11ShaderSamplerUsesAnyTexture(metadata.usage, slot)) {
+        int idx = g_WrapperAFSkipShaderUnused.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 12)
+            WrapperLog("Wrapper: AF skip (pixel shader does not sample with s%u)", slot);
+        return original;
+    }
+    if (!ce::sampler_override::D3D11ShaderSamplerUsesOnlyImplicitSample(metadata.usage, slot)) {
+        int idx = g_WrapperAFSkipExplicitSample.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 24)
+            WrapperLog("Wrapper: AF skip (pixel shader uses explicit/non-implicit sample opcode with s%u explicit=%d)",
+                       slot, ce::sampler_override::D3D11ShaderSamplerUsesExplicitSample(metadata.usage, slot) ? 1 : 0);
+        return original;
+    }
+
     D3D11_SAMPLER_DESC desc = {};
     original->GetDesc(&desc);
     if (!WrapperSamplerAllowsForcedAF(desc, gfx))
         return original;
 
-    ID3D11ShaderResourceView* view = m_TrackedSRVs[stageIndex][slot];
-    if (!view) {
-        RefreshShaderResources(stageIndex, slot, 1);
-        view = m_TrackedSRVs[stageIndex][slot];
-    }
-    if (!view) {
-        int idx = g_WrapperAFSkipNoSRV.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 12)
-            WrapperLog("Wrapper: AF skip (no SRV) stage=%s slot=%u", WrapperStageName(stageIndex), slot);
-        return original;
+    UINT firstTextureSlot = UINT_MAX;
+    UINT lastTextureSlot = UINT_MAX;
+    const UINT textureCount =
+        ce::sampler_override::CountD3D11ShaderSamplerTextureUses(metadata.usage, slot, &firstTextureSlot,
+                                                                 &lastTextureSlot);
+    D3D11_SHADER_RESOURCE_VIEW_DESC firstSrvDesc = {};
+    ce::sampler_override::D3D11Texture2DForcedAFInfo firstResourceInfo = {};
+    bool capturedFirstResource = false;
+
+    for (UINT textureSlot = 0; textureSlot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++textureSlot) {
+        if (!ce::sampler_override::D3D11ShaderSamplerUsesTexture(metadata.usage, slot, textureSlot)) {
+            continue;
+        }
+
+        ID3D11ShaderResourceView* view = m_TrackedSRVs[stageIndex][textureSlot];
+        if (!view) {
+            RefreshShaderResources(stageIndex, textureSlot, 1);
+            view = m_TrackedSRVs[stageIndex][textureSlot];
+        }
+        if (!view) {
+            int idx = g_WrapperAFSkipNoSRV.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 24)
+                WrapperLog("Wrapper: AF skip (shader samples missing SRV s%u->t%u sampledTextures=%u)", slot,
+                           textureSlot, textureCount);
+            return original;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        view->GetDesc(&srvDesc);
+        ce::sampler_override::D3D11Texture2DForcedAFInfo resourceInfo = {};
+        const auto resourceDecision = WrapperClassifyViewForForcedAF(realDevice, view, &resourceInfo);
+        if (resourceDecision != ce::sampler_override::D3D11ForcedAFResourceDecision::Allow) {
+            int idx = g_WrapperAFSkipUnsafeResource.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 24)
+                WrapperLog("Wrapper: AF skip (sampled resource decision=%d s%u->t%u srvFmt=%d texFmt=%d dim=%d "
+                           "size=%ux%u mips=%u viewMip=%u mostMip=%u bind=0x%X misc=0x%X sampledTextures=%u)",
+                           (int)resourceDecision, slot, textureSlot, srvDesc.Format, resourceInfo.format,
+                           resourceInfo.viewDimension, resourceInfo.width, resourceInfo.height,
+                           resourceInfo.mipLevels, resourceInfo.viewMipLevels, resourceInfo.mostDetailedMip,
+                           resourceInfo.bindFlags, resourceInfo.miscFlags, textureCount);
+            return original;
+        }
+
+        if (!capturedFirstResource) {
+            firstSrvDesc = srvDesc;
+            firstResourceInfo = resourceInfo;
+            capturedFirstResource = true;
+        }
     }
 
-    const auto resourceDecision = WrapperClassifyViewForForcedAF(realDevice, view);
-    if (resourceDecision != ce::sampler_override::D3D11ForcedAFResourceDecision::Allow) {
-        int idx = g_WrapperAFSkipUnsafeResource.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 24)
-            WrapperLog("Wrapper: AF skip (resource decision=%d) stage=%s slot=%u", (int)resourceDecision,
-                       WrapperStageName(stageIndex), slot);
-        return original;
+    {
+        int idx = g_WrapperAFAllowed.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 48) {
+            WrapperLog(
+                "Wrapper: AF allow shader-paired sampler slot=s%u sampledTextures=%u first=t%u last=t%u "
+                "Filter=0x%X Aniso=%u Addr=%d/%d/%d srvFmt=%d texFmt=%d dim=%d size=%ux%u mips=%u viewMip=%u "
+                "mostMip=%u bind=0x%X misc=0x%X (#%d)",
+                slot, textureCount, firstTextureSlot, lastTextureSlot, desc.Filter, desc.MaxAnisotropy, desc.AddressU,
+                desc.AddressV, desc.AddressW, firstSrvDesc.Format, firstResourceInfo.format,
+                firstResourceInfo.viewDimension, firstResourceInfo.width, firstResourceInfo.height,
+                firstResourceInfo.mipLevels, firstResourceInfo.viewMipLevels, firstResourceInfo.mostDetailedMip,
+                firstResourceInfo.bindFlags, firstResourceInfo.miscFlags, idx + 1);
+        }
     }
-
     return GetOrCreateWrapperReplacementSampler(realDevice, original, gfx, true);
 }
 
@@ -569,6 +798,14 @@ void CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot,
             currentSampler->Release();
     }
     realDevice->Release();
+}
+
+void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
+    if (!m_PixelSamplerStateDirty) {
+        return;
+    }
+    m_PixelSamplerStateDirty = false;
+    ReconcileSamplers(kWrapperStagePS, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
 }
 
 // ============================================================================
@@ -841,13 +1078,13 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetShaderResources(
     UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView* const* ppShaderResourceViews) {
     m_pReal->PSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
     RefreshShaderResources(kWrapperStagePS, StartSlot, NumViews);
-    ReconcileSamplers(kWrapperStagePS, StartSlot, NumViews);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetShader(ID3D11PixelShader* pPixelShader,
                                                             ID3D11ClassInstance* const* ppClassInstances,
                                                             UINT NumClassInstances) {
     m_pReal->PSSetShader(pPixelShader, ppClassInstances, NumClassInstances);
+    TrackPixelShader(pPixelShader);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::VSSetShader(ID3D11VertexShader* pVertexShader,
@@ -858,10 +1095,12 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::VSSetShader(ID3D11VertexShader* 
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DrawIndexed(UINT IndexCount, UINT StartIndexLocation,
                                                             INT BaseVertexLocation) {
+    PreparePixelSamplersForDraw();
     m_pReal->DrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::Draw(UINT VertexCount, UINT StartVertexLocation) {
+    PreparePixelSamplersForDraw();
     m_pReal->Draw(VertexCount, StartVertexLocation);
 }
 
@@ -897,12 +1136,14 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::IASetIndexBuffer(ID3D11Buffer* p
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DrawIndexedInstanced(UINT IndexCountPerInstance, UINT InstanceCount,
                                                                      UINT StartIndexLocation, INT BaseVertexLocation,
                                                                      UINT StartInstanceLocation) {
+    PreparePixelSamplersForDraw();
     m_pReal->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation,
                                   StartInstanceLocation);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount,
                                                               UINT StartVertexLocation, UINT StartInstanceLocation) {
+    PreparePixelSamplersForDraw();
     m_pReal->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
 }
 
@@ -925,7 +1166,6 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::VSSetShaderResources(
     UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView* const* ppShaderResourceViews) {
     m_pReal->VSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
     RefreshShaderResources(kWrapperStageVS, StartSlot, NumViews);
-    ReconcileSamplers(kWrapperStageVS, StartSlot, NumViews);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::Begin(ID3D11Asynchronous* pAsync) {
@@ -949,7 +1189,6 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::GSSetShaderResources(
     UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView* const* ppShaderResourceViews) {
     m_pReal->GSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
     RefreshShaderResources(kWrapperStageGS, StartSlot, NumViews);
-    ReconcileSamplers(kWrapperStageGS, StartSlot, NumViews);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::OMSetRenderTargets(UINT NumViews,
@@ -982,16 +1221,19 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::SOSetTargets(UINT NumBuffers, ID
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DrawAuto() {
+    PreparePixelSamplersForDraw();
     m_pReal->DrawAuto();
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DrawIndexedInstancedIndirect(ID3D11Buffer* pBufferForArgs,
                                                                              UINT AlignedByteOffsetForArgs) {
+    PreparePixelSamplersForDraw();
     m_pReal->DrawIndexedInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DrawInstancedIndirect(ID3D11Buffer* pBufferForArgs,
                                                                       UINT AlignedByteOffsetForArgs) {
+    PreparePixelSamplersForDraw();
     m_pReal->DrawInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
 }
 
@@ -1088,7 +1330,6 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::HSSetShaderResources(
     UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView* const* ppShaderResourceViews) {
     m_pReal->HSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
     RefreshShaderResources(kWrapperStageHS, StartSlot, NumViews);
-    ReconcileSamplers(kWrapperStageHS, StartSlot, NumViews);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::HSSetShader(ID3D11HullShader* pHullShader,
@@ -1106,7 +1347,6 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DSSetShaderResources(
     UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView* const* ppShaderResourceViews) {
     m_pReal->DSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
     RefreshShaderResources(kWrapperStageDS, StartSlot, NumViews);
-    ReconcileSamplers(kWrapperStageDS, StartSlot, NumViews);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DSSetShader(ID3D11DomainShader* pDomainShader,
@@ -1124,7 +1364,6 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::CSSetShaderResources(
     UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView* const* ppShaderResourceViews) {
     m_pReal->CSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
     RefreshShaderResources(kWrapperStageCS, StartSlot, NumViews);
-    ReconcileSamplers(kWrapperStageCS, StartSlot, NumViews);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::CSSetUnorderedAccessViews(

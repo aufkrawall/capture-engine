@@ -160,6 +160,29 @@ TEST_F(FpsLimiterTest, GeneralBasicUsesLocalCadenceWithoutLimiterProcessTimeout)
     EXPECT_EQ(limiter.GetMissedFrames(), 0u);
 }
 
+TEST_F(FpsLimiterTest, GeneralBasicDeduplicatesImmediateSequentialApplyWhileActive) {
+    mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(30);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+
+    limiter.Apply();
+
+    bool sawFastDedup = false;
+    for (int attempt = 0; attempt < 3 && !sawFastDedup; ++attempt) {
+        LARGE_INTEGER start, end;
+        QueryPerformanceCounter(&start);
+        limiter.Apply();
+        QueryPerformanceCounter(&end);
+
+        const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+        sawFastDedup = elapsedMs < 3.0 && limiter.GetLastWaitUs() == 0;
+    }
+
+    EXPECT_TRUE(sawFastDedup);
+}
+
 TEST_F(FpsLimiterTest, CaptureWarmupUsesCaptureRequestedForCaptureSync) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = false;

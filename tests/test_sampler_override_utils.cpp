@@ -82,6 +82,59 @@ TEST(SamplerOverrideUtilsTest, D3D11ForcedAFIgnoresComparisonFuncOnNonComparison
     EXPECT_EQ(ClassifyD3D11SamplerForForcedAF(desc, gfx), D3D11ForcedAFSamplerDecision::ComparisonFilter);
 }
 
+TEST(SamplerOverrideUtilsTest, ParsesD3D11ShaderSamplerTexturePairs) {
+    const char disassembly[] =
+        "    sample r0.xyzw, v0.xyxx, t0.xyzw, s0\n"
+        "    sample_l r1.xyzw, v1.xyxx, t7.xyzw, s0, l(0)\n"
+        "    sample_c_lz r2.x, v2.xyxx, t13.xxxx, s2, r3.x\n"
+        "    ld r3.xyzw, v3.xyxx, t4.xyzw\n"
+        "    sampleinfo r4.xy, t8.xyzw\n";
+
+    const D3D11ShaderSamplerUsage usage =
+        ParseD3D11ShaderSamplerUsage(disassembly, sizeof(disassembly) - 1);
+
+    EXPECT_TRUE(usage.sawSampleInstruction);
+    EXPECT_FALSE(usage.sawUnsupportedRegister);
+    EXPECT_EQ(CountD3D11ShaderSamplerTextureUses(usage, 0), 2u);
+    EXPECT_TRUE(D3D11ShaderSamplerUsesTexture(usage, 0, 0));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesTexture(usage, 0, 7));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesExplicitSample(usage, 0));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesOnlyImplicitSample(usage, 0));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesExplicitSample(usage, 2));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesOnlyImplicitSample(usage, 2));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesTexture(usage, 2, 13));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesTexture(usage, 1, 4));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesTexture(usage, 0, 8));
+}
+
+TEST(SamplerOverrideUtilsTest, TracksD3D11ShaderSamplersThatUseOnlyImplicitSampling) {
+    const char disassembly[] =
+        "    sample r0.xyzw, v0.xyxx, t1.xyzw, s3\n"
+        "    sample r1.xyzw, v1.xyxx, t2.xyzw, s3\n";
+
+    const D3D11ShaderSamplerUsage usage =
+        ParseD3D11ShaderSamplerUsage(disassembly, sizeof(disassembly) - 1);
+
+    EXPECT_TRUE(D3D11ShaderSamplerUsesOnlyImplicitSample(usage, 3));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesExplicitSample(usage, 3));
+    EXPECT_EQ(CountD3D11ShaderSamplerTextureUses(usage, 3), 2u);
+}
+
+TEST(SamplerOverrideUtilsTest, ParsesD3D11ShaderSamplerUsageCaseInsensitivelyAndFlagsUnsupportedRegisters) {
+    const char disassembly[] =
+        "SAMPLE r0.xyzw, v0.xyxx, t1.xyzw, s3\n"
+        "sample r1.xyzw, v1.xyxx, t130.xyzw, s16\n";
+
+    const D3D11ShaderSamplerUsage usage =
+        ParseD3D11ShaderSamplerUsage(disassembly, sizeof(disassembly) - 1);
+
+    EXPECT_TRUE(usage.sawSampleInstruction);
+    EXPECT_TRUE(usage.sawUnsupportedRegister);
+    EXPECT_TRUE(D3D11ShaderSamplerUsesTexture(usage, 3, 1));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesAnyTexture(usage, 3));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesAnyTexture(usage, 4));
+}
+
 TEST(SamplerOverrideUtilsTest, D3D11ForcedAFRejectsUnsafeSamplerDescriptors) {
     GraphicsConfig gfx;
     gfx.anisotropicFiltering = "16x";

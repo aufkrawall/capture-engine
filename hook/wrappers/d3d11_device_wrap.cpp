@@ -255,7 +255,11 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateGeometryShaderWithStreamOutput
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreatePixelShader(const void* pShaderBytecode, SIZE_T BytecodeLength,
                                                               ID3D11ClassLinkage* pClassLinkage,
                                                               ID3D11PixelShader** ppPixelShader) {
-    return m_pReal->CreatePixelShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppPixelShader);
+    HRESULT hr = m_pReal->CreatePixelShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppPixelShader);
+    if (SUCCEEDED(hr) && ppPixelShader && *ppPixelShader) {
+        RegisterWrapperPixelShaderAFMetadata(*ppPixelShader, pShaderBytecode, BytecodeLength);
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateHullShader(const void* pShaderBytecode, SIZE_T BytecodeLength,
