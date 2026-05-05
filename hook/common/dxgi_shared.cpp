@@ -787,15 +787,12 @@ static bool ShouldKeepSLPresentRoutingDisabledNow(ce::fg_runtime::RuntimeMode* r
 static void DetectSLPresentHook() {
     if (s_slRoutingActive.load(std::memory_order_acquire))
         return;
-    if (!oPresent)
+    if (!oPresent || !oPresentTrampoline)
         return;
 
-    // In the vtable-hook path (external E9 JMP detected), oPresentTrampoline is
-    // NULL because no inline hook trampoline was created.  The vtable-repair path
-    // stores the vtable[8] original in oPresent.  We can still detect SL's JMP
-    // on oPresent's function bytes.  The trampoline guard below only applies
-    // when oPresentTrampoline is non-null (inline-hook path).
-    if (oPresentTrampoline && oPresent == oPresentTrampoline)
+    // If oPresent is our own trampoline, SL hasn't hooked the vtable yet.
+    // The vtable repair code sets oPresent to SL's hook when detected.
+    if (oPresent == oPresentTrampoline)
         return;
 
     auto* funcBytes = (const uint8_t*)oPresent;
@@ -819,16 +816,12 @@ static void DetectSLPresentHook() {
         return;
     }
 
-    if (oPresentTrampoline) {
-        // Verify that our trampoline is different (it should have the original
-        // function bytes, not a JMP).
-        auto* trampolineBytes = (const uint8_t*)oPresentTrampoline;
-        HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X", oPresentTrampoline,
-                         trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3], trampolineBytes[4],
-                         trampolineBytes[5]);
-    } else {
-        HookLogImportant("DetectSLPresentHook: no trampoline (vtable-hook path, oPresent=%p)", oPresent);
-    }
+    // Verify that our trampoline is different (it should have the original
+    // function bytes, not a JMP).
+    auto* trampolineBytes = (const uint8_t*)oPresentTrampoline;
+    HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X", oPresentTrampoline,
+                     trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3], trampolineBytes[4],
+                     trampolineBytes[5]);
 
     ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
     bool runtimeOwnedNativeFGPresentPath = false;
@@ -856,7 +849,7 @@ static void DetectSLPresentHook() {
     HookLogImportant(
         "SL routing ACTIVE: Present calls will go through oPresent=%p "
         "(%s JMP) instead of trampoline=%p.  SL FG chain will execute.",
-        oPresent, isE9 ? "E9" : "FF25", oPresentTrampoline ? oPresentTrampoline : oPresentBypass);
+        oPresent, isE9 ? "E9" : "FF25", oPresentTrampoline);
 }
 
 static void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* publicationSource) {
@@ -1208,31 +1201,39 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
             // Invoke Steam's overlay explicitly before bypass when SL FG is active,
             // since SL's E9 JMP overwrites Steam's and the bypass (disk bytes) has none.
-            // Skip Steam overlay only during the SL DllMain phase
-            // (callerFromStreamlineModule && !s_slRoutingActive) — Steam's TLS may be
-            // uninitialized inside DllMain.  Once SL FG routing is active
-            // (s_slRoutingActive), Steam is safe to call from SL-originated Presents.
+            // Skip Steam overlay only during the SL DllMain phase — Steam's TLS may be
+            // uninitialized inside DllMain.  postSLConfirmedRendering alone is insufficient
+            // because it can become true while DllMain is still running (PostSL confirms
+            // during a Present call that originates from DllMain).  We additionally require
+            // !postSLConfirmedButStartupSettling, which ensures the startup settling window
+            // has ended, providing the safety buffer needed to guarantee DllMain has completed.
+            // s_slRoutingActive is NOT used here because it remains false in the vtable-hook
+            // path (oPresentTrampoline is NULL), and setting it true early crashes during DllMain.
             const bool steamOverlaySafeConfirmed =
-                !(callerFromStreamlineModule && !s_slRoutingActive.load(std::memory_order_relaxed));
+                !callerFromStreamlineModule ||
+                (postSLConfirmedRendering && !postSLConfirmedButStartupSettling);
             if (g_externalOverlayPresentHook && steamOverlayLoaded && steamOverlaySafeConfirmed) {
                 static std::atomic<int> s_steamConfirmedStandaloneInvokeCount{0};
                 int steamNum = s_steamConfirmedStandaloneInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (steamNum <= 10 || (steamNum % 500) == 0) {
                     HookLogImportant(
                         "DetourPresent: Invoking Steam overlay for Post-FSR confirmed standalone bypass #%d "
-                        "(hook=%p, tid=0x%04X)",
-                        steamNum, (void*)g_externalOverlayPresentHook, GetCurrentThreadId());
+                        "(hook=%p, callerSL=%d confirmed=%d settling=%d tid=0x%04X)",
+                        steamNum, (void*)g_externalOverlayPresentHook, callerFromStreamlineModule ? 1 : 0,
+                        postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
+                        GetCurrentThreadId());
                 }
                 return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
             }
             if (g_externalOverlayPresentHook && steamOverlayLoaded && !steamOverlaySafeConfirmed) {
                 static std::atomic<int> s_steamConfirmedStandaloneSkippedDllMainCount{0};
                 int skipNum = s_steamConfirmedStandaloneSkippedDllMainCount.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (skipNum <= 5) {
+                if (skipNum <= 50 || (skipNum % 500) == 0) {
                     HookLogImportant(
                         "DetourPresent: Skipping Steam overlay for confirmed standalone bypass "
-                        "(SL DllMain phase, unsafe) #%d (tid=0x%04X)",
-                        skipNum, GetCurrentThreadId());
+                        "(SL DllMain phase, unsafe) #%d (callerSL=%d confirmed=%d settling=%d tid=0x%04X)",
+                        skipNum, callerFromStreamlineModule ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                        postSLConfirmedButStartupSettling ? 1 : 0, GetCurrentThreadId());
                 }
             }
             PFN_Present presentBypass = EnsurePresentBypassTrampoline();
@@ -1276,32 +1277,40 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         // JMP to dxgi!Present+5) which presents the frame.  We then return
         // Steam's result without calling bypass separately.
         //
-        // Skip Steam overlay only during the SL DllMain phase, detected by
-        // callerFromStreamlineModule && !s_slRoutingActive.  During DllMain,
-        // Steam's internal TLS/callbacks may be uninitialized, causing RIP=0
-        // crashes.  Once SL FG routing is active (s_slRoutingActive=true),
-        // Steam is safe to call even from SL-originated Presents.  The bypass
-        // (oPresentBypass/EnsurePresentBypassTrampoline) is always safe.
-        const bool steamOverlaySafe = !(callerFromStreamlineModule && !s_slRoutingActive.load(std::memory_order_relaxed));
+        // Skip Steam overlay only during the SL DllMain phase — Steam's TLS may be
+        // uninitialized inside DllMain (RIP=0 crashes).  postSLConfirmedRendering alone
+        // is insufficient because it can become true while DllMain is still running
+        // (PostSL confirms during a Present call originating from DllMain).  We
+        // additionally require !postSLConfirmedButStartupSettling, which ensures the
+        // startup settling window has ended, providing the safety buffer needed to
+        // guarantee DllMain has completed.
+        // s_slRoutingActive is NOT used here because it remains false in the
+        // vtable-hook path (oPresentTrampoline is NULL).
+        const bool steamOverlaySafe =
+            !callerFromStreamlineModule ||
+            (postSLConfirmedRendering && !postSLConfirmedButStartupSettling);
         if (g_externalOverlayPresentHook && steamOverlayLoaded && steamOverlaySafe) {
             static std::atomic<int> s_steamOverlayCallCount{0};
             int steamNum = s_steamOverlayCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (steamNum <= 10 || (steamNum % 500) == 0) {
                 HookLogImportant(
                     "DetourPresent: Invoking Steam overlay for SL re-entrant Present #%d "
-                    "(hook=%p, tid=0x%04X)",
-                    steamNum, (void*)g_externalOverlayPresentHook, GetCurrentThreadId());
+                    "(hook=%p, callerSL=%d confirmed=%d settling=%d tid=0x%04X)",
+                    steamNum, (void*)g_externalOverlayPresentHook, callerFromStreamlineModule ? 1 : 0,
+                    postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
+                    GetCurrentThreadId());
             }
             return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
         }
         if (g_externalOverlayPresentHook && steamOverlayLoaded && !steamOverlaySafe) {
             static std::atomic<int> s_steamOverlaySkippedDLMainCount{0};
             int skipNum = s_steamOverlaySkippedDLMainCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (skipNum <= 5) {
+            if (skipNum <= 50 || (skipNum % 500) == 0) {
                 HookLogImportant(
                     "DetourPresent: Skipping Steam overlay for SL re-entrant Present "
-                    "(SL DllMain phase, unsafe) #%d (tid=0x%04X)",
-                    skipNum, GetCurrentThreadId());
+                    "(SL DllMain phase, unsafe) #%d (callerSL=%d confirmed=%d settling=%d tid=0x%04X)",
+                    skipNum, callerFromStreamlineModule ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                    postSLConfirmedButStartupSettling ? 1 : 0, GetCurrentThreadId());
             }
         }
 
