@@ -2831,20 +2831,21 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return presentBypass(pSwapChain, SyncInterval, Flags);
     }
 
-    // CRITICAL: SL worker thread guard.  When an SL worker thread (sl_dlss_g
-    // worker) calls Present, the SL fast-path (oPresent = dxgi!Present body)
-    // hits Steam's inline E9 JMP (OverlayHookD3D3) which crashes because Steam
-    // TLS is uninitialized on SL threads -> RIP=0.  Use the bypass trampoline
-    // (original dxgi!Present bytes from disk) to skip Steam's hook entirely.
+    // CRITICAL: SL context guard.  Steam's overlay Present hook
+    // (OverlayHookD3D3) crashes on SL threads (DllMain loader thread and
+    // worker threads) because Steam TLS is uninitialized -> RIP=0.
+    // Check the stack for SL modules regardless of slLoaded state —
+    // during DllMain, IsSLInterposerLoaded() may return false even though
+    // SL modules (sl_dlss_g, sl_common) are on the stack.
     static std::atomic<int> s_copSlThreadBypassCount{0};
     static std::atomic<int> s_copSlFastPathCount{0};
-    if (slLoaded && ShouldBypassSteamForSLContext()) {
+    if (ShouldBypassSteamForSLContext()) {
         if (presentBypass) {
             int bypassNum = s_copSlThreadBypassCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (bypassNum <= 10 || (bypassNum % 1000) == 0) {
                 HookLogImportant(
-                    "CallOriginalPresent: SL thread bypass #%d at %p (oPresent=%p, tid=0x%04X)",
-                    bypassNum, presentBypass, presentOriginal, GetCurrentThreadId());
+                    "CallOriginalPresent: SL context bypass #%d at %p (oPresent=%p, tid=0x%04X, slLoaded=%d)",
+                    bypassNum, presentBypass, presentOriginal, GetCurrentThreadId(), slLoaded ? 1 : 0);
             }
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
@@ -2951,12 +2952,12 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     }
 
     // CRITICAL: SL worker thread guard — same as CallOriginalPresent.
-    if (slLoaded && ShouldBypassSteamForSLContext()) {
+    if (ShouldBypassSteamForSLContext()) {
         if (present1Bypass) {
             static int s_cop1SlThreadBypassCount = 0;
             if (s_cop1SlThreadBypassCount++ < 10) {
                 HookLogImportant(
-                    "CallOriginalPresent1: SL thread bypass at %p (oPresent1=%p, tid=0x%04X)",
+                    "CallOriginalPresent1: SL context bypass at %p (oPresent1=%p, tid=0x%04X)",
                     present1Bypass, present1Original, GetCurrentThreadId());
             }
             return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
