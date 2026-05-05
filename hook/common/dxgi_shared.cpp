@@ -280,6 +280,13 @@ static PFN_Present1 oPresent1Trampoline = nullptr;
 static PFN_Present oPresentBypass = nullptr;
 static PFN_Present1 oPresent1Bypass = nullptr;
 
+// Saved target of the external E9 JMP on dxgi!Present, installed by Steam overlay
+// (gameoverlayrenderer64!OverlayHookD3D3).  Captured during InstallPresentInlineHooks
+// BEFORE Streamline overwrites it with its own JMP.  When SL FG is active, CE routes
+// re-entrant / bypass Presents through this function explicitly so Steam's overlay
+// still renders even though SL's own JMP displaced Steam's.
+static PFN_Present g_externalOverlayPresentHook = nullptr;
+
 // Stored vtable pointer for unhooking Present when COM wrapper takes over
 static void** s_hookedVTable = nullptr;
 
@@ -649,6 +656,25 @@ static bool HasExternalEntryHook(const void* target) {
         return false;
     }
     return code[0] == 0xE9 || (code[0] == 0xFF && code[1] == 0x25);
+}
+
+// Resolves the target of an E9 (near JMP) hook at the given function address.
+// Returns the absolute address of the hook handler, or nullptr if no E9 JMP
+// is present or the function body is unreadable.
+static void* ResolveE9JmpTarget(void* funcAddress) {
+    if (!funcAddress) {
+        return nullptr;
+    }
+    const auto* code = static_cast<const uint8_t*>(funcAddress);
+    if (!IsReadableMemory(code, 5)) {
+        return nullptr;
+    }
+    if (code[0] != 0xE9) {
+        return nullptr;
+    }
+    int32_t relOffset;
+    memcpy(&relOffset, code + 1, sizeof(relOffset));
+    return static_cast<uint8_t*>(funcAddress) + 5 + relOffset;
 }
 
 static PFN_Present EnsurePresentBypassTrampoline() {
@@ -1173,6 +1199,19 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 api == APIType::D3D12, hadFSRFGPhase, shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute,
                 staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
+            // Invoke Steam's overlay explicitly before bypass when SL FG is active,
+            // since SL's E9 JMP overwrites Steam's and the bypass (disk bytes) has none.
+            if (g_externalOverlayPresentHook && steamOverlayLoaded) {
+                static std::atomic<int> s_steamConfirmedStandaloneInvokeCount{0};
+                int steamNum = s_steamConfirmedStandaloneInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (steamNum <= 10 || (steamNum % 500) == 0) {
+                    HookLogImportant(
+                        "DetourPresent: Invoking Steam overlay for Post-FSR confirmed standalone bypass #%d "
+                        "(hook=%p, tid=0x%04X)",
+                        steamNum, (void*)g_externalOverlayPresentHook, GetCurrentThreadId());
+                }
+                return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+            }
             PFN_Present presentBypass = EnsurePresentBypassTrampoline();
             if (presentBypass) {
                 static std::atomic<int> s_confirmedStandaloneNormalRouteBypassLogCount{0};
@@ -1204,6 +1243,26 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         // deferred probe check would never fire here.  The ECL detour also
         // services it, but may not fire if PostSL submits are being skipped.
         DX12_ServiceDeferredECLProbe();
+
+        // When SL FG is active and Steam overlay is loaded, Steam's E9 JMP on
+        // dxgi!Present is overwritten by SL's own JMP.  SL's trampoline may or
+        // may not chain to Steam (depends whether SL reads original bytes from
+        // disk or memory).  To ensure Steam's overlay renders, call Steam's
+        // overlay hook function explicitly before the bypass.  Steam renders
+        // its overlay and calls its trampoline (saved dxgi!Present bytes +
+        // JMP to dxgi!Present+5) which presents the frame.  We then return
+        // Steam's result without calling bypass separately.
+        if (g_externalOverlayPresentHook && steamOverlayLoaded) {
+            static std::atomic<int> s_steamOverlayCallCount{0};
+            int steamNum = s_steamOverlayCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (steamNum <= 10 || (steamNum % 500) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Invoking Steam overlay for SL re-entrant Present #%d "
+                    "(hook=%p, tid=0x%04X)",
+                    steamNum, (void*)g_externalOverlayPresentHook, GetCurrentThreadId());
+            }
+            return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+        }
 
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
         if (presentBypass) {
@@ -2552,6 +2611,17 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         }
 
         HookLogImportant("InstallPresentInlineHooks: External E9 JMP detected — using vtable hook path");
+        // Save the external overlay hook target (Steam's OverlayHookD3D3) so we
+        // can invoke it explicitly later when SL FG routing bypasses Steam's JMP.
+        // This is done BEFORE SL overwrites the JMP with its own.
+        {
+            void* hookTarget = ResolveE9JmpTarget(presentAddr);
+            if (hookTarget) {
+                g_externalOverlayPresentHook = (PFN_Present)hookTarget;
+                HookLog("InstallPresentInlineHooks: External E9 JMP target = %p (saved)", hookTarget);
+            }
+        }
+
         // External overlay (e.g. Streamline) has hooked Present with an E9 JMP.
         // DO NOT inline-hook the external detour — patching 14 bytes of the
         // external function's prologue corrupts its internal state and crashes
