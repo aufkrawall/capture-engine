@@ -1,6 +1,6 @@
 # Frame Generation Switching
 
-Last cross-checked: 2026-04-25
+Last cross-checked: 2026-05-05
 
 Primary sources:
 - `AGENTS.md`
@@ -46,6 +46,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - Authoritative `SetFSRFGActive(false)` now also **clears** any pre-existing `heuristicFSRFGActive` flag. A heuristic latched during an earlier queue-change detection window must not survive into the post-FSR teardown / DLSS comeback window, or `ClassifyRuntimeMode()` would keep returning `kFSRFG` and the overlay GPU work would be skipped indefinitely.
 - After a post-FSR Streamline teardown where both the swapchain queue (`scQueue`) and the last known-good PostSL queue (`lastWorkingQ`) are null, the overlay deferral policy now falls back to the primary game queue as a valid recovery signal. This prevents the overlay from being locked out for the full 600-frame grace window when the only proven-safe queue is the original game queue.
 - Build `0.1.2771` adds a **DllMain startup guard** for the Present hook chain. The true root cause of the persistent Talos DLSS FG crash (0xC0000005 RIP=0) was **Present hook interference during SL's DllMain**, not earlier theories about CE wrapping DXGI factories. CE installs Present hooks via **vtable patching** on the D3D12 swapchain (because Steam overlay already has an inline E9 JMP on dxgi!Present, CE uses the vtable hook path). The D3D12 swapchain vtable is **shared by ALL swapchain objects from the same D3D12 factory**, so swapchains created by SL during its DllMain have vtable[8] pointing to CE's DetourPresent. When SL's DllMain calls Present, the call goes through CE's DetourPresent → original dxgi!Present → Steam's inline E9 JMP on dxgi!Present → `gameoverlayrenderer64!OverlayHookD3D3` → crash with RAX=0 (Steam's TLS uninitialized on the SL loader thread). The existing `ShouldForceSteamDX12Bypass` was supposed to prevent this but had a bug: `runtimeMode = kDLSSFG` set by DllMain made `!streamlineFGRunning && runtimeMode != kDLSSFG` evaluate to `false && true == false`, so the bypass was NOT applied. Build `0.1.2771` removes the `runtimeMode != kDLSSFG` condition (now always bypass when SL is loaded and FG not running), adds early bypass in `DetourPresent`/`DetourPresent1` for SL module callers during DllMain, and adds a last-resort bypass fallback in `CallOriginalPresent`.
+- Build `0.1.2822` extends the startup bypass window from 4000ms to 10000ms (`kStreamlineStartupTransitionGraceMs` in `dxgi_shared.h:97`) and removes premature clearing of the transition window in `PostSLOverlayRender`. The original window was too short — PostSL confirmed at T+25.105 but the window expired at T+25.049 (armed at T+21.049). `ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering()` at `dx12_overlay_policy.h:1439` is now dead code with no callers.
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because FG switching behavior is spread across runtime classification, queue routing, startup coexistence, and visible metrics publication.
