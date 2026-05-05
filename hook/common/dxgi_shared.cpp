@@ -787,12 +787,15 @@ static bool ShouldKeepSLPresentRoutingDisabledNow(ce::fg_runtime::RuntimeMode* r
 static void DetectSLPresentHook() {
     if (s_slRoutingActive.load(std::memory_order_acquire))
         return;
-    if (!oPresent || !oPresentTrampoline)
+    if (!oPresent)
         return;
 
-    // If oPresent is our own trampoline, SL hasn't hooked the vtable yet.
-    // The vtable repair code sets oPresent to SL's hook when detected.
-    if (oPresent == oPresentTrampoline)
+    // In the vtable-hook path (external E9 JMP detected), oPresentTrampoline is
+    // NULL because no inline hook trampoline was created.  The vtable-repair path
+    // stores the vtable[8] original in oPresent.  We can still detect SL's JMP
+    // on oPresent's function bytes.  The trampoline guard below only applies
+    // when oPresentTrampoline is non-null (inline-hook path).
+    if (oPresentTrampoline && oPresent == oPresentTrampoline)
         return;
 
     auto* funcBytes = (const uint8_t*)oPresent;
@@ -816,12 +819,16 @@ static void DetectSLPresentHook() {
         return;
     }
 
-    // Verify that our trampoline is different (it should have the original
-    // function bytes, not a JMP).
-    auto* trampolineBytes = (const uint8_t*)oPresentTrampoline;
-    HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X", oPresentTrampoline,
-                     trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3], trampolineBytes[4],
-                     trampolineBytes[5]);
+    if (oPresentTrampoline) {
+        // Verify that our trampoline is different (it should have the original
+        // function bytes, not a JMP).
+        auto* trampolineBytes = (const uint8_t*)oPresentTrampoline;
+        HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X", oPresentTrampoline,
+                         trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3], trampolineBytes[4],
+                         trampolineBytes[5]);
+    } else {
+        HookLogImportant("DetectSLPresentHook: no trampoline (vtable-hook path, oPresent=%p)", oPresent);
+    }
 
     ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
     bool runtimeOwnedNativeFGPresentPath = false;
@@ -849,7 +856,7 @@ static void DetectSLPresentHook() {
     HookLogImportant(
         "SL routing ACTIVE: Present calls will go through oPresent=%p "
         "(%s JMP) instead of trampoline=%p.  SL FG chain will execute.",
-        oPresent, isE9 ? "E9" : "FF25", oPresentTrampoline);
+        oPresent, isE9 ? "E9" : "FF25", oPresentTrampoline ? oPresentTrampoline : oPresentBypass);
 }
 
 static void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* publicationSource) {

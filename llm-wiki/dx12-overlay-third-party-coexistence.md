@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-04-16
+Last cross-checked: 2026-05-05
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -34,6 +34,8 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - Use narrow startup bypass windows, then converge back to normal routing as soon as the live game path is clear.
 - When FFX stack evidence and third-party overlay identity disagree, do not blindly trust the immediate caller alone.
 - Keep fixes generic across Steam, Rockstar, Epic, and similar overlay stacks. The code already leans toward topology and state-driven behavior; preserve that direction.
+
+- **Vtable hook path critical difference from inline hook path**: When external E9 JMP is detected at `dxgi!Present` (inline hook), CE uses vtable hooking instead of inline hooking. In the vtable hook path, `oPresentTrampoline` is NULL (no inline hook trampoline created). This causes `DetectSLPresentHook()` to bail early (line 790 guard `!oPresentTrampoline`), which prevents `s_slRoutingActive` from ever being set to true. Consequently, Steam overlay fails to invoke because `steamOverlaySafe` always evaluates to `false` for SL-originated calls. The fix (build 0.1.2839) removes the trampoline-required guard from `DetectSLPresentHook()` so SL routing can be detected and activated even in the vtable hook path.
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because this area depends on call stacks, queue ownership, and third-party module behavior that can change without warning.
