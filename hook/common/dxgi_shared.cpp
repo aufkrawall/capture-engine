@@ -349,53 +349,8 @@ static bool HasStartupBlockingOverlayModuleInCurrentStack() {
     return false;
 }
 
-// Check whether the current call should bypass Steam's overlay Present hook
-// to avoid a crash (RIP=0, RAX=0) on threads where Steam TLS is
-// uninitialized.  This includes:
-//   1. SL DllMain loader thread during sl_dlss_g!DllMain
-//   2. SL worker threads during FG processing
-//
-// During DllMain, CaptureStackBackTrace may fail (loader lock), so we
-// avoid stack walking and instead rely on the PostSL confirmation state
-// and the Present owner check.
-//
-// We use a two-phase approach:
-//   Phase 1 (startup, PostSL not confirmed): bypass unconditionally
-//     when SL is loaded.  During startup, the game isn't rendering with
-//     SL yet, so bypassing Steam overlay is safe — the bypass trampoline
-//     is the real dxgi!Present.  Once PostSL confirms, Steam overlay
-//     works normally.
-//   Phase 2 (PostSL confirmed): bypass only for SL worker threads —
-//     threads that are NOT the Present owner.  The game's Present thread
-//     also has SL modules in its stack through API calls but IS the
-//     Present owner and should NOT be bypassed.
-static bool ShouldBypassSteamForSLContext() {
-    // Phase 1: startup window — bypass when PostSL is not confirmed.
-    // During DllMain, CaptureStackBackTrace may fail, so we don't check
-    // the stack.  The bypass trampoline is safe to use during startup
-    // because the game isn't rendering with SL yet.
-    if (!HookIsPostSLOverlayConfirmedRendering()) {
-        return true;
-    }
-
-    // Phase 2: PostSL confirmed — only bypass for SL worker threads.
-    DWORD currentId = GetCurrentThreadId();
-    DWORD presentOwner = g_presentThreadId.load(std::memory_order_acquire);
-    if (presentOwner == 0 || presentOwner == currentId) {
-        return false;
-    }
-    constexpr USHORT kMaxFrames = 24;
-    void* stackFrames[kMaxFrames] = {};
-    USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
-    for (USHORT i = 0; i < frameCount; ++i) {
-        char modulePath[MAX_PATH] = {};
-        if (TryGetModulePathFromCodeAddress(stackFrames[i], modulePath, sizeof(modulePath)) &&
-            ce::overlay_compat::IsStreamlineFrameGenerationModulePath(modulePath)) {
-            return true;
-        }
-    }
-    return false;
-}
+// SL worker thread detection removed — handled directly in DetourPresent
+// via !HookIsPostSLOverlayConfirmedRendering() guard.
 
 static bool IsWrappedSwapChainObject(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain) {
@@ -1557,7 +1512,29 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
-    // CRITICAL: SL module Present call guard — handled in CallOriginalPresent.
+    // CRITICAL: SL DllMain startup guard.  During SL DllMain (sl_dlss_g!DllMain),
+    // the DllMain thread calls Present through our vtable[8] hook.  Routing through
+    // CallOriginalPresent -> oPresent hits Steam's inline E9 JMP on dxgi!Present,
+    // and Steam's OverlayHookD3D3 crashes because Steam TLS is uninitialized on the
+    // DllMain thread -> RIP=0.  Bypass Steam overlay when PostSL is not confirmed.
+    if (!HookIsPostSLOverlayConfirmedRendering() && steamOverlayLoaded) {
+        PFN_Present bypass = EnsurePresentBypassTrampoline();
+        if (bypass) {
+            static std::atomic<int> s_startupBypassCount{0};
+            int bypassNum = s_startupBypassCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (bypassNum <= 10) {
+                HookLogImportant("DetourPresent: Startup bypass #%d (tid=0x%04X)", bypassNum, GetCurrentThreadId());
+            }
+            HRESULT bypassHr = bypass(pSwapChain, SyncInterval, Flags);
+            if (api == APIType::D3D12) {
+                InvokeDX12FlushDeferredSignal();
+            }
+            if (SUCCEEDED(bypassHr)) {
+                g_SharedFpsLimiter.ApplyPostPresent();
+            }
+            return bypassHr;
+        }
+    }
 
     HRESULT hr;
     if (s_slRoutingActive.load(std::memory_order_acquire)) {
@@ -2824,39 +2801,17 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return presentBypass(pSwapChain, SyncInterval, Flags);
     }
 
-    // CRITICAL: SL context guard.  Steam's overlay Present hook
-    // (OverlayHookD3D3) crashes on SL threads (DllMain loader thread and
-    // worker threads) because Steam TLS is uninitialized -> RIP=0.
-    // Check the stack for SL modules regardless of slLoaded state —
-    // during DllMain, IsSLInterposerLoaded() may return false even though
-    // SL modules (sl_dlss_g, sl_common) are on the stack.
-    static std::atomic<int> s_copSlThreadBypassCount{0};
-    static std::atomic<int> s_copSlFastPathCount{0};
-    if (ShouldBypassSteamForSLContext()) {
-        if (presentBypass) {
-            int bypassNum = s_copSlThreadBypassCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (bypassNum <= 10 || (bypassNum % 1000) == 0) {
-                HookLogImportant(
-                    "CallOriginalPresent: SL context bypass #%d at %p (oPresent=%p, tid=0x%04X, slLoaded=%d)",
-                    bypassNum, presentBypass, presentOriginal, GetCurrentThreadId(), slLoaded ? 1 : 0);
-            }
-            return presentBypass(pSwapChain, SyncInterval, Flags);
-        }
-        if (presentTrampoline) {
-            return presentTrampoline(pSwapChain, SyncInterval, Flags);
-        }
-    }
-
     // When SL is loaded (vtable hook mode), call oPresent directly.
     // Don't re-read vtable[8] — Steam or other overlays may have re-hooked it
     // after us, which would create a re-entrant loop:
     //   DetourPresent → vtable[8](SteamPresent) → Steam → DetourPresent → ...
     // oPresent = the saved original from vtable[8] at hook install time.
     if (slLoaded && presentOriginal && presentOriginal != DetourPresent) {
-        int fastPathNum = s_copSlFastPathCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        static std::atomic<int> s_copFastPathCount{0};
+        int fastPathNum = s_copFastPathCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (fastPathNum <= 10 || (fastPathNum % 1000) == 0) {
-            HookLog("CallOriginalPresent: SL fast-path oPresent=%p (#%d, tid=0x%04X, bypassCount=%d)", presentOriginal,
-                    fastPathNum, GetCurrentThreadId(), s_copSlThreadBypassCount.load(std::memory_order_relaxed));
+            HookLog("CallOriginalPresent: SL fast-path oPresent=%p (#%d, tid=0x%04X)", presentOriginal,
+                    fastPathNum, GetCurrentThreadId());
         }
         return presentOriginal(pSwapChain, SyncInterval, Flags);
     }
@@ -2945,21 +2900,6 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     }
 
     // CRITICAL: SL worker thread guard — same as CallOriginalPresent.
-    if (ShouldBypassSteamForSLContext()) {
-        if (present1Bypass) {
-            static int s_cop1SlThreadBypassCount = 0;
-            if (s_cop1SlThreadBypassCount++ < 10) {
-                HookLogImportant(
-                    "CallOriginalPresent1: SL context bypass at %p (oPresent1=%p, tid=0x%04X)",
-                    present1Bypass, present1Original, GetCurrentThreadId());
-            }
-            return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
-        }
-        if (present1Trampoline) {
-            return present1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
-        }
-    }
-
     // When SL is loaded, call oPresent1 directly (same reason as Present).
     if (slLoaded && present1Original && present1Original != DetourPresent1) {
         return present1Original(pSwapChain, SyncInterval, Flags, pParams);
