@@ -1556,16 +1556,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             // Route through oPresent which has SL's JMP (E9 or FF 25).  This
             // lets SL process FG.  SL's trampoline will re-enter DetourPresent
             // (handled above — forwarded to oPresentTrampoline for real Present).
-            static int s_slCallCount = 0;
-            if (s_slCallCount++ < 20) {
-                HookLog("DetourPresent: Calling oPresent=%p (SL route, call #%d)", oPresent, s_slCallCount);
+            static std::atomic<int> s_slCallCount{0};
+            int slCallNum = s_slCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (slCallNum <= 20 || (slCallNum % 500) == 0) {
+                HookLog("DetourPresent: Calling oPresent=%p (SL route, call #%d, tid=0x%04X)", oPresent, slCallNum,
+                        GetCurrentThreadId());
             }
             hr = oPresent(pSwapChain, SyncInterval, Flags);
-            if (s_slCallCount <= 20) {
-                HookLog("DetourPresent: oPresent returned hr=0x%08X", hr);
+            if (slCallNum <= 20 || (slCallNum % 500) == 0) {
+                HookLog("DetourPresent: oPresent returned hr=0x%08X (call #%d)", hr, slCallNum);
             }
         }
     } else {
+        static std::atomic<int> s_nonSlPresentCount{0};
+        int nonSlNum = s_nonSlPresentCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (nonSlNum == 1 || (nonSlNum % 1000) == 0) {
+            HookLog("DetourPresent: non-SL routing path (call #%d, slRouting=%d, tid=0x%04X)", nonSlNum,
+                    s_slRoutingActive.load(std::memory_order_relaxed), GetCurrentThreadId());
+        }
         hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
@@ -2794,13 +2802,15 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // hits Steam's inline E9 JMP (OverlayHookD3D3) which crashes because Steam
     // TLS is uninitialized on SL threads -> RIP=0.  Use the bypass trampoline
     // (original dxgi!Present bytes from disk) to skip Steam's hook entirely.
+    static std::atomic<int> s_copSlThreadBypassCount{0};
+    static std::atomic<int> s_copSlFastPathCount{0};
     if (slLoaded && HasStreamlineModuleInCurrentStack()) {
         if (presentBypass) {
-            static int s_copSlThreadBypassCount = 0;
-            if (s_copSlThreadBypassCount++ < 10) {
+            int bypassNum = s_copSlThreadBypassCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (bypassNum <= 10 || (bypassNum % 1000) == 0) {
                 HookLogImportant(
-                    "CallOriginalPresent: SL thread bypass at %p (oPresent=%p, tid=0x%04X)",
-                    presentBypass, presentOriginal, GetCurrentThreadId());
+                    "CallOriginalPresent: SL thread bypass #%d at %p (oPresent=%p, tid=0x%04X)",
+                    bypassNum, presentBypass, presentOriginal, GetCurrentThreadId());
             }
             return presentBypass(pSwapChain, SyncInterval, Flags);
         }
@@ -2815,9 +2825,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     //   DetourPresent → vtable[8](SteamPresent) → Steam → DetourPresent → ...
     // oPresent = the saved original from vtable[8] at hook install time.
     if (slLoaded && presentOriginal && presentOriginal != DetourPresent) {
-        static int s_copLogCount2 = 0;
-        if (s_copLogCount2++ < 5) {
-            HookLog("CallOriginalPresent: SL fast-path oPresent=%p", presentOriginal);
+        int fastPathNum = s_copSlFastPathCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (fastPathNum <= 10 || (fastPathNum % 1000) == 0) {
+            HookLog("CallOriginalPresent: SL fast-path oPresent=%p (#%d, tid=0x%04X, bypassCount=%d)", presentOriginal,
+                    fastPathNum, GetCurrentThreadId(), s_copSlThreadBypassCount.load(std::memory_order_relaxed));
         }
         return presentOriginal(pSwapChain, SyncInterval, Flags);
     }

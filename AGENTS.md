@@ -16,7 +16,7 @@ Copyright (c) 2026 aufkrawall
 - Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work!
 - Keep `llm-wiki/` linted / quality-checked and updated when durable project knowledge changes!
 - Always update `llm-wiki/` after code changes!
-- Mistrust code, code annotations and llm-wiki! Each of them might be stale our outdated! Come to your on conclusion and act based on that!
+- Mistrust code, code annotations and llm-wiki! Each of them might be stale or outdated! Come to your own conclusion and act based on that!
 - When fixing a bug or implementing a feature, generally always add new regression test units, or adjust existing ones!
 - When fixing a bug or implementing a feature, generally always increase or improve debug logging to make bug diagnosis easier!
 
@@ -45,7 +45,7 @@ Copyright (c) 2026 aufkrawall
 
 ## Build, diagnostics, and tests
 
-- Fix pre-existing, as well as introduced LSP errors/warnings along they way!
+- Fix pre-existing, as well as newly introduced LSP errors/warnings along they way!
 - We are paranoid about having sufficient regression tests, better too many than too few!
 - Add focused regression tests where possible, especially tests that would have failed before the fix!
 - If no regression-test infrastructure exists for the area, consider adding suitable unit infrastructure such as GoogleTest!
@@ -57,7 +57,6 @@ Copyright (c) 2026 aufkrawall
 - We are paranoid about having sufficient debug logging!
 - Add additional debug logging when it helps diagnose issue root causes, state transitions, failure modes, unexpected runtime conditions, or future regressions!
 - Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information!
-- For media analysis, `ffmpeg.exe` and `ffprobe.exe` are in `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin`.
 
 ## Windows debugging and binary analysis tools
 
