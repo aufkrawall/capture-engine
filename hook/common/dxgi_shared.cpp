@@ -1640,6 +1640,22 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (callerFromStreamlineModule &&
         !s_slRoutingActive.load(std::memory_order_relaxed) &&
         steamOverlayLoaded) {
+        // Once PostSL has confirmed stable rendering, Steam's TLS is guaranteed
+        // initialized and we can safely invoke Steam's overlay hook.  The bypass
+        // (disk bytes) has no Steam overlay, so without this explicit invocation
+        // Steam overlay would never render on SL worker thread Presents.
+        const bool postSLConfirmed = (api == APIType::D3D12) && HookIsPostSLOverlayConfirmedRendering();
+        if (postSLConfirmed && g_externalOverlayPresentHook) {
+            static std::atomic<int> s_startupPostSLSteamInvokeCount{0};
+            int steamNum = s_startupPostSLSteamInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (steamNum <= 10 || (steamNum % 500) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Invoking Steam overlay for PostSL-confirmed startup bypass #%d "
+                    "(hook=%p, tid=0x%04X)",
+                    steamNum, (void*)g_externalOverlayPresentHook, GetCurrentThreadId());
+            }
+            return g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+        }
         PFN_Present bypass = EnsurePresentBypassTrampoline();
         if (bypass) {
             static std::atomic<int> s_startupBypassCount{0};
@@ -2939,7 +2955,27 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // after us, which would create a re-entrant loop:
     //   DetourPresent → vtable[8](SteamPresent) → Steam → DetourPresent → ...
     // oPresent = the saved original from vtable[8] at hook install time.
+    //
+    // However, when Steam overlay is loaded and SL has overwritten Steam's E9 JMP
+    // on dxgi!Present with its own, calling oPresent (dxgi!Present) goes through
+    // SL's JMP, not Steam's.  Steam's overlay is lost.  In this case, invoke
+    // Steam's saved overlay hook explicitly and use the bypass trampoline to
+    // present the frame (bypass has no overlay hooks, Steam's hook chains to
+    // the real dxgi!Present via its own trampoline).
     if (slLoaded && presentOriginal && presentOriginal != DetourPresent) {
+        const bool steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
+        if (steamOverlayLoaded && g_externalOverlayPresentHook && presentBypass) {
+            static std::atomic<int> s_copSteamInvokeCount{0};
+            int steamNum = s_copSteamInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (steamNum <= 10 || (steamNum % 500) == 0) {
+                HookLogImportant(
+                    "CallOriginalPresent: Invoking Steam overlay for SL fast-path #%d "
+                    "(steamHook=%p bypass=%p tid=0x%04X)",
+                    steamNum, (void*)g_externalOverlayPresentHook, (void*)presentBypass, GetCurrentThreadId());
+            }
+            g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+            return presentBypass(pSwapChain, SyncInterval, Flags);
+        }
         static std::atomic<int> s_copFastPathCount{0};
         int fastPathNum = s_copFastPathCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (fastPathNum <= 10 || (fastPathNum % 1000) == 0) {
@@ -3034,7 +3070,21 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
 
     // CRITICAL: SL worker thread guard — same as CallOriginalPresent.
     // When SL is loaded, call oPresent1 directly (same reason as Present).
+    // Also invoke Steam overlay explicitly when SL has overwritten Steam's E9 JMP.
     if (slLoaded && present1Original && present1Original != DetourPresent1) {
+        const bool steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
+        if (steamOverlayLoaded && g_externalOverlayPresentHook && present1Bypass) {
+            static std::atomic<int> s_cop1SteamInvokeCount{0};
+            int steamNum = s_cop1SteamInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (steamNum <= 10 || (steamNum % 500) == 0) {
+                HookLogImportant(
+                    "CallOriginalPresent1: Invoking Steam overlay for SL fast-path #%d "
+                    "(steamHook=%p bypass=%p tid=0x%04X)",
+                    steamNum, (void*)g_externalOverlayPresentHook, (void*)present1Bypass, GetCurrentThreadId());
+            }
+            g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+            return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
+        }
         return present1Original(pSwapChain, SyncInterval, Flags, pParams);
     }
 
