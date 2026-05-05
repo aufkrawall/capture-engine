@@ -349,45 +349,58 @@ static bool HasStartupBlockingOverlayModuleInCurrentStack() {
     return false;
 }
 
-// Check whether the current thread is an SL worker thread (created by
-// sl_dlss_g or sl.common) rather than the game's main Present thread.
-// SL worker threads call Present during FG processing, and Steam's overlay
-// Present hook (OverlayHookD3D3) crashes on those threads because Steam TLS
-// is uninitialized (RIP=0, RAX=0).
+// Check whether the current call is from an SL module context that would
+// crash if routed through Steam's overlay Present hook.  Steam's
+// OverlayHookD3D3 crashes (RIP=0, RAX=0) when called on threads where
+// Steam TLS is uninitialized, which includes:
+//   1. SL DllMain loader thread during sl_dlss_g!DllMain
+//   2. SL worker threads during FG processing
 //
-// We distinguish SL worker threads from game threads by checking:
-// 1. The thread is NOT the current Present owner (g_presentThreadId) — the
-//    game's Present thread should never be bypassed.
-// 2. At least one SL module appears in the call stack.
-//
-// This avoids the problem of HasStreamlineModuleInCurrentStack being too
-// broad — game threads that use SL through API calls also have SL modules
-// in their stack, but they are the Present owner and should NOT be bypassed.
-static bool IsSLWorkerThread() {
-    // Fast path: if the current thread is the Present owner, it's the game
-    // thread, not an SL worker thread.  If no one owns Present yet
-    // (g_presentThreadId == 0), we can't determine the thread type, so
-    // conservatively assume it's NOT an SL worker thread — this avoids
-    // bypassing during DllMain (sl_dlss_g!DllMain) which also has SL
-    // modules in its stack but is the game's loader thread, not an SL
-    // worker thread.
-    DWORD currentId = GetCurrentThreadId();
-    DWORD presentOwner = g_presentThreadId.load(std::memory_order_acquire);
-    if (presentOwner == 0 || presentOwner == currentId) {
-        return false;
-    }
-
-    // Check for SL modules in the stack.
+// We use a two-phase check:
+//   Phase 1 (startup, PostSL not confirmed): bypass if ANY SL module is
+//     in the stack.  During DllMain, no Present owner exists, so we rely
+//     on !postSLConfirmedRendering to gate.
+//   Phase 2 (PostSL confirmed): bypass only for SL worker threads — threads
+//     that are NOT the Present owner but have SL modules in their stack.
+//     This avoids bypassing the game's Present thread which also has SL
+//     modules in its stack through API calls.
+static bool ShouldBypassSteamForSLContext() {
     constexpr USHORT kMaxFrames = 24;
     void* stackFrames[kMaxFrames] = {};
     const USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
+
+    // Check for SL modules in the stack.
+    bool hasSLModule = false;
     for (USHORT i = 0; i < frameCount; ++i) {
         char modulePath[MAX_PATH] = {};
         if (TryGetModulePathFromCodeAddress(stackFrames[i], modulePath, sizeof(modulePath)) &&
             ce::overlay_compat::IsStreamlineFrameGenerationModulePath(modulePath)) {
-            return true;
+            hasSLModule = true;
+            break;
         }
     }
+    if (!hasSLModule) {
+        return false;
+    }
+
+    // Phase 1: startup window — bypass if SL modules are in the stack.
+    // During DllMain, no Present owner exists yet, so we can't distinguish
+    // DllMain from worker threads.  The !postSLConfirmedRendering gate
+    // ensures we only bypass during the startup window.
+    if (!HookIsPostSLOverlayConfirmedRendering()) {
+        return true;
+    }
+
+    // Phase 2: PostSL confirmed — only bypass for SL worker threads.
+    // SL worker threads are NOT the Present owner but have SL modules
+    // in their stack.  The game's Present thread also has SL modules
+    // in its stack (through API calls) but IS the Present owner.
+    DWORD currentId = GetCurrentThreadId();
+    DWORD presentOwner = g_presentThreadId.load(std::memory_order_acquire);
+    if (presentOwner != 0 && presentOwner != currentId) {
+        return true;
+    }
+
     return false;
 }
 
@@ -2825,7 +2838,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // (original dxgi!Present bytes from disk) to skip Steam's hook entirely.
     static std::atomic<int> s_copSlThreadBypassCount{0};
     static std::atomic<int> s_copSlFastPathCount{0};
-    if (slLoaded && IsSLWorkerThread()) {
+    if (slLoaded && ShouldBypassSteamForSLContext()) {
         if (presentBypass) {
             int bypassNum = s_copSlThreadBypassCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (bypassNum <= 10 || (bypassNum % 1000) == 0) {
@@ -2938,7 +2951,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     }
 
     // CRITICAL: SL worker thread guard — same as CallOriginalPresent.
-    if (slLoaded && IsSLWorkerThread()) {
+    if (slLoaded && ShouldBypassSteamForSLContext()) {
         if (present1Bypass) {
             static int s_cop1SlThreadBypassCount = 0;
             if (s_cop1SlThreadBypassCount++ < 10) {
