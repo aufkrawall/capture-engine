@@ -85,18 +85,12 @@ TEST_F(FpsLimiterTest, SmartWait_WithTarget) {
     EXPECT_LT(elapsedMs, 20.0);  // But not too much more
 }
 
-// Test Apply with targetTimeTicks set (uses SmartWait path)
-TEST_F(FpsLimiterTest, Apply_WithTargetTimeTicks) {
+TEST_F(FpsLimiterTest, Apply_GeneralBasicUsesLocalCadence) {
     // Setup for general FPS limit
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
     mockShm->fpsLimiter.SetGeneralFps(60);
-
-    // Set a target time 5ms in the future - this triggers SmartWait
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    mockShm->fpsLimiter.targetTimeTicks.store(now.QuadPart + (5 * freq.QuadPart / 1000), std::memory_order_release);
 
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
@@ -107,22 +101,17 @@ TEST_F(FpsLimiterTest, Apply_WithTargetTimeTicks) {
 
     double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
 
-    // Should wait approximately 5ms via SmartWait
+    // First local-cadence frame starts around half an interval ahead.
     EXPECT_GE(elapsedMs, 3.0);
     EXPECT_LT(elapsedMs, 30.0);
 }
 
-// Test Apply timeout behavior when target is 0
-TEST_F(FpsLimiterTest, Apply_NoTarget_ReturnsImmediately) {
+TEST_F(FpsLimiterTest, Apply_NoExternalTargetUsesLocalCadence) {
     // Setup for general FPS limit
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
     mockShm->fpsLimiter.SetGeneralFps(60);
-
-    // NOTE: When dbgShm is set but targetTimeTicks is 0, the Apply() function
-    // returns immediately without waiting. This is the expected behavior.
-    // The fallback spin-wait path is only entered when dbgShm is NULL.
 
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
@@ -133,8 +122,42 @@ TEST_F(FpsLimiterTest, Apply_NoTarget_ReturnsImmediately) {
 
     double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
 
-    // Should return almost immediately (< 15ms)
+    // Local cadence should not pay any helper-process event timeout.
     EXPECT_LT(elapsedMs, 15.0);
+}
+
+TEST_F(FpsLimiterTest, GeneralBasicUsesLocalCadenceWithoutLimiterProcessTimeout) {
+    mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(140);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+
+    wchar_t releaseName[64] = {};
+    wchar_t requestName[64] = {};
+    swprintf(releaseName, 64, L"Local\\CE_TEST_LR_%lu_%lu", GetCurrentProcessId(), GetTickCount());
+    swprintf(requestName, 64, L"Local\\CE_TEST_LQ_%lu_%lu", GetCurrentProcessId(), GetTickCount());
+    wcscpy_s(mockShm->fpsLimiter.releaseEventName, releaseName);
+    wcscpy_s(mockShm->fpsLimiter.requestEventName, requestName);
+
+    HANDLE releaseEvent = CreateEventW(nullptr, FALSE, FALSE, releaseName);
+    HANDLE requestEvent = CreateEventW(nullptr, FALSE, FALSE, requestName);
+    ASSERT_NE(releaseEvent, nullptr);
+    ASSERT_NE(requestEvent, nullptr);
+
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+
+    limiter.Apply();
+
+    QueryPerformanceCounter(&end);
+    CloseHandle(releaseEvent);
+    CloseHandle(requestEvent);
+
+    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+
+    EXPECT_LT(elapsedMs, 18.0);
+    EXPECT_EQ(limiter.GetMissedFrames(), 0u);
 }
 
 TEST_F(FpsLimiterTest, CaptureWarmupUsesCaptureRequestedForCaptureSync) {
@@ -143,10 +166,6 @@ TEST_F(FpsLimiterTest, CaptureWarmupUsesCaptureRequestedForCaptureSync) {
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
     mockShm->fpsLimiter.SetCaptureFps(60);
-
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    mockShm->fpsLimiter.targetTimeTicks.store(now.QuadPart + (5 * freq.QuadPart / 1000), std::memory_order_release);
 
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);

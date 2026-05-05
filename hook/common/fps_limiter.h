@@ -988,207 +988,32 @@ public:
         if (effectiveTargetFps <= 0)
             effectiveTargetFps = 60;
 
-        // LOCAL FPS LIMITING for capture sync mode.
-        // Bypasses the cross-process event round-trip (hook→limiter→hook) which
-        // adds ~3-4ms latency per frame and drops FPS well below target.
-        // Instead, maintain a local cadence using SmartWait for sub-ms precision.
-        if (usingCaptureSync) {
-            const auto cadence = RunLocalCadence(effectiveTargetFps);
-            if (cadence.emitStats) {
-                TraceLog("Apply: LOCAL stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
-                         cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps,
-                         effectiveTargetFps);
-                HookLog(
-                    "FPS Limiter: Local capture sync (%u frames): lastWait=%lldus avgFps=%.1f "
-                    "instFps=%.1f target=%d",
-                    cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps,
-                    effectiveTargetFps);
-            }
-
-            // Record return time for dedup guard
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            lastApplyReturnQpc = now.QuadPart;
-            return;
+        // Timer fallback/basic/FG fallback pacing is hook-local.  Waiting for
+        // the helper process here is fragile because per-game config can enable
+        // the limiter after startup; an unanswered event used to cost one full
+        // timeout per frame before local fallback ran.
+        const bool localCadenceFirstFrame = localTargetTime_ == 0;
+        const auto cadence = RunLocalCadence(effectiveTargetFps);
+        if (localCadenceFirstFrame) {
+            TraceLog("Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d events=%d/%d",
+                     usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps,
+                     effectiveTargetFps, releaseEvent ? 1 : 0, requestEvent ? 1 : 0);
+            HookLog("FPS Limiter: Local timer cadence active (sync=%s, mode=%u, target=%d, effective=%d)",
+                    usingCaptureSync ? "capture" : "general", effectiveMode, targetFps, effectiveTargetFps);
+        }
+        if (cadence.emitStats) {
+            TraceLog("Apply: LOCAL timer stats frames=%u scheduledWaitUs=%lld actualWaitUs=%lld avgFps=%.1f "
+                     "instFps=%.1f target=%d dedup=%u",
+                     cadence.frameCount, cadence.scheduledWaitUs, cadence.actualWaitUs, cadence.avgFps,
+                     cadence.instantFps, effectiveTargetFps, applyDedupCount_);
+            HookLog("FPS Limiter: Local timer stats (%u frames): lastWait=%lldus avgFps=%.1f instFps=%.1f target=%d",
+                    cadence.frameCount, cadence.actualWaitUs, cadence.avgFps, cadence.instantFps, effectiveTargetFps);
         }
 
-        // Initialize events if not done (general limiter mode only)
-        // Only try to open events if we are not in test mode (implied by dbgShm
-        // presence usually, but let's just check name)
-        uint32_t myRequest = shm->fpsLimiter.requestCount.fetch_add(1, std::memory_order_acq_rel) + 1;
-        DWORD waitResult = WAIT_TIMEOUT;
-        bool haveReleaseEvent = false;
-        {
-            std::lock_guard<std::mutex> lock(eventStateMutex_);
-
-            if (!eventsInitialized && shm->fpsLimiter.releaseEventName[0] != L'\0') {
-                HANDLE newReleaseEvent = OpenEventW(SYNCHRONIZE, FALSE, shm->fpsLimiter.releaseEventName);
-                HANDLE newRequestEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, shm->fpsLimiter.requestEventName);
-
-                // Query QPC frequency for timing calculations
-                if (qpcFrequency == 0) {
-                    LARGE_INTEGER freq;
-                    QueryPerformanceFrequency(&freq);
-                    qpcFrequency = freq.QuadPart;
-                }
-
-                // Only mark as initialized if we got valid events
-                // If OpenEvent failed, we'll retry next frame (limiter might not be ready yet)
-                if (newReleaseEvent && newRequestEvent) {
-                    releaseEvent = newReleaseEvent;
-                    requestEvent = newRequestEvent;
-                    eventsInitialized = true;
-                    TraceLog("Apply: Events OK release=%p request=%p target=%d", releaseEvent, requestEvent,
-                             effectiveTargetFps);
-                    HookLog(
-                        "FPS Limiter: Events Initialized (target: %d FPS, release=%p, "
-                        "request=%p)",
-                        effectiveTargetFps, releaseEvent, requestEvent);
-                } else {
-                    if (newReleaseEvent) {
-                        CloseHandle(newReleaseEvent);
-                    }
-                    if (newRequestEvent) {
-                        CloseHandle(newRequestEvent);
-                    }
-                    HookLog(
-                        "FPS Limiter: Failed to open events (release=%p, request=%p), "
-                        "will retry. Names: %ls / %ls",
-                        newReleaseEvent, newRequestEvent, shm->fpsLimiter.releaseEventName,
-                        shm->fpsLimiter.requestEventName);
-                }
-            }
-
-            // In test mode (dbgShm), we might assume events are initialized or not
-            // needed for SmartWait test But for full Apply() test, we need them if we
-            // want to hit the event path. If not, we fall through.
-
-            // Request next frame timing
-            if (requestEvent)
-                SetEvent(requestEvent);
-
-            // Wait for release from limiter process.
-            // For both capture-sync and general mode: the limiter process writes
-            // targetTimeTicks to shared memory and signals releaseEvent.  We must
-            // wait for it to get a fresh target, otherwise we always read 0 (or
-            // stale values) and fall through to RunLocalCadence, which breaks
-            // live-switching from Reflex→basic mode because the local cadence
-            // lags behind the actual frame-present cadence.
-            //
-            // Timeout = 3x target frame interval, clamped to [10, 100]ms.
-            // If the limiter process is alive (normal case) it responds in <1ms.
-            // On timeout (limiter crashed), the fallback to RunLocalCadence below
-            // still provides basic pacing via local SmartWait.
-            if (releaseEvent) {
-                haveReleaseEvent = true;
-                DWORD frameTimeMs = 1000 / effectiveTargetFps;
-                DWORD timeoutMs = frameTimeMs * 3;
-                if (timeoutMs < 10)
-                    timeoutMs = 10;
-                if (timeoutMs > 100)
-                    timeoutMs = 100;
-
-                waitResult = WaitForSingleObject(releaseEvent, timeoutMs);
-            }
-        }
-
-        if (haveReleaseEvent || dbgShm) {  // Allow test mode to use SmartWait if manual
-                                           // targetTime is set
-            // For real usage: check releaseEvent. For test: if dbgShm is set, we
-            // might skip the WaitForSingleObject or mocking it. But typically tests
-            // won't have the external limiter process running. So let's make the test
-            // set targetTimeTicks manually, and we skp WaitForSingleObject if it's a
-            // test? Better: In a test, we can CreateEvent ourselves.
-
-            if (haveReleaseEvent) {
-                // Log wait statistics and measured FPS periodically
-                applyWaitCount_++;
-                if (waitResult == WAIT_OBJECT_0) {
-                    applySuccessCount_++;
-                }
-                // Measure inter-frame interval (Apply-to-Apply time = true game FPS)
-                if (lastApplyEntryQpc_ != 0) {
-                    int64_t interFrameUs = ((nowQpc.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
-                    applyInterFrameSum_ += interFrameUs;
-                    applyInterFrameCount_++;
-                }
-                lastApplyEntryQpc_ = nowQpc.QuadPart;
-
-                if (applyWaitCount_ % 120 == 0) {
-                    LARGE_INTEGER afterQpc;
-                    QueryPerformanceCounter(&afterQpc);
-                    int64_t waitUs = ((afterQpc.QuadPart - nowQpc.QuadPart) * 1000000) / qpcFrequency;
-                    double measuredFps = 0;
-                    if (applyInterFrameCount_ > 0) {
-                        double avgInterUs = (double)applyInterFrameSum_ / applyInterFrameCount_;
-                        measuredFps = 1000000.0 / avgInterUs;
-                    }
-                    TraceLog("Apply: Stats calls=%u ok=%u timeout=%u measFps=%.1f waitUs=%lld dedup=%u",
-                             applyWaitCount_, applySuccessCount_, applyWaitCount_ - applySuccessCount_, measuredFps,
-                             waitUs, applyDedupCount_);
-                    HookLog(
-                        "FPS Limiter: Stats (%u calls): success=%u timeout=%u "
-                        "measuredFps=%.1f lastWait=%lldus",
-                        applyWaitCount_, applySuccessCount_, applyWaitCount_ - applySuccessCount_, measuredFps, waitUs);
-                    applyInterFrameSum_ = 0;
-                    applyInterFrameCount_ = 0;
-                }
-
-                if (waitResult == WAIT_TIMEOUT) {
-                    missedFrames++;
-                    if (timeoutLogCount_++ < 10) {
-                        TraceLog("Apply: TIMEOUT missed=%u", missedFrames);
-                        HookLog("FPS Limiter: TIMEOUT waiting for release (missed=%u)", missedFrames);
-                    }
-                    // Fall through to local cadence (SmartWait) as fallback
-                    // when the limiter process's event is not available.
-                    // WAS: return; — this skipped SmartWait entirely, making the
-                    // limiter ineffective when the limiter process doesn't respond.
-                }
-            } else {
-                if (!loggedNoEvent_) {
-                    HookLog("FPS Limiter: No releaseEvent available!");
-                    loggedNoEvent_ = true;
-                }
-            }
-
-            int64_t target = shm->fpsLimiter.targetTimeTicks.load(std::memory_order_acquire);
-            if (target > 0) {
-                const int64_t targetDiffUs =
-                    ((target - nowQpc.QuadPart) * 1000000) / qpcFrequency;
-                if (targetHitLogCount_++ < 10) {
-                    TraceLog("Apply: SmartWait targetTimeTicks=%lld diffUs=%lld", target, targetDiffUs);
-                    HookLog("FPS Limiter: SmartWait to targetTimeTicks=%lld (diffUs=%lld)", target, targetDiffUs);
-                }
-                SmartWait(target);
-            } else {
-                if (targetLogCount_++ < 10) {
-                    TraceLog("Apply: targetTimeTicks=%lld (not waiting, using local cadence)", target);
-                    HookLog("FPS Limiter: targetTimeTicks=%lld — falling back to local cadence", target);
-                }
-                // Limiter process not responding — use local timer-based cadence.
-                const auto cadence = RunLocalCadence(effectiveTargetFps);
-                if (cadence.emitStats) {
-                    TraceLog("Apply: LOCAL cadence frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
-                             cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps,
-                             effectiveTargetFps);
-                }
-            }
-            // Record time Apply() returned so sequential duplicate presents
-            // (e.g. DXVK Present+PresentEx) are deduped on the next call.
-            QueryPerformanceCounter(&nowQpc);
-            lastApplyReturnQpc = nowQpc.QuadPart;
-        } else {
-            // Fallback: spin wait on release count (no event available)
-            DWORD start = GetTickCount();
-            while (shm->fpsLimiter.releaseCount.load(std::memory_order_acquire) < myRequest) {
-                if (GetTickCount() - start > 100) {
-                    missedFrames++;
-                    break;
-                }
-                SwitchToThread();  // Yield instead of Sleep(0) for better responsiveness
-            }
-        }
+        // Record time Apply() returned so sequential duplicate presents
+        // (e.g. DXVK Present+PresentEx) are deduped on the next call.
+        QueryPerformanceCounter(&nowQpc);
+        lastApplyReturnQpc = nowQpc.QuadPart;
     }
 
     void Shutdown() {

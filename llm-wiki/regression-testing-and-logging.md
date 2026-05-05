@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-04-30
+Last cross-checked: 2026-05-05
 
 Primary sources:
 - `AGENTS.md`
@@ -48,7 +48,7 @@ Primary sources:
 - `tests/test_overlay_fg_status_publication.cpp`
   - Visible FG label and multiplier publication behavior.
 - `tests/test_fps_limiter.cpp`
-  - FPS limiter behavior and compatibility policy tests, including explicit Reflex limiter ABI/device/cadence coverage and GTA-safe game-owned Reflex handoff rules.
+  - FPS limiter behavior and compatibility policy tests, including explicit Reflex limiter ABI/device/cadence coverage, GTA-safe game-owned Reflex handoff rules, and basic timer cadence coverage that must not depend on helper-process release events.
 - `tests/test_process_ipc.cpp`
   - Named-pipe connection/reconnect coverage for the controller-to-child IPC path. Tests use unique override pipe names so local production services or stale pipe instances cannot determine pass/fail.
 - `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`
@@ -69,6 +69,7 @@ Primary sources:
   - Startup-overlay resume diagnostics now also log whether CE is still waiting for a usable foreground window or intentionally tracking a same-process foreground window instead of the old swapchain HWND, which matters for late no-FG startup handoffs that can otherwise self-latch on `remaining=0ms`.
   - Native-FSR callback traces now also log callback-side HDR classification (`DX12: FFX present callback HDR check ... colorSpace=... isHDR=...`) and the FFX UI-composition contract (`premulAlpha=%d`) so visual FSR callback regressions can be distinguished from queue/routing failures.
 - `hook/common/fps_limiter.h` / `hook/common/reflex_limiter.h`
+  - Basic/timer fallback limiter pacing is hook-local. Per-game config can enable the limiter after startup, so the hook must not wait for helper-process release events before running local cadence. For a 140 FPS basic cap, `fps_limiter_trace.log` should show `Apply: LOCAL timer start ...` and periodic `Apply: LOCAL timer stats ...`; repeated `TIMEOUT waiting for release` in basic/timer fallback mode is a regression.
   - Explicit Reflex limiter fallback logs now include whether a native device was available, and the Reflex limiter logs missing SetSleepMode/Sleep pointers, missing devices, SetSleepMode failures, and NvAPI Sleep failures with device/interval/game-active context.
   - The Reflex sleep-mode ABI should remain 44 bytes with `version=0x0001002C`. A `PushFpsLimit failed` line with `status=-9` and a larger version such as `0x00010038` means CE is sending an incompatible NvAPI struct and explicit Reflex mode will fall back to timer pacing even when `device=1`.
   - Explicit Reflex mode without observed game-owned `slReflexSleep` should not rely on a microsecond CE-owned `NvAPI_D3D_Sleep` alone. On DXGI/DX12, Talos-style sessions should log `Apply: REFLEX post-present cadence ... sleepOk=...`, with the local wait happening after `Present` returns so the game starts the next simulation/render frame fresh. Older single-phase call sites may still log `Apply: REFLEX local cadence ...`; that is a fallback shape, not the desired Talos low-latency DXGI/DX12 path.
@@ -106,6 +107,7 @@ Primary sources:
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.
 - If you touch Streamline Reflex integration, verify both the current `slReflexSetOptions` path and the legacy `slReflexSetConstants` path. GTA `installed/captureengine/logs/20260424_020300` had no constants traffic, so tests/logging that only exercise the legacy path are not enough.
 - If you touch explicit Reflex limiter mode, verify that `fps_limiter_trace.log` does not merely report `limiter=reflex` while timer fallback is active. For DXGI/DX12 Talos latency validation, the preferred evidence is game-owned NvAPI Sleep handoff through the filtered QueryInterface wrapper; CE-owned post-Present cadence plus NvAPI Sleep success is the fallback while waiting for stable game sleep. Verify no implicit frame-queue/prerender clamp is reintroduced, and verify Streamline/FFX/overlay/system callers still receive original driver pointers so GTA game-owned Reflex/DLSS FG switching remains outside the CE manual limiter path.
+- If you touch basic/timer FPS limiter pacing, verify `FpsLimiterTest.GeneralBasicUsesLocalCadenceWithoutLimiterProcessTimeout` and confirm the trace cannot spend one helper-event timeout per frame before local cadence runs.
 - If you touch native-FSR callback rendering, verify both callback-side color/composition contracts explicitly: 10-bit UNORM outputs must not be treated as HDR without probing the real display color space, and callback-side diagnostics should still reveal the resolved HDR decision and whether FFX requested premultiplied-alpha UI composition.
 - If you touch native-FSR callback rendering or callback-side HDR setup, verify the weak-swapchain family too: once runtime-owned FSR callback rendering starts, the callback thread must not need to probe DXGI output state through a raw non-AddRef'd swapchain pointer that may already be stale. The callback path should be able to use cached trusted HDR/color-space state captured earlier from a live swapchain (`ProcessFrame` or `ffxConfigure(... swapChain=...)`), and the logs should make that explicit when it happens.
 - If you touch native-FSR callback-backend lifecycle or any normal-overlay cleanup path that can run during FSR suspension windows, verify the temporary suspend/resume family explicitly too: a transient `ffxConfigure(frameGenerationEnabled=0)` while the runtime-owned swapchain still owns Present must not unnecessarily tear down the dedicated callback backend, GTA/Talos traces should clearly show whether CE preserved or re-used that backend, and a quick resume on the same runtime-owned path must not reopen the `amd_fidelityfx_dx12!ffxQuery` deadlock family.

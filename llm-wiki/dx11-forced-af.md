@@ -26,6 +26,10 @@ appropriate material textures.
 - Runtime forced AF is applied only when sampler and paired SRV/resource checks both
   pass. The default pairing remains conservative: same low sampler/SRV slot on the
   same shader stage.
+- Present-time deferred AF bootstrap must also ensure D3D11 sampler/SRV vtable hooks
+  are installed on the actual device/context being presented. A global original
+  function pointer is not proof that this specific runtime vtable slot is patched;
+  additional vtables may be patched when the slot still points at the known original.
 - Replacement sampler caches are keyed by device plus final sampler descriptor, not
   by original sampler pointer, so one original sampler can be rebound differently as
   the paired SRV changes.
@@ -45,21 +49,30 @@ on postprocess, shadow, single-mip, depth, and other non-material resources.
 
 ## Diagnostics
 - Vtable path logs include `DX11: Deferred AF bootstrap ...`,
+  `DX11: Runtime sampler/SRV hook ensure from Present ...`,
   `DX11: AF reconciled sampler ...`, and rate-limited skip reasons including no SRV,
   unsupported format, single visible mip, unsafe resource, comparison filter, border,
   reduction, fixed/no mips, and high slot.
+- Unsafe-resource skip logs include SRV format, resolved texture format, view dimension,
+  dimensions, mip/view mip counts, most-detailed mip, array/sample count, and bind/misc
+  flags so Blackwell artifact avoidance can be distinguished from missed hook coverage.
+- Shutdown/host-disconnect summaries include `AF_runtimeHooks` and the unsafe-resource
+  skip count.
 - Wrapper path logs mirror the important skip and reconcile decisions with
   `Wrapper: AF ...` messages.
 
 ## Verification
 - Focused tests: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=SamplerOverrideUtilsTest.*`
   passed on 2026-05-05.
+- Focused regression rerun on 2026-05-05 also covered
+  `SamplerOverrideUtilsTest.*` together with the basic-limiter regression tests.
 - Full build: `python build.py --skip-updates` passed on 2026-05-05 and compiled both
   x64/x86 hook DLLs.
 
 ## Open Questions / Stale-Risk
-- BioShock Infinite should be rerun with AF=16x to confirm that the previously skipped
-  normal `Filter=0x15` / `ComparisonFunc=8` sampler family now sharpens when paired
-  with safe mipmapped Texture2D SRVs and does not reintroduce artifacts.
+- BioShock Infinite should be rerun with AF=16x. Expected proof is
+  `DX11: Runtime sampler/SRV hook ensure from Present ...` early in the trace, followed
+  by `PSSetShaderResources` / `AF reconciled sampler` evidence for eligible textures or
+  detailed resource skip lines explaining why specific SRVs stayed blurry.
 - Shader reflection or shader-bytecode pairing could make sampler/SRV matching less
   conservative later, but the current low-slot exact pairing is the safe baseline.
