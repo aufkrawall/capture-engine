@@ -1650,81 +1650,118 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     // CRITICAL: SL DllMain startup guard.  During SL DllMain (sl_dlss_g!DllMain),
-    // the DllMain thread calls Present through our vtable[8] hook.  Routing through
-    // CallOriginalPresent -> oPresent hits Steam's inline E9 JMP on dxgi!Present,
-    // and Steam's OverlayHookD3D3 crashes because Steam TLS is uninitialized on the
-    // DllMain thread -> RIP=0.
+    // the DllMain thread calls Present through our vtable[8] hook.  During the
+    // DllMain cold-start phase, routing through oPresent (the original dxgi!Present)
+    // would re-enter SL code which may not be fully initialized yet.
+    //
+    // Furthermore, the bypass trampoline reads original disk bytes, skipping ALL
+    // inline E9 JMP hooks including both SL's and Steam's.  This means Steam's
+    // OverlayHookD3D3 is NEVER called through the natural hook chain, so Steam
+    // TLS is never initialized on the calling thread.  Any direct call to
+    // g_externalOverlayPresentHook from this context crashes with RIP=0 because
+    // Steam's TLS lazy initialization fails in an unexpected call context.
     //
     // Root-cause fix: detect SL-originated Present calls via _ReturnAddress() at
-    // DetourPresent entry (captured at line ~978).  When the caller is inside an
-    // SL module AND SL's FG routing is not yet active, Steam TLS may be
-    // uninitialized — bypass unconditionally.  No timer, grace period, or PostSL
-    // confirmation state dependency.
+    // DetourPresent entry (captured at line ~978).  During the SL DllMain cold-start
+    // phase (first ~10 bypass calls), use the bypass trampoline (disk bytes) to
+    // skip ALL inline hooks including SL's.  After the cold-start phase, route
+    // through oPresent (the original dxgi!Present) which chains naturally through
+    // SL's E9 JMP -> SL code -> SL's trampoline (which includes Steam's E9 JMP)
+    // -> Steam overlay -> real Present.  Steam overlay renders naturally without
+    // CE having to invoke it directly, safely initializing Steam TLS.
     //
     // The !s_slRoutingActive guard ensures we only bypass during the DllMain
     // phase.  Once SL FG routing is active, SL's own E9 JMP handles SL-internal
     // Present calls and the vtable hook should route through SL routing (line
-    // ~1545), not bypass.
+    // ~1732), not bypass.
     if (callerFromStreamlineModule &&
         !s_slRoutingActive.load(std::memory_order_relaxed) &&
         steamOverlayLoaded) {
-        // When bypass is needed (SL loaded but SL routing not active), the
-        // bypass trampoline reads original disk bytes, skipping ALL inline
-        // E9 JMP hooks including Steam's overlay.  Invoke Steam's overlay
-        // hook explicitly before the bypass so Steam overlay renders even
-        // while the bypass path is active.
+        // Track startup bypass calls to know when DllMain cold-start phase ends.
+        static std::atomic<int> s_startupBypassCallCount{0};
+        static std::atomic<bool> s_startupBypassComplete{false};
+        static std::atomic<LONGLONG> s_firstBypassTime{0};
+        static LARGE_INTEGER s_bypassFreq = []() {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            return f;
+        }();
+
+        if (!s_startupBypassComplete.load(std::memory_order_acquire)) {
+            int bypassNum = s_startupBypassCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+
+            // Record first bypass time for timeout-based cold-start detection.
+            if (bypassNum == 1) {
+                LARGE_INTEGER t;
+                QueryPerformanceCounter(&t);
+                s_firstBypassTime.store(t.QuadPart, std::memory_order_release);
+            }
+
+            // Cold-start phase ends after 10 bypass calls OR 100ms, whichever first.
+            // 10 calls is more than enough for DllMain Present calls (typically 2-3),
+            // and 100ms safely covers any edge case.  After this, SL modules are
+            // fully initialized and Steam TLS can be safely initialized through the
+            // natural hook chain.
+            if (bypassNum >= 10) {
+                s_startupBypassComplete.store(true, std::memory_order_release);
+            } else if (bypassNum > 3) {
+                // Check elapsed time since first bypass call.
+                LARGE_INTEGER now;
+                QueryPerformanceCounter(&now);
+                LONGLONG firstTime = s_firstBypassTime.load(std::memory_order_acquire);
+                if (firstTime != 0) {
+                    double elapsedMs = (double)(now.QuadPart - firstTime) * 1000.0 / s_bypassFreq.QuadPart;
+                    if (elapsedMs > 100.0) {
+                        s_startupBypassComplete.store(true, std::memory_order_release);
+                    }
+                }
+            }
+
+            // During cold-start phase: use bypass trampoline (disk bytes, no hooks).
+            // This avoids re-entering SL code during DllMain and prevents the RIP=0
+            // crash from uninitialized Steam TLS.
+            PFN_Present bypass = EnsurePresentBypassTrampoline();
+            if (bypass) {
+                if (bypassNum <= 10 || (bypassNum % 500) == 0) {
+                    HookLogImportant("DetourPresent: Startup bypass #%d (tid=0x%04X)", bypassNum, GetCurrentThreadId());
+                }
+                HRESULT bypassHr = bypass(pSwapChain, SyncInterval, Flags);
+                if (api == APIType::D3D12) {
+                    InvokeDX12FlushDeferredSignal();
+                }
+                if (SUCCEEDED(bypassHr)) {
+                    g_SharedFpsLimiter.ApplyPostPresent();
+                }
+                return bypassHr;
+            }
+        }
+
+        // Cold-start phase complete: route through oPresent (the original dxgi!Present).
+        // This chains naturally through:
+        //   SL's E9 JMP at dxgi!Present -> SL code -> SL's trampoline
+        //   -> Steam's E9 JMP (captured by SL's trampoline from memory)
+        //   -> Steam overlay -> Steam's trampoline -> real Present
         //
-        // Skip Steam overlay only during the SL DllMain startup settling
-        // phase — Steam's TLS may be uninitialized inside DllMain (RIP=0
-        // crashes).  postSLConfirmedButStartupSettling ensures the startup
-        // settling window has ended, providing the safety buffer needed to
-        // guarantee DllMain has completed.
-        // s_slRoutingActive is NOT used for the safety check because it
-        // remains false in the vtable-hook path (oPresentTrampoline is NULL).
-        if (g_externalOverlayPresentHook && !postSLConfirmedButStartupSettling) {
-            static std::atomic<int> s_startupBypassSteamInvokeCount{0};
-            int steamNum = s_startupBypassSteamInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (steamNum <= 10 || (steamNum % 500) == 0) {
+        // Steam overlay renders through the natural hook chain, safely initializing
+        // Steam TLS without CE directly invoking g_externalOverlayPresentHook
+        // (which would crash with RIP=0 when TLS is uninitialized).
+        if (oPresent && oPresent != DetourPresent) {
+            static std::atomic<int> s_postBypassRouteCount{0};
+            int routeNum = s_postBypassRouteCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (routeNum <= 10 || (routeNum % 500) == 0) {
                 HookLogImportant(
-                    "DetourPresent: Startup bypass invoking Steam overlay #%d "
-                    "(hook=%p, settling=%d, tid=0x%04X)",
-                    steamNum, (void*)g_externalOverlayPresentHook,
-                    postSLConfirmedButStartupSettling ? 1 : 0, GetCurrentThreadId());
+                    "DetourPresent: Post-bypass SL route through oPresent #%d "
+                    "(oPresent=%p, tid=0x%04X)",
+                    routeNum, (void*)oPresent, GetCurrentThreadId());
             }
-            HRESULT steamHr = g_externalOverlayPresentHook(pSwapChain, SyncInterval, Flags);
+            HRESULT routeHr = oPresent(pSwapChain, SyncInterval, Flags);
             if (api == APIType::D3D12) {
                 InvokeDX12FlushDeferredSignal();
             }
-            if (SUCCEEDED(steamHr)) {
+            if (SUCCEEDED(routeHr)) {
                 g_SharedFpsLimiter.ApplyPostPresent();
             }
-            return steamHr;
-        }
-        if (g_externalOverlayPresentHook && steamOverlayLoaded && postSLConfirmedButStartupSettling) {
-            static std::atomic<int> s_startupBypassSkippedSteamCount{0};
-            int skipNum = s_startupBypassSkippedSteamCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (skipNum <= 10 || (skipNum % 500) == 0) {
-                HookLogImportant(
-                    "DetourPresent: Startup bypass skipping Steam overlay "
-                    "(SL DllMain settling phase, unsafe) #%d (settling=%d, tid=0x%04X)",
-                    skipNum, postSLConfirmedButStartupSettling ? 1 : 0, GetCurrentThreadId());
-            }
-        }
-        PFN_Present bypass = EnsurePresentBypassTrampoline();
-        if (bypass) {
-            static std::atomic<int> s_startupBypassCount{0};
-            int bypassNum = s_startupBypassCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (bypassNum <= 10 || (bypassNum % 500) == 0) {
-                HookLogImportant("DetourPresent: Startup bypass #%d (tid=0x%04X)", bypassNum, GetCurrentThreadId());
-            }
-            HRESULT bypassHr = bypass(pSwapChain, SyncInterval, Flags);
-            if (api == APIType::D3D12) {
-                InvokeDX12FlushDeferredSignal();
-            }
-            if (SUCCEEDED(bypassHr)) {
-                g_SharedFpsLimiter.ApplyPostPresent();
-            }
-            return bypassHr;
+            return routeHr;
         }
     }
 
