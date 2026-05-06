@@ -106,9 +106,16 @@ static std::atomic<int> g_DiagSamplerAFApplied{0};
 static std::atomic<int> g_DiagSamplerReplacementCreated{0};
 static std::atomic<int> g_DiagSamplerRebound{0};
 static std::atomic<int> g_DiagSamplerDrawReconcileCalls{0};
+static std::atomic<int> g_DiagSamplerDrawHookCalls{0};
+static std::atomic<int> g_DiagSamplerDrawDirtyMisses{0};
+static std::atomic<int> g_DiagSamplerBindDeferred{0};
 static std::atomic<int> g_DiagSamplerMipBiasApplied{0};
 static std::atomic<int> g_DiagSamplerMipOverride{0};
 static std::atomic<int> g_DiagSamplerRuntimeHookInstalled{0};
+static std::atomic<int> g_DiagD3D11ContextVTablesHooked{0};
+static std::atomic<int> g_DiagD3D11ContextHookSkips{0};
+static std::atomic<int> g_DiagCreateDeferredContext11{0};
+static std::atomic<int> g_DiagExecuteCommandList11{0};
 static std::atomic<int> g_DiagPixelShaderMetadataCreated{0};
 static std::atomic<int> g_DiagPixelShaderMetadataFailed{0};
 static std::atomic<int> g_DiagPrerenderFrames{0};
@@ -264,6 +271,9 @@ typedef HRESULT(STDMETHODCALLTYPE* CreatePixelShader11_t)(ID3D11Device* pDevice,
                                                           SIZE_T BytecodeLength, ID3D11ClassLinkage* pClassLinkage,
                                                           ID3D11PixelShader** ppPixelShader);
 static CreatePixelShader11_t oCreatePixelShader11 = NULL;
+typedef HRESULT(STDMETHODCALLTYPE* CreateDeferredContext11_t)(ID3D11Device* pDevice, UINT ContextFlags,
+                                                              ID3D11DeviceContext** ppDeferredContext);
+static CreateDeferredContext11_t oCreateDeferredContext11 = NULL;
 
 typedef void(STDMETHODCALLTYPE* SetShaderResources11_t)(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumViews,
                                                         ID3D11ShaderResourceView* const* ppShaderResourceViews);
@@ -289,6 +299,9 @@ typedef void(STDMETHODCALLTYPE* DrawIndexedInstancedIndirect11_t)(ID3D11DeviceCo
 typedef void(STDMETHODCALLTYPE* DrawInstancedIndirect11_t)(ID3D11DeviceContext* pContext,
                                                            ID3D11Buffer* pBufferForArgs,
                                                            UINT AlignedByteOffsetForArgs);
+typedef void(STDMETHODCALLTYPE* ExecuteCommandList11_t)(ID3D11DeviceContext* pContext,
+                                                        ID3D11CommandList* pCommandList,
+                                                        BOOL RestoreContextState);
 static DrawIndexed11_t oDrawIndexed11 = NULL;
 static Draw11_t oDraw11 = NULL;
 static DrawIndexedInstanced11_t oDrawIndexedInstanced11 = NULL;
@@ -296,6 +309,7 @@ static DrawInstanced11_t oDrawInstanced11 = NULL;
 static DrawAuto11_t oDrawAuto11 = NULL;
 static DrawIndexedInstancedIndirect11_t oDrawIndexedInstancedIndirect11 = NULL;
 static DrawInstancedIndirect11_t oDrawInstancedIndirect11 = NULL;
+static ExecuteCommandList11_t oExecuteCommandList11 = NULL;
 
 static SetShaderResources11_t oPSSetShaderResources11 = NULL;
 static SetShaderResources11_t oVSSetShaderResources11 = NULL;
@@ -310,6 +324,76 @@ static SetSamplers11_t oGSSetSamplers11 = NULL;
 static SetSamplers11_t oHSSetSamplers11 = NULL;
 static SetSamplers11_t oDSSetSamplers11 = NULL;
 static SetSamplers11_t oCSSetSamplers11 = NULL;
+
+struct D3D11ContextVTableOriginals {
+    SetShaderResources11_t psSetShaderResources = nullptr;
+    PSSetShader11_t psSetShader = nullptr;
+    SetSamplers11_t psSetSamplers = nullptr;
+    DrawIndexed11_t drawIndexed = nullptr;
+    Draw11_t draw = nullptr;
+    DrawIndexedInstanced11_t drawIndexedInstanced = nullptr;
+    DrawInstanced11_t drawInstanced = nullptr;
+    SetShaderResources11_t vsSetShaderResources = nullptr;
+    SetSamplers11_t vsSetSamplers = nullptr;
+    SetShaderResources11_t gsSetShaderResources = nullptr;
+    SetSamplers11_t gsSetSamplers = nullptr;
+    DrawAuto11_t drawAuto = nullptr;
+    DrawIndexedInstancedIndirect11_t drawIndexedInstancedIndirect = nullptr;
+    DrawInstancedIndirect11_t drawInstancedIndirect = nullptr;
+    ExecuteCommandList11_t executeCommandList = nullptr;
+    SetShaderResources11_t hsSetShaderResources = nullptr;
+    SetSamplers11_t hsSetSamplers = nullptr;
+    SetShaderResources11_t dsSetShaderResources = nullptr;
+    SetSamplers11_t dsSetSamplers = nullptr;
+    SetShaderResources11_t csSetShaderResources = nullptr;
+    SetSamplers11_t csSetSamplers = nullptr;
+};
+
+static std::shared_mutex g_D3D11ContextVTableOriginalsMutex;
+static std::unordered_map<void*, D3D11ContextVTableOriginals> g_D3D11ContextVTableOriginals;
+static std::atomic<void*> g_PrimaryD3D11ContextVTable{nullptr};
+static std::atomic<uint32_t> g_D3D11ContextVTableOriginalsGeneration{1};
+
+template <typename Fn>
+static Fn ResolveContextOriginal11(ID3D11DeviceContext* context, UINT slot,
+                                   Fn D3D11ContextVTableOriginals::* member, Fn fallback) {
+    if (!context) {
+        return fallback;
+    }
+
+    void** vtable = *(void***)context;
+    void* vtableKey = reinterpret_cast<void*>(vtable);
+    if (!vtableKey || vtableKey == g_PrimaryD3D11ContextVTable.load(std::memory_order_acquire)) {
+        return fallback;
+    }
+
+    static thread_local void* s_cachedVTable = nullptr;
+    static thread_local UINT s_cachedSlot = UINT_MAX;
+    static thread_local Fn s_cachedOriginal = nullptr;
+    static thread_local uint32_t s_cachedGeneration = 0;
+    const uint32_t generation = g_D3D11ContextVTableOriginalsGeneration.load(std::memory_order_acquire);
+    if (s_cachedGeneration == generation && s_cachedVTable == vtableKey && s_cachedSlot == slot &&
+        s_cachedOriginal) {
+        return s_cachedOriginal;
+    }
+
+    std::shared_lock<std::shared_mutex> lock(g_D3D11ContextVTableOriginalsMutex);
+    auto it = g_D3D11ContextVTableOriginals.find(vtableKey);
+    if (it == g_D3D11ContextVTableOriginals.end()) {
+        return fallback;
+    }
+
+    Fn original = it->second.*member;
+    if (!original) {
+        return fallback;
+    }
+
+    s_cachedVTable = vtableKey;
+    s_cachedSlot = slot;
+    s_cachedOriginal = original;
+    s_cachedGeneration = generation;
+    return original;
+}
 
 // D3D10 CreateSamplerState hook
 typedef HRESULT(STDMETHODCALLTYPE* CreateSamplerState10_t)(ID3D10Device* pDevice,
@@ -527,23 +611,6 @@ struct D3D11PixelShaderAFMetadata {
 static std::mutex g_D3D11PixelShaderMetadataMutex;
 static std::unordered_map<ID3D11PixelShader*, D3D11PixelShaderAFMetadata> g_D3D11PixelShaderMetadata;
 
-static UINT CountPixelShaderUsagePairs11(const ce::sampler_override::D3D11ShaderSamplerUsage& usage,
-                                         UINT* samplerCount = nullptr) {
-    UINT pairs = 0;
-    UINT samplers = 0;
-    for (UINT sampler = 0; sampler < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++sampler) {
-        const UINT samplerPairs = ce::sampler_override::CountD3D11ShaderSamplerTextureUses(usage, sampler);
-        if (samplerPairs != 0) {
-            ++samplers;
-            pairs += samplerPairs;
-        }
-    }
-    if (samplerCount) {
-        *samplerCount = samplers;
-    }
-    return pairs;
-}
-
 static D3D11PixelShaderAFMetadata BuildPixelShaderAFMetadata11(const void* bytecode, SIZE_T bytecodeLength) {
     D3D11PixelShaderAFMetadata metadata = {};
     if (!bytecode || bytecodeLength == 0) {
@@ -584,12 +651,15 @@ static void RegisterPixelShaderAFMetadata11(ID3D11PixelShader* shader, const voi
 
     int idx = g_DiagPixelShaderMetadataCreated.fetch_add(1, std::memory_order_relaxed);
     if (idx < 48) {
-        UINT samplerCount = 0;
-        const UINT pairCount = CountPixelShaderUsagePairs11(metadata.usage, &samplerCount);
-        HookLog("DX11: AF pixel-shader metadata shader=%p available=%d failed=%d samplers=%u pairs=%u unsupported=%d "
-                "(#%d)",
-                (void*)shader, metadata.available ? 1 : 0, metadata.disassembleFailed ? 1 : 0, samplerCount,
-                pairCount, metadata.usage.sawUnsupportedRegister ? 1 : 0, idx + 1);
+        const auto summary = ce::sampler_override::SummarizeD3D11ShaderSamplerUsage(metadata.usage);
+        HookLogImportant("DX11: AF pixel-shader metadata shader=%p available=%d failed=%d samplers=%u pairs=%u "
+                         "kinds(implicit=%u bias=%u lod=%u grad=%u comp=%u other=%u safe=%u unsafe=%u) "
+                         "unsupported=%d (#%d)",
+                         (void*)shader, metadata.available ? 1 : 0, metadata.disassembleFailed ? 1 : 0,
+                         summary.samplerCount, summary.texturePairCount, summary.implicitSamplers,
+                         summary.biasSamplers, summary.lodSamplers, summary.gradientSamplers,
+                         summary.comparisonSamplers, summary.otherExplicitSamplers, summary.afSafeSamplers,
+                         summary.unsafeExplicitSamplers, metadata.usage.sawUnsupportedRegister ? 1 : 0, idx + 1);
     }
 }
 
@@ -1127,12 +1197,19 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
         }
         return false;
     }
-    if (!ce::sampler_override::D3D11ShaderSamplerUsesOnlyImplicitSample(metadata.usage, slot)) {
+    if (!ce::sampler_override::D3D11ShaderSamplerUsesAFSafeSample(metadata.usage, slot)) {
         int idx = g_DiagSamplerSkipExplicitSample.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24) {
             HookLogImportant(
-                "DX11: AF skip sampler (pixel shader uses explicit/non-implicit sample opcode with s%u explicit=%d)",
-                slot, ce::sampler_override::D3D11ShaderSamplerUsesExplicitSample(metadata.usage, slot) ? 1 : 0);
+                "DX11: AF skip sampler (pixel shader uses AF-unsafe sample opcode with s%u implicit=%d bias=%d "
+                "lod=%d grad=%d comp=%d other=%d explicit=%d)",
+                slot, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesGradientSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesComparisonSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesOtherExplicitSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesExplicitSample(metadata.usage, slot) ? 1 : 0);
         }
         return false;
     }
@@ -1206,10 +1283,13 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
     if (idx < 48) {
         HookLogImportant(
             "DX11: AF allow shader-paired sampler slot=s%u sampledTextures=%u first=t%u last=t%u "
-            "Filter=0x%X Aniso=%u Addr=%d/%d/%d srvFmt=%d texFmt=%d dim=%d size=%ux%u mips=%u viewMip=%u "
+            "Filter=0x%X Aniso=%u Addr=%d/%d/%d sampleKinds(implicit=%d bias=%d) srvFmt=%d texFmt=%d dim=%d "
+            "size=%ux%u mips=%u viewMip=%u "
             "mostMip=%u array=%u samples=%u bind=0x%X misc=0x%X (#%d)",
             slot, textureCount, firstTextureSlot, lastTextureSlot, desc.Filter, desc.MaxAnisotropy, desc.AddressU,
-            desc.AddressV, desc.AddressW, firstSrvDesc.Format, firstResourceInfo.format,
+            desc.AddressV, desc.AddressW, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
+            ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
+            firstSrvDesc.Format, firstResourceInfo.format,
             firstResourceInfo.viewDimension, firstResourceInfo.width, firstResourceInfo.height,
             firstResourceInfo.mipLevels, firstResourceInfo.viewMipLevels, firstResourceInfo.mostDetailedMip,
             firstResourceInfo.arraySize, firstResourceInfo.sampleCount, firstResourceInfo.bindFlags,
@@ -1429,15 +1509,16 @@ static void SetSamplersWithOverrides11(SetSamplers11_t originalFn, ID3D11DeviceC
     const UINT maxSamplers = static_cast<UINT>(D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
     const UINT actualNum = (numSamplers < (maxSamplers - startSlot)) ? numSamplers : (maxSamplers - startSlot);
     UpdateStageSamplers(context, stage, startSlot, actualNum, ppSamplers);
-
-    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    for (UINT i = 0; i < actualNum; ++i) {
-        const UINT slot = startSlot + i;
-        replaced[i] = GetOrCreateReplacementSampler11(context, stage, slot, ppSamplers[i]);
+    int idx = g_DiagSamplerBindDeferred.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 24) {
+        HookLog("DX11: AF sampler bind tracked stage=%s start=%u num=%u deferredToDraw=%d (#%d)",
+                GetStageName11(stage), startSlot, numSamplers, stage == D3D11ShaderStage::Pixel ? 1 : 0, idx + 1);
     }
 
-    originalFn(context, startSlot, actualNum, replaced);
+    originalFn(context, startSlot, numSamplers, ppSamplers);
 }
+
+static void InstallContextVTableHooks11(ID3D11DeviceContext* context, const char* source);
 
 static HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device, const void* shaderBytecode,
                                                            SIZE_T bytecodeLength,
@@ -1450,10 +1531,33 @@ static HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device,
     return hr;
 }
 
+static HRESULT STDMETHODCALLTYPE DetourCreateDeferredContext11(ID3D11Device* device, UINT contextFlags,
+                                                               ID3D11DeviceContext** deferredContext) {
+    if (!oCreateDeferredContext11) {
+        return E_FAIL;
+    }
+    const HRESULT hr = oCreateDeferredContext11(device, contextFlags, deferredContext);
+    if (SUCCEEDED(hr) && deferredContext && *deferredContext) {
+        InstallContextVTableHooks11(*deferredContext, "CreateDeferredContext");
+        int idx = g_DiagCreateDeferredContext11.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 16) {
+            void** vtable = *reinterpret_cast<void***>(*deferredContext);
+            HookLogImportant("DX11: CreateDeferredContext returned ctx=%p flags=0x%X vtable=%p (#%d)",
+                             (void*)*deferredContext, contextFlags, (void*)vtable, idx + 1);
+        }
+    }
+    return hr;
+}
+
 static void STDMETHODCALLTYPE DetourPSSetShader11(ID3D11DeviceContext* context, ID3D11PixelShader* pixelShader,
                                                   ID3D11ClassInstance* const* classInstances,
                                                   UINT numClassInstances) {
-    oPSSetShader11(context, pixelShader, classInstances, numClassInstances);
+    PSSetShader11_t original =
+        ResolveContextOriginal11(context, 9, &D3D11ContextVTableOriginals::psSetShader, oPSSetShader11);
+    if (!original) {
+        return;
+    }
+    original(context, pixelShader, classInstances, numClassInstances);
     if (g_InOverlayRender) {
         return;
     }
@@ -1462,127 +1566,239 @@ static void STDMETHODCALLTYPE DetourPSSetShader11(ID3D11DeviceContext* context, 
 
 static void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    oPSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    SetShaderResources11_t original = ResolveContextOriginal11(
+        context, 8, &D3D11ContextVTableOriginals::psSetShaderResources, oPSSetShaderResources11);
+    if (!original) {
+        return;
+    }
+    original(context, startSlot, numViews, ppShaderResourceViews);
     RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Pixel, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourVSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    oVSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    SetShaderResources11_t original = ResolveContextOriginal11(
+        context, 25, &D3D11ContextVTableOriginals::vsSetShaderResources, oVSSetShaderResources11);
+    if (!original) {
+        return;
+    }
+    original(context, startSlot, numViews, ppShaderResourceViews);
     RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Vertex, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourGSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    oGSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    SetShaderResources11_t original = ResolveContextOriginal11(
+        context, 31, &D3D11ContextVTableOriginals::gsSetShaderResources, oGSSetShaderResources11);
+    if (!original) {
+        return;
+    }
+    original(context, startSlot, numViews, ppShaderResourceViews);
     RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Geometry, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourHSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    oHSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    SetShaderResources11_t original = ResolveContextOriginal11(
+        context, 59, &D3D11ContextVTableOriginals::hsSetShaderResources, oHSSetShaderResources11);
+    if (!original) {
+        return;
+    }
+    original(context, startSlot, numViews, ppShaderResourceViews);
     RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Hull, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourDSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    oDSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    SetShaderResources11_t original = ResolveContextOriginal11(
+        context, 63, &D3D11ContextVTableOriginals::dsSetShaderResources, oDSSetShaderResources11);
+    if (!original) {
+        return;
+    }
+    original(context, startSlot, numViews, ppShaderResourceViews);
     RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Domain, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourCSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    oCSSetShaderResources11(context, startSlot, numViews, ppShaderResourceViews);
+    SetShaderResources11_t original = ResolveContextOriginal11(
+        context, 67, &D3D11ContextVTableOriginals::csSetShaderResources, oCSSetShaderResources11);
+    if (!original) {
+        return;
+    }
+    original(context, startSlot, numViews, ppShaderResourceViews);
     RefreshStageShaderResourcesFromContext11(context, D3D11ShaderStage::Compute, startSlot, numViews);
 }
 
 static void STDMETHODCALLTYPE DetourPSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                                                     ID3D11SamplerState* const* ppSamplers) {
-    SetSamplersWithOverrides11(oPSSetSamplers11, context, D3D11ShaderStage::Pixel, startSlot, numSamplers, ppSamplers);
+    SetSamplers11_t original =
+        ResolveContextOriginal11(context, 10, &D3D11ContextVTableOriginals::psSetSamplers, oPSSetSamplers11);
+    SetSamplersWithOverrides11(original, context, D3D11ShaderStage::Pixel, startSlot, numSamplers, ppSamplers);
 }
 
 static void STDMETHODCALLTYPE DetourVSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                                                     ID3D11SamplerState* const* ppSamplers) {
-    SetSamplersWithOverrides11(oVSSetSamplers11, context, D3D11ShaderStage::Vertex, startSlot, numSamplers, ppSamplers);
+    SetSamplers11_t original =
+        ResolveContextOriginal11(context, 26, &D3D11ContextVTableOriginals::vsSetSamplers, oVSSetSamplers11);
+    SetSamplersWithOverrides11(original, context, D3D11ShaderStage::Vertex, startSlot, numSamplers, ppSamplers);
 }
 
 static void STDMETHODCALLTYPE DetourGSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                                                     ID3D11SamplerState* const* ppSamplers) {
-    SetSamplersWithOverrides11(oGSSetSamplers11, context, D3D11ShaderStage::Geometry, startSlot, numSamplers,
-                               ppSamplers);
+    SetSamplers11_t original =
+        ResolveContextOriginal11(context, 32, &D3D11ContextVTableOriginals::gsSetSamplers, oGSSetSamplers11);
+    SetSamplersWithOverrides11(original, context, D3D11ShaderStage::Geometry, startSlot, numSamplers, ppSamplers);
 }
 
 static void STDMETHODCALLTYPE DetourHSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                                                     ID3D11SamplerState* const* ppSamplers) {
-    SetSamplersWithOverrides11(oHSSetSamplers11, context, D3D11ShaderStage::Hull, startSlot, numSamplers, ppSamplers);
+    SetSamplers11_t original =
+        ResolveContextOriginal11(context, 61, &D3D11ContextVTableOriginals::hsSetSamplers, oHSSetSamplers11);
+    SetSamplersWithOverrides11(original, context, D3D11ShaderStage::Hull, startSlot, numSamplers, ppSamplers);
 }
 
 static void STDMETHODCALLTYPE DetourDSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                                                     ID3D11SamplerState* const* ppSamplers) {
-    SetSamplersWithOverrides11(oDSSetSamplers11, context, D3D11ShaderStage::Domain, startSlot, numSamplers, ppSamplers);
+    SetSamplers11_t original =
+        ResolveContextOriginal11(context, 65, &D3D11ContextVTableOriginals::dsSetSamplers, oDSSetSamplers11);
+    SetSamplersWithOverrides11(original, context, D3D11ShaderStage::Domain, startSlot, numSamplers, ppSamplers);
 }
 
 static void STDMETHODCALLTYPE DetourCSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                                                     ID3D11SamplerState* const* ppSamplers) {
-    SetSamplersWithOverrides11(oCSSetSamplers11, context, D3D11ShaderStage::Compute, startSlot, numSamplers,
-                               ppSamplers);
+    SetSamplers11_t original =
+        ResolveContextOriginal11(context, 70, &D3D11ContextVTableOriginals::csSetSamplers, oCSSetSamplers11);
+    SetSamplersWithOverrides11(original, context, D3D11ShaderStage::Compute, startSlot, numSamplers, ppSamplers);
 }
 
 static void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context) {
-    if (!context || !oPSSetSamplers11 || g_InOverlayRender) {
+    SetSamplers11_t original =
+        ResolveContextOriginal11(context, 10, &D3D11ContextVTableOriginals::psSetSamplers, oPSSetSamplers11);
+    if (!context || !original || g_InOverlayRender) {
         return;
     }
     if (!ConsumePixelSamplerStateDirty11(context)) {
+        int idx = g_DiagSamplerDrawDirtyMisses.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 16) {
+            HookLog("DX11: AF draw reconcile skipped ctx=%p reason=clean-or-untracked (#%d)", (void*)context,
+                    idx + 1);
+        }
         return;
     }
-    ReconcileStageSamplers11(oPSSetSamplers11, context, D3D11ShaderStage::Pixel, 0,
-                             D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
-    g_DiagSamplerDrawReconcileCalls.fetch_add(1, std::memory_order_relaxed);
+    const int rebound = ReconcileStageSamplers11(original, context, D3D11ShaderStage::Pixel, 0,
+                                                 D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    int idx = g_DiagSamplerDrawReconcileCalls.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 24) {
+        HookLog("DX11: AF draw reconcile ctx=%p rebound=%d (#%d)", (void*)context, rebound, idx + 1);
+    }
+}
+
+static void NoteD3D11DrawHookHit(const char* name, ID3D11DeviceContext* context) {
+    int idx = g_DiagSamplerDrawHookCalls.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 32) {
+        void** vtable = context ? *reinterpret_cast<void***>(context) : nullptr;
+        HookLog("DX11: AF draw hook hit %s ctx=%p vtable=%p (#%d)", name ? name : "unknown", (void*)context,
+                (void*)vtable, idx + 1);
+    }
 }
 
 static void STDMETHODCALLTYPE DetourDrawIndexed11(ID3D11DeviceContext* context, UINT indexCount,
                                                   UINT startIndexLocation, INT baseVertexLocation) {
+    NoteD3D11DrawHookHit("DrawIndexed", context);
     ReconcilePixelSamplersBeforeDraw11(context);
-    oDrawIndexed11(context, indexCount, startIndexLocation, baseVertexLocation);
+    DrawIndexed11_t original =
+        ResolveContextOriginal11(context, 12, &D3D11ContextVTableOriginals::drawIndexed, oDrawIndexed11);
+    if (original) {
+        original(context, indexCount, startIndexLocation, baseVertexLocation);
+    }
 }
 
 static void STDMETHODCALLTYPE DetourDraw11(ID3D11DeviceContext* context, UINT vertexCount, UINT startVertexLocation) {
+    NoteD3D11DrawHookHit("Draw", context);
     ReconcilePixelSamplersBeforeDraw11(context);
-    oDraw11(context, vertexCount, startVertexLocation);
+    Draw11_t original = ResolveContextOriginal11(context, 13, &D3D11ContextVTableOriginals::draw, oDraw11);
+    if (original) {
+        original(context, vertexCount, startVertexLocation);
+    }
 }
 
 static void STDMETHODCALLTYPE DetourDrawIndexedInstanced11(ID3D11DeviceContext* context, UINT indexCountPerInstance,
                                                            UINT instanceCount, UINT startIndexLocation,
                                                            INT baseVertexLocation, UINT startInstanceLocation) {
+    NoteD3D11DrawHookHit("DrawIndexedInstanced", context);
     ReconcilePixelSamplersBeforeDraw11(context);
-    oDrawIndexedInstanced11(context, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation,
-                            startInstanceLocation);
+    DrawIndexedInstanced11_t original = ResolveContextOriginal11(
+        context, 20, &D3D11ContextVTableOriginals::drawIndexedInstanced, oDrawIndexedInstanced11);
+    if (original) {
+        original(context, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation,
+                 startInstanceLocation);
+    }
 }
 
 static void STDMETHODCALLTYPE DetourDrawInstanced11(ID3D11DeviceContext* context, UINT vertexCountPerInstance,
                                                     UINT instanceCount, UINT startVertexLocation,
                                                     UINT startInstanceLocation) {
+    NoteD3D11DrawHookHit("DrawInstanced", context);
     ReconcilePixelSamplersBeforeDraw11(context);
-    oDrawInstanced11(context, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
+    DrawInstanced11_t original =
+        ResolveContextOriginal11(context, 21, &D3D11ContextVTableOriginals::drawInstanced, oDrawInstanced11);
+    if (original) {
+        original(context, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
+    }
 }
 
 static void STDMETHODCALLTYPE DetourDrawAuto11(ID3D11DeviceContext* context) {
+    NoteD3D11DrawHookHit("DrawAuto", context);
     ReconcilePixelSamplersBeforeDraw11(context);
-    oDrawAuto11(context);
+    DrawAuto11_t original =
+        ResolveContextOriginal11(context, 38, &D3D11ContextVTableOriginals::drawAuto, oDrawAuto11);
+    if (original) {
+        original(context);
+    }
 }
 
 static void STDMETHODCALLTYPE DetourDrawIndexedInstancedIndirect11(ID3D11DeviceContext* context,
                                                                    ID3D11Buffer* bufferForArgs,
                                                                    UINT alignedByteOffsetForArgs) {
+    NoteD3D11DrawHookHit("DrawIndexedInstancedIndirect", context);
     ReconcilePixelSamplersBeforeDraw11(context);
-    oDrawIndexedInstancedIndirect11(context, bufferForArgs, alignedByteOffsetForArgs);
+    DrawIndexedInstancedIndirect11_t original = ResolveContextOriginal11(
+        context, 39, &D3D11ContextVTableOriginals::drawIndexedInstancedIndirect, oDrawIndexedInstancedIndirect11);
+    if (original) {
+        original(context, bufferForArgs, alignedByteOffsetForArgs);
+    }
 }
 
 static void STDMETHODCALLTYPE DetourDrawInstancedIndirect11(ID3D11DeviceContext* context,
                                                             ID3D11Buffer* bufferForArgs,
                                                             UINT alignedByteOffsetForArgs) {
+    NoteD3D11DrawHookHit("DrawInstancedIndirect", context);
     ReconcilePixelSamplersBeforeDraw11(context);
-    oDrawInstancedIndirect11(context, bufferForArgs, alignedByteOffsetForArgs);
+    DrawInstancedIndirect11_t original = ResolveContextOriginal11(
+        context, 40, &D3D11ContextVTableOriginals::drawInstancedIndirect, oDrawInstancedIndirect11);
+    if (original) {
+        original(context, bufferForArgs, alignedByteOffsetForArgs);
+    }
+}
+
+static void STDMETHODCALLTYPE DetourExecuteCommandList11(ID3D11DeviceContext* context, ID3D11CommandList* commandList,
+                                                         BOOL restoreContextState) {
+    int idx = g_DiagExecuteCommandList11.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 24) {
+        HookLogImportant("DX11: ExecuteCommandList ctx=%p commandList=%p restore=%d drawHooks=%d deferredContexts=%d "
+                         "drawReconcile=%d (#%d)",
+                         (void*)context, (void*)commandList, restoreContextState ? 1 : 0,
+                         g_DiagSamplerDrawHookCalls.load(std::memory_order_relaxed),
+                         g_DiagCreateDeferredContext11.load(std::memory_order_relaxed),
+                         g_DiagSamplerDrawReconcileCalls.load(std::memory_order_relaxed), idx + 1);
+    }
+
+    ExecuteCommandList11_t original = ResolveContextOriginal11(
+        context, 58, &D3D11ContextVTableOriginals::executeCommandList, oExecuteCommandList11);
+    if (original) {
+        original(context, commandList, restoreContextState);
+    }
 }
 
 // Use typedef from dx11_hook.h
@@ -1703,9 +1919,10 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
         if (idx < 8) {
             HookLogImportant(
                 "DX11: Runtime AF hook ensure from Present ctx=%p installedDelta=%d hooks(psShader=%p psSRV=%p "
-                "psSamp=%p createPS=%p)",
+                "psSamp=%p createPS=%p createDeferred=%p draw=%p executeCL=%p)",
                 (void*)ctx, installedDelta, (void*)oPSSetShader11, (void*)oPSSetShaderResources11,
-                (void*)oPSSetSamplers11, (void*)oCreatePixelShader11);
+                (void*)oPSSetSamplers11, (void*)oCreatePixelShader11, (void*)oCreateDeferredContext11,
+                (void*)oDraw11, (void*)oExecuteCommandList11);
         }
         s_LastRuntimeHookContext = ctx;
     }
@@ -1714,20 +1931,18 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
 
     struct StageSweep {
         D3D11ShaderStage stage;
-        SetSamplers11_t setSamplers;
     };
 
     StageSweep stages[] = {
-        {D3D11ShaderStage::Pixel, oPSSetSamplers11},
-        {D3D11ShaderStage::Vertex, oVSSetSamplers11},
-        {D3D11ShaderStage::Geometry, oGSSetSamplers11},
-        {D3D11ShaderStage::Hull, oHSSetSamplers11},
-        {D3D11ShaderStage::Domain, oDSSetSamplers11},
-        {D3D11ShaderStage::Compute, oCSSetSamplers11},
+        {D3D11ShaderStage::Pixel},
+        {D3D11ShaderStage::Vertex},
+        {D3D11ShaderStage::Geometry},
+        {D3D11ShaderStage::Hull},
+        {D3D11ShaderStage::Domain},
+        {D3D11ShaderStage::Compute},
     };
 
     int totalBoundSamplers = 0;
-    int totalRebound = 0;
     for (const auto& si : stages) {
         RefreshStageShaderResourcesFromContext11(ctx, si.stage, 0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT);
         RefreshStageSamplersFromContext11(ctx, si.stage, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
@@ -1738,12 +1953,11 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
                 sampler->Release();
             }
         }
-        totalRebound += ReconcileStageSamplers11(si.setSamplers, ctx, si.stage, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
     }
 
     if (totalBoundSamplers > 0) {
-        HookLogImportant("DX11: Deferred AF bootstrap complete ctx=%p boundSamplers=%d rebound=%d", (void*)ctx,
-                         totalBoundSamplers, totalRebound);
+        HookLogImportant("DX11: Deferred AF bootstrap complete ctx=%p boundSamplers=%d drawReconcile=deferred",
+                         (void*)ctx, totalBoundSamplers);
         g_DeferredAFApplied = true;
     } else {
         HookLogImportant("DX11: Deferred AF bootstrap found no samplers — will retry");
@@ -2428,6 +2642,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device,
                                                            SIZE_T bytecodeLength,
                                                            ID3D11ClassLinkage* classLinkage,
                                                            ID3D11PixelShader** pixelShader);
+static HRESULT STDMETHODCALLTYPE DetourCreateDeferredContext11(ID3D11Device* device, UINT contextFlags,
+                                                               ID3D11DeviceContext** deferredContext);
 static void STDMETHODCALLTYPE DetourPSSetShader11(ID3D11DeviceContext* context, ID3D11PixelShader* pixelShader,
                                                   ID3D11ClassInstance* const* classInstances,
                                                   UINT numClassInstances);
@@ -2447,6 +2663,8 @@ static void STDMETHODCALLTYPE DetourDrawIndexedInstancedIndirect11(ID3D11DeviceC
 static void STDMETHODCALLTYPE DetourDrawInstancedIndirect11(ID3D11DeviceContext* context,
                                                             ID3D11Buffer* bufferForArgs,
                                                             UINT alignedByteOffsetForArgs);
+static void STDMETHODCALLTYPE DetourExecuteCommandList11(ID3D11DeviceContext* context, ID3D11CommandList* commandList,
+                                                         BOOL restoreContextState);
 static void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
                                                            ID3D11ShaderResourceView* const* ppShaderResourceViews);
 static void STDMETHODCALLTYPE DetourVSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
@@ -2532,6 +2750,140 @@ static bool EnsureVTableHookSlot11(void** vtable, UINT index, LPVOID detour, Fn&
     return false;
 }
 
+template <typename Fn>
+static bool InstallContextVTableHookSlot11(void** vtable, UINT index, LPVOID detour, Fn& globalOriginal,
+                                           Fn D3D11ContextVTableOriginals::* member, const char* name,
+                                           const char* source) {
+    if (!vtable || !detour) {
+        return false;
+    }
+
+    void** slot = &vtable[index];
+    void* current = *slot;
+    if (current == detour) {
+        return true;
+    }
+
+    LPVOID capturedOriginal = nullptr;
+    VTableHook::Status status = VTableHook::Create(slot, detour, &capturedOriginal);
+    if (status == VTableHook::Success && *slot == detour && capturedOriginal) {
+        void* vtableKey = reinterpret_cast<void*>(vtable);
+        bool newVTable = false;
+        {
+            std::unique_lock<std::shared_mutex> lock(g_D3D11ContextVTableOriginalsMutex);
+            auto [it, inserted] = g_D3D11ContextVTableOriginals.try_emplace(vtableKey);
+            newVTable = inserted;
+            it->second.*member = reinterpret_cast<Fn>(capturedOriginal);
+        }
+        g_D3D11ContextVTableOriginalsGeneration.fetch_add(1, std::memory_order_acq_rel);
+
+        if (newVTable) {
+            void* expected = nullptr;
+            if (g_PrimaryD3D11ContextVTable.compare_exchange_strong(expected, vtableKey, std::memory_order_acq_rel)) {
+                int idx = g_DiagD3D11ContextVTablesHooked.fetch_add(1, std::memory_order_relaxed);
+                if (idx < 12) {
+                    HookLogImportant("DX11: Context vtable registered primary vtable=%p via %s (#%d)", vtableKey,
+                                     source ? source : "unknown", idx + 1);
+                }
+            } else if (expected != vtableKey) {
+                int idx = g_DiagD3D11ContextVTablesHooked.fetch_add(1, std::memory_order_relaxed);
+                if (idx < 12) {
+                    HookLogImportant("DX11: Context vtable registered alternate vtable=%p primary=%p via %s (#%d)",
+                                     vtableKey, expected, source ? source : "unknown", idx + 1);
+                }
+            }
+        }
+
+        if (!globalOriginal ||
+            g_PrimaryD3D11ContextVTable.load(std::memory_order_acquire) == vtableKey) {
+            globalOriginal = reinterpret_cast<Fn>(capturedOriginal);
+        }
+
+        int idx = g_DiagSamplerRuntimeHookInstalled.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 32) {
+            HookLog("DX11: %s hook installed on context vtable=%p via %s (slot=%u original=%p)", name,
+                    reinterpret_cast<void*>(vtable), source ? source : "unknown", index, capturedOriginal);
+        }
+        return true;
+    }
+
+    int idx = g_DiagD3D11ContextHookSkips.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 16) {
+        HookLogImportant("DX11: %s context hook skipped status=%d slot=%u source=%s current=%p captured=%p now=%p",
+                         name, status, index, source ? source : "unknown", current, capturedOriginal, *slot);
+    }
+    return false;
+}
+
+static void InstallContextVTableHooks11(ID3D11DeviceContext* context, const char* source) {
+    if (!context) {
+        return;
+    }
+
+    void** pContextVTable = *(void***)context;
+    InstallContextVTableHookSlot11(pContextVTable, 8, (LPVOID)&DetourPSSetShaderResources11,
+                                   oPSSetShaderResources11,
+                                   &D3D11ContextVTableOriginals::psSetShaderResources, "PSSetShaderResources",
+                                   source);
+    InstallContextVTableHookSlot11(pContextVTable, 9, (LPVOID)&DetourPSSetShader11, oPSSetShader11,
+                                   &D3D11ContextVTableOriginals::psSetShader, "PSSetShader", source);
+    InstallContextVTableHookSlot11(pContextVTable, 10, (LPVOID)&DetourPSSetSamplers11, oPSSetSamplers11,
+                                   &D3D11ContextVTableOriginals::psSetSamplers, "PSSetSamplers", source);
+    InstallContextVTableHookSlot11(pContextVTable, 12, (LPVOID)&DetourDrawIndexed11, oDrawIndexed11,
+                                   &D3D11ContextVTableOriginals::drawIndexed, "DrawIndexed", source);
+    InstallContextVTableHookSlot11(pContextVTable, 13, (LPVOID)&DetourDraw11, oDraw11,
+                                   &D3D11ContextVTableOriginals::draw, "Draw", source);
+    InstallContextVTableHookSlot11(pContextVTable, 20, (LPVOID)&DetourDrawIndexedInstanced11,
+                                   oDrawIndexedInstanced11,
+                                   &D3D11ContextVTableOriginals::drawIndexedInstanced, "DrawIndexedInstanced",
+                                   source);
+    InstallContextVTableHookSlot11(pContextVTable, 21, (LPVOID)&DetourDrawInstanced11, oDrawInstanced11,
+                                   &D3D11ContextVTableOriginals::drawInstanced, "DrawInstanced", source);
+    InstallContextVTableHookSlot11(pContextVTable, 25, (LPVOID)&DetourVSSetShaderResources11,
+                                   oVSSetShaderResources11,
+                                   &D3D11ContextVTableOriginals::vsSetShaderResources, "VSSetShaderResources",
+                                   source);
+    InstallContextVTableHookSlot11(pContextVTable, 26, (LPVOID)&DetourVSSetSamplers11, oVSSetSamplers11,
+                                   &D3D11ContextVTableOriginals::vsSetSamplers, "VSSetSamplers", source);
+    InstallContextVTableHookSlot11(pContextVTable, 31, (LPVOID)&DetourGSSetShaderResources11,
+                                   oGSSetShaderResources11,
+                                   &D3D11ContextVTableOriginals::gsSetShaderResources, "GSSetShaderResources",
+                                   source);
+    InstallContextVTableHookSlot11(pContextVTable, 32, (LPVOID)&DetourGSSetSamplers11, oGSSetSamplers11,
+                                   &D3D11ContextVTableOriginals::gsSetSamplers, "GSSetSamplers", source);
+    InstallContextVTableHookSlot11(pContextVTable, 38, (LPVOID)&DetourDrawAuto11, oDrawAuto11,
+                                   &D3D11ContextVTableOriginals::drawAuto, "DrawAuto", source);
+    InstallContextVTableHookSlot11(pContextVTable, 39, (LPVOID)&DetourDrawIndexedInstancedIndirect11,
+                                   oDrawIndexedInstancedIndirect11,
+                                   &D3D11ContextVTableOriginals::drawIndexedInstancedIndirect,
+                                   "DrawIndexedInstancedIndirect", source);
+    InstallContextVTableHookSlot11(pContextVTable, 40, (LPVOID)&DetourDrawInstancedIndirect11,
+                                   oDrawInstancedIndirect11,
+                                   &D3D11ContextVTableOriginals::drawInstancedIndirect, "DrawInstancedIndirect",
+                                   source);
+    InstallContextVTableHookSlot11(pContextVTable, 58, (LPVOID)&DetourExecuteCommandList11,
+                                   oExecuteCommandList11,
+                                   &D3D11ContextVTableOriginals::executeCommandList, "ExecuteCommandList", source);
+    InstallContextVTableHookSlot11(pContextVTable, 59, (LPVOID)&DetourHSSetShaderResources11,
+                                   oHSSetShaderResources11,
+                                   &D3D11ContextVTableOriginals::hsSetShaderResources, "HSSetShaderResources",
+                                   source);
+    InstallContextVTableHookSlot11(pContextVTable, 61, (LPVOID)&DetourHSSetSamplers11, oHSSetSamplers11,
+                                   &D3D11ContextVTableOriginals::hsSetSamplers, "HSSetSamplers", source);
+    InstallContextVTableHookSlot11(pContextVTable, 63, (LPVOID)&DetourDSSetShaderResources11,
+                                   oDSSetShaderResources11,
+                                   &D3D11ContextVTableOriginals::dsSetShaderResources, "DSSetShaderResources",
+                                   source);
+    InstallContextVTableHookSlot11(pContextVTable, 65, (LPVOID)&DetourDSSetSamplers11, oDSSetSamplers11,
+                                   &D3D11ContextVTableOriginals::dsSetSamplers, "DSSetSamplers", source);
+    InstallContextVTableHookSlot11(pContextVTable, 67, (LPVOID)&DetourCSSetShaderResources11,
+                                   oCSSetShaderResources11,
+                                   &D3D11ContextVTableOriginals::csSetShaderResources, "CSSetShaderResources",
+                                   source);
+    InstallContextVTableHookSlot11(pContextVTable, 70, (LPVOID)&DetourCSSetSamplers11, oCSSetSamplers11,
+                                   &D3D11ContextVTableOriginals::csSetSamplers, "CSSetSamplers", source);
+}
+
 // Helper to install vtable hooks
 static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain) {
     // Hook D3D11 Device methods
@@ -2542,42 +2894,11 @@ static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pCont
         // Index 23 is CreateSamplerState for D3D11
         EnsureVTableHookSlot11(pDeviceVTable, 23, (LPVOID)&DetourCreateSamplerState, oCreateSamplerState,
                                "CreateSamplerState");
+        EnsureVTableHookSlot11(pDeviceVTable, 27, (LPVOID)&DetourCreateDeferredContext11,
+                               oCreateDeferredContext11, "CreateDeferredContext");
     }
 
-    if (pContext) {
-        void** pContextVTable = *(void***)pContext;
-
-        EnsureVTableHookSlot11(pContextVTable, 8, (LPVOID)&DetourPSSetShaderResources11, oPSSetShaderResources11,
-                               "PSSetShaderResources");
-        EnsureVTableHookSlot11(pContextVTable, 9, (LPVOID)&DetourPSSetShader11, oPSSetShader11, "PSSetShader");
-        EnsureVTableHookSlot11(pContextVTable, 10, (LPVOID)&DetourPSSetSamplers11, oPSSetSamplers11, "PSSetSamplers");
-        EnsureVTableHookSlot11(pContextVTable, 12, (LPVOID)&DetourDrawIndexed11, oDrawIndexed11, "DrawIndexed");
-        EnsureVTableHookSlot11(pContextVTable, 13, (LPVOID)&DetourDraw11, oDraw11, "Draw");
-        EnsureVTableHookSlot11(pContextVTable, 20, (LPVOID)&DetourDrawIndexedInstanced11,
-                               oDrawIndexedInstanced11, "DrawIndexedInstanced");
-        EnsureVTableHookSlot11(pContextVTable, 21, (LPVOID)&DetourDrawInstanced11, oDrawInstanced11,
-                               "DrawInstanced");
-        EnsureVTableHookSlot11(pContextVTable, 25, (LPVOID)&DetourVSSetShaderResources11, oVSSetShaderResources11,
-                               "VSSetShaderResources");
-        EnsureVTableHookSlot11(pContextVTable, 26, (LPVOID)&DetourVSSetSamplers11, oVSSetSamplers11, "VSSetSamplers");
-        EnsureVTableHookSlot11(pContextVTable, 31, (LPVOID)&DetourGSSetShaderResources11, oGSSetShaderResources11,
-                               "GSSetShaderResources");
-        EnsureVTableHookSlot11(pContextVTable, 32, (LPVOID)&DetourGSSetSamplers11, oGSSetSamplers11, "GSSetSamplers");
-        EnsureVTableHookSlot11(pContextVTable, 38, (LPVOID)&DetourDrawAuto11, oDrawAuto11, "DrawAuto");
-        EnsureVTableHookSlot11(pContextVTable, 39, (LPVOID)&DetourDrawIndexedInstancedIndirect11,
-                               oDrawIndexedInstancedIndirect11, "DrawIndexedInstancedIndirect");
-        EnsureVTableHookSlot11(pContextVTable, 40, (LPVOID)&DetourDrawInstancedIndirect11,
-                               oDrawInstancedIndirect11, "DrawInstancedIndirect");
-        EnsureVTableHookSlot11(pContextVTable, 59, (LPVOID)&DetourHSSetShaderResources11, oHSSetShaderResources11,
-                               "HSSetShaderResources");
-        EnsureVTableHookSlot11(pContextVTable, 61, (LPVOID)&DetourHSSetSamplers11, oHSSetSamplers11, "HSSetSamplers");
-        EnsureVTableHookSlot11(pContextVTable, 63, (LPVOID)&DetourDSSetShaderResources11, oDSSetShaderResources11,
-                               "DSSetShaderResources");
-        EnsureVTableHookSlot11(pContextVTable, 65, (LPVOID)&DetourDSSetSamplers11, oDSSetSamplers11, "DSSetSamplers");
-        EnsureVTableHookSlot11(pContextVTable, 67, (LPVOID)&DetourCSSetShaderResources11, oCSSetShaderResources11,
-                               "CSSetShaderResources");
-        EnsureVTableHookSlot11(pContextVTable, 70, (LPVOID)&DetourCSSetSamplers11, oCSSetSamplers11, "CSSetSamplers");
-    }
+    InstallContextVTableHooks11(pContext, "immediate");
 
     // Some DX11 implementations expose D3D10 compatibility interfaces too.
     // Only install the D3D10 runtime hooks when the swapchain actually belongs
@@ -4859,6 +5180,13 @@ void DX11Hook::Shutdown() {
         int afShaderMetaFail = g_DiagPixelShaderMetadataFailed.load(std::memory_order_relaxed);
         int afRuntimeHooks = g_DiagSamplerRuntimeHookInstalled.load(std::memory_order_relaxed);
         int afDrawReconcile = g_DiagSamplerDrawReconcileCalls.load(std::memory_order_relaxed);
+        int afDrawHooks = g_DiagSamplerDrawHookCalls.load(std::memory_order_relaxed);
+        int afDrawDirtyMiss = g_DiagSamplerDrawDirtyMisses.load(std::memory_order_relaxed);
+        int afBindDeferred = g_DiagSamplerBindDeferred.load(std::memory_order_relaxed);
+        int afContextVTables = g_DiagD3D11ContextVTablesHooked.load(std::memory_order_relaxed);
+        int afContextHookSkips = g_DiagD3D11ContextHookSkips.load(std::memory_order_relaxed);
+        int afDeferredContexts = g_DiagCreateDeferredContext11.load(std::memory_order_relaxed);
+        int afExecuteCommandLists = g_DiagExecuteCommandList11.load(std::memory_order_relaxed);
         int mipBias = g_DiagSamplerMipBiasApplied.load(std::memory_order_relaxed);
         int mipOverride = g_DiagSamplerMipOverride.load(std::memory_order_relaxed);
         int prerenderFrames = g_DiagPrerenderFrames.load(std::memory_order_relaxed);
@@ -4866,11 +5194,14 @@ void DX11Hook::Shutdown() {
         HookLog("DX11: Override summary: AF_allowed=%d AF_applied=%d AF_replaced=%d AF_runtimeHooks=%d "
                 "AF_shaderMeta(created=%d fail=%d) AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
                 "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
-                "unsafe=%d) drawReconcile=%d mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
+                "unsafe=%d) bindDeferred=%d drawHooks=%d drawDirtyMiss=%d drawReconcile=%d "
+                "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
+                "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
                 afAllowed, afApplied, afReplaced, afRuntimeHooks, afShaderMeta, afShaderMetaFail, afNoMips, afBorder,
                 afReduction, afComparison, afStage, afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample,
-                afNoSRV, afFormat, afSingleMip, afUnsafe, afDrawReconcile, mipBias, mipOverride, prerenderFrames,
-                prerenderWaits);
+                afNoSRV, afFormat, afSingleMip, afUnsafe, afBindDeferred, afDrawHooks, afDrawDirtyMiss,
+                afDrawReconcile, afContextVTables, afContextHookSkips, afDeferredContexts, afExecuteCommandLists,
+                mipBias, mipOverride, prerenderFrames, prerenderWaits);
     }
 
     // Cleanup OverlayAdapter
@@ -4932,6 +5263,13 @@ void DX11Hook::OnHostDisconnect() {
         int afShaderMetaFail = g_DiagPixelShaderMetadataFailed.load(std::memory_order_relaxed);
         int afRuntimeHooks = g_DiagSamplerRuntimeHookInstalled.load(std::memory_order_relaxed);
         int afDrawReconcile = g_DiagSamplerDrawReconcileCalls.load(std::memory_order_relaxed);
+        int afDrawHooks = g_DiagSamplerDrawHookCalls.load(std::memory_order_relaxed);
+        int afDrawDirtyMiss = g_DiagSamplerDrawDirtyMisses.load(std::memory_order_relaxed);
+        int afBindDeferred = g_DiagSamplerBindDeferred.load(std::memory_order_relaxed);
+        int afContextVTables = g_DiagD3D11ContextVTablesHooked.load(std::memory_order_relaxed);
+        int afContextHookSkips = g_DiagD3D11ContextHookSkips.load(std::memory_order_relaxed);
+        int afDeferredContexts = g_DiagCreateDeferredContext11.load(std::memory_order_relaxed);
+        int afExecuteCommandLists = g_DiagExecuteCommandList11.load(std::memory_order_relaxed);
         int mipBias = g_DiagSamplerMipBiasApplied.load(std::memory_order_relaxed);
         int mipOverride = g_DiagSamplerMipOverride.load(std::memory_order_relaxed);
         int prerenderFrames = g_DiagPrerenderFrames.load(std::memory_order_relaxed);
@@ -4939,11 +5277,14 @@ void DX11Hook::OnHostDisconnect() {
         HookLog("DX11: Override summary: AF_allowed=%d AF_applied=%d AF_replaced=%d AF_runtimeHooks=%d "
                 "AF_shaderMeta(created=%d fail=%d) AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
                 "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
-                "unsafe=%d) drawReconcile=%d mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
+                "unsafe=%d) bindDeferred=%d drawHooks=%d drawDirtyMiss=%d drawReconcile=%d "
+                "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
+                "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
                 afAllowed, afApplied, afReplaced, afRuntimeHooks, afShaderMeta, afShaderMetaFail, afNoMips, afBorder,
                 afReduction, afComparison, afStage, afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample,
-                afNoSRV, afFormat, afSingleMip, afUnsafe, afDrawReconcile, mipBias, mipOverride, prerenderFrames,
-                prerenderWaits);
+                afNoSRV, afFormat, afSingleMip, afUnsafe, afBindDeferred, afDrawHooks, afDrawDirtyMiss,
+                afDrawReconcile, afContextVTables, afContextHookSkips, afDeferredContexts, afExecuteCommandLists,
+                mipBias, mipOverride, prerenderFrames, prerenderWaits);
     }
     HookLog("DX11Hook::OnHostDisconnect() - ready for reconnection");
     // DX11 capture is synchronous, nothing to stop

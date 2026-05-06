@@ -120,6 +120,8 @@ private:
     void BeginDeferredRecording();
     bool AdoptTextureDevice(ID3D11Texture2D* texture);
     void ReleaseInjectDeviceStateForScreenGrab();
+    void ApplyGpuThreadPriority(int priority, const char* reason);
+    void UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encodeMs);
 
     std::function<void(AVPacket*)> onPacket;  // Callback member
     AVFormatContext* fmtCtx;
@@ -161,6 +163,9 @@ private:
     bool scalingEnabled = false;                     // True if input != output dimensions
     bool captureCursor = true;                       // Capture mouse cursor in recording (WGC native)
     int gpuPriority = 0;                             // GPU priority for encoder (-7 to 7)
+    int currentGpuThreadPriority = 0;
+    uint64_t gpuPriorityPressureSinceMs = 0;
+    uint64_t gpuPriorityHealthySinceMs = 0;
     std::unique_ptr<CursorRenderer> cursorRenderer;  // GPU cursor compositing (for inject mode)
     std::string outputFilename;
 

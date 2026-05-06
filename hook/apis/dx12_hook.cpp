@@ -9163,13 +9163,12 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
         g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
         // kStreamlineStartupTransitionGraceMs from the SL FG activation arm covers the
-        // remaining window.  SL's DllMain can call Present briefly after PostSL confirms
-        // — the transition window keeps the Steam overlay bypass active so that Present
-        // bypasses Steam's inline E9 JMP on dxgi!Present (Steam TLS is uninitialized on
-        // the SL thread → RIP=0).  The window expires naturally from the arm time; the
-        // old ShouldClear... check at ~line 9220 is removed because it cleared the window
-        // too aggressively on the same call where confirmed became true, re-exposing the
-        // DllMain race window.
+        // remaining startup churn window. Streamline can still call Present briefly after
+        // PostSL confirms; during that family CE keeps using the bypass trampoline for
+        // Streamline-stack Presents and keeps stale OFF churn suppressed. The window
+        // expires naturally from the arm time; the old ShouldClear... check at ~line 9220
+        // is removed because it cleared the window too aggressively on the same call
+        // where confirmed became true, re-exposing the startup churn race.
         HookLogImportant("DX12: PostSL CONFIRMED rendering via re-entrant Present — suppressing pre-SL draw");
     }
     // Reset stall counter — PostSL is actively rendering, no need for pre-SL fallback
@@ -12003,6 +12002,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(
                         currentSLFGRunning, startupActivationPending, postSLActiveButUnconfirmed,
                         postSLConfirmedRendering, postSLConfirmedButStartupSettling);
+                const bool suppressSceneCooldownForStablePostSLGap =
+                    ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownForStablePostSLGap(
+                        currentSLFGRunning, postSLConfirmedRendering, g_PostSLLastWorkingQueue != nullptr,
+                        DXGIShared::g_SharedState.swapchainInvalid.load(std::memory_order_acquire),
+                        g_DeviceRemoved.load(std::memory_order_acquire));
 
                 if (deltaMs > 1000.0 && currentFGActive) {
                     if (suppressSceneCooldownForSyntheticStartup) {
@@ -12016,6 +12020,16 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                 "(gap=%.0fms pending=%d unconfirmed=%d confirmed=%d settling=%d)",
                                 deltaMs, startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
                                 postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0);
+                        }
+                    } else if (suppressSceneCooldownForStablePostSLGap) {
+                        static std::atomic<int> s_stablePostSLSceneCooldownSkipLogCount{0};
+                        const int logCount =
+                            s_stablePostSLSceneCooldownSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+                        if (logCount < 10 || (logCount % 100) == 0) {
+                            HookLogImportant(
+                                "DX12: Suppressing scene transition cooldown after stable PostSL gap "
+                                "(gap=%.0fms lastWorkingQ=%p)",
+                                deltaMs, g_PostSLLastWorkingQueue);
                         }
                     } else {
                         int cooldown = 30;

@@ -37,7 +37,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 23: Added OverlayConfig::observerOnly passive DX12/FG observation mode
 // Version 24: Added OverlayConfig::observerPolicyOnly staged Streamline-policy probe mode
 // Version 25: Added OverlayConfig::observerStartupPresentOnly staged DXGI startup-Present probe mode
-static constexpr uint32_t SHARED_MEMORY_VERSION = 25;
+// Version 26: Added WGC capture health flags for source-starvation diagnostics
+static constexpr uint32_t SHARED_MEMORY_VERSION = 26;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -383,6 +384,8 @@ struct alignas(8) CaptureState {
     std::atomic<uint32_t> wgcBufferedAtTickMin{0};
     std::atomic<uint32_t> wgcStarvedTickCount{0};
     std::atomic<uint32_t> wgcSingleFrameTickCount{0};
+    std::atomic<uint32_t> wgcCaptureHealthFlags{0};  // bit0=source-starved, bit1=scheduler-limited
+    std::atomic<uint32_t> wgcCaptureHealthFps{0};    // recent WGC input min-250 FPS for source warnings
     std::atomic<uint32_t> encoderBottlenecked{0};  // 1 when encoder can't sustain target FPS
 
     // Command flags (controller -> media process via shared memory)

@@ -263,6 +263,8 @@ public:
     void SyncAudioToFirstVideoFrame(int64_t startQpcMs, int64_t startQpc100ns) {
         recordingStartSystemQPCMs.store(startQpcMs, std::memory_order_release);
         recordingStartSystemQpc100ns.store(startQpc100ns, std::memory_order_release);
+        DLL_Log("[A/V START] Shared startup anchor selected: startMs=%lld startQpc100ns=%lld sources=%zu delta=0us",
+                startQpcMs, startQpc100ns, audioSources.size());
 
         // Discard anything captured before the first video frame so audio starts on
         // the same timeline anchor as video, even if packets were still queued in
@@ -332,6 +334,9 @@ public:
             src.targetRateDelta = 0;
             src.rateCompActive = false;
             src.targetRateSaturated = false;
+            DLL_Log("[A/V START] Audio source reset to shared anchor: src=%zu track=%d type=%d startMs=%lld",
+                    static_cast<size_t>(&src - audioSources.data()), src.track, static_cast<int>(src.sourceType),
+                    startQpcMs);
         }
         audioSyncPending.store(false);
     }
@@ -1150,16 +1155,12 @@ public:
                 LARGE_INTEGER qpcNow;
                 QueryPerformanceCounter(&qpcNow);
                 const int64_t nowQPC = qpcNow.QuadPart;
-                anchorQPC = ce::audio::ClampStartupAnchorQpc(timestampQPC, nowQPC, qpcFreq,
-                                                             static_cast<uint32_t>(std::max(0, config.video.fps)));
-                int64_t anchorDeltaQpc = anchorQPC - timestampQPC;
-                int64_t anchorDeltaMs = (qpcFreq > 0) ? (anchorDeltaQpc * 1000) / qpcFreq : 0;
-                if (anchorDeltaMs > 0) {
-                    DLL_Log(
-                        "MediaEngine: WGC CFR clamped startup audio anchor from %lld to %lld "
-                        "(delta=%lldms)",
-                        timestampQPC, anchorQPC, anchorDeltaMs);
-                }
+                const int64_t frameAgeUs =
+                    (qpcFreq > 0 && nowQPC > timestampQPC) ? ((nowQPC - timestampQPC) * 1000000) / qpcFreq : 0;
+                DLL_Log(
+                    "MediaEngine: WGC CFR startup anchor selected exactly from first accepted video frame "
+                    "(anchorQPC=%lld nowQPC=%lld frameAge=%lldus startupDelta=0us)",
+                    anchorQPC, nowQPC, frameAgeUs);
             }
 
             const int64_t anchorMs = (qpcFreq > 0 && anchorQPC > 0) ? (anchorQPC * 1000) / qpcFreq : debugTimestamp;

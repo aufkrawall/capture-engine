@@ -359,7 +359,9 @@ private:
     void RefreshShaderResources(UINT stageIndex, UINT startSlot, UINT numViews);
     ID3D11SamplerState* ResolveForcedAFSampler(UINT stageIndex, UINT slot, ID3D11Device* realDevice,
                                                ID3D11SamplerState* original);
-    void ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots);
+    int ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots);
     void PreparePixelSamplersForDraw();
     void SetRealSampler(UINT stageIndex, UINT slot, ID3D11SamplerState* sampler);
+    void BindTrackedSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers,
+                             ID3D11SamplerState* const* samplers);
 };

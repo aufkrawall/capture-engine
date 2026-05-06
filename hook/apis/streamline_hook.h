@@ -44,4 +44,20 @@ void OnAuthoritativeStreamlineStartupHandoff();
 // is discarded instead of being replayed into the recovered comeback.
 void FlushSuppressedSetOptionsOffIfNeeded();
 
+// Guard used while CE explicitly services a third-party overlay Present hook
+// from inside a Streamline-originated Present path.  Some overlays query
+// Streamline while rendering their own overlay; forwarding those queries back
+// into Streamline during Streamline's own Present processing is not re-entrant.
+class ExternalOverlayPresentGuard {
+public:
+    ExternalOverlayPresentGuard();
+    ~ExternalOverlayPresentGuard();
+
+    ExternalOverlayPresentGuard(const ExternalOverlayPresentGuard&) = delete;
+    ExternalOverlayPresentGuard& operator=(const ExternalOverlayPresentGuard&) = delete;
+};
+
+bool IsExternalOverlayPresentGuardActive();
+bool IsExternalOverlayPluginLookupGuardReady();
+
 }  // namespace StreamlineHook

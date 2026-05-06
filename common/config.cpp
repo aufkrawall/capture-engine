@@ -292,6 +292,8 @@ wgc_skip_split_device_flush=false
 ; wgc_same_device_capture - Experimental. Reuse the encoder D3D11 device for WGC instead of a dedicated capture device.
 ; Leave false unless same-device validation improves capture/game pacing on your system.
 wgc_same_device_capture=false
+; When [Video] bit_depth=10 is explicitly selected, WGC requires a high-precision
+; capture format and fails loudly instead of silently falling back to BGRA8.
 
 ; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay.
 ; Format: process:window:mode - see [Injection] section for full format documentation.

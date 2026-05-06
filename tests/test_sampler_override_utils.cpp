@@ -99,8 +99,14 @@ TEST(SamplerOverrideUtilsTest, ParsesD3D11ShaderSamplerTexturePairs) {
     EXPECT_TRUE(D3D11ShaderSamplerUsesTexture(usage, 0, 0));
     EXPECT_TRUE(D3D11ShaderSamplerUsesTexture(usage, 0, 7));
     EXPECT_TRUE(D3D11ShaderSamplerUsesExplicitSample(usage, 0));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesLodSample(usage, 0));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 0));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 0));
     EXPECT_FALSE(D3D11ShaderSamplerUsesOnlyImplicitSample(usage, 0));
     EXPECT_TRUE(D3D11ShaderSamplerUsesExplicitSample(usage, 2));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesComparisonSample(usage, 2));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 2));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 2));
     EXPECT_FALSE(D3D11ShaderSamplerUsesOnlyImplicitSample(usage, 2));
     EXPECT_TRUE(D3D11ShaderSamplerUsesTexture(usage, 2, 13));
     EXPECT_FALSE(D3D11ShaderSamplerUsesTexture(usage, 1, 4));
@@ -110,14 +116,55 @@ TEST(SamplerOverrideUtilsTest, ParsesD3D11ShaderSamplerTexturePairs) {
 TEST(SamplerOverrideUtilsTest, TracksD3D11ShaderSamplersThatUseOnlyImplicitSampling) {
     const char disassembly[] =
         "    sample r0.xyzw, v0.xyxx, t1.xyzw, s3\n"
-        "    sample r1.xyzw, v1.xyxx, t2.xyzw, s3\n";
+        "    sample_indexable(texture2d)(float,float,float,float) r1.xyzw, v1.xyxx, t2.xyzw, s3\n";
 
     const D3D11ShaderSamplerUsage usage =
         ParseD3D11ShaderSamplerUsage(disassembly, sizeof(disassembly) - 1);
 
     EXPECT_TRUE(D3D11ShaderSamplerUsesOnlyImplicitSample(usage, 3));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesAFSafeSample(usage, 3));
     EXPECT_FALSE(D3D11ShaderSamplerUsesExplicitSample(usage, 3));
     EXPECT_EQ(CountD3D11ShaderSamplerTextureUses(usage, 3), 2u);
+}
+
+TEST(SamplerOverrideUtilsTest, TreatsD3D11SampleBiasAsAFSafeButOtherExplicitSamplesUnsafe) {
+    const char disassembly[] =
+        "    sample_b r0.xyzw, v0.xyxx, t4.xyzw, s5, l(0)\n"
+        "    sample_b_indexable(texture2d)(float,float,float,float) r1.xyzw, v1.xyxx, t5.xyzw, s5, r0.x\n"
+        "    sample_d_indexable(texture2d)(float,float,float,float) r2.xyzw, v2.xyxx, t6.xyzw, s6, r1.xyzw, r2.xyzw\n"
+        "    sample_l_indexable(texture2d)(float,float,float,float) r3.xyzw, v3.xyxx, t7.xyzw, s7, l(0)\n"
+        "    sample_c_lz_indexable(texture2d)(float,float,float,float) r4.x, v4.xyxx, t8.xxxx, s8, r4.x\n";
+
+    const D3D11ShaderSamplerUsage usage =
+        ParseD3D11ShaderSamplerUsage(disassembly, sizeof(disassembly) - 1);
+
+    EXPECT_TRUE(D3D11ShaderSamplerUsesExplicitSample(usage, 5));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesBiasSample(usage, 5));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 5));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesAFSafeSample(usage, 5));
+    EXPECT_EQ(CountD3D11ShaderSamplerTextureUses(usage, 5), 2u);
+
+    EXPECT_TRUE(D3D11ShaderSamplerUsesGradientSample(usage, 6));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 6));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 6));
+
+    EXPECT_TRUE(D3D11ShaderSamplerUsesLodSample(usage, 7));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 7));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 7));
+
+    EXPECT_TRUE(D3D11ShaderSamplerUsesComparisonSample(usage, 8));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 8));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 8));
+
+    const D3D11ShaderSamplerUsageSummary summary = SummarizeD3D11ShaderSamplerUsage(usage);
+    EXPECT_EQ(summary.samplerCount, 4u);
+    EXPECT_EQ(summary.texturePairCount, 5u);
+    EXPECT_EQ(summary.biasSamplers, 1u);
+    EXPECT_EQ(summary.lodSamplers, 1u);
+    EXPECT_EQ(summary.gradientSamplers, 1u);
+    EXPECT_EQ(summary.comparisonSamplers, 1u);
+    EXPECT_EQ(summary.afSafeSamplers, 1u);
+    EXPECT_EQ(summary.unsafeExplicitSamplers, 3u);
 }
 
 TEST(SamplerOverrideUtilsTest, ParsesD3D11ShaderSamplerUsageCaseInsensitivelyAndFlagsUnsupportedRegisters) {

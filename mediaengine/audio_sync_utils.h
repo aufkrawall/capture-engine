@@ -268,23 +268,6 @@ inline int64_t ComputeDurationUsToSamples(int64_t durationUs, int sampleRate) {
     return ((durationUs * static_cast<int64_t>(sampleRate)) + (kMicrosecondsPerSecond / 2)) / kMicrosecondsPerSecond;
 }
 
-inline int64_t ClampStartupAnchorQpc(int64_t sourceAnchorQpc, int64_t observedNowQpc, int64_t qpcFrequency,
-                                     uint32_t nominalFps, int64_t fallbackFrameMs = 16) {
-    if (sourceAnchorQpc <= 0 || observedNowQpc <= 0 || qpcFrequency <= 0 || observedNowQpc <= sourceAnchorQpc) {
-        return sourceAnchorQpc;
-    }
-
-    int64_t frameDurationQpc = 0;
-    if (nominalFps > 0) {
-        frameDurationQpc = (qpcFrequency + static_cast<int64_t>(nominalFps / 2)) / static_cast<int64_t>(nominalFps);
-    }
-    if (frameDurationQpc <= 0) {
-        frameDurationQpc = ((qpcFrequency * std::max<int64_t>(1, fallbackFrameMs)) + 500) / 1000;
-    }
-
-    return std::min<int64_t>(observedNowQpc, sourceAnchorQpc + std::max<int64_t>(1, frameDurationQpc));
-}
-
 inline int64_t ComputeLeadTrimExcessSamples(int64_t bufferedSamples, int64_t targetLatencySamples,
                                             int64_t allowedLeadSamples,
                                             int64_t hysteresisSamples = kDefaultAudioPullQuantumSamples) {

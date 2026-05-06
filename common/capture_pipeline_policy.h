@@ -44,6 +44,10 @@ constexpr uint32_t kWgcRecoveryEnterShortfallTicks = 3;
 constexpr uint32_t kWgcRecoveryEnterHoldMs = 120;
 constexpr uint32_t kWgcRecoveryExitHoldMs = 450;
 constexpr double kWgcAudioLeadCatchupThresholdMs = 40.0;
+constexpr uint32_t kWgcCfrOvercaptureHeadroomPermille = 1250;
+constexpr uint32_t kWgcCfrOvercaptureStableRestoreMs = 2000;
+constexpr double kEncoderGpuPriorityRaiseBudgetRatio = 0.75;
+constexpr double kEncoderGpuPriorityRestoreBudgetRatio = 0.50;
 
 inline uint32_t GetCfrOutputShortfallTicks(uint64_t liveTicksScheduled, uint64_t liveTicksOutput) {
     return liveTicksScheduled > liveTicksOutput
@@ -362,6 +366,41 @@ inline double GetEncoderSustainableOutputFps(double encodeMs) {
     return 1000.0 / encodeMs;
 }
 
+inline bool ShouldAllowBgra8WgcFallback(bool explicitTenBitVideo, bool hdrCapture) {
+    return !explicitTenBitVideo && !hdrCapture;
+}
+
+inline int64_t GetWgcStartupBarrierQpc(int64_t nowQpc, int64_t targetIntervalTicks) {
+    if (nowQpc <= 0 || targetIntervalTicks <= 0) {
+        return nowQpc;
+    }
+
+    return nowQpc + targetIntervalTicks;
+}
+
+inline bool IsWgcFramePastStartupBarrier(int64_t frameQpc, int64_t startupBarrierQpc) {
+    return startupBarrierQpc <= 0 || (frameQpc > 0 && frameQpc >= startupBarrierQpc);
+}
+
+inline uint32_t GetWgcCfrOvercaptureTargetFps(uint32_t outputFps,
+                                              uint32_t headroomPermille = kWgcCfrOvercaptureHeadroomPermille) {
+    if (outputFps == 0 || headroomPermille <= 1000u) {
+        return outputFps;
+    }
+
+    return static_cast<uint32_t>((static_cast<uint64_t>(outputFps) * headroomPermille + 999ull) / 1000ull);
+}
+
+inline bool ShouldRaiseAdaptiveEncoderGpuPriority(double encodeMs, double frameIntervalMs,
+                                                  double raiseBudgetRatio = kEncoderGpuPriorityRaiseBudgetRatio) {
+    return encodeMs > 0.0 && frameIntervalMs > 0.0 && encodeMs >= frameIntervalMs * raiseBudgetRatio;
+}
+
+inline bool ShouldRestoreNeutralEncoderGpuPriority(double encodeMs, double frameIntervalMs,
+                                                   double restoreBudgetRatio = kEncoderGpuPriorityRestoreBudgetRatio) {
+    return frameIntervalMs > 0.0 && encodeMs >= 0.0 && encodeMs <= frameIntervalMs * restoreBudgetRatio;
+}
+
 inline uint32_t GetEncoderBudgetUtilizationPermille(double encodeMs, double frameIntervalMs) {
     if (encodeMs <= 0.0 || frameIntervalMs <= 0.0) {
         return 0u;
@@ -395,6 +434,37 @@ struct WgcAdaptiveTelemetry {
     uint32_t encoderQueueDepth = 0;
     double duplicateRatio = 0.0;
 };
+
+inline bool ShouldUseWgcMaxRateForRecovery(const WgcAdaptiveTelemetry& telemetry, uint32_t noFreshTickPermille,
+                                           bool lowSourceModeActive, bool liveRecoveryModeActive) {
+    if (telemetry.outputFps == 0) {
+        return false;
+    }
+
+    if (lowSourceModeActive || liveRecoveryModeActive) {
+        return true;
+    }
+
+    if (noFreshTickPermille >= kWgcLowSourceEmptyTickPermille) {
+        return true;
+    }
+
+    return telemetry.recentInputMin250Fps > 0 && telemetry.recentInputMin250Fps < telemetry.outputFps;
+}
+
+inline bool ShouldRestoreWgcOvercaptureCap(const WgcAdaptiveTelemetry& telemetry, uint32_t noFreshTickPermille,
+                                           uint64_t stableDurationMs,
+                                           uint64_t requiredStableMs = kWgcCfrOvercaptureStableRestoreMs) {
+    if (telemetry.outputFps == 0 || stableDurationMs < requiredStableMs) {
+        return false;
+    }
+
+    return telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
+           telemetry.recentDeliveredMin500Fps >= telemetry.outputFps &&
+           telemetry.recentInputMin250Fps >= telemetry.outputFps &&
+           telemetry.recentInputMin500Fps >= telemetry.outputFps &&
+           noFreshTickPermille <= kWgcLowSourceExitEmptyTickPermille;
+}
 
 enum class HeldModeTransition : uint8_t {
     kNone = 0,

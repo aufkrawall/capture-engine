@@ -19,6 +19,7 @@ extern "C" {
 #include <d3d11_4.h>
 #include <dxgi1_5.h>
 #include <chrono>
+#include <cstring>
 #include <functional>
 #include <unordered_map>
 
@@ -775,6 +776,60 @@ VideoEncoder::~VideoEncoder() {
     if (fenceEvent) {
         CloseHandle(fenceEvent);
         fenceEvent = nullptr;
+    }
+}
+
+void VideoEncoder::ApplyGpuThreadPriority(int priority, const char* reason) {
+    if (!d3d11Device) {
+        return;
+    }
+
+    priority = std::clamp(priority, -7, 7);
+    if (priority == currentGpuThreadPriority && reason && std::strcmp(reason, "initial") != 0) {
+        return;
+    }
+
+    IDXGIDevice* dxgiDevice = nullptr;
+    if (SUCCEEDED(d3d11Device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice)) && dxgiDevice) {
+        HRESULT phr = dxgiDevice->SetGPUThreadPriority(priority);
+        if (SUCCEEDED(phr)) {
+            currentGpuThreadPriority = priority;
+            DLL_Log("[VideoEncoder] Set GPU Thread Priority to %d (%s)", priority, reason ? reason : "update");
+        } else {
+            DLL_Log("[VideoEncoder] Failed to set GPU Thread Priority %d (%s): HR=%x", priority,
+                    reason ? reason : "update", phr);
+        }
+        dxgiDevice->Release();
+    }
+}
+
+void VideoEncoder::UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encodeMs) {
+    if (gpuPriority != 0 || savedConfig.fps <= 0 || !d3d11Device) {
+        return;
+    }
+
+    const double frameIntervalMs = 1000.0 / static_cast<double>(savedConfig.fps);
+    if (ce::capture_policy::ShouldRaiseAdaptiveEncoderGpuPriority(encodeMs, frameIntervalMs)) {
+        if (gpuPriorityPressureSinceMs == 0) {
+            gpuPriorityPressureSinceMs = nowMs;
+        }
+        gpuPriorityHealthySinceMs = 0;
+        if (currentGpuThreadPriority < 1 && nowMs - gpuPriorityPressureSinceMs >= 2000) {
+            ApplyGpuThreadPriority(1, "adaptive encoder pressure");
+        }
+        return;
+    }
+
+    gpuPriorityPressureSinceMs = 0;
+    if (ce::capture_policy::ShouldRestoreNeutralEncoderGpuPriority(encodeMs, frameIntervalMs)) {
+        if (gpuPriorityHealthySinceMs == 0) {
+            gpuPriorityHealthySinceMs = nowMs;
+        }
+        if (currentGpuThreadPriority != 0 && nowMs - gpuPriorityHealthySinceMs >= 5000) {
+            ApplyGpuThreadPriority(0, "adaptive encoder recovered");
+        }
+    } else {
+        gpuPriorityHealthySinceMs = 0;
     }
 }
 
@@ -1673,34 +1728,11 @@ bool VideoEncoder::EnsureDevice() {
         // baseDeviceGuard and baseContextGuard will auto-release on scope exit
     }  // End of else block (inject mode device creation)
 
-    // Apply GPU priority from config to ensure encoder/game balance
+    // Apply explicit GPU priority only. With gpu_priority=0 the encoder starts
+    // neutral and raises priority adaptively only if encode time sustains real
+    // pressure, so capture does not fight the game during healthy 10-bit runs.
     if (d3d11Device) {
-        IDXGIDevice* dxgiDevice = nullptr;
-        if (SUCCEEDED(d3d11Device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice))) {
-            // Range -7 to 7 (DXGI_GPU_THREAD_PRIORITY_MAX/MIN)
-            // Positive = higher than game, negative = lower than game
-            // Value comes from config.ini [Performance] gpu_priority.
-            // Keep the default neutral behavior unless the 10-bit pipeline is active, where
-            // a small boost helps the extra GPU color conversion stay real-time under load.
-            int priority = gpuPriority;  // Passed to Init() from config
-            if (priority == 0 && ShouldUse10BitOutput()) {
-                priority = 1;
-            }
-
-            // Clamp to valid range
-            if (priority < -7)
-                priority = -7;
-            if (priority > 7)
-                priority = 7;
-
-            HRESULT phr = dxgiDevice->SetGPUThreadPriority(priority);
-            if (SUCCEEDED(phr)) {
-                DLL_Log("[VideoEncoder] Set GPU Thread Priority to %d", priority);
-            } else {
-                DLL_Log("[VideoEncoder] Failed to set GPU Thread Priority: HR=%x", phr);
-            }
-            dxgiDevice->Release();
-        }
+        ApplyGpuThreadPriority(gpuPriority, "initial");
     }
 
     // CreateSharedCaptureTextures can run before Start() recreates codec/container
@@ -2365,8 +2397,9 @@ void VideoEncoder::PublishRuntimeState() {
     }
 
     pSharedMem->runtimeState.encoderOverloadFlags.store(flags, std::memory_order_relaxed);
-    const double sustainFps = ce::capture_policy::GetEncoderSustainableOutputFps(
-        static_cast<double>(std::max<int64_t>(lastEncodeTimeUs, 0)) / 1000.0);
+    const double encodeMs = static_cast<double>(std::max<int64_t>(lastEncodeTimeUs, 0)) / 1000.0;
+    UpdateAdaptiveGpuThreadPriority(nowMs, encodeMs);
+    const double sustainFps = ce::capture_policy::GetEncoderSustainableOutputFps(encodeMs);
     const uint32_t sustainFpsX100 =
         sustainFps > 0.0 ? static_cast<uint32_t>(std::clamp(sustainFps * 100.0, 0.0, 4294967295.0)) : 0u;
     pSharedMem->runtimeState.encoderSustainFpsX100.store(sustainFpsX100, std::memory_order_relaxed);
@@ -6513,6 +6546,7 @@ void VideoEncoder::AsyncWriteLoop() {
                 DLL_Log("[VideoEncoder] Async Finalize: Writing Trailer...");
                 int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
                 if (finalDurationUs > 0) {
+                    ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
                     for (unsigned s = 0; s < fmtCtx->nb_streams; s++) {
                         AVStream* st = fmtCtx->streams[s];
                         int64_t firstPts = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
@@ -6526,10 +6560,9 @@ void VideoEncoder::AsyncWriteLoop() {
                                 st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO
                                     ? "video"
                                     : (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ? "audio" : "unknown"),
-                                (long long)firstPtsUs, (long long)lastPtsUs, (long long)lastPtsUs, st->time_base.num,
-                                (long long)st->time_base.den);
+                                (long long)firstPtsUs, (long long)lastPtsUs, (long long)(lastPtsUs - firstPtsUs),
+                                st->time_base.num, (long long)st->time_base.den);
                     }
-                    ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
                     LogFinalDurationSummary(fmtCtx, finalDurationUs,
                                             muxBackpressureCount.load(std::memory_order_relaxed),
                                             peakQueueBytes.load(std::memory_order_relaxed),

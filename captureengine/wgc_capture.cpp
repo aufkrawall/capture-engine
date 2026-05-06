@@ -3,6 +3,7 @@
 // Requires Windows 10 1803+
 
 #include "wgc_capture.h"
+#include <avrt.h>
 #include <d3d11.h>
 #include <d3d11_4.h>
 #include <dxgi.h>
@@ -13,10 +14,16 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include "../common/capture_pipeline_policy.h"
 #include "../common/frame_timing_utils.h"
 #include "../common/logging.h"
 #include "../common/rate_window_utils.h"
+#include "../common/thread_power_throttling_compat.h"
 #include "mediaengine_loader.h"
+
+#ifdef _MSC_VER
+#pragma comment(lib, "avrt.lib")
+#endif
 
 // Global inflight callback counter - outlives WGCCapture::Impl destruction
 // to prevent use-after-free when WinRT thread pool callbacks access Impl members
@@ -82,6 +89,50 @@ void SafeRelease(T*& ptr) {
     if (ptr) {
         ptr->Release();
         ptr = nullptr;
+    }
+}
+
+template <typename T>
+void UpdateAtomicMax(std::atomic<T>& value, T sample) {
+    auto current = value.load(std::memory_order_relaxed);
+    while (sample > current &&
+           !value.compare_exchange_weak(current, sample, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+}
+
+inline void UpdateSmoothedAtomicUs(std::atomic<int64_t>& target, int64_t sampleUs) {
+    if (sampleUs < 0) {
+        return;
+    }
+
+    int64_t current = target.load(std::memory_order_relaxed);
+    const int64_t next = current == 0 ? sampleUs : ((current * 7) + sampleUs) / 8;
+    target.store(next, std::memory_order_relaxed);
+}
+
+void DisableCurrentWgcCallbackThreadPowerThrottling() {
+    THREAD_POWER_THROTTLING_STATE throttlingState = {};
+    throttlingState.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    throttlingState.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    throttlingState.StateMask = 0;
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState));
+}
+
+void EnsureWgcCallbackThreadQoS() {
+    thread_local bool configured = false;
+    thread_local HANDLE mmcssHandle = nullptr;
+    if (configured) {
+        return;
+    }
+    configured = true;
+
+    DisableCurrentWgcCallbackThreadPowerThrottling();
+    DWORD taskIndex = 0;
+    mmcssHandle = AvSetMmThreadCharacteristicsW(L"Capture", &taskIndex);
+    if (mmcssHandle) {
+        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
+        LogInfo("[WGC] Callback thread QoS enabled (tid=%lu, task=Capture)", GetCurrentThreadId());
+    } else {
+        LogWarn("[WGC] Callback thread QoS setup failed (tid=%lu, err=%lu)", GetCurrentThreadId(), GetLastError());
     }
 }
 
@@ -324,6 +375,12 @@ public:
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
     std::atomic<uint32_t> inputFrameCount_{0};
+    std::atomic<int64_t> lastCallbackStartQpc_{0};
+    std::atomic<int64_t> callbackGapAvgUs_{0};
+    std::atomic<int64_t> callbackGapMaxUs_{0};
+    std::atomic<int64_t> callbackProcessAvgUs_{0};
+    std::atomic<int64_t> callbackProcessMaxUs_{0};
+    std::atomic<uint32_t> callbackDrainMaxCount_{0};
     std::atomic<int64_t> sourceIntervalAvgUs_{0};
     std::atomic<int64_t> sourceJitterAvgUs_{0};
     std::atomic<int64_t> sourceJitterMaxUs_{0};
@@ -391,6 +448,7 @@ public:
     HWND targetWindow_ = nullptr;
     HMONITOR targetMonitor_ = nullptr;
     bool useHighPrecisionCapture_ = false;
+    bool requireHighPrecisionCapture_ = false;
     bool captureIsHDR_ = false;
     bool borderlessCapture_ = false;
     UINT outputBitsPerColor_ = 8;
@@ -593,6 +651,12 @@ public:
         }
         callbackFrameCount_.store(0, std::memory_order_relaxed);
         inputFrameCount_.store(0, std::memory_order_relaxed);
+        lastCallbackStartQpc_.store(0, std::memory_order_relaxed);
+        callbackGapAvgUs_.store(0, std::memory_order_relaxed);
+        callbackGapMaxUs_.store(0, std::memory_order_relaxed);
+        callbackProcessAvgUs_.store(0, std::memory_order_relaxed);
+        callbackProcessMaxUs_.store(0, std::memory_order_relaxed);
+        callbackDrainMaxCount_.store(0, std::memory_order_relaxed);
         sourceIntervalAvgUs_.store(0, std::memory_order_relaxed);
         sourceJitterAvgUs_.store(0, std::memory_order_relaxed);
         sourceJitterMaxUs_.store(0, std::memory_order_relaxed);
@@ -1129,7 +1193,14 @@ public:
         DXGI_OUTPUT_DESC1 desc1 = {};
         const HMONITOR monitor = ResolveTargetMonitor();
         if (!QueryOutputDesc1ForMonitor(monitor, desc1)) {
-            LogInfo("[WGC] Output probe unavailable, using BGRA8 capture");
+            if (requireHighPrecisionCapture_) {
+                useHighPrecisionCapture_ = true;
+                capturePixelFormat_ = winrt::DirectXPixelFormat::R10G10B10A2UIntNormalized;
+                captureDxgiFormat_ = DXGI_FORMAT_R10G10B10A2_UNORM;
+                LogWarn("[WGC] Output probe unavailable; explicit 10-bit request requires high-precision capture");
+            } else {
+                LogInfo("[WGC] Output probe unavailable, using BGRA8 capture");
+            }
             return;
         }
 
@@ -1140,15 +1211,17 @@ public:
             useHighPrecisionCapture_ = true;
             capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
             captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        } else if (desc1.BitsPerColor > 8) {
+        } else if (desc1.BitsPerColor > 8 || requireHighPrecisionCapture_) {
             useHighPrecisionCapture_ = true;
             capturePixelFormat_ = winrt::DirectXPixelFormat::R10G10B10A2UIntNormalized;
             captureDxgiFormat_ = DXGI_FORMAT_R10G10B10A2_UNORM;
         }
 
-        LogInfo("[WGC] Output probe: bpc=%u colorSpace=%d hdr=%s highPrecision=%s captureFormat=%s",
+        LogInfo("[WGC] Output probe: bpc=%u colorSpace=%d hdr=%s highPrecision=%s requireHighPrecision=%s "
+                "captureFormat=%s",
                 outputBitsPerColor_, (int)outputColorSpace_, captureIsHDR_ ? "YES" : "NO",
-                useHighPrecisionCapture_ ? "YES" : "NO", DescribeCaptureFormat());
+                useHighPrecisionCapture_ ? "YES" : "NO", requireHighPrecisionCapture_ ? "YES" : "NO",
+                DescribeCaptureFormat());
     }
 
     bool EnsureTexturePool(uint32_t width, uint32_t height, DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM) {
@@ -1476,6 +1549,28 @@ public:
         // Use global atomic for inflight count - survives Impl destruction
         // to prevent use-after-free on WinRT thread pool callbacks
         g_WgcInflightCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        EnsureWgcCallbackThreadQoS();
+
+        LARGE_INTEGER callbackStart = {};
+        QueryPerformanceCounter(&callbackStart);
+        const int64_t previousCallbackStart =
+            lastCallbackStartQpc_.exchange(callbackStart.QuadPart, std::memory_order_relaxed);
+        if (previousCallbackStart > 0 && callbackStart.QuadPart > previousCallbackStart && qpcFreq_ > 0) {
+            const int64_t gapUs = ((callbackStart.QuadPart - previousCallbackStart) * 1000000) / qpcFreq_;
+            UpdateSmoothedAtomicUs(callbackGapAvgUs_, gapUs);
+            UpdateAtomicMax(callbackGapMaxUs_, gapUs);
+        }
+
+        auto recordCallbackProcess = [&](uint32_t drainedCount) {
+            LARGE_INTEGER callbackEnd = {};
+            QueryPerformanceCounter(&callbackEnd);
+            if (callbackEnd.QuadPart > callbackStart.QuadPart && qpcFreq_ > 0) {
+                const int64_t processUs = ((callbackEnd.QuadPart - callbackStart.QuadPart) * 1000000) / qpcFreq_;
+                UpdateSmoothedAtomicUs(callbackProcessAvgUs_, processUs);
+                UpdateAtomicMax(callbackProcessMaxUs_, processUs);
+            }
+            UpdateAtomicMax(callbackDrainMaxCount_, drainedCount);
+        };
 
         struct DecrementGuard {
             ~DecrementGuard() {
@@ -1485,17 +1580,21 @@ public:
 
         // Check if Impl is still alive
         if (!alive_.load(std::memory_order_acquire)) {
+            recordCallbackProcess(0);
             return;
         }
 
         if (NeedsReset()) {
+            uint32_t drainedCount = 0;
             while (alive_.load(std::memory_order_acquire)) {
                 auto winrtFrame = sender.TryGetNextFrame();
                 if (!winrtFrame) {
                     break;
                 }
+                ++drainedCount;
                 winrtFrame.Close();
             }
+            recordCallbackProcess(drainedCount);
             return;
         }
 
@@ -1505,6 +1604,7 @@ public:
         // collection to encoder wakeups.
         if (!frameCallback_.load(std::memory_order_acquire)) {
             bool processedFrame = false;
+            uint32_t drainedCount = 0;
             std::vector<WGCCapturedFrame> drainedFrames;
             drainedFrames.reserve(4);
             {
@@ -1514,6 +1614,7 @@ public:
                     if (!winrtFrame) {
                         break;
                     }
+                    ++drainedCount;
 
                     WGCCapturedFrame frame{};
                     if (ProcessCapturedFrame(std::move(winrtFrame), &frame) && frame.texture) {
@@ -1533,15 +1634,18 @@ public:
             if (processedFrame && frameArrivedEvent_) {
                 SetEvent(frameArrivedEvent_);
             }
+            recordCallbackProcess(drainedCount);
             return;
         }
 
         std::lock_guard<std::mutex> lock(callbackDrainMutex_);
         if (!alive_.load(std::memory_order_acquire)) {
+            recordCallbackProcess(0);
             return;
         }
 
         bool processedFrame = false;
+        uint32_t drainedCount = 0;
         {
             std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
             while (alive_.load(std::memory_order_acquire)) {
@@ -1549,6 +1653,7 @@ public:
                 if (!winrtFrame) {
                     break;
                 }
+                ++drainedCount;
                 processedFrame = ProcessCapturedFrame(std::move(winrtFrame), nullptr) || processedFrame;
             }
         }
@@ -1556,6 +1661,7 @@ public:
         if (processedFrame && frameArrivedEvent_) {
             SetEvent(frameArrivedEvent_);
         }
+        recordCallbackProcess(drainedCount);
     }  // decrementGuard destructor fires here, decrementing inflightCallbacks_
 
     bool CreateWinRTDevice() {
@@ -1663,6 +1769,7 @@ public:
         UpdateCaptureFormatSelection();
         const DXGI_FORMAT requestedDxgiFormat = captureDxgiFormat_;
         const bool requestedHighPrecision = useHighPrecisionCapture_;
+        const bool highPrecisionRequired = requireHighPrecisionCapture_ || captureIsHDR_;
         bool attemptedFp16Fallback = false;
         bool attemptedBgraFallback = false;
 
@@ -1688,11 +1795,16 @@ public:
         if (!tryCreateFramePool(capturePixelFormat_)) {
             if (!captureIsHDR_ && capturePixelFormat_ == winrt::DirectXPixelFormat::R10G10B10A2UIntNormalized) {
                 // SDR 10-bpc: try FP16 to preserve full 10-bit precision in the
-                // captured texture.  Only fall to BGRA8 if FP16 also fails.
+                // captured texture. Explicit 10-bit recording must never fall
+                // to BGRA8 silently.
                 attemptedFp16Fallback = true;
                 capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
                 captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
                 // useHighPrecisionCapture_ stays true
+            } else if (highPrecisionRequired) {
+                LogError("[WGC] Failed to create required high-precision frame pool for format=%s",
+                         DescribeCaptureFormat());
+                return false;
             } else {
                 attemptedBgraFallback = true;
                 capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
@@ -1702,6 +1814,18 @@ public:
 
             if (!tryCreateFramePool(capturePixelFormat_)) {
                 if (capturePixelFormat_ != winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized) {
+                    if (!ce::capture_policy::ShouldAllowBgra8WgcFallback(requireHighPrecisionCapture_,
+                                                                         captureIsHDR_)) {
+                        LogError(
+                            "[WGC] Required high-precision frame pool failed after fallback attempts "
+                            "(requested=%s finalAttempt=%s)",
+                            requestedDxgiFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
+                                ? "R16G16B16A16_FLOAT"
+                                : (requestedDxgiFormat == DXGI_FORMAT_R10G10B10A2_UNORM ? "R10G10B10A2_UNORM"
+                                                                                         : "B8G8R8A8_UNORM"),
+                            DescribeCaptureFormat());
+                        return false;
+                    }
                     attemptedBgraFallback = true;
                     capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
                     captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -2417,6 +2541,46 @@ int64_t WGCCapture::GetLastPoolSlotRewriteUs() const {
 #endif
 }
 
+int64_t WGCCapture::GetCallbackGapAvgUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->callbackGapAvgUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetCallbackGapMaxUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->callbackGapMaxUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetCallbackProcessAvgUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->callbackProcessAvgUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetCallbackProcessMaxUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->callbackProcessMaxUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetCallbackDrainMaxCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->callbackDrainMaxCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
 bool WGCCapture::IsUsingDedicatedCaptureDevice() const {
 #if HAS_WGC
     return impl_ ? impl_->usingDedicatedCaptureDevice_ : false;
@@ -2625,6 +2789,20 @@ void WGCCapture::SetSameDeviceCapture(bool enabled) {
         impl_->sameDeviceCapture_ = enabled;
         if (changed && impl_->d3dDevice_) {
             impl_->FlagResetNeeded("same-device capture option changed");
+        }
+    }
+#else
+    (void)enabled;
+#endif
+}
+
+void WGCCapture::SetRequireHighPrecisionCapture(bool enabled) {
+#if HAS_WGC
+    if (impl_) {
+        const bool changed = impl_->requireHighPrecisionCapture_ != enabled;
+        impl_->requireHighPrecisionCapture_ = enabled;
+        if (changed && impl_->framePool_) {
+            impl_->FlagResetNeeded("high-precision capture requirement changed");
         }
     }
 #else

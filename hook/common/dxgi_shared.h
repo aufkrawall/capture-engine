@@ -94,7 +94,7 @@ inline bool IsStreamlineStartupHandoffPending() {
     return g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
 }
 
-static constexpr ULONGLONG kStreamlineStartupTransitionGraceMs = 10000;
+static constexpr ULONGLONG kStreamlineStartupTransitionGraceMs = 3000;
 
 inline void ArmStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
     g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
@@ -244,6 +244,41 @@ inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isStea
         streamlineLoaded && !streamlineFGRunning;
     const bool smoothMotionNeedsBypass = nvPresentLoaded;
     return streamlineNeedsBypass || smoothMotionNeedsBypass;
+}
+
+inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(bool externalPresentHookAvailable,
+                                                                   bool bypassAvailable, bool isSteamOverlay,
+                                                                   bool isD3D12SwapChain, bool inWrapperPresent,
+                                                                   bool isWrappedSwapChain,
+                                                                   bool externalOverlayPresentInvokeInProgress,
+                                                                   bool streamlineStackActive,
+                                                                   bool streamlinePluginLookupGuardAvailable) {
+    // Directly calling Steam's saved Present hook is only safe when CE has a
+    // bypass trampoline available for any recursive Present that Steam may issue
+    // internally.  Wrapped swapchains already have their own cooperation path.
+    if (!externalPresentHookAvailable || !bypassAvailable || !isSteamOverlay || !isD3D12SwapChain ||
+        inWrapperPresent || isWrappedSwapChain || externalOverlayPresentInvokeInProgress) {
+        return false;
+    }
+
+    if (streamlineStackActive && !streamlinePluginLookupGuardAvailable) {
+        // Steam may query Streamline while rendering its overlay. Talos showed
+        // that the dangerous path is not limited to the public
+        // slGetFeatureFunction lookup: Steam can also land inside
+        // sl_common!slGetPluginFunction from Streamline/DLSSG startup and FG
+        // callbacks, and that path can still call through a NULL internal
+        // callback even after CE's own PostSL renderer has confirmed. Until
+        // CE's slGetPluginFunction guard is installed, use the DXGI bypass
+        // trampoline instead of directly invoking Steam from the SL stack.
+        return false;
+    }
+
+    return true;
+}
+
+inline bool ShouldBypassRecursiveExternalOverlayPresent(bool externalOverlayPresentInvokeInProgress,
+                                                        bool bypassAvailable) {
+    return externalOverlayPresentInvokeInProgress && bypassAvailable;
 }
 
 inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(

@@ -326,7 +326,16 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateCounter(const D3D11_COUNTER_DE
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateDeferredContext(UINT ContextFlags,
                                                                   ID3D11DeviceContext** ppDeferredContext) {
-    return m_pReal->CreateDeferredContext(ContextFlags, ppDeferredContext);
+    ID3D11DeviceContext* realContext = nullptr;
+    HRESULT hr = m_pReal->CreateDeferredContext(ContextFlags, ppDeferredContext ? &realContext : nullptr);
+    if (SUCCEEDED(hr) && ppDeferredContext && realContext) {
+        CWrapD3D11DeviceContext* wrappedContext = new CWrapD3D11DeviceContext(realContext, this);
+        realContext->Release();
+        *ppDeferredContext = wrappedContext;
+        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext wrapped real=%p wrapper=%p flags=0x%X",
+                   realContext, wrappedContext, ContextFlags);
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::OpenSharedResource(HANDLE hResource, REFIID ReturnedInterface,
@@ -444,7 +453,16 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateDeferredContext1(UINT ContextF
                                                                    ID3D11DeviceContext1** ppDeferredContext) {
     if (!m_pReal1)
         return E_NOINTERFACE;
-    return m_pReal1->CreateDeferredContext1(ContextFlags, ppDeferredContext);
+    ID3D11DeviceContext1* realContext = nullptr;
+    HRESULT hr = m_pReal1->CreateDeferredContext1(ContextFlags, ppDeferredContext ? &realContext : nullptr);
+    if (SUCCEEDED(hr) && ppDeferredContext && realContext) {
+        CWrapD3D11DeviceContext* wrappedContext = new CWrapD3D11DeviceContext(realContext, this);
+        realContext->Release();
+        *ppDeferredContext = static_cast<ID3D11DeviceContext1*>(wrappedContext);
+        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext1 wrapped real=%p wrapper=%p flags=0x%X",
+                   realContext, wrappedContext, ContextFlags);
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateBlendState1(const D3D11_BLEND_DESC1* pBlendStateDesc,
@@ -510,7 +528,16 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateDeferredContext2(UINT ContextF
                                                                    ID3D11DeviceContext2** ppDeferredContext) {
     if (!m_pReal2)
         return E_NOINTERFACE;
-    return m_pReal2->CreateDeferredContext2(ContextFlags, ppDeferredContext);
+    ID3D11DeviceContext2* realContext = nullptr;
+    HRESULT hr = m_pReal2->CreateDeferredContext2(ContextFlags, ppDeferredContext ? &realContext : nullptr);
+    if (SUCCEEDED(hr) && ppDeferredContext && realContext) {
+        CWrapD3D11DeviceContext* wrappedContext = new CWrapD3D11DeviceContext(realContext, this);
+        realContext->Release();
+        *ppDeferredContext = static_cast<ID3D11DeviceContext2*>(wrappedContext);
+        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext2 wrapped real=%p wrapper=%p flags=0x%X",
+                   realContext, wrappedContext, ContextFlags);
+    }
+    return hr;
 }
 
 void STDMETHODCALLTYPE CWrapD3D11Device::GetResourceTiling(
@@ -610,7 +637,16 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateDeferredContext3(UINT ContextF
                                                                    ID3D11DeviceContext3** ppDeferredContext) {
     if (!m_pReal3)
         return E_NOINTERFACE;
-    return m_pReal3->CreateDeferredContext3(ContextFlags, ppDeferredContext);
+    ID3D11DeviceContext3* realContext = nullptr;
+    HRESULT hr = m_pReal3->CreateDeferredContext3(ContextFlags, ppDeferredContext ? &realContext : nullptr);
+    if (SUCCEEDED(hr) && ppDeferredContext && realContext) {
+        CWrapD3D11DeviceContext* wrappedContext = new CWrapD3D11DeviceContext(realContext, this);
+        realContext->Release();
+        *ppDeferredContext = static_cast<ID3D11DeviceContext3*>(wrappedContext);
+        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext3 wrapped real=%p wrapper=%p flags=0x%X",
+                   realContext, wrappedContext, ContextFlags);
+    }
+    return hr;
 }
 
 void STDMETHODCALLTYPE CWrapD3D11Device::WriteToSubresource(ID3D11Resource* pDstResource, UINT DstSubresource,

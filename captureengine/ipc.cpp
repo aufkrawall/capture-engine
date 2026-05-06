@@ -314,6 +314,8 @@ bool IPCManager::GetLatestFrame(SharedMemoryLayout& outState) {
     outState.runtimeState.wgcBufferedAtTickMin = pSharedMem->runtimeState.wgcBufferedAtTickMin.load();
     outState.runtimeState.wgcStarvedTickCount = pSharedMem->runtimeState.wgcStarvedTickCount.load();
     outState.runtimeState.wgcSingleFrameTickCount = pSharedMem->runtimeState.wgcSingleFrameTickCount.load();
+    outState.runtimeState.wgcCaptureHealthFlags = pSharedMem->runtimeState.wgcCaptureHealthFlags.load();
+    outState.runtimeState.wgcCaptureHealthFps = pSharedMem->runtimeState.wgcCaptureHealthFps.load();
     // Atomic flags accessed directly, not copied
     // Note: atomics (throttleCapture, encoderQueueDepth, frameRing, logs) must be
     // accessed via GetSharedMem()

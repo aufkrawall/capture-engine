@@ -1085,6 +1085,18 @@ inline bool ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(bo
     return startupActivationPending || postSLActiveButUnconfirmed;
 }
 
+inline bool ShouldSuppressSceneTransitionCooldownForStablePostSLGap(bool streamlineFGRunning,
+                                                                    bool postSLConfirmedRendering,
+                                                                    bool hasPostSLLastWorkingQueue,
+                                                                    bool swapchainInvalid, bool deviceRemoved) {
+    // A long Present/ProcessFrame gap by itself is not evidence that the proven
+    // PostSL queue topology became unsafe.  Once PostSL has confirmed rendering
+    // and remembered a working queue, keep drawing after pause/load gaps unless
+    // the swapchain/device has actually entered a reset path.
+    return streamlineFGRunning && postSLConfirmedRendering && hasPostSLLastWorkingQueue && !swapchainInvalid &&
+           !deviceRemoved;
+}
+
 inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
                                               bool hasRealD3D12ECL) {
     if (hadFSRFGPhase) {

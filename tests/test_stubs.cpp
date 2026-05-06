@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <atomic>
 
+#include "../hook/apis/streamline_hook.h"
 #include "../hook/common/fg_runtime_state.h"
 #include "../hook/common/hook_common.h"
 
@@ -159,5 +160,13 @@ void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::R
 
 // Stubs for streamline_hook.cpp (StreamlineHook namespace)
 namespace StreamlineHook {
+ExternalOverlayPresentGuard::ExternalOverlayPresentGuard() {}
+ExternalOverlayPresentGuard::~ExternalOverlayPresentGuard() {}
+bool IsExternalOverlayPresentGuardActive() {
+    return false;
+}
+bool IsExternalOverlayPluginLookupGuardReady() {
+    return false;
+}
 void FlushSuppressedSetOptionsOffIfNeeded() {}
 }  // namespace StreamlineHook

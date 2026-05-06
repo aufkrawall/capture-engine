@@ -135,6 +135,11 @@ public:
     uint32_t GetSplitDeviceFlushSkippedCount() const;
     uint32_t GetPoolSlotFastRewriteCount() const;
     int64_t GetLastPoolSlotRewriteUs() const;
+    int64_t GetCallbackGapAvgUs() const;
+    int64_t GetCallbackGapMaxUs() const;
+    int64_t GetCallbackProcessAvgUs() const;
+    int64_t GetCallbackProcessMaxUs() const;
+    uint32_t GetCallbackDrainMaxCount() const;
     bool IsUsingDedicatedCaptureDevice() const;
 
     // Throttle capture rate to avoid wasting GPU bandwidth on excess frames.
@@ -169,6 +174,7 @@ public:
     // Experimental WGC performance controls. Defaults preserve legacy behavior.
     void SetSkipSplitDeviceFlush(bool enabled);
     void SetSameDeviceCapture(bool enabled);
+    void SetRequireHighPrecisionCapture(bool enabled);
 
 private:
     class Impl;  // PIMPL to hide WinRT dependencies

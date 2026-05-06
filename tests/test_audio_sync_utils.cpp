@@ -59,16 +59,6 @@ TEST(AudioSyncUtilsTest, DurationUsToSamplesRoundsToNearestSample) {
     EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(1000, 0), 0);
 }
 
-TEST(AudioSyncUtilsTest, StartupAnchorClampKeepsSourceTimestampWhenFresh) {
-    EXPECT_EQ(ce::audio::ClampStartupAnchorQpc(1000, 1000, 1000000, 120), 1000);
-    EXPECT_EQ(ce::audio::ClampStartupAnchorQpc(1000, 1004, 1000000, 120), 1004);
-}
-
-TEST(AudioSyncUtilsTest, StartupAnchorClampLimitsLateWallClockOverrideToOneFrame) {
-    EXPECT_EQ(ce::audio::ClampStartupAnchorQpc(1000, 101000, 1000000, 120), 9333);
-    EXPECT_EQ(ce::audio::ClampStartupAnchorQpc(1000, 30000, 1000000, 60), 17667);
-}
-
 TEST(AudioSyncUtilsTest, LeadTrimExcessUsesHysteresisBand) {
     EXPECT_EQ(ce::audio::ComputeLeadTrimExcessSamples(6000, 3000, 2400, 240), 360);
     EXPECT_EQ(ce::audio::ComputeLeadTrimExcessSamples(5640, 3000, 2400, 240), 0);

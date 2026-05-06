@@ -54,6 +54,8 @@ bool ShouldKeepPureObserverOnlyStreamlineBehavior() {
         IsObserverOnlyModeActive(), IsObserverPolicyOnlyModeActive());
 }
 
+thread_local int g_ExternalOverlayPresentGuardDepth = 0;
+
 using slResult = int;
 
 constexpr slResult kSlResultOk = 0;
@@ -165,6 +167,7 @@ struct slReflexOptions : slBaseStructure {
 };
 
 using PFN_slGetFeatureFunction = slResult (*)(uint32_t feature, const char* functionName, void*& function);
+using PFN_slGetPluginFunction = void* (*)(const char* functionName);
 using PFN_slSetD3DDevice = slResult (*)(void* d3dDevice);
 using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle& viewport, const slDLSSGOptions& options);
 using PFN_slDLSSGGetState = slResult (*)(const slViewportHandle& viewport, slDLSSGState& state,
@@ -193,6 +196,7 @@ std::atomic<uint32_t> g_IATPatchesMask{0};
 std::atomic<uint32_t> g_InstalledModuleMask{0};
 
 std::atomic<void*> g_SLGetFeatureFunctionTarget{nullptr};
+std::atomic<void*> g_SLGetPluginFunctionTarget{nullptr};
 std::atomic<void*> g_SLSetD3DDeviceTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateTarget{nullptr};
@@ -206,6 +210,7 @@ std::atomic<void*> g_ReflexSetOptionsImportFallbackAttemptedTarget{nullptr};
 std::atomic<void*> g_ReflexSetConstantsImportFallbackAttemptedTarget{nullptr};
 
 std::atomic<bool> g_SLGetFeatureFunctionHooked{false};
+std::atomic<bool> g_SLGetPluginFunctionHooked{false};
 std::atomic<bool> g_SLSetD3DDeviceHooked{false};
 std::atomic<bool> g_DLSSGSetOptionsHooked{false};
 std::atomic<bool> g_DLSSGGetStateHooked{false};
@@ -242,6 +247,7 @@ slDLSSGOptions g_SuppressedOffOptions = {};
 uint32_t g_SuppressedOffViewportKey = 0;
 
 PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
+PFN_slGetPluginFunction g_Original_slGetPluginFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
 PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
 PFN_slDLSSGGetState g_Original_slDLSSGGetState = nullptr;
@@ -250,6 +256,7 @@ PFN_slReflexSetOptions g_Original_slReflexSetOptions = nullptr;
 PFN_slReflexSetConstants g_Original_slReflexSetConstants = nullptr;
 
 slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName, void*& function);
+void* Hooked_slGetPluginFunction(const char* functionName);
 slResult Hooked_slSetD3DDevice(void* d3dDevice);
 slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options);
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options);
@@ -1380,6 +1387,8 @@ void RegisterDynamicHooksOnce() {
 
     IATHook::RegisterDynamicHook("slGetFeatureFunction", reinterpret_cast<void*>(Hooked_slGetFeatureFunction),
                                  reinterpret_cast<void**>(&g_Original_slGetFeatureFunction));
+    IATHook::RegisterDynamicHook("slGetPluginFunction", reinterpret_cast<void*>(Hooked_slGetPluginFunction),
+                                 reinterpret_cast<void**>(&g_Original_slGetPluginFunction));
     IATHook::RegisterDynamicHook("slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
                                  reinterpret_cast<void**>(&g_Original_slSetD3DDevice));
     IATHook::RegisterDynamicHook("slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
@@ -1393,7 +1402,7 @@ void RegisterDynamicHooksOnce() {
     IATHook::RegisterDynamicHook("slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
                                  reinterpret_cast<void**>(&g_Original_slReflexSetConstants));
     HookLogImportant(
-        "Streamline Hook: Registered dynamic hooks for slGetFeatureFunction, slSetD3DDevice, "
+        "Streamline Hook: Registered dynamic hooks for slGetFeatureFunction, slGetPluginFunction, slSetD3DDevice, "
         "slDLSSGSetOptions, slDLSSGGetState, slReflexSleep, slReflexSetOptions, and slReflexSetConstants");
 }
 
@@ -1410,6 +1419,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     const uint32_t moduleBit = GetModuleMaskBit(moduleBaseName);
     const auto originalGetFeatureFunction =
         reinterpret_cast<PFN_slGetFeatureFunction>(GetProcAddress(module, "slGetFeatureFunction"));
+    const auto originalGetPluginFunction =
+        reinterpret_cast<PFN_slGetPluginFunction>(GetProcAddress(module, "slGetPluginFunction"));
     const auto originalSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(module, "slSetD3DDevice"));
     const auto originalDLSSGSetOptions =
         reinterpret_cast<PFN_slDLSSGSetOptions>(GetProcAddress(module, "slDLSSGSetOptions"));
@@ -1420,8 +1431,9 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     const auto originalReflexSetConstants =
         reinterpret_cast<PFN_slReflexSetConstants>(GetProcAddress(module, "slReflexSetConstants"));
 
-    if (!originalGetFeatureFunction && !originalSetD3DDevice && !originalDLSSGSetOptions && !originalDLSSGGetState &&
-        !originalReflexSleep && !originalReflexSetOptions && !originalReflexSetConstants) {
+    if (!originalGetFeatureFunction && !originalGetPluginFunction && !originalSetD3DDevice &&
+        !originalDLSSGSetOptions && !originalDLSSGGetState && !originalReflexSleep && !originalReflexSetOptions &&
+        !originalReflexSetConstants) {
         return false;
     }
 
@@ -1444,6 +1456,17 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                                                     g_SLGetFeatureFunctionTarget, "slGetFeatureFunction");
         }
 
+        if (originalGetPluginFunction) {
+            if (!g_Original_slGetPluginFunction) {
+                g_Original_slGetPluginFunction = originalGetPluginFunction;
+            }
+
+            hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(originalGetPluginFunction),
+                                                    reinterpret_cast<void*>(Hooked_slGetPluginFunction),
+                                                    g_Original_slGetPluginFunction, g_SLGetPluginFunctionHooked,
+                                                    g_SLGetPluginFunctionTarget, "slGetPluginFunction");
+        }
+
         if (originalSetD3DDevice) {
             if (!g_Original_slSetD3DDevice) {
                 g_Original_slSetD3DDevice = originalSetD3DDevice;
@@ -1459,6 +1482,10 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
             if (originalGetFeatureFunction) {
                 IATHook::PatchIATAllModules(moduleBaseName, "slGetFeatureFunction",
                                             reinterpret_cast<void*>(Hooked_slGetFeatureFunction), &dummy);
+            }
+            if (originalGetPluginFunction) {
+                IATHook::PatchIATAllModules(moduleBaseName, "slGetPluginFunction",
+                                            reinterpret_cast<void*>(Hooked_slGetPluginFunction), &dummy);
             }
             if (originalSetD3DDevice) {
                 IATHook::PatchIATAllModules(moduleBaseName, "slSetD3DDevice",
@@ -2012,7 +2039,52 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     return result;
 }
 
+// Safe no-op stub for SL function pointers that SL returned as NULL during
+// re-entrant calls.  Steam's OverlayHookD3D3 may call slGetFeatureFunction
+// from within SL's execution context (during DllMain or FG processing).
+// If SL returns NULL, Steam calls through the NULL pointer → RIP=0 crash.
+// Instead of returning an error (which Steam may ignore while still using the
+// NULL pointer), substitute a safe stub that returns success and does nothing.
+// This allows Steam to continue overlay rendering without crashing.
+static slResult SlNullFunctionStub() {
+    return kSlResultOk;
+}
+
+void* Hooked_slGetPluginFunction(const char* functionName) {
+    if (StreamlineHook::IsExternalOverlayPresentGuardActive()) {
+        static std::atomic<int> s_externalOverlaySuppressedPluginLookupLogCount{0};
+        const int logCount =
+            s_externalOverlaySuppressedPluginLookupLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 200) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Suppressing re-entrant slGetPluginFunction during guarded external overlay "
+                "Present (name=%s depth=%d)",
+                functionName ? functionName : "null", g_ExternalOverlayPresentGuardDepth);
+        }
+        return reinterpret_cast<void*>(SlNullFunctionStub);
+    }
+
+    if (!g_Original_slGetPluginFunction) {
+        return nullptr;
+    }
+
+    return g_Original_slGetPluginFunction(functionName);
+}
+
 slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName, void*& function) {
+    if (StreamlineHook::IsExternalOverlayPresentGuardActive()) {
+        static std::atomic<int> s_externalOverlaySuppressedLookupLogCount{0};
+        const int logCount = s_externalOverlaySuppressedLookupLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 200) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Suppressing re-entrant slGetFeatureFunction during guarded external overlay "
+                "Present (feature=%u name=%s depth=%d)",
+                feature, functionName ? functionName : "null", g_ExternalOverlayPresentGuardDepth);
+        }
+        function = reinterpret_cast<void*>(SlNullFunctionStub);
+        return kSlResultErrorInvalidState;
+    }
+
     if (!g_Original_slGetFeatureFunction) {
         return kSlResultErrorInvalidState;
     }
@@ -2022,16 +2094,18 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
     // would call through NULL → RIP=0 crash.  This can happen when third-party
     // overlays (e.g., Steam's OverlayHookD3D3) call slGetFeatureFunction
     // re-entrantly from within Streamline's own code during FG processing.
-    // Return an error so the caller handles the missing function gracefully.
+    // Substitute a safe no-op stub so the caller doesn't crash even if it
+    // ignores the error return and uses the function pointer directly.
     if (result == kSlResultOk && !function) {
         static std::atomic<int> s_nullFunctionLogCount{0};
         if (s_nullFunctionLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
             HookLogImportant(
                 "Streamline Hook: slGetFeatureFunction returned OK with NULL function "
-                "(feature=%u name=%s) — returning error to prevent null call crash",
+                "(feature=%u name=%s) — substituting safe no-op stub to prevent null call crash",
                 feature, functionName ? functionName : "null");
         }
-        return kSlResultErrorInvalidState;
+        function = reinterpret_cast<void*>(SlNullFunctionStub);
+        return kSlResultOk;
     }
     if (result != kSlResultOk || !functionName || !function) {
         return result;
@@ -2182,6 +2256,24 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
 
 namespace StreamlineHook {
 
+ExternalOverlayPresentGuard::ExternalOverlayPresentGuard() {
+    ++g_ExternalOverlayPresentGuardDepth;
+}
+
+ExternalOverlayPresentGuard::~ExternalOverlayPresentGuard() {
+    if (g_ExternalOverlayPresentGuardDepth > 0) {
+        --g_ExternalOverlayPresentGuardDepth;
+    }
+}
+
+bool IsExternalOverlayPresentGuardActive() {
+    return g_ExternalOverlayPresentGuardDepth > 0;
+}
+
+bool IsExternalOverlayPluginLookupGuardReady() {
+    return g_SLGetPluginFunctionHooked.load(std::memory_order_acquire);
+}
+
 bool HasExplicitSetOptionsActivationForCurrentComeback() {
     // Provenance of the current comeback is tracked explicitly. Startup-window
     // OFF churn can temporarily re-arm provisional GetState suppression without
@@ -2218,10 +2310,12 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
     if (inspectedModule || resolvedDLSSG || resolvedReflex) {
         HookLogImportant(
             "Streamline Hook: Fresh module load inspected %s (%p) "
-            "slGetFeatureFunctionHooked=%d slSetD3DDeviceHooked=%d dlssgSetOptionsHooked=%d "
+            "slGetFeatureFunctionHooked=%d slGetPluginFunctionHooked=%d slSetD3DDeviceHooked=%d "
+            "dlssgSetOptionsHooked=%d "
             "dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d reflexSetConstantsHooked=%d",
             GetModuleBaseName(moduleNameOrPath), module,
             g_SLGetFeatureFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_SLGetPluginFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_SLSetD3DDeviceHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,

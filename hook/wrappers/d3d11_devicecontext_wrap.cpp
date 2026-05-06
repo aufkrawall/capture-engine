@@ -45,6 +45,8 @@ static std::atomic<int> g_WrapperAFSkipExplicitSample{0};
 static std::atomic<int> g_WrapperAFAllowed{0};
 static std::atomic<int> g_WrapperAFReplaced{0};
 static std::atomic<int> g_WrapperAFReconciled{0};
+static std::atomic<int> g_WrapperAFBindDeferred{0};
+static std::atomic<int> g_WrapperAFDrawReconciles{0};
 static std::atomic<int> g_WrapperPixelShaderMetadataCreated{0};
 static std::atomic<int> g_WrapperPixelShaderMetadataFailed{0};
 
@@ -56,23 +58,6 @@ struct WrapperPixelShaderAFMetadata {
 
 static std::mutex g_WrapperPixelShaderMetadataMutex;
 static std::unordered_map<ID3D11PixelShader*, WrapperPixelShaderAFMetadata> g_WrapperPixelShaderMetadata;
-
-static UINT CountWrapperPixelShaderUsagePairs(const ce::sampler_override::D3D11ShaderSamplerUsage& usage,
-                                              UINT* samplerCount = nullptr) {
-    UINT pairs = 0;
-    UINT samplers = 0;
-    for (UINT sampler = 0; sampler < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++sampler) {
-        const UINT samplerPairs = ce::sampler_override::CountD3D11ShaderSamplerTextureUses(usage, sampler);
-        if (samplerPairs != 0) {
-            ++samplers;
-            pairs += samplerPairs;
-        }
-    }
-    if (samplerCount) {
-        *samplerCount = samplers;
-    }
-    return pairs;
-}
 
 void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void* shaderBytecode,
                                           SIZE_T bytecodeLength) {
@@ -108,11 +93,14 @@ void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void*
 
     int idx = g_WrapperPixelShaderMetadataCreated.fetch_add(1, std::memory_order_relaxed);
     if (idx < 48) {
-        UINT samplerCount = 0;
-        const UINT pairCount = CountWrapperPixelShaderUsagePairs(metadata.usage, &samplerCount);
+        const auto summary = ce::sampler_override::SummarizeD3D11ShaderSamplerUsage(metadata.usage);
         WrapperLog("Wrapper: AF pixel-shader metadata shader=%p available=%d failed=%d samplers=%u pairs=%u "
+                   "kinds(implicit=%u bias=%u lod=%u grad=%u comp=%u other=%u safe=%u unsafe=%u) "
                    "unsupported=%d (#%d)",
-                   shader, metadata.available ? 1 : 0, metadata.disassembleFailed ? 1 : 0, samplerCount, pairCount,
+                   shader, metadata.available ? 1 : 0, metadata.disassembleFailed ? 1 : 0, summary.samplerCount,
+                   summary.texturePairCount, summary.implicitSamplers, summary.biasSamplers, summary.lodSamplers,
+                   summary.gradientSamplers, summary.comparisonSamplers, summary.otherExplicitSamplers,
+                   summary.afSafeSamplers, summary.unsafeExplicitSamplers,
                    metadata.usage.sawUnsupportedRegister ? 1 : 0, idx + 1);
     }
 }
@@ -640,11 +628,18 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
             WrapperLog("Wrapper: AF skip (pixel shader does not sample with s%u)", slot);
         return original;
     }
-    if (!ce::sampler_override::D3D11ShaderSamplerUsesOnlyImplicitSample(metadata.usage, slot)) {
+    if (!ce::sampler_override::D3D11ShaderSamplerUsesAFSafeSample(metadata.usage, slot)) {
         int idx = g_WrapperAFSkipExplicitSample.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24)
-            WrapperLog("Wrapper: AF skip (pixel shader uses explicit/non-implicit sample opcode with s%u explicit=%d)",
-                       slot, ce::sampler_override::D3D11ShaderSamplerUsesExplicitSample(metadata.usage, slot) ? 1 : 0);
+            WrapperLog("Wrapper: AF skip (pixel shader uses AF-unsafe sample opcode with s%u implicit=%d bias=%d "
+                       "lod=%d grad=%d comp=%d other=%d explicit=%d)",
+                       slot, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
+                       ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
+                       ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot) ? 1 : 0,
+                       ce::sampler_override::D3D11ShaderSamplerUsesGradientSample(metadata.usage, slot) ? 1 : 0,
+                       ce::sampler_override::D3D11ShaderSamplerUsesComparisonSample(metadata.usage, slot) ? 1 : 0,
+                       ce::sampler_override::D3D11ShaderSamplerUsesOtherExplicitSample(metadata.usage, slot) ? 1 : 0,
+                       ce::sampler_override::D3D11ShaderSamplerUsesExplicitSample(metadata.usage, slot) ? 1 : 0);
         return original;
     }
 
@@ -708,10 +703,13 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
         if (idx < 48) {
             WrapperLog(
                 "Wrapper: AF allow shader-paired sampler slot=s%u sampledTextures=%u first=t%u last=t%u "
-                "Filter=0x%X Aniso=%u Addr=%d/%d/%d srvFmt=%d texFmt=%d dim=%d size=%ux%u mips=%u viewMip=%u "
+                "Filter=0x%X Aniso=%u Addr=%d/%d/%d sampleKinds(implicit=%d bias=%d) srvFmt=%d texFmt=%d dim=%d "
+                "size=%ux%u mips=%u viewMip=%u "
                 "mostMip=%u bind=0x%X misc=0x%X (#%d)",
                 slot, textureCount, firstTextureSlot, lastTextureSlot, desc.Filter, desc.MaxAnisotropy, desc.AddressU,
-                desc.AddressV, desc.AddressW, firstSrvDesc.Format, firstResourceInfo.format,
+                desc.AddressV, desc.AddressW, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
+                firstSrvDesc.Format, firstResourceInfo.format,
                 firstResourceInfo.viewDimension, firstResourceInfo.width, firstResourceInfo.height,
                 firstResourceInfo.mipLevels, firstResourceInfo.viewMipLevels, firstResourceInfo.mostDetailedMip,
                 firstResourceInfo.bindFlags, firstResourceInfo.miscFlags, idx + 1);
@@ -743,18 +741,19 @@ void CWrapD3D11DeviceContext::SetRealSampler(UINT stageIndex, UINT slot, ID3D11S
     }
 }
 
-void CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots) {
+int CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots) {
     if (!m_pReal || stageIndex >= 6 || startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT || numSlots == 0 ||
         !g_GraphicsOverridesActive.load(std::memory_order_acquire))
-        return;
+        return 0;
 
     ID3D11Device* realDevice = nullptr;
     m_pReal->GetDevice(&realDevice);
     if (!realDevice)
-        return;
+        return 0;
 
     const UINT maxSlots = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
     const UINT actualSlots = (numSlots < maxSlots) ? numSlots : maxSlots;
+    int rebound = 0;
     for (UINT i = 0; i < actualSlots; ++i) {
         const UINT slot = startSlot + i;
         ID3D11SamplerState* logicalSampler = m_TrackedSamplers[stageIndex][slot];
@@ -786,6 +785,7 @@ void CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot,
         ID3D11SamplerState* desiredSampler = ResolveForcedAFSampler(stageIndex, slot, realDevice, logicalSampler);
         if (currentSampler != desiredSampler) {
             SetRealSampler(stageIndex, slot, desiredSampler);
+            ++rebound;
             int idx = g_WrapperAFReconciled.fetch_add(1, std::memory_order_relaxed);
             if (idx < 48) {
                 D3D11_SAMPLER_DESC desc = {};
@@ -798,6 +798,7 @@ void CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot,
             currentSampler->Release();
     }
     realDevice->Release();
+    return rebound;
 }
 
 void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
@@ -805,7 +806,46 @@ void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
         return;
     }
     m_PixelSamplerStateDirty = false;
-    ReconcileSamplers(kWrapperStagePS, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    const int rebound = ReconcileSamplers(kWrapperStagePS, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    int idx = g_WrapperAFDrawReconciles.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 24) {
+        WrapperLog("Wrapper: AF draw reconcile rebound=%d (#%d)", rebound, idx + 1);
+    }
+}
+
+void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers,
+                                                  ID3D11SamplerState* const* samplers) {
+    if (samplers && numSamplers != 0 && startSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT &&
+        g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        TrackSamplers(stageIndex, startSlot, numSamplers, samplers);
+        int idx = g_WrapperAFBindDeferred.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 24) {
+            WrapperLog("Wrapper: AF sampler bind tracked stage=%s start=%u num=%u deferredToDraw=%d (#%d)",
+                       WrapperStageName(stageIndex), startSlot, numSamplers, stageIndex == kWrapperStagePS ? 1 : 0,
+                       idx + 1);
+        }
+    }
+
+    switch (stageIndex) {
+        case kWrapperStagePS:
+            m_pReal->PSSetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case kWrapperStageVS:
+            m_pReal->VSSetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case kWrapperStageGS:
+            m_pReal->GSSetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case kWrapperStageHS:
+            m_pReal->HSSetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case kWrapperStageDS:
+            m_pReal->DSSetSamplers(startSlot, numSamplers, samplers);
+            break;
+        case kWrapperStageCS:
+            m_pReal->CSSetSamplers(startSlot, numSamplers, samplers);
+            break;
+    }
 }
 
 // ============================================================================
@@ -898,171 +938,33 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11DeviceContext::SetPrivateDataInterface(REFGU
 // ============================================================================
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                               ID3D11SamplerState* const* ppSamplers) {
-    if (!ppSamplers || NumSamplers == 0 || StartSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT ||
-        !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        m_pReal->PSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-    TrackSamplers(kWrapperStagePS, StartSlot, NumSamplers, ppSamplers);
-
-    ID3D11Device* realDevice = nullptr;
-    m_pReal->GetDevice(&realDevice);
-    if (!realDevice) {
-        m_pReal->PSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-
-    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    const UINT actualNum = (NumSamplers < (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot))
-                               ? NumSamplers
-                               : (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot);
-    for (UINT i = 0; i < actualNum; ++i) {
-        replaced[i] = ResolveForcedAFSampler(kWrapperStagePS, StartSlot + i, realDevice, ppSamplers[i]);
-    }
-
-    m_pReal->PSSetSamplers(StartSlot, actualNum, replaced);
-    realDevice->Release();
+                                                              ID3D11SamplerState* const* ppSamplers) {
+    BindTrackedSamplers(kWrapperStagePS, StartSlot, NumSamplers, ppSamplers);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::VSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                               ID3D11SamplerState* const* ppSamplers) {
-    if (!ppSamplers || NumSamplers == 0 || StartSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT ||
-        !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        m_pReal->VSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-    TrackSamplers(kWrapperStageVS, StartSlot, NumSamplers, ppSamplers);
-
-    ID3D11Device* realDevice = nullptr;
-    m_pReal->GetDevice(&realDevice);
-    if (!realDevice) {
-        m_pReal->VSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-
-    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    const UINT actualNum = (NumSamplers < (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot))
-                               ? NumSamplers
-                               : (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot);
-    for (UINT i = 0; i < actualNum; ++i) {
-        replaced[i] = ResolveForcedAFSampler(kWrapperStageVS, StartSlot + i, realDevice, ppSamplers[i]);
-    }
-
-    m_pReal->VSSetSamplers(StartSlot, actualNum, replaced);
-    realDevice->Release();
+                                                              ID3D11SamplerState* const* ppSamplers) {
+    BindTrackedSamplers(kWrapperStageVS, StartSlot, NumSamplers, ppSamplers);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::GSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                               ID3D11SamplerState* const* ppSamplers) {
-    if (!ppSamplers || NumSamplers == 0 || StartSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT ||
-        !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        m_pReal->GSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-    TrackSamplers(kWrapperStageGS, StartSlot, NumSamplers, ppSamplers);
-
-    ID3D11Device* realDevice = nullptr;
-    m_pReal->GetDevice(&realDevice);
-    if (!realDevice) {
-        m_pReal->GSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-
-    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    const UINT actualNum = (NumSamplers < (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot))
-                               ? NumSamplers
-                               : (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot);
-    for (UINT i = 0; i < actualNum; ++i) {
-        replaced[i] = ResolveForcedAFSampler(kWrapperStageGS, StartSlot + i, realDevice, ppSamplers[i]);
-    }
-
-    m_pReal->GSSetSamplers(StartSlot, actualNum, replaced);
-    realDevice->Release();
+                                                              ID3D11SamplerState* const* ppSamplers) {
+    BindTrackedSamplers(kWrapperStageGS, StartSlot, NumSamplers, ppSamplers);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::HSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                               ID3D11SamplerState* const* ppSamplers) {
-    if (!ppSamplers || NumSamplers == 0 || StartSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT ||
-        !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        m_pReal->HSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-    TrackSamplers(kWrapperStageHS, StartSlot, NumSamplers, ppSamplers);
-
-    ID3D11Device* realDevice = nullptr;
-    m_pReal->GetDevice(&realDevice);
-    if (!realDevice) {
-        m_pReal->HSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-
-    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    const UINT actualNum = (NumSamplers < (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot))
-                               ? NumSamplers
-                               : (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot);
-    for (UINT i = 0; i < actualNum; ++i) {
-        replaced[i] = ResolveForcedAFSampler(kWrapperStageHS, StartSlot + i, realDevice, ppSamplers[i]);
-    }
-
-    m_pReal->HSSetSamplers(StartSlot, actualNum, replaced);
-    realDevice->Release();
+                                                              ID3D11SamplerState* const* ppSamplers) {
+    BindTrackedSamplers(kWrapperStageHS, StartSlot, NumSamplers, ppSamplers);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                               ID3D11SamplerState* const* ppSamplers) {
-    if (!ppSamplers || NumSamplers == 0 || StartSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT ||
-        !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        m_pReal->DSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-    TrackSamplers(kWrapperStageDS, StartSlot, NumSamplers, ppSamplers);
-
-    ID3D11Device* realDevice = nullptr;
-    m_pReal->GetDevice(&realDevice);
-    if (!realDevice) {
-        m_pReal->DSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-
-    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    const UINT actualNum = (NumSamplers < (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot))
-                               ? NumSamplers
-                               : (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot);
-    for (UINT i = 0; i < actualNum; ++i) {
-        replaced[i] = ResolveForcedAFSampler(kWrapperStageDS, StartSlot + i, realDevice, ppSamplers[i]);
-    }
-
-    m_pReal->DSSetSamplers(StartSlot, actualNum, replaced);
-    realDevice->Release();
+                                                              ID3D11SamplerState* const* ppSamplers) {
+    BindTrackedSamplers(kWrapperStageDS, StartSlot, NumSamplers, ppSamplers);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::CSSetSamplers(UINT StartSlot, UINT NumSamplers,
-                                                               ID3D11SamplerState* const* ppSamplers) {
-    if (!ppSamplers || NumSamplers == 0 || StartSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT ||
-        !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        m_pReal->CSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-    TrackSamplers(kWrapperStageCS, StartSlot, NumSamplers, ppSamplers);
-
-    ID3D11Device* realDevice = nullptr;
-    m_pReal->GetDevice(&realDevice);
-    if (!realDevice) {
-        m_pReal->CSSetSamplers(StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-
-    ID3D11SamplerState* replaced[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    const UINT actualNum = (NumSamplers < (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot))
-                               ? NumSamplers
-                               : (D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot);
-    for (UINT i = 0; i < actualNum; ++i) {
-        replaced[i] = ResolveForcedAFSampler(kWrapperStageCS, StartSlot + i, realDevice, ppSamplers[i]);
-    }
-
-    m_pReal->CSSetSamplers(StartSlot, actualNum, replaced);
-    realDevice->Release();
+                                                              ID3D11SamplerState* const* ppSamplers) {
+    BindTrackedSamplers(kWrapperStageCS, StartSlot, NumSamplers, ppSamplers);
 }
 
 // ============================================================================

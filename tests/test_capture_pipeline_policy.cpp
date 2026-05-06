@@ -291,6 +291,72 @@ TEST(CapturePipelinePolicyTest, WgcAdaptiveHeadroomRequiresHealthySourceReserve)
     EXPECT_FALSE(policy::ShouldAllowWgcAdaptiveHeadroom(telemetry, 20, false, false));
 }
 
+TEST(CapturePipelinePolicyTest, WgcExplicitTenBitDisallowsBgraFallback) {
+    EXPECT_FALSE(policy::ShouldAllowBgra8WgcFallback(true, false));
+    EXPECT_FALSE(policy::ShouldAllowBgra8WgcFallback(true, true));
+    EXPECT_FALSE(policy::ShouldAllowBgra8WgcFallback(false, true));
+    EXPECT_TRUE(policy::ShouldAllowBgra8WgcFallback(false, false));
+}
+
+TEST(CapturePipelinePolicyTest, WgcStartupBarrierDelaysUntilFutureFreshFrame) {
+    EXPECT_EQ(policy::GetWgcStartupBarrierQpc(1000, 100), 1100);
+    EXPECT_EQ(policy::GetWgcStartupBarrierQpc(1000, 0), 1000);
+    EXPECT_FALSE(policy::IsWgcFramePastStartupBarrier(1099, 1100));
+    EXPECT_TRUE(policy::IsWgcFramePastStartupBarrier(1100, 1100));
+    EXPECT_TRUE(policy::IsWgcFramePastStartupBarrier(1200, 1100));
+}
+
+TEST(CapturePipelinePolicyTest, WgcCfrOvercaptureCapUsesTwentyFivePercentHeadroom) {
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(0), 0u);
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(60), 75u);
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(120), 150u);
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(143), 179u);
+}
+
+TEST(CapturePipelinePolicyTest, WgcOvercaptureSwitchesToMaxRateDuringRecovery) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredMin250Fps = 120;
+    telemetry.recentDeliveredMin500Fps = 120;
+    telemetry.recentInputMin250Fps = 122;
+    telemetry.recentInputMin500Fps = 122;
+
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, false));
+    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, true, false));
+    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, true));
+    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, policy::kWgcLowSourceEmptyTickPermille, false, false));
+
+    telemetry.recentInputMin250Fps = 119;
+    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, false));
+}
+
+TEST(CapturePipelinePolicyTest, WgcOvercaptureRestoresOnlyAfterStableFreshSource) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredMin250Fps = 120;
+    telemetry.recentDeliveredMin500Fps = 120;
+    telemetry.recentInputMin250Fps = 122;
+    telemetry.recentInputMin500Fps = 122;
+
+    EXPECT_FALSE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 20, 1999));
+    EXPECT_TRUE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 20, 2000));
+
+    telemetry.recentInputMin250Fps = 119;
+    EXPECT_FALSE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 20, 2500));
+
+    telemetry.recentInputMin250Fps = 122;
+    EXPECT_FALSE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 80, 2500));
+}
+
+TEST(CapturePipelinePolicyTest, AdaptiveEncoderGpuPriorityUsesBudgetHysteresis) {
+    EXPECT_FALSE(policy::ShouldRaiseAdaptiveEncoderGpuPriority(5.9, 8.0));
+    EXPECT_TRUE(policy::ShouldRaiseAdaptiveEncoderGpuPriority(6.0, 8.0));
+    EXPECT_TRUE(policy::ShouldRaiseAdaptiveEncoderGpuPriority(8.0, 8.0));
+
+    EXPECT_TRUE(policy::ShouldRestoreNeutralEncoderGpuPriority(4.0, 8.0));
+    EXPECT_FALSE(policy::ShouldRestoreNeutralEncoderGpuPriority(4.1, 8.0));
+}
+
 TEST(CapturePipelinePolicyTest, WgcWarmupCommitRequiresStableBufferedSource) {
     EXPECT_FALSE(policy::ShouldCommitWgcWarmup(false, 3, policy::kRecordingWarmupMaxMs, 120.0, 120));
     EXPECT_FALSE(policy::ShouldCommitWgcWarmup(true, 2, policy::kRecordingWarmupMinMs, 120.0, 120));
