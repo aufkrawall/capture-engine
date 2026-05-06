@@ -291,6 +291,9 @@ static thread_local int s_externalOverlayPresentInvokeDepth = 0;
 // Stored vtable pointer for unhooking Present when COM wrapper takes over
 static void** s_hookedVTable = nullptr;
 
+// Forward declaration — defined later in this translation unit.
+static PFN_Present EnsurePresentBypassTrampoline();
+
 enum class DX12StartupPresentMode {
     kNone,
     kPassThroughOriginal,
@@ -435,10 +438,23 @@ static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, co
         bypassAvailable, IsSteamOverlayModule(overlayModule), true, false, false,
         GetModuleHandleA("sl.interposer.dll") != nullptr, g_FGCompat.GetRuntimeMode(),
         g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.IsNvPresentLoaded());
+    const bool bypassReady = EnsurePresentBypassTrampoline() != nullptr;
     if (!DXGIShared::ShouldAllowDX12StartupPresentPassForState(overlayModule != nullptr, oPresentTrampoline != nullptr,
                                                                oPresent1Trampoline != nullptr, steamBypassShouldOwnPath,
+                                                               bypassReady,
                                                                g_FGCompat.GetRuntimeMode(),
                                                                g_StreamlineFGRunning.load(std::memory_order_acquire))) {
+        static std::atomic<int> s_startupPassBlockLogCount{0};
+        const int blockNum = s_startupPassBlockLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (blockNum < 5) {
+            HookLogImportant(
+                "GetDX12StartupPresentMode: Startup compat pass blocked "
+                "(overlay=%d trampoline=%d bypass=%d steamBypassOwn=%d runtimeMode=%d slFG=%d)",
+                overlayModule != nullptr ? 1 : 0, oPresentTrampoline != nullptr ? 1 : 0,
+                bypassReady ? 1 : 0, steamBypassShouldOwnPath ? 1 : 0,
+                static_cast<int>(g_FGCompat.GetRuntimeMode()),
+                g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0);
+        }
         return DX12StartupPresentMode::kNone;
     }
 
@@ -1618,8 +1634,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         DX12StartupPresentMode startupMode =
             GetDX12StartupPresentMode(oPresentBypass != nullptr, &overlayModule, &startupPass);
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
-            HookLogImportant("DetourPresent: Startup compatibility pass #%d for third-party overlay %s", startupPass,
-                             overlayModule ? overlayModule : "module");
+            HookLogImportant("DetourPresent: Startup compatibility pass #%d for third-party overlay %s "
+                             "(trampoline=%p bypass=%p)",
+                             startupPass, overlayModule ? overlayModule : "module",
+                             (void*)oPresentTrampoline, (void*)oPresentBypass);
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();
@@ -3070,10 +3088,16 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
 
     // Vtable-hook path fallback: use saved original only if it is not detoured.
+    // NOTE: presentOriginal is dxgi!Present which may have an external overlay's
+    // E9 JMP installed. Calling through it enters the external overlay hook chain
+    // (e.g. Steam's gameoverlayrenderer64). This is safe only when the startup
+    // compat pass has been blocked (see ShouldAllowDX12StartupPresentPassForState)
+    // so that DetourPresent's full routing logic handles re-entrancy.
     if (presentOriginal && presentOriginal != DetourPresent) {
         static int s_copLogCount4 = 0;
         if (s_copLogCount4++ < 5) {
-            HookLog("CallOriginalPresent: fallback oPresent=%p (slLoaded=%d)", presentOriginal, slLoaded);
+            HookLogImportant("CallOriginalPresent: fallback oPresent=%p (trampoline=%p bypass=%p slLoaded=%d)",
+                             presentOriginal, presentTrampoline, presentBypass, slLoaded);
         }
         return presentOriginal(pSwapChain, SyncInterval, Flags);
     }

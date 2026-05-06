@@ -316,16 +316,27 @@ inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStanda
 }
 
 inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay, bool presentTrampolineInstalled,
-                                                      bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
-                                                      ce::fg_runtime::RuntimeMode runtimeMode,
-                                                      bool streamlineFGRunning) {
+                                                       bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
+                                                       bool bypassAvailable,
+                                                       ce::fg_runtime::RuntimeMode runtimeMode,
+                                                       bool streamlineFGRunning) {
     if (!hasThirdPartyOverlay || presentTrampolineInstalled || present1TrampolineInstalled) {
         return false;
     }
 
+    // The startup compatibility pass forwards Present through a safe trampoline
+    // (oPresentTrampoline) or the bypass trampoline (oPresentBypass). When the
+    // vtable-hook path was chosen (inline hooks skipped due to external E9 JMP),
+    // the inline trampoline is null. Without a bypass trampoline available,
+    // CallOriginalPresent has no safe forwarding path — it would route through
+    // the external overlay's E9 JMP, causing re-entrant crashes (RIP=0).
+    if (!bypassAvailable) {
+        return false;
+    }
+
     const bool actualFrameGenerationActive = streamlineFGRunning ||
-                                             runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
-                                             runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
+                                              runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
+                                              runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
 
     // The startup compatibility pass exists to let third-party overlays settle
     // before we start driving our own DX12 startup routing. Once Steam's

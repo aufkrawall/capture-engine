@@ -174,36 +174,52 @@ TEST(DXGISharedTest, SteamDX12HookRiskExtendsToProtectedPostFSRStartupHandoff) {
 }
 
 TEST(DXGISharedTest, DX12StartupPresentPassStaysAvailableOnlyForInactiveNonBypassStartup) {
-    EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false,
-                                                                      ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
     EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
-        true, false, false, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
+        true, false, false, false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
     EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
-        true, false, false, false, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false));
+        true, false, false, false, true, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false));
 }
 
 TEST(DXGISharedTest, DX12StartupPresentPassDisablesWhenRealFGOrBypassOwnsPath) {
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(false, false, false, false,
-                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, true, false, false,
-                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, true, false,
-                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, true,
-                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false,
-                                                                       ce::fg_runtime::RuntimeMode::kDLSSFG, false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false,
-                                                                       ce::fg_runtime::RuntimeMode::kFSRFG, false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false,
-                                                                       ce::fg_runtime::RuntimeMode::kOff, true));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(false, false, false, false, true,
+                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, true, false, false, true,
+                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, true, false, true,
+                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, true, true,
+                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
+                                                                        ce::fg_runtime::RuntimeMode::kDLSSFG, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
+                                                                        ce::fg_runtime::RuntimeMode::kFSRFG, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
+                                                                        ce::fg_runtime::RuntimeMode::kOff, true));
 }
 
 TEST(DXGISharedTest, DX12StartupPresentPassStaysDisabledWhenSteamBypassAlreadyOwnsStartupPath) {
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, true,
-                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, true, true,
+                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
-        true, false, false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
+        true, false, false, true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
+}
+
+TEST(DXGISharedTest, DX12StartupPresentPassDisablesWhenNoBypassAvailableForVtableHookPath) {
+    // Regression: vtable-hook path (no inline trampoline) with no bypass
+    // trampoline available must NOT allow the startup compat pass, otherwise
+    // CallOriginalPresent would route through the external overlay's E9 JMP
+    // causing a null-pointer crash (RIP=0).
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, false,
+                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, false,
+                                                                        ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, false,
+                                                                        ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false));
+    // When bypass IS available, the pass should still work (no regression)
+    EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
 }
 
 TEST(DXGISharedTest, GlobalCreateSwapchainPathsCaptureQueueWhenSkippingWrapForStreamline) {

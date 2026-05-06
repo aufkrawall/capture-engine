@@ -125,6 +125,39 @@ void ArchiveInstalledCrashArtifactsForDumpDirectory(const std::string& dumpDir) 
             ec.clear();
         }
     }
+
+    // Also copy PDB files directly to the symbols/ root directory so that cdb
+    // can find them with a symbol path like "srv*;...\symbols" without needing
+    // a per-module subdirectory.  The captureengine/ subdirectory above already
+    // preserves the full set of artifacts for manual inspection.
+    const std::filesystem::path symbolsRoot = archiveDir.parent_path();
+    for (const auto& entry : std::filesystem::directory_iterator(sourceDir, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || ec) {
+            ec.clear();
+            continue;
+        }
+
+        const std::string fileName = entry.path().filename().string();
+        if (!ce::crash_dump_policy::EndsWithAsciiInsensitive(fileName.c_str(), ".pdb")) {
+            continue;
+        }
+        if (ce::crash_dump_policy::ContainsAsciiInsensitive(fileName.c_str(), ".old.")) {
+            continue;
+        }
+
+        const std::filesystem::path dest = symbolsRoot / entry.path().filename();
+        if (std::filesystem::exists(dest)) {
+            continue;
+        }
+
+        std::filesystem::copy_file(entry.path(), dest, std::filesystem::copy_options::none, ec);
+        if (ec) {
+            ec.clear();
+        }
+    }
 }
 
 }  // namespace
