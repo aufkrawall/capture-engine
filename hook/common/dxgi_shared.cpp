@@ -1634,16 +1634,22 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         DX12StartupPresentMode startupMode =
             GetDX12StartupPresentMode(oPresentBypass != nullptr, &overlayModule, &startupPass);
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
+            const bool steamOverlayPresent = IsSteamOverlayModule(overlayModule);
+            const bool useBypass = steamOverlayPresent && oPresentBypass && !oPresentTrampoline;
             HookLogImportant("DetourPresent: Startup compatibility pass #%d for third-party overlay %s "
-                             "(trampoline=%p bypass=%p)",
+                             "(trampoline=%p bypass=%p steam=%d useBypass=%d)",
                              startupPass, overlayModule ? overlayModule : "module",
-                             (void*)oPresentTrampoline, (void*)oPresentBypass);
+                             (void*)oPresentTrampoline, (void*)oPresentBypass,
+                             steamOverlayPresent ? 1 : 0, useBypass ? 1 : 0);
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
             ProcessVSyncOverride(SyncInterval, Flags);
+            if (useBypass) {
+                return oPresentBypass(pSwapChain, SyncInterval, Flags);
+            }
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
         const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);

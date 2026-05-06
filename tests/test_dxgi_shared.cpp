@@ -96,6 +96,38 @@ TEST(DXGISharedTest, SteamDX12BypassRequiresCleanNonWrappedEntryPath) {
                                                                 ce::fg_runtime::RuntimeMode::kOff, false, false));
 }
 
+// Regression: Strange Brigade DX12 crash.  When Steam overlay hooks dxgi!Present
+// with an E9 JMP and CE uses vtable hooks (oPresentTrampoline==NULL), the startup
+// compat pass must use the bypass trampoline instead of routing through Steam's
+// broken hook chain.  Steam reads vtable[8] (=DetourPresent), can't resolve a
+// "next" handler, and calls through NULL (RIP=0).
+TEST(DXGISharedTest, StartupCompatPassRequiresBypassForSteamOverlayVtableHookPath) {
+    // Steam overlay + vtable hook (no trampoline) + bypass available: allow pass
+    EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, true,
+        ce::fg_runtime::RuntimeMode::kOff, false));
+
+    // Without bypass trampoline: no safe forwarding path, block the pass
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, false,
+        ce::fg_runtime::RuntimeMode::kOff, false));
+
+    // With inline trampoline present: normal path, allow pass
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, true, false, false, true,
+        ce::fg_runtime::RuntimeMode::kOff, false));
+
+    // No third-party overlay: no startup compat pass needed
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        false, false, false, false, true,
+        ce::fg_runtime::RuntimeMode::kOff, false));
+
+    // With active frame generation: block the pass (let FG routing handle it)
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, true,
+        ce::fg_runtime::RuntimeMode::kDLSSFG, false));
+}
+
 TEST(DXGISharedTest, GuardedSteamOverlayInvokeRequiresBypassAndCleanDX12Path) {
     EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
                                                                                    false, false, false, false));
