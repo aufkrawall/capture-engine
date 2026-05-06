@@ -1747,6 +1747,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     int64_t lastWarmupWgcSourceQpc = 0;
     int64_t wgcStartupBarrierQpc = 0;
     uint32_t wgcStartupBarrierDroppedFrames = 0;
+    bool wgcStartupPreLiveDelayComplete = false;
+    uint32_t wgcStartupPreLiveDelayDroppedFrames = 0;
     uint32_t wgcFreshWarmupFrameCount = 0;
     uint32_t wgcOldestBufferedFrameAgeUs = 0;
     double wgcCoverageRepeatAccumulator = 0.0;
@@ -1923,6 +1925,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         lastWarmupWgcSourceQpc = 0;
         wgcStartupBarrierQpc = 0;
         wgcStartupBarrierDroppedFrames = 0;
+        wgcStartupPreLiveDelayComplete = false;
+        wgcStartupPreLiveDelayDroppedFrames = 0;
         wgcFreshWarmupFrameCount = 0;
     };
     auto TrackWarmupWgcFreshFrame = [&](const QueuedFrame& queuedFrame) {
@@ -3196,14 +3200,70 @@ void EncoderThreadFunc(const AppConfig& config) {
             const bool warmupFreshEnough =
                 !useScreenGrab || wgcFreshWarmupFrameCount >= ce::capture_policy::kWgcWarmupFreshFrames;
             if (warmupReady && warmupFreshEnough) {
-                if (useScreenGrab && !config.video.useVFR && targetIntervalTicks > 0) {
+                const bool wgcCfrStartupSync = ce::capture_policy::ShouldUseWgcCfrStartupSyncBarrier(
+                    useScreenGrab, config.video.useVFR, targetIntervalTicks);
+                if (wgcCfrStartupSync) {
+                    if (!wgcStartupPreLiveDelayComplete) {
+                        if (popped) {
+                            TrackWarmupWgcFreshFrame(frame);
+                            ++hiddenStartupFrames;
+                            ++wgcStartupPreLiveDelayDroppedFrames;
+                            warmupState.hiddenStartupFrames = hiddenStartupFrames;
+                            DiscardQueuedFrame(frame);
+                        }
+
+                        const int64_t delayTicks =
+                            ce::capture_policy::GetWgcCfrStartupPreLiveDelayTicks(targetIntervalTicks);
+                        if (hTimer && delayTicks > 0) {
+                            const int64_t delay100ns = (delayTicks * 10000000) / qpcFreq.QuadPart;
+                            LARGE_INTEGER dueTime;
+                            dueTime.QuadPart = -delay100ns;
+                            if (SetWaitableTimer(hTimer, &dueTime, 0, NULL, NULL, FALSE)) {
+                                WaitForSingleObject(hTimer, INFINITE);
+                            }
+                        }
+
+                        QueuedFrame qf;
+                        size_t queueFlushed = 0;
+                        while (g_FrameQueue.Pop(qf, 0)) {
+                            if (qf.isInjectMode)
+                                DiscardQueuedFrame(qf);
+                            else if (qf.texture)
+                                ReleaseQueuedFrameTexture(qf);
+                            queueFlushed++;
+                        }
+                        size_t bufferedFlushed = 0;
+                        if (!bufferedWgcFrames.empty()) {
+                            bufferedFlushed = bufferedWgcFrames.size();
+                            ClearBufferedWgcFrames();
+                        }
+
+                        LARGE_INTEGER barrierNow;
+                        QueryPerformanceCounter(&barrierNow);
+                        wgcStartupBarrierQpc =
+                            ce::capture_policy::GetWgcStartupBarrierQpc(barrierNow.QuadPart, targetIntervalTicks);
+                        wgcStartupBarrierDroppedFrames = 0;
+                        wgcStartupPreLiveDelayComplete = true;
+                        const uint64_t warmupElapsedWithDelayMs64 = GetTickCount64() - startupWarmupStartTick;
+                        LogInfo(
+                            "[EncoderThread] WGC startup pre-live delay complete: anchorQpc=%lld now=%lld "
+                            "oneFrame=%lld delayTicks=%lld hiddenFrames=%u discarded=%u queueFlushed=%zu "
+                            "bufferedFlushed=%zu warmupMs=%llu",
+                            static_cast<long long>(wgcStartupBarrierQpc), static_cast<long long>(barrierNow.QuadPart),
+                            static_cast<long long>(targetIntervalTicks), static_cast<long long>(delayTicks),
+                            hiddenStartupFrames, wgcStartupPreLiveDelayDroppedFrames, queueFlushed, bufferedFlushed,
+                            static_cast<unsigned long long>(warmupElapsedWithDelayMs64));
+                        continue;
+                    }
+
                     if (wgcStartupBarrierQpc <= 0) {
                         LARGE_INTEGER barrierNow;
                         QueryPerformanceCounter(&barrierNow);
                         wgcStartupBarrierQpc =
                             ce::capture_policy::GetWgcStartupBarrierQpc(barrierNow.QuadPart, targetIntervalTicks);
                         LogInfo(
-                            "[EncoderThread] WGC startup sync barrier armed: anchorQpc=%lld now=%lld oneFrame=%lld",
+                            "[EncoderThread] WGC startup sync post-delay barrier armed: anchorQpc=%lld now=%lld "
+                            "oneFrame=%lld",
                             static_cast<long long>(wgcStartupBarrierQpc), static_cast<long long>(barrierNow.QuadPart),
                             static_cast<long long>(targetIntervalTicks));
                     }
@@ -3220,13 +3280,21 @@ void EncoderThreadFunc(const AppConfig& config) {
                         continue;
                     }
 
+                    LARGE_INTEGER anchorNow;
+                    QueryPerformanceCounter(&anchorNow);
                     const int64_t startDeltaUs =
                         ((frame.timestamp - wgcStartupBarrierQpc) * 1000000) / qpcFreq.QuadPart;
+                    const int64_t frameAgeUs =
+                        anchorNow.QuadPart >= frame.timestamp
+                            ? ((anchorNow.QuadPart - frame.timestamp) * 1000000) / qpcFreq.QuadPart
+                            : 0;
                     LogInfo(
-                        "[EncoderThread] WGC startup sync barrier satisfied: anchorQpc=%lld firstFrameQpc=%lld "
-                        "delta=%lldus dropped=%u",
+                        "[EncoderThread] WGC startup sync post-delay barrier satisfied: anchorQpc=%lld "
+                        "firstFrameQpc=%lld delta=%lldus frameAge=%lldus droppedPostDelay=%u "
+                        "discardedBeforeDelay=%u",
                         static_cast<long long>(wgcStartupBarrierQpc), static_cast<long long>(frame.timestamp),
-                        static_cast<long long>(startDeltaUs), wgcStartupBarrierDroppedFrames);
+                        static_cast<long long>(startDeltaUs), static_cast<long long>(frameAgeUs),
+                        wgcStartupBarrierDroppedFrames, wgcStartupPreLiveDelayDroppedFrames);
                 }
 
                 pendingLiveActivation = true;
@@ -3296,12 +3364,25 @@ void EncoderThreadFunc(const AppConfig& config) {
                     // Inject needs extra ticks for NVENC encode warmup (~21ms for
                     // rate control init, lookahead buffer fill).  WGC needs more
                     // because the codec itself initializes at first frame (~127ms).
-                    int64_t sleepTicks = useScreenGrab ? (targetIntervalTicks * 24) : (targetIntervalTicks * 4);
-                    int64_t sleep100ns = (sleepTicks * 10000000) / qpcFreq.QuadPart;
-                    LARGE_INTEGER dueTime;
-                    dueTime.QuadPart = -sleep100ns;
-                    if (SetWaitableTimer(hTimer, &dueTime, 0, NULL, NULL, FALSE)) {
-                        WaitForSingleObject(hTimer, INFINITE);
+                    const bool wgcCfrDelayAlreadyDone =
+                        ce::capture_policy::ShouldUseWgcCfrStartupSyncBarrier(
+                            useScreenGrab, config.video.useVFR, targetIntervalTicks) &&
+                        wgcStartupPreLiveDelayComplete;
+                    // WGC CFR performs this delay before the final startup barrier
+                    // so the shared A/V anchor is selected from a fresh post-delay frame.
+                    int64_t sleepTicks =
+                        wgcCfrDelayAlreadyDone
+                            ? 0
+                            : (useScreenGrab
+                                   ? ce::capture_policy::GetWgcCfrStartupPreLiveDelayTicks(targetIntervalTicks)
+                                   : (targetIntervalTicks * 4));
+                    if (sleepTicks > 0) {
+                        int64_t sleep100ns = (sleepTicks * 10000000) / qpcFreq.QuadPart;
+                        LARGE_INTEGER dueTime;
+                        dueTime.QuadPart = -sleep100ns;
+                        if (SetWaitableTimer(hTimer, &dueTime, 0, NULL, NULL, FALSE)) {
+                            WaitForSingleObject(hTimer, INFINITE);
+                        }
                     }
                 }
                 QueryPerformanceCounter(&nextSampleTime);

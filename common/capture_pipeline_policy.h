@@ -370,6 +370,14 @@ inline bool ShouldAllowBgra8WgcFallback(bool explicitTenBitVideo, bool hdrCaptur
     return !explicitTenBitVideo && !hdrCapture;
 }
 
+inline bool ShouldUseWgcCfrStartupSyncBarrier(bool useScreenGrab, bool useVfr, int64_t targetIntervalTicks) {
+    return useScreenGrab && !useVfr && targetIntervalTicks > 0;
+}
+
+inline int64_t GetWgcCfrStartupPreLiveDelayTicks(int64_t targetIntervalTicks) {
+    return targetIntervalTicks > 0 ? (targetIntervalTicks * 24) : 0;
+}
+
 inline int64_t GetWgcStartupBarrierQpc(int64_t nowQpc, int64_t targetIntervalTicks) {
     if (nowQpc <= 0 || targetIntervalTicks <= 0) {
         return nowQpc;

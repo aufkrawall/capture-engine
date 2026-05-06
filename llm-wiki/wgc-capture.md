@@ -26,7 +26,7 @@ Windows Graphics Capture remains the default non-injected capture path. The curr
 
 WGC CFR now aims for smooth output with lower steady-state pressure on the game: it starts capture at a modest over-target cadence (`ceil(output_fps * 1.25)`), switches to max-rate only while recovering from source starvation, and restores the cap after sustained fresh input. Explicit 10-bit capture is quality-mandatory: when `Video.bit_depth=10`, WGC must stay on a high-precision input path (`R10G10B10A2` first, FP16 as the only fallback) and fail loudly if no high-precision frame-pool path is available. BGRA8 throughput fallback is allowed only for 8-bit or automatic SDR paths.
 
-WGC CFR startup A/V sync now uses one shared start anchor by construction. Capture waits for a first usable WGC frame at or after a one-frame startup barrier, then mediaengine selects that accepted video timestamp as the shared audio/video anchor. First stream packets should start at PTS zero, with startup anchor delta logged as `0us`.
+WGC CFR startup A/V sync now uses one shared start anchor by construction. Capture performs the existing pre-live cadence/encoder settling delay first, flushes pre-anchor warmup material, arms a one-frame startup barrier, then waits for the first usable post-delay WGC frame at or after that barrier. Mediaengine selects that accepted video timestamp as the shared audio/video anchor. First stream packets should start at PTS zero, with startup anchor delta logged as `0us`; the accepted frame should also be fresh instead of carrying the old pre-live delay as startup frame age.
 
 ## Config Flags
 
@@ -51,8 +51,8 @@ Use these with existing `FreshMiss`, `BufAvg`, `BufMin`, `NoFresh`, `NoReserve`,
 
 Startup sync logs to preserve in future changes:
 
-- `[WGC CFR] Startup barrier armed...`
-- `[WGC CFR] Startup barrier satisfied...`
+- `WGC startup pre-live delay complete...`
+- `WGC startup sync post-delay barrier satisfied... frameAge=...`
 - `MediaEngine: WGC CFR startup anchor selected exactly... startupDelta=0us`
 - `[A/V START] Shared startup anchor selected... delta=0us`
 
@@ -70,7 +70,9 @@ The encoder D3D11 device no longer raises GPU thread priority merely because a c
 
 Validated in this implementation pass:
 
-- `python build.py --skip-updates` passed on build `0.1.2893`.
+- `installed/captureengine/logs/20260506_212712` on build `0.1.2893` produced a 3840x2160/120 AV1 10-bit file (`yuv420p10le`, BT.709 full range) with all streams starting at PTS zero and final video/audio durations equal at 315.000000 s. The log showed `startupDelta=0us` and final `maxDelta=0 us`, but also exposed a 205 ms first-frame age because the accepted startup frame was chosen before the pre-live delay.
+- The startup path now performs the WGC CFR pre-live delay before arming the final startup barrier so the shared anchor is selected from a fresh post-delay frame.
+- `python build.py --skip-updates` passed on build `0.1.2895`.
 - `python build.py --no-build --run-tests --skip-updates` passed 685/685 tests.
 
 Manual validation is still required for WGC CFR 4K120 10-bit AV1 capture under normal load, high CPU load, high GPU load, `wgc_skip_split_device_flush=0/1`, and optional `wgc_same_device_capture=1`. Watch for corruption, device removal, source-starved duplicates, encoder starvation, unbounded queue growth, startup anchor deltas, final stream duration deltas, and game-performance regression.

@@ -299,6 +299,13 @@ TEST(CapturePipelinePolicyTest, WgcExplicitTenBitDisallowsBgraFallback) {
 }
 
 TEST(CapturePipelinePolicyTest, WgcStartupBarrierDelaysUntilFutureFreshFrame) {
+    EXPECT_TRUE(policy::ShouldUseWgcCfrStartupSyncBarrier(true, false, 100));
+    EXPECT_FALSE(policy::ShouldUseWgcCfrStartupSyncBarrier(true, true, 100));
+    EXPECT_FALSE(policy::ShouldUseWgcCfrStartupSyncBarrier(false, false, 100));
+    EXPECT_FALSE(policy::ShouldUseWgcCfrStartupSyncBarrier(true, false, 0));
+    EXPECT_EQ(policy::GetWgcCfrStartupPreLiveDelayTicks(100), 2400);
+    EXPECT_EQ(policy::GetWgcCfrStartupPreLiveDelayTicks(0), 0);
+    EXPECT_EQ(policy::GetWgcCfrStartupPreLiveDelayTicks(-100), 0);
     EXPECT_EQ(policy::GetWgcStartupBarrierQpc(1000, 100), 1100);
     EXPECT_EQ(policy::GetWgcStartupBarrierQpc(1000, 0), 1000);
     EXPECT_FALSE(policy::IsWgcFramePastStartupBarrier(1099, 1100));
