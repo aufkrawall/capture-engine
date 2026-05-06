@@ -3102,8 +3102,30 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (presentOriginal && presentOriginal != DetourPresent) {
         static int s_copLogCount4 = 0;
         if (s_copLogCount4++ < 5) {
-            HookLogImportant("CallOriginalPresent: fallback oPresent=%p (trampoline=%p bypass=%p slLoaded=%d)",
-                             presentOriginal, presentTrampoline, presentBypass, slLoaded);
+            const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+            const bool steamOverlay = IsSteamOverlayModule(overlayModule);
+            HookLogImportant(
+                "CallOriginalPresent: fallback oPresent=%p (trampoline=%p bypass=%p slLoaded=%d steamOverlay=%d "
+                "overlay=%s)",
+                presentOriginal, presentTrampoline, presentBypass, slLoaded, steamOverlay ? 1 : 0,
+                overlayModule ? overlayModule : "none");
+        }
+        // When Steam overlay is loaded without Streamline, calling oPresent
+        // (dxgi!Present with Steam's E9 JMP) re-enters Steam's overlay handler
+        // which crashes because vtable[8] = DetourPresent. Use the bypass
+        // trampoline instead to skip all in-memory hooks.
+        if (!slLoaded && presentBypass) {
+            const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+            if (IsSteamOverlayModule(overlayModule)) {
+                static int s_steamNonSLBypassCount = 0;
+                if (s_steamNonSLBypassCount++ < 10) {
+                    HookLogImportant(
+                        "CallOriginalPresent: Steam overlay without Streamline — using bypass trampoline %p instead of "
+                        "oPresent %p to avoid Steam NULL-callback crash",
+                        presentBypass, presentOriginal);
+                }
+                return presentBypass(pSwapChain, SyncInterval, Flags);
+            }
         }
         return presentOriginal(pSwapChain, SyncInterval, Flags);
     }

@@ -92,7 +92,12 @@ TEST(DXGISharedTest, SteamDX12BypassRequiresCleanNonWrappedEntryPath) {
                                                                 ce::fg_runtime::RuntimeMode::kOff, false, false));
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, true, true,
                                                                 ce::fg_runtime::RuntimeMode::kOff, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
+    // Regression: Strange Brigade DX12 crash.  When Steam overlay hooks dxgi!Present
+    // with an E9 JMP and no Streamline or NvPresent is loaded, calling oPresent
+    // (dxgi!Present with Steam's E9) re-enters Steam's overlay handler which
+    // crashes because vtable[8] = DetourPresent.  The bypass trampoline must be
+    // used instead.
+    EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
                                                                 ce::fg_runtime::RuntimeMode::kOff, false, false));
 }
 
@@ -126,6 +131,45 @@ TEST(DXGISharedTest, StartupCompatPassRequiresBypassForSteamOverlayVtableHookPat
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
         true, false, false, false, true,
         ce::fg_runtime::RuntimeMode::kDLSSFG, false));
+}
+
+// Regression: Strange Brigade DX12 non-SL Steam overlay bypass.  When Steam
+// overlay is loaded without Streamline or NvPresent, ShouldForceSteamDX12Bypass
+// must return true so CallOriginalPresent routes through the bypass trampoline
+// instead of calling oPresent (dxgi!Present with Steam's E9 JMP) which would
+// crash because Steam can't resolve vtable[8] (=DetourPresent) as a next handler.
+TEST(DXGISharedTest, SteamDX12BypassForNonSLSteamOverlay) {
+    // Steam overlay + bypass available + no SL + no NV: must force bypass
+    EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
+                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+
+    // Still requires bypassAvailable
+    EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(false, true, true, false, false, false,
+                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+
+    // Still requires isSteamOverlay
+    EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(true, false, true, false, false, false,
+                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+
+    // Still requires isD3D12SwapChain
+    EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, false, false, false, false,
+                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+
+    // Still blocked by inWrapperPresent
+    EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, true, false, false,
+                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+
+    // Still blocked by isWrappedSwapChain
+    EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, true, false,
+                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+
+    // SL loaded without FG still forces bypass (existing behavior preserved)
+    EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, true,
+                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+
+    // NvPresent loaded still forces bypass (existing behavior preserved)
+    EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
+                                                                ce::fg_runtime::RuntimeMode::kOff, false, true));
 }
 
 TEST(DXGISharedTest, GuardedSteamOverlayInvokeRequiresBypassAndCleanDX12Path) {

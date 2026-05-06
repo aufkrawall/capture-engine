@@ -237,7 +237,13 @@ inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isStea
     }
     const bool unsafeSteamStartupWindow = streamlineLoaded || nvPresentLoaded;
     if (!unsafeSteamStartupWindow) {
-        return false;
+        // When Steam overlay is loaded without Streamline or NvPresent (e.g.
+        // Strange Brigade DX12), calling oPresent (dxgi!Present with Steam's
+        // E9 JMP) re-enters Steam's overlay handler which crashes because
+        // vtable[8] = DetourPresent and Steam can't resolve a "next" handler.
+        // The bypass trampoline skips all in-memory hooks and calls the real
+        // DXGI Present directly, which is safe.
+        return true;
     }
 
     const bool streamlineNeedsBypass =
