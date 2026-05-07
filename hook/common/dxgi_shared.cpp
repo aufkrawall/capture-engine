@@ -2124,6 +2124,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
 
+    // Recursive external-overlay Present1 (e.g. Steam overlay called Present1
+    // which re-entered through vtable[22]).  Same guard as DetourPresent.
+    if (s_externalOverlayPresentInvokeDepth > 0) {
+        PFN_Present1 recursiveBypass1 = EnsurePresent1BypassTrampoline();
+        if (recursiveBypass1) {
+            static std::atomic<int> s_recursiveExternalOverlayPresent1BypassLogCount{0};
+            const int bypassNum =
+                s_recursiveExternalOverlayPresent1BypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (bypassNum <= 10 || (bypassNum % 500) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Bypassing recursive external-overlay Present1 #%d while guarded Steam hook is "
+                    "active (depth=%d bypass=%p tid=0x%04X)",
+                    bypassNum, s_externalOverlayPresentInvokeDepth, (void*)recursiveBypass1, GetCurrentThreadId());
+            }
+            return recursiveBypass1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
+    }
+
     // Re-entrant Present1 call — same logic as DetourPresent.
     if (IsRecursivePresent()) {
         // Post-SL overlay rendering (same as DetourPresent).
@@ -3033,16 +3051,70 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     const char* forcedBypassOverlay = nullptr;
     if (ShouldForceSteamDX12Bypass(pSwapChain, presentBypass != nullptr, slLoaded, &forcedBypassOverlay)) {
-        HRESULT guardedSteamHr = S_OK;
-        if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
-                                                        "Steam DX12 forced bypass", &guardedSteamHr)) {
-            return guardedSteamHr;
+        // When Streamline is on the stack, the guarded Steam overlay invoke path
+        // is safe because the Streamline plugin-lookup guard prevents Steam's
+        // re-entrant slGetPluginFunction queries from returning NULL.
+        if (slLoaded) {
+            HRESULT guardedSteamHr = S_OK;
+            if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
+                                                             "Steam DX12 forced bypass", &guardedSteamHr)) {
+                return guardedSteamHr;
+            }
+        } else {
+            // Non-Streamline case (e.g. Strange Brigade DX12 with only Steam overlay):
+            // Steam's handler reads vtable[8] to find the next Present to forward
+            // to.  Since CE has vtable[8] = DetourPresent, Steam cannot resolve a
+            // forwarding target and would crash.  Fix: temporarily set vtable[8] to
+            // the bypass trampoline (which calls the real Present from original disk
+            // bytes, skipping ALL in-memory hooks) before calling Steam's overlay
+            // hook directly.  The s_externalOverlayPresentInvokeDepth recursion guard
+            // in DetourPresent handles any re-entrant Present that Steam may issue.
+            PFN_Present steamHook = g_externalOverlayPresentHook;
+            if (steamHook && steamHook != DetourPresent && presentBypass &&
+                IsReadableMemory(pSwapChain, sizeof(void*))) {
+                void** vtable = *(void***)pSwapChain;
+                if (vtable && IsReadableMemory(vtable, 9 * sizeof(void*))) {
+                    void* savedVtable8 = vtable[8];
+                    vtable[8] = (void*)presentBypass;
+
+                    ++s_externalOverlayPresentInvokeDepth;
+                    const HRESULT steamHr = steamHook(pSwapChain, SyncInterval, Flags);
+                    if (s_externalOverlayPresentInvokeDepth > 0) {
+                        --s_externalOverlayPresentInvokeDepth;
+                    }
+
+                    vtable[8] = savedVtable8;
+
+                    static std::atomic<int> s_steamNonSLDirectInvokeCount{0};
+                    if (s_steamNonSLDirectInvokeCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                        HookLogImportant(
+                            "CallOriginalPresent: invoked Steam overlay hook directly (no SL) "
+                            "via vtable[8]=bypass fixup — hr=0x%08X hook=%p",
+                            (unsigned)steamHr, (void*)steamHook);
+                    }
+                    return steamHr;
+                }
+            }
+
+            // Fallback: vtable fixup unavailable — log and use bypass trampoline.
+            static std::atomic<int> s_steamNonSLFallbackCount{0};
+            if (s_steamNonSLFallbackCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                HookLogImportant(
+                    "CallOriginalPresent: Steam overlay direct invoke unavailable "
+                    "(hook=%p bypass=%p readable=%d vtable=%s) — falling back to bypass trampoline",
+                    (void*)steamHook, (void*)presentBypass,
+                    IsReadableMemory(pSwapChain, sizeof(void*)) ? 1 : 0,
+                    (steamHook && IsReadableMemory(pSwapChain, sizeof(void*)))
+                        ? (*(void***)pSwapChain && IsReadableMemory(*(void***)pSwapChain, 9 * sizeof(void*)) ? "ok" : "bad")
+                        : "n/a");
+            }
         }
 
         static int s_forcedBypassLogCount = 0;
         if (s_forcedBypassLogCount++ < 10) {
-            HookLogImportant("CallOriginalPresent: forcing DXGI bypass for %s while FG is inactive",
-                             forcedBypassOverlay ? forcedBypassOverlay : "overlay");
+            HookLogImportant("CallOriginalPresent: forcing DXGI bypass for %s (slLoaded=%d, bypass=%p)",
+                             forcedBypassOverlay ? forcedBypassOverlay : "overlay",
+                             slLoaded ? 1 : 0, (void*)presentBypass);
         }
         return presentBypass(pSwapChain, SyncInterval, Flags);
     }
@@ -3169,13 +3241,56 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
 
     const char* forcedBypassOverlay = nullptr;
     if (ShouldForceSteamDX12Bypass(pSwapChain, present1Bypass != nullptr, slLoaded, &forcedBypassOverlay)) {
-        // NOTE: Same as CallOriginalPresent — Steam's overlay hook is unsafe
-        // from within SL's execution context (re-entrant slGetPluginFunction
-        // returns NULL → RIP=0).  Use the bypass trampoline instead.
-        static int s_forcedBypass1LogCount = 0;
-        if (s_forcedBypass1LogCount++ < 10) {
-            HookLogImportant("CallOriginalPresent1: forcing DXGI bypass (no Steam hook) for %s while FG is inactive",
-                             forcedBypassOverlay ? forcedBypassOverlay : "overlay");
+        if (slLoaded) {
+            // SL case: use bypass trampoline (same as before, no Present1 guard available).
+            static int s_forcedBypass1LogCount = 0;
+            if (s_forcedBypass1LogCount++ < 10) {
+                HookLogImportant("CallOriginalPresent1: forcing DXGI bypass for %s (slLoaded=%d)",
+                                 forcedBypassOverlay ? forcedBypassOverlay : "overlay", slLoaded ? 1 : 0);
+            }
+        } else {
+            // Non-Streamline case: attempt Steam overlay invoke with vtable[22] fixup.
+            // g_externalOverlayPresentHook is Steam's E9 JMP target for Present (vtable[8]).
+            // Steam may also have hooked Present1 (vtable[22]) with the same handler or
+            // a different one.  Try the fixup using g_externalOverlayPresentHook cast to
+            // PFN_Present1 — Steam's handler should tolerate the extra DXGI_PRESENT_PARAMETERS*
+            // parameter (COM-style ignored trailing params).
+            PFN_Present steamHook = g_externalOverlayPresentHook;
+            if (steamHook && steamHook != DetourPresent && present1Bypass &&
+                IsReadableMemory(pSwapChain, sizeof(void*))) {
+                void** vtable = *(void***)pSwapChain;
+                if (vtable && IsReadableMemory(vtable, 23 * sizeof(void*))) {
+                    void* savedVtable22 = vtable[22];
+                    vtable[22] = (void*)present1Bypass;
+
+                    ++s_externalOverlayPresentInvokeDepth;
+                    // Call through Present (slot 8) handler with extra params — Steam's
+                    // handler typically tolerates trailing parameters.
+                    const HRESULT steamHr = steamHook(pSwapChain, SyncInterval, Flags);
+                    if (s_externalOverlayPresentInvokeDepth > 0) {
+                        --s_externalOverlayPresentInvokeDepth;
+                    }
+
+                    vtable[22] = savedVtable22;
+
+                    static std::atomic<int> s_steamNonSLPresent1InvokeCount{0};
+                    if (s_steamNonSLPresent1InvokeCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                        HookLogImportant(
+                            "CallOriginalPresent1: invoked Steam overlay hook via vtable[22]=bypass fixup "
+                            "hr=0x%08X hook=%p",
+                            (unsigned)steamHr, (void*)steamHook);
+                    }
+                    return steamHr;
+                }
+            }
+
+            static std::atomic<int> s_steamNonSLPresent1FallbackCount{0};
+            if (s_steamNonSLPresent1FallbackCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                HookLogImportant(
+                    "CallOriginalPresent1: Steam overlay direct invoke unavailable "
+                    "(hook=%p bypass=%p) — falling back to Present1 bypass trampoline",
+                    (void*)steamHook, (void*)present1Bypass);
+            }
         }
         return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
     }

@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-05
+Last cross-checked: 2026-05-07
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -54,6 +54,37 @@ This page records the current repo knowledge for making our DX12 overlay work we
   Safety: `postSLConfirmedButStartupSettling` is the single guard for DllMain safety. When true, Steam overlay is skipped (RIP=0 crash risk). When false, DllMain has completed and Steam TLS is initialized on the calling thread.
   - Primary source anchors: `dxgi_shared.cpp` ~line 1669 (startup bypass), ~line 1318 (synthetic re-entrant), ~line 1241 (confirmed standalone normal route)
   - Root cause: callFromStreamlineModule remains true for ALL Present calls when SL interposer wraps the game's Present calls, causing DetourPresent to take early bypass paths that skip Steam overlay without our explicit invoke.
+
+## Non-SL Steam Overlay Bypass (Strange Brigade DX12 Fix)
+
+### Build 0.1.2904 — Force bypass for non-SL Steam overlay
+- When Steam overlay is loaded without Streamline or NvPresent (e.g. Strange Brigade DX12), `ShouldForceSteamDX12BypassForState` returns `true`. This routes `CallOriginalPresent` through the bypass trampoline instead of calling `oPresent` (dxgi!Present with Steam's E9 JMP), which would re-enter Steam's overlay handler and crash because `vtable[8] = DetourPresent`.
+- A safety net in `CallOriginalPresent` fallback path also handles this case directly: when `!slLoaded && presentBypass && IsSteamOverlayModule`, the bypass trampoline is used.
+- Source anchors: `hook/common/dxgi_shared.h:239-244`, `hook/common/dxgi_shared.cpp:3111-3128`.
+- Regression test: `SteamDX12BypassForNonSLSteamOverlay` in `tests/test_dxgi_shared.cpp`.
+
+### Build 0.1.2906 — Fix: don't invoke Steam overlay hook from forced-bypass path without Streamline
+- **Problem**: `CallOriginalPresent`'s forced-bypass block (line 3035) called `TryInvokeGuardedExternalSteamOverlayPresent` for ALL cases where `ShouldForceSteamDX12Bypass` returned true, including the non-Steam-overlay-without-Streamline scenario. But Steam's overlay handler crashes when invoked without Streamline on the stack because:
+  - CE uses vtable hooking (vtable[8] = `DetourPresent`)
+  - Steam's handler tries to find the "next" real Present by reading vtable[8]
+  - Gets `DetourPresent` → can't resolve a valid handler → calls through NULL → RIP=0
+- **Fix**: Added `if (slLoaded)` guard around `TryInvokeGuardedExternalSteamOverlayPresent` in `CallOriginalPresent`. When Streamline is not loaded, skip Steam overlay invocation and use the bypass trampoline directly. The guarded Steam invocation is only safe when Streamline is on the Present stack (the `streamlineStackActive` guard in `ShouldInvokeGuardedExternalSteamOverlayPresentForState` protects against re-entrancy).
+- Also added improved debug logging: explicit "skipping Steam overlay invoke" log and updated "forcing DXGI bypass" log to include `slLoaded` state.
+- **Source anchors**: `hook/common/dxgi_shared.cpp:3035-3055` (call-site fix with `slLoaded` guard + logging), `tests/test_dxgi_shared.cpp` (regression test `StrangeBrigadeSteamOverlayCrashWithoutStreamline`).
+- **Edge cases covered**: (a) NvPresent loaded without Streamline also benefits from the same fix, (b) no bypass trampoline case unchanged (fundamental failure), (c) inline hook path (trampoline exists) unchanged.
+
+### Build 0.1.2908 — Steam overlay visible: invoke directly with vtable[8] fixup (non-SL case)
+- **Problem**: The 0.1.2906 fix prevented the crash but also made Steam overlay permanently invisible in the non-Streamline case. The bypass trampoline jumped over Steam's E9 JMP entirely.
+- **Fix** (`hook/common/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:
+  1. Save vtable[8], set it to the bypass trampoline (valid forwarding target)
+  2. Increment `s_externalOverlayPresentInvokeDepth` (activates recursion guard)
+  3. Call `g_externalOverlayPresentHook` directly (NOT through `TryInvokeGuardedExternalSteamOverlayPresent`)
+  4. Restore vtable[8], decrement depth
+  5. Return Steam's HRESULT
+- Steam's handler reads vtable[8] (=bypass trampoline), renders its overlay, and forwards to the bypass trampoline which calls the real Present. The recursion guard in `DetourPresent` catches any re-entrant calls.
+- Also applied the same fix to `CallOriginalPresent1` (vtable[22] fixup) and added the recursion guard to `DetourPresent1`.
+- **Source anchors**: `hook/common/dxgi_shared.cpp:3044-3085` (CallOriginalPresent fix), `:3192-3235` (CallOriginalPresent1 fix), `:2127-2145` (DetourPresent1 recursion guard), `tests/test_dxgi_shared.cpp:2492-2550` (new regression test `StrangeBrigadeSteamOverlayVisibleNonSL`).
+- **Stale-risk**: Medium. Assumes Steam's handler reads vtable[8] for forwarding. Fallback to bypass trampoline preserved.
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because this area depends on call stacks, queue ownership, and third-party module behavior that can change without warning.
