@@ -53,7 +53,7 @@ Primary sources:
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
 - `wgc-capture.md`
-  - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-05-06. Stale-risk: medium.
+  - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, WGC CFR audio continuity/stop-tail policy, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-05-07. Stale-risk: medium.
 - `log.md`
   - Stub pointing to `log/recent.md` (recent activity) and `log/archive-YYYY-Www*.md` (weekly archives).
 

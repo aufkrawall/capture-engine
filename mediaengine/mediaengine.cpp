@@ -1255,7 +1255,7 @@ public:
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 10;  // 100ms
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
-        constexpr double kTier1MaxPitchPercent = 1.0;  // 1.0% covers ~4800 samples/10s at 48kHz
+        constexpr double kTier1MaxPitchPercent = 0.05;  // Keep WGC source-clock correction below audible pitch shift.
         constexpr int64_t kTier2DriftThresholdMs = 20;
         constexpr int64_t kWgcEncoderShortfallBufferedLagMaxMs = 4000;
         constexpr uint32_t kWgcEncoderHealthyDeliveryMarginFps = 4;
@@ -1823,7 +1823,7 @@ public:
                     }
 
                     // Two-tier drift correction:
-                    // Tier 1 - Inaudible micro-pitch via swr_set_compensation (max 0.05%)
+                    // Tier 1 - Inaudible micro-pitch via swr_set_compensation.
                     // Tier 2 - Ring buffer sample trimming with crossfade (when drift > 20ms)
                     {
                         const int64_t rbLevel = static_cast<int64_t>(rbAvailable);
@@ -1866,6 +1866,10 @@ public:
                                     int32_t tier1Delta = 0;
 
                                     if (isWgcCfrRecording) {
+                                        const bool suppressPositiveCorrectionForLiveShortfall =
+                                            ce::audio::ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(
+                                                isWgcCfrRecording, forceDrain, timelineShortfallMs,
+                                                wgcEncoderBottlenecked);
                                         if (wgcEncoderOnlyOverload) {
                                             tier1Delta = 0;
                                             src.targetRateSaturated = false;
@@ -1882,7 +1886,10 @@ public:
                                                 kTier1MaxPitchPercent);
                                             src.targetRateSaturated =
                                                 std::abs(trueDrift) > src.syncResampler->GetMaxCompensationDelta();
-                                            if (tier1Delta > 0) {
+                                            if (tier1Delta > 0 && suppressPositiveCorrectionForLiveShortfall) {
+                                                tier1Delta = 0;
+                                                src.targetRateSaturated = false;
+                                            } else if (tier1Delta > 0) {
                                                 if (ce::audio::ShouldClearWgcPositiveDriftCompensation(
                                                         allowSteadyStatePositiveCompensation, rbLevel, expectedLead,
                                                         positiveCompensationHysteresisSamples)) {
@@ -1987,18 +1994,18 @@ public:
                         }
                     }
 
-                    // Overflow protection: unconditionally cap ring buffer depth to prevent
-                    // unbounded growth when the encoder is severely stalled.  The existing
-                    // lead-excess and Tier2 trims are gated on encoder-bottleneck/coverage-loss
-                    // conditions and are capped at 5ms/call, so they cannot keep up when the
-                    // ring buffer grows to 10+ seconds.  This overflow cap discards excess
-                    // samples with a crossfade whenever the buffer exceeds
-                    // targetLatency + kMaxOverflowSamples (500ms).
+                    // Overflow protection. Non-WGC modes keep the historical short cap; WGC CFR
+                    // preserves audio continuity and only trims near the real ring capacity.
                     if (!forceDrain && src.ringBuffer && !startupTimelineProtected) {
-                        constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;  // 500ms max overflow
+                        constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;             // 500ms max overflow
+                        constexpr int64_t kWgcCfrEmergencyRingMarginSamples = SAMPLE_RATE;  // 1s before full
                         rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
+                        const int64_t rbCapacitySamples = static_cast<int64_t>(src.ringBuffer->GetCapacity() / CHANNELS);
+                        const int64_t overflowCapSamples = ce::audio::ComputeRuntimeOverflowCapSamples(
+                            isWgcCfrRecording, targetLatencySamples, rbCapacitySamples, kMaxOverflowSamples,
+                            kWgcCfrEmergencyRingMarginSamples);
                         const int64_t overflowExcess =
-                            static_cast<int64_t>(rbAvailable) - targetLatencySamples - kMaxOverflowSamples;
+                            static_cast<int64_t>(rbAvailable) - targetLatencySamples - overflowCapSamples;
                         if (overflowExcess > kRuntimeDropFadeSamples) {
                             if (src.postResampleBuffer.size() >= CHANNELS) {
                                 size_t base = src.postResampleBuffer.size() - CHANNELS;
@@ -2020,10 +2027,11 @@ public:
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                             if (dropLogCounter++ % 500 == 0) {
                                 DLL_Log(
-                                    "[PullAudio] Ring buffer overflow protection: src %d trimmed %lld samples "
+                                    "[PullAudio] Ring buffer overflow protection%s: src %d trimmed %lld samples "
                                     "(rb was %lld samples, target %lld, overflow cap %lld)",
+                                    isWgcCfrRecording ? " (WGC emergency capacity guard)" : "",
                                     (int)srcIdx, (long long)trimmedSamples, (long long)(rbAvailable + trimmedSamples),
-                                    (long long)targetLatencySamples, (long long)kMaxOverflowSamples);
+                                    (long long)targetLatencySamples, (long long)overflowCapSamples);
                             }
                         }
                     }

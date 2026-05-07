@@ -171,6 +171,20 @@ TEST(AudioSyncUtilsTest, Tier2TrimOnlyActivatesForPositiveLead) {
     EXPECT_FALSE(ce::audio::ShouldActivateTier2Trim(959, 48000, 20));
 }
 
+TEST(AudioSyncUtilsTest, WgcLiveShortfallSuppressesPositiveDriftCorrection) {
+    EXPECT_TRUE(ce::audio::ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(true, false, 100, false));
+    EXPECT_TRUE(ce::audio::ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(true, false, 0, true));
+    EXPECT_FALSE(ce::audio::ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(true, true, 1000, true));
+    EXPECT_FALSE(ce::audio::ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(false, false, 1000, true));
+    EXPECT_FALSE(ce::audio::ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(true, false, 99, false));
+}
+
+TEST(AudioSyncUtilsTest, WgcRuntimeOverflowCapUsesRingCapacityGuard) {
+    EXPECT_EQ(ce::audio::ComputeRuntimeOverflowCapSamples(false, 6720, 1440000, 24000, 48000), 24000);
+    EXPECT_EQ(ce::audio::ComputeRuntimeOverflowCapSamples(true, 6720, 1440000, 24000, 48000), 1385280);
+    EXPECT_EQ(ce::audio::ComputeRuntimeOverflowCapSamples(true, 6720, 40000, 24000, 48000), 24000);
+}
+
 TEST(AudioSyncUtilsTest, WgcCoverageLossTrimSamplesUsesFractionalAccumulatorAndCap) {
     double accumulator = 0.0;
     EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.05, accumulator, 48), 12);

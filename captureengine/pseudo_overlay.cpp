@@ -3,6 +3,7 @@
 // Runs entirely in the captureengine controller process.
 
 #include "pseudo_overlay.h"
+#include "../common/capture_pipeline_policy.h"
 #include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
 
@@ -578,26 +579,27 @@ void PseudoOverlay::OnTimerTick() {
 
     if (config_.showEncoderOverloadWarn && EnsureSharedMemoryMapping() && pSharedMem_) {
         const uint32_t overloadFlags = pSharedMem_->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
-        if (overloadFlags != 0) {
+        const uint32_t captureHealthFlags =
+            pSharedMem_->runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
+        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, captureHealthFlags);
+        if (ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
+            const ULONGLONG previousWarnUntil = overloadWarnUntil_.exchange(0, std::memory_order_relaxed);
+            captureWarnKind_.store(ce::capture_policy::kOverlayWarningNone, std::memory_order_relaxed);
+            if (previousWarnUntil != 0 && initialized_) {
+                UpdateOverlay();
+            }
+        } else if (warningKind == ce::capture_policy::kOverlayWarningEncoderOverload) {
             ULONGLONG current = GetTickCount64();
             uint32_t currentFps = pSharedMem_->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
             uint32_t lastFps = overloadWarnSustainFpsX100_.load(std::memory_order_relaxed);
             bool fpsChanged = (currentFps > lastFps ? currentFps - lastFps : lastFps - currentFps) > 100;
 
-            if (lastEncoderOverloadFlags_ == 0 || (current > overloadWarnUntil_.load() - 2500) || fpsChanged) {
+            if ((lastEncoderOverloadFlags_ & ce::capture_policy::kEncoderOverloadFlagEncoder) == 0 ||
+                (current > overloadWarnUntil_.load() - 2500) || fpsChanged) {
                 TriggerEncoderOverloadWarning(currentFps);
             }
         }
         lastEncoderOverloadFlags_ = overloadFlags;
-        const uint32_t captureHealthFlags =
-            pSharedMem_->runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
-        if (overloadFlags == 0 && (captureHealthFlags & 0x1u) != 0) {
-            const uint32_t sourceFps = pSharedMem_->runtimeState.wgcCaptureHealthFps.load(std::memory_order_relaxed);
-            ULONGLONG current = GetTickCount64();
-            if (lastCaptureHealthFlags_ == 0 || current > overloadWarnUntil_.load() - 2500) {
-                TriggerCaptureSourceWarning(sourceFps);
-            }
-        }
         lastCaptureHealthFlags_ = captureHealthFlags;
     }
 

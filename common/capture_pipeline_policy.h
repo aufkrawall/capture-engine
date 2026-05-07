@@ -48,6 +48,12 @@ constexpr uint32_t kWgcCfrOvercaptureHeadroomPermille = 1250;
 constexpr uint32_t kWgcCfrOvercaptureStableRestoreMs = 2000;
 constexpr double kEncoderGpuPriorityRaiseBudgetRatio = 0.75;
 constexpr double kEncoderGpuPriorityRestoreBudgetRatio = 0.50;
+constexpr uint32_t kEncoderOverloadFlagEncoder = 1u;
+constexpr uint32_t kEncoderOverloadFlagMux = 2u;
+constexpr uint32_t kWgcCaptureHealthFlagSourceStarved = 1u;
+constexpr uint32_t kWgcCaptureHealthFlagSchedulerLimited = 2u;
+constexpr uint32_t kOverlayWarningNone = 0u;
+constexpr uint32_t kOverlayWarningEncoderOverload = 1u;
 
 inline uint32_t GetCfrOutputShortfallTicks(uint64_t liveTicksScheduled, uint64_t liveTicksOutput) {
     return liveTicksScheduled > liveTicksOutput
@@ -65,11 +71,10 @@ inline uint32_t GetCfrTimerRebaseDiscardTicks(uint64_t elapsedTicks, uint64_t di
 }
 
 inline bool ShouldDiscardCfrTimerRebaseDebt(bool useScreenGrab) {
-    // Discard timer rebase debt so the encoder doesn't accumulate an unresolvable
-    // shortfall that would need draining at stop. Since stop-time drain is disabled,
-    // discarding rebase debt during live recording prevents a growing mismatch
-    // between scheduled and actual output that would never be recovered.
-    return true;
+    // Non-WGC CFR has no stop-time duplicate drain, so discard timer-rebase debt
+    // there. WGC CFR can drain outstanding ticks at stop and should preserve that
+    // debt so final video duration still matches the actual capture interval.
+    return !useScreenGrab;
 }
 
 inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useScreenGrab, bool frameAvailable,
@@ -91,7 +96,12 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
 
 inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool bufferedWgcFrameAvailable, bool hasLastFrame,
                                         bool mediaEngineCanRepeatLastFrame) {
-    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable || hasLastFrame || mediaEngineCanRepeatLastFrame;
+    (void)hasLastFrame;
+    (void)mediaEngineCanRepeatLastFrame;
+    // Stop drain may finish real WGC content that was already captured but not
+    // encoded yet. It must not extend the tail using only cached last-frame
+    // repeats, because that creates frozen video with continuing audio.
+    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable;
 }
 
 // Returns the maximum number of output ticks to emit in a single encoder loop
@@ -407,6 +417,33 @@ inline bool ShouldRaiseAdaptiveEncoderGpuPriority(double encodeMs, double frameI
 inline bool ShouldRestoreNeutralEncoderGpuPriority(double encodeMs, double frameIntervalMs,
                                                    double restoreBudgetRatio = kEncoderGpuPriorityRestoreBudgetRatio) {
     return frameIntervalMs > 0.0 && encodeMs >= 0.0 && encodeMs <= frameIntervalMs * restoreBudgetRatio;
+}
+
+inline bool IsAdaptiveEncoderGpuPriorityPressureActive(double encodeMs, double frameIntervalMs,
+                                                       bool encoderPressureActive) {
+    return encoderPressureActive || ShouldRaiseAdaptiveEncoderGpuPriority(encodeMs, frameIntervalMs);
+}
+
+inline bool ShouldResetAdaptiveEncoderGpuPriorityPressure(double encodeMs, double frameIntervalMs,
+                                                          bool encoderPressureActive = false) {
+    return !encoderPressureActive && ShouldRestoreNeutralEncoderGpuPriority(encodeMs, frameIntervalMs);
+}
+
+inline bool IsWgcCaptureLimitedForOverlay(uint32_t captureHealthFlags) {
+    const uint32_t captureLimitedFlags = kWgcCaptureHealthFlagSourceStarved | kWgcCaptureHealthFlagSchedulerLimited;
+    return (captureHealthFlags & captureLimitedFlags) != 0;
+}
+
+inline uint32_t SelectWgcOverlayWarningKind(uint32_t overloadFlags, uint32_t captureHealthFlags) {
+    if (IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
+        return kOverlayWarningNone;
+    }
+
+    if ((overloadFlags & kEncoderOverloadFlagEncoder) != 0) {
+        return kOverlayWarningEncoderOverload;
+    }
+
+    return kOverlayWarningNone;
 }
 
 inline uint32_t GetEncoderBudgetUtilizationPermille(double encodeMs, double frameIntervalMs) {

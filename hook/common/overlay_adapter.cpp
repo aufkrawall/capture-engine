@@ -10,6 +10,7 @@
 #include "fg_detection.h"
 #include "hook_common.h"
 #include "perf_logger.h"
+#include "../../common/capture_pipeline_policy.h"
 
 #include <cfloat>  // FLT_MAX
 
@@ -95,6 +96,7 @@ std::string FormatEncoderOverloadLabel(uint32_t sustainFpsX100, uint32_t targetF
     }
     return buffer;
 }
+
 }  // namespace
 
 // Helper to detect Windows DPI scaling
@@ -250,6 +252,8 @@ void OverlayAdapter::ResetStateLocked() {
     lastShowOverloadWarning = false;
     lastRecordingSeconds = 0;
     lastEncoderOverloadTick = 0;
+    lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
+    lastRenderedRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     layoutDirty = true;
     memset(&lastRenderedConfig, 0, sizeof(lastRenderedConfig));
 }
@@ -508,13 +512,23 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
             recordingSeconds = (nowTick64 - startTime) / 1000;
         }
         uint32_t overloadFlags = sharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
-        if (overloadFlags & 1u) {
+        const uint32_t captureHealthFlags =
+            sharedMem->runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
+        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, captureHealthFlags);
+        if (ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
+            lastEncoderOverloadTick = 0;
+            lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
+        } else if (warningKind != ce::capture_policy::kOverlayWarningNone) {
             lastEncoderOverloadTick = nowTick64;
+            lastRecordingWarningKind = warningKind;
         }
     } else {
         lastEncoderOverloadTick = 0;
+        lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     }
     bool showOverloadWarning = (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
+    const uint32_t recordingWarningKind =
+        showOverloadWarning ? lastRecordingWarningKind : ce::capture_policy::kOverlayWarningNone;
     PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
     bool showGraph = cfg.showFrameTime && metrics;
     bool shouldRefreshGraph = showGraph;
@@ -522,7 +536,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
     bool dynamicStateChanged = (fgVisible != lastFGActive) || (reserveInactiveFGSpace != lastReserveInactiveFGSpace) ||
                                (isRecording != lastRecordingActive) || (recordingSeconds != lastRecordingSeconds) ||
-                               (showOverloadWarning != lastShowOverloadWarning);
+                               (showOverloadWarning != lastShowOverloadWarning) ||
+                               (recordingWarningKind != lastRenderedRecordingWarningKind);
     bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
                        dynamicStateChanged || layoutDirty;
     static int renderPathLogCount = 0;
@@ -590,6 +605,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     lastRecordingActive = isRecording;
     lastRecordingSeconds = recordingSeconds;
     lastShowOverloadWarning = showOverloadWarning;
+    lastRenderedRecordingWarningKind = recordingWarningKind;
 }
 
 void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg, bool shouldUpdate) {
@@ -1122,19 +1138,25 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         int minutes = (int)((elapsed % 3600) / 60);
         int seconds = (int)(elapsed % 60);
 
-        // Check for encoder overload (flags: bit 0 = encoder, bit 1 = mux)
+        // Suppress encoder warnings while WGC is source/scheduler limited so
+        // variable-FPS games do not look like encoder failures.
         uint32_t overloadFlags = mem.runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+        const uint32_t captureHealthFlags =
+            mem.runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
         uint64_t nowTick = GetTickCount64();
-        if (overloadFlags & 1u) {
-            // Encoder overload detected - update last detection time
+        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, captureHealthFlags);
+        if (ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
+            lastEncoderOverloadTick = 0;
+            lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
+        } else if (warningKind != ce::capture_policy::kOverlayWarningNone) {
             lastEncoderOverloadTick = nowTick;
+            lastRecordingWarningKind = warningKind;
         }
 
         // Show overload warning if within 5 seconds of last detection
         bool showOverloadWarning = (lastEncoderOverloadTick != 0) && ((nowTick - lastEncoderOverloadTick) <= 5000);
 
         if (showOverloadWarning) {
-            // Show recording time with overload warning
             const uint32_t targetFps = mem.runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
             const uint32_t sustainFpsX100 = mem.runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
             const std::string overloadLabel = FormatEncoderOverloadLabel(sustainFpsX100, targetFps);
@@ -1149,6 +1171,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     } else {
         // Reset overload tracking when not recording
         lastEncoderOverloadTick = 0;
+        lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     }
 
     // Frame time graph labels and markers

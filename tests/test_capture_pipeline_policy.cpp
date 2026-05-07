@@ -30,18 +30,18 @@ TEST(CapturePipelinePolicyTest, InjectReserveFramesScaleWithFenceLeadTime) {
     EXPECT_EQ(policy::GetInjectReserveFrames(true, 19.0, 8.0), 0u);
 }
 
-TEST(CapturePipelinePolicyTest, WgcStopDrainAcceptsAnyRepeatableFrameSource) {
-    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, true, false));
-    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, false, true));
+TEST(CapturePipelinePolicyTest, WgcStopDrainRequiresCapturedFrames) {
+    EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, true, false));
+    EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, true));
     EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(true, false, false, false));
     EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, true, false, false));
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, false));
 }
 
-TEST(CapturePipelinePolicyTest, WgcStopDrainRequiresCfrRepeatSourceBeforeAbort) {
+TEST(CapturePipelinePolicyTest, WgcStopDrainRejectsCachedRepeatOnlyTail) {
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, false));
-    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, true, false));
-    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, false, true));
+    EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, true, false));
+    EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, true));
 }
 
 TEST(CapturePipelinePolicyTest, WgcCoverageLossRepeatPolicyRequiresLagMismatch) {
@@ -362,6 +362,34 @@ TEST(CapturePipelinePolicyTest, AdaptiveEncoderGpuPriorityUsesBudgetHysteresis) 
 
     EXPECT_TRUE(policy::ShouldRestoreNeutralEncoderGpuPriority(4.0, 8.0));
     EXPECT_FALSE(policy::ShouldRestoreNeutralEncoderGpuPriority(4.1, 8.0));
+
+    EXPECT_TRUE(policy::ShouldResetAdaptiveEncoderGpuPriorityPressure(4.0, 8.0));
+    EXPECT_FALSE(policy::ShouldResetAdaptiveEncoderGpuPriorityPressure(5.9, 8.0));
+    EXPECT_FALSE(policy::ShouldResetAdaptiveEncoderGpuPriorityPressure(6.0, 8.0));
+
+    EXPECT_TRUE(policy::IsAdaptiveEncoderGpuPriorityPressureActive(1.0, 8.0, true));
+    EXPECT_TRUE(policy::IsAdaptiveEncoderGpuPriorityPressureActive(6.0, 8.0, false));
+    EXPECT_FALSE(policy::IsAdaptiveEncoderGpuPriorityPressureActive(5.9, 8.0, false));
+    EXPECT_FALSE(policy::ShouldResetAdaptiveEncoderGpuPriorityPressure(4.0, 8.0, true));
+}
+
+TEST(CapturePipelinePolicyTest, WgcOverlayWarningSuppressesEncoderPressureWhenSourceLimited) {
+    EXPECT_FALSE(policy::IsWgcCaptureLimitedForOverlay(0));
+    EXPECT_TRUE(policy::IsWgcCaptureLimitedForOverlay(policy::kWgcCaptureHealthFlagSourceStarved));
+    EXPECT_TRUE(policy::IsWgcCaptureLimitedForOverlay(policy::kWgcCaptureHealthFlagSchedulerLimited));
+
+    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(0, 0), policy::kOverlayWarningNone);
+    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(policy::kEncoderOverloadFlagEncoder, 0),
+              policy::kOverlayWarningEncoderOverload);
+    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(policy::kEncoderOverloadFlagMux, 0), policy::kOverlayWarningNone);
+    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(policy::kEncoderOverloadFlagEncoder,
+                                                  policy::kWgcCaptureHealthFlagSourceStarved),
+              policy::kOverlayWarningNone);
+    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(policy::kEncoderOverloadFlagEncoder,
+                                                  policy::kWgcCaptureHealthFlagSchedulerLimited),
+              policy::kOverlayWarningNone);
+    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(0, policy::kWgcCaptureHealthFlagSourceStarved),
+              policy::kOverlayWarningNone);
 }
 
 TEST(CapturePipelinePolicyTest, WgcWarmupCommitRequiresStableBufferedSource) {
@@ -616,9 +644,9 @@ TEST(CapturePipelinePolicyTest, TimerRebaseDiscardDropsOnlyOutstandingShortfall)
     EXPECT_EQ(policy::GetCfrTimerRebaseDiscardTicks(221, 18, 203), 0u);
 }
 
-TEST(CapturePipelinePolicyTest, TimerRebaseDebtDiscardIsEnabledForAllCfrModes) {
+TEST(CapturePipelinePolicyTest, TimerRebaseDebtDiscardKeepsWgcDebtForStopDrain) {
     EXPECT_TRUE(policy::ShouldDiscardCfrTimerRebaseDebt(false));
-    EXPECT_TRUE(policy::ShouldDiscardCfrTimerRebaseDebt(true));
+    EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(true));
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThreshold) {

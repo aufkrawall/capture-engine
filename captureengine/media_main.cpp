@@ -2057,9 +2057,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                             static_cast<unsigned long long>(liveTicksOutput));
                 } else {
                     LogWarn(
-                        "[EncoderThread] WGC stop drain aborted: no frame available for outstanding "
+                        "[EncoderThread] WGC stop drain aborted: no captured frame available for outstanding "
                         "shortfall=%u/%.1fms "
-                        "(queue=%u buffered=%zu hostLast=%d cachedRepeat=%d)",
+                        "(queue=%u buffered=%zu hostLast=%d cachedRepeat=%d; cached repeats are not used for "
+                        "stop-tail extension)",
                         outputShortfallTicks,
                         ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
                         static_cast<unsigned>(g_FrameQueue.Size()), bufferedWgcFrames.size(), g_HasLastFrame ? 1 : 0,
@@ -4375,10 +4376,10 @@ void EncoderThreadFunc(const AppConfig& config) {
             if (wgcSourceStarvedCurrent ||
                 (wgcNoFreshTickPermille >= ce::capture_policy::kWgcDeepUnderfeedEmptyTickPermille &&
                  wgcRecentInputMin250Fps + ce::capture_policy::kWgcRecoverySourceMarginFps < outputFps)) {
-                wgcCaptureHealthFlags |= 1u;
+                wgcCaptureHealthFlags |= ce::capture_policy::kWgcCaptureHealthFlagSourceStarved;
             }
             if (wgcSchedulerLimitedCurrent) {
-                wgcCaptureHealthFlags |= 2u;
+                wgcCaptureHealthFlags |= ce::capture_policy::kWgcCaptureHealthFlagSchedulerLimited;
             }
             state.wgcCaptureHealthFlags.store(wgcCaptureHealthFlags, std::memory_order_relaxed);
             state.wgcCaptureHealthFps.store(wgcRecentInputMin250Fps, std::memory_order_relaxed);
@@ -4465,14 +4466,19 @@ void EncoderThreadFunc(const AppConfig& config) {
             static uint32_t s_wgcCapacityLimitedStreakSeconds = 0;
             if (useScreenGrab && recordingOutputLive) {
                 const bool encoderPressure = g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
-                                             (overloadFlags & 0x1u) != 0 || smoothedEncodeMs >= frameIntervalMs;
-                const bool muxPressure = (overloadFlags & 0x2u) != 0 || muxBackpressureWaitUs > 0;
+                                             (overloadFlags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0 ||
+                                             smoothedEncodeMs >= frameIntervalMs;
+                const bool muxPressure =
+                    (overloadFlags & ce::capture_policy::kEncoderOverloadFlagMux) != 0 || muxBackpressureWaitUs > 0;
+                const bool captureLimitedForOverlay =
+                    ce::capture_policy::IsWgcCaptureLimitedForOverlay(wgcCaptureHealthFlags);
+                const bool hardCapacityPressure = muxPressure || (encoderPressure && !captureLimitedForOverlay);
                 const bool capacityLimitedThisSecond =
-                    (encoderPressure || muxPressure) && (outputShortfallTicks > 0 || oldestBufferedFrameAgeUs > 0);
+                    hardCapacityPressure && (outputShortfallTicks > 0 || oldestBufferedFrameAgeUs > 0);
                 s_wgcCapacityLimitedStreakSeconds =
                     capacityLimitedThisSecond ? (s_wgcCapacityLimitedStreakSeconds + 1) : 0;
                 const uint64_t nowTick = GetTickCount64();
-                if ((encoderPressure || muxPressure) && (nowTick - s_lastWgcCapacityWarnTick) >= 5000) {
+                if (hardCapacityPressure && (nowTick - s_lastWgcCapacityWarnTick) >= 5000) {
                     const char* limiter = encoderPressure && muxPressure ? "encoder+mux"
                                           : encoderPressure              ? "encoder"
                                                                          : "mux";
@@ -4495,13 +4501,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                     LogWarn(
                         "[WGC CFR] Capture source starved: target=%ufps input=%u/%u delivered=%u/%u freshMiss=%upm "
                         "buffered=%u oldest=%.1fms shortfall=%u/%.1fms duplicates=%u cause=S%d/D%d/E%d "
-                        "encoderOverload=%d muxOverload=%d",
+                        "encoderPressure=%d muxPressure=%d overlayEncoderWarn=%d",
                         outputFps, wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcRecentDeliveredMin250Fps,
                         wgcRecentDeliveredMin500Fps, wgcNoFreshTickPermille, bufferedAtTickMinValue,
                         oldestBufferedFrameAgeMs, outputShortfallTicks, shortfallDurationMs,
                         cadenceCounters.liveTickDuplicateCount, wgcSourceStarvedCurrent ? 1 : 0,
                         wgcSchedulerLimitedCurrent ? 1 : 0, wgcEncoderRecoveryLimitedCurrent ? 1 : 0,
-                        encoderPressure ? 1 : 0, muxPressure ? 1 : 0);
+                        encoderPressure ? 1 : 0, muxPressure ? 1 : 0,
+                        ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, wgcCaptureHealthFlags) ==
+                                ce::capture_policy::kOverlayWarningEncoderOverload
+                            ? 1
+                            : 0);
                     s_lastWgcSourceStarvedWarnTick = nowTick;
                 }
             } else {
@@ -4791,13 +4801,24 @@ void StopRecording() {
 
     LogInfo("[Media] Stopping recording...");
 
-    const bool drainOutstandingWgcTicks = false;
+    const bool drainOutstandingWgcTicks =
+        IsActiveScreenGrab() && !g_RecordingUsesVfr.load(std::memory_order_acquire);
+    int64_t drainStopQpc = 0;
+    if (drainOutstandingWgcTicks) {
+        LARGE_INTEGER stopQpc;
+        QueryPerformanceCounter(&stopQpc);
+        drainStopQpc = stopQpc.QuadPart;
+    }
+
     g_Recording = false;
     SetCaptureRequestedState(false);
     SetRecordingVisibleState(false);
     SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
-    g_WgcDrainStopQpc.store(0, std::memory_order_release);
-    g_DrainOutstandingWgcTicks.store(false, std::memory_order_release);
+    g_WgcDrainStopQpc.store(drainStopQpc, std::memory_order_release);
+    g_DrainOutstandingWgcTicks.store(drainOutstandingWgcTicks && drainStopQpc > 0, std::memory_order_release);
+    if (drainOutstandingWgcTicks && drainStopQpc > 0) {
+        LogInfo("[Media] WGC CFR stop drain armed at QPC=%lld", drainStopQpc);
+    }
 
     StopWgcCapturePipeline();
     StopInjectCapturePipeline();

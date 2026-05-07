@@ -803,15 +803,18 @@ void VideoEncoder::ApplyGpuThreadPriority(int priority, const char* reason) {
     }
 }
 
-void VideoEncoder::UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encodeMs) {
+void VideoEncoder::UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encodeMs, bool encoderPressureActive) {
     if (gpuPriority != 0 || savedConfig.fps <= 0 || !d3d11Device) {
         return;
     }
 
     const double frameIntervalMs = 1000.0 / static_cast<double>(savedConfig.fps);
-    if (ce::capture_policy::ShouldRaiseAdaptiveEncoderGpuPriority(encodeMs, frameIntervalMs)) {
+    if (ce::capture_policy::IsAdaptiveEncoderGpuPriorityPressureActive(encodeMs, frameIntervalMs,
+                                                                       encoderPressureActive)) {
         if (gpuPriorityPressureSinceMs == 0) {
             gpuPriorityPressureSinceMs = nowMs;
+            DLL_Log("[VideoEncoder] Adaptive GPU priority pressure started: encode=%.2fms budget=%.2fms flag=%d",
+                    encodeMs, frameIntervalMs, encoderPressureActive ? 1 : 0);
         }
         gpuPriorityHealthySinceMs = 0;
         if (currentGpuThreadPriority < 1 && nowMs - gpuPriorityPressureSinceMs >= 2000) {
@@ -820,8 +823,9 @@ void VideoEncoder::UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encode
         return;
     }
 
-    gpuPriorityPressureSinceMs = 0;
-    if (ce::capture_policy::ShouldRestoreNeutralEncoderGpuPriority(encodeMs, frameIntervalMs)) {
+    if (ce::capture_policy::ShouldResetAdaptiveEncoderGpuPriorityPressure(encodeMs, frameIntervalMs,
+                                                                          encoderPressureActive)) {
+        gpuPriorityPressureSinceMs = 0;
         if (gpuPriorityHealthySinceMs == 0) {
             gpuPriorityHealthySinceMs = nowMs;
         }
@@ -2387,18 +2391,19 @@ void VideoEncoder::PublishRuntimeState() {
     uint64_t muxTick = lastMuxOverloadTickMs.load(std::memory_order_relaxed);
 
     if (encTick != 0 && (nowMs - encTick) <= kOverloadHoldMs) {
-        flags |= 1u;
+        flags |= ce::capture_policy::kEncoderOverloadFlagEncoder;
     }
     if (pSharedMem->runtimeState.encoderBottlenecked.load(std::memory_order_relaxed) != 0) {
-        flags |= 1u;
+        flags |= ce::capture_policy::kEncoderOverloadFlagEncoder;
     }
     if (muxTick != 0 && (nowMs - muxTick) <= kOverloadHoldMs) {
-        flags |= 2u;
+        flags |= ce::capture_policy::kEncoderOverloadFlagMux;
     }
 
     pSharedMem->runtimeState.encoderOverloadFlags.store(flags, std::memory_order_relaxed);
     const double encodeMs = static_cast<double>(std::max<int64_t>(lastEncodeTimeUs, 0)) / 1000.0;
-    UpdateAdaptiveGpuThreadPriority(nowMs, encodeMs);
+    UpdateAdaptiveGpuThreadPriority(nowMs, encodeMs,
+                                    (flags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0);
     const double sustainFps = ce::capture_policy::GetEncoderSustainableOutputFps(encodeMs);
     const uint32_t sustainFpsX100 =
         sustainFps > 0.0 ? static_cast<uint32_t>(std::clamp(sustainFps * 100.0, 0.0, 4294967295.0)) : 0u;

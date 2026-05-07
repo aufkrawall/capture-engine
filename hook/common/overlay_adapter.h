@@ -131,6 +131,8 @@ private:
 
     // Encoder overload warning tracking (5-second display with extension)
     uint64_t lastEncoderOverloadTick = 0;
+    uint32_t lastRecordingWarningKind = 0;
+    uint32_t lastRenderedRecordingWarningKind = 0;
 
     // Cached layout measurement (recomputed only on content updates, avoids
     // per-frame snprintf+CalcTextSize overhead)

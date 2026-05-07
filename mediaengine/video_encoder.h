@@ -121,7 +121,7 @@ private:
     bool AdoptTextureDevice(ID3D11Texture2D* texture);
     void ReleaseInjectDeviceStateForScreenGrab();
     void ApplyGpuThreadPriority(int priority, const char* reason);
-    void UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encodeMs);
+    void UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encodeMs, bool encoderPressureActive);
 
     std::function<void(AVPacket*)> onPacket;  // Callback member
     AVFormatContext* fmtCtx;

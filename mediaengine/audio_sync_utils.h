@@ -359,6 +359,30 @@ inline bool ShouldActivateTier2Trim(int64_t trueDriftSamples, int sampleRate, in
     return trueDriftSamples > thresholdSamples;
 }
 
+inline bool ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(bool isWgcCfrRecording, bool forceDrain,
+                                                                        int64_t timelineShortfallMs,
+                                                                        bool encoderBottlenecked,
+                                                                        int64_t minShortfallMs = 100) {
+    if (!isWgcCfrRecording || forceDrain) {
+        return false;
+    }
+
+    return encoderBottlenecked || timelineShortfallMs >= std::max<int64_t>(0, minShortfallMs);
+}
+
+inline int64_t ComputeRuntimeOverflowCapSamples(bool isWgcCfrRecording, int64_t targetLatencySamples,
+                                                int64_t ringCapacitySamples, int64_t defaultOverflowCapSamples,
+                                                int64_t emergencyMarginSamples) {
+    const int64_t defaultCap = std::max<int64_t>(0, defaultOverflowCapSamples);
+    if (!isWgcCfrRecording || ringCapacitySamples <= 0) {
+        return defaultCap;
+    }
+
+    const int64_t emergencyCap =
+        ringCapacitySamples - std::max<int64_t>(0, targetLatencySamples) - std::max<int64_t>(0, emergencyMarginSamples);
+    return std::max<int64_t>(defaultCap, emergencyCap);
+}
+
 inline int64_t ComputeTier2TrimBudget(int64_t trueDriftSamples, int sampleRate, int64_t baseQuantumSamples,
                                       int64_t largeDriftThresholdMs = 100, int64_t maxTrimMs = 20) {
     if (sampleRate <= 0)
