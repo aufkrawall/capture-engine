@@ -345,6 +345,10 @@ public:
     std::vector<int64_t> encodedSamplesPerSource;
 
     std::map<int, bool> trackWasSilent;
+    std::map<int, uint64_t> trackSilentSamples;
+    std::map<int, uint64_t> trackSilentChunks;
+    std::map<int, uint64_t> trackSilenceTransitions;
+    std::map<int, uint64_t> trackLastSilenceLogTick;
     std::map<int, bool> trackBootstrapComplete;
     std::map<int, bool> trackFirstPullAfterBootstrap;
     std::map<int, int> trackBootstrapWaitLogCounters;
@@ -635,6 +639,10 @@ public:
             encodedSamplesPerSource.resize(audioSources.size(), 0);
 
             trackWasSilent.clear();
+            trackSilentSamples.clear();
+            trackSilentChunks.clear();
+            trackSilenceTransitions.clear();
+            trackLastSilenceLogTick.clear();
             trackBootstrapComplete.clear();
             trackFirstPullAfterBootstrap.clear();
             trackBootstrapWaitLogCounters.clear();
@@ -897,21 +905,28 @@ public:
                 const double retainedTrimPerMinute =
                     ce::audio::ComputeSamplesPerMinute(src.retainedNewestTrimSamples, expectedVideoUsForStop);
                 const double ratePpm = ce::audio::ComputeClockMismatchPpm(src.currentRateDelta, kStopSampleRate);
+                const uint64_t categorizedLatencyTrim =
+                    std::min(src.latencyTrimSamples, src.bootstrapTrimSamples + src.retainedNewestTrimSamples +
+                                                         src.coverageLossTrimSamples + src.tier2TrimSamples);
+                const uint64_t uncategorizedLatencyTrim = src.latencyTrimSamples - categorizedLatencyTrim;
                 DLL_Log(
-                    "[STOP AUDIO] Source %zu: track=%d encoded=%llu trim=cov:%llu lat:%llu pad:%llu qgap:%llu "
+                    "[STOP AUDIO] Source %zu: track=%d encoded=%llu trim=cov:%llu latTotal:%llu liveUncat:%llu "
+                    "pad:%llu qgap:%llu "
                     "ringPeak=%zu ringUnderruns=%u",
                     i, src.track, (unsigned long long)encodedSamplesPerSource[i],
                     (unsigned long long)src.coverageLossTrimSamples, (unsigned long long)src.latencyTrimSamples,
-                    (unsigned long long)src.underrunPadSamples, (unsigned long long)src.packetTimelineGapSamples,
-                    src.ringBufferPeakSamples, src.ringBufferUnderrunCount);
+                    (unsigned long long)uncategorizedLatencyTrim, (unsigned long long)src.underrunPadSamples,
+                    (unsigned long long)src.packetTimelineGapSamples, src.ringBufferPeakSamples,
+                    src.ringBufferUnderrunCount);
                 DLL_Log(
-                    "[STOP AUDIO DETAIL] Source %zu: ratePpm=%+.2f compDelta=%d sat=%d trimRate(lat=%.1f/min "
+                    "[STOP AUDIO DETAIL] Source %zu: ratePpm=%+.2f compDelta=%d sat=%d trimRate(latTotal=%.1f/min "
                     "boot=%.1f/min cov=%.1f/min tier2=%.1f/min retain=%.1f/min) totals(boot=%llu tier2=%llu "
-                    "retain=%llu post=%llu overlap=%llu ovf=%llu)",
+                    "retain=%llu liveUncat=%llu post=%llu overlap=%llu ovf=%llu)",
                     i, ratePpm, src.currentRateDelta, src.targetRateSaturated ? 1 : 0, latencyTrimPerMinute,
                     bootstrapTrimPerMinute, coverageTrimPerMinute, tier2TrimPerMinute, retainedTrimPerMinute,
                     (unsigned long long)src.bootstrapTrimSamples, (unsigned long long)src.tier2TrimSamples,
-                    (unsigned long long)src.retainedNewestTrimSamples, (unsigned long long)src.postResampleTrimSamples,
+                    (unsigned long long)src.retainedNewestTrimSamples, (unsigned long long)uncategorizedLatencyTrim,
+                    (unsigned long long)src.postResampleTrimSamples,
                     (unsigned long long)src.packetTimelineOverlapSamples, (unsigned long long)src.overflowDropSamples);
             }
         }
@@ -1262,6 +1277,7 @@ public:
         constexpr int64_t kWgcCoverageLossLeadSlackSamples = SAMPLE_RATE / 25;  // 40ms above target
         constexpr int64_t kWgcCoverageLossMaxDropPerCall =
             ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
+        constexpr int64_t kWgcVisualSyncMaxBufferedLagMs = 4000;
 
         const bool isWgcCfrRecording = IsWgcCfrRecording();
         const int64_t wallVideoMs = this->videoElapsedMs.load();
@@ -1310,6 +1326,7 @@ public:
         uint32_t wgcQueueEmptyTickPermille = 0u;
         uint32_t wgcBufferedAtTickMin = 0u;
         uint32_t wgcSingleFrameTickCount = 0u;
+        int64_t wgcSelectionBiasUs = 0;
         if (isWgcCfrRecording && sharedMemLayout) {
             const auto& runtimeState = sharedMemLayout->runtimeState;
             wgcOverloadFlags = runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
@@ -1324,6 +1341,7 @@ public:
             wgcQueueEmptyTickPermille = runtimeState.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed);
             wgcBufferedAtTickMin = runtimeState.wgcBufferedAtTickMin.load(std::memory_order_relaxed);
             wgcSingleFrameTickCount = runtimeState.wgcSingleFrameTickCount.load(std::memory_order_relaxed);
+            wgcSelectionBiasUs = runtimeState.wgcSelectionErrorSignedAvgUs.load(std::memory_order_relaxed);
         }
         const uint32_t wgcRecordingCadenceFps =
             ce::audio::GetWgcRecordingCadenceFps(configuredWgcOutputFps, wgcTargetFps);
@@ -1368,11 +1386,21 @@ public:
                 ? ce::audio::ComputeWgcCfrDriftLagMs(wgcAudioLagTargets, kWgcPreferVideoRepeatsOverAudioCuts,
                                                      wgcEncoderShortfallBufferedLagMs)
                 : videoPipelineLagMs + timelineShortfallMs;
-        const int64_t effectiveWgcTargetBufferLagMs =
+        const int64_t wgcSelectedContentLeadMs =
+            isWgcCfrRecording ? std::max<int64_t>(0, wgcSelectionBiasUs / 1000) : 0;
+        const int64_t wgcSelectedContentLagMs =
+            isWgcCfrRecording ? std::max<int64_t>(0, (-wgcSelectionBiasUs) / 1000) : 0;
+        const int64_t wgcVisualContentLagMs =
+            isWgcCfrRecording
+                ? std::clamp<int64_t>(timelineShortfallMs + wgcSelectedContentLagMs - wgcSelectedContentLeadMs, 0,
+                                      kWgcVisualSyncMaxBufferedLagMs)
+                : 0;
+        const int64_t baseEffectiveWgcTargetBufferLagMs =
             isWgcCfrRecording ? ce::audio::ComputeWgcCfrTargetBufferLagMs(
                                     wgcAudioLagTargets, wgcSteadyStateBufferedAudioLagMs,
                                     kWgcPreferVideoRepeatsOverAudioCuts, wgcEncoderShortfallBufferedLagMs)
                               : videoPipelineLagMs + timelineShortfallMs;
+        const int64_t effectiveWgcTargetBufferLagMs = baseEffectiveWgcTargetBufferLagMs;
         const int64_t targetBufferedLagCapMs =
             isWgcCfrRecording ? std::max<int64_t>(kWgcCoverageLossMaxBufferedLagMs, effectiveWgcTargetBufferLagMs)
                               : kMaxPipelineLagContributionMs;
@@ -1591,6 +1619,7 @@ public:
             size_t totalFloats = samplesToEncode * CHANNELS;
             std::vector<float> mixBuffer(totalFloats, 0.0f);
             int activeSources = 0;
+            int eligibleSources = 0;
 
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
@@ -1599,6 +1628,7 @@ public:
                 if (ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.hasAlignedStart)) {
                     continue;
                 }
+                ++eligibleSources;
 
                 size_t droppedFloats = src.ringBuffer->GetAndClearDroppedSamples();
                 if (droppedFloats > 0) {
@@ -1705,13 +1735,15 @@ public:
                                    targetLatencySamples + kWgcCoverageLossLeadSlackSamples &&
                                dropLogCounter++ % 500 == 0) {
                         DLL_Log(
-                            "[PullAudio] WGC coverage loss active: preserving audio continuity and expecting host "
-                            "video "
-                            "repeats to absorb mismatch (src=%d ahead=%lld target=%lld slack=%lld pipelineLag=%lldms "
-                            "contentLag=%lldms delivered=%u/%u fps ratio=%.3f%%)",
+                            "[PullAudio] WGC source-limited CFR repeats active: preserving continuous audio and "
+                            "expecting CFR video "
+                            "repeats to absorb mismatch (src=%d ahead=%lld target=%lld "
+                            "slack=%lld pipelineLag=%lldms contentLag=%lldms wgcFrameLead=%lldms "
+                            "wgcFrameLag=%lldms wgcSelBias=%lldus delivered=%u/%u fps ratio=%.3f%%)",
                             (int)srcIdx, static_cast<int64_t>(rbAvailable) - targetLatencySamples, targetLatencySamples,
                             kWgcCoverageLossLeadSlackSamples, videoPipelineLagMs, wgcBufferedVideoContentLagMs,
-                            wgcDeliveredFps, wgcTargetFps,
+                            wgcSelectedContentLeadMs, wgcVisualContentLagMs, wgcSelectionBiasUs, wgcDeliveredFps,
+                            wgcTargetFps,
                             ce::audio::ComputeWgcCoverageLossRatio(videoPipelineLagMs, wgcBufferedVideoContentLagMs) *
                                 100.0);
                     } else if (!forceDrain && !startupTimelineProtected && !IsWgcCfrRecording()) {
@@ -1997,10 +2029,11 @@ public:
                     // Overflow protection. Non-WGC modes keep the historical short cap; WGC CFR
                     // preserves audio continuity and only trims near the real ring capacity.
                     if (!forceDrain && src.ringBuffer && !startupTimelineProtected) {
-                        constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;             // 500ms max overflow
+                        constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;            // 500ms max overflow
                         constexpr int64_t kWgcCfrEmergencyRingMarginSamples = SAMPLE_RATE;  // 1s before full
                         rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
-                        const int64_t rbCapacitySamples = static_cast<int64_t>(src.ringBuffer->GetCapacity() / CHANNELS);
+                        const int64_t rbCapacitySamples =
+                            static_cast<int64_t>(src.ringBuffer->GetCapacity() / CHANNELS);
                         const int64_t overflowCapSamples = ce::audio::ComputeRuntimeOverflowCapSamples(
                             isWgcCfrRecording, targetLatencySamples, rbCapacitySamples, kMaxOverflowSamples,
                             kWgcCfrEmergencyRingMarginSamples);
@@ -2029,8 +2062,8 @@ public:
                                 DLL_Log(
                                     "[PullAudio] Ring buffer overflow protection%s: src %d trimmed %lld samples "
                                     "(rb was %lld samples, target %lld, overflow cap %lld)",
-                                    isWgcCfrRecording ? " (WGC emergency capacity guard)" : "",
-                                    (int)srcIdx, (long long)trimmedSamples, (long long)(rbAvailable + trimmedSamples),
+                                    isWgcCfrRecording ? " (WGC emergency capacity guard)" : "", (int)srcIdx,
+                                    (long long)trimmedSamples, (long long)(rbAvailable + trimmedSamples),
                                     (long long)targetLatencySamples, (long long)overflowCapSamples);
                             }
                         }
@@ -2131,11 +2164,24 @@ public:
                                 if (dropLogCounter++ % 500 == 0 &&
                                     (src.overflowDropSamples > 0 || src.latencyTrimSamples > 0 ||
                                      src.postResampleTrimSamples > 0)) {
+                                    const uint64_t categorizedLatencyTrim =
+                                        std::min(src.latencyTrimSamples,
+                                                 src.bootstrapTrimSamples + src.retainedNewestTrimSamples +
+                                                     src.coverageLossTrimSamples + src.tier2TrimSamples);
+                                    const uint64_t uncategorizedLatencyTrim =
+                                        src.latencyTrimSamples - categorizedLatencyTrim;
                                     DLL_Log(
                                         "[PullAudio] Sample trim stats src=%d: overflowDropped=%llu "
-                                        "latencyTrimmed=%llu postResampleTrimmed=%llu",
+                                        "latencyTrimTotal=%llu bootstrapTrim=%llu retainedTrim=%llu "
+                                        "coverageTrim=%llu tier2Trim=%llu uncategorizedLiveTrim=%llu "
+                                        "postResampleTrim=%llu",
                                         (int)srcIdx, (unsigned long long)src.overflowDropSamples,
                                         (unsigned long long)src.latencyTrimSamples,
+                                        (unsigned long long)src.bootstrapTrimSamples,
+                                        (unsigned long long)src.retainedNewestTrimSamples,
+                                        (unsigned long long)src.coverageLossTrimSamples,
+                                        (unsigned long long)src.tier2TrimSamples,
+                                        (unsigned long long)uncategorizedLatencyTrim,
                                         (unsigned long long)src.postResampleTrimSamples);
                                 }
                             }
@@ -2283,11 +2329,36 @@ public:
             bool applyTransitionFade = false;
 
             if (activeSources == 0) {
+                const bool wasSilent = trackWasSilent[track];
                 trackWasSilent[track] = true;
+                trackSilentSamples[track] += static_cast<uint64_t>(samplesToEncode);
+                trackSilentChunks[track]++;
+                const uint64_t nowTick = GetTickCount64();
+                const uint64_t lastLogTick = trackLastSilenceLogTick[track];
+                if (!wasSilent) {
+                    trackSilenceTransitions[track]++;
+                    DLL_Log(
+                        "[PullAudio] Track %d entered silence: generated=%lld samples active=%d/%d "
+                        "transitions=%llu target=%lldms encoded=%lld",
+                        track, samplesToEncode, activeSources, eligibleSources,
+                        static_cast<unsigned long long>(trackSilenceTransitions[track]), trackAudioTargetMs,
+                        encodedSamplesPerSource[firstSrcIdx]);
+                    trackLastSilenceLogTick[track] = nowTick;
+                } else if (nowTick - lastLogTick >= 1000) {
+                    DLL_Log(
+                        "[PullAudio] Track %d still silent: total=%llu samples (%.1fms) chunks=%llu active=%d/%d "
+                        "target=%lldms encoded=%lld",
+                        track, static_cast<unsigned long long>(trackSilentSamples[track]),
+                        static_cast<double>(trackSilentSamples[track]) * 1000.0 / SAMPLE_RATE,
+                        static_cast<unsigned long long>(trackSilentChunks[track]), activeSources, eligibleSources,
+                        trackAudioTargetMs, encodedSamplesPerSource[firstSrcIdx]);
+                    trackLastSilenceLogTick[track] = nowTick;
+                }
                 /*
                    Logic:
                    1. Create a zeroed buffer matching totalFloats.
-                   2. Encode it.
+ 2.
+                   Encode it.
                    3. Advance counters.
                 */
                 if (silenceLogCounter++ % 500 == 0) {
@@ -2307,8 +2378,32 @@ public:
                 auto it = trackWasSilent.find(track);
                 if (it != trackWasSilent.end() && it->second) {
                     applyTransitionFade = true;
+                    DLL_Log(
+                        "[PullAudio] Track %d resumed after silence: silentTotal=%llu samples (%.1fms) chunks=%llu "
+                        "active=%d/%d target=%lldms encoded=%lld",
+                        track, static_cast<unsigned long long>(trackSilentSamples[track]),
+                        static_cast<double>(trackSilentSamples[track]) * 1000.0 / SAMPLE_RATE,
+                        static_cast<unsigned long long>(trackSilentChunks[track]), activeSources, eligibleSources,
+                        trackAudioTargetMs, encodedSamplesPerSource[firstSrcIdx]);
+                    trackSilentSamples[track] = 0;
+                    trackSilentChunks[track] = 0;
                 }
                 trackWasSilent[track] = false;
+                if (activeSources < eligibleSources) {
+                    const uint64_t nowTick = GetTickCount64();
+                    const uint64_t lastLogTick = trackLastSilenceLogTick[track];
+                    if (nowTick - lastLogTick >= 1000) {
+                        DLL_Log(
+                            "[PullAudio] Track %d partial/intermittent silence: active=%d/%d target=%lldms "
+                            "encoded=%lld padTotal=%llu qpcGap=%llu qpcOverlap=%llu",
+                            track, activeSources, eligibleSources, trackAudioTargetMs,
+                            encodedSamplesPerSource[firstSrcIdx],
+                            static_cast<unsigned long long>(audioSources[firstSrcIdx].underrunPadSamples),
+                            static_cast<unsigned long long>(audioSources[firstSrcIdx].packetTimelineGapSamples),
+                            static_cast<unsigned long long>(audioSources[firstSrcIdx].packetTimelineOverlapSamples));
+                        trackLastSilenceLogTick[track] = nowTick;
+                    }
+                }
                 // Perform mixing for active sources
                 // (Existing logic moved here or just fall through since mixBuffer is
                 // already correct?) mixBuffer is already zeroed. We can just skip the
@@ -2420,6 +2515,8 @@ public:
                 uint64_t overflowDropped = 0;
                 uint64_t retainedTrimmed = 0;
                 uint64_t latencyTrimmed = 0;
+                uint64_t tier2Trimmed = 0;
+                uint64_t bootstrapTrimmed = 0;
                 uint64_t postTrimmed = 0;
                 uint64_t underrunPadded = 0;
                 uint64_t coverageLossTrimmed = 0;
@@ -2472,13 +2569,15 @@ public:
                     overflowDropped += srcOverflowDropped;
                     retainedTrimmed += srcRetainedTrimmed;
                     latencyTrimmed += srcLatencyTrimmed;
+                    tier2Trimmed += srcTier2Trimmed;
+                    bootstrapTrimmed += srcBootstrapTrimmed;
                     postTrimmed += srcPostTrimmed;
                     underrunPadded += srcUnderrunPadded;
                     coverageLossTrimmed += srcCoverageLossTrimmed;
                     packetGapAdjusted += srcPacketGapAdjusted;
                     packetOverlapTrimmed += srcPacketOverlapTrimmed;
 
-                    char sourceState[352];
+                    char sourceState[448];
                     std::snprintf(
                         sourceState, sizeof(sourceState),
                         "src%zu(rb=%zu sync=%lld start=%lld primed=%d boot=%d synth=%llu/%llu/%llu ovf=%llu "
@@ -2499,6 +2598,9 @@ public:
                 if (sourceSummary.empty()) {
                     sourceSummary = "none";
                 }
+                const uint64_t categorizedLatencyTrim =
+                    std::min(latencyTrimmed, bootstrapTrimmed + retainedTrimmed + coverageLossTrimmed + tier2Trimmed);
+                const uint64_t uncategorizedLatencyTrim = latencyTrimmed - categorizedLatencyTrim;
 
                 for (size_t srcIdx : srcIndices) {
                     auto& src = audioSources[srcIdx];
@@ -2527,13 +2629,22 @@ public:
                     if (src.pendingLatencyTrimEvents > 0) {
                         const double trimRatePerMinute =
                             ce::audio::ComputeSamplesPerMinute(src.pendingLatencyTrimSamples, 10000000ll) * 6.0;
+                        const uint64_t categorizedLatencyTrim =
+                            std::min(src.latencyTrimSamples, src.bootstrapTrimSamples + src.retainedNewestTrimSamples +
+                                                                 src.coverageLossTrimSamples + src.tier2TrimSamples);
+                        const uint64_t uncategorizedLatencyTrim = src.latencyTrimSamples - categorizedLatencyTrim;
                         DLL_Log(
-                            "[PullAudio] Latency trim summary - src=%zu events=%u samples=%llu total=%llu "
-                            "rate=%.1f/min "
-                            "target=%lld pipelineLag=%lldms",
+                            "[PullAudio] Latency trim aggregate summary - src=%zu events=%u samples=%llu "
+                            "total=%llu bootstrap=%llu retained=%llu coverage=%llu tier2=%llu "
+                            "uncategorizedLive=%llu rate=%.1f/min target=%lld pipelineLag=%lldms",
                             srcIdx, src.pendingLatencyTrimEvents,
                             static_cast<unsigned long long>(src.pendingLatencyTrimSamples),
-                            static_cast<unsigned long long>(src.latencyTrimSamples), trimRatePerMinute,
+                            static_cast<unsigned long long>(src.latencyTrimSamples),
+                            static_cast<unsigned long long>(src.bootstrapTrimSamples),
+                            static_cast<unsigned long long>(src.retainedNewestTrimSamples),
+                            static_cast<unsigned long long>(src.coverageLossTrimSamples),
+                            static_cast<unsigned long long>(src.tier2TrimSamples),
+                            static_cast<unsigned long long>(uncategorizedLatencyTrim), trimRatePerMinute,
                             targetBufferedSamples, pipelineLagMs);
                         src.pendingLatencyTrimEvents = 0;
                         src.pendingLatencyTrimSamples = 0;
@@ -2557,23 +2668,29 @@ public:
                     "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, VideoEnc=%lld ms, "
                     "PipelineLag=%lld ms, "
                     "ContentLag=%lld ms, CovMode=%d, EncBottleneck=%d, Delivered=%u/%u, Over=0x%x, "
-                    "TargetBuf=%lld ms, Overflow=%llu, "
-                    "RetainTrim=%llu, CoverageTrim=%llu, LatencyTrim=%llu, PostTrim=%llu, Pad=%llu, QpcGap=%llu, "
+                    "TargetBuf=%lld ms, WgcFrameLead=%lld ms, WgcFrameLag=%lld ms, WgcSelBias=%lld us, Overflow=%llu, "
+                    "RetainTrim=%llu, CoverageTrim=%llu, Tier2Trim=%llu, BootstrapTrim=%llu, "
+                    "LatencyTrimTotal=%llu, UncategorizedLiveTrim=%llu, PostTrim=%llu, Pad=%llu, QpcGap=%llu, "
                     "QpcOverlap=%llu, Sources=%s",
                     track, videoMs, audioMs, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs, wallVideoMs,
                     encodedVideoMs, pipelineLagMs, isWgcCfrRecording ? wgcBufferedVideoContentLagMs : pipelineLagMs,
                     wgcCoverageLossActive ? 1 : 0, wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps,
-                    wgcOverloadFlags, (targetBufferedSamples * 1000) / SAMPLE_RATE, (unsigned long long)overflowDropped,
+                    wgcOverloadFlags, (targetBufferedSamples * 1000) / SAMPLE_RATE, wgcSelectedContentLeadMs,
+                    wgcVisualContentLagMs, wgcSelectionBiasUs, (unsigned long long)overflowDropped,
                     (unsigned long long)retainedTrimmed, (unsigned long long)coverageLossTrimmed,
-                    (unsigned long long)latencyTrimmed, (unsigned long long)postTrimmed,
-                    (unsigned long long)underrunPadded, (unsigned long long)packetGapAdjusted,
-                    (unsigned long long)packetOverlapTrimmed, sourceSummary.c_str());
+                    (unsigned long long)tier2Trimmed, (unsigned long long)bootstrapTrimmed,
+                    (unsigned long long)latencyTrimmed, (unsigned long long)uncategorizedLatencyTrim,
+                    (unsigned long long)postTrimmed, (unsigned long long)underrunPadded,
+                    (unsigned long long)packetGapAdjusted, (unsigned long long)packetOverlapTrimmed,
+                    sourceSummary.c_str());
 
                 DLL_Log(
                     "[A/V SYNC SUMMARY] Track %d: Wall=%lldms EncV=%lldms Audio=%lldms Drift=%+lldms "
-                    "PipelineLag=%lldms PullLatency=%lldms EncBot=%d Delivered=%u/%u",
+                    "PipelineLag=%lldms PullLatency=%lldms WgcFrameLead=%lldms WgcFrameLag=%lldms EncBot=%d "
+                    "Delivered=%u/%u",
                     track, wallVideoMs, encodedVideoMs, audioMs, avDrift, pipelineLagMs, trackAudioPullLatencyMs,
-                    wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps);
+                    wgcSelectedContentLeadMs, wgcVisualContentLagMs, wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps,
+                    wgcTargetFps);
 
                 if (std::abs(latencyAdjustedAvDrift) > 100) {
                     DLL_Log(

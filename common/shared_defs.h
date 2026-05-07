@@ -38,7 +38,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 24: Added OverlayConfig::observerPolicyOnly staged Streamline-policy probe mode
 // Version 25: Added OverlayConfig::observerStartupPresentOnly staged DXGI startup-Present probe mode
 // Version 26: Added WGC capture health flags for source-starvation diagnostics
-static constexpr uint32_t SHARED_MEMORY_VERSION = 26;
+// Version 27: Added WGC-specific selection-bias telemetry separate from output schedule bias
+static constexpr uint32_t SHARED_MEMORY_VERSION = 27;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -366,6 +367,11 @@ struct alignas(8) CaptureState {
     std::atomic<int32_t> selectionErrorSignedAvgUs{0};
     std::atomic<uint32_t> selectionEarlyMaxUs{0};
     std::atomic<uint32_t> selectionLateMaxUs{0};
+    std::atomic<uint32_t> wgcSelectionErrorAvgUs{0};
+    std::atomic<uint32_t> wgcSelectionErrorMaxUs{0};
+    std::atomic<int32_t> wgcSelectionErrorSignedAvgUs{0};
+    std::atomic<uint32_t> wgcSelectionEarlyMaxUs{0};
+    std::atomic<uint32_t> wgcSelectionLateMaxUs{0};
     std::atomic<uint32_t> oldestBufferedFrameAgeUs{0};
     std::atomic<uint32_t> wgcSourceFrameIntervalAvgUs{0};
     std::atomic<uint32_t> wgcSourceFrameJitterAvgUs{0};
@@ -386,7 +392,7 @@ struct alignas(8) CaptureState {
     std::atomic<uint32_t> wgcSingleFrameTickCount{0};
     std::atomic<uint32_t> wgcCaptureHealthFlags{0};  // bit0=source-starved, bit1=scheduler-limited
     std::atomic<uint32_t> wgcCaptureHealthFps{0};    // recent WGC input min-250 FPS for source warnings
-    std::atomic<uint32_t> encoderBottlenecked{0};  // 1 when encoder can't sustain target FPS
+    std::atomic<uint32_t> encoderBottlenecked{0};    // 1 when encoder can't sustain target FPS
 
     // Command flags (controller -> media process via shared memory)
     // Using std::atomic for proper cross-process visibility and memory ordering

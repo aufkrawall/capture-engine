@@ -33,7 +33,6 @@ public:
 
     // Notify encoder overload (warning shown for 5 seconds).
     void TriggerEncoderOverloadWarning(uint32_t sustainFpsX100 = 0);
-    void TriggerCaptureSourceWarning(uint32_t sourceFps = 0);
 
     // Show brief screenshot notification (2 seconds).
     void ShowScreenshotNotification();
@@ -91,8 +90,6 @@ private:
     std::atomic<bool> isRecording_{false};
     std::atomic<ULONGLONG> overloadWarnUntil_{0};
     std::atomic<uint32_t> overloadWarnSustainFpsX100_{0};
-    std::atomic<uint32_t> captureWarnSourceFps_{0};
-    std::atomic<uint32_t> captureWarnKind_{0};
     std::atomic<ULONGLONG> screenshotNotifyUntil_{0};
     // Warning blink state
     bool warnActive_ = false;

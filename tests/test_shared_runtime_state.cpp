@@ -45,6 +45,11 @@ TEST(CaptureStateTest, WgcDiagnosticsFieldsDefaultToZero) {
     EXPECT_EQ(state.wgcDeliveredMin500Fps.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(state.wgcInputMin250Fps.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(state.wgcInputMin500Fps.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcSelectionErrorAvgUs.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcSelectionErrorMaxUs.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcSelectionErrorSignedAvgUs.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(state.wgcSelectionEarlyMaxUs.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcSelectionLateMaxUs.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(state.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(state.wgcBufferedAtTickAvgPermille.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(state.wgcBufferedAtTickMin.load(std::memory_order_relaxed), 0u);
@@ -58,10 +63,20 @@ TEST(CaptureStateTest, WgcTelemetryFieldsRepresentFreshnessAndReserveCounters) {
     state.wgcQueueEmptyTickPermille.store(375, std::memory_order_relaxed);
     state.wgcStarvedTickCount.store(9, std::memory_order_relaxed);
     state.wgcSingleFrameTickCount.store(15, std::memory_order_relaxed);
+    state.wgcSelectionErrorAvgUs.store(2200, std::memory_order_relaxed);
+    state.wgcSelectionErrorMaxUs.store(8100, std::memory_order_relaxed);
+    state.wgcSelectionErrorSignedAvgUs.store(-1300, std::memory_order_relaxed);
+    state.wgcSelectionEarlyMaxUs.store(2700, std::memory_order_relaxed);
+    state.wgcSelectionLateMaxUs.store(4500, std::memory_order_relaxed);
 
     EXPECT_EQ(state.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed), 375u);
     EXPECT_EQ(state.wgcStarvedTickCount.load(std::memory_order_relaxed), 9u);
     EXPECT_EQ(state.wgcSingleFrameTickCount.load(std::memory_order_relaxed), 15u);
+    EXPECT_EQ(state.wgcSelectionErrorAvgUs.load(std::memory_order_relaxed), 2200u);
+    EXPECT_EQ(state.wgcSelectionErrorMaxUs.load(std::memory_order_relaxed), 8100u);
+    EXPECT_EQ(state.wgcSelectionErrorSignedAvgUs.load(std::memory_order_relaxed), -1300);
+    EXPECT_EQ(state.wgcSelectionEarlyMaxUs.load(std::memory_order_relaxed), 2700u);
+    EXPECT_EQ(state.wgcSelectionLateMaxUs.load(std::memory_order_relaxed), 4500u);
 }
 
 TEST(SharedDefsTest, DlssFrameGenerationHelpersClampToSupportedRange) {

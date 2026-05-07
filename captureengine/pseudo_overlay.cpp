@@ -112,16 +112,6 @@ std::string FormatEncoderOverloadMessage(uint32_t sustainFpsX100, uint32_t targe
     return buffer;
 }
 
-std::string FormatCaptureSourceWarningMessage(uint32_t sourceFps, uint32_t targetFps) {
-    if (targetFps == 0 || sourceFps == 0) {
-        return "Capture source starved!";
-    }
-
-    char buffer[96];
-    std::snprintf(buffer, sizeof(buffer), "Capture source starved (%u/%ufps)", sourceFps, targetFps);
-    return buffer;
-}
-
 bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
     RECT clientRect = {};
     if (!GetClientRect(hwnd, &clientRect)) {
@@ -584,7 +574,6 @@ void PseudoOverlay::OnTimerTick() {
         const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, captureHealthFlags);
         if (ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
             const ULONGLONG previousWarnUntil = overloadWarnUntil_.exchange(0, std::memory_order_relaxed);
-            captureWarnKind_.store(ce::capture_policy::kOverlayWarningNone, std::memory_order_relaxed);
             if (previousWarnUntil != 0 && initialized_) {
                 UpdateOverlay();
             }
@@ -870,17 +859,12 @@ void PseudoOverlay::UpdateOverlay() {
     BYTE warnAlpha = 0;
     bool doUpdateWarn = false;
 
-    const uint32_t captureWarnKind = captureWarnKind_.load(std::memory_order_relaxed);
     const uint32_t overloadWarnSustainFpsX100 = this->overloadWarnSustainFpsX100_.load();
     uint32_t overloadTargetFps = 0;
     if (showOverload && EnsureSharedMemoryMapping() && pSharedMem_) {
         overloadTargetFps = pSharedMem_->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
     }
-    const std::string overloadMsg =
-        captureWarnKind == 2
-            ? FormatCaptureSourceWarningMessage(captureWarnSourceFps_.load(std::memory_order_relaxed),
-                                                overloadTargetFps)
-            : FormatEncoderOverloadMessage(overloadWarnSustainFpsX100, overloadTargetFps);
+    const std::string overloadMsg = FormatEncoderOverloadMessage(overloadWarnSustainFpsX100, overloadTargetFps);
     const char* msg = showScreenshot ? "Screenshot saved!" : (showOverload ? overloadMsg.c_str() : "NOT RECORDING");
     bool isScreenshotMsg = showScreenshot;
 
@@ -1157,8 +1141,6 @@ void PseudoOverlay::Shutdown() {
     lastEncoderOverloadFlags_ = 0;
     lastCaptureHealthFlags_ = 0;
     overloadWarnSustainFpsX100_.store(0, std::memory_order_relaxed);
-    captureWarnSourceFps_.store(0, std::memory_order_relaxed);
-    captureWarnKind_.store(0, std::memory_order_relaxed);
     lastOverlaySuppressed_ = false;
     lastFullscreenSuppressed_ = false;
     stickyAnchorWindow_ = NULL;
@@ -1203,16 +1185,6 @@ void PseudoOverlay::SetRecordingState(bool recording) {
 
 void PseudoOverlay::TriggerEncoderOverloadWarning(uint32_t sustainFpsX100) {
     overloadWarnSustainFpsX100_.store(sustainFpsX100, std::memory_order_relaxed);
-    captureWarnKind_.store(1, std::memory_order_relaxed);
-    overloadWarnUntil_.store(GetTickCount64() + 5000ULL);
-    if (initialized_) {
-        UpdateOverlay();
-    }
-}
-
-void PseudoOverlay::TriggerCaptureSourceWarning(uint32_t sourceFps) {
-    captureWarnSourceFps_.store(sourceFps, std::memory_order_relaxed);
-    captureWarnKind_.store(2, std::memory_order_relaxed);
     overloadWarnUntil_.store(GetTickCount64() + 5000ULL);
     if (initialized_) {
         UpdateOverlay();

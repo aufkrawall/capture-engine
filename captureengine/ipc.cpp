@@ -296,6 +296,11 @@ bool IPCManager::GetLatestFrame(SharedMemoryLayout& outState) {
     outState.runtimeState.selectionErrorSignedAvgUs = pSharedMem->runtimeState.selectionErrorSignedAvgUs.load();
     outState.runtimeState.selectionEarlyMaxUs = pSharedMem->runtimeState.selectionEarlyMaxUs.load();
     outState.runtimeState.selectionLateMaxUs = pSharedMem->runtimeState.selectionLateMaxUs.load();
+    outState.runtimeState.wgcSelectionErrorAvgUs = pSharedMem->runtimeState.wgcSelectionErrorAvgUs.load();
+    outState.runtimeState.wgcSelectionErrorMaxUs = pSharedMem->runtimeState.wgcSelectionErrorMaxUs.load();
+    outState.runtimeState.wgcSelectionErrorSignedAvgUs = pSharedMem->runtimeState.wgcSelectionErrorSignedAvgUs.load();
+    outState.runtimeState.wgcSelectionEarlyMaxUs = pSharedMem->runtimeState.wgcSelectionEarlyMaxUs.load();
+    outState.runtimeState.wgcSelectionLateMaxUs = pSharedMem->runtimeState.wgcSelectionLateMaxUs.load();
     outState.runtimeState.oldestBufferedFrameAgeUs = pSharedMem->runtimeState.oldestBufferedFrameAgeUs.load();
     outState.runtimeState.wgcSourceFrameIntervalAvgUs = pSharedMem->runtimeState.wgcSourceFrameIntervalAvgUs.load();
     outState.runtimeState.wgcSourceFrameJitterAvgUs = pSharedMem->runtimeState.wgcSourceFrameJitterAvgUs.load();
