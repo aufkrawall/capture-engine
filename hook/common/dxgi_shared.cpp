@@ -3075,24 +3075,31 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 void** vtable = *(void***)pSwapChain;
                 if (vtable && IsReadableMemory(vtable, 9 * sizeof(void*))) {
                     void* savedVtable8 = vtable[8];
-                    vtable[8] = (void*)presentBypass;
+                    DWORD oldProtect;
 
-                    ++s_externalOverlayPresentInvokeDepth;
-                    const HRESULT steamHr = steamHook(pSwapChain, SyncInterval, Flags);
-                    if (s_externalOverlayPresentInvokeDepth > 0) {
-                        --s_externalOverlayPresentInvokeDepth;
+                    if (VirtualProtect(&vtable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                        vtable[8] = (void*)presentBypass;
+                        VirtualProtect(&vtable[8], sizeof(void*), oldProtect, &oldProtect);
+
+                        ++s_externalOverlayPresentInvokeDepth;
+                        const HRESULT steamHr = steamHook(pSwapChain, SyncInterval, Flags);
+                        if (s_externalOverlayPresentInvokeDepth > 0) {
+                            --s_externalOverlayPresentInvokeDepth;
+                        }
+
+                        VirtualProtect(&vtable[8], sizeof(void*), PAGE_READWRITE, &oldProtect);
+                        vtable[8] = savedVtable8;
+                        VirtualProtect(&vtable[8], sizeof(void*), oldProtect, &oldProtect);
+
+                        static std::atomic<int> s_steamNonSLDirectInvokeCount{0};
+                        if (s_steamNonSLDirectInvokeCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                            HookLogImportant(
+                                "CallOriginalPresent: invoked Steam overlay hook directly (no SL) "
+                                "via vtable[8]=bypass fixup — hr=0x%08X hook=%p",
+                                (unsigned)steamHr, (void*)steamHook);
+                        }
+                        return steamHr;
                     }
-
-                    vtable[8] = savedVtable8;
-
-                    static std::atomic<int> s_steamNonSLDirectInvokeCount{0};
-                    if (s_steamNonSLDirectInvokeCount.fetch_add(1, std::memory_order_relaxed) < 10) {
-                        HookLogImportant(
-                            "CallOriginalPresent: invoked Steam overlay hook directly (no SL) "
-                            "via vtable[8]=bypass fixup — hr=0x%08X hook=%p",
-                            (unsigned)steamHr, (void*)steamHook);
-                    }
-                    return steamHr;
                 }
             }
 
@@ -3261,26 +3268,33 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
                 void** vtable = *(void***)pSwapChain;
                 if (vtable && IsReadableMemory(vtable, 23 * sizeof(void*))) {
                     void* savedVtable22 = vtable[22];
-                    vtable[22] = (void*)present1Bypass;
+                    DWORD oldProtect;
 
-                    ++s_externalOverlayPresentInvokeDepth;
-                    // Call through Present (slot 8) handler with extra params — Steam's
-                    // handler typically tolerates trailing parameters.
-                    const HRESULT steamHr = steamHook(pSwapChain, SyncInterval, Flags);
-                    if (s_externalOverlayPresentInvokeDepth > 0) {
-                        --s_externalOverlayPresentInvokeDepth;
+                    if (VirtualProtect(&vtable[22], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                        vtable[22] = (void*)present1Bypass;
+                        VirtualProtect(&vtable[22], sizeof(void*), oldProtect, &oldProtect);
+
+                        ++s_externalOverlayPresentInvokeDepth;
+                        // Call through Present (slot 8) handler with extra params — Steam's
+                        // handler typically tolerates trailing parameters.
+                        const HRESULT steamHr = steamHook(pSwapChain, SyncInterval, Flags);
+                        if (s_externalOverlayPresentInvokeDepth > 0) {
+                            --s_externalOverlayPresentInvokeDepth;
+                        }
+
+                        VirtualProtect(&vtable[22], sizeof(void*), PAGE_READWRITE, &oldProtect);
+                        vtable[22] = savedVtable22;
+                        VirtualProtect(&vtable[22], sizeof(void*), oldProtect, &oldProtect);
+
+                        static std::atomic<int> s_steamNonSLPresent1InvokeCount{0};
+                        if (s_steamNonSLPresent1InvokeCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                            HookLogImportant(
+                                "CallOriginalPresent1: invoked Steam overlay hook via vtable[22]=bypass fixup "
+                                "hr=0x%08X hook=%p",
+                                (unsigned)steamHr, (void*)steamHook);
+                        }
+                        return steamHr;
                     }
-
-                    vtable[22] = savedVtable22;
-
-                    static std::atomic<int> s_steamNonSLPresent1InvokeCount{0};
-                    if (s_steamNonSLPresent1InvokeCount.fetch_add(1, std::memory_order_relaxed) < 10) {
-                        HookLogImportant(
-                            "CallOriginalPresent1: invoked Steam overlay hook via vtable[22]=bypass fixup "
-                            "hr=0x%08X hook=%p",
-                            (unsigned)steamHr, (void*)steamHook);
-                    }
-                    return steamHr;
                 }
             }
 

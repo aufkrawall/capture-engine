@@ -2532,3 +2532,88 @@ TEST(DXGISharedTest, StrangeBrigadeSteamOverlayVisibleNonSL) {
             ce::fg_runtime::RuntimeMode::kOff, false, false);
     EXPECT_TRUE(newCallSiteBehaviorActive);
 }
+
+// Regression: CallOriginalPresent and CallOriginalPresent1 vtable[8]/[22] fixups
+// must wrap writes with VirtualProtect to prevent AV when vtable page is read-only.
+// This test creates a read-only vtable-like page, then exercises the exact
+// VirtualProtect → write → VirtualProtect → restore → VirtualProtect pattern
+// used by the fix.  Without VirtualProtect, writing to the read-only page would
+// crash with 0xC0000005, as observed in Strange Brigade DX12 + Steam overlay.
+TEST(DXGISharedTest, CallOriginalPresentVtableFixupRequiresVirtualProtect) {
+    SYSTEM_INFO sysInfo;
+    GetSystemInfo(&sysInfo);
+
+    // Allocate enough for a simulated vtable (23+ entries + padding)
+    const size_t vtableBytes = sysInfo.dwPageSize;
+    void* alloc = VirtualAlloc(nullptr, vtableBytes, MEM_COMMIT, PAGE_READWRITE);
+    ASSERT_NE(alloc, nullptr);
+
+    void** vtable = static_cast<void**>(alloc);
+    const size_t vtableEntryCount = vtableBytes / sizeof(void*);
+
+    // Fill vtable with distinguishable pattern pointers
+    const void* fakeOriginalPresent = reinterpret_cast<void*>(static_cast<uintptr_t>(0x12345678));
+    const void* fakeBypassTrampoline = reinterpret_cast<void*>(static_cast<uintptr_t>(0x87654321));
+    const void* fakeOriginalPresent1 = reinterpret_cast<void*>(static_cast<uintptr_t>(0x12345679));
+    const void* fakeBypassTrampoline1 = reinterpret_cast<void*>(static_cast<uintptr_t>(0x87654322));
+
+    for (size_t i = 0; i < vtableEntryCount; ++i) {
+        vtable[i] = reinterpret_cast<void*>(static_cast<uintptr_t>(0xDEAD0000 + i));
+    }
+    vtable[8] = const_cast<void*>(fakeOriginalPresent);
+    vtable[22] = const_cast<void*>(fakeOriginalPresent1);
+
+    // Make vtable read-only, simulating DXGI runtime vtable page protection
+    DWORD oldProtect;
+    ASSERT_NE(0, VirtualProtect(vtable, vtableBytes, PAGE_READONLY, &oldProtect));
+
+    // Verify read-only: VirtualQuery confirms protection
+    MEMORY_BASIC_INFORMATION mbi;
+    ASSERT_NE(0u, VirtualQuery(vtable, &mbi, sizeof(mbi)));
+    ASSERT_EQ(mbi.Protect & 0xFF, PAGE_READONLY);
+
+    // ---- vtable[8] fixup pattern (exact sequence from CallOriginalPresent) ----
+    void* savedVtable8 = vtable[8];
+    ASSERT_EQ(savedVtable8, fakeOriginalPresent);
+
+    DWORD vpOld;
+    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), PAGE_READWRITE, &vpOld));
+    vtable[8] = const_cast<void*>(fakeBypassTrampoline);
+    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), vpOld, &vpOld));
+
+    // Verify bypass trampoline was written
+    ASSERT_EQ(vtable[8], fakeBypassTrampoline);
+
+    // Restore original value (post-Steam-hook)
+    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), PAGE_READWRITE, &vpOld));
+    vtable[8] = savedVtable8;
+    ASSERT_NE(0, VirtualProtect(&vtable[8], sizeof(void*), vpOld, &vpOld));
+
+    // Verify restore
+    ASSERT_EQ(vtable[8], fakeOriginalPresent);
+
+    // ---- vtable[22] fixup pattern (exact sequence from CallOriginalPresent1) ----
+    void* savedVtable22 = vtable[22];
+    ASSERT_EQ(savedVtable22, fakeOriginalPresent1);
+
+    ASSERT_NE(0, VirtualProtect(&vtable[22], sizeof(void*), PAGE_READWRITE, &vpOld));
+    vtable[22] = const_cast<void*>(fakeBypassTrampoline1);
+    ASSERT_NE(0, VirtualProtect(&vtable[22], sizeof(void*), vpOld, &vpOld));
+
+    // Verify bypass trampoline was written
+    ASSERT_EQ(vtable[22], fakeBypassTrampoline1);
+
+    // Restore original value
+    ASSERT_NE(0, VirtualProtect(&vtable[22], sizeof(void*), PAGE_READWRITE, &vpOld));
+    vtable[22] = savedVtable22;
+    ASSERT_NE(0, VirtualProtect(&vtable[22], sizeof(void*), vpOld, &vpOld));
+
+    // Verify restore
+    ASSERT_EQ(vtable[22], fakeOriginalPresent1);
+
+    // Verify page is still read-only after all manipulations
+    ASSERT_NE(0u, VirtualQuery(vtable, &mbi, sizeof(mbi)));
+    EXPECT_EQ(mbi.Protect & 0xFF, PAGE_READONLY);
+
+    VirtualFree(alloc, 0, MEM_RELEASE);
+}
