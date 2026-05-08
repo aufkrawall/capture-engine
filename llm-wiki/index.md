@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-08
+Last cross-checked: 2026-05-08 (updated: build 0.1.2935 Steam black screen bypass trampoline)
 
 Primary sources:
 - `AGENTS.md`
