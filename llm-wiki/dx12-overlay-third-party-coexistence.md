@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-07
+Last cross-checked: 2026-05-07 (updated: build 0.1.2920 VirtualProtect fix)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -73,6 +73,17 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - **Source anchors**: `hook/common/dxgi_shared.cpp:3035-3055` (call-site fix with `slLoaded` guard + logging), `tests/test_dxgi_shared.cpp` (regression test `StrangeBrigadeSteamOverlayCrashWithoutStreamline`).
 - **Edge cases covered**: (a) NvPresent loaded without Streamline also benefits from the same fix, (b) no bypass trampoline case unchanged (fundamental failure), (c) inline hook path (trampoline exists) unchanged.
 
+### Build 0.1.2920 — Missing VirtualProtect around vtable[8]/[22] fixup (Strange Brigade crash regression)
+
+- **Problem**: Strange Brigade DX12 with Steam overlay (no Streamline/FG) crashes on first Present with `0xC0000005` (AV-WRITE) at `vtable[8]`. The game never renders, CE overlay never appears.
+- **Root cause**: The vtable[8]/[22] fixup code introduced in build 0.1.2908 writes to the swapchain vtable **without `VirtualProtect`**. CE's `InstallPresentInlineHooks` made the vtable writable, wrote hooks (`DetourPresent`/`DetourPresent1`), then restored the page to read-only. When the fixup code later writes `oPresentBypass` to vtable[8], it crashes on the read-only page. Every other vtable write site in the file uses `VirtualProtect`.
+- **Fix** (`hook/common/dxgi_shared.cpp`):
+  1. `CallOriginalPresent` (lines 3077-3086): Wrap vtable[8] save/write/restore with `VirtualProtect(PAGE_READWRITE)`/restore. If `VirtualProtect` fails, fall through to bypass trampoline.
+  2. `CallOriginalPresent1` (lines 3263-3274): Same for vtable[22].
+- **Regression test**: `CallOriginalPresentVtableFixupRequiresVirtualProtect` in `tests/test_dxgi_shared.cpp` validates the pattern on a read-only simulated vtable page.
+- **Source anchors**: `hook/common/dxgi_shared.cpp:3076-3102`, `:3268-3297`, `tests/test_dxgi_shared.cpp:2536-2619`.
+- **Stale-risk**: Low. VirtualProtect pattern matches all other vtable write sites; regression test catches removal.
+
 ### Build 0.1.2908 — Steam overlay visible: invoke directly with vtable[8] fixup (non-SL case)
 - **Problem**: The 0.1.2906 fix prevented the crash but also made Steam overlay permanently invisible in the non-Streamline case. The bypass trampoline jumped over Steam's E9 JMP entirely.
 - **Fix** (`hook/common/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:
@@ -84,7 +95,7 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - Steam's handler reads vtable[8] (=bypass trampoline), renders its overlay, and forwards to the bypass trampoline which calls the real Present. The recursion guard in `DetourPresent` catches any re-entrant calls.
 - Also applied the same fix to `CallOriginalPresent1` (vtable[22] fixup) and added the recursion guard to `DetourPresent1`.
 - **Source anchors**: `hook/common/dxgi_shared.cpp:3044-3085` (CallOriginalPresent fix), `:3192-3235` (CallOriginalPresent1 fix), `:2127-2145` (DetourPresent1 recursion guard), `tests/test_dxgi_shared.cpp:2492-2550` (new regression test `StrangeBrigadeSteamOverlayVisibleNonSL`).
-- **Stale-risk**: Medium. Assumes Steam's handler reads vtable[8] for forwarding. Fallback to bypass trampoline preserved.
+- **Stale-risk**: Low-Medium. Assumes Steam's handler reads vtable[8] for forwarding; now wrapped with VirtualProtect so it works regardless of vtable page protection state (build 0.1.2920). Fallback to bypass trampoline preserved.
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because this area depends on call stacks, queue ownership, and third-party module behavior that can change without warning.
