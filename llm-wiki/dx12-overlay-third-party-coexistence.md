@@ -111,24 +111,49 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - **WHY SUPERSEDED**: cdb disassembly of the crash dump proved the crash is from a **NULL global function pointer** in Steam's overlay data section at RVA ~0x1621d8 in gameoverlayrenderer64.dll, NOT from reading vtable[8]. The instruction at `OverlayHookD3D3+0x1417f` loads `rax = qword ptr [VulkanSteamOverlayProcessCapturedFrame+0x9b378]` (rax = 0 = NULL) and calls `rax` without NULL check. This is an internal Steam overlay rendering callback that was never initialized. Replaced by temp swapchain pre-init in build 0.1.2928.
 - **Stale-risk**: SUPERSEDED. The vtable[8] unhook approach alone does NOT fix the crash.
 
-### Build 0.1.2928 — Pre-init Steam overlay on temp swapchain during hook installation (Strange Brigade DX12 fix)
-- **Problem**: Same as builds 0.1.2922/0.1.2923 — Strange Brigade DX12 crashes on first Present with RIP=0.
-- **Correct root cause (cdb analysis of crash dump `crash_20260508_184246_405_pid5840_tid19316.dmp`)**:
-  - Steam's OverlayHookD3D3 has an internal global function pointer at RVA ~0x1621d8 in gameoverlayrenderer64.dll that's **NULL**.
-  - At `OverlayHookD3D3+0x1417f`: `mov rax, qword ptr [VulkanSteamOverlayProcessCapturedFrame+0x9b378]` → `call rax` where `rax = 0`.
-  - This pointer is a rendering callback that Steam initializes during its startup sequence (likely during D3D12 device/swapchain creation or the first Present).
-  - CE's vtable hook (setting vtable[8] = DetourPresent before the first game Present) prevents Steam from ever observing a normal Present through the E9 JMP, and the callback stays NULL.
-- **Fix** (`hook/common/dxgi_shared.cpp` — `InstallPresentInlineHooks`):
-  - **Pre-init**: During hook installation, **before** setting vtable[8] = DetourPresent, call `vtable[8](pSwapChain, 0, 0)` on the **detection temp swapchain**.
-  - vtable[8] at this point still = real dxgi!Present (CE hasn't hooked yet).
-  - This call goes through dxgi!Present → Steam's E9 JMP → OverlayHookD3D3.
-  - Steam reads vtable[8] = real dxgi!Present, initializes normally INCLUDING the internal callback.
-  - AFTER the Present returns, CE installs vtable[8] = DetourPresent.
-  - For all subsequent frames: `CallOriginalPresent` → `oPresent` (E9 JMP) → Steam overlay works because callbacks are initialized.
-- **Why this works**: The call happens before CE ever modifies vtable[8], in a completely unhooked environment identical to a normal game's first Present. Steam's internal initialization completes fully.
-- **Safety net**: `AttemptSteamDX12OverlayInit` is kept as a fallback for cases where the pre-init didn't occur (e.g., Steam overlay loaded after hook installation).
-- **Source anchors**: `hook/common/dxgi_shared.cpp:2849-2850` (pre-init in InstallPresentInlineHooks), `tests/test_dxgi_shared.cpp` (existing tests updated).
-- **Verification**: All 696 unit tests pass build 0.1.2928.
+### Build 0.1.2928 (SUPERSEDED by 0.1.2930) — Pre-init Steam overlay on temp swapchain during hook installation (DID NOT WORK)
+- **Problem**: Same as builds 0.1.2922/0.1.2923 — still crashing.
+- **Root cause**: Same NULL global function pointer at RVA 0x1621d8.
+- **Fix that did NOT work**: Called `vtable[8](pSwapChain, 0, 0)` on the detection temp swapchain BEFORE setting vtable[8] = DetourPresent.
+- **WHY it didn't work**: The temp swapchain is 2×2 with a hidden window. Steam's OverlayHookD3D3 skips its rendering initialization path when the swapchain is not a "real" game swapchain (no visible window, no buffers). The callback at RVA 0x1621d8 remained NULL. The temp swapchain pre-init did initialize Steam's "next" handler but NOT the rendering callback.
+- **Stale-risk**: SUPERSEDED. The temp swapchain pre-init alone is insufficient.
+
+### Build 0.1.2930 — VEH-protected Steam overlay init on game swapchain (Strange Brigade DX12 fix)
+- **Problem**: Same — Strange Brigade DX12 crashes on first Present with RIP=0 at `call rax` (RAX loaded from RVA 0x1621d8 = NULL).
+- **Root cause** (confirmed by cdb disassembly of crash dump `crash_20260508_192218_047_pid8308_tid23364.dmp`):
+  ```
+  f11a533e  mov rax,qword ptr [VulkanSteamOverlayProcessCapturedFrame+0x9b378]  ; RAX = [base+0x1621d8] = 0
+  f11a5345  mov r8d, ebp                                                          ; arg3 = flags
+  f11a5348  mov edx, esi                                                          ; arg2 = 0
+  f11a534a  mov rcx, r14                                                          ; arg1 = swapchain
+  f11a534d  call rax                                                              ; call through NULL → crash
+  ```
+  - The NULL function pointer at RVA `0x1621d8` in gameoverlayrenderer64.dll is an internal Steam overlay rendering callback.
+  - CE's vtable hook (vtable[8] = DetourPresent) prevents Steam's E9 JMP from ever firing on a real game swapchain, so the callback never gets initialized.
+  - The temp swapchain pre-init (build 0.1.2928) doesn't fix this because Steam only initializes the callback when rendering on a real game swapchain with a visible window.
+  - The vtable unhook safety net (build 0.1.2923, AttemptSteamDX12OverlayInit) also crashes because it calls through the E9 JMP which triggers Steam's overlay to try to render → NULL callback → crash.
+- **Fix** (`hook/common/dxgi_shared.cpp`):
+  1. Added `SteamDummyRenderingCallback` — a no-op callback that returns `S_OK`, serving as a safe placeholder.
+  2. Added `SteamOverlayInitVehHandler` — a VEH handler that catches the NULL callback crash (RIP=0, RAX=0, return address in gameoverlayrenderer64):
+     - Identifies the crash by checking RIP=0, RAX=0, and return address inside gameoverlayrenderer64.dll
+     - Patches the NULL pointer at RVA 0x1621d8 to `SteamDummyRenderingCallback`
+     - Fixes the context: pops the stale return address from stack, sets RAX to the dummy, sets RIP back to the `call rax` instruction
+     - Returns `EXCEPTION_CONTINUE_EXECUTION` so the `call rax` retries with a valid pointer
+  3. Modified `AttemptSteamDX12OverlayInit` — wraps the `presentOriginal(pSwapChain, 0, 0)` call with VEH: installs `SteamOverlayInitVehHandler` before the call and removes it after.
+  4. Updated comments in `InstallPresentInlineHooks` to note that the temp swapchain pre-init only initializes Steam's "next" handler, not the rendering callback (the VEH fix in AttemptSteamDX12OverlayInit handles the real problem).
+- **How it works**:
+  1. First non-SL Present call → `CallOriginalPresent` → `AttemptSteamDX12OverlayInit`
+  2. vtable[8] restored to dxgi!Present
+  3. VEH handler installed
+  4. Called through E9 JMP (`presentOriginal`) → Steam fires → hits NULL callback → crash
+  5. VEH handler catches the crash, patches RVA 0x1621d8 to `SteamDummyRenderingCallback`, retries
+  6. `call rax` retries with valid pointer → dummy executes → returns S_OK → Steam continues
+  7. Steam completes its overlay processing → Present returns to AttemptSteamDX12OverlayInit
+  8. VEH handler removed, vtable[8] re-hooked to DetourPresent
+  9. Subsequent frames route through E9 JMP normally — callback is no longer NULL (Steam may overwrite the dummy with its own function during the first E9 JMP entry, or the dummy stays as a safe no-op that prevents crashing)
+- **Architecture support**: The VEH handler is compiled for both x64 and x86 (uses `#ifdef _WIN64` for Rip/Rax/Rsp vs Eip/Eax/Esp register names, and different Steam DLL names).
+- **Source anchors**: `hook/common/dxgi_shared.cpp:305-381` (dummy callback + VEH handler), `:3236-3238` (VEH-wrapped call in AttemptSteamDX12OverlayInit).
+- **Verification**: All 696 unit tests pass build 0.1.2930.
   8. Clean flow: DetourPresent → CallOriginalPresent → oPresent → Steam overlay → real Present. No re-entrancy into DetourPresent.
 - **Why this is safe**:
   - One-time setup: The vtable unhook/re-hook happens only on the very first non-SL Steam overlay Present call

@@ -302,6 +302,117 @@ static void** s_hookedVTable = nullptr;
 static std::atomic<bool> s_steamDX12InitAttempted{false};
 static bool s_steamInitCrashed = false;
 
+// Steam overlay has a NULL internal rendering callback at RVA ~0x1621d8
+// inside gameoverlayrenderer64.dll, used by OverlayHookD3D3.  CE's vtable
+// hook prevents Steam's natural initialization of this pointer.  We write
+// this no-op function there as a safe placeholder so Steam can complete
+// its first E9 JMP entry without crashing (the first call goes through our
+// VEH handler which patches the NULL pointer and retries).  Steam
+// typically overwrites this with its own real function during that same
+// E9 JMP entry.
+static HRESULT WINAPI SteamDummyRenderingCallback(IDXGISwapChain* /*pSwapChain*/,
+                                                    UINT /*SyncInterval*/, UINT /*Flags*/) {
+    return S_OK;
+}
+
+// VEH handler: catches Steam's NULL rendering callback crash during the
+// one-time overlay init in AttemptSteamDX12OverlayInit.  Patches the NULL
+// pointer at the known RVA inside gameoverlayrenderer(64).dll to
+// SteamDummyRenderingCallback and retries the `call (e)ax` instruction so
+// Steam completes its initialization.
+//
+// Architecture notes:
+//   x64: returnAddr from [RSP], RIP, RAX, RSP, call rax = FF D0 (2 bytes)
+//   x86: returnAddr from [ESP], EIP, EAX, ESP, call eax = FF D0 (2 bytes)
+//   Steam module: x64=gameoverlayrenderer64.dll, x86=gameoverlayrenderer.dll
+//   RVA: x64=0x1621d8, x86=TODO (not yet observed, same offset concept)
+static LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
+    if (ep->ExceptionRecord->ExceptionCode != STATUS_ACCESS_VIOLATION) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+#ifdef _WIN64
+    const wchar_t* steamModuleName = L"gameoverlayrenderer64.dll";
+    const uintptr_t kSteamCallbackRva = 0x1621d8;
+    const int kCallOpcodeSize = 2;  // FF D0 = call rax (2 bytes)
+    // RIP=0, RAX=0: calling through NULL (`call rax` where RAX loaded from NULL ptr)
+    if (ep->ContextRecord->Rip != 0 || ep->ContextRecord->Rax != 0) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    uintptr_t returnAddress = 0;
+    if (ep->ContextRecord->Rsp) {
+        returnAddress = *(uintptr_t*)ep->ContextRecord->Rsp;
+    }
+#else
+    const wchar_t* steamModuleName = L"gameoverlayrenderer.dll";
+    const uintptr_t kSteamCallbackRva = 0x1621d8;
+    const int kCallOpcodeSize = 2;  // FF D0 = call eax (2 bytes)
+    // EIP=0, EAX=0: calling through NULL (`call eax` where EAX loaded from NULL ptr)
+    if (ep->ContextRecord->Eip != 0 || ep->ContextRecord->Eax != 0) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    uintptr_t returnAddress = 0;
+    if (ep->ContextRecord->Esp) {
+        returnAddress = *(uintptr_t*)ep->ContextRecord->Esp;
+    }
+#endif
+
+    if (!returnAddress) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    HMODULE steamMod = GetModuleHandleW(steamModuleName);
+    if (!steamMod) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    MODULEINFO modInfo = {};
+    if (!GetModuleInformation(GetCurrentProcess(), steamMod, &modInfo, sizeof(modInfo))) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    uintptr_t steamStart = (uintptr_t)steamMod;
+    uintptr_t steamEnd = steamStart + modInfo.SizeOfImage;
+    if (returnAddress < steamStart || returnAddress >= steamEnd) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Patch the NULL callback at the known RVA
+    void** nullFnPtr = (void**)(steamStart + kSteamCallbackRva);
+    DWORD oldProtect;
+    if (VirtualProtect(nullFnPtr, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        *nullFnPtr = (void*)SteamDummyRenderingCallback;
+        VirtualProtect(nullFnPtr, sizeof(void*), oldProtect, &oldProtect);
+        HookLogImportant(
+            "SteamOverlayInitVehHandler: Patched NULL callback at %p (steam+0x%zX) "
+            "-> SteamDummyRenderingCallback=%p",
+            nullFnPtr, kSteamCallbackRva, (void*)SteamDummyRenderingCallback);
+    } else {
+        HookLogImportant(
+            "SteamOverlayInitVehHandler: VirtualProtect failed for Steam callback at %p",
+            nullFnPtr);
+    }
+
+#ifdef _WIN64
+    // Fix context to retry `call rax` with valid RAX:
+    // 1. Pop the stale return address from the failed call
+    // 2. Set RAX to our no-op
+    // 3. Set RIP back to `call rax` (= returnAddress - kCallOpcodeSize)
+    ep->ContextRecord->Rsp += 8;  // undo the call's stack push
+    ep->ContextRecord->Rax = (DWORD64)SteamDummyRenderingCallback;
+    ep->ContextRecord->Rip = returnAddress - kCallOpcodeSize;
+    HookLog("SteamOverlayInitVehHandler: Fixed up context — retrying call rax with RAX=%p",
+            (void*)ep->ContextRecord->Rax);
+#else
+    // Fix context to retry `call eax` with valid EAX:
+    ep->ContextRecord->Esp += 4;  // undo the call's stack push (4 bytes on x86)
+    ep->ContextRecord->Eax = (DWORD)SteamDummyRenderingCallback;
+    ep->ContextRecord->Eip = returnAddress - kCallOpcodeSize;
+    HookLog("SteamOverlayInitVehHandler: Fixed up context — retrying call eax with EAX=%p",
+            (void*)(DWORD_PTR)ep->ContextRecord->Eax);
+#endif
+
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 // Forward declaration — defined later in this translation unit.
 static PFN_Present EnsurePresentBypassTrampoline();
 
@@ -2857,21 +2968,20 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         // initialization because Steam's E9 JMP never fires on the game's Present
         // calls — they go through DetourPresent instead of dxgi!Present.
         //
-        // Fix: Call Present through the REAL dxgi!Present (vtable[8] is still
-        // unhooked at this point) on the detection temp swapchain BEFORE
-        // installing our vtable hook.  Steam's overlay initializes fully
-        // (including the NULL callback), then we install our hook.
+        // Best-effort pre-init: Call Present on the temp swapchain through the
+        // REAL dxgi!Present (vtable[8] is still unhooked at this point) BEFORE
+        // installing our vtable hook.  This initializes Steam's "next" handler
+        // but does NOT initialize the rendering callback at RVA 0x1621d8 —
+        // Steam only writes that when rendering on a REAL game swapchain (the
+        // 2x2 hidden-window temp swapchain causes Steam to skip full init).
+        //
+        // The actual fix for the NULL rendering callback is the VEH-protected
+        // call in AttemptSteamDX12OverlayInit (see below), which patches the
+        // NULL pointer at crash time and lets Steam continue.
         //
         // Thread safety: InstallPresentInlineHooks runs once on the hook thread.
         // The temp swapchain is valid and vtable page is already writable
         // (from VirtualProtect at line ~2843).
-        //
-        // Why the previous fix (build 0.1.2923, vtable[8] unhook in
-        // AttemptSteamDX12OverlayInit) failed: The NULL callback is NOT
-        // initialized by restoring vtable[8] on the first game Present — Steam's
-        // overlay needs to observe Present through an UNMODIFIED hook chain from
-        // the very beginning (before any CE vtable modifications).  The temp
-        // swapchain Present before our hook is installed provides this.
         if (externalJmpDetected) {
             const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
             if (overlayModule && IsSteamOverlayModule(overlayModule)) {
@@ -3135,23 +3245,29 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     HookLogImportant(
         "AttemptSteamDX12OverlayInit: vtable[8] temporarily restored to dxgi!Present=%p — "
-        "calling through E9 JMP for Steam overlay init",
+        "calling through E9 JMP for Steam overlay init (with VEH protection)",
         (void*)presentOriginal);
 
-    // Call through oPresent (E9 JMP at dxgi!Present).
-    // Steam's OverlayHookD3D3 should find vtable[8] = dxgi!Present (we just
-    // restored it) and find its internal rendering callbacks already initialized
-    // (from the temp swapchain pre-init in InstallPresentInlineHooks).  The
-    // combination of correct vtable[8] + initialized callbacks means this call
-    // should succeed without crashing.
+    // Call through oPresent (E9 JMP at dxgi!Present) WITH VEH protection.
     //
-    // NOTE: No SEH/VEH protection on this call.  With correct vtable[8] and
-    // pre-initialized callbacks, Steam's overlay should work (as it does in
-    // thousands of other games).  If Steam's overlay still crashes (e.g. due to
-    // an unrelated Steam bug), the existing VEH crash handler catches it and
-    // writes a dump.  s_steamInitCrashed will remain false so the next game
-    // launch will try again.
+    // Steam's OverlayHookD3D3 has a NULL internal rendering callback at RVA
+    // ~0x1621d8 in gameoverlayrenderer64.dll that causes a RIP=0 crash on first
+    // entry through the E9 JMP on a REAL game swapchain (the temp swapchain pre-
+    // init in InstallPresentInlineHooks doesn't trigger full initialization because
+    // Steam skips rendering on a 2x2 hidden-window swapchain).
+    //
+    // The SteamOverlayInitVehHandler catches this specific crash (RIP=0, RAX=0,
+    // return address inside gameoverlayrenderer64.dll), patches the NULL pointer
+    // to SteamDummyRenderingCallback, and retries the `call rax` so Steam
+    // completes its initialization.  Steam typically overwrites the dummy with
+    // its own real callback during the same E9 JMP entry.
+    //
+    // If the crash is NOT the expected NULL callback (e.g. a different Steam bug),
+    // the handler returns EXCEPTION_CONTINUE_SEARCH and CE's existing VEH crash
+    // handler catches it and writes a crash dump.
+    PVOID steamInitVehHandle = AddVectoredExceptionHandler(1, SteamOverlayInitVehHandler);
     HRESULT initHr = presentOriginal(pSwapChain, SyncInterval, Flags);
+    RemoveVectoredExceptionHandler(steamInitVehHandle);
 
     // Re-hook vtable[8] with DetourPresent (our vtable hook)
     if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
@@ -3210,14 +3326,17 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             //
             // Steam's OverlayHookD3D3 has a NULL global function pointer at RVA
             // ~0x1621d8 in gameoverlayrenderer64.dll (internal rendering callback).
-            // The PRIMARY fix is in InstallPresentInlineHooks: calling Present on
-            // the temp swapchain BEFORE our vtable hook is installed, which lets
-            // Steam initialize this callback naturally.
+            // The temp swapchain pre-init in InstallPresentInlineHooks does NOT
+            // initialize this callback (Steam only writes it when rendering on
+            // a real game swapchain).
             //
-            // This safety net (AttemptSteamDX12OverlayInit) handles cases where
-            // the pre-init didn't occur.  It temporarily restores vtable[8] to
-            // dxgi!Present and calls Steam's E9 JMP.  With pre-init done, Steam's
-            // internal callbacks are already non-NULL, so this call succeeds.
+            // AttemptSteamDX12OverlayInit handles the real fix: it temporarily
+            // restores vtable[8] to dxgi!Present and calls Steam's E9 JMP with
+            // VEH protection.  The VEH handler (SteamOverlayInitVehHandler)
+            // catches the NULL callback crash, patches RVA 0x1621d8 to a no-op,
+            // and retries the call.  Steam completes its initialization (and
+            // typically overwrites the no-op with its own real callback during
+            // the same E9 JMP entry).
             //
             // After init, subsequent frames route through oPresent (E9 JMP)
             // normally — Steam's overlay is fully initialized.
