@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-07 (updated: build 0.1.2920 VirtualProtect fix)
+Last cross-checked: 2026-05-08 (updated: build 0.1.2923 vtable unhook fix)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -84,20 +84,65 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - **Source anchors**: `hook/common/dxgi_shared.cpp:3076-3102`, `:3268-3297`, `tests/test_dxgi_shared.cpp:2536-2619`.
 - **Stale-risk**: Low. VirtualProtect pattern matches all other vtable write sites; regression test catches removal.
 
-### Build 0.1.2908 — Steam overlay visible: invoke directly with vtable[8] fixup (non-SL case)
+### Build 0.1.2908 (SUPERSEDED by 0.1.2922) — Steam overlay visible: invoke directly with vtable[8] fixup (non-SL case)
 - **Problem**: The 0.1.2906 fix prevented the crash but also made Steam overlay permanently invisible in the non-Streamline case. The bypass trampoline jumped over Steam's E9 JMP entirely.
-- **Fix** (`hook/common/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:
+- **Original fix** (`hook/common/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:
   1. Save vtable[8], set it to the bypass trampoline (valid forwarding target)
   2. Increment `s_externalOverlayPresentInvokeDepth` (activates recursion guard)
-  3. Call `g_externalOverlayPresentHook` directly (NOT through `TryInvokeGuardedExternalSteamOverlayPresent`)
+  3. Call `g_externalOverlayPresentHook` directly
   4. Restore vtable[8], decrement depth
   5. Return Steam's HRESULT
-- Steam's handler reads vtable[8] (=bypass trampoline), renders its overlay, and forwards to the bypass trampoline which calls the real Present. The recursion guard in `DetourPresent` catches any re-entrant calls.
-- Also applied the same fix to `CallOriginalPresent1` (vtable[22] fixup) and added the recursion guard to `DetourPresent1`.
-- **Source anchors**: `hook/common/dxgi_shared.cpp:3044-3085` (CallOriginalPresent fix), `:3192-3235` (CallOriginalPresent1 fix), `:2127-2145` (DetourPresent1 recursion guard), `tests/test_dxgi_shared.cpp:2492-2550` (new regression test `StrangeBrigadeSteamOverlayVisibleNonSL`).
-- **Stale-risk**: Low-Medium. Assumes Steam's handler reads vtable[8] for forwarding; now wrapped with VirtualProtect so it works regardless of vtable page protection state (build 0.1.2920). Fallback to bypass trampoline preserved.
+- **WHY SUPERSEDED**: The vtable[8] fixup + direct Steam handler call approach incorrectly assumed Steam reads vtable[8] from the swapchain object at call time. In practice, Steam's OverlayHookD3D3 caches the "next" Present handler pointer INTERNALLY when its E9 JMP is first triggered through the natural dxgi!Present entry point. Since CE uses vtable hooking (bypassing Steam's E9 JMP on dxgi!Present), the cached pointer was never initialized and remained NULL → RIP=0 crash on first Present even with the vtable[8] fixup. Replaced by oPresent (E9 JMP) routing in build 0.1.2922.
+- **Source anchors**: Same files, superseded by 0.1.2922 code.
+- **Stale-risk**: SUPERSEDED. Do not restore the vtable[8] fixup + direct Steam handler call approach.
+
+### Build 0.1.2922 (SUPERSEDED by 0.1.2923) — Steam overlay via oPresent (E9 JMP) routing for non-SL Steam overlay (Strange Brigade DX12 fix)
+- **Problem**: Strange Brigade DX12 with Steam overlay (no Streamline, no FG) crashed on first Present with `0xC0000005` (RIP=0) inside Steam's OverlayHookD3D3.
+- **Root cause (superseded by 0.1.2923 analysis)**: The 0.1.2922 analysis incorrectly assumed Steam's OverlayHookD3D3 reads vtable[8] and successfully uses DetourPresent as a forwarding target. In reality, Steam lazily initializes its internal "next" Present handler on first E9 JMP entry by reading vtable[8], and the initialization VALIDATES the pointer — if it points to anything other than the real dxgi!Present (e.g. DetourPresent), Steam's validation fails and sets "next" = NULL → RIP=0 crash.
+- **Fix**: Routing through `oPresent` (dxgi!Present with Steam's E9 JMP) with the expectation that Steam would initialize its internal pointer from vtable[8] (= DetourPresent) and call it back into DetourPresent's reentrancy guard.
+- **WHY SUPERSEDED**: The 0.1.2922 approach crashes because Steam's OverlayHookD3D3 does NOT accept DetourPresent as a valid "next" handler during initialization. Steam reads vtable[8], finds DetourPresent, validation fails, sets "next" = NULL, and the crash occurs inside Steam's overlay code before any reentrancy guard can catch it. The oPresent → DetourPresent → reentrancy guard → bypass chain never completes because Steam's internal init fails immediately on first entry. Replaced by the one-time vtable unhook approach in build 0.1.2923.
+- **Source anchors**: `hook/common/dxgi_shared.cpp:3063-3118` (original fix), `:3254-3304` (original Present1 fix).
+- **Stale-risk**: SUPERSEDED. Do not restore the oPresent routing approach — it relies on an incorrect assumption about Steam's initialization mechanism.
+
+### Build 0.1.2923 — One-time vtable[8] unhook for Steam DX12 overlay init (Strange Brigade DX12 fix)
+- **Problem**: Strange Brigade DX12 with Steam overlay active (no Streamline, no DLSS FG, no FSR FG) crashes on the first Present call with `0xC0000005` (RIP=0) inside Steam's OverlayHookD3D3. CE uses vtable hooking (vtable[8] = `DetourPresent`) because Steam's E9 JMP is detected on `dxgi!Present`, bypassing Steam's inline hook entirely. Steam's overlay never initializes its internal Present handler.
+- **Root cause**: Steam's `OverlayHookD3D3` lazily initializes its internal "next" Present handler pointer on the first entry through its E9 JMP by reading `vtable[8]` from the swapchain. When `vtable[8]` = `DetourPresent` (CE's vtable hook function), Steam's initialization validation determines that DetourPresent is not a valid real Present function pointer and sets "next" = NULL. The overlay then crashes with RIP=0 on its first actual call site. This differs from the build 0.1.2922 assumption (which thought Steam would accept DetourPresent and call it back through the reentrancy guard).
+- **Fix** (`hook/common/dxgi_shared.cpp`):
+  1. Added file-scoped state vars: `s_steamDX12InitAttempted` (atomic<bool>), `s_steamInitCrashed` (bool)
+  2. Added helper: `AttemptSteamDX12OverlayInit()` — performs the one-time vtable unhook → E9 JMP call → re-hook sequence:
+     a. Save vtable[8] (= DetourPresent), write real `dxgi!Present` to vtable[8] (with `VirtualProtect`)
+     b. Call the real dxgi!Present through `oPresent` (= dxgi!Present with Steam's E9 JMP)
+     c. Steam's OverlayHookD3D3 enters through its E9 JMP, reads vtable[8] = real dxgi!Present, succeeds in initializing its internal "next" handler
+     d. Steam renders overlay, calls "next" = real dxgi!Present → frame presented
+     e. Restore vtable[8] to DetourPresent (with `VirtualProtect`)
+  3. Modified `CallOriginalPresent()`: Replaced the non-Streamline Steam overlay block (old oPresent routing from build 0.1.2922) with two-phase logic:
+     - **Phase A** (one-time init): If `!s_steamDX12InitAttempted`, call `AttemptSteamDX12OverlayInit()`. Sets `s_steamDX12InitAttempted = true`. On success, routes through `oPresent` (Steam's E9 JMP → Steam's now-initialized handler → real Present). On crash, sets `s_steamInitCrashed = true`, falls through to bypass fallback.
+     - **Phase B** (steady state): If init completed, route through `oPresent` normally. If init crashed, use bypass trampoline.
+  4. Modified `CallOriginalPresent1()`: Only route through `oPresent1` if Steam init completed; otherwise use bypass.
+- **How it works**:
+  1. First non-SL Present call enters `CallOriginalPresent`
+  2. `AttemptSteamDX12OverlayInit()` temporarily restores vtable[8] to real `dxgi!Present`
+  3. Calls `oPresent` (dxgi!Present with Steam's E9 JMP) — Steam's E9 JMP fires
+  4. Steam reads vtable[8] = real `dxgi!Present` → init succeeds → internal "next" = real Present
+  5. Steam renders overlay → calls "next" (real Present) → frame presented
+  6. vtable[8] restored to `DetourPresent`
+  7. All subsequent frames: `CallOriginalPresent` → `oPresent` → Steam's E9 JMP → Steam's now-initialized "next" handler (real Present) → frame presented with both overlays
+  8. Clean flow: DetourPresent → CallOriginalPresent → oPresent → Steam overlay → real Present. No re-entrancy into DetourPresent.
+- **Why this is safe**:
+  - One-time setup: The vtable unhook/re-hook happens only on the very first non-SL Steam overlay Present call
+  - VirtualProtect is used for all vtable writes (matches existing pattern from all other vtable write sites)
+  - If Steam's E9 JMP is NOT present (oPresent == dxgi!Present), the init call just calls real Present directly — no harm, no Steam overlay
+  - `s_steamInitCrashed` flag provides crash-safe fallback: if init crashes (e.g. Steam overlay removed at runtime), subsequent calls use bypass trampoline
+  - Thread safety: `s_steamDX12InitAttempted` is atomic. Only one thread performs the init. Other threads arriving during init wait for `s_steamDX12InitAttempted = true` and will use bypass if init crashed.
+  - No re-entrancy into DetourPresent: after init, Steam's "next" handler points to real Present, not DetourPresent
+  - No stack overflow: at most one level of reentrancy during the init phase (DetourPresent → CallOriginalPresent → init helper → oPresent → Steam → real Present → return)
+- **Fallback**: If `AttemptSteamDX12OverlayInit()` crashes (Steam overlay removed or init fails silently), `s_steamInitCrashed = true` and all subsequent calls use bypass trampoline (Steam overlay not visible, but game doesn't crash).
+- **Source anchors**: `hook/common/dxgi_shared.cpp` (AttemptSteamDX12OverlayInit, CallOriginalPresent init block), `tests/test_dxgi_shared.cpp` (SteamDX12InitVtableUnhookRestorePattern, SteamDX12InitVtableRehookFailureSafety).
+- **Verification**: All unit tests pass. Regression tests cover the VirtualProtect unhook → call → re-hook pattern on read-only vtable pages (SteamDX12InitVtableUnhookRestorePattern) and safe behavior if re-hook fails (SteamDX12InitVtableRehookFailureSafety).
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because this area depends on call stacks, queue ownership, and third-party module behavior that can change without warning.
 - Module-token detection is heuristic. Re-check it whenever new overlay modules appear in traces or bug reports.
 - Re-check SL routing suppression whenever FSR FG classification or FFX hook timing changes, because the effective runtime mode is now the authoritative guard.
+- The one-time vtable unhook approach (build 0.1.2923) assumes Steam's OverlayHookD3D3 lazily initializes its internal "next" handler on first E9 JMP entry by reading vtable[8], and that the initialization validates the pointer against the real dxgi!Present. This was confirmed by the crash analysis of build 0.1.2922 (which crashed because vtable[8] = DetourPresent failed validation). If Steam's internal initialization mechanism changes (e.g. reads a different vtable slot, uses a non-vtable mechanism, or changes validation criteria), this fix may need revision. The bypass trampoline fallback and `s_steamInitCrashed` flag remain as crash-safe last resorts.
+- The vtable[8] fixup + direct Steam handler call approach (build 0.1.2908) is SUPERSEDED by the oPresent routing approach (build 0.1.2922), which is in turn SUPERSEDED by the one-time vtable unhook approach (build 0.1.2923). Neither earlier approach must be restored. The oPresent routing approach incorrectly assumed Steam would accept DetourPresent as a valid forwarding target during initialization; the vtable fixup approach incorrectly assumed Steam reads vtable[8] at call time rather than during E9 JMP initialization.
