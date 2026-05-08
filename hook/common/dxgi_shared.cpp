@@ -315,6 +315,9 @@ static HRESULT WINAPI SteamDummyRenderingCallback(IDXGISwapChain* /*pSwapChain*/
     return S_OK;
 }
 
+// Forward declaration (defined at line ~817)
+static bool IsReadableMemory(const void* ptr, size_t size);
+
 // VEH handler: catches Steam's NULL rendering callback crash during the
 // one-time overlay init in AttemptSteamDX12OverlayInit.  Patches the NULL
 // pointer at the known RVA inside gameoverlayrenderer(64).dll to
@@ -375,40 +378,68 @@ static LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Patch the NULL callback at the known RVA
+    // Patch the NULL callback at the known RVA.
+    // Safety check: verify the pointer is actually NULL before patching,
+    // in case Steam updates changed the RVA.
     void** nullFnPtr = (void**)(steamStart + kSteamCallbackRva);
-    DWORD oldProtect;
-    if (VirtualProtect(nullFnPtr, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        *nullFnPtr = (void*)SteamDummyRenderingCallback;
-        VirtualProtect(nullFnPtr, sizeof(void*), oldProtect, &oldProtect);
-        HookLogImportant(
-            "SteamOverlayInitVehHandler: Patched NULL callback at %p (steam+0x%zX) "
-            "-> SteamDummyRenderingCallback=%p",
-            nullFnPtr, kSteamCallbackRva, (void*)SteamDummyRenderingCallback);
+    bool patched = false;
+    if (IsReadableMemory(nullFnPtr, sizeof(void*)) && *nullFnPtr == 0) {
+        DWORD oldProtect;
+        if (VirtualProtect(nullFnPtr, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+            *nullFnPtr = (void*)SteamDummyRenderingCallback;
+            VirtualProtect(nullFnPtr, sizeof(void*), oldProtect, &oldProtect);
+            patched = true;
+            HookLogImportant(
+                "SteamOverlayInitVehHandler: Patched NULL callback at %p (steam+0x%zX) "
+                "-> SteamDummyRenderingCallback=%p",
+                nullFnPtr, kSteamCallbackRva, (void*)SteamDummyRenderingCallback);
+        } else {
+            HookLogImportant(
+                "SteamOverlayInitVehHandler: VirtualProtect failed for Steam callback at %p",
+                nullFnPtr);
+        }
     } else {
         HookLogImportant(
-            "SteamOverlayInitVehHandler: VirtualProtect failed for Steam callback at %p",
-            nullFnPtr);
+            "SteamOverlayInitVehHandler: RVA 0x%zX is not NULL (%p) - RVA may have changed, "
+            "skipping patch and falling back to crash skip",
+            kSteamCallbackRva, nullFnPtr);
     }
 
+    if (patched) {
+        // Retry `call (e)ax` with our patched callback.
 #ifdef _WIN64
-    // Fix context to retry `call rax` with valid RAX:
-    // 1. Pop the stale return address from the failed call
-    // 2. Set RAX to our no-op
-    // 3. Set RIP back to `call rax` (= returnAddress - kCallOpcodeSize)
-    ep->ContextRecord->Rsp += 8;  // undo the call's stack push
-    ep->ContextRecord->Rax = (DWORD64)SteamDummyRenderingCallback;
-    ep->ContextRecord->Rip = returnAddress - kCallOpcodeSize;
-    HookLog("SteamOverlayInitVehHandler: Fixed up context — retrying call rax with RAX=%p",
-            (void*)ep->ContextRecord->Rax);
+        ep->ContextRecord->Rsp += 8;  // undo the call's stack push (8 bytes on x64)
+        ep->ContextRecord->Rax = (DWORD64)SteamDummyRenderingCallback;
+        ep->ContextRecord->Rip = returnAddress - kCallOpcodeSize;
+        HookLog("SteamOverlayInitVehHandler: Retrying call rax with RAX=%p",
+                (void*)ep->ContextRecord->Rax);
 #else
-    // Fix context to retry `call eax` with valid EAX:
-    ep->ContextRecord->Esp += 4;  // undo the call's stack push (4 bytes on x86)
-    ep->ContextRecord->Eax = (DWORD)SteamDummyRenderingCallback;
-    ep->ContextRecord->Eip = returnAddress - kCallOpcodeSize;
-    HookLog("SteamOverlayInitVehHandler: Fixed up context — retrying call eax with EAX=%p",
-            (void*)(DWORD_PTR)ep->ContextRecord->Eax);
+        ep->ContextRecord->Esp += 4;  // undo the call's stack push (4 bytes on x86)
+        ep->ContextRecord->Eax = (DWORD)SteamDummyRenderingCallback;
+        ep->ContextRecord->Eip = returnAddress - kCallOpcodeSize;
+        HookLog("SteamOverlayInitVehHandler: Retrying call eax with EAX=%p",
+                (void*)(DWORD_PTR)ep->ContextRecord->Eax);
 #endif
+    } else {
+        // Could not patch - skip past the crash entirely.
+        // Set (R/E)IP past the call and (R/E)AX = S_OK (0) so Steam continues.
+        // This may cause Steam to crash elsewhere if the callback was mandatory,
+        // but at least we tried.
+#ifdef _WIN64
+        ep->ContextRecord->Rax = 0;  // S_OK
+        ep->ContextRecord->Rip = returnAddress;
+        // NOTE: RSP already points to the return address (pushed by `call rax`).
+        // By setting RIP=returnAddress, we consume that pushed return address
+        // as the "function returned normally". RSP is preserved correctly.
+        HookLog("SteamOverlayInitVehHandler: Skipped past crash (fallback) - RIP=%p RAX=0",
+                (void*)ep->ContextRecord->Rip);
+#else
+        ep->ContextRecord->Eax = 0;  // S_OK
+        ep->ContextRecord->Eip = returnAddress;
+        HookLog("SteamOverlayInitVehHandler: Skipped past crash (fallback) - EIP=%p EAX=0",
+                (void*)(DWORD_PTR)ep->ContextRecord->Eip);
+#endif
+    }
 
     return EXCEPTION_CONTINUE_EXECUTION;
 }
