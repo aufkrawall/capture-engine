@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-05-07 — WGC CFR now preserves explicit 10-bit as a high-precision-only path, starts from one shared audio/video anchor after a post-warmup startup barrier, uses adaptive overcapture instead of steady max-rate capture, suppresses misleading encoder overlay warnings while source/scheduler-limited, protects audio continuity without stop-time frozen-video tails, and separates WGC visual-selection bias from CFR schedule timing in diagnostics. See `llm-wiki/log/recent.md` for the full timeline.
+Last cross-checked: 2026-05-08 — Strange Brigade DX12 black screen fix (build 0.1.2941): vtable[8] for this DX12 game IS `dxgi!Present` (inner function) with Steam's E9 JMP. Calling it directly via the E9 JMP path skips DXGI COM method kernel state management (buffer tracking, fence sync, rotation). Fix: save original vtable[8] COM method from temp swapchain at init time as `s_originalVtable8Present` and use it in `CallOriginalPresent` instead of `presentOriginal` (= inner function). The COM method does state management, then calls `dxgi!Present` internally where Steam's E9 JMP fires naturally — both overlays render, game content visible. See `llm-wiki/log/recent.md` for the full timeline.
 
 Primary sources:
 - `llm-wiki/log/recent.md`

@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-08 (updated: build 0.1.2935 Steam black screen bypass trampoline)
+Last cross-checked: 2026-05-08 (updated: build 0.1.2941 save original vtable[8] COM method for E9 JMP path)
 
 Primary sources:
 - `AGENTS.md`

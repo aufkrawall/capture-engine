@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-08 (updated: build 0.1.2923 vtable unhook fix)
+Last cross-checked: 2026-05-08 (updated: build 0.1.2941 original vtable[8] COM method fix)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -166,6 +166,20 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - **Fallback**: If `AttemptSteamDX12OverlayInit()` crashes (Steam overlay removed or init fails silently), `s_steamInitCrashed = true` and all subsequent calls use bypass trampoline (Steam overlay not visible, but game doesn't crash).
 - **Source anchors**: `hook/common/dxgi_shared.cpp` (AttemptSteamDX12OverlayInit, CallOriginalPresent init block), `tests/test_dxgi_shared.cpp` (SteamDX12InitVtableUnhookRestorePattern, SteamDX12InitVtableRehookFailureSafety).
 - **Verification**: All unit tests pass. Regression tests cover the VirtualProtect unhook → call → re-hook pattern on read-only vtable pages (SteamDX12InitVtableUnhookRestorePattern) and safe behavior if re-hook fails (SteamDX12InitVtableRehookFailureSafety).
+
+### Build 0.1.2941 — Black screen fix: save original vtable[8] COM method for E9 JMP path (Strange Brigade DX12)
+
+- **Problem**: Build 0.1.2938 produced black screen (game content invisible, CE overlay renders, Steam overlay may or may not render). Logs showed `CallOriginalPresent: routing through E9 JMP at ...` on every frame with `bufIdx=0` on every Reinit SUBMIT.
+- **Root cause (properly identified)**: For this DX12 game, `vtable[8]` IS `dxgi!Present` (the inner function, not a COM wrapper method). Steam's E9 JMP is on `dxgi!Present`. When `CallOriginalPresent` calls `presentOriginal` (= `oPresent` = `vtable[8]` = `dxgi!Present` with E9 JMP), it enters Steam's overlay handler directly — **skipping the DXGI COM method's kernel state management** (buffer tracking, fence sync, rotation management). The inner function produces garbled/black output without that state setup.
+  - **Normal Steam-only flow**: Game → `IDXGISwapChain::Present` (COM method) → state mgmt → `dxgi!Present` (E9 JMP) → Steam overlay → "next" (original `dxgi!Present`) → present. State management done BEFORE E9 JMP.
+  - **CE+Steam broken**: Game → `DetourPresent` (vtable[8]) → CE overlay → `CallOriginalPresent` → `oPresent` = `dxgi!Present` (E9 JMP) → Steam overlay → "next" → DetourPresent (re-entrant) → bypass → `dxgi!Present+5` → presents. **No COM state management.**
+  - **CE+Steam fixed**: Game → `DetourPresent` (vtable[8]) → CE overlay → `CallOriginalPresent` → saved COM method → state mgmt → `dxgi!Present` (E9 JMP) → Steam overlay → "next" → DetourPresent (re-entrant) → bypass → `dxgi!Present+5` → presents. **State management done by COM method before E9 JMP.**
+- **Key insight**: The bypass trampoline and Steam's "next" handler both call `dxgi!Present+5` (original inner function body). This is equivalent. The inner function needs COM method state management to have run FIRST. In the normal Steam-only case, the COM method (vtable[8]) runs first and sets up DXGI state. In the CE case, vtable[8] = DetourPresent prevents the COM method from running.
+- **Fix**: Save the temp swapchain's vtable[8] at `InstallPresentInlineHooks` init time as `s_originalVtable8Present`, before any modifications (line ~2855 in dxgi_shared.cpp). Use this saved COM method in `CallOriginalPresent`'s E9 JMP path and vtable-hook fallback instead of `presentOriginal` (= `oPresent` = inner function with E9 JMP).
+- **AttemptSteamDX12OverlayInit unchanged**: Steam's init still uses `presentOriginal` (inner function with E9 JMP) because Steam's OverlayHookD3D3 expects to find the function it hooked (`dxgi!Present`) when it reads vtable[8] during init.
+- **Logging added**: `InstallPresentInlineHooks` now logs whether `s_originalVtable8Present` matches `presentAddr` and which module `presentAddr` belongs to — critical for diagnosing vtable[8] ownership.
+- **Source anchors**: `hook/common/dxgi_shared.cpp:291-301` (s_originalVtable8Present), `:2855-2888` (save + logging), `:3492-3515` (E9 JMP path), `:3629-3635` (vtable-hook fallback).
+- **Verification**: All 696 unit tests pass. Build 0.1.2941.
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because this area depends on call stacks, queue ownership, and third-party module behavior that can change without warning.
