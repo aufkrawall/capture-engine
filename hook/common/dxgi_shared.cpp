@@ -3395,18 +3395,29 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     }
                 } else {
                     // Init already attempted (by another thread or a prior frame).
-                    // If it succeeded, E9 JMP path is now safe.
-                    if (!s_steamInitCrashed &&
-                        presentOriginal && presentOriginal != DetourPresent &&
-                        IsReadableMemory(pSwapChain, sizeof(void*))) {
-                        static std::atomic<int> s_steamNonSLViaE9JmpCount{0};
-                        if (s_steamNonSLViaE9JmpCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                    // After the VEH handler patched Steam's internal rendering
+                    // callback at RVA 0x1621d8 to SteamDummyRenderingCallback (a
+                    // no-op returning S_OK), Steam's OverlayHookD3D3 runs without
+                    // crashing but corrupts the backbuffer (clears it) before
+                    // calling the callback.  Our no-op returns S_OK without
+                    // rendering anything, so Steam presents a cleared (black)
+                    // frame.
+                    //
+                    // To preserve game content + CE overlay, we bypass Steam's
+                    // E9 JMP entirely and call through the bypass trampoline
+                    // (executes the original dxgi!Present bytes without any
+                    // external overlay hooks).  Steam's overlay does not render,
+                    // but the game and CE overlay display correctly.
+                    if (presentBypass) {
+                        static std::atomic<int> s_steamNonSLBypassCount{0};
+                        if (s_steamNonSLBypassCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                             HookLogImportant(
-                                "CallOriginalPresent: routing non-SL Steam overlay through "
-                                "oPresent (E9 JMP path) at %p — Steam init already done",
-                                (void*)presentOriginal);
+                                "CallOriginalPresent: non-SL Steam overlay — using bypass "
+                                "trampoline %p to avoid Steam backbuffer corruption (E9 JMP "
+                                "path %p skipped)",
+                                (void*)presentBypass, (void*)presentOriginal);
                         }
-                        return presentOriginal(pSwapChain, SyncInterval, Flags);
+                        return presentBypass(pSwapChain, SyncInterval, Flags);
                     }
                 }
             }
