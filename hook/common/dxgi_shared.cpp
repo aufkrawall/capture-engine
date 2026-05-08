@@ -302,13 +302,6 @@ static void** s_hookedVTable = nullptr;
 static std::atomic<bool> s_steamDX12InitAttempted{false};
 static bool s_steamInitCrashed = false;
 
-// Set to true after AttemptSteamDX12OverlayInit if Steam overwrote the
-// dummy callback (SteamDummyRenderingCallback) with its own real rendering
-// function at RVA 0x1621d8.  When true, CallOriginalPresent routes through
-// the E9 JMP path (oPresent) on subsequent frames so Steam overlay renders
-// normally alongside game content and CE overlay.
-static bool s_steamDX12CallbackReady = false;
-
 // Steam overlay has a NULL internal rendering callback at RVA ~0x1621d8
 // inside gameoverlayrenderer64.dll, used by OverlayHookD3D3.  CE's vtable
 // hook prevents Steam's natural initialization of this pointer.  We write
@@ -3330,16 +3323,17 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
                 void* callbackAfterInit = *steamCallbackPtr;
                 if (callbackAfterInit != nullptr &&
                     callbackAfterInit != (void*)SteamDummyRenderingCallback) {
-                    s_steamDX12CallbackReady = true;
                     HookLogImportant(
                         "AttemptSteamDX12OverlayInit: Steam overwrote dummy callback (%p) "
-                        "with its real rendering function (%p) — E9 JMP path ready for "
-                        "full Steam overlay rendering",
+                        "with its own function (%p) — not expected for DX12 but logged "
+                        "for diagnostics",
                         (void*)SteamDummyRenderingCallback, callbackAfterInit);
                 } else {
                     HookLogImportant(
                         "AttemptSteamDX12OverlayInit: Steam callback is still %s (%p) — "
-                        "will use bypass trampoline (no Steam overlay rendering)",
+                        "this is expected, the callback is a Vulkan-only function "
+                        "(symbol: VulkanSteamOverlayProcessCapturedFrame) irrelevant "
+                        "for DX12 overlay rendering",
                         callbackAfterInit == nullptr ? "NULL" : "our no-op",
                         callbackAfterInit ? callbackAfterInit : (void*)SteamDummyRenderingCallback);
                 }
@@ -3353,8 +3347,9 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     HookLogImportant(
         "AttemptSteamDX12OverlayInit: Steam overlay init completed (hr=0x%08X) — "
-        "vtable[8] re-hooked to DetourPresent (callbackReady=%d).",
-        (unsigned)initHr, s_steamDX12CallbackReady ? 1 : 0);
+        "vtable[8] re-hooked to DetourPresent.  Subsequent frames will route through "
+        "E9 JMP path for Steam DX12 overlay rendering.",
+        (unsigned)initHr);
 
     *resultOut = initHr;
     return true;
@@ -3433,29 +3428,29 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     }
                 } else {
                     // Init already attempted (by another thread or a prior frame).
+                    // Steam's overlay init completed successfully (VEH handled the
+                    // NULL Vulkan callback at RVA 0x1621d8).  Route through the E9
+                    // JMP path so Steam's DX12 overlay rendering works normally.
                     //
-                    // If Steam overwrote the dummy callback (RVA 0x1621d8) with its
-                    // real rendering function during the init call, route through the
-                    // E9 JMP path so Steam overlay renders normally.  Steam composites
-                    // its overlay on top of the game content — the E9 JMP path enters
-                    // OverlayHookD3D3 which calls the real callback (renders Steam
-                    // overlay), then calls the "next" handler (re-enters DetourPresent
-                    // due to vtable[8], which is forwarded to the bypass trampoline by
-                    // the re-entrancy guard).
+                    // The callback at RVA 0x1621d8 is a Vulkan-only function (symbol:
+                    // VulkanSteamOverlayProcessCapturedFrame).  Patching it to our
+                    // no-op prevents Vulkan crashes but has zero effect on DX12
+                    // overlay rendering — Steam's DX12 path in OverlayHookD3D3 uses
+                    // a separate mechanism.
                     //
-                    // If the callback is still our no-op or NULL, use the bypass
-                    // trampoline to avoid Steam's backbuffer corruption (Steam clears
-                    // the backbuffer before calling the callback, and our no-op renders
-                    // nothing, resulting in a black frame).
-                    if (s_steamDX12CallbackReady &&
+                    // Steam composites its overlay on top of the game content.
+                    // After OverlayHookD3D3 returns, it calls the "next" handler
+                    // which may re-enter DetourPresent (vtable[8] = our hook).
+                    // The re-entrancy guard forwards to the bypass trampoline,
+                    // which calls the real dxgi!Present safely.
+                    if (!s_steamInitCrashed &&
                         presentOriginal && presentOriginal != DetourPresent &&
                         IsReadableMemory(pSwapChain, sizeof(void*))) {
                         static std::atomic<int> s_steamNonSLE9JmpCount{0};
                         if (s_steamNonSLE9JmpCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                             HookLogImportant(
                                 "CallOriginalPresent: non-SL Steam overlay — routing through "
-                                "E9 JMP at %p (Steam callback ready, full overlay rendering "
-                                "enabled)",
+                                "E9 JMP at %p (Steam init done, DX12 overlay enabled)",
                                 (void*)presentOriginal);
                         }
                         return presentOriginal(pSwapChain, SyncInterval, Flags);
@@ -3465,8 +3460,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                         if (s_steamNonSLBypassCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                             HookLogImportant(
                                 "CallOriginalPresent: non-SL Steam overlay — using bypass "
-                                "trampoline %p (Steam callback not ready, E9 JMP path %p "
-                                "skipped)",
+                                "trampoline %p (E9 JMP path %p unavailable or unsafe)",
                                 (void*)presentBypass, (void*)presentOriginal);
                         }
                         return presentBypass(pSwapChain, SyncInterval, Flags);
@@ -3479,11 +3473,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (s_steamNonSLFallbackCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                 HookLogImportant(
                     "CallOriginalPresent: non-SL Steam overlay — bypass trampoline at %p "
-                    "(initAttempted=%d initCrashed=%d callbackReady=%d)",
+                    "(initAttempted=%d initCrashed=%d)",
                     (void*)presentBypass,
                     s_steamDX12InitAttempted.load(std::memory_order_acquire) ? 1 : 0,
-                    s_steamInitCrashed ? 1 : 0,
-                    s_steamDX12CallbackReady ? 1 : 0);
+                    s_steamInitCrashed ? 1 : 0);
             }
         }
 
