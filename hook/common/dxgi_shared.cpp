@@ -291,6 +291,17 @@ static thread_local int s_externalOverlayPresentInvokeDepth = 0;
 // Stored vtable pointer for unhooking Present when COM wrapper takes over
 static void** s_hookedVTable = nullptr;
 
+// Saved original vtable[8] Present COM method captured from the temp swapchain
+// at InstallPresentInlineHooks time, before any vtable modifications.  This is
+// the real IDXGISwapChain::Present COM method (dxgi!CDXGISwapChain::Present or
+// equivalent), not the inner dxgi!Present function that Steam hooks with an E9
+// JMP.  Used in the E9 JMP path of CallOriginalPresent and
+// AttemptSteamDX12OverlayInit to ensure DXGI COM method state management runs
+// before dxgi!Present is called with Steam's E9 JMP.  Without this, calling
+// dxgi!Present directly skips COM state management, which causes black screen
+// on some DX12 games (e.g. Strange Brigade).
+static PFN_Present s_originalVtable8Present = nullptr;
+
 // State for one-time Steam DX12 overlay initialization.
 // Steam's OverlayHookD3D3 lazily initializes its internal "next" Present handler
 // on first E9 JMP entry by reading vtable[8].  When vtable[8] = DetourPresent
@@ -2841,6 +2852,39 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         return false;
     }
 
+    // Save original vtable[8] before any modifications. This captures the real
+    // COM method (dxgi!CDXGISwapChain::Present or equivalent) from the temp
+    // swapchain, before CE patches it to DetourPresent. Used later in
+    // CallOriginalPresent and AttemptSteamDX12OverlayInit to ensure DXGI COM
+    // method state management runs before dxgi!Present is called with Steam's
+    // E9 JMP.
+    {
+        void** vtable = *(void***)pSwapChain;
+        if (vtable && IsReadableMemory(&vtable[8], sizeof(void*))) {
+            if (!s_originalVtable8Present) {
+                s_originalVtable8Present = (PFN_Present)vtable[8];
+                // Log the saved address and compare with GetPresentAddress
+                HookLogImportant(
+                    "InstallPresentInlineHooks: Saved s_originalVtable8Present=%p from temp swapchain %p "
+                    "(presentAddr=%p, same=%d)",
+                    (void*)s_originalVtable8Present, (void*)pSwapChain, presentAddr,
+                    s_originalVtable8Present == (PFN_Present)presentAddr ? 1 : 0);
+                // Log which module presentAddr belongs to for debugging
+                HMODULE hAddrModule = nullptr;
+                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       (LPCSTR)presentAddr, &hAddrModule)) {
+                    char modulePath[MAX_PATH] = {};
+                    GetModuleFileNameA(hAddrModule, modulePath, sizeof(modulePath));
+                    HookLogImportant(
+                        "InstallPresentInlineHooks: presentAddr=%p is in module: %s",
+                        presentAddr, modulePath[0] ? modulePath : "(unknown)");
+                }
+            }
+        } else {
+            HookLog("InstallPresentInlineHooks: Cannot read vtable[8] from temp swapchain %p", (void*)pSwapChain);
+        }
+    }
+
     static bool s_inlineHooksInstalled = false;
     if (s_inlineHooksInstalled) {
         HookLog("InstallPresentInlineHooks: Inline hooks already installed");
@@ -3276,8 +3320,10 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     HookLogImportant(
         "AttemptSteamDX12OverlayInit: vtable[8] temporarily restored to dxgi!Present=%p — "
-        "calling through E9 JMP for Steam overlay init (with VEH protection)",
-        (void*)presentOriginal);
+        "calling through E9 JMP for Steam overlay init (with VEH protection) "
+        "[s_originalVtable8Present=%p, same=%d]",
+        (void*)presentOriginal, (void*)s_originalVtable8Present,
+        s_originalVtable8Present == presentOriginal ? 1 : 0);
 
     // Call through oPresent (E9 JMP at dxgi!Present) WITH VEH protection.
     //
@@ -3446,14 +3492,25 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     if (!s_steamInitCrashed &&
                         presentOriginal && presentOriginal != DetourPresent &&
                         IsReadableMemory(pSwapChain, sizeof(void*))) {
+                        // Route through the saved original COM method
+                        // (s_originalVtable8Present) instead of presentOriginal
+                        // (= dxgi!Present inner function with E9 JMP).  The COM
+                        // method does DXGI kernel state management and then
+                        // calls dxgi!Present internally, where Steam's E9 JMP
+                        // fires naturally — both overlays render, and the COM
+                        // method's state setup prevents black screen.
+                        PFN_Present comTarget = s_originalVtable8Present ?
+                            s_originalVtable8Present : presentOriginal;
                         static std::atomic<int> s_steamNonSLE9JmpCount{0};
                         if (s_steamNonSLE9JmpCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                             HookLogImportant(
                                 "CallOriginalPresent: non-SL Steam overlay — routing through "
-                                "E9 JMP at %p (Steam init done, DX12 overlay enabled)",
-                                (void*)presentOriginal);
+                                "%s at %p (presentOriginal=%p, init done, DX12 overlay enabled)",
+                                s_originalVtable8Present ? "s_originalVtable8Present (COM method)" :
+                                    "presentOriginal (E9 JMP)",
+                                (void*)comTarget, (void*)presentOriginal);
                         }
-                        return presentOriginal(pSwapChain, SyncInterval, Flags);
+                        return comTarget(pSwapChain, SyncInterval, Flags);
                     }
                     if (presentBypass) {
                         static std::atomic<int> s_steamNonSLBypassCount{0};
@@ -3569,7 +3626,14 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }
         }
-        return presentOriginal(pSwapChain, SyncInterval, Flags);
+        // Use the saved original COM method (s_originalVtable8Present) if available,
+        // which ensures DXGI kernel state management runs before dxgi!Present is
+        // called internally with Steam's E9 JMP.  Fall back to presentOriginal
+        // (= dxgi!Present inner function with E9 JMP) if the COM method wasn't
+        // captured (e.g. non-DX12 paths).
+        PFN_Present comTarget = s_originalVtable8Present ?
+            s_originalVtable8Present : presentOriginal;
+        return comTarget(pSwapChain, SyncInterval, Flags);
     }
 
     // Last resort: if the bypass trampoline exists but was skipped
