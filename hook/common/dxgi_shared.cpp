@@ -2848,6 +2848,49 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
 
         s_hookedVTable = vtable;
 
+        // === STEAM DX12 OVERLAY PRE-INITIALIZATION ===
+        //
+        // Steam's OverlayHookD3D3 lazily initializes internal rendering
+        // callbacks (including a global function pointer at RVA ~0x1621d8 in
+        // gameoverlayrenderer64.dll) during its first E9 JMP entry.  CE's vtable
+        // hook (setting vtable[8] = DetourPresent below) prevents this natural
+        // initialization because Steam's E9 JMP never fires on the game's Present
+        // calls — they go through DetourPresent instead of dxgi!Present.
+        //
+        // Fix: Call Present through the REAL dxgi!Present (vtable[8] is still
+        // unhooked at this point) on the detection temp swapchain BEFORE
+        // installing our vtable hook.  Steam's overlay initializes fully
+        // (including the NULL callback), then we install our hook.
+        //
+        // Thread safety: InstallPresentInlineHooks runs once on the hook thread.
+        // The temp swapchain is valid and vtable page is already writable
+        // (from VirtualProtect at line ~2843).
+        //
+        // Why the previous fix (build 0.1.2923, vtable[8] unhook in
+        // AttemptSteamDX12OverlayInit) failed: The NULL callback is NOT
+        // initialized by restoring vtable[8] on the first game Present — Steam's
+        // overlay needs to observe Present through an UNMODIFIED hook chain from
+        // the very beginning (before any CE vtable modifications).  The temp
+        // swapchain Present before our hook is installed provides this.
+        if (externalJmpDetected) {
+            const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+            if (overlayModule && IsSteamOverlayModule(overlayModule)) {
+                HookLogImportant(
+                    "InstallPresentInlineHooks: Pre-initializing Steam overlay on temp swapchain %p "
+                    "(vtable[8]=%p = dxgi!Present, before CE vtable hook)",
+                    pSwapChain, (void*)vtable[8]);
+
+                PFN_Present realPresent = (PFN_Present)vtable[8];
+                HRESULT steamInitHr = realPresent(pSwapChain, 0, 0);
+
+                HookLogImportant(
+                    "InstallPresentInlineHooks: Steam overlay pre-init on temp swapchain "
+                    "returned hr=0x%08X — proceeding with vtable hook installation",
+                    (unsigned)steamInitHr);
+            }
+        }
+        // === END STEAM PRE-INIT ===
+
         oPresent = (PFN_Present)vtable[8];
         vtable[8] = (void*)DetourPresent;
         HookLogImportant(
@@ -3041,17 +3084,19 @@ void RemoveSwapchainVTableHooks() {
     HookLog("DXGIShared: All swapchain vtable hooks removed");
 }
 
-// Attempt one-time Steam DX12 overlay initialization by temporarily restoring
-// vtable[8] to the real dxgi!Present, calling through Steam's E9 JMP (which
-// triggers Steam's lazy init), then re-hooking vtable[8] to DetourPresent.
+// SAFETY NET: Attempt one-time Steam DX12 overlay initialization.
 //
-// Steam's OverlayHookD3D3 lazily initializes its internal "next" Present handler
-// on FIRST E9 JMP entry by reading vtable[8].  If vtable[8] = DetourPresent
-// (our vtable hook), Steam's init fails and sets "next" = NULL → RIP=0 crash.
+// The PRIMARY fix (InstallPresentInlineHooks) pre-initializes Steam overlay on
+// the temp swapchain BEFORE our vtable hook is installed.  This function is a
+// fallback for cases where pre-init didn't occur:
+//   - Steam overlay loaded AFTER hook installation
+//   - Another thread/process context
 //
-// By temporarily restoring vtable[8] to the real dxgi!Present, Steam reads the
-// correct value, creates its trampoline, renders overlay, and chains through the
-// trampoline → real dxgi!Present.  After Steam returns, we re-hook vtable[8].
+// It temporarily restores vtable[8] to the real dxgi!Present, calls through
+// Steam's E9 JMP, then re-hooks vtable[8] to DetourPresent.  With the
+// pre-init having already set up Steam's internal rendering callbacks (the
+// NULL global function pointer at RVA ~0x1621d8 in gameoverlayrenderer64.dll),
+// this E9 JMP call should succeed without crashing.
 //
 // Thread safety: only one thread wins the compare-exchange.  The brief window
 // where vtable[8] is unhooked is microseconds wide and limited to frame 1.
@@ -3094,16 +3139,18 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
         (void*)presentOriginal);
 
     // Call through oPresent (E9 JMP at dxgi!Present).
-    // Steam's OverlayHookD3D3 reads vtable[8] = dxgi!Present, initializes
-    // correctly, renders overlay, and calls its trampoline → real Present.
+    // Steam's OverlayHookD3D3 should find vtable[8] = dxgi!Present (we just
+    // restored it) and find its internal rendering callbacks already initialized
+    // (from the temp swapchain pre-init in InstallPresentInlineHooks).  The
+    // combination of correct vtable[8] + initialized callbacks means this call
+    // should succeed without crashing.
     //
-    // NOTE: No SEH/VEH protection on this call.  With vtable[8] correctly
-    // pointing to dxgi!Present, Steam's init should succeed (as it does in
-    // thousands of other games).  If Steam's overlay crashes anyway (e.g. due
-    // to a game-specific incompatibility in Steam's own code), the existing
-    // crash handler catches it and writes a dump.  s_steamInitCrashed will
-    // remain false so the next game launch will try again — but the init
-    // succeeds with high probability given the correct vtable[8].
+    // NOTE: No SEH/VEH protection on this call.  With correct vtable[8] and
+    // pre-initialized callbacks, Steam's overlay should work (as it does in
+    // thousands of other games).  If Steam's overlay still crashes (e.g. due to
+    // an unrelated Steam bug), the existing VEH crash handler catches it and
+    // writes a dump.  s_steamInitCrashed will remain false so the next game
+    // launch will try again.
     HRESULT initHr = presentOriginal(pSwapChain, SyncInterval, Flags);
 
     // Re-hook vtable[8] with DetourPresent (our vtable hook)
@@ -3161,23 +3208,23 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         } else {
             // Non-Streamline case (e.g. Strange Brigade DX12 with only Steam overlay):
             //
-            // Steam's OverlayHookD3D3 lazily initializes its internal "next" Present
-            // handler pointer on FIRST E9 JMP entry by reading vtable[8] from the
-            // swapchain.  With vtable[8] = DetourPresent (our vtable hook), Steam's
-            // init fails and sets "next" = NULL → RIP=0 crash.
+            // Steam's OverlayHookD3D3 has a NULL global function pointer at RVA
+            // ~0x1621d8 in gameoverlayrenderer64.dll (internal rendering callback).
+            // The PRIMARY fix is in InstallPresentInlineHooks: calling Present on
+            // the temp swapchain BEFORE our vtable hook is installed, which lets
+            // Steam initialize this callback naturally.
             //
-            // Fix (build 0.1.2923): On the very first non-SL Steam overlay Present,
-            // temporarily restore vtable[8] to the real dxgi!Present before calling
-            // through Steam's E9 JMP.  Steam reads vtable[8] = dxgi!Present,
-            // initializes correctly, renders overlay, and calls its saved trampoline
-            // → real Present.  After Steam returns, re-hook vtable[8] to DetourPresent.
+            // This safety net (AttemptSteamDX12OverlayInit) handles cases where
+            // the pre-init didn't occur.  It temporarily restores vtable[8] to
+            // dxgi!Present and calls Steam's E9 JMP.  With pre-init done, Steam's
+            // internal callbacks are already non-NULL, so this call succeeds.
             //
-            // Subsequent frames: Steam's internal "next" handler is now initialized
-            // and non-NULL, so normal oPresent (E9 JMP) routing works without crash.
+            // After init, subsequent frames route through oPresent (E9 JMP)
+            // normally — Steam's overlay is fully initialized.
 
             // Phase A: One-time Steam DX12 overlay initialization.
-            // Temporarily restore vtable[8] to dxgi!Present so Steam can init.
-            // Only one thread wins the race; losers use bypass for this frame.
+            // If pre-init didn't happen (unusual), AttemptSteamDX12OverlayInit
+            // handles it here. Only one thread wins the race; losers bypass.
             if (!s_steamInitCrashed) {
                 const bool needInit = !s_steamDX12InitAttempted.load(std::memory_order_acquire);
                 if (needInit) {

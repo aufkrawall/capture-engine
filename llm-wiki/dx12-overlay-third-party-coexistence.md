@@ -104,29 +104,31 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - **Source anchors**: `hook/common/dxgi_shared.cpp:3063-3118` (original fix), `:3254-3304` (original Present1 fix).
 - **Stale-risk**: SUPERSEDED. Do not restore the oPresent routing approach — it relies on an incorrect assumption about Steam's initialization mechanism.
 
-### Build 0.1.2923 — One-time vtable[8] unhook for Steam DX12 overlay init (Strange Brigade DX12 fix)
-- **Problem**: Strange Brigade DX12 with Steam overlay active (no Streamline, no DLSS FG, no FSR FG) crashes on the first Present call with `0xC0000005` (RIP=0) inside Steam's OverlayHookD3D3. CE uses vtable hooking (vtable[8] = `DetourPresent`) because Steam's E9 JMP is detected on `dxgi!Present`, bypassing Steam's inline hook entirely. Steam's overlay never initializes its internal Present handler.
-- **Root cause**: Steam's `OverlayHookD3D3` lazily initializes its internal "next" Present handler pointer on the first entry through its E9 JMP by reading `vtable[8]` from the swapchain. When `vtable[8]` = `DetourPresent` (CE's vtable hook function), Steam's initialization validation determines that DetourPresent is not a valid real Present function pointer and sets "next" = NULL. The overlay then crashes with RIP=0 on its first actual call site. This differs from the build 0.1.2922 assumption (which thought Steam would accept DetourPresent and call it back through the reentrancy guard).
-- **Fix** (`hook/common/dxgi_shared.cpp`):
-  1. Added file-scoped state vars: `s_steamDX12InitAttempted` (atomic<bool>), `s_steamInitCrashed` (bool)
-  2. Added helper: `AttemptSteamDX12OverlayInit()` — performs the one-time vtable unhook → E9 JMP call → re-hook sequence:
-     a. Save vtable[8] (= DetourPresent), write real `dxgi!Present` to vtable[8] (with `VirtualProtect`)
-     b. Call the real dxgi!Present through `oPresent` (= dxgi!Present with Steam's E9 JMP)
-     c. Steam's OverlayHookD3D3 enters through its E9 JMP, reads vtable[8] = real dxgi!Present, succeeds in initializing its internal "next" handler
-     d. Steam renders overlay, calls "next" = real dxgi!Present → frame presented
-     e. Restore vtable[8] to DetourPresent (with `VirtualProtect`)
-  3. Modified `CallOriginalPresent()`: Replaced the non-Streamline Steam overlay block (old oPresent routing from build 0.1.2922) with two-phase logic:
-     - **Phase A** (one-time init): If `!s_steamDX12InitAttempted`, call `AttemptSteamDX12OverlayInit()`. Sets `s_steamDX12InitAttempted = true`. On success, routes through `oPresent` (Steam's E9 JMP → Steam's now-initialized handler → real Present). On crash, sets `s_steamInitCrashed = true`, falls through to bypass fallback.
-     - **Phase B** (steady state): If init completed, route through `oPresent` normally. If init crashed, use bypass trampoline.
-  4. Modified `CallOriginalPresent1()`: Only route through `oPresent1` if Steam init completed; otherwise use bypass.
-- **How it works**:
-  1. First non-SL Present call enters `CallOriginalPresent`
-  2. `AttemptSteamDX12OverlayInit()` temporarily restores vtable[8] to real `dxgi!Present`
-  3. Calls `oPresent` (dxgi!Present with Steam's E9 JMP) — Steam's E9 JMP fires
-  4. Steam reads vtable[8] = real `dxgi!Present` → init succeeds → internal "next" = real Present
-  5. Steam renders overlay → calls "next" (real Present) → frame presented
-  6. vtable[8] restored to `DetourPresent`
-  7. All subsequent frames: `CallOriginalPresent` → `oPresent` → Steam's E9 JMP → Steam's now-initialized "next" handler (real Present) → frame presented with both overlays
+### Build 0.1.2923 (SUPERSEDED by 0.1.2928) — One-time vtable[8] unhook for Steam DX12 overlay init (Strange Brigade DX12 fix — DID NOT WORK)
+- **Problem**: Strange Brigade DX12 with Steam overlay active (no Streamline, no DLSS FG, no FSR FG) crashes on the first Present call with `0xC0000005` (RIP=0) inside Steam's OverlayHookD3D3.
+- **Incorrect root cause (build 0.1.2923 analysis)**: Assumed Steam's OverlayHookD3D3 reads vtable[8] to find a "next" handler on first E9 JMP entry, and that DetourPresent fails validation → "next" = NULL → crash.
+- **Fix that did NOT work**: Temporarily restored vtable[8] to dxgi!Present, called through E9 JMP, re-hooked. The fix IS executing (confirmed by hook_debug.log) but the crash STILL happens.
+- **WHY SUPERSEDED**: cdb disassembly of the crash dump proved the crash is from a **NULL global function pointer** in Steam's overlay data section at RVA ~0x1621d8 in gameoverlayrenderer64.dll, NOT from reading vtable[8]. The instruction at `OverlayHookD3D3+0x1417f` loads `rax = qword ptr [VulkanSteamOverlayProcessCapturedFrame+0x9b378]` (rax = 0 = NULL) and calls `rax` without NULL check. This is an internal Steam overlay rendering callback that was never initialized. Replaced by temp swapchain pre-init in build 0.1.2928.
+- **Stale-risk**: SUPERSEDED. The vtable[8] unhook approach alone does NOT fix the crash.
+
+### Build 0.1.2928 — Pre-init Steam overlay on temp swapchain during hook installation (Strange Brigade DX12 fix)
+- **Problem**: Same as builds 0.1.2922/0.1.2923 — Strange Brigade DX12 crashes on first Present with RIP=0.
+- **Correct root cause (cdb analysis of crash dump `crash_20260508_184246_405_pid5840_tid19316.dmp`)**:
+  - Steam's OverlayHookD3D3 has an internal global function pointer at RVA ~0x1621d8 in gameoverlayrenderer64.dll that's **NULL**.
+  - At `OverlayHookD3D3+0x1417f`: `mov rax, qword ptr [VulkanSteamOverlayProcessCapturedFrame+0x9b378]` → `call rax` where `rax = 0`.
+  - This pointer is a rendering callback that Steam initializes during its startup sequence (likely during D3D12 device/swapchain creation or the first Present).
+  - CE's vtable hook (setting vtable[8] = DetourPresent before the first game Present) prevents Steam from ever observing a normal Present through the E9 JMP, and the callback stays NULL.
+- **Fix** (`hook/common/dxgi_shared.cpp` — `InstallPresentInlineHooks`):
+  - **Pre-init**: During hook installation, **before** setting vtable[8] = DetourPresent, call `vtable[8](pSwapChain, 0, 0)` on the **detection temp swapchain**.
+  - vtable[8] at this point still = real dxgi!Present (CE hasn't hooked yet).
+  - This call goes through dxgi!Present → Steam's E9 JMP → OverlayHookD3D3.
+  - Steam reads vtable[8] = real dxgi!Present, initializes normally INCLUDING the internal callback.
+  - AFTER the Present returns, CE installs vtable[8] = DetourPresent.
+  - For all subsequent frames: `CallOriginalPresent` → `oPresent` (E9 JMP) → Steam overlay works because callbacks are initialized.
+- **Why this works**: The call happens before CE ever modifies vtable[8], in a completely unhooked environment identical to a normal game's first Present. Steam's internal initialization completes fully.
+- **Safety net**: `AttemptSteamDX12OverlayInit` is kept as a fallback for cases where the pre-init didn't occur (e.g., Steam overlay loaded after hook installation).
+- **Source anchors**: `hook/common/dxgi_shared.cpp:2849-2850` (pre-init in InstallPresentInlineHooks), `tests/test_dxgi_shared.cpp` (existing tests updated).
+- **Verification**: All 696 unit tests pass build 0.1.2928.
   8. Clean flow: DetourPresent → CallOriginalPresent → oPresent → Steam overlay → real Present. No re-entrancy into DetourPresent.
 - **Why this is safe**:
   - One-time setup: The vtable unhook/re-hook happens only on the very first non-SL Steam overlay Present call
