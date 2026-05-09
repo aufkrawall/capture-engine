@@ -821,6 +821,13 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
       HookLog("NotifyHookModuleLoaded: d3d11.dll detected — installing D3D11 hooks "
               "immediately (pre-GetProcAddress)");
       IATHook::InitializeD3D11Hooks();
+      // CRITICAL: Install the GetProcAddress hook NOW, before LoadLibrary returns.
+      // The game's main thread will call GetProcAddress(d3d11.dll, "D3D11CreateDevice")
+      // immediately after LoadLibrary returns. If our DetourGetProcAddress is not
+      // installed yet, the game gets the real function pointer, bypasses our wrapper,
+      // and our vtable hooks are never installed during device creation. The game
+      // caches un-hooked Draw vtable entries → zero AF effect.
+      IATHook::InitializeGetProcAddressHook();
     }
   }
 

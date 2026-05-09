@@ -688,6 +688,15 @@ bool InitializeD3D11Hooks() {
         RegisterDynamicHook("D3D11CreateDevice", (void*)::Wrapped_D3D11CreateDevice, (void**)&::oD3D11CreateDevice);
         WrapperLog("IAT: Registered D3D11 functions for dynamic hooking");
 
+        // CRITICAL: Install GetProcAddress hook NOW so that subsequent
+        // GetProcAddress(d3d11.dll, "D3D11CreateDevice") calls are intercepted.
+        // Without this, the game's GetProcAddress call (made right after
+        // LoadLibrary("d3d11.dll") returns) goes through the real GetProcAddress
+        // and returns the real D3D11CreateDevice, completely bypassing our wrapper
+        // and vtable hooks. This must be called from every path that initializes
+        // D3D11 hooks (DllMain, NotifyHookModuleLoaded, HookThread scan).
+        InitializeGetProcAddressHook();
+
         WrapperLog("IAT: D3D11 hooks initialized");
         return true;
     }
@@ -986,6 +995,12 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
         // Return our hook address
         WrapperLog("GetProcAddress: Intercepting %s from %s (orig=%p, hook=%p)", lpProcName,
                    moduleName[0] ? moduleName : "unknown", proc, it->second.hookFunction);
+        // CRITICAL: Log D3D11CreateDevice intercept at high visibility
+        if (strcmp(lpProcName, "D3D11CreateDevice") == 0 || strcmp(lpProcName, "D3D11CreateDeviceAndSwapChain") == 0) {
+            HookLogImportant("GetProcAddress: Intercepted %s -> Wrapped_%s (game=%s) — "
+                             "preventing UE3 vtable-cache bypass",
+                             lpProcName, lpProcName, moduleName[0] ? moduleName : "unknown");
+        }
         return (FARPROC)it->second.hookFunction;
     }
 
