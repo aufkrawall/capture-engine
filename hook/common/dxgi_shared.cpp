@@ -3537,18 +3537,96 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                         }
                     }
 
-                    // Phase B: Invoke Steam's overlay handler explicitly.
+                    // Phase B: Diagnostic — log state before Steam invoke.
+                    // Check: E9 JMP at dxgi!Present integrity, swapchain buffer index,
+                    // swapchain description, Present call counter.
+                    UINT bbIdxBefore = UINT_MAX;
+                    UINT bbCountBefore = 0;
+                    DXGI_SWAP_CHAIN_DESC scDescBefore = {};
+                    {
+                        IDXGISwapChain3* sc3 = nullptr;
+                        if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) && sc3) {
+                            bbIdxBefore = sc3->GetCurrentBackBufferIndex();
+                            sc3->Release();
+                        }
+                        if (SUCCEEDED(pSwapChain->GetDesc(&scDescBefore))) {
+                            bbCountBefore = scDescBefore.BufferCount;
+                        }
+                    }
+                    // Check E9 JMP integrity at presentOriginal (= dxgi!Present)
+                    const void* presentOrigPtr = (const void*)presentOriginal;
+                    uint8_t presentBytes[5] = {};
+                    bool e9JmpIntact = false;
+                    if (presentOrigPtr && IsReadableMemory(presentOrigPtr, 5)) {
+                        memcpy(presentBytes, presentOrigPtr, 5);
+                        if (presentBytes[0] == 0xE9) {
+                            int32_t relOffset;
+                            memcpy(&relOffset, presentBytes + 1, sizeof(relOffset));
+                            void* resolvedTarget = (uint8_t*)presentOrigPtr + 5 + relOffset;
+                            e9JmpIntact = (resolvedTarget == (void*)g_externalOverlayPresentHook);
+                        }
+                    }
+                    uint64_t presentCallCount =
+                        g_SharedState.presentCallCount.load(std::memory_order_relaxed);
+                    static std::atomic<int> s_steamNonSLDiagCount{0};
+                    int diagNum = s_steamNonSLDiagCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (diagNum <= 20 || (diagNum % 200) == 0) {
+                        HookLogImportant(
+                            "CallOriginalPresent: DIAG #%d — bbIdx=%u bbCount=%u presentCalls=%llu "
+                            "e9Bytes=%02X%02X%02X%02X%02X e9Intact=%d presentOrig=%p hookTarget=%p "
+                            "vtableRestored=%d",
+                            diagNum, bbIdxBefore, bbCountBefore, (unsigned long long)presentCallCount,
+                            presentBytes[0], presentBytes[1], presentBytes[2], presentBytes[3],
+                            presentBytes[4], e9JmpIntact ? 1 : 0, (void*)presentOriginal,
+                            (void*)g_externalOverlayPresentHook, vtableRestored ? 1 : 0);
+                    }
+
+                    // Phase C: Invoke Steam's overlay handler explicitly.
                     if (TryInvokeGuardedExternalSteamOverlayPresent(
                             pSwapChain, SyncInterval, Flags, "Steam DX12 explicit invoke", &steamHr)) {
                         steamInvoked = true;
+
+                        // Diagnostic — log state after Steam invoke.
+                        UINT bbIdxAfter = UINT_MAX;
+                        DXGI_SWAP_CHAIN_DESC scDescAfter = {};
+                        {
+                            IDXGISwapChain3* sc3 = nullptr;
+                            if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) && sc3) {
+                                bbIdxAfter = sc3->GetCurrentBackBufferIndex();
+                                sc3->Release();
+                            }
+                            pSwapChain->GetDesc(&scDescAfter);
+                        }
+                        uint8_t presentBytesAfter[5] = {};
+                        bool e9IntactAfter = false;
+                        const void* presentOrigPtr2 = (const void*)presentOriginal;
+                        if (presentOrigPtr2 && IsReadableMemory(presentOrigPtr2, 5)) {
+                            memcpy(presentBytesAfter, presentOrigPtr2, 5);
+                            if (presentBytesAfter[0] == 0xE9) {
+                                int32_t relOffset;
+                                memcpy(&relOffset, presentBytesAfter + 1, sizeof(relOffset));
+                                void* resolvedTarget = (uint8_t*)presentOrigPtr2 + 5 + relOffset;
+                                e9IntactAfter = (resolvedTarget == (void*)g_externalOverlayPresentHook);
+                            }
+                        }
+                        uint64_t presentCallCountAfter =
+                            g_SharedState.presentCallCount.load(std::memory_order_relaxed);
                         static std::atomic<int> s_steamNonSLInvokeCount{0};
                         int invokeNum = s_steamNonSLInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (invokeNum <= 20 || (invokeNum % 200) == 0) {
                             HookLogImportant(
                                 "CallOriginalPresent: non-SL Steam overlay — explicit invoke #%d "
-                                "completed hr=0x%08X (vtableRestored=%d, presentOriginal=%p)",
-                                invokeNum, (unsigned)steamHr, vtableRestored ? 1 : 0,
-                                (void*)presentOriginal);
+                                "hr=0x%08X bbIdx=%u->%u bufCount=%u->%u presentCalls=%llu "
+                                "e9Intact=%d->%d e9BytesAfter=%02X%02X%02X%02X%02X "
+                                "vtableRestored=%d",
+                                invokeNum, (unsigned)steamHr,
+                                bbIdxBefore, bbIdxAfter,
+                                bbCountBefore, scDescAfter.BufferCount,
+                                (unsigned long long)presentCallCountAfter,
+                                e9JmpIntact ? 1 : 0, e9IntactAfter ? 1 : 0,
+                                presentBytesAfter[0], presentBytesAfter[1], presentBytesAfter[2],
+                                presentBytesAfter[3], presentBytesAfter[4],
+                                vtableRestored ? 1 : 0);
                         }
                     } else {
                         static std::atomic<int> s_steamNonSLDeclineCount{0};
