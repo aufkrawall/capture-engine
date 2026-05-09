@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2947 bypass-only — ALL Steam handler approaches fail)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2963 ECL-hook-based deferred overlay)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -176,6 +176,29 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - **Fallback**: If `TryInvokeGuardedExternalSteamOverlayPresent` is declined (guard conditions not met), use bypass trampoline which preserves game content + CE overlay but disables Steam overlay.
 - **Source anchors**: `hook/common/dxgi_shared.cpp:3507-3537` (Phase A: vtable restore), `3540-3562` (Phase B: Steam invoke), `3565-3601` (Phase C: vtable re-hook), `3608-3619` (Phase E: bypass fallback).
 - **Pending test**: Strange Brigade DX12 with Steam overlay. Check all three outcomes: (1) all overlays visible, (2) bypass fallback with CE+game visible, (3) black screen (further analysis needed).
+
+### Build 0.1.2960-2963 — ECL-hook-based deferred CE overlay submission (Strange Brigade DX12 black screen fix)
+
+- **Problem**: ALL approaches to invoking Steam's DX12 overlay handler (E9 JMP, explicit invoke, vtable restore, Steam-only experimental) produce black game content. Build 0.1.2949 diagnostic logging confirmed Steam's handler ONLY submits an ECL to the game queue — no Present calls, no buffer modifications, no code byte changes. The hypothesis is that Steam's overlay ECL clears/overwrites the backbuffer, erasing both game content and CE's overlay ECL (submitted before Steam invoke via `ProcessFrame`).
+- **The ECL-hook approach**: Defer CE overlay ECL submission to `DetourExecuteCommandLists`, which fires AFTER Steam's overlay ECL on the same queue. Queue order: [Steam ECL] [CE overlay ECL] [fence signal] [Present].
+- **Implementation**:
+  1. `g_deferOverlaySubmitToSteamECL` flag — set by `DetourPresent` for non-SL Steam path
+  2. `g_steamDeferredOverlay` state struct — captures cmdList, allocIdx, eclQueue, pending
+  3. `ProcessFrame` — when flag set, records overlay commands and closes list but skips ECL submission + fence signal (jumps to `skip_steam_deferred_fence_signal`)
+  4. `SubmitSteamDeferredOverlay` — submits deferred ECL via `g_RealD3D12ECL` or `GetOriginalExecuteCommandLists` (per-queue original, avoids recursion into `DetourExecuteCommandLists`), signals fence
+  5. `DetourExecuteCommandLists` — detects Steam overlay ECL via `IsSteamOverlayModulePath("gameoverlayrenderer")`, calls `SubmitSteamDeferredOverlay(pThis, "ecl_hook")` after original ECL completes
+  6. `DetourPresent` — skip normal fence wait before Present when deferred; after `CallOriginalPresent`, submit fallback if still pending (Steam never called ECL), then wait fence, clear flag
+  7. Non-hook build stubs in `dxgi_shared.cpp` — `ResolveDX12SetDeferOverlay`, `ResolveDX12SubmitSteamDeferredOverlay`, `ResolveDX12IsDeferOverlayPending` via `GetModuleHandleA`/`GetProcAddress`
+- **Key design decisions**: Automatic (no env vars), non-SL only (`steamOverlayLoaded && !IsSLInterposerLoaded()`), `GetOriginalExecuteCommandLists` over vtable fallback, fallback safety for frames where Steam doesn't call ECL.
+- **Diagnostic logging**: "non-SL Steam path — deferring overlay" with SyncInterval/Flags, "Deferring overlay ECL submit to Steam ECL hook #N", "ECL hook detected Steam with deferred overlay pending" vs "no deferred overlay pending", "Submitting Steam-deferred overlay ECL to queue %p (cmdList=%p, allocIdx=%d)", "Deferred overlay submitted #N (queue=%p, fence=%llu)", fallback submit log, "Post-Steam fence wait took X us (wasPending=%d)", fence-already-complete with mode info.
+- **Source anchors**: `hook/apis/dx12_hook.cpp` (~line 955-1080: state struct, exports, SubmitSteamDeferredOverlay, IsSteamOverlayModulePath, ProcessFrame skip logic, DetourExecuteCommandLists ECL hook detection), `hook/common/dxgi_shared.cpp` (~line 1970-2150: deferral flag set, skip fence wait, post-CallOriginalPresent fallback + fence wait + clear).
+- **Verification**: Build 0.1.2963 compiles, all 696 unit tests pass.
+- **Open questions / stale-risk**:
+  - ECL hook fires ~1 in 50+ frames — fallback path submits after Present, too late for current frame
+  - Even when ECL hook DOES fire, black screen may persist — root cause may differ from ECL backbuffer clearing
+  - No D3D12 debug layer / GPU validation active — potential resource state mismatches between Steam's ECL and CE's overlay ECL go uncaught
+  - Steam's ECL may leave backbuffer in non-PRESENT state, making CE's `PRESENT→RT` barrier incorrect
+- **Pending**: Strange Brigade DX12 testing with build 0.1.2963.
 
 ### Build 0.1.2947 — Black screen: ALL Steam handler invoke approaches fail — bypass-only fallback (Strange Brigade DX12)
 

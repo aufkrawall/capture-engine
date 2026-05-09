@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2950 experimental Steam-only mode)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2963 ECL-hook-based deferred overlay)
 
 Primary sources:
 - `AGENTS.md`
