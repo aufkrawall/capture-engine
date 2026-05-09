@@ -2384,6 +2384,11 @@ void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain) {
     }
 }
 
+void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain) {
+    HookLog("DX11: InstallDeviceAndContextHooks device=%p context=%p swapChain=%p", pDevice, pContext, pSwapChain);
+    InstallVTableHooks(pDevice, pContext, pSwapChain);
+}
+
 static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType,
                                                           HMODULE Software, UINT Flags, UINT SDKVersion,
                                                           DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,

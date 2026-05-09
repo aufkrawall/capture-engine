@@ -49,6 +49,8 @@ static bool IsCallerFromStreamlineModule(const void* returnAddress) {
 #include "dxgi_swapchain_wrap.h"
 #include "iat_hook.h"
 #include "wrapper_hooks.h"
+// Forward declaration from dx11_hook.cpp (after D3D11 types are available)
+extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
 
 // ============================================================================
 // Original Function Pointers
@@ -454,6 +456,12 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE
         // need the wrapped variant can still obtain it via the wrapped device.
     }
 
+    // Install vtable hooks immediately so the game cannot cache un-hooked Draw
+    // function pointers from the real context before our detours are active.
+    if (SUCCEEDED(hr)) {
+        DX11Hook_InstallDeviceAndContextHooks(pRealDevice, pRealContext, NULL);
+    }
+
     return hr;
 }
 
@@ -502,6 +510,13 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
     WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Original returned hr=0x%08X", hr);
 
     if (SUCCEEDED(hr)) {
+        // Install vtable hooks immediately on device and context, before any
+        // swapchain-specific setup, so the game cannot cache un-hooked function
+        // pointers.
+        DX11Hook_InstallDeviceAndContextHooks(ppDevice ? *ppDevice : NULL,
+                                              ppImmediateContext ? *ppImmediateContext : NULL,
+                                              ppSwapChain ? *ppSwapChain : NULL);
+
         // D3D11 runtime compatibility: return raw objects and hook swapchain vtable.
         if (ppSwapChain && *ppSwapChain) {
             DX11Hook_OnSwapChainCreated(*ppSwapChain);

@@ -30,6 +30,9 @@ HRESULT WINAPI DX11_DetourCreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_D
 // Manual Hook Activation (for DXGI/DX12 interop fallbacks)
 void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 
+// Install vtable hooks on D3D11 device and context immediately (for wrapper path)
+void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
+
 // Update metrics for wrapper calls
 #include <cstdint>
 void DX11_UpdatePerformanceMetrics(int64_t qpcUs);

@@ -804,6 +804,24 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
       HookLog("NotifyHookModuleLoaded: %s detected — initializing Reflex limiter", baseName);
       g_ReflexLimiter.Init();
     }
+    // CRITICAL FIX: Hook d3d11.dll at LoadLibrary time, BEFORE the game calls
+    // GetProcAddress. UE3 caches D3D11 context vtable function pointers (Draw
+    // etc.) at startup. If our IAT/dynamic hooks are installed too late (e.g.
+    // from the HookThread's periodic scan), the game gets the real
+    // D3D11CreateDevice pointer, creates the device, and UE3 caches the
+    // original vtable entries — completely bypassing our vtable detours.
+    //
+    // By installing D3D11 hooks here, inside LoadLibrary before it returns,
+    // our GetProcAddress hook intercepts the game's subsequent
+    // GetProcAddress(d3d11.dll, "D3D11CreateDevice") and returns
+    // Wrapped_D3D11CreateDevice instead. The wrapper creates a wrapped
+    // device/context, and vtable hooks installed during device creation
+    // actually intercept Draw calls.
+    if (_stricmp(baseName, "d3d11.dll") == 0) {
+      HookLog("NotifyHookModuleLoaded: d3d11.dll detected — installing D3D11 hooks "
+              "immediately (pre-GetProcAddress)");
+      IATHook::InitializeD3D11Hooks();
+    }
   }
 
   if (g_hCheckHooksEvent)
