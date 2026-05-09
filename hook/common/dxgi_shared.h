@@ -141,6 +141,15 @@ uint32_t GetLatestSourceFrameIndex();
 void SetLatestSourceFrameIndex(uint32_t frameIndex);
 void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain);
 
+// Experimental: skip CE overlay rendering when Steam handler is invoked.
+// When enabled, DetourPresent skips HandleDX12ProcessFrame and CallOriginalPresent
+// calls Steam's handler directly.  This isolates whether Steam's handler alone
+// (without CE overlay) causes the black screen.
+inline std::atomic<bool>& GetSteamOnlyOverlayExperimentalFlag() {
+    static std::atomic<bool> s_flag{false};
+    return s_flag;
+}
+
 // Exported handlers for specific APIs (implemented in their respective hook
 // files)
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);

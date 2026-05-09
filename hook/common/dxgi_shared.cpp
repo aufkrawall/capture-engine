@@ -1866,9 +1866,37 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     });
 
     if (!IsShuttingDown() && (oPresentTrampoline || oPresent)) {
-        if (api == APIType::D3D12) {
+        // Experimental: skip CE overlay rendering when Steam-only overlay test is active.
+        // This lets us determine whether the black screen with Steam invoke is caused by
+        // CE overlay + Steam overlay interaction or by Steam's handler alone.
+        // Enable via environment variable: CE_STEAM_ONLY_OVERLAY=1
+        {
+            static std::once_flag s_steamOnlyFlag;
+            std::call_once(s_steamOnlyFlag, []() {
+                char envVal[32] = {};
+                if (GetEnvironmentVariableA("CE_STEAM_ONLY_OVERLAY", envVal, sizeof(envVal)) > 0 &&
+                    envVal[0] == '1') {
+                    DXGIShared::GetSteamOnlyOverlayExperimentalFlag().store(true, std::memory_order_relaxed);
+                    HookLogImportant(
+                        "DetourPresent: CE_STEAM_ONLY_OVERLAY=1 detected — Steam-only "
+                        "overlay test activated. CE overlay rendering will be skipped.");
+                }
+            });
+        }
+        const bool steamOnlyTest = DXGIShared::GetSteamOnlyOverlayExperimentalFlag().load(std::memory_order_relaxed);
+        if (steamOnlyTest) {
+            static std::atomic<int> s_steamOnlySkipLogCount{0};
+            const int skipNum = s_steamOnlySkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (skipNum < 5) {
+                HookLogImportant(
+                    "DetourPresent: Steam-only overlay test active — skipping ProcessFrame "
+                    "#%d, Steam handler will be invoked in CallOriginalPresent",
+                    skipNum + 1);
+            }
+        }
+        if (!steamOnlyTest && api == APIType::D3D12) {
             HandleDX12ProcessFrame(pSwapChain, true);
-        } else if (api == APIType::D3D11) {
+        } else if (!steamOnlyTest && api == APIType::D3D11) {
             HandleDX11ProcessFrame(pSwapChain, true);
         }
     }
