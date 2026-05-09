@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2948 vtable[8] restore before Steam invoke)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2949 diagnostic logging for Steam invoke)
 
 Primary sources:
 - `AGENTS.md`
