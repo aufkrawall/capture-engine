@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2947 bypass-only — ALL Steam handler approaches fail)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2948 vtable[8] restore before Steam invoke)
 
 Primary sources:
 - `AGENTS.md`

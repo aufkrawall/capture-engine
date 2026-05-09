@@ -167,6 +167,16 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - **Source anchors**: `hook/common/dxgi_shared.cpp` (AttemptSteamDX12OverlayInit, CallOriginalPresent init block), `tests/test_dxgi_shared.cpp` (SteamDX12InitVtableUnhookRestorePattern, SteamDX12InitVtableRehookFailureSafety).
 - **Verification**: All unit tests pass. Regression tests cover the VirtualProtect unhook → call → re-hook pattern on read-only vtable pages (SteamDX12InitVtableUnhookRestorePattern) and safe behavior if re-hook fails (SteamDX12InitVtableRehookFailureSafety).
 
+### Build 0.1.2948 — vtable[8] restore before Steam overlay invoke (Strange Brigade DX12)
+
+- **Problem**: Build 0.1.2947 bypass-only confirmed working (game content + CE overlay, no Steam overlay). Need to re-enable Steam overlay without black screen.
+- **New root cause hypothesis**: Steam's DX12 overlay handler (`gameoverlayrenderer64!OverlayHookD3D3`) may internally call `pSwapChain->Present()` as part of its hook chain protocol (e.g., post-overlay fence wait and Present sequencing). With vtable[8] = `DetourPresent` (CE's vtable hook), such internal Present calls re-enter CE → `CallOriginalPresent` → either explicit Steam invoke (recursive) or bypass trampoline. The bypass trampoline skips Steam's E9 JMP entirely, breaking Steam's expected "next" handler chain. Steam's overlay commands may be submitted but never properly sequenced with the Present call, leading to buffer corruption.
+- **Fix**: Before invoking `TryInvokeGuardedExternalSteamOverlayPresent`, temporarily set vtable[8] back to the original `dxgi!Present` (which has Steam's E9 JMP). After Steam's handler returns, re-hook to `DetourPresent`. This ensures Steam's internal Present calls flow through the natural E9 JMP → Steam handler (re-entrant) → Steam's saved "next" → real Present body.
+- **Invariant**: The vtable[8] restore/re-hook window is per-frame and microsecond-scale. If vtable[8] was modified by another component during Steam's handler execution, the re-hook is skipped (logged).
+- **Fallback**: If `TryInvokeGuardedExternalSteamOverlayPresent` is declined (guard conditions not met), use bypass trampoline which preserves game content + CE overlay but disables Steam overlay.
+- **Source anchors**: `hook/common/dxgi_shared.cpp:3507-3537` (Phase A: vtable restore), `3540-3562` (Phase B: Steam invoke), `3565-3601` (Phase C: vtable re-hook), `3608-3619` (Phase E: bypass fallback).
+- **Pending test**: Strange Brigade DX12 with Steam overlay. Check all three outcomes: (1) all overlays visible, (2) bypass fallback with CE+game visible, (3) black screen (further analysis needed).
+
 ### Build 0.1.2947 — Black screen: ALL Steam handler invoke approaches fail — bypass-only fallback (Strange Brigade DX12)
 
 - **Problem**: Build 0.1.2943 (explicit Steam overlay invoke) still produces black game content. Log confirms `TryInvokeGuardedExternalSteamOverlayPresent` IS called and invokes Steam's handler (`hook=00007FFF8725058A`), but the frame is black.
