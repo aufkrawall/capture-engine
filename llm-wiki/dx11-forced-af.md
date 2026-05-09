@@ -1,6 +1,6 @@
 # DX11 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-05-05
+Last cross-checked: 2026-05-09
 
 Primary sources:
 - `hook/common/sampler_override_utils.h`
@@ -24,9 +24,11 @@ appropriate material texture samples.
   D3D comparison filter. `ComparisonFunc` alone, such as `D3D11_COMPARISON_ALWAYS`
   on a normal linear sampler, must not block AF.
 - Runtime forced AF is applied only on the pixel stage, and only when active pixel
-  shader metadata proves that the sampler is used by a plain implicit `sample`
-  instruction. `sample_l`, `sample_d`, `sample_b`, `sample_c`, and other explicit
-  or non-implicit sample opcodes are skipped.
+  shader metadata proves that the sampler uses only AF-safe sample opcodes.
+  `sample_l` (explicit LOD) is now treated as AF-safe because it selects the mip
+  level, while AF controls filtering within that level. `sample_b` (bias) is also
+  safe. `sample_d` (gradient), `sample_c` (comparison), and `OtherExplicit`
+  remain unsafe and block AF.
 - Shader metadata pairs each sampler register with the texture registers used by
   the same sample instruction. Every texture register sampled through that sampler
   must have a currently bound SRV, and every sampled SRV/resource must pass the
@@ -63,7 +65,8 @@ on postprocess, shadow, single-mip, depth, and other non-material resources.
 ## Diagnostics
 - Vtable path logs include `DX11: Deferred AF bootstrap ...`,
   `DX11: Runtime AF hook ensure from Present ...`, `DX11: AF pixel-shader metadata ...`,
-  `DX11: AF allow shader-paired sampler ...`, `DX11: AF reconciled sampler ...`, and
+  `DX11: AF allow shader-paired sampler ...` (now includes `lod=` field),
+  `DX11: AF reconciled sampler ...`, and
   rate-limited skip reasons including no active pixel shader, no shader metadata,
   shader-unused sampler, explicit/non-implicit sample opcode, missing sampled SRV,
   unsupported format, single visible mip, unsafe resource, comparison filter, border,
@@ -72,30 +75,33 @@ on postprocess, shadow, single-mip, depth, and other non-material resources.
   dimensions, mip/view mip counts, most-detailed mip, array/sample count, and bind/misc
   flags so Blackwell artifact avoidance can be distinguished from missed hook coverage.
 - Shutdown/host-disconnect summaries include `AF_runtimeHooks`,
-  `AF_shaderMeta(created=... fail=...)`, `explicitSample`, `drawReconcile`, and the
-  detailed skip counters.
+  `AF_shaderMeta(created=... fail=...)`, `explicitSample`, `AF_lodAllowed`,
+  `drawReconcile`, and the detailed skip counters.
 - Wrapper path logs mirror the important skip and reconcile decisions with
   `Wrapper: AF ...` messages.
+- New `AF_lodAllowed` counter tracks how many samplers now receive AF thanks to
+  the relaxed `sample_l` policy. A non-zero value confirms the fix is working for
+  games that use explicit LOD sampling.
 
 ## Verification
-- Focused tests: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=SamplerOverrideUtilsTest.*:FpsLimiterTest.GeneralBasicDeduplicatesImmediateSequentialApplyWhileActive:FpsLimiterTest.GeneralBasicUsesLocalCadenceWithoutLimiterProcessTimeout`
-  passed 14/14 on 2026-05-05.
-- Full build: `python build.py --skip-updates` passed on 2026-05-05 and produced build
-  `0.1.2854`, compiling both x64/x86 hook DLLs.
+- Focused tests: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=SamplerOverrideUtilsTest.*`
+  passed 16/16 on 2026-05-09.
+- Full build: `python build.py --skip-updates` passed on 2026-05-09 and produced build
+  `0.1.2966`, compiling both x64/x86 hook DLLs.
 - Full no-rebuild unit run: `python build.py --no-build --run-tests --skip-updates`
-  passed 676/676 tests on 2026-05-05.
+  passed 697/697 tests on 2026-05-09.
 
 ## Open Questions / Stale-Risk
 - BioShock Infinite should be rerun with AF=16x. Expected proof is
   `DX11: Runtime AF hook ensure from Present ...`, `AF pixel-shader metadata ...`,
-  low `explicitSample` skips for material draws, bounded `drawReconcile`, and either
-  `AF reconciled sampler` lines for eligible textures or detailed skip lines explaining
-  why specific sampled SRVs stayed blurry.
+  `AF_lodAllowed` counters > 0 (showing that `sample_l`-using samplers now get AF),
+  bounded `drawReconcile`, and either `AF reconciled sampler` lines for eligible
+  textures or detailed skip lines explaining why specific sampled SRVs stayed blurry.
+- The `sample_l` relaxation should be verified on NVIDIA Blackwell GPUs to confirm
+  no corruption arises from the broader AF coverage. The existing resource policy
+  (format, bind flags, view dimension, mip count) remains in place as the safety net.
 - If BioShock is still slow with the FPS limiter inactive, compare `perf_metrics_*.csv`
-  frame deltas against `drawReconcile`, `AF_replaced`, and skip counters. The
-  20260505_223901 run showed the limiter inactive and CE per-frame time low, so AF
-  state churn or an incorrectly hooked D3D11 context slot is more plausible than the
-  limiter for that run.
+  frame deltas against `drawReconcile`, `AF_replaced`, and skip counters.
 - A more robust future option is DXBC token parsing instead of text disassembly. The
   current parser is covered by focused tests and keeps the implementation feasible, but
   DXBC-level parsing would remove dependence on disassembler text shape.

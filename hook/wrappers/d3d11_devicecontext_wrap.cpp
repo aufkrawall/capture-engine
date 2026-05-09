@@ -42,6 +42,7 @@ static std::atomic<int> g_WrapperAFSkipNoShader{0};
 static std::atomic<int> g_WrapperAFSkipNoShaderMetadata{0};
 static std::atomic<int> g_WrapperAFSkipShaderUnused{0};
 static std::atomic<int> g_WrapperAFSkipExplicitSample{0};
+static std::atomic<int> g_WrapperAFAllowLodSample{0};
 static std::atomic<int> g_WrapperAFAllowed{0};
 static std::atomic<int> g_WrapperAFReplaced{0};
 static std::atomic<int> g_WrapperAFReconciled{0};
@@ -700,15 +701,19 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
 
     {
         int idx = g_WrapperAFAllowed.fetch_add(1, std::memory_order_relaxed);
+        if (ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot)) {
+            g_WrapperAFAllowLodSample.fetch_add(1, std::memory_order_relaxed);
+        }
         if (idx < 48) {
             WrapperLog(
                 "Wrapper: AF allow shader-paired sampler slot=s%u sampledTextures=%u first=t%u last=t%u "
-                "Filter=0x%X Aniso=%u Addr=%d/%d/%d sampleKinds(implicit=%d bias=%d) srvFmt=%d texFmt=%d dim=%d "
+                "Filter=0x%X Aniso=%u Addr=%d/%d/%d sampleKinds(implicit=%d bias=%d lod=%d) srvFmt=%d texFmt=%d dim=%d "
                 "size=%ux%u mips=%u viewMip=%u "
                 "mostMip=%u bind=0x%X misc=0x%X (#%d)",
                 slot, textureCount, firstTextureSlot, lastTextureSlot, desc.Filter, desc.MaxAnisotropy, desc.AddressU,
                 desc.AddressV, desc.AddressW, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
                 ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot) ? 1 : 0,
                 firstSrvDesc.Format, firstResourceInfo.format,
                 firstResourceInfo.viewDimension, firstResourceInfo.width, firstResourceInfo.height,
                 firstResourceInfo.mipLevels, firstResourceInfo.viewMipLevels, firstResourceInfo.mostDetailedMip,

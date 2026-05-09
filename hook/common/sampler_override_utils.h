@@ -328,7 +328,7 @@ inline bool D3D11ShaderSamplerUsesOtherExplicitSample(const D3D11ShaderSamplerUs
 
 inline bool D3D11ShaderSamplerUsesUnsafeExplicitSample(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
     return samplerSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT &&
-           (usage.samplerUsesLodSample[samplerSlot] || usage.samplerUsesGradientSample[samplerSlot] ||
+           (usage.samplerUsesGradientSample[samplerSlot] ||
             usage.samplerUsesComparisonSample[samplerSlot] || usage.samplerUsesOtherExplicitSample[samplerSlot]);
 }
 

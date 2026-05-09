@@ -100,8 +100,8 @@ TEST(SamplerOverrideUtilsTest, ParsesD3D11ShaderSamplerTexturePairs) {
     EXPECT_TRUE(D3D11ShaderSamplerUsesTexture(usage, 0, 7));
     EXPECT_TRUE(D3D11ShaderSamplerUsesExplicitSample(usage, 0));
     EXPECT_TRUE(D3D11ShaderSamplerUsesLodSample(usage, 0));
-    EXPECT_TRUE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 0));
-    EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 0));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 0));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesAFSafeSample(usage, 0));
     EXPECT_FALSE(D3D11ShaderSamplerUsesOnlyImplicitSample(usage, 0));
     EXPECT_TRUE(D3D11ShaderSamplerUsesExplicitSample(usage, 2));
     EXPECT_TRUE(D3D11ShaderSamplerUsesComparisonSample(usage, 2));
@@ -149,8 +149,8 @@ TEST(SamplerOverrideUtilsTest, TreatsD3D11SampleBiasAsAFSafeButOtherExplicitSamp
     EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 6));
 
     EXPECT_TRUE(D3D11ShaderSamplerUsesLodSample(usage, 7));
-    EXPECT_TRUE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 7));
-    EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 7));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 7));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 7));  // LOD-only, no implicit/bias
 
     EXPECT_TRUE(D3D11ShaderSamplerUsesComparisonSample(usage, 8));
     EXPECT_TRUE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 8));
@@ -164,7 +164,21 @@ TEST(SamplerOverrideUtilsTest, TreatsD3D11SampleBiasAsAFSafeButOtherExplicitSamp
     EXPECT_EQ(summary.gradientSamplers, 1u);
     EXPECT_EQ(summary.comparisonSamplers, 1u);
     EXPECT_EQ(summary.afSafeSamplers, 1u);
-    EXPECT_EQ(summary.unsafeExplicitSamplers, 3u);
+    EXPECT_EQ(summary.unsafeExplicitSamplers, 2u);
+}
+
+TEST(SamplerOverrideUtilsTest, TreatsD3D11SampleLodAsAFSafe) {
+    const char disassembly[] =
+        "    sample r0.xyzw, v0.xyxx, t0.xyzw, s0\n"
+        "    sample_l r1.xyzw, v1.xyxx, t1.xyzw, s0, l(0)\n";
+
+    const D3D11ShaderSamplerUsage usage =
+        ParseD3D11ShaderSamplerUsage(disassembly, sizeof(disassembly) - 1);
+
+    EXPECT_TRUE(usage.samplerUsesImplicitSample[0]);
+    EXPECT_TRUE(D3D11ShaderSamplerUsesLodSample(usage, 0));
+    EXPECT_FALSE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 0));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesAFSafeSample(usage, 0));
 }
 
 TEST(SamplerOverrideUtilsTest, ParsesD3D11ShaderSamplerUsageCaseInsensitivelyAndFlagsUnsupportedRegisters) {

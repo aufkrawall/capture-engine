@@ -102,6 +102,7 @@ static std::atomic<int> g_DiagSamplerSkipNoShader{0};
 static std::atomic<int> g_DiagSamplerSkipNoShaderMetadata{0};
 static std::atomic<int> g_DiagSamplerSkipShaderUnused{0};
 static std::atomic<int> g_DiagSamplerSkipExplicitSample{0};
+static std::atomic<int> g_DiagSamplerAllowLodSample{0};
 static std::atomic<int> g_DiagSamplerAFApplied{0};
 static std::atomic<int> g_DiagSamplerReplacementCreated{0};
 static std::atomic<int> g_DiagSamplerRebound{0};
@@ -1280,15 +1281,19 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
     }
 
     int idx = g_DiagSamplerAllowsAF.fetch_add(1, std::memory_order_relaxed);
+    if (ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot)) {
+        g_DiagSamplerAllowLodSample.fetch_add(1, std::memory_order_relaxed);
+    }
     if (idx < 48) {
         HookLogImportant(
             "DX11: AF allow shader-paired sampler slot=s%u sampledTextures=%u first=t%u last=t%u "
-            "Filter=0x%X Aniso=%u Addr=%d/%d/%d sampleKinds(implicit=%d bias=%d) srvFmt=%d texFmt=%d dim=%d "
+            "Filter=0x%X Aniso=%u Addr=%d/%d/%d sampleKinds(implicit=%d bias=%d lod=%d) srvFmt=%d texFmt=%d dim=%d "
             "size=%ux%u mips=%u viewMip=%u "
             "mostMip=%u array=%u samples=%u bind=0x%X misc=0x%X (#%d)",
             slot, textureCount, firstTextureSlot, lastTextureSlot, desc.Filter, desc.MaxAnisotropy, desc.AddressU,
             desc.AddressV, desc.AddressW, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
             ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
+            ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot) ? 1 : 0,
             firstSrvDesc.Format, firstResourceInfo.format,
             firstResourceInfo.viewDimension, firstResourceInfo.width, firstResourceInfo.height,
             firstResourceInfo.mipLevels, firstResourceInfo.viewMipLevels, firstResourceInfo.mostDetailedMip,
@@ -5172,6 +5177,7 @@ void DX11Hook::Shutdown() {
         int afNoShaderMeta = g_DiagSamplerSkipNoShaderMetadata.load(std::memory_order_relaxed);
         int afShaderUnused = g_DiagSamplerSkipShaderUnused.load(std::memory_order_relaxed);
         int afExplicitSample = g_DiagSamplerSkipExplicitSample.load(std::memory_order_relaxed);
+        int afAllowLod = g_DiagSamplerAllowLodSample.load(std::memory_order_relaxed);
         int afNoSRV = g_DiagSamplerSkipNoSRV.load(std::memory_order_relaxed);
         int afFormat = g_DiagSamplerSkipFormat.load(std::memory_order_relaxed);
         int afSingleMip = g_DiagSamplerSkipSingleMip.load(std::memory_order_relaxed);
@@ -5194,12 +5200,12 @@ void DX11Hook::Shutdown() {
         HookLog("DX11: Override summary: AF_allowed=%d AF_applied=%d AF_replaced=%d AF_runtimeHooks=%d "
                 "AF_shaderMeta(created=%d fail=%d) AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
                 "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
-                "unsafe=%d) bindDeferred=%d drawHooks=%d drawDirtyMiss=%d drawReconcile=%d "
+                "unsafe=%d) AF_lodAllowed=%d bindDeferred=%d drawHooks=%d drawDirtyMiss=%d drawReconcile=%d "
                 "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
                 "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
                 afAllowed, afApplied, afReplaced, afRuntimeHooks, afShaderMeta, afShaderMetaFail, afNoMips, afBorder,
                 afReduction, afComparison, afStage, afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample,
-                afNoSRV, afFormat, afSingleMip, afUnsafe, afBindDeferred, afDrawHooks, afDrawDirtyMiss,
+                afNoSRV, afFormat, afSingleMip, afUnsafe, afAllowLod, afBindDeferred, afDrawHooks, afDrawDirtyMiss,
                 afDrawReconcile, afContextVTables, afContextHookSkips, afDeferredContexts, afExecuteCommandLists,
                 mipBias, mipOverride, prerenderFrames, prerenderWaits);
     }
@@ -5255,6 +5261,7 @@ void DX11Hook::OnHostDisconnect() {
         int afNoShaderMeta = g_DiagSamplerSkipNoShaderMetadata.load(std::memory_order_relaxed);
         int afShaderUnused = g_DiagSamplerSkipShaderUnused.load(std::memory_order_relaxed);
         int afExplicitSample = g_DiagSamplerSkipExplicitSample.load(std::memory_order_relaxed);
+        int afAllowLod = g_DiagSamplerAllowLodSample.load(std::memory_order_relaxed);
         int afNoSRV = g_DiagSamplerSkipNoSRV.load(std::memory_order_relaxed);
         int afFormat = g_DiagSamplerSkipFormat.load(std::memory_order_relaxed);
         int afSingleMip = g_DiagSamplerSkipSingleMip.load(std::memory_order_relaxed);
@@ -5277,12 +5284,12 @@ void DX11Hook::OnHostDisconnect() {
         HookLog("DX11: Override summary: AF_allowed=%d AF_applied=%d AF_replaced=%d AF_runtimeHooks=%d "
                 "AF_shaderMeta(created=%d fail=%d) AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
                 "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
-                "unsafe=%d) bindDeferred=%d drawHooks=%d drawDirtyMiss=%d drawReconcile=%d "
-                "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
+                "unsafe=%d) AF_lodAllowed=%d bindDeferred=%d drawHooks=%d drawDirtyMiss=%d drawReconcile=%d "	
+                "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "	
                 "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
                 afAllowed, afApplied, afReplaced, afRuntimeHooks, afShaderMeta, afShaderMetaFail, afNoMips, afBorder,
                 afReduction, afComparison, afStage, afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample,
-                afNoSRV, afFormat, afSingleMip, afUnsafe, afBindDeferred, afDrawHooks, afDrawDirtyMiss,
+                afNoSRV, afFormat, afSingleMip, afUnsafe, afAllowLod, afBindDeferred, afDrawHooks, afDrawDirtyMiss,
                 afDrawReconcile, afContextVTables, afContextHookSkips, afDeferredContexts, afExecuteCommandLists,
                 mipBias, mipOverride, prerenderFrames, prerenderWaits);
     }
