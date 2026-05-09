@@ -3393,8 +3393,8 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     HookLogImportant(
         "AttemptSteamDX12OverlayInit: Steam overlay init completed (hr=0x%08X) — "
-        "vtable[8] re-hooked to DetourPresent.  Subsequent frames will route through "
-        "E9 JMP path for Steam DX12 overlay rendering.",
+        "vtable[8] re-hooked to DetourPresent.  Subsequent frames will invoke Steam "
+        "overlay via g_externalOverlayPresentHook (explicit hook target, bypass trampoline fallback).",
         (unsigned)initHr);
 
     *resultOut = initHr;
@@ -3475,49 +3475,41 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 } else {
                     // Init already attempted (by another thread or a prior frame).
                     // Steam's overlay init completed successfully (VEH handled the
-                    // NULL Vulkan callback at RVA 0x1621d8).  Route through the E9
-                    // JMP path so Steam's DX12 overlay rendering works normally.
+                    // NULL Vulkan callback at RVA 0x1621d8).
                     //
-                    // The callback at RVA 0x1621d8 is a Vulkan-only function (symbol:
-                    // VulkanSteamOverlayProcessCapturedFrame).  Patching it to our
-                    // no-op prevents Vulkan crashes but has zero effect on DX12
-                    // overlay rendering — Steam's DX12 path in OverlayHookD3D3 uses
-                    // a separate mechanism.
+                    // Route through the explicit Steam overlay invocation
+                    // (g_externalOverlayPresentHook = resolved E9 JMP target from
+                    // InstallPresentInlineHooks) which calls Steam's OverlayHookD3D3
+                    // directly.  Steam renders its overlay, calls its "next" handler
+                    // (original dxgi!Present body or re-entrant DetourPresent → bypass
+                    // trampoline), and presents the frame normally.
                     //
-                    // Steam composites its overlay on top of the game content.
-                    // After OverlayHookD3D3 returns, it calls the "next" handler
-                    // which may re-enter DetourPresent (vtable[8] = our hook).
-                    // The re-entrancy guard forwards to the bypass trampoline,
-                    // which calls the real dxgi!Present safely.
-                    if (!s_steamInitCrashed &&
-                        presentOriginal && presentOriginal != DetourPresent &&
-                        IsReadableMemory(pSwapChain, sizeof(void*))) {
-                        // Route through the saved original COM method
-                        // (s_originalVtable8Present) instead of presentOriginal
-                        // (= dxgi!Present inner function with E9 JMP).  The COM
-                        // method does DXGI kernel state management and then
-                        // calls dxgi!Present internally, where Steam's E9 JMP
-                        // fires naturally — both overlays render, and the COM
-                        // method's state setup prevents black screen.
-                        PFN_Present comTarget = s_originalVtable8Present ?
-                            s_originalVtable8Present : presentOriginal;
-                        static std::atomic<int> s_steamNonSLE9JmpCount{0};
-                        if (s_steamNonSLE9JmpCount.fetch_add(1, std::memory_order_relaxed) < 10) {
-                            HookLogImportant(
-                                "CallOriginalPresent: non-SL Steam overlay — routing through "
-                                "%s at %p (presentOriginal=%p, init done, DX12 overlay enabled)",
-                                s_originalVtable8Present ? "s_originalVtable8Present (COM method)" :
-                                    "presentOriginal (E9 JMP)",
-                                (void*)comTarget, (void*)presentOriginal);
+                    // This replaces the old approach of calling s_originalVtable8Present
+                    // (= dxgi!Present with Steam's E9 JMP).  The E9 JMP path produces
+                    // black game content in some DX12 games (e.g. Strange Brigade)
+                    // because Steam's overlay handler called through the inline JMP on
+                    // dxgi!Present triggers a different internal path than when called
+                    // as a standalone hook target, leading to incorrect rendering state
+                    // for the game content.
+                    //
+                    // The bypass trampoline (presentBypass) is used as fallback when
+                    // the explicit Steam invoke is unavailable or declined, skipping
+                    // Steam's overlay rendering for that frame but preserving game
+                    // content and CE overlay.
+                    if (!s_steamInitCrashed) {
+                        HRESULT steamHr = S_OK;
+                        if (TryInvokeGuardedExternalSteamOverlayPresent(
+                                pSwapChain, SyncInterval, Flags,
+                                "Steam DX12 non-SL", &steamHr)) {
+                            return steamHr;
                         }
-                        return comTarget(pSwapChain, SyncInterval, Flags);
                     }
                     if (presentBypass) {
                         static std::atomic<int> s_steamNonSLBypassCount{0};
                         if (s_steamNonSLBypassCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                             HookLogImportant(
-                                "CallOriginalPresent: non-SL Steam overlay — using bypass "
-                                "trampoline %p (E9 JMP path %p unavailable or unsafe)",
+                                "CallOriginalPresent: non-SL Steam overlay — explicit invoke "
+                                "declined, using bypass trampoline at %p (presentOriginal=%p)",
                                 (void*)presentBypass, (void*)presentOriginal);
                         }
                         return presentBypass(pSwapChain, SyncInterval, Flags);
