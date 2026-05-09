@@ -1970,21 +1970,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     skipNum + 1);
             }
         }
-        // Determine if this frame will invoke Steam overlay in the non-SL path.
-        // When true, ProcessFrame defers overlay ECL submission so it can be
-        // submitted in DetourExecuteCommandLists AFTER Steam's overlay ECL clears
-        // the backbuffer.  This ensures CE overlay renders on top of Steam's
-        // cleared buffer instead of being cleared by it.
+    // non-SL Steam path: log detection but DO NOT defer overlay ECL.
+        // Deferral was attempted (builds 0.1.2960-2963) but failed because:
+        // 1. Steam's ECL hook only fires on frame #1 (before overlay init)
+        // 2. Every frame falls through to the fallback path (after Present)
+        // 3. The overlay ECL is always submitted too late (one frame behind)
+        //
+        // Instead, submit overlay ECL normally (before Present/Steam invoke),
+        // and call dxgi!Present through Steam's E9 JMP to ensure Steam's
+        // handler chains to the original Present correctly.
         const bool nonSLSteamInvokePath =
             !steamOnlyTest && api == APIType::D3D12 && steamOverlayLoaded && !IsSLInterposerLoaded();
         if (nonSLSteamInvokePath) {
-            static std::atomic<int> s_steamDeferLog{0};
-            if (s_steamDeferLog.fetch_add(1, std::memory_order_relaxed) < 20) {
+            static std::atomic<int> s_steamPathLog{0};
+            if (s_steamPathLog.fetch_add(1, std::memory_order_relaxed) < 20) {
                 HookLogImportant(
-                    "DetourPresent: non-SL Steam path — deferring overlay, SyncInterval=%u Flags=%u",
+                    "DetourPresent: non-SL Steam path — SyncInterval=%u Flags=%u (normal overlay submit)",
                     SyncInterval, Flags);
             }
-            InvokeDX12SetDeferOverlaySubmitToSteamECL(true);
         }
 
         if (!steamOnlyTest && api == APIType::D3D12) {
@@ -2005,12 +2008,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     ProcessVSyncOverride(SyncInterval, Flags);
 
-    // When Steam ECL deferred overlay is active, skip the normal fence wait.
-    // The overlay hasn't been submitted yet — it will be submitted by the ECL
-    // hook after Steam's ECL.  The fence wait happens after CallOriginalPresent
-    // returns (see below).
-    const bool steamOverlayDeferred = InvokeDX12IsDeferOverlaySubmitPending();
-    if (api == APIType::D3D12 && !steamOverlayDeferred) {
+    // Always wait for overlay fence before Present.  The overlay ECL was
+    // submitted during ProcessFrame (non-deferred), so the fence signals
+    // completion before the buffer flips.
+    if (api == APIType::D3D12) {
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
@@ -2098,52 +2099,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
-    // Steam ECL deferred overlay: if the deferral flag was set (non-SL Steam
-    // path), the overlay ECL was submitted by DetourExecuteCommandLists after
-    // Steam's ECL.  Wait for the overlay fence that was signaled there.
-    // If the deferred overlay is still pending (fallback: Steam never called
-    // ECL), submit it now before Present would have occurred.
-    if (steamOverlayDeferred) {
-        bool wasPending = InvokeDX12IsDeferOverlaySubmitPending();
-        if (wasPending) {
-            static std::atomic<int> s_deferredFallbackLogCount{0};
-            int fallbackNum = s_deferredFallbackLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (fallbackNum <= 50 || (fallbackNum % 500) == 0) {
-                HookLogImportant(
-                    "DetourPresent: Steam-deferred overlay still pending after "
-                    "CallOriginalPresent — submitting as fallback #%d",
-                    fallbackNum);
-            }
-            InvokeDX12SubmitSteamDeferredOverlay();
-        } else {
-            static std::atomic<int> s_deferredECLHandledLog{0};
-            if (s_deferredECLHandledLog.fetch_add(1, std::memory_order_relaxed) < 50) {
-                HookLogImportant(
-                    "DetourPresent: Steam-deferred overlay was handled by ECL hook "
-                    "(pending was false after CallOriginalPresent)");
-            }
-        }
-        if (api == APIType::D3D12) {
-            LARGE_INTEGER fenceWaitStart, fenceWaitEnd;
-            QueryPerformanceCounter(&fenceWaitStart);
-            InvokeDX12WaitForOverlayCompletion(nullptr);
-            QueryPerformanceCounter(&fenceWaitEnd);
-            static std::atomic<int> s_fenceWaitTimingLog{0};
-            if (s_fenceWaitTimingLog.fetch_add(1, std::memory_order_relaxed) < 50) {
-                LARGE_INTEGER freq;
-                QueryPerformanceFrequency(&freq);
-                double waitUs = (double)(fenceWaitEnd.QuadPart - fenceWaitStart.QuadPart) * 1000000.0 / (double)freq.QuadPart;
-                if (waitUs > 100.0) {
-                    HookLogImportant("DX12: Post-Steam fence wait took %.1f us (wasPending=%d)",
-                                     waitUs, wasPending ? 1 : 0);
-                } else {
-                    HookLog("DX12: Post-Steam fence wait took %.1f us (wasPending=%d)",
-                            waitUs, wasPending ? 1 : 0);
-                }
-            }
-        }
-        InvokeDX12SetDeferOverlaySubmitToSteamECL(false);
-    }
+    // Note: The Steam ECL deferred overlay handling was removed in build 0.1.2964.
+    // The ECL-hook approach (builds 0.1.2960-2963) failed because Steam's ECL
+    // only fires on frame #1, making deferral useless.  Overlay is now submitted
+    // normally (non-deferred) during ProcessFrame.
 
     // Flush deferred overlay fence Signal AFTER Present.  The NVIDIA driver
     // stalls the GPU when Signal sits between our overlay ECL and Present.
@@ -3754,9 +3713,14 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                             (void*)g_externalOverlayPresentHook, vtableRestored ? 1 : 0);
                     }
 
-                    // Phase C: Invoke Steam's overlay handler explicitly.
-                    if (TryInvokeGuardedExternalSteamOverlayPresent(
-                            pSwapChain, SyncInterval, Flags, "Steam DX12 explicit invoke", &steamHr)) {
+                    // Phase C: Invoke Steam's overlay handler through the E9 JMP
+                    // at presentOriginal (dxgi!Present).  This ensures Steam's
+                    // handler fires through the natural hook chain with the correct
+                    // return address, so it chains to the original dxgi!Present
+                    // after rendering Steam overlay.
+                    if (presentOriginal && presentOriginal != (PFN_Present)DetourPresent) {
+                        StreamlineHook::ExternalOverlayPresentGuard slGuard;
+                        steamHr = presentOriginal(pSwapChain, SyncInterval, Flags);
                         steamInvoked = true;
 
                         // Diagnostic — log state after Steam invoke.
@@ -3788,7 +3752,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                         int invokeNum = s_steamNonSLInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (invokeNum <= 20 || (invokeNum % 200) == 0) {
                             HookLogImportant(
-                                "CallOriginalPresent: non-SL Steam overlay — explicit invoke #%d "
+                                "CallOriginalPresent: non-SL Steam — E9 JMP invoke #%d "
                                 "hr=0x%08X bbIdx=%u->%u bufCount=%u->%u presentCalls=%llu "
                                 "e9Intact=%d->%d e9BytesAfter=%02X%02X%02X%02X%02X "
                                 "vtableRestored=%d",
@@ -3801,14 +3765,27 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                                 presentBytesAfter[3], presentBytesAfter[4],
                                 vtableRestored ? 1 : 0);
                         }
+                        // If the backbuffer index didn't advance, Steam's handler
+                        // didn't chain to the original dxgi!Present.  Fall back to
+                        // the bypass trampoline to ensure the frame is presented.
+                        if (bbIdxAfter == bbIdxBefore && presentBypass) {
+                            static std::atomic<int> s_steamE9JMPFallbackCount{0};
+                            if (s_steamE9JMPFallbackCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                                HookLogImportant(
+                                    "CallOriginalPresent: non-SL Steam — E9 JMP did not advance "
+                                    "bbIdx (%u->%u), using bypass trampoline to ensure Present",
+                                    bbIdxBefore, bbIdxAfter);
+                            }
+                            steamHr = presentBypass(pSwapChain, SyncInterval, Flags);
+                        }
                     } else {
                         static std::atomic<int> s_steamNonSLDeclineCount{0};
                         int declineNum = s_steamNonSLDeclineCount.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (declineNum <= 20 || (declineNum % 200) == 0) {
                             HookLogImportant(
-                                "CallOriginalPresent: non-SL Steam overlay — explicit invoke "
-                                "declined #%d (vtableRestored=%d, presentBypass=%p, tid=0x%04X)",
-                                declineNum, vtableRestored ? 1 : 0, (void*)presentBypass,
+                                "CallOriginalPresent: non-SL Steam — E9 JMP invoke "
+                                "declined #%d (presentOriginal=%p, vtableRestored=%d, presentBypass=%p, tid=0x%04X)",
+                                declineNum, (void*)presentOriginal, vtableRestored ? 1 : 0, (void*)presentBypass,
                                 GetCurrentThreadId());
                         }
                     }
