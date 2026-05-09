@@ -841,6 +841,8 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
         IATHook::PatchEAT(module, "D3D11CreateDeviceAndSwapChain",
                           (void*)::Wrapped_D3D11CreateDeviceAndSwapChain,
                           (void**)&::oD3D11CreateDeviceAndSwapChain);
+        HookLogImportant("NotifyHookModuleLoaded: Patched d3d11.dll EAT — GetProcAddress for "
+                         "D3D11CreateDevice/AndSwapChain now return wrappers");
       }
     }
   }
