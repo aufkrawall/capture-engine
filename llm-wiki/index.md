@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2963 ECL-hook-based deferred overlay)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2964 ECL-hook removal, E9 JMP root-cause fix)
 
 Primary sources:
 - `AGENTS.md`
