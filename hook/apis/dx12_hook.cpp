@@ -952,6 +952,42 @@ struct DX12OverlayState {
 };
 
 static DX12OverlayState g_State;
+
+// ============================================================
+// Steam ECL deferred overlay submission state
+// ============================================================
+// Set by DetourPresent (dxgi_shared.cpp) before invoking Steam's overlay handler.
+// When true, ProcessFrame records overlay commands into g_State.cmdList and closes
+// the list, but skips the actual ECL submission.  The submission is deferred to
+// DetourExecuteCommandLists, which fires the CE overlay ECL AFTER Steam's overlay
+// ECL has been submitted to the queue.  This ensures CE's overlay renders on top
+// of Steam's cleared backbuffer instead of being cleared by Steam.
+static bool g_deferOverlaySubmitToSteamECL = false;
+
+struct SteamDeferredOverlaySubmitState {
+    ID3D12CommandList* cmdList = nullptr;
+    int allocIdx = -1;
+    ID3D12CommandQueue* eclQueue = nullptr;
+    bool pending = false;
+};
+static SteamDeferredOverlaySubmitState g_steamDeferredOverlay;
+
+extern "C" __declspec(dllexport) void DX12_SetDeferOverlaySubmitToSteamECL(bool defer) {
+    g_deferOverlaySubmitToSteamECL = defer;
+    if (!defer) {
+        // Clear any stale deferred state
+        g_steamDeferredOverlay.pending = false;
+        g_steamDeferredOverlay.cmdList = nullptr;
+        g_steamDeferredOverlay.allocIdx = -1;
+        g_steamDeferredOverlay.eclQueue = nullptr;
+    }
+}
+
+// Check if deferred overlay is still pending (not consumed by ECL hook).
+extern "C" __declspec(dllexport) bool DX12_IsDeferOverlaySubmitPending() {
+    return g_steamDeferredOverlay.pending;
+}
+
 static SharedCaptureD3D12 g_SharedCaptureD3D12;
 static OverlayAdapter g_D3D11On12Adapter;
 // Separate overlay adapter for D3D11On12 rendering during Streamline FG.
@@ -9333,6 +9369,94 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
     PostSLOverlayRender(pSwapChain);
 }
 
+// ============================================================
+// Steam ECL deferred overlay submission
+// ============================================================
+// Submit the deferred overlay command list to the specified queue.  Called from
+// DetourExecuteCommandLists after Steam's overlay ECL returns, or as fallback
+// from DetourPresent after CallOriginalPresent returns.  Submits CE overlay to
+// the same queue Steam used, so CE overlay renders after Steam's clear.
+// The callerContext distinguishes the two paths for diagnostic logging.
+static bool SubmitSteamDeferredOverlay(ID3D12CommandQueue* submitQueue, const char* callerContext) {
+    if (!g_steamDeferredOverlay.pending || !g_steamDeferredOverlay.cmdList) {
+        return false;
+    }
+
+    ID3D12CommandList* list = g_steamDeferredOverlay.cmdList;
+    int allocIdx = g_steamDeferredOverlay.allocIdx;
+
+    HookLogImportant(
+        "DX12: [%s] Submitting Steam-deferred overlay ECL to queue %p (cmdList=%p, allocIdx=%d)",
+        callerContext ? callerContext : "unknown", submitQueue, list, allocIdx);
+
+    ID3D12CommandList* lists[] = {list};
+
+    // Prefer realECL (raw tracked D3D12 ECL from d3d12core.dll) to bypass all
+    // hook layers including FG vtable hooks on this queue.
+    ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
+    if (realECL) {
+        realECL(submitQueue, 1, lists);
+        HookLog("DX12: [%s] used realECL=%p for ECL submit", callerContext ? callerContext : "unknown", (void*)realECL);
+    } else {
+        // Use the per-queue original ECL (un-hooked) from the vtable hook.
+        // This avoids re-entering DetourExecuteCommandLists via the vtable.
+        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(submitQueue);
+        if (original) {
+            original(submitQueue, 1, lists);
+            HookLog("DX12: [%s] used GetOriginalExecuteCommandLists=%p for ECL submit",
+                    callerContext ? callerContext : "unknown", (void*)original);
+        } else {
+            HookLogImportant("DX12: [%s] WARNING — no original ECL available, using vtable call (will recurse)",
+                            callerContext ? callerContext : "unknown");
+            submitQueue->ExecuteCommandLists(1, lists);
+        }
+    }
+
+    // Signal fence immediately (not deferred) since we need to wait before Present.
+    if (g_State.fence) {
+        UINT64 next = g_State.currentFenceValue + 1;
+        HRESULT sigHr = submitQueue->Signal(g_State.fence, next);
+        if (SUCCEEDED(sigHr)) {
+            g_State.currentFenceValue = next;
+            if (allocIdx >= 0 && allocIdx < static_cast<int>(g_State.fenceValues.size())) {
+                g_State.fenceValues[allocIdx] = next;
+            }
+        } else {
+            HookLog("DX12: Steam-deferred overlay fence Signal failed hr=0x%08X", (unsigned)sigHr);
+        }
+    }
+
+    // Clear deferred state
+    g_steamDeferredOverlay.pending = false;
+    g_steamDeferredOverlay.cmdList = nullptr;
+    g_steamDeferredOverlay.allocIdx = -1;
+    g_steamDeferredOverlay.eclQueue = nullptr;
+
+    static std::atomic<int> s_deferredSubmitLogCount{0};
+    int logNum = s_deferredSubmitLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (logNum <= 20 || (logNum % 200) == 0) {
+        HookLogImportant(
+            "DX12: Steam-deferred overlay submitted #%d (queue=%p, fence=%llu)",
+            logNum, submitQueue, (unsigned long long)g_State.currentFenceValue);
+    }
+
+    return true;
+}
+
+// Fallback: submit deferred overlay from the Present path if Steam never called ECL.
+extern "C" __declspec(dllexport) void DX12_SubmitSteamDeferredOverlay() {
+    if (g_steamDeferredOverlay.pending && g_steamDeferredOverlay.eclQueue) {
+        SubmitSteamDeferredOverlay(g_steamDeferredOverlay.eclQueue, "fallback");
+    }
+}
+
+// Steam module path suffix check: returns true if the given module path contains
+// "gameoverlayrenderer" (Steam overlay DLL for x64 or x86).
+static bool IsSteamOverlayModulePath(const char* modulePath) {
+    if (!modulePath || !modulePath[0]) return false;
+    return strstr(modulePath, "gameoverlayrenderer") != nullptr;
+}
+
 void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // Re-entrancy guard: NVIDIA driver can pump window messages during
     // ExecuteCommandLists (via WaitImpl → DefWindowProc), which can re-enter
@@ -12838,6 +12962,30 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             }
                                         }
 
+                                        // Steam ECL deferred submit: when g_deferOverlaySubmitToSteamECL
+                                        // is true (non-SL Steam overlay path), skip the normal overlay ECL
+                                        // submission.  The overlay command list is closed and ready, but
+                                        // submission is deferred to DetourExecuteCommandLists which fires
+                                        // AFTER Steam's overlay handler submits its ECL.  This ensures CE
+                                        // overlay renders on top of Steam's cleared backbuffer.
+                                        if (g_deferOverlaySubmitToSteamECL && !useDedicated) {
+                                            g_steamDeferredOverlay.cmdList = list;
+                                            g_steamDeferredOverlay.allocIdx = idx;
+                                            g_steamDeferredOverlay.eclQueue = eclQueue;
+                                            g_steamDeferredOverlay.pending = true;
+                                            static std::atomic<int> s_deferredSkipLogCount{0};
+                                            int deferredSkipNum =
+                                                s_deferredSkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                                            if (deferredSkipNum <= 20 || (deferredSkipNum % 200) == 0) {
+                                                HookLogImportant(
+                                                    "DX12: Deferring overlay ECL submit to Steam ECL hook #%d "
+                                                    "(eclQueue=%p, list=%p, allocIdx=%d, bb=%p, bufIdx=%u)",
+                                                    deferredSkipNum, eclQueue, list, idx, bb, bufferIdx);
+                                            }
+                                            // Skip the normal fence signal too - ECL hook will signal it.
+                                            goto skip_steam_deferred_fence_signal;
+                                        }
+
                                         if (!useDedicated && realECL && !isSLWrapperECL) {
                                             realECL(eclQueue, 1, lists);
                                             usedRealECL = true;
@@ -12947,6 +13095,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 g_deferredSignalAllocIdx.store(idx, std::memory_order_release);
                                             }
                                         }
+                                    skip_steam_deferred_fence_signal:
                                         cmdRecordOk = true;
                                         QueryPerformanceCounter(&perfSubmit);
                                     }
@@ -13475,8 +13624,18 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
             return;
     }
 
-    if (g_State.fence->GetCompletedValue() >= fenceValueToWait)
-        return;
+    {
+        UINT64 completedVal = g_State.fence->GetCompletedValue();
+        if (completedVal >= fenceValueToWait) {
+            static std::atomic<int> s_fenceAlreadyCompleteLog{0};
+            if (s_fenceAlreadyCompleteLog.fetch_add(1, std::memory_order_relaxed) < 50) {
+                HookLog("DX12: Overlay fence already complete (fence=%llu, completed=%llu, mode=%s)",
+                        (unsigned long long)fenceValueToWait, (unsigned long long)completedVal,
+                        usingDedicatedQueue ? "dedicated-queue" : (overlayModule ? overlayModule : "single-queue"));
+            }
+            return;
+        }
+    }
 
     HRESULT setHr = g_State.fence->SetEventOnCompletion(fenceValueToWait, g_State.fenceEvent);
     if (FAILED(setHr))
@@ -13486,13 +13645,13 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     constexpr DWORD kCompatWaitTimeoutMs = 16;
     DWORD waitHr = WaitForSingleObject(g_State.fenceEvent, kCompatWaitTimeoutMs);
     if (waitHr == WAIT_TIMEOUT) {
-        if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+        if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
             HookLog("DX12: Overlay completion wait timed out for %s mode (fence=%llu)",
                     usingDedicatedQueue ? "dedicated-queue" : (overlayModule ? overlayModule : "single-queue"),
                     (unsigned long long)fenceValueToWait);
         }
     } else if (waitHr == WAIT_OBJECT_0) {
-        if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+        if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
             HookLog("DX12: Overlay completion wait finished for %s mode (fence=%llu)",
                     usingDedicatedQueue ? "dedicated-queue" : (overlayModule ? overlayModule : "single-queue"),
                     (unsigned long long)fenceValueToWait);
@@ -13966,8 +14125,37 @@ skip_command_queue_registration:
 
     ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
 
+    // Detect Steam overlay ECL: if the caller is from gameoverlayrenderer64.dll
+    // AND we have a deferred CE overlay pending (set by DetourPresent for the
+    // non-SL Steam invoke path), submit CE overlay commands AFTER Steam's ECL.
+    // This ensures CE overlay renders on top of Steam's cleared backbuffer
+    // instead of being overwritten by Steam's clear.
+    const bool eclCallerIsSteam =
+        eclCallerModulePath[0] != '\0' && IsSteamOverlayModulePath(eclCallerModulePath);
+    const bool hasDeferredOverlay = g_steamDeferredOverlay.pending;
+
     if (original)
         original(pThis, NumCommandLists, ppCommandLists);
+
+    // After Steam's ECL completes: submit CE deferred overlay to the same queue.
+    if (eclCallerIsSteam && hasDeferredOverlay) {
+        static std::atomic<int> s_deferredECLSubmitCount{0};
+        int eclSubmitNum = s_deferredECLSubmitCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (eclSubmitNum <= 50 || (eclSubmitNum % 500) == 0) {
+            HookLogImportant(
+                "DX12: ECL hook detected Steam with deferred overlay pending #%d (queue=%p, eclCount=%llu)",
+                eclSubmitNum, pThis, (unsigned long long)eclCount);
+        }
+        SubmitSteamDeferredOverlay(pThis, "ecl_hook");
+    } else if (eclCallerIsSteam && !hasDeferredOverlay) {
+        static std::atomic<int> s_deferredECLSkipCount{0};
+        int eclSkipNum = s_deferredECLSkipCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (eclSkipNum == 1 || eclSkipNum <= 20 || (eclSkipNum % 500) == 0) {
+            HookLogImportant(
+                "DX12: ECL hook detected Steam but no deferred overlay pending #%d (queue=%p, eclCount=%llu)",
+                eclSkipNum, pThis, (unsigned long long)eclCount);
+        }
+    }
 }
 
 __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
