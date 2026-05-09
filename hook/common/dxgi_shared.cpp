@@ -3496,20 +3496,32 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     // the explicit Steam invoke is unavailable or declined, skipping
                     // Steam's overlay rendering for that frame but preserving game
                     // content and CE overlay.
-                    if (!s_steamInitCrashed) {
-                        HRESULT steamHr = S_OK;
-                        if (TryInvokeGuardedExternalSteamOverlayPresent(
-                                pSwapChain, SyncInterval, Flags,
-                                "Steam DX12 non-SL", &steamHr)) {
-                            return steamHr;
-                        }
-                    }
+                    // Use the bypass trampoline which calls dxgi!Present+5 directly,
+                    // skipping both CE's vtable hook and Steam's E9 JMP.  This is a
+                    // safe path that preserves game content and CE overlay.  Steam
+                    // overlay is NOT rendered on this path.
+                    //
+                    // Both the E9 JMP path (calling dxgi!Present with Steam's inline
+                    // hook) and the explicit Steam invoke path (g_externalOverlayPresentHook)
+                    // produce black game content in Strange Brigade DX12.  The exact
+                    // mechanism is not yet determined but is consistent across both
+                    // invocation methods.
+                    //
+                    // TODO: Find a way to render Steam overlay without black screen.
+                    // Options:
+                    //   - Read dxgi!Present's original vtable[8] COM method from PE
+                    //     .rdata and call that instead of the inner function
+                    //   - Inline-hook dxgi!Present with chain to Steam's E9 JMP
+                    //     (instead of vtable hook), so CE and Steam can coexist in
+                    //     the same hook chain without vtable manipulation
+                    //   - Call Steam's overlay rendering via a separate device/queue
+                    //     that doesn't interfere with the Present call chain
                     if (presentBypass) {
                         static std::atomic<int> s_steamNonSLBypassCount{0};
                         if (s_steamNonSLBypassCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                             HookLogImportant(
-                                "CallOriginalPresent: non-SL Steam overlay — explicit invoke "
-                                "declined, using bypass trampoline at %p (presentOriginal=%p)",
+                                "CallOriginalPresent: non-SL Steam overlay — using bypass "
+                                "trampoline at %p (presentOriginal=%p, init done)",
                                 (void*)presentBypass, (void*)presentOriginal);
                         }
                         return presentBypass(pSwapChain, SyncInterval, Flags);
