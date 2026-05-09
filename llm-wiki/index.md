@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2949 diagnostic logging for Steam invoke)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2950 experimental Steam-only mode)
 
 Primary sources:
 - `AGENTS.md`
