@@ -688,15 +688,6 @@ bool InitializeD3D11Hooks() {
         RegisterDynamicHook("D3D11CreateDevice", (void*)::Wrapped_D3D11CreateDevice, (void**)&::oD3D11CreateDevice);
         WrapperLog("IAT: Registered D3D11 functions for dynamic hooking");
 
-        // CRITICAL: Install GetProcAddress hook NOW so that subsequent
-        // GetProcAddress(d3d11.dll, "D3D11CreateDevice") calls are intercepted.
-        // Without this, the game's GetProcAddress call (made right after
-        // LoadLibrary("d3d11.dll") returns) goes through the real GetProcAddress
-        // and returns the real D3D11CreateDevice, completely bypassing our wrapper
-        // and vtable hooks. This must be called from every path that initializes
-        // D3D11 hooks (DllMain, NotifyHookModuleLoaded, HookThread scan).
-        InitializeGetProcAddressHook();
-
         WrapperLog("IAT: D3D11 hooks initialized");
         return true;
     }

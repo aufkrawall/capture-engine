@@ -821,13 +821,27 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
       HookLog("NotifyHookModuleLoaded: d3d11.dll detected — installing D3D11 hooks "
               "immediately (pre-GetProcAddress)");
       IATHook::InitializeD3D11Hooks();
-      // CRITICAL: Install the GetProcAddress hook NOW, before LoadLibrary returns.
-      // The game's main thread will call GetProcAddress(d3d11.dll, "D3D11CreateDevice")
-      // immediately after LoadLibrary returns. If our DetourGetProcAddress is not
-      // installed yet, the game gets the real function pointer, bypasses our wrapper,
-      // and our vtable hooks are never installed during device creation. The game
-      // caches un-hooked Draw vtable entries → zero AF effect.
-      IATHook::InitializeGetProcAddressHook();
+      // CRITICAL: Patch d3d11.dll's Export Address Table (EAT) to redirect
+      // D3D11CreateDevice and D3D11CreateDeviceAndSwapChain to our wrappers.
+      // This ensures GetProcAddress(d3d11.dll, "D3D11CreateDevice") returns our
+      // wrapper regardless of when it's called — no race condition.
+      //
+      // We MUST NOT use InitializeGetProcAddressHook() here (which patches
+      // GetProcAddress in ALL loaded modules' IAT). That approach crashes
+      // Steam's overlay (gameoverlayrenderer.dll) during CreateSwapChain
+      // because DXGI's internal state gets corrupted when GetProcAddress is
+      // intercepted from non-game callers.
+      //
+      // EAT patching is safe because it only modifies d3d11.dll's export table,
+      // affecting ALL callers equally without touching any module's IAT, vtable,
+      // or internal state.
+      if (module) {
+        IATHook::PatchEAT(module, "D3D11CreateDevice", (void*)::Wrapped_D3D11CreateDevice,
+                          (void**)&::oD3D11CreateDevice);
+        IATHook::PatchEAT(module, "D3D11CreateDeviceAndSwapChain",
+                          (void*)::Wrapped_D3D11CreateDeviceAndSwapChain,
+                          (void**)&::oD3D11CreateDeviceAndSwapChain);
+      }
     }
   }
 
