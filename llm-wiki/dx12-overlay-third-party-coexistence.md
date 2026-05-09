@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2943 explicit Steam overlay invoke — s_originalVtable8Present was no-op)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2947 bypass-only — ALL Steam handler approaches fail)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -166,6 +166,24 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - **Fallback**: If `AttemptSteamDX12OverlayInit()` crashes (Steam overlay removed or init fails silently), `s_steamInitCrashed = true` and all subsequent calls use bypass trampoline (Steam overlay not visible, but game doesn't crash).
 - **Source anchors**: `hook/common/dxgi_shared.cpp` (AttemptSteamDX12OverlayInit, CallOriginalPresent init block), `tests/test_dxgi_shared.cpp` (SteamDX12InitVtableUnhookRestorePattern, SteamDX12InitVtableRehookFailureSafety).
 - **Verification**: All unit tests pass. Regression tests cover the VirtualProtect unhook → call → re-hook pattern on read-only vtable pages (SteamDX12InitVtableUnhookRestorePattern) and safe behavior if re-hook fails (SteamDX12InitVtableRehookFailureSafety).
+
+### Build 0.1.2947 — Black screen: ALL Steam handler invoke approaches fail — bypass-only fallback (Strange Brigade DX12)
+
+- **Problem**: Build 0.1.2943 (explicit Steam overlay invoke) still produces black game content. Log confirms `TryInvokeGuardedExternalSteamOverlayPresent` IS called and invokes Steam's handler (`hook=00007FFF8725058A`), but the frame is black.
+- **Root cause (refined)**: Three different approaches to invoking Steam's overlay handler ALL produce black game content:
+  1. E9 JMP path: calling `dxgi!Present` (with Steam's E9 JMP)
+  2. Explicit invoke: calling `g_externalOverlayPresentHook` (Steam's handler directly)
+  3. Vtable restore: temporarily setting vtable[8] = dxgi!Present, calling Present, re-hooking
+
+  Even when Steam's overlay renders nothing and just calls "next" to present, the game content on the backbuffer is lost. The most likely cause: Steam's init Present call in `AttemptSteamDX12OverlayInit` alters the GPU buffer state on the real game swapchain, changing how CE's subsequent PRESENT→RT barrier behaves. Some GPU drivers may discard/clear backbuffer contents on PRESENT→RT transition when the buffer's internal state tracking was modified by Steam's init.
+- **Current approach**: Bypass-only for non-SL Steam path. The bypass trampoline calls `dxgi!Present+5` directly, skipping both CE vtable hook and Steam E9 JMP. Game content + CE overlay visible, but NO Steam overlay.
+- **Pending solutions (to explore)**:
+  - **Chain inline hook**: Install inline hook on `dxgi!Present` WITH chain to Steam's E9 JMP, avoiding vtable modification entirely. Risk: CE and Steam fight over `dxgi!Present` entry bytes.
+  - **PE-read COM method**: Read original `IDXGISwapChain::Present` COM method from `dxgi.dll` PE `.rdata` section, find the method that does kernel state management before calling `dxgi!Present`.
+  - **Skip CE overlay when Steam is active**: Let Steam own the Present call, render CE overlay separately via a different GPU queue or post-present mechanism.
+  - **Separate overlay device/queue**: Create a separate D3D12 device and command queue for CE overlay rendering that doesn't touch the game swapchain buffers; composite via shared textures.
+- **Source anchors**: `hook/common/dxgi_shared.cpp:3499-3515`.
+- **Verification**: All 696 unit tests pass. Build 0.1.2947.
 
 ### Build 0.1.2943 — Black screen fix (corrected): explicit Steam overlay invoke instead of E9 JMP — s_originalVtable8Present was a no-op (Strange Brigade DX12)
 

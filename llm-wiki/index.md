@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2943 explicit Steam overlay invoke — s_originalVtable8Present was no-op)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2947 bypass-only — ALL Steam handler approaches fail)
 
 Primary sources:
 - `AGENTS.md`

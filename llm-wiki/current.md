@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-05-09 — Strange Brigade DX12 black screen fix (build 0.1.2943): The COMMETHOD theory was WRONG — `s_originalVtable8Present == presentAddr == dxgi!Present` (same=1 confirmed in log). There is no separate COM method — vtable[8] IS the inner `dxgi!Present` function. Actual fix: replace the E9 JMP path with `TryInvokeGuardedExternalSteamOverlayPresent` which calls Steam's overlay handler directly via the resolved `g_externalOverlayPresentHook` (the E9 JMP target). Steam renders overlay, calls "next" and presents normally — CE overlay is already on the backbuffer. Fallback: bypass trampoline (game+CE overlay, no Steam overlay). See `llm-wiki/log/recent.md` for the full timeline.
+Last cross-checked: 2026-05-09 — Strange Brigade DX12 black screen: ALL Steam handler invoke approaches fail (build 0.1.2947). Three approaches tried — E9 JMP path, explicit `g_externalOverlayPresentHook` invoke, and vtable[8] temporary restore — all produce black game content when Steam's overlay handler runs. Even a minimal Steam handler call (rendering nothing, just calling "next") causes game content loss. Current approach: bypass-only (skips both CE vtable hook and Steam E9 JMP) gives game content + CE overlay but no Steam overlay. Root cause suspected: Steam's init Present call alters GPU buffer state in a way that makes CE's PRESENT→RT barrier discard game content. See `llm-wiki/log/recent.md` for the full timeline.
 
 Primary sources:
 - `llm-wiki/log/recent.md`
