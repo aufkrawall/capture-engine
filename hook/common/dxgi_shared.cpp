@@ -3477,52 +3477,144 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     // Steam's overlay init completed successfully (VEH handled the
                     // NULL Vulkan callback at RVA 0x1621d8).
                     //
-                    // Route through the explicit Steam overlay invocation
-                    // (g_externalOverlayPresentHook = resolved E9 JMP target from
-                    // InstallPresentInlineHooks) which calls Steam's OverlayHookD3D3
-                    // directly.  Steam renders its overlay, calls its "next" handler
-                    // (original dxgi!Present body or re-entrant DetourPresent → bypass
-                    // trampoline), and presents the frame normally.
+                    // == STEAM OVERLAY INVOCATION (non-SL path) ==
                     //
-                    // This replaces the old approach of calling s_originalVtable8Present
-                    // (= dxgi!Present with Steam's E9 JMP).  The E9 JMP path produces
-                    // black game content in some DX12 games (e.g. Strange Brigade)
-                    // because Steam's overlay handler called through the inline JMP on
-                    // dxgi!Present triggers a different internal path than when called
-                    // as a standalone hook target, leading to incorrect rendering state
-                    // for the game content.
+                    // Strategy: Temporarily restore vtable[8] to the original dxgi!Present
+                    // (which has Steam's E9 JMP) before invoking Steam's overlay handler.
                     //
-                    // The bypass trampoline (presentBypass) is used as fallback when
-                    // the explicit Steam invoke is unavailable or declined, skipping
-                    // Steam's overlay rendering for that frame but preserving game
-                    // content and CE overlay.
-                    // Use the bypass trampoline which calls dxgi!Present+5 directly,
-                    // skipping both CE's vtable hook and Steam's E9 JMP.  This is a
-                    // safe path that preserves game content and CE overlay.  Steam
-                    // overlay is NOT rendered on this path.
+                    // Why: Steam's DX12 overlay handler (gameoverlayrenderer64!OverlayHookD3D3)
+                    // may internally call pSwapChain->Present() as part of its hook chain
+                    // protocol (e.g. for post-overlay fence wait and Present sequencing).
+                    // When vtable[8] = DetourPresent (CE's hook), such internal Present calls
+                    // re-enter DetourPresent → recursive bypass → the Present skips Steam's
+                    // E9 JMP chain entirely, and Steam's "next" handler never fires.
+                    // By temporarily restoring vtable[8] to dxgi!Present, Steam's internal
+                    // Present flows through the natural E9 JMP → Steam handler (re-entrant)
+                    // → Steam's saved "next" → real Present body, correctly completing
+                    // both overlay rendering and buffer presentation.
                     //
-                    // Both the E9 JMP path (calling dxgi!Present with Steam's inline
-                    // hook) and the explicit Steam invoke path (g_externalOverlayPresentHook)
-                    // produce black game content in Strange Brigade DX12.  The exact
-                    // mechanism is not yet determined but is consistent across both
-                    // invocation methods.
+                    // After Steam's handler returns, re-hook vtable[8] to DetourPresent
+                    // to restore CE's overlay hook for the next frame.
                     //
-                    // TODO: Find a way to render Steam overlay without black screen.
-                    // Options:
-                    //   - Read dxgi!Present's original vtable[8] COM method from PE
-                    //     .rdata and call that instead of the inner function
-                    //   - Inline-hook dxgi!Present with chain to Steam's E9 JMP
-                    //     (instead of vtable hook), so CE and Steam can coexist in
-                    //     the same hook chain without vtable manipulation
-                    //   - Call Steam's overlay rendering via a separate device/queue
-                    //     that doesn't interfere with the Present call chain
-                    if (presentBypass) {
-                        static std::atomic<int> s_steamNonSLBypassCount{0};
-                        if (s_steamNonSLBypassCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                    // Fallback: If TryInvokeGuardedExternalSteamOverlayPresent declines or
+                    // fails, fall back to the bypass trampoline (game content + CE overlay,
+                    // no Steam overlay).  This preserves a working game/CE session even
+                    // when Steam overlay cannot be rendered.
+                    bool vtableRestored = false;
+                    bool steamInvoked = false;
+                    HRESULT steamHr = S_OK;
+
+                    // Phase A: Temporarily restore vtable[8] from DetourPresent to original
+                    // Present function.  This lets Steam's internal Present calls flow
+                    // through the natural E9 JMP hook chain instead of re-entering CE.
+                    bool needVtableRestore = false;
+                    void* savedVtable8 = nullptr;
+                    if (s_hookedVTable && IsReadableMemory(s_hookedVTable, 9 * sizeof(void*))) {
+                        savedVtable8 = s_hookedVTable[8];
+                        if (savedVtable8 == (void*)DetourPresent && presentOriginal &&
+                            presentOriginal != (PFN_Present)DetourPresent) {
+                            DWORD oldProtect = 0;
+                            if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                                s_hookedVTable[8] = (void*)presentOriginal;
+                                VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+                                needVtableRestore = true;
+                                vtableRestored = true;
+                                static std::atomic<int> s_vtableRestoreLogCount{0};
+                                if (s_vtableRestoreLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                                    HookLogImportant(
+                                        "CallOriginalPresent: non-SL Steam — temp vtable[8]=%p "
+                                        "(was DetourPresent) for Steam overlay invoke",
+                                        (void*)presentOriginal);
+                                }
+                            } else {
+                                static std::atomic<int> s_vtableRestoreFailCount{0};
+                                if (s_vtableRestoreFailCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                                    HookLogImportant(
+                                        "CallOriginalPresent: non-SL Steam — VirtualProtect failed "
+                                        "for vtable[8] restore, proceeding without vtable restore");
+                                }
+                            }
+                        }
+                    }
+
+                    // Phase B: Invoke Steam's overlay handler explicitly.
+                    if (TryInvokeGuardedExternalSteamOverlayPresent(
+                            pSwapChain, SyncInterval, Flags, "Steam DX12 explicit invoke", &steamHr)) {
+                        steamInvoked = true;
+                        static std::atomic<int> s_steamNonSLInvokeCount{0};
+                        int invokeNum = s_steamNonSLInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (invokeNum <= 20 || (invokeNum % 200) == 0) {
                             HookLogImportant(
-                                "CallOriginalPresent: non-SL Steam overlay — using bypass "
-                                "trampoline at %p (presentOriginal=%p, init done)",
-                                (void*)presentBypass, (void*)presentOriginal);
+                                "CallOriginalPresent: non-SL Steam overlay — explicit invoke #%d "
+                                "completed hr=0x%08X (vtableRestored=%d, presentOriginal=%p)",
+                                invokeNum, (unsigned)steamHr, vtableRestored ? 1 : 0,
+                                (void*)presentOriginal);
+                        }
+                    } else {
+                        static std::atomic<int> s_steamNonSLDeclineCount{0};
+                        int declineNum = s_steamNonSLDeclineCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (declineNum <= 20 || (declineNum % 200) == 0) {
+                            HookLogImportant(
+                                "CallOriginalPresent: non-SL Steam overlay — explicit invoke "
+                                "declined #%d (vtableRestored=%d, presentBypass=%p, tid=0x%04X)",
+                                declineNum, vtableRestored ? 1 : 0, (void*)presentBypass,
+                                GetCurrentThreadId());
+                        }
+                    }
+
+                    // Phase C: Restore vtable[8] to DetourPresent (CE's hook) AFTER
+                    // Steam's handler returns.  This ensures CE's overlay hook is
+                    // active for the next frame.
+                    if (needVtableRestore && s_hookedVTable &&
+                        IsReadableMemory(s_hookedVTable, 9 * sizeof(void*))) {
+                        DWORD oldProtect = 0;
+                        if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                            if (s_hookedVTable[8] == (void*)presentOriginal) {
+                                s_hookedVTable[8] = (void*)DetourPresent;
+                                VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+                                static std::atomic<int> s_vtableRehookLogCount{0};
+                                if (s_vtableRehookLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                                    HookLogImportant(
+                                        "CallOriginalPresent: non-SL Steam — vtable[8] re-hooked "
+                                        "to DetourPresent after Steam invoke (was=%p)",
+                                        savedVtable8);
+                                }
+                            } else {
+                                // Another component modified vtable[8] while CE's back was
+                                // turned.  Log it but don't force re-hook — the current
+                                // vtable[8] may have been deliberately changed by Steam or
+                                // another overlay.
+                                VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+                                static std::atomic<int> s_vtableModifiedLogCount{0};
+                                if (s_vtableModifiedLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                                    HookLogImportant(
+                                        "CallOriginalPresent: non-SL Steam — vtable[8] was "
+                                        "modified during Steam invoke (current=%p, expected=%p)",
+                                        (void*)s_hookedVTable[8], (void*)presentOriginal);
+                                }
+                            }
+                        } else {
+                            HookLogImportant(
+                                "CallOriginalPresent: CRITICAL — VirtualProtect failed to "
+                                "re-hook vtable[8] to DetourPresent after Steam invoke!");
+                        }
+                    }
+
+                    // Phase D: If Steam was successfully invoked, return its HRESULT.
+                    if (steamInvoked) {
+                        return steamHr;
+                    }
+
+                    // Phase E: Fallback — bypass trampoline (safe, preserves game + CE
+                    // overlay but no Steam overlay).
+                    if (presentBypass) {
+                        static std::atomic<int> s_steamNonSLFallbackCount{0};
+                        if (s_steamNonSLFallbackCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                            HookLogImportant(
+                                "CallOriginalPresent: non-SL Steam overlay — Steam invoke "
+                                "declined, using bypass trampoline at %p (presentOriginal=%p, "
+                                "init done, tid=0x%04X)",
+                                (void*)presentBypass, (void*)presentOriginal, GetCurrentThreadId());
                         }
                         return presentBypass(pSwapChain, SyncInterval, Flags);
                     }
