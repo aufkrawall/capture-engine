@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2964 ECL-hook removal, E9 JMP root-cause fix)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2964 — Strange Brigade DX12 black screen FIXED, confirmed working)
 
 Primary sources:
 - `AGENTS.md`

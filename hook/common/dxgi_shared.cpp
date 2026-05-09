@@ -1971,14 +1971,20 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             }
         }
     // non-SL Steam path: log detection but DO NOT defer overlay ECL.
-        // Deferral was attempted (builds 0.1.2960-2963) but failed because:
-        // 1. Steam's ECL hook only fires on frame #1 (before overlay init)
-        // 2. Every frame falls through to the fallback path (after Present)
-        // 3. The overlay ECL is always submitted too late (one frame behind)
+        // Deferral was attempted (builds 0.1.2960-2963) but the ECL-hook failed
+        // because Steam's ECL hook only fires on frame #1 (before overlay init).
+        // Every subsequent frame fell through to the fallback path (after Present).
         //
-        // Instead, submit overlay ECL normally (before Present/Steam invoke),
-        // and call dxgi!Present through Steam's E9 JMP to ensure Steam's
-        // handler chains to the original Present correctly.
+        // The real root cause was that CallOriginalPresent invoked Steam's
+        // explicit hook (g_externalOverlayPresentHook) directly, skipping the E9
+        // JMP chain.  Steam's handler DID NOT chain to dxgi!Present — the frame
+        // was never presented, producing the black screen.
+        //
+        // Fix (build 0.1.2964, confirmed working on Strange Brigade DX12):
+        // Call dxgi!Present through Steam's E9 JMP (presentOriginal).  Steam's
+        // handler fires through the natural hook chain with the correct return
+        // address and chains to the original dxgi!Present.  Overlay ECL is
+        // submitted normally (non-deferred) during ProcessFrame.
         const bool nonSLSteamInvokePath =
             !steamOnlyTest && api == APIType::D3D12 && steamOverlayLoaded && !IsSLInterposerLoaded();
         if (nonSLSteamInvokePath) {
@@ -2100,9 +2106,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     // Note: The Steam ECL deferred overlay handling was removed in build 0.1.2964.
-    // The ECL-hook approach (builds 0.1.2960-2963) failed because Steam's ECL
-    // only fires on frame #1, making deferral useless.  Overlay is now submitted
-    // normally (non-deferred) during ProcessFrame.
+    // The ECL-hook approach (builds 0.1.2960-2963) was a dead end — Steam's ECL
+    // only fires on frame #1, making deferral useless.  The real root cause was
+    // the wrong Steam invocation path in CallOriginalPresent (explicit hook
+    // skipped the E9 JMP chain).  Fix confirmed working on Strange Brigade DX12:
+    // overlay ECL submitted normally, Steam called through E9 JMP at presentOriginal,
+    // all three layers (game, CE overlay, Steam overlay) visible simultaneously.
 
     // Flush deferred overlay fence Signal AFTER Present.  The NVIDIA driver
     // stalls the GPU when Signal sits between our overlay ECL and Present.
