@@ -27,8 +27,9 @@ appropriate material texture samples.
   shader metadata proves that the sampler uses only AF-safe sample opcodes.
   `sample_l` (explicit LOD) is now treated as AF-safe because it selects the mip
   level, while AF controls filtering within that level. `sample_b` (bias) is also
-  safe. `sample_d` (gradient), `sample_c` (comparison), and `OtherExplicit`
-  remain unsafe and block AF.
+  safe. The check `D3D11ShaderSamplerUsesAFSafeSample()` accepts any sampler with
+  `implicit || bias || lod` (and no unsafe explicit opcodes). `sample_d` (gradient),
+  `sample_c` (comparison), and `OtherExplicit` remain unsafe and block AF.
 - Shader metadata pairs each sampler register with the texture registers used by
   the same sample instruction. Every texture register sampled through that sampler
   must have a currently bound SRV, and every sampled SRV/resource must pass the
@@ -85,11 +86,11 @@ on postprocess, shadow, single-mip, depth, and other non-material resources.
 
 ## Verification
 - Focused tests: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=SamplerOverrideUtilsTest.*`
-  passed 16/16 on 2026-05-09.
+  passed 17/17 on 2026-05-09.
 - Full build: `python build.py --skip-updates` passed on 2026-05-09 and produced build
-  `0.1.2966`, compiling both x64/x86 hook DLLs.
+  `0.1.2968`, compiling both x64/x86 hook DLLs.
 - Full no-rebuild unit run: `python build.py --no-build --run-tests --skip-updates`
-  passed 697/697 tests on 2026-05-09.
+  passed 698/698 tests on 2026-05-09.
 
 ## Open Questions / Stale-Risk
 - BioShock Infinite should be rerun with AF=16x. Expected proof is

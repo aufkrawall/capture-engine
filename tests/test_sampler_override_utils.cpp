@@ -150,7 +150,7 @@ TEST(SamplerOverrideUtilsTest, TreatsD3D11SampleBiasAsAFSafeButOtherExplicitSamp
 
     EXPECT_TRUE(D3D11ShaderSamplerUsesLodSample(usage, 7));
     EXPECT_FALSE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 7));
-    EXPECT_FALSE(D3D11ShaderSamplerUsesAFSafeSample(usage, 7));  // LOD-only, no implicit/bias
+    EXPECT_TRUE(D3D11ShaderSamplerUsesAFSafeSample(usage, 7));
 
     EXPECT_TRUE(D3D11ShaderSamplerUsesComparisonSample(usage, 8));
     EXPECT_TRUE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 8));
@@ -163,7 +163,7 @@ TEST(SamplerOverrideUtilsTest, TreatsD3D11SampleBiasAsAFSafeButOtherExplicitSamp
     EXPECT_EQ(summary.lodSamplers, 1u);
     EXPECT_EQ(summary.gradientSamplers, 1u);
     EXPECT_EQ(summary.comparisonSamplers, 1u);
-    EXPECT_EQ(summary.afSafeSamplers, 1u);
+    EXPECT_EQ(summary.afSafeSamplers, 2u);
     EXPECT_EQ(summary.unsafeExplicitSamplers, 2u);
 }
 
@@ -179,6 +179,20 @@ TEST(SamplerOverrideUtilsTest, TreatsD3D11SampleLodAsAFSafe) {
     EXPECT_TRUE(D3D11ShaderSamplerUsesLodSample(usage, 0));
     EXPECT_FALSE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 0));
     EXPECT_TRUE(D3D11ShaderSamplerUsesAFSafeSample(usage, 0));
+}
+
+TEST(SamplerOverrideUtilsTest, TreatsD3D11SampleLodOnlyAsAFSafe) {
+    const char disassembly[] =
+        "    sample_l r0.xyzw, v0.xyxx, t0.xyzw, s1, l(0)\n";
+
+    const D3D11ShaderSamplerUsage usage =
+        ParseD3D11ShaderSamplerUsage(disassembly, sizeof(disassembly) - 1);
+
+    EXPECT_TRUE(D3D11ShaderSamplerUsesLodSample(usage, 1));
+    EXPECT_FALSE(usage.samplerUsesImplicitSample[1]);
+    EXPECT_FALSE(usage.samplerUsesBiasSample[1]);
+    EXPECT_FALSE(D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, 1));
+    EXPECT_TRUE(D3D11ShaderSamplerUsesAFSafeSample(usage, 1));
 }
 
 TEST(SamplerOverrideUtilsTest, ParsesD3D11ShaderSamplerUsageCaseInsensitivelyAndFlagsUnsupportedRegisters) {
