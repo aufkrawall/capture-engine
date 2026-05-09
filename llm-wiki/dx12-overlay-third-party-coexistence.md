@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-08 (updated: build 0.1.2941 original vtable[8] COM method fix)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2943 explicit Steam overlay invoke — s_originalVtable8Present was no-op)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -167,19 +167,15 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - **Source anchors**: `hook/common/dxgi_shared.cpp` (AttemptSteamDX12OverlayInit, CallOriginalPresent init block), `tests/test_dxgi_shared.cpp` (SteamDX12InitVtableUnhookRestorePattern, SteamDX12InitVtableRehookFailureSafety).
 - **Verification**: All unit tests pass. Regression tests cover the VirtualProtect unhook → call → re-hook pattern on read-only vtable pages (SteamDX12InitVtableUnhookRestorePattern) and safe behavior if re-hook fails (SteamDX12InitVtableRehookFailureSafety).
 
-### Build 0.1.2941 — Black screen fix: save original vtable[8] COM method for E9 JMP path (Strange Brigade DX12)
+### Build 0.1.2943 — Black screen fix (corrected): explicit Steam overlay invoke instead of E9 JMP — s_originalVtable8Present was a no-op (Strange Brigade DX12)
 
-- **Problem**: Build 0.1.2938 produced black screen (game content invisible, CE overlay renders, Steam overlay may or may not render). Logs showed `CallOriginalPresent: routing through E9 JMP at ...` on every frame with `bufIdx=0` on every Reinit SUBMIT.
-- **Root cause (properly identified)**: For this DX12 game, `vtable[8]` IS `dxgi!Present` (the inner function, not a COM wrapper method). Steam's E9 JMP is on `dxgi!Present`. When `CallOriginalPresent` calls `presentOriginal` (= `oPresent` = `vtable[8]` = `dxgi!Present` with E9 JMP), it enters Steam's overlay handler directly — **skipping the DXGI COM method's kernel state management** (buffer tracking, fence sync, rotation management). The inner function produces garbled/black output without that state setup.
-  - **Normal Steam-only flow**: Game → `IDXGISwapChain::Present` (COM method) → state mgmt → `dxgi!Present` (E9 JMP) → Steam overlay → "next" (original `dxgi!Present`) → present. State management done BEFORE E9 JMP.
-  - **CE+Steam broken**: Game → `DetourPresent` (vtable[8]) → CE overlay → `CallOriginalPresent` → `oPresent` = `dxgi!Present` (E9 JMP) → Steam overlay → "next" → DetourPresent (re-entrant) → bypass → `dxgi!Present+5` → presents. **No COM state management.**
-  - **CE+Steam fixed**: Game → `DetourPresent` (vtable[8]) → CE overlay → `CallOriginalPresent` → saved COM method → state mgmt → `dxgi!Present` (E9 JMP) → Steam overlay → "next" → DetourPresent (re-entrant) → bypass → `dxgi!Present+5` → presents. **State management done by COM method before E9 JMP.**
-- **Key insight**: The bypass trampoline and Steam's "next" handler both call `dxgi!Present+5` (original inner function body). This is equivalent. The inner function needs COM method state management to have run FIRST. In the normal Steam-only case, the COM method (vtable[8]) runs first and sets up DXGI state. In the CE case, vtable[8] = DetourPresent prevents the COM method from running.
-- **Fix**: Save the temp swapchain's vtable[8] at `InstallPresentInlineHooks` init time as `s_originalVtable8Present`, before any modifications (line ~2855 in dxgi_shared.cpp). Use this saved COM method in `CallOriginalPresent`'s E9 JMP path and vtable-hook fallback instead of `presentOriginal` (= `oPresent` = inner function with E9 JMP).
-- **AttemptSteamDX12OverlayInit unchanged**: Steam's init still uses `presentOriginal` (inner function with E9 JMP) because Steam's OverlayHookD3D3 expects to find the function it hooked (`dxgi!Present`) when it reads vtable[8] during init.
-- **Logging added**: `InstallPresentInlineHooks` now logs whether `s_originalVtable8Present` matches `presentAddr` and which module `presentAddr` belongs to — critical for diagnosing vtable[8] ownership.
-- **Source anchors**: `hook/common/dxgi_shared.cpp:291-301` (s_originalVtable8Present), `:2855-2888` (save + logging), `:3492-3515` (E9 JMP path), `:3629-3635` (vtable-hook fallback).
-- **Verification**: All 696 unit tests pass. Build 0.1.2941.
+- **Problem**: Build 0.1.2942 (with the vtable[8] COM method fix) still produced black screen. Log confirmed `s_originalVtable8Present=00007FFF86A4D9F0 (same=1)` — the saved vtable[8] was identically `dxgi!Present` (the inner function). **There is no separate COM method.** The build 0.1.2941 fix was a complete no-op.
+- **Corrected root cause**: For this DX12 game, vtable[8] IS `dxgi!Present` (the inner function) — there is no COM wrapper method. Both `s_originalVtable8Present` and `presentOriginal` (= `oPresent`) point to the same address. Calling `dxgi!Present` (with Steam's E9 JMP) from `CallOriginalPresent` enters Steam's overlay handler via the inline JMP hook. The internal path Steam takes when entered through its E9 JMP on the function body differs from the path taken when invoked as a standalone hook target (`g_externalOverlayPresentHook`). The E9 JMP entry path produces black game content — the exact GPU-level mechanism is complex but confirmed by repeated testing.
+- **Fix**: Replace the `s_originalVtable8Present` / E9 JMP path with `TryInvokeGuardedExternalSteamOverlayPresent`. This calls Steam's overlay handler directly via `g_externalOverlayPresentHook` (the resolved E9 JMP target, saved during `InstallPresentInlineHooks` at line 2992-2996). Steam renders its overlay, calls "next" (original dxgi!Present body or re-entrant DetourPresent → bypass), and presents normally. CE's overlay submission + fence wait happens in `DetourPresent` before `CallOriginalPresent`.
+- **Why the delegation path doesn't block**: `CWrapDXGISwapChain::Present` sets `g_InWrapperPresent = false` before delegating to the detour hook (line 917 in `dxgi_swapchain_wrap.cpp`), so `ShouldInvokeGuardedExternalSteamOverlayPresentForState` does not reject the call.
+- **Fallback**: bypass trampoline (game content + CE overlay visible, Steam overlay dropped for that frame).
+- **Source anchors**: `hook/common/dxgi_shared.cpp:3475-3516` (non-SL explicit Steam invoke), `dxgi_swapchain_wrap.cpp:916-920` (g_InWrapperPresent = false during delegation).
+- **Verification**: All 696 unit tests pass. Build 0.1.2943.
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because this area depends on call stacks, queue ownership, and third-party module behavior that can change without warning.

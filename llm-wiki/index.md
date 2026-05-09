@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-08 (updated: build 0.1.2941 save original vtable[8] COM method for E9 JMP path)
+Last cross-checked: 2026-05-09 (updated: build 0.1.2943 explicit Steam overlay invoke — s_originalVtable8Present was no-op)
 
 Primary sources:
 - `AGENTS.md`
