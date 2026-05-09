@@ -821,28 +821,33 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
       HookLog("NotifyHookModuleLoaded: d3d11.dll detected — installing D3D11 hooks "
               "immediately (pre-GetProcAddress)");
       IATHook::InitializeD3D11Hooks();
-      // CRITICAL: Patch d3d11.dll's Export Address Table (EAT) to redirect
-      // D3D11CreateDevice and D3D11CreateDeviceAndSwapChain to our wrappers.
-      // This ensures GetProcAddress(d3d11.dll, "D3D11CreateDevice") returns our
-      // wrapper regardless of when it's called — no race condition.
+      // CRITICAL: Patch GetProcAddress IAT in the game's main EXE only (not all
+      // modules). This intercepts the game's early GetProcAddress(d3d11.dll,
+      // "D3D11CreateDevice") call that happens immediately after LoadLibrary
+      // returns. Without this, the game gets the real device creation function
+      // and our wrapper/vtable hooks are never reached.
       //
-      // We MUST NOT use InitializeGetProcAddressHook() here (which patches
-      // GetProcAddress in ALL loaded modules' IAT). That approach crashes
-      // Steam's overlay (gameoverlayrenderer.dll) during CreateSwapChain
-      // because DXGI's internal state gets corrupted when GetProcAddress is
-      // intercepted from non-game callers.
+      // We MUST NOT use PatchEAT() — the real D3D11CreateDeviceAndSwapChain
+      // reads its own EAT entry internally. Patching the EAT redirects internal
+      // dispatch to our wrapper, causing infinite recursion.
       //
-      // EAT patching is safe because it only modifies d3d11.dll's export table,
-      // affecting ALL callers equally without touching any module's IAT, vtable,
-      // or internal state.
-      if (module) {
-        IATHook::PatchEAT(module, "D3D11CreateDevice", (void*)::Wrapped_D3D11CreateDevice,
-                          (void**)&::oD3D11CreateDevice);
-        IATHook::PatchEAT(module, "D3D11CreateDeviceAndSwapChain",
-                          (void*)::Wrapped_D3D11CreateDeviceAndSwapChain,
-                          (void**)&::oD3D11CreateDeviceAndSwapChain);
-        HookLogImportant("NotifyHookModuleLoaded: Patched d3d11.dll EAT — GetProcAddress for "
-                         "D3D11CreateDevice/AndSwapChain now return wrappers");
+      // We MUST NOT use PatchIATAllModules() for GetProcAddress — that crashes
+      // Steam's overlay (patches DXGI IAT, corrupting its CModule state during
+      // CreateSwapChain).
+      //
+      // Patching GetProcAddress only in the main EXE's IAT is safe: it
+      // intercepts the game's GetProcAddress without affecting Steam overlay,
+      // DXGI, or any other module.
+      {
+        HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+        if (hKernel32) {
+          void* dummy = nullptr;
+          IATHook::PatchIAT(GetModuleHandle(nullptr), "kernel32.dll", "GetProcAddress",
+                           (void*)IATHook::DetourGetProcAddress, &dummy);
+          HookLogImportant(
+              "NotifyHookModuleLoaded: Patched GetProcAddress in main EXE IAT "
+              "(early interception of D3D11CreateDevice)");
+        }
       }
     }
   }

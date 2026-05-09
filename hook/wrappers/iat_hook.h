@@ -89,6 +89,18 @@ void RegisterDynamicHook(const char* functionName, void* hookFunction, void** ou
 void InitializeGetProcAddressHook();
 
 /**
+ * Detour function for GetProcAddress. Called when GetProcAddress is invoked
+ * by any module whose IAT we patched. Checks g_DynamicHooks and returns the
+ * hook function for matching function names (unless the caller is a system
+ * DLL or third-party overlay, in which case it returns the real function).
+ *
+ * @param hModule Module handle to query
+ * @param lpProcName Function name to look up
+ * @return Hook function if registered, otherwise the real function
+ */
+FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName);
+
+/**
  * Cleanup all IAT patches
  */
 void ShutdownIATHooks();
