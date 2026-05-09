@@ -931,6 +931,29 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
         return proc;
     }
 
+    // CRITICAL: Resolve EAT-patching pollution. When the EAT (Export Address Table)
+    // of a module like d3d11.dll has been patched via PatchEAT(), the original
+    // GetProcAddress now returns our wrapper function instead of the real function.
+    // This is intentional for non-system callers (the game), but causes infinite
+    // recursion when system DLLs (SysWOW64\SysWOW64) or overlay DLLs internally call
+    // GetProcAddress on the same function — they get our wrapper, call it, wrapper
+    // calls the original, original calls GetProcAddress on itself → loop.
+    //
+    // Fix: if `proc` matches one of our registered hook functions, resolve it to
+    // the stored original address. This ensures system/overlay callers always get
+    // the real function even when the EAT is patched.
+    {
+        // Check all registered hooks for a match against this proc address.
+        // We hold g_DynamicHookLock, so the map is stable.
+        for (const auto& hookEntry : g_DynamicHooks) {
+            if ((void*)proc == hookEntry.second.hookFunction && hookEntry.second.outOriginal &&
+                *hookEntry.second.outOriginal) {
+                proc = (FARPROC)*hookEntry.second.outOriginal;
+                break;
+            }
+        }
+    }
+
     // Get module name for logging
     char moduleName[MAX_PATH] = {0};
     if (hModule) {
