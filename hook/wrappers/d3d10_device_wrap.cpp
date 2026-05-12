@@ -103,18 +103,7 @@ HRESULT STDMETHODCALLTYPE CWrapD3D10Device::QueryInterface(REFIID riid, void** p
 
     if (riid == IID_IDXGIDevice || riid == IID_IDXGIDevice1 || riid == IID_IDXGIDevice2 || riid == IID_IDXGIDevice3 ||
         riid == IID_IDXGIDevice4 || riid == IID_IDXGIObject) {
-        IDXGIDevice* pRealDxgiDevice = nullptr;
-        HRESULT hr = m_pReal->QueryInterface(IID_PPV_ARGS(&pRealDxgiDevice));
-        if (FAILED(hr) || !pRealDxgiDevice) {
-            return hr;
-        }
-
-        auto* pWrappedDxgiDevice = new CWrapDXGIDevice(pRealDxgiDevice);
-        pRealDxgiDevice->Release();
-
-        hr = pWrappedDxgiDevice->QueryInterface(riid, ppvObj);
-        pWrappedDxgiDevice->Release();
-        return hr;
+        return m_pReal->QueryInterface(riid, ppvObj);
     }
 
     return m_pReal->QueryInterface(riid, ppvObj);
