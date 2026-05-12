@@ -514,6 +514,62 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // Track VEH call count for detecting runaway exception storms
     int callCount = g_VEHCallCount.fetch_add(1, std::memory_order_acq_rel);
 
+    // Trampoline Region Crash Recovery:
+    // Detect RIP=0 (DEP crash executing at NULL) where RAX points into our
+    // trampoline pool. This happens when a third-party component (sl_interposer
+    // or Steam overlay) scans PAGE_EXECUTE_READWRITE memory and misinterprets
+    // our trampoline pool as a COM vtable. The pool address gets written into
+    // a COM object's vtable pointer field, and later a vtable dispatch reads
+    // a NULL entry → RIP=0.
+    //
+    // Recovery: Patch the NULL vtable entries in the trampoline pool region
+    // with a safe E_NOINTERFACE stub, then continue execution.
+    if (code == EXCEPTION_ACCESS_VIOLATION && pExceptionPointers->ExceptionRecord->NumberParameters >= 2) {
+        ULONG_PTR accessType = pExceptionPointers->ExceptionRecord->ExceptionInformation[0];
+        ULONG_PTR faultAddr = pExceptionPointers->ExceptionRecord->ExceptionInformation[1];
+        if (faultAddr == 0 && accessType == 2) {
+            CONTEXT* ctx = pExceptionPointers->ContextRecord;
+#ifdef _WIN64
+            // Trampoline crash recovery (x64 only):
+            // When RIP=0 with RAX pointing into our trampoline pool, a third-party
+            // component (sl_interposer/Steam overlay) has misread our trampoline pool
+            // as a COM vtable. Patch NULL entries with E_NOINTERFACE stub.
+            uintptr_t rax = ctx->Rax;
+            if (rax != 0 && rax >= 0x0000700000000000ULL) {
+                static const uint8_t s_nointerfaceStub[] = {
+                    0xB8, 0x02, 0x00, 0x00, 0x80,
+                    0xC3
+                };
+                int patchedCount = 0;
+                for (int slot = 0; slot < 64; slot++) {
+                    uintptr_t* entryPtr = (uintptr_t*)(rax + slot * sizeof(uintptr_t));
+                    uintptr_t entryValue = *entryPtr;
+                    if (entryValue == 0) {
+                        DWORD oldProtect;
+                        if (VirtualProtect(entryPtr, sizeof(s_nointerfaceStub), PAGE_READWRITE, &oldProtect)) {
+                            memcpy(entryPtr, s_nointerfaceStub, sizeof(s_nointerfaceStub));
+                            VirtualProtect(entryPtr, sizeof(s_nointerfaceStub), oldProtect, &oldProtect);
+                            FlushInstructionCache(GetCurrentProcess(), entryPtr, sizeof(s_nointerfaceStub));
+                            patchedCount++;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                if (patchedCount > 0) {
+                    char recoveryMsg[256];
+                    snprintf(recoveryMsg, sizeof(recoveryMsg),
+                             "Trampoline crash recovery: patched %d NULL vtable entries at RAX=0x%llX",
+                             patchedCount, (unsigned long long)rax);
+                    TraceCrash(recoveryMsg);
+                    ctx->Rip = rax;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+            }
+#endif  // _WIN64
+        }
+    }
+
     // If the UnhandledExceptionFilter has asked us to force a dump, do it
     // regardless of exception code.
     bool forceDump = g_ForceUnhandledDump.load(std::memory_order_acquire);
