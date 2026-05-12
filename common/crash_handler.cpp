@@ -13,6 +13,12 @@
 #include "crash_dump_policy.h"
 #include "logging.h"
 
+// InlineHook is only available in the hook DLL build, not in test targets.
+// The trampoline lazy-exec handler wraps calls in a conditional check.
+#ifdef BUILD_HOOK_DLL
+#include "../hook/wrappers/inline_hook.h"
+#endif
+
 static std::string g_DumpDir = ".\\logs";
 static std::mutex g_DumpDirMutex;
 static char g_ProcessName[256] = "unknown";
@@ -514,57 +520,71 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // Track VEH call count for detecting runaway exception storms
     int callCount = g_VEHCallCount.fetch_add(1, std::memory_order_acq_rel);
 
-    // Trampoline Region Crash Recovery:
-    // Detect RIP=0 (DEP crash executing at NULL) where RAX points into our
-    // trampoline pool. This happens when a third-party component (sl_interposer
-    // or Steam overlay) scans PAGE_EXECUTE_READWRITE memory and misinterprets
-    // our trampoline pool as a COM vtable. The pool address gets written into
-    // a COM object's vtable pointer field, and later a vtable dispatch reads
-    // a NULL entry → RIP=0.
-    //
-    // Recovery: Patch the NULL vtable entries in the trampoline pool region
-    // with a safe E_NOINTERFACE stub, then continue execution.
     if (code == EXCEPTION_ACCESS_VIOLATION && pExceptionPointers->ExceptionRecord->NumberParameters >= 2) {
         ULONG_PTR accessType = pExceptionPointers->ExceptionRecord->ExceptionInformation[0];
         ULONG_PTR faultAddr = pExceptionPointers->ExceptionRecord->ExceptionInformation[1];
+
+        // === Lazy-Exec Trampoline Pool Handler ===
+        // The trampoline pool is PAGE_READWRITE (non-executable) by default to
+        // prevent third-party memory scanners from misinterpreting it as a COM
+        // vtable. When a thread first tries to execute code from the pool, this
+        // handler catches the DEP violation, makes the pool executable, and retries
+        // the instruction. Subsequent trampoline calls through the same pool work
+        // without faulting (the pool stays executable).
+        //
+        // accessType == 8 means DEP violation (tried to execute non-executable).
+        // Only handle this in the hook DLL build where InlineHook is available.
+#ifdef BUILD_HOOK_DLL
+        if (accessType == 8) {
+            if (InlineHook::IsInTrampolinePool((void*)faultAddr)) {
+                char lazyMsg[256];
+                snprintf(lazyMsg, sizeof(lazyMsg),
+                         "LazyExec: Making trampoline pool executable at fault=0x%llX, RIP=0x%llX",
+                         (unsigned long long)faultAddr,
+#ifdef _WIN64
+                         (unsigned long long)pExceptionPointers->ContextRecord->Rip
+#else
+                         (unsigned long)pExceptionPointers->ContextRecord->Eip
+#endif
+                );
+                TraceCrash(lazyMsg);
+                InlineHook::SetTrampolinePoolProtection(PAGE_EXECUTE_READWRITE);
+#ifdef _WIN64
+                pExceptionPointers->ContextRecord->Rip = faultAddr;
+#else
+                pExceptionPointers->ContextRecord->Eip = (DWORD)faultAddr;
+#endif
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+        }
+#endif  // BUILD_HOOK_DLL
+
+        // === Trampoline Region VTable Corruption ===
+        // Detect RIP=0 (DEP crash executing at NULL) where RAX points into our
+        // trampoline pool. This happens when a third-party component (sl_interposer
+        // or Steam overlay) previously scanned the PAGE_EXECUTE_READWRITE pool
+        // (before our lazy-exec fix was applied) and wrote the pool address into
+        // a COM object's vtable pointer → vtable dispatch reads NULL → RIP=0.
+        //
+        // This is now a fallback diagnostic for pre-fix runs. With lazy-exec,
+        // the pool is no longer PAGE_EXECUTE_READWRITE by default, so scanners
+        // should not find it. If this still triggers, it means the vtable pointer
+        // was corrupted in an earlier session before the fix was deployed.
         if (faultAddr == 0 && accessType == 2) {
             CONTEXT* ctx = pExceptionPointers->ContextRecord;
 #ifdef _WIN64
-            // Trampoline crash recovery (x64 only):
-            // When RIP=0 with RAX pointing into our trampoline pool, a third-party
-            // component (sl_interposer/Steam overlay) has misread our trampoline pool
-            // as a COM vtable. Patch NULL entries with E_NOINTERFACE stub.
             uintptr_t rax = ctx->Rax;
-            if (rax != 0 && rax >= 0x0000700000000000ULL) {
-                static const uint8_t s_nointerfaceStub[] = {
-                    0xB8, 0x02, 0x00, 0x00, 0x80,
-                    0xC3
-                };
-                int patchedCount = 0;
-                for (int slot = 0; slot < 64; slot++) {
-                    uintptr_t* entryPtr = (uintptr_t*)(rax + slot * sizeof(uintptr_t));
-                    uintptr_t entryValue = *entryPtr;
-                    if (entryValue == 0) {
-                        DWORD oldProtect;
-                        if (VirtualProtect(entryPtr, sizeof(s_nointerfaceStub), PAGE_READWRITE, &oldProtect)) {
-                            memcpy(entryPtr, s_nointerfaceStub, sizeof(s_nointerfaceStub));
-                            VirtualProtect(entryPtr, sizeof(s_nointerfaceStub), oldProtect, &oldProtect);
-                            FlushInstructionCache(GetCurrentProcess(), entryPtr, sizeof(s_nointerfaceStub));
-                            patchedCount++;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                if (patchedCount > 0) {
-                    char recoveryMsg[256];
-                    snprintf(recoveryMsg, sizeof(recoveryMsg),
-                             "Trampoline crash recovery: patched %d NULL vtable entries at RAX=0x%llX",
-                             patchedCount, (unsigned long long)rax);
-                    TraceCrash(recoveryMsg);
-                    ctx->Rip = rax;
-                    return EXCEPTION_CONTINUE_EXECUTION;
-                }
+#ifdef BUILD_HOOK_DLL
+            bool inPool = InlineHook::IsInTrampolinePool((void*)rax);
+#else
+            bool inPool = false;
+#endif
+            if (rax != 0 && rax >= 0x0000700000000000ULL && inPool) {
+                char diagMsg[256];
+                snprintf(diagMsg, sizeof(diagMsg),
+                         "Trampoline crash: vtable corruption detected at RAX=0x%llX - pool address read as vtable ptr",
+                         (unsigned long long)rax);
+                TraceCrash(diagMsg);
             }
 #endif  // _WIN64
         }

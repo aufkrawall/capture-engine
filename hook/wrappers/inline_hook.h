@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstdint>
+#include <windows.h>
 
 namespace InlineHook {
 
@@ -67,5 +68,14 @@ bool RemoveDeepHook(void* target);
 //
 // Returns callable trampoline pointer, or nullptr on failure.
 void* CreateBypassTrampoline(void* target);
+
+// Check if an address falls within any trampoline pool.
+// Used by the crash handler VEH to determine if a page fault is from
+// lazy-execution (pool is PAGE_READWRITE) vs a real crash.
+bool IsInTrampolinePool(void* address);
+
+// Set the trampoline pool page protection. Used during lazy-exec toggling
+// and during trampoline construction.
+void SetTrampolinePoolProtection(DWORD newProtect);
 
 }  // namespace InlineHook

@@ -514,7 +514,12 @@ static constexpr int PATCH_SIZE = 14;  // FF 25 00 00 00 00 + 8-byte address
 static constexpr int PATCH_SIZE = 5;  // E9 + 4-byte relative offset
 #endif
 
-// Allocate executable memory near the target (within ±2GB for x64)
+// Allocate memory near the target (within ±2GB for x64).
+// The pool is allocated as PAGE_READWRITE (NON-executable) to prevent
+// third-party memory scanners (sl_interposer, Steam overlay) from
+// misinterpreting it as a COM vtable. The pool is temporarily made
+// PAGE_EXECUTE_READWRITE only during trampoline construction and during
+// actual trampoline execution (via lazy-exec page fault handling in VEH).
 static uint8_t* AllocateTrampolinePool(void* nearAddr) {
 #ifdef _WIN64
     // Try to allocate within ±2GB of target for RIP-relative fixups
@@ -532,7 +537,7 @@ static uint8_t* AllocateTrampolinePool(void* nearAddr) {
             uintptr_t aligned = (addr + 0xFFFF) & ~(uintptr_t)0xFFFF;
             if (aligned + TRAMPOLINE_POOL_SIZE <= addr + mbi.RegionSize) {
                 void* p = VirtualAlloc((void*)aligned, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE,
-                                       PAGE_EXECUTE_READWRITE);
+                                       PAGE_READWRITE);
                 if (p)
                     return (uint8_t*)p;
             }
@@ -541,7 +546,27 @@ static uint8_t* AllocateTrampolinePool(void* nearAddr) {
     }
 #endif
     // Fallback: allocate anywhere
-    return (uint8_t*)VirtualAlloc(nullptr, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    return (uint8_t*)VirtualAlloc(nullptr, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+}
+
+bool IsInTrampolinePool(void* address) {
+    if (!address)
+        return false;
+    for (const auto& pool : g_trampolinePools) {
+        uintptr_t poolStart = reinterpret_cast<uintptr_t>(pool);
+        uintptr_t poolEnd = poolStart + TRAMPOLINE_POOL_SIZE;
+        uintptr_t addr = reinterpret_cast<uintptr_t>(address);
+        if (addr >= poolStart && addr < poolEnd)
+            return true;
+    }
+    return false;
+}
+
+void SetTrampolinePoolProtection(DWORD newProtect) {
+    for (const auto& pool : g_trampolinePools) {
+        DWORD oldProtect;
+        VirtualProtect((void*)pool, TRAMPOLINE_POOL_SIZE, newProtect, &oldProtect);
+    }
 }
 
 static bool IsTrampolinePoolNearTarget(const uint8_t* pool, void* nearAddr) {
@@ -1308,6 +1333,17 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     LogDirect("Trampoline allocated at %p", trampoline);
     HookLog("InlineHook: Trampoline allocated at %p", trampoline);
 
+    // CRITICAL: Make the trampoline pool executable for construction.
+    // The pool is kept PAGE_READWRITE (non-executable) by default to prevent
+    // third-party memory scanners from misinterpreting it as a COM vtable.
+    // We temporarily make it EXECUTE_READWRITE while building the trampoline
+    // so the FlushInstructionCache and subsequent JMP instructions work.
+    DWORD oldPoolProtect = 0;
+    uint8_t* currentPool = g_trampolinePool;
+    if (currentPool) {
+        VirtualProtect(currentPool, TRAMPOLINE_POOL_SIZE, PAGE_EXECUTE_READWRITE, &oldPoolProtect);
+    }
+
     // Copy original instructions to trampoline, fixing up RIP-relative refs
     int trampolineOffset = 0;
     int srcOffset = 0;
@@ -1452,6 +1488,14 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     // (instructions + RIP fixups + WriteJump + CALL absolute conversion) are
     // globally visible before we redirect any thread to it via the target patch.
     FlushInstructionCache(GetCurrentProcess(), trampoline, trampolineOffset);
+
+    // CRITICAL: Revert pool to PAGE_READWRITE (non-executable) to prevent
+    // third-party scanners from misinterpreting it as a COM vtable.
+    // The trampoline will be lazily-made-executable via the VEH handler
+    // when a thread first tries to execute code from the pool.
+    if (currentPool) {
+        VirtualProtect(currentPool, TRAMPOLINE_POOL_SIZE, PAGE_READWRITE, &oldPoolProtect);
+    }
 
     // Save original bytes
     HookEntry entry = {};
