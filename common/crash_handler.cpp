@@ -744,6 +744,36 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
 #endif
     }
 
+    // DEP crash at RIP=0 with non-zero RAX indicates a function pointer
+    // dispatch through NULL (vtable entry or trampoline target was zero).
+    // This is the signature of a race condition during inline hook installation
+    // where a concurrent thread reads a partially-written JMP instruction.
+    if (code == EXCEPTION_ACCESS_VIOLATION && pExceptionPointers->ExceptionRecord->NumberParameters >= 2) {
+        ULONG_PTR accessType = pExceptionPointers->ExceptionRecord->ExceptionInformation[0];
+        ULONG_PTR faultAddr = pExceptionPointers->ExceptionRecord->ExceptionInformation[1];
+        if (faultAddr == 0 && accessType == 2) {
+            CONTEXT* ctx = pExceptionPointers->ContextRecord;
+#ifdef _WIN64
+            char rip0Info[512];
+            snprintf(rip0Info, sizeof(rip0Info),
+                     "RIP=0 DEP crash at vcall through NULL: "
+                     "RAX=0x%016llX RCX=0x%016llX RDX=0x%016llX R8=0x%016llX R9=0x%016llX "
+                     "RSP=0x%016llX - possible trampoline race condition",
+                     (unsigned long long)ctx->Rax, (unsigned long long)ctx->Rcx,
+                     (unsigned long long)ctx->Rdx, (unsigned long long)ctx->R8,
+                     (unsigned long long)ctx->R9, (unsigned long long)ctx->Rsp);
+#else
+            char rip0Info[256];
+            snprintf(rip0Info, sizeof(rip0Info),
+                     "EIP=0 DEP crash at vcall through NULL: "
+                     "EAX=0x%08lX ECX=0x%08lX EDX=0x%08lX ESP=0x%08lX",
+                     (unsigned long)ctx->Eax, (unsigned long)ctx->Ecx,
+                     (unsigned long)ctx->Edx, (unsigned long)ctx->Esp);
+#endif
+            TraceCrash(rip0Info);
+        }
+    }
+
     // Log crash address with module info
     {
         HMODULE hCrashMod = NULL;

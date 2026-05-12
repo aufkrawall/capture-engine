@@ -600,24 +600,29 @@ static uint8_t* GetTrampolineSlot(void* nearAddr) {
 // Write an absolute jump at 'dest' to 'target'
 static void WriteJump(uint8_t* dest, void* target) {
 #ifdef _WIN64
-    // FF 25 00 00 00 00 [8-byte address]
-    dest[0] = 0xFF;
-    dest[1] = 0x25;
-    dest[2] = 0x00;
-    dest[3] = 0x00;
-    dest[4] = 0x00;
-    dest[5] = 0x00;
+    // CRITICAL ORDER: Write the 8-byte absolute target address FIRST, then the
+    // 6-byte JMP [RIP+0] header. If a concurrent thread sees a partial JMP,
+    // dest+6 already contains the correct absolute target, and the disp32=0
+    // means [RIP+0] correctly reads from dest+6.
     memcpy(dest + 6, &target, 8);
+    MemoryBarrier();
+    // Write full 6-byte JMP header atomically (32-bit aligned, single memcpy)
+    const uint8_t jmpHeader[6] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
+    memcpy(dest, jmpHeader, 6);
     HookLog("WriteJump: x64 JMP [RIP+0] -> %p at %p", target, dest);
 #else
     // E9 [4-byte relative offset]
-    // CRITICAL: The displacement is relative to the instruction AFTER the JMP
+    // CRITICAL ORDER: Write the displacement FIRST (as a 4-byte aligned write),
+    // then the opcode. A concurrent thread sees either original code (safe)
+    // or a complete JMP with a valid displacement.
+    // The displacement is relative to the instruction AFTER the JMP
     // JMP rel32 means: RIP = (address of next instruction) + rel32
     // So: target = (dest + 5) + rel32
     // Therefore: rel32 = target - (dest + 5)
-    dest[0] = 0xE9;
     int32_t rel = (int32_t)((uintptr_t)target - (uintptr_t)(dest + 5));
     memcpy(dest + 1, &rel, 4);
+    MemoryBarrier();
+    dest[0] = 0xE9;
     HookLog("WriteJump: x86 JMP rel32 -> %p at %p (rel=0x%08X, dest+5=%p)", target, dest, (unsigned)rel,
             (void*)(dest + 5));
     // Verify: dest+5 + rel should equal target
@@ -1443,6 +1448,11 @@ bool Install(void* target, void* detour, void** outTrampoline) {
         }
     }
 
+    // CRITICAL: Flush instruction cache on the trampoline to ensure all writes
+    // (instructions + RIP fixups + WriteJump + CALL absolute conversion) are
+    // globally visible before we redirect any thread to it via the target patch.
+    FlushInstructionCache(GetCurrentProcess(), trampoline, trampolineOffset);
+
     // Save original bytes
     HookEntry entry = {};
     entry.target = target;
@@ -1461,9 +1471,11 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     }
     LogDirect("VirtualProtect succeeded, oldProtect=0x%08X", oldProtect);
 
-    // Write the jump to the detour function FIRST, then NOP-fill the rest,
-    // then do a single FlushInstructionCache. This avoids the race window
-    // where another thread could execute past a partial INT3 fill.
+    // CRITICAL ORDER: For x64, write the 8-byte absolute address FIRST,
+    // then the 6-byte JMP [RIP+0] header. This eliminates the race where a
+    // concurrent thread executing the target function decodes a partial JMP
+    // and jumps through zeros. The trampoline is already fully built and
+    // cache-flushed before we touch the target.
     volatile uint8_t* pTarget = (volatile uint8_t*)target;
 #ifdef _WIN64
     // x64: Use absolute jump via [RIP+0] - 14 bytes total
@@ -1477,16 +1489,23 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     jmpBuf[5] = 0x00;
     memcpy(jmpBuf + 6, &detour, 8);
 
-    // Copy all bytes to target
-    for (int i = 0; i < PATCH_SIZE; i++) {
-        pTarget[i] = jmpBuf[i];
-    }
+    // Write the 8-byte target address first, so a concurrent thread that
+    // sees a partial JMP [RIP+0] header reads the correct target from dest+6.
+    memcpy((void*)(pTarget + 6), jmpBuf + 6, 8);
+    MemoryBarrier();
+    // Now write the 6-byte JMP header (FF 25 + disp32=0)
+    memcpy((void*)pTarget, jmpBuf, 6);
 #else
-    // x86: Calculate displacement for the actual target location
-    // JMP rel32: target = (instruction_address + 5) + displacement
+    // x86: Calculate displacement for the actual target location.
+    // On x86 the E9 rel32 is only 5 bytes. Write the 4-byte displacement
+    // FIRST so a concurrent thread that sees a partial E9 reads a correct
+    // (or near-correct) displacement from a 4-byte natural write.
     pTarget[0] = 0xE9;  // JMP rel32 opcode
     int32_t rel = (int32_t)((uintptr_t)detour - (uintptr_t)((uint8_t*)target + 5));
-    memcpy((void*)(pTarget + 1), &rel, 4);
+    // Write displacement atomically (32-bit aligned), then the opcode.
+    *(int32_t*)(pTarget + 1) = rel;
+    MemoryBarrier();
+    pTarget[0] = 0xE9;  // re-write opcode in case MemoryBarrier changed it
     HookLog("InlineHook: Target JMP at %p -> %p (rel=0x%08X)", target, detour, (unsigned)rel);
     // Verify the calculation
     uintptr_t verify = (uintptr_t)((uint8_t*)target + 5) + rel;
