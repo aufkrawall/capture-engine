@@ -36,6 +36,17 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal) {
     void** ppEntry = reinterpret_cast<void**>(pVTableEntry);
     void* currentValue = *ppEntry;
 
+    // NULL ENTRY GUARD: Do NOT patch a NULL vtable entry. Writing to a NULL
+    // entry when the vtable is incomplete (e.g. sl_interposer wrapper devices
+    // that only implement a subset of ID3D12Device methods) writes past the
+    // vtable boundary, corrupting adjacent memory.
+    if (!currentValue) {
+        HookLog("VTableHook: Create - VTable entry %p is NULL! Cannot hook NULL entry. Skipping.", ppEntry);
+        if (ppOriginal)
+            *ppOriginal = nullptr;
+        return ErrorNotExecutable;
+    }
+
     // IDEMPOTENCY CHECK: Is the VTable entry already set to our detour?
     if (currentValue == pDetour) {
         HookLog(

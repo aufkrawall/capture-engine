@@ -14235,6 +14235,14 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
         }
     }
 
+    // Verify vtbl[10] is non-NULL before patching. SL wrapper queues with
+    // incomplete vtables may have NULL at slot 10, and writing there would
+    // corrupt adjacent memory (same pattern as DX12_HookDeviceVTable).
+    if (!vtbl[10]) {
+        HookLog("DX12: ECL vtable[10] is NULL for queue %p - skipping hook", queue);
+        return;
+    }
+
     if (vtbl[10] != (void*)DetourExecuteCommandLists) {
         HookLog("DX12: Hooking ExecuteCommandLists vtable for queue %p", queue);
         ExecuteCommandListsPtr original = nullptr;
@@ -14273,6 +14281,41 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
     std::lock_guard<std::recursive_mutex> lock(s_DeviceHookMutex);
 
     void** vtbl = *reinterpret_cast<void***>(device);
+    if (!vtbl)
+        return;
+
+    // Skip vtable hooking on sl_interposer / SL wrapper devices.
+    // SL wrapper vtables may have fewer than the 23 entries required for
+    // CreateSampler (slot 22). Reading or writing vtbl[22] past the end
+    // of the wrapper's vtable corrupts adjacent memory, which causes a
+    // deterministic RIP=0 crash when another COM object's vtable pointer
+    // gets overwritten with the trampoline pool address.
+    {
+        HMODULE hMod = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)vtbl, &hMod) && hMod) {
+            char modPath[MAX_PATH] = {};
+            if (GetModuleFileNameA(hMod, modPath, MAX_PATH)) {
+                const char* modName = strrchr(modPath, '\\');
+                modName = modName ? modName + 1 : modPath;
+                if (strstr(modName, "sl_interposer") || strstr(modName, "sl.common")) {
+                    HookLog("DX12: Skipping CreateSampler vtable hook for SL wrapper device %p (vtbl in %s)",
+                            device, modName);
+                    return;
+                }
+            }
+        }
+    }
+
+    // Verify vtbl[22] is non-NULL before patching. A NULL entry means the
+    // device doesn't implement CreateSampler (common on SL wrapper devices
+    // with minimal vtable). Writing to a NULL slot writes to the wrong memory
+    // when the vtable is incomplete.
+    if (!vtbl[22]) {
+        HookLog("DX12: CreateSampler vtable entry is NULL for device %p - skipping hook", device);
+        return;
+    }
 
     // CreateSampler is at vtable index 20 in ID3D12Device
     // ID3D12Object: QueryInterface=0, AddRef=1, Release=2, GetPrivateData=3,
