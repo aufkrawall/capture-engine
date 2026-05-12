@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2964 — Strange Brigade DX12 black screen FIXED, confirmed working)
+Last cross-checked: 2026-05-12 (updated: build 0.1.3044 — BioShock Infinite crash fix, CWrapD3D11Device no longer wraps IDXGIDevice)
 
 Primary sources:
 - `AGENTS.md`
