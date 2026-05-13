@@ -1,9 +1,13 @@
 #include "audio_encoder.h"
+#include "audio_sync_utils.h"
 #include "mediaengine.h"  // For DLL_Log
 
 extern "C" {
 #include <libavutil/audio_fifo.h>
 }
+
+#include <algorithm>
+#include <climits>
 
 AudioEncoder::AudioEncoder()
     : codecCtx(nullptr),
@@ -428,7 +432,33 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
     int samplesToWrite = convertedSamples;
     bool applyingFadeOut = false;
 
-    if (currentFifoSize + convertedSamples > MAX_FIFO_SAMPLES) {
+    if (recordingEndUs > 0 && recordingStartUs >= 0 && recordingEndUs >= recordingStartUs) {
+        const int64_t durationUs = recordingEndUs - recordingStartUs;
+        const int64_t maxSamples = ce::audio::ComputeDurationUsToSamples(durationUs, codecCtx->sample_rate);
+        const int64_t allowedSamples =
+            ce::audio::ComputeAudioSamplesAllowedBeforeEnd(maxSamples, samplesCount, currentFifoSize);
+        if (allowedSamples <= 0) {
+            static int endDropLogCount = 0;
+            if (endDropLogCount++ < 5) {
+                DLL_Log(
+                    "[AudioEnc] End boundary reached: dropping %d samples before FIFO write "
+                    "(encoded=%lld fifo=%d max=%lld)",
+                    convertedSamples, (long long)samplesCount, currentFifoSize, (long long)maxSamples);
+            }
+            AudioResampler::FreeOutputBuffer(resampledData);
+            return;
+        }
+        if (samplesToWrite > allowedSamples) {
+            DLL_Log(
+                "[AudioEnc] Clamping audio write at recording end: write=%d -> %lld "
+                "(encoded=%lld fifo=%d max=%lld)",
+                samplesToWrite, (long long)allowedSamples, (long long)samplesCount, currentFifoSize,
+                (long long)maxSamples);
+            samplesToWrite = static_cast<int>(std::min<int64_t>(allowedSamples, INT_MAX));
+        }
+    }
+
+    if (currentFifoSize + samplesToWrite > MAX_FIFO_SAMPLES) {
         samplesToWrite = MAX_FIFO_SAMPLES - currentFifoSize;
         if (samplesToWrite < 0)
             samplesToWrite = 0;
@@ -792,9 +822,10 @@ void AudioEncoder::Flush() {
     if (recordingEndUs > 0 && recordingStartUs >= 0 && recordingEndUs >= recordingStartUs) {
         int64_t durationUs = recordingEndUs - recordingStartUs;
 
-        // av_rescale_rnd for precise sample count from microseconds
-        // Use AV_ROUND_UP to ensure audio is never shorter than video
-        maxSamples = av_rescale_rnd(durationUs, codecCtx->sample_rate, 1000000, AV_ROUND_UP);
+        // Use the same rounded sample target as MediaEngine stop diagnostics so
+        // final packets cannot extend beyond the CFR video timeline by a codec
+        // frame after metadata has already been clamped.
+        maxSamples = ce::audio::ComputeDurationUsToSamples(durationUs, codecCtx->sample_rate);
 
         DLL_Log(
             "[AudioEncoder] Video duration: %lld us, max audio samples: %lld, "
@@ -819,6 +850,25 @@ void AudioEncoder::Flush() {
         }
     }
 
+    auto packetWithinEndBoundary = [&](AVPacket* pkt) {
+        if (!pkt || maxSamples == INT64_MAX || pkt->pts == AV_NOPTS_VALUE) {
+            return true;
+        }
+        if (pkt->pts >= maxSamples) {
+            DLL_Log("[AudioEncoder] Dropping packet beyond recording end: pts=%lld max=%lld",
+                    (long long)pkt->pts, (long long)maxSamples);
+            return false;
+        }
+        if (pkt->duration > 0 && pkt->pts + pkt->duration > maxSamples) {
+            const int64_t clampedDuration = std::max<int64_t>(1, maxSamples - pkt->pts);
+            DLL_Log("[AudioEncoder] Clamping final packet duration: pts=%lld dur=%lld -> %lld max=%lld",
+                    (long long)pkt->pts, (long long)pkt->duration, (long long)clampedDuration,
+                    (long long)maxSamples);
+            pkt->duration = clampedDuration;
+        }
+        return true;
+    };
+
     auto drainPackets = [&]() {
         while (true) {
             AVPacket* pkt = av_packet_alloc();
@@ -832,9 +882,11 @@ void AudioEncoder::Flush() {
                 break;
             }
             ApplyPacketDuration(pkt);
-            pkt->stream_index = streamIndex;
-            if (onPacket)
-                onPacket(pkt);
+            if (packetWithinEndBoundary(pkt)) {
+                pkt->stream_index = streamIndex;
+                if (onPacket)
+                    onPacket(pkt);
+            }
             av_packet_free(&pkt);
         }
     };
@@ -1058,6 +1110,10 @@ void AudioEncoder::Flush() {
             break;
         }
         ApplyPacketDuration(pkt);
+        if (!packetWithinEndBoundary(pkt)) {
+            av_packet_free(&pkt);
+            continue;
+        }
         pkt->stream_index = streamIndex;  // Ensure correct stream index for flushed packets
         flushedPackets.push_back(pkt);
     }

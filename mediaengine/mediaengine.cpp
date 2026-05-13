@@ -801,12 +801,14 @@ public:
                 int64_t expectedDurationUs = videoEnc->GetExpectedFinalDurationUs();
                 int64_t encodedDurationUs = videoEnc->GetEncodedDurationUs();
                 int64_t durationUs = expectedDurationUs > 0 ? expectedDurationUs : encodedDurationUs;
-                if (IsWgcCfrRecording()) {
+                if (IsCfrRecording()) {
                     const int64_t wallDurationUs =
-                        std::max<int64_t>(d3d11TimelineState.lastElapsedUs, videoElapsedMs.load() * 1000);
+                        std::max<int64_t>(
+                            IsWgcCfrRecording() ? d3d11TimelineState.lastElapsedUs : injectTimelineState.lastElapsedUs,
+                            videoElapsedMs.load() * 1000);
 
                     DLL_Log(
-                        "MediaEngine: WGC stop durations. Expected: %lld us, Encoded: %lld us, Wall: %lld us, "
+                        "MediaEngine: CFR stop durations. Expected: %lld us, Encoded: %lld us, Wall: %lld us, "
                         "Selected: %lld us",
                         expectedDurationUs, encodedDurationUs, wallDurationUs, durationUs);
                 }
@@ -824,16 +826,16 @@ public:
                 }
 
                 if (endUs > 0) {
-                    // WGC CFR: use PTS-based target so audio matches video exactly.
+                    // CFR: use PTS-based target so audio matches video exactly.
                     // The encoder thread's drain already covers most audio; this final
                     // pull fills any remaining gap without racing (drain is done by now).
-                    const int64_t wgcAudioTargetUs =
-                        IsWgcCfrRecording() ? videoEnc->GetExpectedFinalDurationUs() : endUs;
+                    const int64_t cfrAudioTargetUs =
+                        IsCfrRecording() ? videoEnc->GetExpectedFinalDurationUs() : endUs;
                     const int64_t minEncodedBefore =
                         encodedSamplesPerSource.empty()
                             ? 0
                             : *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
-                    PullAndEncodeAudio(wgcAudioTargetUs, true);
+                    PullAndEncodeAudio(cfrAudioTargetUs, true);
                     const int64_t minEncodedAfter =
                         encodedSamplesPerSource.empty()
                             ? 0
@@ -841,7 +843,7 @@ public:
                     DLL_Log(
                         "[StopAudio] forceDrain: targetUs=%lld minEncodedBefore=%lld minEncodedAfter=%lld "
                         "pulled=%lld samples (%.1f ms)",
-                        wgcAudioTargetUs, minEncodedBefore, minEncodedAfter, minEncodedAfter - minEncodedBefore,
+                        cfrAudioTargetUs, minEncodedBefore, minEncodedAfter, minEncodedAfter - minEncodedBefore,
                         (double)(minEncodedAfter - minEncodedBefore) / 48.0);
                 }
             }
@@ -1074,7 +1076,9 @@ public:
             return false;
         }
 
-        const int64_t committedElapsedUs = GetCommittedVideoElapsedUs(realElapsedUs);
+        const bool cfrRecording = IsCfrRecording();
+        const int64_t committedElapsedUs =
+            cfrRecording && videoEnc ? videoEnc->GetExpectedFinalDurationUs() : GetCommittedVideoElapsedUs(realElapsedUs);
         CommitVideoElapsedUs(injectTimelineState, committedElapsedUs);
 
         // Update audio stream index for all sources
@@ -1091,7 +1095,7 @@ public:
             DLL_Log("MediaEngine: Sending Frame ts=%lld", debugTimestamp);
         }
 
-        // PULL MODEL: Encode audio for this video frame (same as screengrab mode)
+        // PULL MODEL: CFR audio follows the authoritative output timeline.
         PullAndEncodeAudio(committedElapsedUs);
         return res;
     }
@@ -1102,13 +1106,13 @@ public:
 
     bool RepeatLastFrame(int64_t timestampQPC, int64_t timelineElapsedUs) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        const bool cfrRecording = IsCfrRecording();
         const bool wgcCfrRecording = IsWgcCfrRecording();
-        // WGC CFR: allow audio pull during drain even when recording==false,
-        // so the encoder thread can feed audio per drain frame instead of
-        // relying on a single forceDrain pull at the very end.
+        // CFR drain: allow scheduled repeats to close already accrued CFR debt
+        // before MediaEngine_StopRecording finalizes the encoders.
         if (!videoEnc || firstVideoFrameMs == 0)
             return false;
-        if (!recording && !wgcCfrRecording)
+        if (!recording && !cfrRecording)
             return false;
 
         auto now = std::chrono::steady_clock::now();
@@ -1131,7 +1135,8 @@ public:
             return false;
         }
 
-        const int64_t committedElapsedUs = GetCommittedVideoElapsedUs(realElapsedUs);
+        const int64_t committedElapsedUs =
+            cfrRecording ? videoEnc->GetExpectedFinalDurationUs() : GetCommittedVideoElapsedUs(realElapsedUs);
         CommitVideoElapsedUs(wgcCfrRecording ? d3d11TimelineState : injectTimelineState,
                              wgcCfrRecording ? realElapsedUs : committedElapsedUs);
         for (size_t i = 0; i < audioSources.size(); i++) {
@@ -1142,13 +1147,17 @@ public:
             }
         }
 
-        const int64_t audioTimelineUs = wgcCfrRecording ? videoEnc->GetExpectedFinalDurationUs() : committedElapsedUs;
+        const int64_t audioTimelineUs = cfrRecording ? videoEnc->GetExpectedFinalDurationUs() : committedElapsedUs;
         PullAndEncodeAudio(audioTimelineUs);
         return true;
     }
 
     bool IsWgcCfrRecording() const {
         return SessionUsesScreenGrab() && !SessionUsesVfr();
+    }
+
+    bool IsCfrRecording() const {
+        return ce::audio::ShouldUseCfrAudioContinuityPolicy(SessionUsesVfr());
     }
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
@@ -1279,21 +1288,25 @@ public:
             ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
         constexpr int64_t kWgcVisualSyncMaxBufferedLagMs = 4000;
 
+        const bool isCfrRecording = IsCfrRecording();
         const bool isWgcCfrRecording = IsWgcCfrRecording();
         const int64_t wallVideoMs = this->videoElapsedMs.load();
         int64_t encodedVideoMs = 0;
         int64_t audioTargetUs = videoTimelineUs;
-        if (videoEnc && !isWgcCfrRecording) {
+        if (videoEnc && !isCfrRecording) {
             int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
             if (encodedVideoUs > 0) {
                 encodedVideoMs = encodedVideoUs / 1000;
                 audioTargetUs = encodedVideoUs;
             }
         }
-        if (isWgcCfrRecording && videoEnc) {
+        if (isCfrRecording && videoEnc) {
             int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
             if (encodedVideoUs > 0) {
                 encodedVideoMs = encodedVideoUs / 1000;
+            }
+            if (audioTargetUs <= 0) {
+                audioTargetUs = videoEnc->GetExpectedFinalDurationUs();
             }
         }
         if (audioTargetUs <= 0) {
@@ -1414,7 +1427,7 @@ public:
         // anchor in CFR mode would pull audio to wall clock, making it advance faster than
         // video PTS and causing unbounded desync.
         const int64_t wallVideoLagMs = timelineShortfallMs;
-        if (!forceDrain && !isWgcCfrRecording && wallVideoLagMs > 500) {
+        if (ce::audio::ShouldAllowWallClockAudioAnchor(isCfrRecording, forceDrain, wallVideoLagMs)) {
             const int64_t steadyElapsedMs = steadyElapsedUs / 1000;
             if (steadyElapsedMs > audioTargetMs && steadyElapsedMs - audioTargetMs > 200) {
                 audioTargetUs = steadyElapsedUs;
@@ -1474,7 +1487,7 @@ public:
                 forceDrain ? 0
                            : ce::audio::ComputeAudioPullLatencyMs(kSteadyAudioPullLatencyMs, trackStartupSettled,
                                                                   trackMaxObservedLateStartMs);
-            if (isWgcCfrRecording && trackStartupSettled && trackAllPrimed) {
+            if (isCfrRecording && trackStartupSettled && trackAllPrimed) {
                 trackAudioPullLatencyMs = std::min<int64_t>(trackAudioPullLatencyMs, 30);
             }
             const int64_t trackAudioTargetUs = audioTargetUs - (std::max<int64_t>(trackAudioPullLatencyMs, 0) * 1000);
@@ -1579,7 +1592,9 @@ public:
                 // samples = 20ms) that accumulates into a constant audio-video offset. Skip
                 // quantum rounding on the first pull after bootstrap to achieve exact alignment.
                 if (!initialTrackCatchup) {
-                    const bool overloadPullQuantum = isWgcCfrRecording && (wgcOverloadFlags & 0x1u) != 0;
+                    const bool overloadPullQuantum =
+                        (isWgcCfrRecording && (wgcOverloadFlags & 0x1u) != 0) ||
+                        (isCfrRecording && !isWgcCfrRecording && timelineShortfallMs > 100);
                     const int64_t quantumSamples = overloadPullQuantum ? kOverloadAudioPullQuantumSamples
                                                                        : ce::audio::kDefaultAudioPullQuantumSamples;
                     samplesToEncode = (samplesToEncode / quantumSamples) * quantumSamples;
@@ -1594,7 +1609,7 @@ public:
 
             const int64_t MAX_GAP_SAMPLES = (SAMPLE_RATE * 2);
             const int64_t MAX_SILENCE_CHUNK = SAMPLE_RATE / 2;
-            if (samplesToEncode > MAX_GAP_SAMPLES && !initialTrackCatchup) {
+            if (samplesToEncode > MAX_GAP_SAMPLES && !initialTrackCatchup && !isCfrRecording) {
                 warpCount++;
                 DLL_Log(
                     "[PullAudio] Large A/V gap (%.2f sec) on track %d - inserting silence (warp #%d). target=%lld, "
@@ -1614,6 +1629,16 @@ public:
                 }
 
                 samplesToEncode = std::min(samplesToEncode, MAX_SILENCE_CHUNK);
+            } else if (samplesToEncode > MAX_GAP_SAMPLES && !initialTrackCatchup) {
+                warpCount++;
+                samplesToEncode = std::min(samplesToEncode, MAX_SILENCE_CHUNK);
+                if (dropLogCounter++ % 20 == 0) {
+                    DLL_Log(
+                        "[PullAudio] Large CFR audio backlog (%.2f sec) on track %d - draining in bounded chunks "
+                        "without dropping buffered audio (chunk=%lld samples, target=%lld, encoded=%lld)",
+                        (double)pendingSamples / SAMPLE_RATE, track, samplesToEncode, targetSamples,
+                        encodedSamplesPerSource[firstSrcIdx]);
+                }
             }
 
             size_t totalFloats = samplesToEncode * CHANNELS;
@@ -1650,13 +1675,13 @@ public:
                     src.latencyTrimSamples += retainedSamples;
                     src.pendingLatencyTrimSamples += retainedSamples;
                     src.pendingLatencyTrimEvents++;
-                    if (isWgcCfrRecording) {
+                    if (isCfrRecording) {
                         const uint64_t nowTick = GetTickCount64();
                         if (nowTick - src.lastRetainedTrimWarnTick >= 1000) {
                             const size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                             const size_t rbCapacity = src.ringBuffer->GetCapacity() / CHANNELS;
                             DLL_Log(
-                                "[PullAudio] WARNING: WGC CFR audio headroom exhausted - trimmed %zu oldest samples "
+                                "[PullAudio] WARNING: CFR audio headroom exhausted - trimmed %zu oldest samples "
                                 "for src=%d to retain newest audio (buffered=%zu target=%lld cap=%zu "
                                 "pipelineLag=%lldms). This may cause audible discontinuities; encoder/capture "
                                 "throughput is behind real time.",
@@ -1674,7 +1699,7 @@ public:
                 const int64_t targetLatencySamples = targetBufferedSamples;
                 if (src.bootstrapComplete && src.syncResampler && src.syncResampler->IsReady()) {
                     const double maxCompensationPercent =
-                        isWgcCfrRecording ? kTier1MaxPitchPercent : kDefaultMaxCompensationPercent;
+                        isCfrRecording ? kTier1MaxPitchPercent : kDefaultMaxCompensationPercent;
                     src.syncResampler->SetMaxCompensationPercent(maxCompensationPercent);
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                     const int64_t expectedLeadSamplesForCorrection =
@@ -1746,7 +1771,7 @@ public:
                             wgcTargetFps,
                             ce::audio::ComputeWgcCoverageLossRatio(videoPipelineLagMs, wgcBufferedVideoContentLagMs) *
                                 100.0);
-                    } else if (!forceDrain && !startupTimelineProtected && !IsWgcCfrRecording()) {
+                    } else if (!forceDrain && !startupTimelineProtected && !isCfrRecording) {
                         int64_t dropSamplesTotal = ce::audio::ComputeLeadTrimExcessSamples(
                             static_cast<int64_t>(rbAvailable), targetLatencySamples, kRuntimeMaxLeadSamples,
                             kLatencyTrimHysteresisSamples);
@@ -1897,12 +1922,12 @@ public:
                                     // only exists because the authoritative CFR timeline is slightly behind wall clock.
                                     int32_t tier1Delta = 0;
 
-                                    if (isWgcCfrRecording) {
+                                    if (isCfrRecording) {
                                         const bool suppressPositiveCorrectionForLiveShortfall =
-                                            ce::audio::ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(
-                                                isWgcCfrRecording, forceDrain, timelineShortfallMs,
+                                            ce::audio::ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(
+                                                isCfrRecording, forceDrain, timelineShortfallMs,
                                                 wgcEncoderBottlenecked);
-                                        if (wgcEncoderOnlyOverload) {
+                                        if (isWgcCfrRecording && wgcEncoderOnlyOverload) {
                                             tier1Delta = 0;
                                             src.targetRateSaturated = false;
                                         } else {
@@ -1963,7 +1988,9 @@ public:
                                     // Normally suppressed in WGC CFR mode (prefer video repeats over
                                     // audio cuts), and enabled for non-CFR modes when the wall-clock
                                     // audio anchor is active (encoder severely stalled).
-                                    const bool wallClockAnchorActive = !isWgcCfrRecording && wallVideoLagMs > 500;
+                                    const bool wallClockAnchorActive =
+                                        ce::audio::ShouldAllowWallClockAudioAnchor(isCfrRecording, forceDrain,
+                                                                                   wallVideoLagMs);
                                     if (isWgcCfrRecording && !wgcEncoderOnlyOverload && !startupTimelineProtected &&
                                         (!kWgcPreferVideoRepeatsOverAudioCuts || wallClockAnchorActive) &&
                                         ce::audio::ShouldActivateTier2Trim(trueDrift, SAMPLE_RATE,
@@ -2026,7 +2053,7 @@ public:
                         }
                     }
 
-                    // Overflow protection. Non-WGC modes keep the historical short cap; WGC CFR
+                    // Overflow protection. Non-CFR modes keep the historical short cap; CFR
                     // preserves audio continuity and only trims near the real ring capacity.
                     if (!forceDrain && src.ringBuffer && !startupTimelineProtected) {
                         constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;            // 500ms max overflow
@@ -2035,7 +2062,7 @@ public:
                         const int64_t rbCapacitySamples =
                             static_cast<int64_t>(src.ringBuffer->GetCapacity() / CHANNELS);
                         const int64_t overflowCapSamples = ce::audio::ComputeRuntimeOverflowCapSamples(
-                            isWgcCfrRecording, targetLatencySamples, rbCapacitySamples, kMaxOverflowSamples,
+                            isCfrRecording, targetLatencySamples, rbCapacitySamples, kMaxOverflowSamples,
                             kWgcCfrEmergencyRingMarginSamples);
                         const int64_t overflowExcess =
                             static_cast<int64_t>(rbAvailable) - targetLatencySamples - overflowCapSamples;
@@ -2062,7 +2089,7 @@ public:
                                 DLL_Log(
                                     "[PullAudio] Ring buffer overflow protection%s: src %d trimmed %lld samples "
                                     "(rb was %lld samples, target %lld, overflow cap %lld)",
-                                    isWgcCfrRecording ? " (WGC emergency capacity guard)" : "", (int)srcIdx,
+                                    isCfrRecording ? " (CFR emergency capacity guard)" : "", (int)srcIdx,
                                     (long long)trimmedSamples, (long long)(rbAvailable + trimmedSamples),
                                     (long long)targetLatencySamples, (long long)overflowCapSamples);
                             }
@@ -2498,7 +2525,7 @@ public:
                     int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
                     if (encodedVideoUs > 0) {
                         encodedVideoMs = encodedVideoUs / 1000;
-                        if (!isWgcCfrRecording) {
+                        if (!isCfrRecording) {
                             videoMs = encodedVideoMs;
                         }
                     }
@@ -2884,14 +2911,14 @@ private:
     void InitAudioSourceBuffers(AudioSource& source, const AudioConfig& audioConfig, size_t sourceIdx) {
         constexpr int kMixerSampleRate = 48000;
         constexpr size_t kDefaultAudioRingBufferSeconds = 8;
-        // Heavy WGC CFR overload runs can fall tens of seconds behind real time even
-        // while audio/video file durations still stay mathematically equal. Give WGC
+        // Heavy CFR overload runs can fall tens of seconds behind real time even
+        // while audio/video file durations still stay mathematically equal. Give CFR
         // enough retention headroom to avoid destructive oldest-audio trims in those
         // runs so we preserve pitch and avoid crackle while diagnostics report the
         // underlying encoder shortfall honestly.
-        constexpr size_t kWgcCfrAudioRingBufferSeconds = 30;
-        const bool isWgcCfrPath = config.captureMethod != "inject" && !config.video.useVFR;
-        const size_t ringBufferSeconds = isWgcCfrPath ? kWgcCfrAudioRingBufferSeconds : kDefaultAudioRingBufferSeconds;
+        constexpr size_t kCfrAudioRingBufferSeconds = 30;
+        const bool isCfrPath = ce::audio::ShouldUseCfrAudioContinuityPolicy(config.video.useVFR);
+        const size_t ringBufferSeconds = isCfrPath ? kCfrAudioRingBufferSeconds : kDefaultAudioRingBufferSeconds;
         size_t capacity = static_cast<size_t>(kMixerSampleRate) * ringBufferSeconds * 2;
         source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
         DLL_Log("MediaEngine::Init RingBuffer created for source %zu. Cap=%zu samples (%zus), rate=%d", sourceIdx,

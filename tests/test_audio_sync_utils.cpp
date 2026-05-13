@@ -44,6 +44,18 @@ TEST(AudioSyncUtilsTest, AudioPullQuantumDefersOnlySmallSteadyStatePulls) {
     EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(120, true, true));
 }
 
+TEST(AudioSyncUtilsTest, CfrAudioContinuityPolicyFollowsVfrMode) {
+    EXPECT_TRUE(ce::audio::ShouldUseCfrAudioContinuityPolicy(false));
+    EXPECT_FALSE(ce::audio::ShouldUseCfrAudioContinuityPolicy(true));
+}
+
+TEST(AudioSyncUtilsTest, WallClockAudioAnchorIsDisabledForCfr) {
+    EXPECT_FALSE(ce::audio::ShouldAllowWallClockAudioAnchor(true, false, 5000));
+    EXPECT_FALSE(ce::audio::ShouldAllowWallClockAudioAnchor(false, true, 5000));
+    EXPECT_FALSE(ce::audio::ShouldAllowWallClockAudioAnchor(false, false, 500));
+    EXPECT_TRUE(ce::audio::ShouldAllowWallClockAudioAnchor(false, false, 501));
+}
+
 TEST(AudioSyncUtilsTest, LatencyAdjustedDriftRemovesIntentionalPullOffset) {
     EXPECT_EQ(ce::audio::ComputeLatencyAdjustedAvDriftMs(-20, 20), 0);
     EXPECT_EQ(ce::audio::ComputeLatencyAdjustedAvDriftMs(-50, 20), -30);
@@ -179,10 +191,24 @@ TEST(AudioSyncUtilsTest, WgcLiveShortfallSuppressesPositiveDriftCorrection) {
     EXPECT_FALSE(ce::audio::ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(true, false, 99, false));
 }
 
+TEST(AudioSyncUtilsTest, CfrLiveShortfallSuppressesPositiveDriftCorrection) {
+    EXPECT_TRUE(ce::audio::ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(true, false, 100, false));
+    EXPECT_TRUE(ce::audio::ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(true, false, 0, true));
+    EXPECT_FALSE(ce::audio::ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(true, true, 1000, true));
+    EXPECT_FALSE(ce::audio::ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(false, false, 1000, true));
+}
+
 TEST(AudioSyncUtilsTest, WgcRuntimeOverflowCapUsesRingCapacityGuard) {
     EXPECT_EQ(ce::audio::ComputeRuntimeOverflowCapSamples(false, 6720, 1440000, 24000, 48000), 24000);
     EXPECT_EQ(ce::audio::ComputeRuntimeOverflowCapSamples(true, 6720, 1440000, 24000, 48000), 1385280);
     EXPECT_EQ(ce::audio::ComputeRuntimeOverflowCapSamples(true, 6720, 40000, 24000, 48000), 24000);
+}
+
+TEST(AudioSyncUtilsTest, AudioEndBoundaryAccountsForEncodedAndQueuedSamples) {
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesAllowedBeforeEnd(48000, 47000, 500), 500);
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesAllowedBeforeEnd(48000, 48000, 0), 0);
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesAllowedBeforeEnd(48000, 47000, 2000), 0);
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesAllowedBeforeEnd(-1, -1, -1), 0);
 }
 
 TEST(AudioSyncUtilsTest, WgcCoverageLossTrimSamplesUsesFractionalAccumulatorAndCap) {

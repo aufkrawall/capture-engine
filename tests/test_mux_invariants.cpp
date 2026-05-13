@@ -5,9 +5,13 @@
 namespace {
 
 using ce::mux::ComputeDurationDeltaUs;
+using ce::mux::ComputePacketEndUs;
 using ce::mux::HeaderValidationIssue;
 using ce::mux::HeaderValidationIssueToString;
 using ce::mux::IsDurationWithinToleranceUs;
+using ce::mux::ObservePacketTimeline;
+using ce::mux::PacketTimelineExceedsTarget;
+using ce::mux::PacketTimelineStats;
 using ce::mux::ValidateStreamForHeader;
 
 }  // namespace
@@ -39,4 +43,25 @@ TEST(MuxInvariantTest, DurationDeltaAndToleranceAreAbsolute) {
     EXPECT_FALSE(IsDurationWithinToleranceUs(1000, 1002, 1));
     EXPECT_TRUE(IsDurationWithinToleranceUs(1000, 1000, -1));
     EXPECT_FALSE(IsDurationWithinToleranceUs(1000, 1002, -1));
+}
+
+TEST(MuxInvariantTest, PacketTimelineTracksActualPacketEnd) {
+    PacketTimelineStats stats;
+    ObservePacketTimeline(stats, 0, 8333);
+    ObservePacketTimeline(stats, 8333, 8334);
+
+    EXPECT_TRUE(stats.seen);
+    EXPECT_EQ(stats.packetCount, 2u);
+    EXPECT_EQ(stats.firstStartUs, 0);
+    EXPECT_EQ(stats.lastStartUs, 8333);
+    EXPECT_EQ(stats.lastEndUs, 16667);
+}
+
+TEST(MuxInvariantTest, PacketTimelineDetectsAudioPastMetadataTarget) {
+    PacketTimelineStats stats;
+    ObservePacketTimeline(stats, 102485333, 85333);
+
+    EXPECT_EQ(ComputePacketEndUs(102485333, 85333), 102570666);
+    EXPECT_TRUE(PacketTimelineExceedsTarget(stats, 102183333, 1000));
+    EXPECT_FALSE(PacketTimelineExceedsTarget(stats, 102570000, 1000));
 }

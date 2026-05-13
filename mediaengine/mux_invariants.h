@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 namespace ce::mux {
@@ -48,6 +49,38 @@ inline bool IsDurationWithinToleranceUs(int64_t lhsUs, int64_t rhsUs, int64_t to
         toleranceUs = 0;
     }
     return ComputeDurationDeltaUs(lhsUs, rhsUs) <= toleranceUs;
+}
+
+struct PacketTimelineStats {
+    bool seen = false;
+    uint32_t packetCount = 0;
+    int64_t firstStartUs = 0;
+    int64_t lastStartUs = 0;
+    int64_t lastEndUs = 0;
+};
+
+inline int64_t ComputePacketEndUs(int64_t packetStartUs, int64_t packetDurationUs) {
+    return std::max<int64_t>(0, packetStartUs) + std::max<int64_t>(0, packetDurationUs);
+}
+
+inline void ObservePacketTimeline(PacketTimelineStats& stats, int64_t packetStartUs, int64_t packetDurationUs) {
+    const int64_t clampedStartUs = std::max<int64_t>(0, packetStartUs);
+    const int64_t packetEndUs = ComputePacketEndUs(packetStartUs, packetDurationUs);
+    if (!stats.seen) {
+        stats.seen = true;
+        stats.firstStartUs = clampedStartUs;
+    }
+    stats.packetCount++;
+    stats.lastStartUs = clampedStartUs;
+    stats.lastEndUs = std::max(stats.lastEndUs, packetEndUs);
+}
+
+inline bool PacketTimelineExceedsTarget(const PacketTimelineStats& stats, int64_t targetDurationUs,
+                                        int64_t toleranceUs = 0) {
+    if (!stats.seen) {
+        return false;
+    }
+    return stats.lastEndUs > targetDurationUs + std::max<int64_t>(0, toleranceUs);
 }
 
 }  // namespace ce::mux

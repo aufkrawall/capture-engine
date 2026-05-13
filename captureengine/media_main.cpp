@@ -40,8 +40,8 @@ static std::atomic<bool> g_Recording{false};
 static std::atomic<bool> g_EncoderRunning{false};
 static std::atomic<bool> g_IsEncoderBottlenecked{false};
 static std::atomic<bool> g_RecordingUsesVfr{false};
-static std::atomic<bool> g_DrainOutstandingWgcTicks{false};
-static std::atomic<int64_t> g_WgcDrainStopQpc{0};
+static std::atomic<bool> g_DrainOutstandingCfrTicks{false};
+static std::atomic<int64_t> g_CfrDrainStopQpc{0};
 
 BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
     // Handle all console events including Windows shutdown/logoff
@@ -1969,7 +1969,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
         int64_t scheduledUntilQpc = nowQpc;
         if (!g_Recording.load(std::memory_order_acquire)) {
-            const int64_t drainStopQpc = g_WgcDrainStopQpc.load(std::memory_order_acquire);
+            const int64_t drainStopQpc = g_CfrDrainStopQpc.load(std::memory_order_acquire);
             if (drainStopQpc > liveStartQpc.QuadPart) {
                 scheduledUntilQpc = drainStopQpc;
             }
@@ -1980,7 +1980,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             ce::capture_policy::GetAdjustedCfrScheduledTicks(elapsedTicks, liveTicksDiscardedByTimerRebase);
         return ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
     };
-    while (g_EncoderRunning || g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) || g_FrameQueue.Size() > 0 ||
+    while (g_EncoderRunning || g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) || g_FrameQueue.Size() > 0 ||
            !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         LARGE_INTEGER cycleStartQpc;
         // NOTE: cycleStartQpc is set after timer sleep below to measure
@@ -2056,41 +2056,45 @@ void EncoderThreadFunc(const AppConfig& config) {
             outputShortfallTicks = updateLiveCfrShortfall(shortfallNow.QuadPart);
         }
         if (!g_Recording.load(std::memory_order_acquire) && recordingOutputLive &&
-            g_DrainOutstandingWgcTicks.load(std::memory_order_acquire)) {
+            g_DrainOutstandingCfrTicks.load(std::memory_order_acquire)) {
             const bool mediaEngineCanRepeatLastFrame =
-                activeScreenGrab && MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
-            const bool canDrainOutstandingTicks = ce::capture_policy::CanDrainOutstandingWgcTicks(
-                g_FrameQueue.Size() > 0, !bufferedWgcFrames.empty(), g_HasLastFrame, mediaEngineCanRepeatLastFrame);
+                MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
+            const bool bufferedFrameAvailable =
+                activeScreenGrab ? !bufferedWgcFrames.empty() : !bufferedInjectFrames.empty();
+            const size_t bufferedFrameCount = activeScreenGrab ? bufferedWgcFrames.size() : bufferedInjectFrames.size();
+            const bool canDrainOutstandingTicks = ce::capture_policy::CanDrainOutstandingCfrTicks(
+                activeScreenGrab, g_FrameQueue.Size() > 0, bufferedFrameAvailable, g_HasLastFrame,
+                mediaEngineCanRepeatLastFrame);
             static uint64_t s_lastStopDrainProgressLogTick = 0;
             const uint64_t nowTick = GetTickCount64();
             if (outputShortfallTicks > 0 && nowTick - s_lastStopDrainProgressLogTick >= 5000) {
                 LogInfo(
-                    "[EncoderThread] WGC stop drain progress: shortfall=%u/%.1fms queue=%u buffered=%zu hostLast=%d "
+                    "[EncoderThread] CFR stop drain progress: shortfall=%u/%.1fms queue=%u buffered=%zu hostLast=%d "
                     "cachedRepeat=%d",
                     outputShortfallTicks,
                     ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
-                    static_cast<unsigned>(g_FrameQueue.Size()), bufferedWgcFrames.size(), g_HasLastFrame ? 1 : 0,
+                    static_cast<unsigned>(g_FrameQueue.Size()), bufferedFrameCount, g_HasLastFrame ? 1 : 0,
                     mediaEngineCanRepeatLastFrame ? 1 : 0);
                 s_lastStopDrainProgressLogTick = nowTick;
             }
             if (outputShortfallTicks == 0 || !canDrainOutstandingTicks) {
                 if (outputShortfallTicks == 0) {
-                    LogInfo("[EncoderThread] WGC stop drain complete: scheduled=%llu output=%llu",
+                    LogInfo("[EncoderThread] CFR stop drain complete: scheduled=%llu output=%llu",
                             static_cast<unsigned long long>(liveTicksScheduled),
                             static_cast<unsigned long long>(liveTicksOutput));
                 } else {
                     LogWarn(
-                        "[EncoderThread] WGC stop drain aborted: no captured frame available for outstanding "
+                        "[EncoderThread] CFR stop drain aborted: no captured frame/repeat available for outstanding "
                         "shortfall=%u/%.1fms "
                         "(queue=%u buffered=%zu hostLast=%d cachedRepeat=%d; cached repeats are not used for "
-                        "stop-tail extension)",
+                        "WGC stop-tail extension)",
                         outputShortfallTicks,
                         ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
-                        static_cast<unsigned>(g_FrameQueue.Size()), bufferedWgcFrames.size(), g_HasLastFrame ? 1 : 0,
+                        static_cast<unsigned>(g_FrameQueue.Size()), bufferedFrameCount, g_HasLastFrame ? 1 : 0,
                         mediaEngineCanRepeatLastFrame ? 1 : 0);
                 }
                 s_lastStopDrainProgressLogTick = 0;
-                g_DrainOutstandingWgcTicks.store(false, std::memory_order_release);
+                g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);
             }
         }
 
@@ -2173,7 +2177,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         int64_t encoderLateQpc = 0;
         uint32_t encoderLateTickCount = 0;
         bool drainingOutstandingLiveTicks = !g_EncoderRunning &&
-                                            g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) &&
+                                            g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) &&
                                             recordingOutputLive && !config.video.useVFR;
         if (g_EncoderRunning || drainingOutstandingLiveTicks) {
             scheduledSampleQpc = nextSampleTime.QuadPart;
@@ -3559,10 +3563,10 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
 
         const bool refreshedDrainOutstandingLiveTicks = !g_EncoderRunning &&
-                                                        g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) &&
+                                                        g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) &&
                                                         recordingOutputLive && !config.video.useVFR;
         if (!popped && !drainingOutstandingLiveTicks && refreshedDrainOutstandingLiveTicks) {
-            LogInfo("[EncoderThread] WGC stop drain picked up mid-cycle");
+            LogInfo("[EncoderThread] CFR stop drain picked up mid-cycle");
             continue;
         }
         drainingOutstandingLiveTicks = refreshedDrainOutstandingLiveTicks;
@@ -4790,8 +4794,8 @@ void StartRecording(const AppConfig& config) {
     g_Recording = true;
     g_EncoderRunning = true;
     g_RecordingUsesVfr.store(config.video.useVFR, std::memory_order_release);
-    g_DrainOutstandingWgcTicks.store(false, std::memory_order_release);
-    g_WgcDrainStopQpc.store(0, std::memory_order_release);
+    g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);
+    g_CfrDrainStopQpc.store(0, std::memory_order_release);
 
     g_EncoderThread = std::thread(EncoderThreadFunc, std::ref(config));
     SetThreadPriority(reinterpret_cast<HANDLE>(g_EncoderThread.native_handle()), THREAD_PRIORITY_HIGHEST);
@@ -4829,9 +4833,9 @@ void StopRecording() {
 
     LogInfo("[Media] Stopping recording...");
 
-    const bool drainOutstandingWgcTicks = IsActiveScreenGrab() && !g_RecordingUsesVfr.load(std::memory_order_acquire);
+    const bool drainOutstandingCfrTicks = !g_RecordingUsesVfr.load(std::memory_order_acquire);
     int64_t drainStopQpc = 0;
-    if (drainOutstandingWgcTicks) {
+    if (drainOutstandingCfrTicks) {
         LARGE_INTEGER stopQpc;
         QueryPerformanceCounter(&stopQpc);
         drainStopQpc = stopQpc.QuadPart;
@@ -4841,10 +4845,11 @@ void StopRecording() {
     SetCaptureRequestedState(false);
     SetRecordingVisibleState(false);
     SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
-    g_WgcDrainStopQpc.store(drainStopQpc, std::memory_order_release);
-    g_DrainOutstandingWgcTicks.store(drainOutstandingWgcTicks && drainStopQpc > 0, std::memory_order_release);
-    if (drainOutstandingWgcTicks && drainStopQpc > 0) {
-        LogInfo("[Media] WGC CFR stop drain armed at QPC=%lld", drainStopQpc);
+    g_CfrDrainStopQpc.store(drainStopQpc, std::memory_order_release);
+    g_DrainOutstandingCfrTicks.store(drainOutstandingCfrTicks && drainStopQpc > 0, std::memory_order_release);
+    if (drainOutstandingCfrTicks && drainStopQpc > 0) {
+        LogInfo("[Media] CFR stop drain armed at QPC=%lld path=%s", drainStopQpc,
+                IsActiveScreenGrab() ? "WGC" : "inject");
     }
 
     StopWgcCapturePipeline();
@@ -4886,8 +4891,8 @@ void StopRecording() {
         g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
     }
 
-    g_DrainOutstandingWgcTicks.store(false, std::memory_order_release);
-    g_WgcDrainStopQpc.store(0, std::memory_order_release);
+    g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);
+    g_CfrDrainStopQpc.store(0, std::memory_order_release);
     g_RecordingUsesVfr.store(false, std::memory_order_release);
     SetActiveScreenGrab(false);
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);

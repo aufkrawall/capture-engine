@@ -64,6 +64,8 @@ Primary sources:
   - Named-pipe connection/reconnect coverage for the controller-to-child IPC path. Tests use unique override pipe names so local production services or stale pipe instances cannot determine pass/fail.
 - `tests/test_config.cpp`, `tests/test_config_override.cpp`, `tests/test_shared_runtime_state.cpp`
   - Config, override, and shared-memory coverage for `Overlay.observer_only`, `Overlay.observer_policy_only`, `Overlay.observer_startup_present_only`, and other runtime-visible overlay config fields.
+- `tests/test_capture_pipeline_policy.cpp`, `tests/test_audio_sync_utils.cpp`, `tests/test_mux_invariants.cpp`
+  - CFR capture cadence/audio/mux invariants, including WGC and inject stop-drain behavior, disabled wall-clock audio anchoring for CFR, final audio packet clamping, packet-level duration diagnostics, and source-limited versus hard-overload policy.
 
 ## Useful Existing Logging Points
 - `captureengine/injection.cpp`

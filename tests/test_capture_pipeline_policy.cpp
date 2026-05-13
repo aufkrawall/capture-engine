@@ -44,6 +44,20 @@ TEST(CapturePipelinePolicyTest, WgcStopDrainRejectsCachedRepeatOnlyTail) {
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, true));
 }
 
+TEST(CapturePipelinePolicyTest, InjectStopDrainMayUseCachedRepeatToCloseCfrDebt) {
+    EXPECT_FALSE(policy::CanDrainOutstandingCfrTicks(false, false, false, false, false));
+    EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(false, true, false, false, false));
+    EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(false, false, true, false, false));
+    EXPECT_FALSE(policy::CanDrainOutstandingCfrTicks(false, false, false, true, false));
+    EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(false, false, false, true, true));
+}
+
+TEST(CapturePipelinePolicyTest, WgcGenericStopDrainKeepsCapturedFrameRequirement) {
+    EXPECT_FALSE(policy::CanDrainOutstandingCfrTicks(true, false, false, true, true));
+    EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(true, true, false, false, false));
+    EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(true, false, true, false, false));
+}
+
 TEST(CapturePipelinePolicyTest, WgcCoverageLossRepeatPolicyRequiresLagMismatch) {
     EXPECT_TRUE(policy::HasWgcUnrecoverableCoverageLoss(6333.0, 23.0));
     EXPECT_TRUE(policy::HasWgcUnrecoverableCoverageLoss(6333.0, 23.0, 80.0));
@@ -644,8 +658,8 @@ TEST(CapturePipelinePolicyTest, TimerRebaseDiscardDropsOnlyOutstandingShortfall)
     EXPECT_EQ(policy::GetCfrTimerRebaseDiscardTicks(221, 18, 203), 0u);
 }
 
-TEST(CapturePipelinePolicyTest, TimerRebaseDebtDiscardKeepsWgcDebtForStopDrain) {
-    EXPECT_TRUE(policy::ShouldDiscardCfrTimerRebaseDebt(false));
+TEST(CapturePipelinePolicyTest, TimerRebaseDebtIsPreservedForAllCfrPaths) {
+    EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(false));
     EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(true));
 }
 
@@ -655,7 +669,7 @@ TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThre
     EXPECT_TRUE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks, true, true, false));
     EXPECT_TRUE(
         policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallForceCatchupThresholdTicks, false, false, false));
-    EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks, false, false, true));
+    EXPECT_TRUE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks, false, false, true));
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupTicksGradualBelowForceThreshold) {

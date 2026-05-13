@@ -149,7 +149,7 @@ void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, u
     }
 
     DLL_Log(
-        "[VideoEncoder] Final durations: target=%lld us video=%lld us audioMin=%lld us audioMax=%lld us maxDelta=%lld "
+        "[VideoEncoder] Final metadata durations: target=%lld us video=%lld us audioMin=%lld us audioMax=%lld us maxDelta=%lld "
         "us "
         "streams(v=%u a=%u) overload(encoder=%d mux=%d) backpressure=%u peakMux=%uKB peakPkts=%u",
         finalDurationUs, maxVideoDurationUs, minAudioDurationUs, maxAudioDurationUs, maxStreamDeltaUs, videoStreamCount,
@@ -162,7 +162,7 @@ void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, u
          !ce::mux::IsDurationWithinToleranceUs(minAudioDurationUs, maxAudioDurationUs, kDurationWarningToleranceUs)) ||
         maxStreamDeltaUs > kDurationWarningToleranceUs) {
         DLL_Log(
-            "[VideoEncoder] WARNING: Final stream durations exceeded %lld us tolerance (target=%lld video=%lld "
+            "[VideoEncoder] WARNING: Final metadata stream durations exceeded %lld us tolerance (target=%lld video=%lld "
             "audioMin=%lld audioMax=%lld maxDelta=%lld)",
             kDurationWarningToleranceUs, finalDurationUs, maxVideoDurationUs, minAudioDurationUs, maxAudioDurationUs,
             maxStreamDeltaUs);
@@ -834,6 +834,97 @@ void VideoEncoder::UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encode
         }
     } else {
         gpuPriorityHealthySinceMs = 0;
+    }
+}
+
+void VideoEncoder::ResetPacketTimelineDiagnostics() {
+    writtenPacketTimelines.clear();
+    lastMuxerVideoPtsUs.store(0, std::memory_order_relaxed);
+}
+
+void VideoEncoder::RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int64_t dts, int64_t duration,
+                                               AVRational timeBase) {
+    if (streamIndex < 0 || !fmtCtx || static_cast<unsigned int>(streamIndex) >= fmtCtx->nb_streams ||
+        !HasValidStreamTimeBase(fmtCtx->streams[streamIndex])) {
+        return;
+    }
+
+    const int64_t packetPts = pts != AV_NOPTS_VALUE ? pts : dts;
+    if (packetPts == AV_NOPTS_VALUE) {
+        return;
+    }
+
+    if (writtenPacketTimelines.size() < fmtCtx->nb_streams) {
+        writtenPacketTimelines.resize(fmtCtx->nb_streams);
+    }
+    if (static_cast<size_t>(streamIndex) >= writtenPacketTimelines.size()) {
+        return;
+    }
+
+    const int64_t packetStartUs = av_rescale_q(packetPts, timeBase, AVRational{1, 1000000});
+    const int64_t packetDurationUs =
+        duration > 0 ? av_rescale_q(duration, timeBase, AVRational{1, 1000000}) : 0;
+    ce::mux::ObservePacketTimeline(writtenPacketTimelines[streamIndex], packetStartUs, packetDurationUs);
+}
+
+void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
+    if (!fmtCtx || finalDurationUs <= 0 || writtenPacketTimelines.empty()) {
+        return;
+    }
+
+    int64_t maxVideoEndUs = 0;
+    int64_t minAudioEndUs = 0;
+    int64_t maxAudioEndUs = 0;
+    int64_t maxPacketDeltaUs = 0;
+    uint32_t videoStreamCount = 0;
+    uint32_t audioStreamCount = 0;
+    uint32_t audioPastTargetCount = 0;
+
+    for (unsigned int i = 0; i < fmtCtx->nb_streams && i < writtenPacketTimelines.size(); ++i) {
+        const AVStream* st = fmtCtx->streams[i];
+        if (!st || !st->codecpar) {
+            continue;
+        }
+        const auto& timeline = writtenPacketTimelines[i];
+        if (!timeline.seen) {
+            continue;
+        }
+
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            ++videoStreamCount;
+            maxVideoEndUs = std::max(maxVideoEndUs, timeline.lastEndUs);
+        } else if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            ++audioStreamCount;
+            if (minAudioEndUs == 0 || timeline.lastEndUs < minAudioEndUs) {
+                minAudioEndUs = timeline.lastEndUs;
+            }
+            maxAudioEndUs = std::max(maxAudioEndUs, timeline.lastEndUs);
+            if (ce::mux::PacketTimelineExceedsTarget(timeline, finalDurationUs, 1000)) {
+                ++audioPastTargetCount;
+            }
+        }
+    }
+
+    const int64_t referenceVideoEndUs = maxVideoEndUs > 0 ? maxVideoEndUs : finalDurationUs;
+    if (audioStreamCount > 0) {
+        maxPacketDeltaUs = std::max(ce::mux::ComputeDurationDeltaUs(referenceVideoEndUs, minAudioEndUs),
+                                    ce::mux::ComputeDurationDeltaUs(referenceVideoEndUs, maxAudioEndUs));
+    }
+
+    DLL_Log(
+        "[VideoEncoder] Final packet timeline: target=%lld us videoEnd=%lld us audioMinEnd=%lld us "
+        "audioMaxEnd=%lld us maxPacketDelta=%lld us streams(v=%u a=%u) audioPastTarget=%u",
+        finalDurationUs, maxVideoEndUs, minAudioEndUs, maxAudioEndUs, maxPacketDeltaUs, videoStreamCount,
+        audioStreamCount, audioPastTargetCount);
+
+    constexpr int64_t kPacketDurationWarningToleranceUs = 1000;
+    if (audioPastTargetCount > 0 ||
+        (audioStreamCount > 0 && maxPacketDeltaUs > kPacketDurationWarningToleranceUs)) {
+        DLL_Log(
+            "[VideoEncoder] WARNING: Packet-level A/V duration mismatch exceeded %lld us tolerance "
+            "(target=%lld videoEnd=%lld audioMinEnd=%lld audioMaxEnd=%lld maxPacketDelta=%lld)",
+            kPacketDurationWarningToleranceUs, finalDurationUs, maxVideoEndUs, minAudioEndUs, maxAudioEndUs,
+            maxPacketDeltaUs);
     }
 }
 
@@ -1736,6 +1827,12 @@ bool VideoEncoder::EnsureDevice() {
     // neutral and raises priority adaptively only if encode time sustains real
     // pressure, so capture does not fight the game during healthy 10-bit runs.
     if (d3d11Device) {
+        if (gpuPriority != 0) {
+            DLL_Log(
+                "[VideoEncoder] Explicit gpu_priority=%d configured; adaptive encoder GPU priority is bypassed for "
+                "this recording",
+                gpuPriority);
+        }
         ApplyGpuThreadPriority(gpuPriority, "initial");
     }
 
@@ -1996,6 +2093,7 @@ void VideoEncoder::BeginDeferredRecording() {
     vidDebugCount = 0;
     asyncWriteErrorCount = 0;
     packetStats.Reset();
+    ResetPacketTimelineDiagnostics();
 
     recordingRequested = true;
     needsCounterReset = true;
@@ -4240,6 +4338,7 @@ void VideoEncoder::Stop() {
         if (fmtCtx) {
             int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
             if (finalDurationUs > 0) {
+                LogPacketTimelineSummary(finalDurationUs);
                 ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
                 LogFinalDurationSummary(fmtCtx, finalDurationUs, muxBackpressureCount.load(std::memory_order_relaxed),
                                         peakQueueBytes.load(std::memory_order_relaxed),
@@ -6460,7 +6559,16 @@ void VideoEncoder::AsyncWriteLoop() {
                     lastMuxerVideoPtsUs.store(av_rescale_q(pkt->pts, stream->time_base, AVRational{1, 1000000}),
                                               std::memory_order_relaxed);
                 }
+                const int writtenStreamIndex = pkt->stream_index;
+                const int64_t writtenPts = pkt->pts;
+                const int64_t writtenDts = pkt->dts;
+                const int64_t writtenDuration = pkt->duration;
+                const AVRational writtenTimeBase = fmtCtx->streams[pkt->stream_index]->time_base;
                 int ret = av_interleaved_write_frame(fmtCtx, pkt);
+                if (ret >= 0) {
+                    RecordWrittenPacketTimeline(writtenStreamIndex, writtenPts, writtenDts, writtenDuration,
+                                                writtenTimeBase);
+                }
                 if (ret < 0) {
                     if (asyncWriteErrorCount++ < 10) {
                         char errbuf[AV_ERROR_MAX_STRING_SIZE];
@@ -6538,7 +6646,15 @@ void VideoEncoder::AsyncWriteLoop() {
                         }
                     }
 
-                    av_interleaved_write_frame(fmtCtx, pkt);
+                    const int flushedStreamIndex = pkt->stream_index;
+                    const int64_t flushedPts = pkt->pts;
+                    const int64_t flushedDts = pkt->dts;
+                    const int64_t flushedDuration = pkt->duration;
+                    const AVRational flushedTimeBase = stream->time_base;
+                    if (av_interleaved_write_frame(fmtCtx, pkt) >= 0) {
+                        RecordWrittenPacketTimeline(flushedStreamIndex, flushedPts, flushedDts, flushedDuration,
+                                                    flushedTimeBase);
+                    }
                     av_packet_unref(pkt);
                     flushedCount++;
                 }
@@ -6551,6 +6667,7 @@ void VideoEncoder::AsyncWriteLoop() {
                 DLL_Log("[VideoEncoder] Async Finalize: Writing Trailer...");
                 int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
                 if (finalDurationUs > 0) {
+                    LogPacketTimelineSummary(finalDurationUs);
                     ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
                     for (unsigned s = 0; s < fmtCtx->nb_streams; s++) {
                         AVStream* st = fmtCtx->streams[s];
@@ -6561,7 +6678,7 @@ void VideoEncoder::AsyncWriteLoop() {
                         }
                         int64_t firstPtsUs = av_rescale_q(firstPts, st->time_base, AVRational{1, 1000000});
                         int64_t lastPtsUs = av_rescale_q(lastPts, st->time_base, AVRational{1, 1000000});
-                        DLL_Log("[PTS ALIGN] Stream %u (codec=%s): first=%lldus last=%lldus dur=%lldus tb=%d/%lld", s,
+                        DLL_Log("[PTS ALIGN METADATA] Stream %u (codec=%s): first=%lldus last=%lldus dur=%lldus tb=%d/%lld", s,
                                 st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO
                                     ? "video"
                                     : (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ? "audio" : "unknown"),

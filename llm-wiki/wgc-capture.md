@@ -1,6 +1,6 @@
 # WGC Capture
 
-Last cross-checked: 2026-05-07
+Last cross-checked: 2026-05-13
 Stale-risk: medium
 
 Primary sources:
@@ -19,6 +19,7 @@ Primary sources:
 - `captureengine/config.ini.template`
 - `tests/test_capture_pipeline_policy.cpp`
 - `tests/test_audio_sync_utils.cpp`
+- `tests/test_mux_invariants.cpp`
 - `tests/test_shared_runtime_state.cpp`
 
 ## Current Summary
@@ -30,6 +31,8 @@ WGC CFR now aims for smooth output with lower steady-state pressure on the game:
 WGC CFR startup A/V sync now uses one shared start anchor by construction. Capture performs the existing pre-live cadence/encoder settling delay first, flushes pre-anchor warmup material, arms a one-frame startup barrier, then waits for the first usable post-delay WGC frame at or after that barrier. Mediaengine selects that accepted video timestamp as the shared audio/video anchor. First stream packets should start at PTS zero, with startup anchor delta logged as `0us`; the accepted frame should also be fresh instead of carrying the old pre-live delay as startup frame age.
 
 WGC CFR audio continuity policy separates live sync from stop/finalization. During live overload or source starvation, audio must not audibly chase WGC/encoder shortfall: positive speed-up is suppressed while a live shortfall or encoder bottleneck is active, WGC micro-correction is limited to 0.05%, and the large audio ring is used as a continuity cushion with only an emergency near-capacity trim. At stop, the encoder may drain already captured WGC frames, but cached last-frame repeats alone are not allowed to extend the tail; otherwise the result is frozen video with continuing audio. Final audio is force-drained/cut to the actual encoded video timeline so packet durations match without adding an audible speed shift.
+
+Shared CFR audio/timeline rules for both WGC and injected capture live in `cfr-capture-sync.md`. In particular, CFR timer-rebase debt is not disposable: deleting scheduled ticks can make visual content jump ahead while continuous audio appears to lag, even when final packet durations are equal.
 
 Diagnostics now keep timing concepts separate. CFR frame spacing (`8.33 ms` at 120 fps, for example) is the video frame interval, not the audio/video offset. A/V sync evidence comes from the shared startup anchor, stream first PTS values, per-track audio-vs-video `Drift` / `DriftAdj`, stop-time sample counts, and final mux duration delta. WGC visual-frame selection bias is published separately from generic output-schedule bias so audio logs can report `WgcFrameLead`, `WgcFrameLag`, and `WgcSelBias` without conflating selected content timing with encoder-thread wake timing.
 

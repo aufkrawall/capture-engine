@@ -71,14 +71,16 @@ inline uint32_t GetCfrTimerRebaseDiscardTicks(uint64_t elapsedTicks, uint64_t di
 }
 
 inline bool ShouldDiscardCfrTimerRebaseDebt(bool useScreenGrab) {
-    // Non-WGC CFR has no stop-time duplicate drain, so discard timer-rebase debt
-    // there. WGC CFR can drain outstanding ticks at stop and should preserve that
-    // debt so final video duration still matches the actual capture interval.
-    return !useScreenGrab;
+    (void)useScreenGrab;
+    // CFR tick debt is part of the recording timeline. Dropping it makes video
+    // content jump forward while audio remains continuous, which creates real
+    // content-level A/V drift even when packet durations still match.
+    return false;
 }
 
 inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useScreenGrab, bool frameAvailable,
                                         bool hasLastFrame) {
+    (void)useScreenGrab;
     if (outputShortfallTicks == 0) {
         return false;
     }
@@ -91,7 +93,7 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
         return false;
     }
 
-    return useScreenGrab ? (frameAvailable || hasLastFrame) : frameAvailable;
+    return frameAvailable || hasLastFrame;
 }
 
 inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool bufferedWgcFrameAvailable, bool hasLastFrame,
@@ -102,6 +104,19 @@ inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool buffe
     // encoded yet. It must not extend the tail using only cached last-frame
     // repeats, because that creates frozen video with continuing audio.
     return queuedWgcFrameAvailable || bufferedWgcFrameAvailable;
+}
+
+inline bool CanDrainOutstandingCfrTicks(bool useScreenGrab, bool queuedFrameAvailable, bool bufferedFrameAvailable,
+                                        bool hasLastFrame, bool mediaEngineCanRepeatLastFrame) {
+    if (useScreenGrab) {
+        return CanDrainOutstandingWgcTicks(queuedFrameAvailable, bufferedFrameAvailable, hasLastFrame,
+                                           mediaEngineCanRepeatLastFrame);
+    }
+
+    // Inject CFR has no separate source-drain path after capture stops. If the
+    // encoder was late, repeat the last captured frame to close only the already
+    // scheduled CFR debt so audio does not lag behind content that jumped ahead.
+    return queuedFrameAvailable || bufferedFrameAvailable || (hasLastFrame && mediaEngineCanRepeatLastFrame);
 }
 
 // Returns the maximum number of output ticks to emit in a single encoder loop

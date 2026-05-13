@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 #include "../common/config.h"
+#include "mux_invariants.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -122,6 +123,9 @@ private:
     void ReleaseInjectDeviceStateForScreenGrab();
     void ApplyGpuThreadPriority(int priority, const char* reason);
     void UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encodeMs, bool encoderPressureActive);
+    void ResetPacketTimelineDiagnostics();
+    void RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int64_t dts, int64_t duration, AVRational timeBase);
+    void LogPacketTimelineSummary(int64_t finalDurationUs) const;
 
     std::function<void(AVPacket*)> onPacket;  // Callback member
     AVFormatContext* fmtCtx;
@@ -227,6 +231,7 @@ private:
     std::atomic<uint32_t> packetDurationClampCount{0};
     std::atomic<uint32_t> negativePtsCount{0};
     std::atomic<uint32_t> nonMonotonicPtsCount{0};
+    std::vector<ce::mux::PacketTimelineStats> writtenPacketTimelines;
     int64_t lastQueuedVideoPts = AV_NOPTS_VALUE;
     int audioWriteLogCount = 0;
     std::atomic<int64_t> lastMuxerVideoPtsUs{0};

@@ -20,7 +20,7 @@ struct WgcAudioLagTargets {
 };
 
 inline bool ShouldDeferAudioPullUntilQuantum(int64_t pendingSamples, bool trackStartupSettled, bool forceDrain,
-                                             int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
+                                              int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
     if (forceDrain || !trackStartupSettled) {
         return false;
     }
@@ -30,6 +30,15 @@ inline bool ShouldDeferAudioPullUntilQuantum(int64_t pendingSamples, bool trackS
     }
 
     return pendingSamples < std::max<int64_t>(1, quantumSamples);
+}
+
+inline bool ShouldUseCfrAudioContinuityPolicy(bool useVfr) {
+    return !useVfr;
+}
+
+inline bool ShouldAllowWallClockAudioAnchor(bool isCfrRecording, bool forceDrain, int64_t wallVideoLagMs,
+                                            int64_t minLagMs = 500) {
+    return !forceDrain && !isCfrRecording && wallVideoLagMs > std::max<int64_t>(0, minLagMs);
 }
 
 inline int64_t ComputeVideoPipelineLagMs(int64_t wallVideoMs, int64_t encodedVideoMs) {
@@ -359,28 +368,44 @@ inline bool ShouldActivateTier2Trim(int64_t trueDriftSamples, int sampleRate, in
     return trueDriftSamples > thresholdSamples;
 }
 
-inline bool ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(bool isWgcCfrRecording, bool forceDrain,
-                                                                        int64_t timelineShortfallMs,
-                                                                        bool encoderBottlenecked,
-                                                                        int64_t minShortfallMs = 100) {
-    if (!isWgcCfrRecording || forceDrain) {
+inline bool ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(bool isCfrRecording, bool forceDrain,
+                                                                       int64_t timelineShortfallMs,
+                                                                       bool encoderBottlenecked,
+                                                                       int64_t minShortfallMs = 100) {
+    if (!isCfrRecording || forceDrain) {
         return false;
     }
 
     return encoderBottlenecked || timelineShortfallMs >= std::max<int64_t>(0, minShortfallMs);
 }
 
-inline int64_t ComputeRuntimeOverflowCapSamples(bool isWgcCfrRecording, int64_t targetLatencySamples,
+inline bool ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(bool isWgcCfrRecording, bool forceDrain,
+                                                                        int64_t timelineShortfallMs,
+                                                                        bool encoderBottlenecked,
+                                                                        int64_t minShortfallMs = 100) {
+    return ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(isWgcCfrRecording, forceDrain,
+                                                                       timelineShortfallMs, encoderBottlenecked,
+                                                                       minShortfallMs);
+}
+
+inline int64_t ComputeRuntimeOverflowCapSamples(bool isCfrContinuityProtected, int64_t targetLatencySamples,
                                                 int64_t ringCapacitySamples, int64_t defaultOverflowCapSamples,
                                                 int64_t emergencyMarginSamples) {
     const int64_t defaultCap = std::max<int64_t>(0, defaultOverflowCapSamples);
-    if (!isWgcCfrRecording || ringCapacitySamples <= 0) {
+    if (!isCfrContinuityProtected || ringCapacitySamples <= 0) {
         return defaultCap;
     }
 
     const int64_t emergencyCap =
         ringCapacitySamples - std::max<int64_t>(0, targetLatencySamples) - std::max<int64_t>(0, emergencyMarginSamples);
     return std::max<int64_t>(defaultCap, emergencyCap);
+}
+
+inline int64_t ComputeAudioSamplesAllowedBeforeEnd(int64_t targetSamples, int64_t encodedSamples,
+                                                   int64_t queuedSamples) {
+    return std::max<int64_t>(
+        0, std::max<int64_t>(0, targetSamples) - std::max<int64_t>(0, encodedSamples) -
+               std::max<int64_t>(0, queuedSamples));
 }
 
 inline int64_t ComputeTier2TrimBudget(int64_t trueDriftSamples, int sampleRate, int64_t baseQuantumSamples,
