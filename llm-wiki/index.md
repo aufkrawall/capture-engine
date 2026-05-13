@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-13 (updated: build 0.1.3084 — GTA DLSS FG startup activation and external dump storm fixes)
+Last cross-checked: 2026-05-13 (updated: build 0.1.3086 — DX10 32-bit overlay fix)
 
 Primary sources:
 - `AGENTS.md`

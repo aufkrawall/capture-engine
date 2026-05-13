@@ -1617,16 +1617,17 @@ void CheckAndInstallHooks() {
 #  ifdef _WIN64
     const bool shouldInitDX12Hook = true;
 #  else
-    // x86: init DX12 hooks when a D3D12 device was created, or when a
-    // D3D10/11 device was created (the global DXGI factory vtable hooks
-    // on CreateSwapChain/CreateSwapChainForHwnd are needed to intercept
-    // and wrap swapchain creation for overlay rendering).
-    // d3d12.dll is often loaded by D3D11On12 even in pure DX11 x86 games,
-    // and DX12 hook init installs DXGI factory vtable hooks + inline hooks
-    // on CreateSwapChainForHwnd that can interfere with DX11 swapchain
-    // creation and third-party overlays — this is a known risk accepted for
-    // correct overlay behavior.
-    const bool shouldInitDX12Hook = d3d12DeviceCreated || WasD3D11Or10DeviceCreated();
+    // x86: init DX12 hooks unconditionally when d3d12.dll is loaded (matching
+    // 64-bit behavior). The global DXGI factory vtable hooks on
+    // CreateSwapChain/CreateSwapChainForHwnd MUST be installed during DllMain
+    // (synchronously) before any game code runs — otherwise the swapchain is
+    // never intercepted and the overlay has no target. The earlier conditional
+    // (WasD3D11Or10DeviceCreated()) was too late: it only became true after the
+    // HookThread retry loop (1s tick), by which point the swapchain already
+    // existed. The third-party overlay interference concern (nvspcap.dll) is
+    // handled inside DX12Hook::Init() which defers only the eager Present hook
+    // install, NOT InstallGlobalVTableHooks().
+    const bool shouldInitDX12Hook = true;
 #  endif
 #endif
     const bool suppressDX12HookForDXVK = dxvkD3D11WrapperLoaded && !d3d12DeviceCreated;
