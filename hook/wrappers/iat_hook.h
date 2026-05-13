@@ -13,6 +13,13 @@
 
 namespace IATHook {
 
+using DynamicHookModuleFilter = bool (*)(const char* moduleBaseName, HMODULE module);
+
+inline bool ShouldApplyDynamicHookForModule(DynamicHookModuleFilter moduleFilter, const char* moduleBaseName,
+                                            HMODULE module) {
+    return !moduleFilter || moduleFilter(moduleBaseName, module);
+}
+
 /**
  * Patch a single imported function in a module's IAT
  *
@@ -81,6 +88,13 @@ bool InitializeAdvapi32Hooks(void* RegQueryValueExWHook, void** pOriginalRegQuer
  * address
  */
 void RegisterDynamicHook(const char* functionName, void* hookFunction, void** outOriginal);
+
+/**
+ * Register a hook for GetProcAddress interception, limited to matching export
+ * owner modules.
+ */
+void RegisterDynamicHookFiltered(const char* functionName, void* hookFunction, void** outOriginal,
+                                 DynamicHookModuleFilter moduleFilter);
 
 /**
  * Initialize GetProcAddress hook to enable dynamic hooking.

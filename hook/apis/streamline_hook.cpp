@@ -54,6 +54,23 @@ bool ShouldKeepPureObserverOnlyStreamlineBehavior() {
         IsObserverOnlyModeActive(), IsObserverPolicyOnlyModeActive());
 }
 
+bool TryServicePostSLStartupActivation(const char* source, bool clearStartupWindow) {
+    auto service = DXGIShared::g_PostSLStartupActivationService.load(std::memory_order_acquire);
+    if (!service) {
+        static std::atomic<int> s_missingServiceLogCount{0};
+        const int logCount = s_missingServiceLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "Streamline Hook: PostSL startup activation service unavailable "
+                "(source=%s clearWindow=%d)",
+                source ? source : "unknown", clearStartupWindow ? 1 : 0);
+        }
+        return false;
+    }
+
+    return service(source, clearStartupWindow);
+}
+
 thread_local int g_ExternalOverlayPresentGuardDepth = 0;
 
 using slResult = int;
@@ -295,6 +312,22 @@ bool IsStreamlineModuleName(const char* moduleNameOrPath) {
     return ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath);
 }
 
+bool ShouldHookStreamlineCoreExports(const char* moduleNameOrPath) {
+    return ce::streamline_runtime_policy::ShouldHookStreamlineCoreExportsOnLoad(moduleNameOrPath);
+}
+
+bool IsStreamlineCoreDynamicHookModule(const char* moduleBaseName, HMODULE) {
+    return ShouldHookStreamlineCoreExports(moduleBaseName);
+}
+
+bool IsStreamlineDLSSGDynamicHookModule(const char* moduleBaseName, HMODULE) {
+    return ce::streamline_runtime_policy::IsStreamlineDLSSGFeatureModuleName(moduleBaseName);
+}
+
+bool IsStreamlineReflexDynamicHookModule(const char* moduleBaseName, HMODULE) {
+    return ce::streamline_runtime_policy::IsStreamlineReflexFeatureModuleName(moduleBaseName);
+}
+
 uint32_t GetModuleMaskBit(const char* moduleNameOrPath) {
     const char* baseName = GetModuleBaseName(moduleNameOrPath);
     if (!baseName) {
@@ -307,6 +340,191 @@ uint32_t GetModuleMaskBit(const char* moduleNameOrPath) {
         return 1u << 1;
     }
     return 0;
+}
+
+void LogSkippedStreamlineCoreExportsOnce(const char* moduleBaseName, HMODULE module, bool hasGetFeature,
+                                         bool hasGetPlugin, bool hasSetD3DDevice) {
+    if (!moduleBaseName || !moduleBaseName[0]) {
+        return;
+    }
+
+    static std::mutex s_logMutex;
+    static std::unordered_map<std::string, bool> s_loggedModules;
+
+    std::string key = moduleBaseName;
+    key += '|';
+    key += std::to_string(reinterpret_cast<uintptr_t>(module));
+
+    {
+        std::lock_guard<std::mutex> lock(s_logMutex);
+        if (s_loggedModules.find(key) != s_loggedModules.end()) {
+            return;
+        }
+        s_loggedModules.emplace(key, true);
+    }
+
+    HookLogImportant(
+        "Streamline Hook: Skipping generic core exports for unloadable feature module %s (%p) "
+        "getFeature=%d getPlugin=%d setD3DDevice=%d",
+        moduleBaseName, module, hasGetFeature ? 1 : 0, hasGetPlugin ? 1 : 0, hasSetD3DDevice ? 1 : 0);
+}
+
+bool DoesAddressBelongToLoadedModule(void* address, HMODULE* ownerModule, char* ownerPath, DWORD ownerPathCapacity,
+                                     DWORD* outError) {
+    if (ownerModule) {
+        *ownerModule = nullptr;
+    }
+    if (ownerPath && ownerPathCapacity > 0) {
+        ownerPath[0] = '\0';
+    }
+    if (outError) {
+        *outError = ERROR_SUCCESS;
+    }
+    if (!address) {
+        if (outError) {
+            *outError = ERROR_INVALID_ADDRESS;
+        }
+        return false;
+    }
+
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(address), &module) ||
+        !module) {
+        if (outError) {
+            *outError = GetLastError();
+        }
+        return false;
+    }
+
+    if (ownerModule) {
+        *ownerModule = module;
+    }
+    if (ownerPath && ownerPathCapacity > 0) {
+        const DWORD pathLen = GetModuleFileNameA(module, ownerPath, ownerPathCapacity);
+        if (pathLen == 0 || pathLen >= ownerPathCapacity) {
+            if (outError) {
+                *outError = pathLen >= ownerPathCapacity ? ERROR_INSUFFICIENT_BUFFER : GetLastError();
+            }
+            ownerPath[0] = '\0';
+        }
+    }
+    return true;
+}
+
+void LogStaleStreamlineOriginalBlockedOnce(const char* functionName, void* original, void* validationAddress,
+                                           const char* expectedModuleRole, DWORD error) {
+    static std::mutex s_logMutex;
+    static std::unordered_map<std::string, bool> s_loggedOriginals;
+
+    std::string key = functionName ? functionName : "<unknown>";
+    key += '|';
+    key += std::to_string(reinterpret_cast<uintptr_t>(original));
+    key += '|';
+    key += std::to_string(reinterpret_cast<uintptr_t>(validationAddress));
+
+    {
+        std::lock_guard<std::mutex> lock(s_logMutex);
+        if (s_loggedOriginals.find(key) != s_loggedOriginals.end()) {
+            return;
+        }
+        s_loggedOriginals.emplace(key, true);
+    }
+
+    HookLogImportant(
+        "Streamline Hook: Blocking stale original forward for %s original=%p validation=%p expected=%s "
+        "ownerLoaded=0 error=%lu",
+        functionName ? functionName : "<unknown>", original, validationAddress,
+        expectedModuleRole ? expectedModuleRole : "loaded Streamline module", static_cast<unsigned long>(error));
+}
+
+bool IsSavedStreamlineOriginalCallable(const char* functionName, void* original, void* validationAddress,
+                                       const char* expectedModuleRole) {
+    const void* addressToValidate = validationAddress ? validationAddress : original;
+    DWORD ownerError = ERROR_SUCCESS;
+    const bool ownerLoaded = DoesAddressBelongToLoadedModule(const_cast<void*>(addressToValidate), nullptr, nullptr, 0,
+                                                            &ownerError);
+    if (ce::streamline_runtime_policy::ShouldForwardSavedStreamlineOriginal(original != nullptr, ownerLoaded)) {
+        return true;
+    }
+
+    if (original) {
+        LogStaleStreamlineOriginalBlockedOnce(functionName, original, const_cast<void*>(addressToValidate),
+                                             expectedModuleRole, ownerError);
+    }
+    return false;
+}
+
+PFN_slGetFeatureFunction GetCallableOriginalGetFeatureFunction() {
+    auto original = g_Original_slGetFeatureFunction;
+    return IsSavedStreamlineOriginalCallable("slGetFeatureFunction", reinterpret_cast<void*>(original),
+                                             g_SLGetFeatureFunctionTarget.load(std::memory_order_acquire),
+                                             "core Streamline module")
+               ? original
+               : nullptr;
+}
+
+PFN_slGetPluginFunction GetCallableOriginalGetPluginFunction() {
+    auto original = g_Original_slGetPluginFunction;
+    return IsSavedStreamlineOriginalCallable("slGetPluginFunction", reinterpret_cast<void*>(original),
+                                             g_SLGetPluginFunctionTarget.load(std::memory_order_acquire),
+                                             "core Streamline module")
+               ? original
+               : nullptr;
+}
+
+PFN_slSetD3DDevice GetCallableOriginalSetD3DDevice() {
+    auto original = g_Original_slSetD3DDevice;
+    return IsSavedStreamlineOriginalCallable("slSetD3DDevice", reinterpret_cast<void*>(original),
+                                             g_SLSetD3DDeviceTarget.load(std::memory_order_acquire),
+                                             "core Streamline module")
+               ? original
+               : nullptr;
+}
+
+PFN_slDLSSGSetOptions GetCallableOriginalDLSSGSetOptions() {
+    auto original = g_Original_slDLSSGSetOptions;
+    return IsSavedStreamlineOriginalCallable("slDLSSGSetOptions", reinterpret_cast<void*>(original),
+                                             g_DLSSGSetOptionsTarget.load(std::memory_order_acquire),
+                                             "DLSSG feature module")
+               ? original
+               : nullptr;
+}
+
+PFN_slDLSSGGetState GetCallableOriginalDLSSGGetState() {
+    auto original = g_Original_slDLSSGGetState;
+    return IsSavedStreamlineOriginalCallable("slDLSSGGetState", reinterpret_cast<void*>(original),
+                                             g_DLSSGGetStateTarget.load(std::memory_order_acquire),
+                                             "DLSSG feature module")
+               ? original
+               : nullptr;
+}
+
+PFN_slReflexSleep GetCallableOriginalReflexSleep() {
+    auto original = g_Original_slReflexSleep;
+    return IsSavedStreamlineOriginalCallable("slReflexSleep", reinterpret_cast<void*>(original),
+                                             g_ReflexSleepTarget.load(std::memory_order_acquire),
+                                             "Reflex feature module")
+               ? original
+               : nullptr;
+}
+
+PFN_slReflexSetOptions GetCallableOriginalReflexSetOptions() {
+    auto original = g_Original_slReflexSetOptions;
+    return IsSavedStreamlineOriginalCallable("slReflexSetOptions", reinterpret_cast<void*>(original),
+                                             g_ReflexSetOptionsTarget.load(std::memory_order_acquire),
+                                             "Reflex feature module")
+               ? original
+               : nullptr;
+}
+
+PFN_slReflexSetConstants GetCallableOriginalReflexSetConstants() {
+    auto original = g_Original_slReflexSetConstants;
+    return IsSavedStreamlineOriginalCallable("slReflexSetConstants", reinterpret_cast<void*>(original),
+                                             g_ReflexSetConstantsTarget.load(std::memory_order_acquire),
+                                             "Reflex feature module")
+               ? original
+               : nullptr;
 }
 
 uint32_t GetViewportKey(const slViewportHandle& viewport) {
@@ -1257,7 +1475,8 @@ bool MaybeHookReflexSetConstants(void*& function, bool fallbackToReturnedWrapper
 }
 
 bool TryResolveDLSSGFeatureHooks() {
-    if (!g_Original_slGetFeatureFunction) {
+    auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
+    if (!originalGetFeatureFunction) {
         return false;
     }
 
@@ -1265,7 +1484,7 @@ bool TryResolveDLSSGFeatureHooks() {
 
     if (!g_DLSSGSetOptionsHooked.load(std::memory_order_acquire)) {
         void* function = nullptr;
-        const slResult result = g_Original_slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", function);
+        const slResult result = originalGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", function);
         if (result == kSlResultOk && function) {
             const bool hooked = MaybeHookDLSSGSetOptions(function, false);
             hookedAnything |= hooked;
@@ -1277,7 +1496,7 @@ bool TryResolveDLSSGFeatureHooks() {
 
     if (!g_DLSSGGetStateHooked.load(std::memory_order_acquire)) {
         void* function = nullptr;
-        const slResult result = g_Original_slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGGetState", function);
+        const slResult result = originalGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGGetState", function);
         if (result == kSlResultOk && function) {
             const bool hooked = MaybeHookDLSSGGetState(function, false);
             hookedAnything |= hooked;
@@ -1292,7 +1511,8 @@ bool TryResolveDLSSGFeatureHooks() {
 }
 
 bool TryResolveReflexFeatureHooks() {
-    if (!g_Original_slGetFeatureFunction) {
+    auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
+    if (!originalGetFeatureFunction) {
         return false;
     }
 
@@ -1309,7 +1529,7 @@ bool TryResolveReflexFeatureHooks() {
 
     if (!g_ReflexSleepHooked.load(std::memory_order_acquire)) {
         queriedSleep = true;
-        sleepResult = g_Original_slGetFeatureFunction(kSLFeatureReflex, "slReflexSleep", sleepFunction);
+        sleepResult = originalGetFeatureFunction(kSLFeatureReflex, "slReflexSleep", sleepFunction);
         if (sleepResult == kSlResultOk && sleepFunction) {
             hookedAnything |= MaybeHookReflexSleep(sleepFunction, false);
         }
@@ -1317,7 +1537,7 @@ bool TryResolveReflexFeatureHooks() {
 
     if (!g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
         queriedSetOptions = true;
-        setOptionsResult = g_Original_slGetFeatureFunction(kSLFeatureReflex, "slReflexSetOptions", setOptionsFunction);
+        setOptionsResult = originalGetFeatureFunction(kSLFeatureReflex, "slReflexSetOptions", setOptionsFunction);
         if (setOptionsResult == kSlResultOk && setOptionsFunction) {
             hookedAnything |= MaybeHookReflexSetOptions(setOptionsFunction, false);
         }
@@ -1326,7 +1546,7 @@ bool TryResolveReflexFeatureHooks() {
     if (!g_ReflexSetConstantsHooked.load(std::memory_order_acquire)) {
         queriedSetConstants = true;
         setConstantsResult =
-            g_Original_slGetFeatureFunction(kSLFeatureReflex, "slReflexSetConstants", setConstantsFunction);
+            originalGetFeatureFunction(kSLFeatureReflex, "slReflexSetConstants", setConstantsFunction);
         if (setConstantsResult == kSlResultOk && setConstantsFunction) {
             hookedAnything |= MaybeHookReflexSetConstants(setConstantsFunction, false);
         }
@@ -1362,15 +1582,16 @@ bool TryResolveReflexFeatureHooks() {
 }
 
 uint32_t QueryCapabilityMax(const slViewportHandle& viewport, const slDLSSGOptions* options) {
-    if (!g_Original_slDLSSGGetState && !TryResolveDLSSGFeatureHooks()) {
+    if (!GetCallableOriginalDLSSGGetState() && !TryResolveDLSSGFeatureHooks()) {
         return 0;
     }
-    if (!g_Original_slDLSSGGetState) {
+    auto originalGetState = GetCallableOriginalDLSSGGetState();
+    if (!originalGetState) {
         return 0;
     }
 
     slDLSSGState state;
-    const slResult result = g_Original_slDLSSGGetState(viewport, state, options);
+    const slResult result = originalGetState(viewport, state, options);
     if (result != kSlResultOk || state.numFramesToGenerateMax == 0) {
         return 0;
     }
@@ -1385,25 +1606,33 @@ void RegisterDynamicHooksOnce() {
         return;
     }
 
-    IATHook::RegisterDynamicHook("slGetFeatureFunction", reinterpret_cast<void*>(Hooked_slGetFeatureFunction),
-                                 reinterpret_cast<void**>(&g_Original_slGetFeatureFunction));
-    IATHook::RegisterDynamicHook("slGetPluginFunction", reinterpret_cast<void*>(Hooked_slGetPluginFunction),
-                                 reinterpret_cast<void**>(&g_Original_slGetPluginFunction));
-    IATHook::RegisterDynamicHook("slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
-                                 reinterpret_cast<void**>(&g_Original_slSetD3DDevice));
-    IATHook::RegisterDynamicHook("slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
-                                 reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions));
-    IATHook::RegisterDynamicHook("slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
-                                 reinterpret_cast<void**>(&g_Original_slDLSSGGetState));
-    IATHook::RegisterDynamicHook("slReflexSleep", reinterpret_cast<void*>(Hooked_slReflexSleep),
-                                 reinterpret_cast<void**>(&g_Original_slReflexSleep));
-    IATHook::RegisterDynamicHook("slReflexSetOptions", reinterpret_cast<void*>(Hooked_slReflexSetOptions),
-                                 reinterpret_cast<void**>(&g_Original_slReflexSetOptions));
-    IATHook::RegisterDynamicHook("slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
-                                 reinterpret_cast<void**>(&g_Original_slReflexSetConstants));
+    IATHook::RegisterDynamicHookFiltered("slGetFeatureFunction", reinterpret_cast<void*>(Hooked_slGetFeatureFunction),
+                                         reinterpret_cast<void**>(&g_Original_slGetFeatureFunction),
+                                         IsStreamlineCoreDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slGetPluginFunction", reinterpret_cast<void*>(Hooked_slGetPluginFunction),
+                                         reinterpret_cast<void**>(&g_Original_slGetPluginFunction),
+                                         IsStreamlineCoreDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
+                                         reinterpret_cast<void**>(&g_Original_slSetD3DDevice),
+                                         IsStreamlineCoreDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
+                                         reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions),
+                                         IsStreamlineDLSSGDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
+                                         reinterpret_cast<void**>(&g_Original_slDLSSGGetState),
+                                         IsStreamlineDLSSGDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slReflexSleep", reinterpret_cast<void*>(Hooked_slReflexSleep),
+                                         reinterpret_cast<void**>(&g_Original_slReflexSleep),
+                                         IsStreamlineReflexDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slReflexSetOptions", reinterpret_cast<void*>(Hooked_slReflexSetOptions),
+                                         reinterpret_cast<void**>(&g_Original_slReflexSetOptions),
+                                         IsStreamlineReflexDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
+                                         reinterpret_cast<void**>(&g_Original_slReflexSetConstants),
+                                         IsStreamlineReflexDynamicHookModule);
     HookLogImportant(
-        "Streamline Hook: Registered dynamic hooks for slGetFeatureFunction, slGetPluginFunction, slSetD3DDevice, "
-        "slDLSSGSetOptions, slDLSSGGetState, slReflexSleep, slReflexSetOptions, and slReflexSetConstants");
+        "Streamline Hook: Registered module-filtered dynamic hooks for core Streamline exports and owned feature "
+        "exports");
 }
 
 bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
@@ -1416,6 +1645,7 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     RegisterDynamicHooksOnce();
 
     const char* moduleBaseName = GetModuleBaseName(moduleNameOrPath);
+    const bool shouldHookCoreExports = ShouldHookStreamlineCoreExports(moduleBaseName);
     const uint32_t moduleBit = GetModuleMaskBit(moduleBaseName);
     const auto originalGetFeatureFunction =
         reinterpret_cast<PFN_slGetFeatureFunction>(GetProcAddress(module, "slGetFeatureFunction"));
@@ -1441,11 +1671,17 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         return false;
     }
 
+    if (!shouldHookCoreExports &&
+        (originalGetFeatureFunction || originalGetPluginFunction || originalSetD3DDevice)) {
+        LogSkippedStreamlineCoreExportsOnce(moduleBaseName, module, originalGetFeatureFunction != nullptr,
+                                            originalGetPluginFunction != nullptr, originalSetD3DDevice != nullptr);
+    }
+
     bool hookedAnything = false;
     {
         std::lock_guard<std::mutex> lock(g_ModuleHookMutex);
 
-        if (originalGetFeatureFunction) {
+        if (shouldHookCoreExports && originalGetFeatureFunction) {
             if (!g_Original_slGetFeatureFunction) {
                 g_Original_slGetFeatureFunction = originalGetFeatureFunction;
             }
@@ -1456,7 +1692,7 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                                                     g_SLGetFeatureFunctionTarget, "slGetFeatureFunction");
         }
 
-        if (originalGetPluginFunction) {
+        if (shouldHookCoreExports && originalGetPluginFunction) {
             if (!g_Original_slGetPluginFunction) {
                 g_Original_slGetPluginFunction = originalGetPluginFunction;
             }
@@ -1467,7 +1703,7 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                                                     g_SLGetPluginFunctionTarget, "slGetPluginFunction");
         }
 
-        if (originalSetD3DDevice) {
+        if (shouldHookCoreExports && originalSetD3DDevice) {
             if (!g_Original_slSetD3DDevice) {
                 g_Original_slSetD3DDevice = originalSetD3DDevice;
             }
@@ -1477,7 +1713,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                 g_Original_slSetD3DDevice, g_SLSetD3DDeviceHooked, g_SLSetD3DDeviceTarget, "slSetD3DDevice");
         }
 
-        if (moduleBit != 0 && (g_IATPatchesMask.load(std::memory_order_acquire) & moduleBit) == 0) {
+        if (shouldHookCoreExports && moduleBit != 0 &&
+            (g_IATPatchesMask.load(std::memory_order_acquire) & moduleBit) == 0) {
             void* dummy = nullptr;
             if (originalGetFeatureFunction) {
                 IATHook::PatchIATAllModules(moduleBaseName, "slGetFeatureFunction",
@@ -1494,35 +1731,45 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
             g_IATPatchesMask.fetch_or(moduleBit, std::memory_order_acq_rel);
         }
 
-        if (originalDLSSGSetOptions) {
+        if (originalDLSSGSetOptions &&
+            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGSetOptions",
+                                                                                   moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
                 reinterpret_cast<void*>(originalDLSSGSetOptions),
                 reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions), "slDLSSGSetOptions");
         }
 
-        if (originalDLSSGGetState) {
+        if (originalDLSSGGetState &&
+            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGGetState",
+                                                                                   moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
                 reinterpret_cast<void*>(originalDLSSGGetState), reinterpret_cast<void**>(&g_Original_slDLSSGGetState),
                 "slDLSSGGetState");
         }
 
-        if (originalReflexSleep) {
+        if (originalReflexSleep &&
+            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSleep",
+                                                                                   moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slReflexSleep", reinterpret_cast<void*>(Hooked_slReflexSleep),
                 reinterpret_cast<void*>(originalReflexSleep), reinterpret_cast<void**>(&g_Original_slReflexSleep),
                 "slReflexSleep");
         }
 
-        if (originalReflexSetOptions) {
+        if (originalReflexSetOptions &&
+            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetOptions",
+                                                                                   moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slReflexSetOptions", reinterpret_cast<void*>(Hooked_slReflexSetOptions),
                 reinterpret_cast<void*>(originalReflexSetOptions),
                 reinterpret_cast<void**>(&g_Original_slReflexSetOptions), "slReflexSetOptions");
         }
 
-        if (originalReflexSetConstants) {
+        if (originalReflexSetConstants &&
+            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetConstants",
+                                                                                   moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
                 reinterpret_cast<void*>(originalReflexSetConstants),
@@ -1639,11 +1886,12 @@ bool ScanLoadedStreamlineModules() {
 }
 
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options) {
-    if (!g_Original_slDLSSGGetState) {
+    auto originalGetState = GetCallableOriginalDLSSGGetState();
+    if (!originalGetState) {
         return kSlResultErrorInvalidState;
     }
 
-    const slResult result = g_Original_slDLSSGGetState(viewport, state, options);
+    const slResult result = originalGetState(viewport, state, options);
     const uint32_t viewportKey = GetViewportKey(viewport);
     const bool viewportWasActive = WasViewportRuntimeStateActive(viewportKey);
     const bool hasRuntimeFenceEvidence = HasDLSSGRuntimeFenceEvidence(state);
@@ -1735,14 +1983,13 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
                     safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
                     postSLConfirmedRendering, postSLConfirmedButStartupSettling,
                     postSLConfirmedButRuntimeStateStabilizing);
-            } else if (g_Original_slDLSSGSetOptions) {
+            } else if (auto originalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
                 HookLogImportant(
                     "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via GetState — startup window "
                     "expired (viewport=%u settling=%d stabilizing=%d)",
                     g_SuppressedOffViewportKey, postSLConfirmedButStartupSettling ? 1 : 0,
                     postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
-                const slResult offResult =
-                    g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
+                const slResult offResult = originalSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
                 if (offResult != kSlResultOk) {
                     HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via GetState returned %d",
                                      offResult);
@@ -1767,7 +2014,8 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
 }
 
 slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options) {
-    if (!g_Original_slDLSSGSetOptions) {
+    auto originalSetOptions = GetCallableOriginalDLSSGSetOptions();
+    if (!originalSetOptions) {
         return kSlResultErrorInvalidState;
     }
 
@@ -1844,14 +2092,14 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                     safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
                     postSLConfirmedRendering, postSLConfirmedButStartupSettling,
                     postSLConfirmedButRuntimeStateStabilizing);
-            } else if (g_Original_slDLSSGSetOptions) {
+            } else if (auto suppressedOriginalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
                 HookLogImportant(
                     "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) — startup window expired "
                     "(viewport=%u settling=%d stabilizing=%d)",
                     g_SuppressedOffViewportKey, postSLConfirmedButStartupSettling ? 1 : 0,
                     postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
                 const slResult offResult =
-                    g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
+                    suppressedOriginalSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
                 if (offResult != kSlResultOk) {
                     HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) returned %d", offResult);
                 }
@@ -1907,7 +2155,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         }
         result = kSlResultOk;
     } else {
-        result = g_Original_slDLSSGSetOptions(viewport, adjustedOptions);
+        result = originalSetOptions(viewport, adjustedOptions);
     }
 
     LogDLSSGSetOptionsTransition(viewportKey, options, adjustedOptions, originalGeneratedFrames, capabilityMax,
@@ -2064,11 +2312,12 @@ void* Hooked_slGetPluginFunction(const char* functionName) {
         return reinterpret_cast<void*>(SlNullFunctionStub);
     }
 
-    if (!g_Original_slGetPluginFunction) {
-        return nullptr;
+    auto originalGetPluginFunction = GetCallableOriginalGetPluginFunction();
+    if (!originalGetPluginFunction) {
+        return g_Original_slGetPluginFunction ? reinterpret_cast<void*>(SlNullFunctionStub) : nullptr;
     }
 
-    return g_Original_slGetPluginFunction(functionName);
+    return originalGetPluginFunction(functionName);
 }
 
 slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName, void*& function) {
@@ -2085,11 +2334,13 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
         return kSlResultErrorInvalidState;
     }
 
-    if (!g_Original_slGetFeatureFunction) {
+    auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
+    if (!originalGetFeatureFunction) {
+        function = reinterpret_cast<void*>(SlNullFunctionStub);
         return kSlResultErrorInvalidState;
     }
 
-    const slResult result = g_Original_slGetFeatureFunction(feature, functionName, function);
+    const slResult result = originalGetFeatureFunction(feature, functionName, function);
     // Safety: if the original returned success but gave us NULL, the caller
     // would call through NULL → RIP=0 crash.  This can happen when third-party
     // overlays (e.g., Steam's OverlayHookD3D3) call slGetFeatureFunction
@@ -2149,11 +2400,12 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
 }
 
 slResult Hooked_slSetD3DDevice(void* d3dDevice) {
-    if (!g_Original_slSetD3DDevice) {
+    auto originalSetD3DDevice = GetCallableOriginalSetD3DDevice();
+    if (!originalSetD3DDevice) {
         return kSlResultErrorInvalidState;
     }
 
-    const slResult result = g_Original_slSetD3DDevice(d3dDevice);
+    const slResult result = originalSetD3DDevice(d3dDevice);
     if (result == kSlResultOk) {
         TryResolveDLSSGFeatureHooks();
         TryResolveReflexFeatureHooks();
@@ -2164,13 +2416,14 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
 // Hook for Streamline Reflex sleep. This lets CE observe game-owned Reflex
 // pacing without patching NvAPI_D3D_Sleep inside nvapi64.dll.
 slResult Hooked_slReflexSleep(const void* frame) {
-    if (!g_Original_slReflexSleep) {
+    auto originalReflexSleep = GetCallableOriginalReflexSleep();
+    if (!originalReflexSleep) {
         return kSlResultErrorInvalidState;
     }
 
     g_ReflexLimiter.ApplyHybridPacingBeforeNativeSleep();
 
-    const slResult result = g_Original_slReflexSleep(frame);
+    const slResult result = originalReflexSleep(frame);
     if (result == kSlResultOk) {
         g_ReflexLimiter.MarkGameSleep("Streamline");
         g_ReflexLimiter.MarkNativePacingSignal();
@@ -2186,7 +2439,8 @@ slResult Hooked_slReflexSleep(const void* frame) {
 
 // Hook for current Streamline Reflex options — detects low-latency and FPS limiter signals.
 slResult Hooked_slReflexSetOptions(const slReflexOptions& options) {
-    if (!g_Original_slReflexSetOptions) {
+    auto originalReflexSetOptions = GetCallableOriginalReflexSetOptions();
+    if (!originalReflexSetOptions) {
         return kSlResultErrorInvalidState;
     }
 
@@ -2198,7 +2452,7 @@ slResult Hooked_slReflexSetOptions(const slReflexOptions& options) {
     HandleStreamlineReflexPacingSignal("slReflexSetOptions", options.mode, options.frameLimitUs,
                                        adjustedOptions.frameLimitUs, targetIntervalUs);
 
-    const slResult result = g_Original_slReflexSetOptions(adjustedOptions);
+    const slResult result = originalReflexSetOptions(adjustedOptions);
     if (result == kSlResultOk && frameLimitForwarding.overrideApplied) {
         HookLogImportant(
             "Streamline Hook: Overrode Reflex options frameLimitUs %u->%u (mode=%d incomingActive=%d)",
@@ -2219,7 +2473,8 @@ slResult Hooked_slReflexSetOptions(const slReflexOptions& options) {
 
 // Hook for legacy slReflexSetConstants — detects when game activates Reflex via Streamline.
 slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
-    if (!g_Original_slReflexSetConstants) {
+    auto originalReflexSetConstants = GetCallableOriginalReflexSetConstants();
+    if (!originalReflexSetConstants) {
         return kSlResultErrorInvalidState;
     }
 
@@ -2237,7 +2492,7 @@ slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
                                        adjustedConsts.frameLimitUs, targetIntervalUs);
 
     // Forward to the real slReflexSetConstants
-    const slResult result = g_Original_slReflexSetConstants(adjustedConsts);
+    const slResult result = originalReflexSetConstants(adjustedConsts);
     if (result == kSlResultOk && adjustedConsts.frameLimitUs != consts.frameLimitUs) {
         HookLogImportant("Streamline Hook: Overrode Reflex constants frameLimitUs %u->%u (mode=%d)",
                          consts.frameLimitUs, adjustedConsts.frameLimitUs, adjustedConsts.mode);
@@ -2434,6 +2689,20 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
             postSLConfirmedButRuntimeStateStabilizing);
     if (shouldKeepDeferred) {
+        if (ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(
+                shouldKeepDeferred, windowStillActive, activationPending, postSLActiveButUnconfirmed,
+                callbackInstalled)) {
+            const bool serviced = TryServicePostSLStartupActivation(
+                "StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded deferred OFF churn", true);
+            static std::atomic<int> s_deferredOffServiceLogCount{0};
+            const int logCount = s_deferredOffServiceLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 100) == 0) {
+                HookLogImportant(
+                    "Streamline Hook: Startup-protected OFF churn serviced PostSL startup activation before "
+                    "remaining deferred (serviced=%d pending=%d unconfirmed=%d)",
+                    serviced ? 1 : 0, activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0);
+            }
+        }
         return;
     }
 
@@ -2465,7 +2734,8 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
             g_SuppressedSetOptionsOffDuringStartup = false;
         } else {
-            if (!g_Original_slDLSSGSetOptions) {
+            auto originalSetOptions = GetCallableOriginalDLSSGSetOptions();
+            if (!originalSetOptions) {
                 return;
             }
             HookLogImportant(
@@ -2473,7 +2743,7 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 "expired (viewport=%u, activationPending=%d settling=%d stabilizing=%d)",
                 g_SuppressedOffViewportKey, activationPending ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                 postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
-            const slResult offResult = g_Original_slDLSSGSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
+            const slResult offResult = originalSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
             if (offResult != kSlResultOk) {
                 HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via periodic flush returned %d",
                                  offResult);
@@ -2507,21 +2777,10 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 "Streamline Hook: Activation still pending after OFF flush — "
                 "PostSL callback never entered (deferred or bypassed); trigger direct "
                 "callback to attempt activation before Streamline processes OFF");
-
-            // CRITICAL: Clear the startup transition window so that when the PostSL
-            // callback is skipped (due to null swapchain), the next ProcessFrame call
-            // won't see the window as still active and defer again.
-            DXGIShared::ClearStreamlineStartupTransitionWindow();
-            HookLogImportant("Streamline Hook: Cleared startup transition window after OFF flush trigger");
-
-            auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
-            if (postSLCallback) {
-                // Note: PostSLOverlayRenderGated now handles nullptr swapchain by returning early.
-                // The startup window has been cleared, so the next normal ProcessFrame call
-                // will properly complete activation with a valid swapchain.
-                postSLCallback(nullptr);
-                HookLogImportant("Streamline Hook: PostSL callback (via nullptr) completed after OFF flush");
-            }
+            const bool serviced = TryServicePostSLStartupActivation(
+                "StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded after OFF flush", true);
+            HookLogImportant("Streamline Hook: PostSL startup activation service after OFF flush returned %d",
+                             serviced ? 1 : 0);
         } else if (activationPending && callbackInstalled && postSLActiveButUnconfirmed) {
             logSkippedDirectCallbackAfterActivation();
         }
@@ -2538,21 +2797,10 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             "Streamline Hook: Startup window expired with activation pending but no "
             "suppressed OFF — triggering PostSL callback directly to complete "
             "activation before Streamline times out");
-
-        // CRITICAL: Clear the startup transition window so that when the PostSL
-        // callback is skipped (due to null swapchain), the next ProcessFrame call
-        // won't see the window as still active and defer again.
-        DXGIShared::ClearStreamlineStartupTransitionWindow();
-        HookLogImportant("Streamline Hook: Cleared startup transition window before direct callback trigger");
-
-        auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
-        if (postSLCallback) {
-            // Note: PostSLOverlayRenderGated now handles nullptr swapchain by returning early.
-            // The startup window has been cleared, so the next normal ProcessFrame call
-            // will properly complete activation with a valid swapchain.
-            postSLCallback(nullptr);
-            HookLogImportant("Streamline Hook: PostSL callback (via nullptr) completed");
-        }
+        const bool serviced = TryServicePostSLStartupActivation(
+            "StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded expiry", true);
+        HookLogImportant("Streamline Hook: PostSL startup activation service after startup expiry returned %d",
+                         serviced ? 1 : 0);
     } else if (activationPending && callbackInstalled && postSLActiveButUnconfirmed) {
         logSkippedDirectCallbackAfterActivation();
     }

@@ -496,7 +496,7 @@ track=2
 [Performance]
 ; For video capture. These usually don't need to be changed
 ; process_priority - Values: idle, below_normal, normal, above_normal, high, realtime
-process_priority=normal
+process_priority=above_normal
 ; gpu_priority - Values: integer -7..7
 gpu_priority=0
 ; copy_queue_priority - Values: low, normal, high
@@ -753,7 +753,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
 
     // Performance (Priority Settings)
-    config.processPriority = GetStr("Performance", "process_priority", "normal");
+    config.processPriority = GetStr("Performance", "process_priority", "above_normal");
     config.video.gpuPriority = GetInt("Performance", "gpu_priority", 0);
     config.copyQueuePriority = GetStr("Performance", "copy_queue_priority", "normal");
 

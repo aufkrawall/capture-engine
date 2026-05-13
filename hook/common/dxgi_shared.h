@@ -15,6 +15,7 @@ class PerformanceMetrics;
 // (after Streamline's FG pipeline finishes) so the overlay renders AFTER FG
 // interpolation — matching RTSS's approach for FG compatibility.
 using PostSLOverlayRenderFn = void (*)(IDXGISwapChain* pSwapChain);
+using PostSLStartupActivationServiceFn = bool (*)(const char* source, bool clearStartupWindow);
 
 namespace DXGIShared {
 
@@ -71,6 +72,10 @@ extern std::mutex g_SharedMutex;
 
 // Callback for post-SL FG overlay rendering (set by dx12_hook.cpp).
 extern std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback;
+
+// Service for forcing a pending PostSL startup activation with a valid retained
+// swapchain when the normal ProcessFrame path has stalled behind Streamline.
+extern std::atomic<PostSLStartupActivationServiceFn> g_PostSLStartupActivationService;
 
 // Direct Streamline FG active signal — set by streamline_hook.cpp when
 // slDLSSGSetOptions transitions FG on/off.  More immediate than heuristic
@@ -197,6 +202,21 @@ inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable
     return !trackedVtableMatchesCurrent || !presentHookInstalled || !present1HookInstalled;
 }
 
+inline bool ShouldDeferVTableRepairDuringStreamlineStartup(bool streamlineFGRunning,
+                                                           bool streamlineStartupHandoffPending,
+                                                           bool streamlineStartupTransitionWindowActive,
+                                                           bool postSLConfirmedRendering) {
+    if (!streamlineFGRunning) {
+        return false;
+    }
+
+    // Confirmation belongs to a specific swapchain/queue epoch. A fresh
+    // Streamline startup handoff can still have an older confirmed PostSL proof
+    // while DLSSG is rebuilding its internal swapchain path, so keep vtable
+    // repair out of both the unconfirmed and explicitly fresh-startup windows.
+    return !postSLConfirmedRendering || streamlineStartupHandoffPending || streamlineStartupTransitionWindowActive;
+}
+
 inline bool ShouldTreatEarlyPresentRecursionAsForwardable(bool hasPresentTrampoline, bool hasPresentBypass,
                                                           bool inWrapperPresent, bool isWrappedSwapChain,
                                                           bool streamlineFGRunning) {
@@ -267,7 +287,8 @@ inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(bool external
                                                                    bool isWrappedSwapChain,
                                                                    bool externalOverlayPresentInvokeInProgress,
                                                                    bool streamlineStackActive,
-                                                                   bool streamlinePluginLookupGuardAvailable) {
+                                                                   bool streamlinePluginLookupGuardAvailable,
+                                                                   bool steamNullCallbackRecoveryAvailable = true) {
     // Directly calling Steam's saved Present hook is only safe when CE has a
     // bypass trampoline available for any recursive Present that Steam may issue
     // internally.  Wrapped swapchains already have their own cooperation path.
@@ -276,19 +297,29 @@ inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(bool external
         return false;
     }
 
-    if (streamlineStackActive && !streamlinePluginLookupGuardAvailable) {
-        // Steam may query Streamline while rendering its overlay. Talos showed
-        // that the dangerous path is not limited to the public
-        // slGetFeatureFunction lookup: Steam can also land inside
-        // sl_common!slGetPluginFunction from Streamline/DLSSG startup and FG
-        // callbacks, and that path can still call through a NULL internal
-        // callback even after CE's own PostSL renderer has confirmed. Until
-        // CE's slGetPluginFunction guard is installed, use the DXGI bypass
-        // trampoline instead of directly invoking Steam from the SL stack.
+    if (streamlineStackActive &&
+        (!streamlinePluginLookupGuardAvailable || !steamNullCallbackRecoveryAvailable)) {
+        // Steam may query Streamline while rendering its overlay, and it may
+        // also call through its own lazily initialized NULL callback. The
+        // Streamline plugin guard and Steam NULL-callback VEH guard protect
+        // different failure modes; both must be present before CE directly
+        // invokes Steam from a Streamline-originated stack.
         return false;
     }
 
     return true;
+}
+
+inline bool ShouldFallbackGuardedExternalSteamOverlayPresentForResult(bool bypassAvailable, HRESULT steamPresentHr,
+                                                                      bool backbufferIndexMeasured,
+                                                                      bool backbufferAdvanced) {
+    if (!bypassAvailable) {
+        return false;
+    }
+    if (FAILED(steamPresentHr)) {
+        return true;
+    }
+    return backbufferIndexMeasured && !backbufferAdvanced;
 }
 
 inline bool ShouldBypassRecursiveExternalOverlayPresent(bool externalOverlayPresentInvokeInProgress,
@@ -456,6 +487,26 @@ inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(bool
     return isD3D12SwapChain && hadFSRFGPhase && startupTopLevelCandidate && staleThirdPartyPresentHookRisk;
 }
 
+inline bool ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
+    bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain, bool bypassAvailable,
+    bool callerFromStreamlineModule, bool streamlineStartupHandoffInProgress, bool runtimeOwnedSwapchainActive,
+    bool startupNormalRouteCandidate) {
+    // A fresh runtime-owned Streamline swapchain handoff can expose a normal
+    // startup Present before the shared dxgi Present hook chain is safe to enter
+    // directly. Keep the logical normal route so startup/PostSL state advances,
+    // but use bypass transport while that fresh runtime-owned handoff is live.
+    return isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain && bypassAvailable &&
+           callerFromStreamlineModule && streamlineStartupHandoffInProgress && runtimeOwnedSwapchainActive &&
+           startupNormalRouteCandidate;
+}
+
+inline bool ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
+    bool isD3D12SwapChain, bool hadFSRFGPhase, bool startupTopLevelCandidate,
+    bool freshRuntimeOwnedHandoffTransportRisk, bool staleThirdPartyPresentHookRisk) {
+    return isD3D12SwapChain && startupTopLevelCandidate &&
+           (freshRuntimeOwnedHandoffTransportRisk || (hadFSRFGPhase && staleThirdPartyPresentHookRisk));
+}
+
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
     bool observerOnlyMode, bool hadFSRFGPhase, bool explicitSetOptionsActivation, bool safePostFSRBootstrapPath,
     bool postSLStartupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedButStartupSettling,
@@ -485,19 +536,19 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
 
 inline bool ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
     bool isD3D12SwapChain, bool keepStartupPresentOnNormalRoute, bool hadFSRFGPhase, bool postSLConfirmedRendering,
-    bool postSLConfirmedButStartupSettling, bool staleThirdPartyPresentHookRisk) {
-    // After an FSR->DLSS comeback, the shared routing layer can correctly decide
-    // that the decisive startup Present must stay in the normal Streamline family
-    // so PostSL keeps making progress. But the brand-new swapchain can still have
-    // stale third-party vtable hooks whose saved original Present pointer is not
-    // ready yet. The Talos post-FSR comeback traces show that the first confirmed
-    // render alone is still too early to trust the recovered hook chain again:
-    // Steam can still crash on the next few confirmed-but-startup-settling
-    // Presents. Keep the callback/routing decision, but transport the actual
-    // Present through the bypass trampoline until PostSL has both confirmed a
-    // successful render and left that short startup-settling window.
-    return isD3D12SwapChain && keepStartupPresentOnNormalRoute && hadFSRFGPhase && staleThirdPartyPresentHookRisk &&
-           (!postSLConfirmedRendering || postSLConfirmedButStartupSettling);
+    bool postSLConfirmedButStartupSettling, bool freshRuntimeOwnedHandoffTransportRisk,
+    bool staleThirdPartyPresentHookRisk) {
+    // After a fresh runtime-owned Streamline handoff, the shared routing layer can
+    // correctly decide that decisive startup Presents must stay in the normal
+    // Streamline family so PostSL keeps making progress. But the new swapchain
+    // can still have a fragile dxgi Present hook chain. Keep the callback/routing
+    // decision, but transport the actual Present through the bypass trampoline
+    // until PostSL has both confirmed a successful render and left startup
+    // settling. The older post-FSR stale-Steam risk remains an additional reason
+    // to use the same transport.
+    return isD3D12SwapChain && keepStartupPresentOnNormalRoute &&
+           (!postSLConfirmedRendering || postSLConfirmedButStartupSettling) &&
+           (freshRuntimeOwnedHandoffTransportRisk || (hadFSRFGPhase && staleThirdPartyPresentHookRisk));
 }
 
 inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(

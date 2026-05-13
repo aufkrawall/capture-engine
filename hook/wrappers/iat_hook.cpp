@@ -104,6 +104,7 @@ struct PatchedEntry {
 struct DynamicHookEntry {
     void* hookFunction;
     void** outOriginal;
+    DynamicHookModuleFilter moduleFilter;
 };
 
 static std::mutex g_DynamicHookLock;
@@ -945,6 +946,7 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     {
         // Check all registered hooks for a match against this proc address.
         // We hold g_DynamicHookLock, so the map is stable.
+        std::lock_guard<std::mutex> lock(g_DynamicHookLock);
         for (const auto& hookEntry : g_DynamicHooks) {
             if ((void*)proc == hookEntry.second.hookFunction && hookEntry.second.outOriginal &&
                 *hookEntry.second.outOriginal) {
@@ -1000,6 +1002,10 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
             }
         }
 
+        if (!ShouldApplyDynamicHookForModule(it->second.moduleFilter, moduleName[0] ? moduleName : nullptr, hModule)) {
+            return proc;
+        }
+
         // We found a hook!
         // Store the original address if requested
         if (it->second.outOriginal && *it->second.outOriginal == nullptr) {
@@ -1033,8 +1039,13 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
 }
 
 void RegisterDynamicHook(const char* functionName, void* hookFunction, void** outOriginal) {
+    RegisterDynamicHookFiltered(functionName, hookFunction, outOriginal, nullptr);
+}
+
+void RegisterDynamicHookFiltered(const char* functionName, void* hookFunction, void** outOriginal,
+                                 DynamicHookModuleFilter moduleFilter) {
     std::lock_guard<std::mutex> lock(g_DynamicHookLock);
-    g_DynamicHooks[functionName] = {hookFunction, outOriginal};
+    g_DynamicHooks[functionName] = {hookFunction, outOriginal, moduleFilter};
 }
 
 void InitializeGetProcAddressHook() {

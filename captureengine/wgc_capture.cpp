@@ -2589,6 +2589,32 @@ bool WGCCapture::IsUsingDedicatedCaptureDevice() const {
 #endif
 }
 
+void WGCCapture::SetGpuPriority(int priority) {
+#if HAS_WGC
+    if (!impl_ || !impl_->d3dDevice_) {
+        LogWarn("[WGC] SetGpuPriority: no capture device available");
+        return;
+    }
+    priority = std::clamp(priority, -7, 7);
+    IDXGIDevice* dxgiDevice = nullptr;
+    HRESULT hr = impl_->d3dDevice_->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
+    if (SUCCEEDED(hr) && dxgiDevice) {
+        hr = dxgiDevice->SetGPUThreadPriority(priority);
+        if (SUCCEEDED(hr)) {
+            LogInfo("[WGC] Set GPU thread priority to %d (dedicated=%d)", priority,
+                    impl_->usingDedicatedCaptureDevice_ ? 1 : 0);
+        } else {
+            LogWarn("[WGC] SetGPUThreadPriority(%d) failed: HR=0x%08lX", priority, (unsigned long)hr);
+        }
+        dxgiDevice->Release();
+    } else {
+        LogWarn("[WGC] SetGpuPriority: failed to query IDXGIDevice (HR=0x%08lX)", (unsigned long)hr);
+    }
+#else
+    (void)priority;
+#endif
+}
+
 void WGCCapture::ResetStats() {
     droppedFrames.store(0, std::memory_order_relaxed);
 #if HAS_WGC

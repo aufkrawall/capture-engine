@@ -65,20 +65,64 @@ TEST(CrashDumpPolicyTest, ExternalDumpMirrorSkipsSessionLocalTargets) {
 }
 
 TEST(CrashDumpPolicyTest, ExternalDumpMirrorBuildsStableDestinationFileNames) {
-    EXPECT_EQ(
-        policy::BuildMirroredExternalDumpFileName(
-            R"(C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp)"),
-        "external_51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp");
-    EXPECT_EQ(policy::BuildMirroredExternalDumpFileName("crashcontext"), "external_crashcontext.dmp");
+    const std::string mirrored = policy::BuildMirroredExternalDumpFileName(
+        R"(C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\51e9b489-70bb-4998-a4ec-254bdd858cbd.dmp)");
+    EXPECT_NE(mirrored.find("external_51e9b489-70bb-4998-a4ec-254bdd858cbd_"), std::string::npos);
+    EXPECT_TRUE(policy::EndsWithAsciiInsensitive(mirrored.c_str(), ".dmp"));
+
+    EXPECT_NE(policy::BuildMirroredExternalDumpFileName(R"(C:\a\sl-sha-da40c631.dmp)"),
+              policy::BuildMirroredExternalDumpFileName(R"(C:\b\sl-sha-da40c631.dmp)"));
+    EXPECT_NE(policy::BuildMirroredExternalDumpFileName("crashcontext").find("external_crashcontext_"),
+              std::string::npos);
     EXPECT_EQ(policy::BuildMirroredExternalDumpFileName(nullptr), "external_dump.dmp");
 }
 
 TEST(CrashDumpPolicyTest, SupplementalExternalCrashDumpBuildsStableDestinationFileNames) {
-    EXPECT_EQ(
-        policy::BuildSupplementalCrashDumpFileNameFromExternalSource(
-            R"(C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\103327d5-227b-4bb7-b529-7c8a38cccdbf.dmp)"),
-        "crash_external_103327d5-227b-4bb7-b529-7c8a38cccdbf.dmp");
-    EXPECT_EQ(policy::BuildSupplementalCrashDumpFileNameFromExternalSource("sl-sha-11cf43f"),
-              "crash_external_sl-sha-11cf43f.dmp");
+    const std::string supplemental = policy::BuildSupplementalCrashDumpFileNameFromExternalSource(
+        R"(C:\Users\TestUser\AppData\Local\Rockstar Games\GTAV Enhanced\CrashLogs\103327d5-227b-4bb7-b529-7c8a38cccdbf.dmp)");
+    EXPECT_NE(supplemental.find("crash_external_103327d5-227b-4bb7-b529-7c8a38cccdbf_"), std::string::npos);
+    EXPECT_TRUE(policy::EndsWithAsciiInsensitive(supplemental.c_str(), ".dmp"));
+    EXPECT_NE(policy::BuildSupplementalCrashDumpFileNameFromExternalSource("sl-sha-11cf43f")
+                  .find("crash_external_sl-sha-11cf43f_"),
+              std::string::npos);
     EXPECT_EQ(policy::BuildSupplementalCrashDumpFileNameFromExternalSource(nullptr), "crash_external_dump.dmp");
+}
+
+TEST(CrashDumpPolicyTest, InProgressDumpFileNamesAreNotFinalDmpArtifacts) {
+    const std::string inProgressName = policy::BuildInProgressDumpFileName("crash_20260513_032512.dmp");
+
+    EXPECT_EQ(inProgressName, "crash_20260513_032512.dmp.inprogress");
+    EXPECT_FALSE(policy::EndsWithAsciiInsensitive(inProgressName.c_str(), ".dmp"));
+    EXPECT_EQ(policy::BuildInProgressDumpFileName(nullptr), "dump.dmp.inprogress");
+}
+
+TEST(CrashDumpPolicyTest, ExternalDumpStormUsesStrongSignatureForTermination) {
+    policy::ExternalDumpSignature signature;
+    signature.processId = 1234;
+    signature.dumpBaseName = "sl-sha-da40c631.dmp";
+    signature.exceptionCode = 0xE06D7363;
+    signature.exceptionAddress = 0x7ff600001234;
+    signature.exceptionThreadId = 99;
+    signature.hasExceptionInfo = true;
+
+    EXPECT_TRUE(policy::IsStrongExternalDumpSignature(signature));
+    EXPECT_NE(policy::BuildExternalDumpSignatureKey(signature).find("sl-sha-da40c631.dmp"), std::string::npos);
+    EXPECT_FALSE(policy::ShouldSuppressDuplicateExternalDumpArtifacts(1, false));
+    EXPECT_TRUE(policy::ShouldSuppressDuplicateExternalDumpArtifacts(2, true));
+    EXPECT_TRUE(policy::ShouldTerminateAfterExternalDumpStorm(true, 3, 1000, 2000, true, false));
+    EXPECT_FALSE(policy::ShouldTerminateAfterExternalDumpStorm(false, 3, 1000, 2000, true, false));
+    EXPECT_FALSE(policy::ShouldTerminateAfterExternalDumpStorm(true, 3, 1000, 40000, true, false));
+    EXPECT_FALSE(policy::ShouldTerminateAfterExternalDumpStorm(true, 3, 1000, 2000, false, false));
+    EXPECT_FALSE(policy::ShouldTerminateAfterExternalDumpStorm(true, 3, 1000, 2000, true, true));
+}
+
+TEST(CrashDumpPolicyTest, WeakExternalDumpSignatureCanDedupButCannotTerminate) {
+    policy::ExternalDumpSignature signature;
+    signature.processId = 1234;
+    signature.dumpBaseName = "sl-sha-da40c631.dmp";
+
+    EXPECT_FALSE(policy::IsStrongExternalDumpSignature(signature));
+    EXPECT_TRUE(policy::ShouldSuppressDuplicateExternalDumpArtifacts(5, true));
+    EXPECT_FALSE(policy::ShouldTerminateAfterExternalDumpStorm(policy::IsStrongExternalDumpSignature(signature), 5, 10,
+                                                              20, true, false));
 }

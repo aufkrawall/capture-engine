@@ -1146,6 +1146,9 @@ static IDXGISwapChain* g_PendingSwapChainCleanup = nullptr;
 static std::atomic<bool> g_LastKnownSwapchainHDRStateValid{false};
 static std::atomic<bool> g_LastKnownSwapchainIsHDR{false};
 static std::atomic<int> g_LastKnownSwapchainColorSpace{-1};
+static std::mutex g_StreamlineStartupActivationSwapchainMutex;
+static IDXGISwapChain* g_StreamlineStartupActivationSwapchain = nullptr;
+static std::atomic<uint64_t> g_StreamlineStartupActivationSwapchainGeneration{0};
 
 static void UpdateLastKnownSwapchainHDRStateCache(DXGI_FORMAT format, bool isActualHDR, int outputColorSpace) {
     const bool trustedHDRState =
@@ -1175,14 +1178,84 @@ static bool IsReadableSwapchainPointer(const void* ptr) {
     return true;
 }
 
-static IDXGISwapChain* GetLastTrackedSwapchainForStartupActivation() {
-    IDXGISwapChain* swapchain = g_LastSwapChain;
+static bool IsUsableStartupActivationSwapchainPointer(IDXGISwapChain* swapchain) {
     if (!IsReadableSwapchainPointer(swapchain) || !IsReadableSwapchainPointer(*(void***)swapchain)) {
-        return nullptr;
+        return false;
     }
 
     void** vtable = *(void***)swapchain;
     if (!vtable || !vtable[8]) {
+        return false;
+    }
+
+    return true;
+}
+
+static void ReleaseStreamlineStartupActivationSwapchain(const char* source) {
+    IDXGISwapChain* oldSwapchain = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_StreamlineStartupActivationSwapchainMutex);
+        oldSwapchain = g_StreamlineStartupActivationSwapchain;
+        g_StreamlineStartupActivationSwapchain = nullptr;
+    }
+
+    if (oldSwapchain) {
+        HookLogImportant("DX12: Released retained Streamline startup activation swapchain %p (source=%s)",
+                         oldSwapchain, source ? source : "unknown");
+        oldSwapchain->Release();
+    }
+}
+
+void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
+    if (!swapchain || !IsUsableStartupActivationSwapchainPointer(swapchain)) {
+        return;
+    }
+
+    swapchain->AddRef();
+
+    IDXGISwapChain* oldSwapchain = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_StreamlineStartupActivationSwapchainMutex);
+        oldSwapchain = g_StreamlineStartupActivationSwapchain;
+        g_StreamlineStartupActivationSwapchain = swapchain;
+        g_StreamlineStartupActivationSwapchainGeneration.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    HookLogImportant(
+        "DX12: Retained Streamline startup activation swapchain %p (source=%s generation=%llu) — "
+        "PostSL startup can recover even if ProcessFrame is stale",
+        swapchain, source ? source : "unknown",
+        static_cast<unsigned long long>(g_StreamlineStartupActivationSwapchainGeneration.load(
+            std::memory_order_acquire)));
+
+    if (oldSwapchain) {
+        oldSwapchain->Release();
+    }
+}
+
+static IDXGISwapChain* AcquireRetainedStreamlineStartupActivationSwapchain() {
+    const bool startupActivationPending =
+        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+
+    IDXGISwapChain* swapchain = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_StreamlineStartupActivationSwapchainMutex);
+        if (ce::dx12_overlay_policy::ShouldPreferRetainedStreamlineStartupActivationSwapchain(
+                g_StreamlineStartupActivationSwapchain != nullptr, startupActivationPending,
+                postSLActiveButUnconfirmed) &&
+            IsUsableStartupActivationSwapchainPointer(g_StreamlineStartupActivationSwapchain)) {
+            swapchain = g_StreamlineStartupActivationSwapchain;
+            swapchain->AddRef();
+        }
+    }
+
+    return swapchain;
+}
+
+static IDXGISwapChain* AcquireLastTrackedSwapchainForStartupActivation() {
+    IDXGISwapChain* swapchain = g_LastSwapChain;
+    if (!IsUsableStartupActivationSwapchainPointer(swapchain)) {
         return nullptr;
     }
 
@@ -1204,7 +1277,57 @@ static IDXGISwapChain* GetLastTrackedSwapchainForStartupActivation() {
         return nullptr;
     }
 
+    swapchain->AddRef();
     return swapchain;
+}
+
+static IDXGISwapChain* AcquireSwapchainForStartupActivation(const char* source) {
+    IDXGISwapChain* retained = AcquireRetainedStreamlineStartupActivationSwapchain();
+    if (retained) {
+        return retained;
+    }
+
+    IDXGISwapChain* tracked = AcquireLastTrackedSwapchainForStartupActivation();
+    if (tracked) {
+        return tracked;
+    }
+
+    static std::atomic<int> s_missingStartupActivationSwapchainLogCount{0};
+    const int logCount = s_missingStartupActivationSwapchainLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 10 || (logCount % 100) == 0) {
+        HookLogImportant(
+            "DX12: No startup activation swapchain available for PostSL recovery "
+            "(source=%s startupPending=%d activeButUnconfirmed=%d retained=%p last=%p)",
+            source ? source : "unknown",
+            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_relaxed) ? 1 : 0,
+            HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, g_StreamlineStartupActivationSwapchain,
+            g_LastSwapChain);
+    }
+    return nullptr;
+}
+
+bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clearStartupWindow) {
+    auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+    if (!postSLCallback) {
+        return false;
+    }
+
+    IDXGISwapChain* activationSwapchain = AcquireSwapchainForStartupActivation(source);
+    if (!activationSwapchain) {
+        return false;
+    }
+
+    if (clearStartupWindow) {
+        DXGIShared::ClearStreamlineStartupTransitionWindow();
+    }
+
+    HookLogImportant(
+        "DX12: Invoking retained-swapchain PostSL startup activation callback "
+        "(source=%s swapchain=%p clearWindow=%d)",
+        source ? source : "unknown", activationSwapchain, clearStartupWindow ? 1 : 0);
+    postSLCallback(activationSwapchain);
+    activationSwapchain->Release();
+    return true;
 }
 
 // Track the game's Present thread ID. Captured from the first non-FG Present call.
@@ -1823,6 +1946,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    ReleaseStreamlineStartupActivationSwapchain("DX12: FFX swapchain takeover");
     ResetFFXPresentCallbackOverlayBackend("DX12: FFX swapchain takeover");
     StreamlineHook::OnAuthoritativeFFXTakeover();
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
@@ -1887,6 +2011,7 @@ static void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserv
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
+    ReleaseStreamlineStartupActivationSwapchain(reason);
     if (!preserveStartupTransitionWindow) {
         DXGIShared::ResetStreamlineStartupTransitionState();
     }
@@ -3643,6 +3768,7 @@ void CleanupRTVs();
 void DX12_InvalidateSwapchain() {
     DXGIShared::g_SharedState.swapchainInvalid.store(true, std::memory_order_release);
     HookLog("DX12: Swapchain marked INVALID (FSR/FG transition detected)");
+    ReleaseStreamlineStartupActivationSwapchain("DX12_InvalidateSwapchain");
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kSwapchainInvalidation, "DX12_InvalidateSwapchain");
     // Log current state for debugging
     HookLog("DX12: Invalidating - overlayInit=%d, syncInit=%d, device=%p, queue=%p", g_State.overlayInit,
@@ -4078,6 +4204,77 @@ static bool IsDX12Swapchain(IDXGISwapChain* pSwapChain) {
     return true;
 }
 
+static void InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(
+    const char* context, ID3D12CommandQueue* newSwapchainQueue, ID3D12CommandQueue* previousSwapchainQueue,
+    ID3D12CommandQueue* originalGameQueue) {
+    ID3D12CommandQueue* lockedQueue = nullptr;
+    ID3D12CommandQueue* lastWorkingQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        lockedQueue = g_PostSLLockedQueue;
+        lastWorkingQueue = g_PostSLLastWorkingQueue;
+    }
+
+    const bool postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    const bool newQueueMatchesPreviousSwapchainQueue =
+        newSwapchainQueue != nullptr && newSwapchainQueue == previousSwapchainQueue;
+    const bool invalidateConfirmed =
+        ce::dx12_overlay_policy::ShouldInvalidateConfirmedPostSLForFreshAuthoritativeStreamlineHandoff(
+            true, postSLConfirmedRendering, newQueueMatchesPreviousSwapchainQueue);
+    const bool clearLastWorking =
+        ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(
+            true, lastWorkingQueue != nullptr, newSwapchainQueue != nullptr && lastWorkingQueue == newSwapchainQueue);
+    const bool clearLocked =
+        ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(
+            true, lockedQueue != nullptr, newSwapchainQueue != nullptr && lockedQueue == newSwapchainQueue);
+
+    DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
+    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
+    g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
+    g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    g_PostSLStallCounter.store(0, std::memory_order_release);
+
+    if (invalidateConfirmed) {
+        const int previousStableFrames = g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
+        g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+        g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
+        g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
+        g_PostSLOverlayActive.store(false, std::memory_order_release);
+        HookLogImportant(
+            "DX12: Fresh authoritative Streamline handoff invalidated stale PostSL confirmation "
+            "(source=%s newScQueue=%p prevScQueue=%p origGame=%p locked=%p lastWorking=%p stableFrames=%d)",
+            context ? context : "unknown", newSwapchainQueue, previousSwapchainQueue, originalGameQueue, lockedQueue,
+            lastWorkingQueue, previousStableFrames);
+    }
+
+    if (invalidateConfirmed || clearLocked) {
+        WaitForOverlayGpuIdle("DX12: Fresh authoritative Streamline handoff");
+        ResetPostSLLifecycleForTransition("DX12: Fresh authoritative Streamline handoff", true);
+    }
+
+    if (clearLastWorking) {
+        HookLogImportant(
+            "DX12: Fresh authoritative Streamline handoff cleared stale PostSL lastWorking queue %p "
+            "(newScQueue=%p prevScQueue=%p origGame=%p)",
+            lastWorkingQueue, newSwapchainQueue, previousSwapchainQueue, originalGameQueue);
+        SetPostSLLastWorkingQueue(nullptr);
+    }
+
+    if (g_State.overlayInit || g_State.syncInit) {
+        std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
+        g_State.overlayInit = false;
+        g_State.syncInit = false;
+        g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
+        CleanupRTVs();
+        HookLogImportant(
+            "DX12: Fresh authoritative Streamline handoff invalidated PostSL swapchain resources "
+            "(source=%s newScQueue=%p prevScQueue=%p)",
+            context ? context : "unknown", newSwapchainQueue, previousSwapchainQueue);
+    }
+}
+
 static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context,
                                                   const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
     if (!pDevice || !pSwapChain)
@@ -4133,6 +4330,14 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         const bool runtimeOwnershipJustActivated =
             DX12_SetSwapchainQueue(pQueue, authoritativeStreamlineRuntimeQueue, authoritativeFFXRuntimeQueue);
         if (freshAuthoritativeStreamlineHandoff) {
+            if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchain(
+                    IsDX12Swapchain(pSwapChain), freshAuthoritativeStreamlineHandoff,
+                    DXGIShared::DoesFGRuntimeOwnSwapchain())) {
+                DX12_RetainStreamlineStartupActivationSwapchain(
+                    pSwapChain, "DX12: fresh authoritative Streamline handoff");
+            }
+            InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(context, pQueue, currentSwapchainQueue,
+                                                                        currentOriginalGameQueue);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
             DXGIShared::ArmStreamlineStartupTransitionWindow();
             StreamlineHook::OnAuthoritativeStreamlineStartupHandoff();
@@ -4275,6 +4480,8 @@ void DX12Hook::Init() {
     s_InitDone = true;
 
     ce::fg_session::RegisterDX12LegacyStateProvider(&FillFGSessionLegacyStateView);
+    DXGIShared::g_PostSLStartupActivationService.store(&DX12_TryInvokePostSLStartupActivationCallback,
+                                                       std::memory_order_release);
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPresentObserved, "DX12Hook::Init");
 
     // CRITICAL FIX: Check if Vulkan is active before installing ANY DXGI hooks
@@ -4766,6 +4973,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
     g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    ReleaseStreamlineStartupActivationSwapchain("DX12: Streamline FG OFF");
     g_SLOffHeuristicGrace.store(600, std::memory_order_release);
     g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.store(false, std::memory_order_release);
     if (g_PostSLLastWorkingQueue) {
@@ -6586,6 +6794,13 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        if (g_pSharedMem) {
+            int32_t copyPrio = g_pSharedMem->GetCopyQueuePriority();
+            if (copyPrio == 2) {
+                queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
+                HookLog("InitOverlaySync: Using high priority for overlay queue (copy_queue_priority=high)");
+            }
+        }
         queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
         queueDesc.NodeMask = 0;
 
@@ -6867,6 +7082,7 @@ void DX12_OnSwapchainResizeBegin() {
     // Disable post-SL overlay rendering IMMEDIATELY to prevent rendering
     // to invalidated backbuffers during the resize.
     g_PostSLOverlayActive.store(false, std::memory_order_release);
+    ReleaseStreamlineStartupActivationSwapchain("DX12: swapchain resize");
     ResetPostSLLifecycleForTransition("DX12: swapchain resize", true);
     SetPostSLLastWorkingQueue(nullptr);  // Swapchain resize — rendering setup changed
     // Prevent recursion - if already in resize, return immediately
@@ -9198,6 +9414,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         g_PostSLConfirmedRendering.store(true, std::memory_order_release);
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
         g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+        ReleaseStreamlineStartupActivationSwapchain("DX12: PostSL confirmed rendering");
         // kStreamlineStartupTransitionGraceMs from the SL FG activation arm covers the
         // remaining startup churn window. Streamline can still call Present briefly after
         // PostSL confirms; during that family CE keeps using the bypass trampoline for
@@ -13811,7 +14028,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool overlayVisible = GetHookOverlayConfig().showOverlay;
         const bool windowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
         const bool startupTransitionWindowJustExpired = s_startupWindowWasActive && !windowActive;
-        IDXGISwapChain* activationSwapchain = GetLastTrackedSwapchainForStartupActivation();
+        IDXGISwapChain* activationSwapchain =
+            AcquireSwapchainForStartupActivation("DX12::ECL startup activation probe");
+        const bool activationSwapchainAvailable = activationSwapchain != nullptr;
+        if (activationSwapchain) {
+            activationSwapchain->Release();
+            activationSwapchain = nullptr;
+        }
         const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
         const bool allowExpiryTriggeredStartupActivation =
             ce::dx12_overlay_policy::ShouldTriggerExpiryDrivenECLPostSLStartupActivation(
@@ -13820,7 +14043,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool continueVisibleOverlayStartupProgress =
             ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
                 overlayVisible, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
-                callbackInstalled, activationSwapchain != nullptr, g_HadFSRFGPhase, safePostFSRBootstrapPath);
+                callbackInstalled, activationSwapchainAvailable, g_HadFSRFGPhase, safePostFSRBootstrapPath);
         const ULONGLONG nowMs = GetTickCount64();
         const ULONGLONG lastVisibleOverlayStartupProgressTriggerMs =
             s_lastVisibleOverlayStartupProgressTriggerMs.load(std::memory_order_acquire);
@@ -13834,71 +14057,51 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             // Present path), so the deferred probe check in ProcessFrame would never fire.
             DX12_ServiceDeferredECLProbe();
 
-            if (!activationSwapchain) {
-                static int s_nullSwapchainSkipLog = 0;
-                if (s_nullSwapchainSkipLog < 5) {
-                    HookLogImportant(
-                        "DX12: ECL hook skipping PostSL callback — activationSwapchain is nullptr, "
-                        "deferring until ProcessFrame refreshes swapchain "
-                        "(allowExpiry=%d visibleTick=%d)",
-                        allowExpiryTriggeredStartupActivation ? 1 : 0, visibleOverlayStartupProgressTick ? 1 : 0);
-                    ++s_nullSwapchainSkipLog;
-                }
-                if (startupTransitionWindowJustExpired) {
-                    DXGIShared::ClearStreamlineStartupTransitionWindow();
-                }
-            } else {
+            if (activationSwapchainAvailable) {
                 if (startupTransitionWindowJustExpired) {
                     HookLogImportant(
                         "DX12: ECL hook detected startup transition window expiry with pending PostSL activation — "
-                        "triggering PostSL callback directly from ECL context to complete activation "
-                        "(startupWindowExpired=1 activationPending=1 callbackInstalled=1 cachedSwapchain=%p)",
-                        activationSwapchain);
+                        "triggering retained-swapchain PostSL activation service "
+                        "(startupWindowExpired=1 activationPending=1 callbackInstalled=1)");
                 } else {
                     const int logCount =
                         s_visibleOverlayStartupProgressLogCount.fetch_add(1, std::memory_order_relaxed);
                     if (logCount < 10 || (logCount % 120) == 0) {
                         HookLogImportant(
                             "DX12: ECL hook continuing visible-overlay PostSL startup progress while render remains "
-                            "unconfirmed (startupPending=%d activeButUnconfirmed=%d cachedSwapchain=%p)",
-                            activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0, activationSwapchain);
+                            "unconfirmed (startupPending=%d activeButUnconfirmed=%d retainedSwapchain=1)",
+                            activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0);
                     }
                 }
 
-                if (startupTransitionWindowJustExpired) {
-                    // CRITICAL: Clear the startup transition window NOW so that when PostSL callback
-                    // enters PostSLOverlayRenderGated, it doesn't defer rendering due to the startup
-                    // window still appearing active. The window was detected as expired based on
-                    // IsStreamlineStartupTransitionWindowActive() returning false, but we must
-                    // explicitly clear it to prevent race conditions between threads.
-                    DXGIShared::ClearStreamlineStartupTransitionWindow();
-                    HookLogImportant(
-                        "DX12: ECL hook cleared startup transition window after triggering PostSL callback "
-                        "(prevWindowActive=%d nowCleared=1)",
-                        s_startupWindowWasActive ? 1 : 0);
+                s_callbackTriggeredWithCachedSwapchain = true;
+                if (!startupTransitionWindowJustExpired) {
+                    s_lastVisibleOverlayStartupProgressTriggerMs.store(nowMs, std::memory_order_release);
                 }
-
-                auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
-                if (postSLCallback) {
-                    s_callbackTriggeredWithCachedSwapchain = true;
-                    if (!startupTransitionWindowJustExpired) {
-                        s_lastVisibleOverlayStartupProgressTriggerMs.store(nowMs, std::memory_order_release);
-                    }
-                    postSLCallback(activationSwapchain);
-                    s_callbackTriggeredWithCachedSwapchain = false;
+                const bool invoked = DX12_TryInvokePostSLStartupActivationCallback(
+                    startupTransitionWindowJustExpired ? "DX12::ECL startup-window expiry"
+                                                       : "DX12::ECL visible startup progress",
+                    startupTransitionWindowJustExpired);
+                s_callbackTriggeredWithCachedSwapchain = false;
+                if (invoked) {
                     if (startupTransitionWindowJustExpired) {
-                        HookLogImportant("DX12: ECL hook PostSL callback completed (cachedSwapchain=%p)",
-                                         activationSwapchain);
+                        HookLogImportant("DX12: ECL hook retained-swapchain PostSL callback completed");
                     } else {
                         const int logCount =
                             s_visibleOverlayStartupProgressCompleteLogCount.fetch_add(1, std::memory_order_relaxed);
                         if (logCount < 10 || (logCount % 120) == 0) {
-                            HookLogImportant(
-                                "DX12: ECL hook visible-overlay PostSL progress callback completed "
-                                "(cachedSwapchain=%p)",
-                                activationSwapchain);
+                            HookLogImportant("DX12: ECL hook visible-overlay PostSL progress callback completed");
                         }
                     }
+                }
+            } else {
+                static int s_nullSwapchainSkipLog = 0;
+                if (s_nullSwapchainSkipLog < 5) {
+                    HookLogImportant(
+                        "DX12: ECL hook skipping PostSL callback — no retained/fresh activation swapchain "
+                        "(allowExpiry=%d visibleTick=%d)",
+                        allowExpiryTriggeredStartupActivation ? 1 : 0, visibleOverlayStartupProgressTick ? 1 : 0);
+                    ++s_nullSwapchainSkipLog;
                 }
             }
         } else if (startupTransitionWindowJustExpired && activationPending && callbackInstalled &&
@@ -13906,8 +14109,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             HookLogImportant(
                 "DX12: ECL hook leaving pending PostSL activation dormant after startup window expiry "
                 "because post-FSR bootstrap path is still unsafe "
-                "(activationPending=1 hadFSR=%d safeBootstrap=%d cachedSwapchain=%p)",
-                g_HadFSRFGPhase ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0, activationSwapchain);
+                "(activationPending=1 hadFSR=%d safeBootstrap=%d activationSwapchainAvailable=%d)",
+                g_HadFSRFGPhase ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
+                activationSwapchainAvailable ? 1 : 0);
         } else if (s_callbackTriggeredWithCachedSwapchain) {
             // Log if we're still processing after callback was triggered (callbacks from ProcessFrame)
             static int s_postEclCallbackLogCount = 0;
@@ -14512,6 +14716,8 @@ void DX12Hook::Shutdown() {
     CleanupResources();
     CleanupOverlay();
     CleanupRTVs();
+    DXGIShared::g_PostSLStartupActivationService.store(nullptr, std::memory_order_release);
+    ReleaseStreamlineStartupActivationSwapchain("DX12: Shutdown");
 
     // Clean up drain fence/event (used for FSR→DLSS transition)
     if (g_DrainFence) {

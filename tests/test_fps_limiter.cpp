@@ -882,3 +882,8 @@ TEST_F(FpsLimiterTest, FreezeWatchdogDefersSelfTargetedImmediateDumpCapture) {
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldDeferImmediateDumpToWatchdogThread(42, 7));
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldDeferImmediateDumpToWatchdogThread(42, 0));
 }
+
+TEST_F(FpsLimiterTest, FreezeWatchdogDumpCaptureIsOneShotPerRun) {
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldCaptureWatchdogDump(false));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldCaptureWatchdogDump(true));
+}

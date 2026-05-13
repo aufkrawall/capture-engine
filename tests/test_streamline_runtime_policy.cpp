@@ -39,6 +39,47 @@ TEST(StreamlineRuntimePolicyTest, StreamlineModuleLoadInspectionIncludesFeatureD
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInspectStreamlineModuleOnLoad("nvngx_dlssg.dll"));
 }
 
+TEST(StreamlineRuntimePolicyTest, StreamlineCoreExportsHookOnlyStableCoreModules) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineCoreExportsOnLoad("sl.interposer.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineCoreExportsOnLoad("C:\\Game\\SL.COMMON.DLL"));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineCoreExportsOnLoad("sl.reflex.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineCoreExportsOnLoad("sl.dlss_g.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineCoreExportsOnLoad("sl.pcl.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineCoreExportsOnLoad("nvngx_dlssg.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineCoreExportsOnLoad(nullptr));
+}
+
+TEST(StreamlineRuntimePolicyTest, FeatureExportsHookOnlyTheirOwningFeatureModules) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGSetOptions",
+                                                                                       "sl.dlss_g.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGGetState",
+                                                                                       "C:\\Game\\SL.DLSS_G.DLL"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSleep",
+                                                                                       "sl.reflex.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetOptions",
+                                                                                       "sl.reflex.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetConstants",
+                                                                                       "sl.reflex.dll"));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slGetPluginFunction",
+                                                                                        "sl.reflex.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGSetOptions",
+                                                                                        "sl.reflex.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSleep",
+                                                                                        "sl.dlss_g.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetOptions",
+                                                                                        "sl.common.dll"));
+}
+
+TEST(StreamlineRuntimePolicyTest, SavedOriginalForwardingRequiresLiveOwnerAddress) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldForwardSavedStreamlineOriginal(true, true));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldForwardSavedStreamlineOriginal(true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldForwardSavedStreamlineOriginal(false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldForwardSavedStreamlineOriginal(false, false));
+}
+
 TEST(StreamlineRuntimePolicyTest, LoadedModuleSnapshotRetryIsNarrow) {
     EXPECT_TRUE(ce::streamline_runtime_policy::IsRetryableLoadedModuleSnapshotError(24));
 

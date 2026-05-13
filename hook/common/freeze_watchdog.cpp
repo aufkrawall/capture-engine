@@ -190,6 +190,8 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
     uint64_t now = GetCurrentMicros();
     lastHeartbeat_.store(now);
     startupTime_.store(now);
+    lastDumpRequestMicros_.store(0, std::memory_order_release);
+    dumpCapturedForCurrentRun_.store(false, std::memory_order_release);
 
     char logMsg[256];
     snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Starting: timeout=%.1fs, grace=%.1fs\n", finalTimeout,
@@ -315,6 +317,14 @@ double FreezeWatchdog::GetRecommendedTimeout() const {
 
 void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD preferredThreadId) {
     if (!running_.load(std::memory_order_acquire) || reason.empty()) {
+        return;
+    }
+
+    bool expectedDumpCaptured = false;
+    if (!ce::freeze_watchdog_policy::ShouldCaptureWatchdogDump(expectedDumpCaptured) ||
+        !dumpCapturedForCurrentRun_.compare_exchange_strong(expectedDumpCaptured, true, std::memory_order_acq_rel,
+                                                            std::memory_order_acquire)) {
+        HookLogImportant("FreezeWatchdog: Suppressing duplicate watchdog dump request for '%s'", reason.c_str());
         return;
     }
 
@@ -588,18 +598,25 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
     std::tm local_tm;
     localtime_s(&local_tm, &time_t_now);
 
-    std::stringstream ss;
-    ss << logsDir << "\\" << processName_ << "_FREEZE_" << std::put_time(&local_tm, "%Y-%m-%d_%H-%M-%S") << "_"
-       << std::setw(3) << std::setfill('0') << millisecondPart << ".dmp";
-    std::string dumpPath = ss.str();
+    std::stringstream fileNameStream;
+    fileNameStream << processName_ << "_FREEZE_" << std::put_time(&local_tm, "%Y-%m-%d_%H-%M-%S") << "_"
+                   << std::setw(3) << std::setfill('0') << millisecondPart << ".dmp";
+    const std::string dumpFileName = fileNameStream.str();
+    const std::filesystem::path dumpPathFs = std::filesystem::path(logsDir) / dumpFileName;
+    const std::filesystem::path tempDumpPathFs =
+        std::filesystem::path(logsDir) / ce::crash_dump_policy::BuildInProgressDumpFileName(dumpFileName.c_str());
+    std::string dumpPath = dumpPathFs.string();
+    std::string tempDumpPath = tempDumpPathFs.string();
 
     char logMsg[512];
     snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Dump path: %s\n", dumpPath.c_str());
     OutputDebugStringA(logMsg);
-    HookLogImportant("FreezeWatchdog: Writing dump to %s", dumpPath.c_str());
+    HookLogImportant("FreezeWatchdog: Writing dump to %s via in-progress path %s", dumpPath.c_str(),
+                     tempDumpPath.c_str());
 
-    HANDLE hFile =
-        CreateFileA(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DeleteFileA(tempDumpPath.c_str());
+    HANDLE hFile = CreateFileA(tempDumpPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
 
     if (hFile == INVALID_HANDLE_VALUE) {
         DWORD err = GetLastError();
@@ -666,11 +683,29 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
 
     CloseHandle(hFile);
 
-    if (success) {
+    LARGE_INTEGER dumpSize = {};
+    const bool hasNonEmptyDump =
+        success && GetFileAttributesA(tempDumpPath.c_str()) != INVALID_FILE_ATTRIBUTES &&
+        [&]() {
+            HANDLE sizeFile = CreateFileA(tempDumpPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                          FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (sizeFile == INVALID_HANDLE_VALUE) {
+                return false;
+            }
+            const bool ok = GetFileSizeEx(sizeFile, &dumpSize) && dumpSize.QuadPart > 0;
+            CloseHandle(sizeFile);
+            return ok;
+        }();
+
+    if (hasNonEmptyDump && MoveFileExA(tempDumpPath.c_str(), dumpPath.c_str(), MOVEFILE_WRITE_THROUGH)) {
         snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] SUCCESS: Dump created: %s\n", dumpPath.c_str());
         OutputDebugStringA(logMsg);
         HookLogImportant("FreezeWatchdog: Dump created at %s", dumpPath.c_str());
     } else {
+        if (success && hasNonEmptyDump) {
+            err = GetLastError();
+        }
+        DeleteFileA(tempDumpPath.c_str());
         snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] FAILED to write dump, error=%lu\n", err);
         OutputDebugStringA(logMsg);
         HookLogImportant("FreezeWatchdog: Dump creation failed at %s (error=%lu)", dumpPath.c_str(), err);

@@ -152,6 +152,43 @@ inline bool ShouldInspectStreamlineModuleOnLoad(const char* moduleNameOrPath) {
     return IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath);
 }
 
+inline bool ShouldHookStreamlineCoreExportsOnLoad(const char* moduleNameOrPath) {
+    return IsStreamlineCoreModuleName(moduleNameOrPath);
+}
+
+inline bool IsStreamlineDLSSGFeatureModuleName(const char* moduleNameOrPath) {
+    return EqualsIgnoreCaseAscii(PathBaseName(moduleNameOrPath), "sl.dlss_g.dll");
+}
+
+inline bool IsStreamlineReflexFeatureModuleName(const char* moduleNameOrPath) {
+    return EqualsIgnoreCaseAscii(PathBaseName(moduleNameOrPath), "sl.reflex.dll");
+}
+
+inline bool IsStreamlineDLSSGFeatureFunctionName(const char* functionName) {
+    return EqualsIgnoreCaseAscii(functionName, "slDLSSGSetOptions") ||
+           EqualsIgnoreCaseAscii(functionName, "slDLSSGGetState");
+}
+
+inline bool IsStreamlineReflexFeatureFunctionName(const char* functionName) {
+    return EqualsIgnoreCaseAscii(functionName, "slReflexSleep") ||
+           EqualsIgnoreCaseAscii(functionName, "slReflexSetOptions") ||
+           EqualsIgnoreCaseAscii(functionName, "slReflexSetConstants");
+}
+
+inline bool ShouldHookStreamlineFeatureExportOnLoad(const char* functionName, const char* moduleNameOrPath) {
+    if (IsStreamlineDLSSGFeatureFunctionName(functionName)) {
+        return IsStreamlineDLSSGFeatureModuleName(moduleNameOrPath);
+    }
+    if (IsStreamlineReflexFeatureFunctionName(functionName)) {
+        return IsStreamlineReflexFeatureModuleName(moduleNameOrPath);
+    }
+    return false;
+}
+
+inline bool ShouldForwardSavedStreamlineOriginal(bool hasOriginal, bool validationAddressBelongsToLoadedModule) {
+    return hasOriginal && validationAddressBelongsToLoadedModule;
+}
+
 inline bool IsRetryableLoadedModuleSnapshotError(uint32_t error) {
     // Toolhelp module snapshots can transiently fail while another thread is
     // loading/unloading a DLL. Windows reports that race as ERROR_BAD_LENGTH.

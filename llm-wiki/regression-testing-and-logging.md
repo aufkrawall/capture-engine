@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-05-05
+Last cross-checked: 2026-05-13
 
 Primary sources:
 - `AGENTS.md`
@@ -14,6 +14,9 @@ Primary sources:
 - `hook/apis/dx12_hook.cpp`
 - `hook/apis/streamline_hook.cpp`
 - `hook/common/dxgi_shared.cpp`
+- `hook/common/dx12_overlay_policy.h`
+- `hook/common/freeze_watchdog.cpp`
+- `hook/common/freeze_watchdog.h`
 - `hook/common/fps_limiter.h`
 - `hook/common/fps_limiter_policy.h`
 - `hook/common/reflex_limiter.h`
@@ -21,10 +24,14 @@ Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
 - `hook/wrappers/dxgi_swapchain_wrap.cpp`
 - `hook/wrappers/iat_hook.cpp`
+- `common/crash_dump_policy.h`
+- `common/crash_handler.cpp`
 - `common/process_ipc.cpp`
 - `common/process_ipc.h`
 - `tests/test_dx12_fg_trace_replay.cpp`
 - `tests/test_dxgi_shared.cpp`
+- `tests/test_crash_dump_policy.cpp`
+- `tests/test_crash_handler.cpp`
 - `tests/test_overlay_fg_status_publication.cpp`
 - `tests/test_fps_limiter.cpp`
 - `tests/test_process_ipc.cpp`
@@ -45,6 +52,10 @@ Primary sources:
   - Planner/session snapshot invariants, queue-role planning, and planner-side publication/authority coverage for the new FG session layer.
 - `tests/test_dx12_fg_trace_replay.cpp`
   - Transition-sequence tests for Talos-style and GTA-style FG behavior.
+- `tests/test_dxgi_shared.cpp`
+  - DXGI/DX12 routing, bypass, Steam coexistence, Streamline startup activation, PostSL, and Present/Present1 parity coverage.
+- `tests/test_crash_dump_policy.cpp`, `tests/test_crash_handler.cpp`
+  - Crash dump naming/policy, external dump storm suppression/termination thresholds, watchdog dump hygiene, and hook-DLL binary regression strings for crash/FG startup recovery paths.
 - `tests/test_overlay_fg_status_publication.cpp`
   - Visible FG label and multiplier publication behavior.
 - `tests/test_fps_limiter.cpp`
@@ -65,6 +76,7 @@ Primary sources:
   - Logs pseudo-overlay suppression and resume during injected-overlay handoff.
 - `hook/apis/dx12_hook.cpp`
   - Logs when observer-only suppresses early PostSL registration, PostSL callback execution, and DX12 overlay/PostSL transition management.
+  - Fresh runtime-owned Streamline startup handoffs now log retained startup activation swapchain capture/release and DX12 startup activation service success/failure. A startup activation callback must use a retained or fresh non-null swapchain; a `nullptr` callback from Streamline flush/ECL-expiry paths is a regression.
   - Publishes the currently discovered DX12 queue/swapchain device to native driver limiter consumers and logs the source, device, queue, and HookContext update/conflict state. This matters for explicit Reflex limiter mode, Anti-Lag 2, and XeLL paths that lazy-init from `HookContext`.
   - Startup-overlay resume diagnostics now also log whether CE is still waiting for a usable foreground window or intentionally tracking a same-process foreground window instead of the old swapchain HWND, which matters for late no-FG startup handoffs that can otherwise self-latch on `remaining=0ms`.
   - Native-FSR callback traces now also log callback-side HDR classification (`DX12: FFX present callback HDR check ... colorSpace=... isHDR=...`) and the FFX UI-composition contract (`premulAlpha=%d`) so visual FSR callback regressions can be distinguished from queue/routing failures.
@@ -91,9 +103,9 @@ Primary sources:
 - `hook/common/dxgi_shared.cpp`
   - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths.
 - `hook/common/freeze_watchdog.cpp`
-  - Logs watchdog startup, monitored thread selection, dialog-triggered dumps, freeze-triggered dumps, and explicit immediate dump requests.
+  - Logs watchdog startup, monitored thread selection, dialog-triggered dumps, freeze-triggered dumps, explicit immediate dump requests, duplicate immediate-dump suppression, and temp/rename watchdog dump writes. Watchdog dump capture is one-shot per run; ordinary freeze dumps still do not force-kill the game.
 - `hook/main.cpp`
-  - Logs installation of the `dbghelp.dll!MiniDumpWriteDump` mirror hook and successful/failed re-emission of externally handled dumps into the active session folder.
+  - Logs installation of the `dbghelp.dll!MiniDumpWriteDump` mirror hook, successful/failed re-emission of externally handled dumps into the active session folder, duplicate external crash signature suppression, and repeated strong external dump storm termination. External dump mirrors and supplemental CE-owned dumps are written through `.inprogress` paths and renamed only after success/non-empty validation.
 - `hook/common/overlay_metrics_publisher.cpp`
   - Logs FG publication state changes and invariant violations.
 - `hook/common/fg_session_state.cpp`
@@ -117,7 +129,9 @@ Primary sources:
 - If you touch `Overlay.observer_only`, `Overlay.observer_policy_only`, or `Overlay.observer_startup_present_only`, verify the intended split explicitly: pure observer-only still has no pre-FG overlay submits, no early/PostSL callback install/use, no special Streamline synthetic/startup Present routing, and no startup-window Streamline mutation; observer-policy-only may restore only the Streamline startup-policy family while DX12/PostSL/startup-Present behavior stays passive; observer-startup-present-only may further restore only the remaining non-Streamline startup-Present probe pieces while PostSL callback install/use and rendering still stay passive, and Streamline-originated startup-handoff Presents must stay synthetic in observer mode.
 - If you touch watchdog ownership or dump-trigger conditions, verify that helper heartbeats do not silently retarget the monitored thread and that explicit stall conditions still produce an automatic dump.
 - If you touch watchdog ownership or dump-trigger conditions, also verify that an immediate dump request targeting the current render/present thread is handled asynchronously instead of trying to suspend/capture that same thread inline.
-- If you touch external crash capture or `MiniDumpWriteDump` interception, verify both dump families explicitly: CE's own VEH/watchdog dumps still write to the session folder, and externally handled dumps (for example Rockstar / Streamline crash paths) get mirrored into the same session folder as `external_<original-name>.dmp` instead of being stranded only in an external crash directory. If the target process handle is still usable, also verify the new supplemental CE-owned artifact path: the same externally handled crash should additionally yield `crash_external_<original-name>.dmp` in the session folder.
+- If you touch watchdog ownership or dump-trigger conditions, also verify the one-shot latch and temp/rename contract: repeated immediate watchdog requests in one watchdog run must not rewrite the same dump path, and a failed/interrupted dump must not leave a zero-byte `.dmp`.
+- If you touch external crash capture or `MiniDumpWriteDump` interception, verify both dump families explicitly: CE's own VEH/watchdog dumps still write to the session folder, and externally handled dumps (for example Rockstar / Streamline crash paths) get mirrored into the same session folder with source-hashed `external_<original-name>_<hash>.dmp` names instead of being stranded only in an external crash directory. If the target process handle is still usable, also verify the supplemental CE-owned artifact path: the same externally handled crash should additionally yield one `crash_external_<original-name>_<hash>.dmp` in the session folder. Repeated strong external crash signatures should produce one mirror plus one supplemental dump, log duplicate suppression afterward, and request one controlled termination only after at least three strong hits in 30 seconds after the supplemental dump was captured. Weak signatures may dedupe but must not force termination.
+- If you touch Streamline startup activation, verify the retained-swapchain family explicitly: authoritative runtime-owned Streamline handoff must retain an activation swapchain before any startup bypass return, retained swapchains should be preferred while synthetic startup activation is pending or PostSL is active-but-unconfirmed, Streamline flush/ECL-expiry paths should request the DX12 activation service instead of calling PostSL with `nullptr`, and retained refs must be released on confirmation, FG off, swapchain invalidation/resize, lifecycle reset, replacement, and shutdown.
 - If you touch Streamline stall detection, verify that top-level `Present1` traffic counts as forward progress alongside `Present`; otherwise `Present STALLED` can become a false positive on games/runtimes that switch entrypoints during DLSS activation.
 - If you touch Streamline startup-window or state-signal logic, verify that the startup transition window is only armed by fresh activation/handoff edges and cannot be kept alive indefinitely by steady-state active `GetState` / `SetOptions` polls.
 - If you touch startup-window extension or deferred-OFF churn handling, verify separately that extending the window does not reset the one-shot top-level startup-handoff Present latch; a later deferred OFF must not reopen a second promoted top-level Present in the same handoff.

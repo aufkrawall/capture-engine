@@ -735,6 +735,8 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         LogWarn("[Media] MediaEngine_SetSourcePrefers10Bit not available (old mediaengine.dll?)");
     }
 
+    g_WgcCap->SetGpuPriority(config.video.gpuPriority);
+
     g_WgcCaptureShutdown = false;
     g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
     SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()), THREAD_PRIORITY_HIGHEST);

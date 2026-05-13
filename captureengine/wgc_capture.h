@@ -176,6 +176,12 @@ public:
     void SetSameDeviceCapture(bool enabled);
     void SetRequireHighPrecisionCapture(bool enabled);
 
+    // Set GPU thread priority for the WGC capture D3D11 device.
+    // Passes through to IDXGIDevice::SetGPUThreadPriority.
+    // Applies whether using shared or dedicated capture device.
+    // When 0 (default adaptive), encoder handles its own adaptive priority.
+    void SetGpuPriority(int priority);
+
 private:
     class Impl;  // PIMPL to hide WinRT dependencies
     std::unique_ptr<Impl> impl_;

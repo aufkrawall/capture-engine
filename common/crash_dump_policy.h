@@ -5,6 +5,8 @@
 #include <dbghelp.h>
 // clang-format on
 
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -17,6 +19,8 @@ inline constexpr const char* kMirroredExternalDumpPrefix = "external_";
 inline constexpr const char* kMirroredExternalDumpFallbackFileName = "external_dump.dmp";
 inline constexpr const char* kSupplementalExternalCrashDumpPrefix = "crash_external_";
 inline constexpr const char* kSupplementalExternalCrashDumpFallbackFileName = "crash_external_dump.dmp";
+inline constexpr ULONGLONG kExternalDumpStormWindowMs = 30'000;
+inline constexpr uint32_t kExternalDumpStormTerminateHitThreshold = 3;
 
 inline constexpr MINIDUMP_TYPE kRichCrashDumpType = static_cast<MINIDUMP_TYPE>(
     MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
@@ -88,6 +92,47 @@ inline bool ContainsAsciiInsensitive(const char* value, const char* needle) {
         }
     }
     return false;
+}
+
+inline uint64_t StablePathHashAsciiInsensitive(const char* value) {
+    uint64_t hash = 1469598103934665603ULL;
+    if (!value) {
+        return hash;
+    }
+
+    for (const char* current = value; *current != '\0'; ++current) {
+        char c = *current;
+        if (c == '\\' || c == '/') {
+            c = '\\';
+        } else {
+            c = ToLowerAscii(c);
+        }
+        hash ^= static_cast<unsigned char>(c);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+inline std::string ShortHashSuffix(const char* value) {
+    char buffer[16] = {};
+    snprintf(buffer, sizeof(buffer), "%08llx",
+             static_cast<unsigned long long>(StablePathHashAsciiInsensitive(value) & 0xffffffffULL));
+    return buffer;
+}
+
+inline std::string AppendShortHashBeforeDumpExtension(std::string fileName, const char* hashSource) {
+    if (fileName.empty()) {
+        fileName = "dump.dmp";
+    }
+
+    const std::string suffix = "_" + ShortHashSuffix(hashSource);
+    if (EndsWithAsciiInsensitive(fileName.c_str(), ".dmp")) {
+        fileName.insert(fileName.size() - 4, suffix);
+    } else {
+        fileName += suffix;
+        fileName += ".dmp";
+    }
+    return fileName;
 }
 
 inline bool ShouldArchiveInstalledCrashArtifactFileName(const char* fileName) {
@@ -171,10 +216,7 @@ inline std::string BuildMirroredExternalDumpFileName(const char* sourcePathOrFil
 
     std::string mirroredName = kMirroredExternalDumpPrefix;
     mirroredName += fileName;
-    if (!EndsWithAsciiInsensitive(mirroredName.c_str(), ".dmp")) {
-        mirroredName += ".dmp";
-    }
-    return mirroredName;
+    return AppendShortHashBeforeDumpExtension(mirroredName, sourcePathOrFileName);
 }
 
 inline std::string BuildSupplementalCrashDumpFileNameFromExternalSource(const char* sourcePathOrFileName) {
@@ -185,10 +227,56 @@ inline std::string BuildSupplementalCrashDumpFileNameFromExternalSource(const ch
 
     std::string crashName = kSupplementalExternalCrashDumpPrefix;
     crashName += fileName;
-    if (!EndsWithAsciiInsensitive(crashName.c_str(), ".dmp")) {
-        crashName += ".dmp";
+    return AppendShortHashBeforeDumpExtension(crashName, sourcePathOrFileName);
+}
+
+inline std::string BuildInProgressDumpFileName(const char* finalDumpFileName) {
+    if (!finalDumpFileName || finalDumpFileName[0] == '\0') {
+        return "dump.dmp.inprogress";
     }
-    return crashName;
+
+    std::string inProgressName = finalDumpFileName;
+    inProgressName += ".inprogress";
+    return inProgressName;
+}
+
+struct ExternalDumpSignature {
+    DWORD processId = 0;
+    std::string dumpBaseName;
+    DWORD exceptionCode = 0;
+    uintptr_t exceptionAddress = 0;
+    DWORD exceptionThreadId = 0;
+    bool hasExceptionInfo = false;
+};
+
+inline bool IsStrongExternalDumpSignature(const ExternalDumpSignature& signature) {
+    return signature.processId != 0 && !signature.dumpBaseName.empty() && signature.hasExceptionInfo &&
+           signature.exceptionCode != 0 && signature.exceptionAddress != 0;
+}
+
+inline std::string BuildExternalDumpSignatureKey(const ExternalDumpSignature& signature) {
+    char buffer[256] = {};
+    snprintf(buffer, sizeof(buffer), "pid=%lu;file=%s;code=%08lx;addr=%p;tid=%lu;strong=%d",
+             signature.processId, signature.dumpBaseName.c_str(), signature.exceptionCode,
+             reinterpret_cast<void*>(signature.exceptionAddress), signature.exceptionThreadId,
+             IsStrongExternalDumpSignature(signature) ? 1 : 0);
+    return buffer;
+}
+
+inline bool ShouldSuppressDuplicateExternalDumpArtifacts(uint32_t signatureHitCount, bool artifactAlreadyCaptured) {
+    return artifactAlreadyCaptured && signatureHitCount > 1;
+}
+
+inline bool ShouldTerminateAfterExternalDumpStorm(bool strongSignature, uint32_t signatureHitCount,
+                                                  ULONGLONG firstHitMs, ULONGLONG currentHitMs,
+                                                  bool supplementalDumpCaptured, bool terminationAlreadyRequested) {
+    if (!strongSignature || !supplementalDumpCaptured || terminationAlreadyRequested) {
+        return false;
+    }
+    if (signatureHitCount < kExternalDumpStormTerminateHitThreshold) {
+        return false;
+    }
+    return currentHitMs >= firstHitMs && (currentHitMs - firstHitMs) <= kExternalDumpStormWindowMs;
 }
 
 }  // namespace ce::crash_dump_policy

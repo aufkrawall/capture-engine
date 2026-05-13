@@ -13,19 +13,15 @@
 #include "crash_dump_policy.h"
 #include "logging.h"
 
-// InlineHook is only available in the hook DLL build, not in test targets.
-// The trampoline lazy-exec handler wraps calls in a conditional check.
-#ifdef BUILD_HOOK_DLL
-#include "../hook/wrappers/inline_hook.h"
-#endif
-
 static std::string g_DumpDir = ".\\logs";
 static std::mutex g_DumpDirMutex;
 static char g_ProcessName[256] = "unknown";
 static HMODULE g_hDbgHelp = NULL;
-static std::atomic<bool> g_DumpAlreadyWritten{false};
+static std::atomic<bool> g_DumpAttemptInProgress{false};
+static std::atomic<bool> g_DumpSuccessfullyWritten{false};
 static std::atomic<bool> g_ForceUnhandledDump{false};
 static std::atomic<bool> g_CrashTraceActive{false};
+static std::atomic<CrashExecutionFaultHandler> g_ExecutionFaultHandler{nullptr};
 static std::mutex g_TraceCrashMutex;
 static std::atomic<int> g_VEHCallCount{0};
 static std::atomic<int> g_RPCDisconnectedExceptionCount{0};
@@ -40,6 +36,31 @@ typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE
 static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
 
 namespace {
+
+LONG DispatchCrashExecutionFaultHandler(EXCEPTION_POINTERS* pExceptionPointers) {
+    if (!pExceptionPointers || !pExceptionPointers->ExceptionRecord) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const auto* record = pExceptionPointers->ExceptionRecord;
+    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record->NumberParameters < 2) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const ULONG_PTR accessType = record->ExceptionInformation[0];
+    const ULONG_PTR faultAddr = record->ExceptionInformation[1];
+    if (accessType != 8) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    CrashExecutionFaultHandler handler = g_ExecutionFaultHandler.load(std::memory_order_acquire);
+    if (!handler) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const LONG result = handler(pExceptionPointers, accessType, faultAddr);
+    return result == EXCEPTION_CONTINUE_EXECUTION ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
+}
 
 std::filesystem::path GetCurrentCrashHandlerModulePath() {
     HMODULE hModule = nullptr;
@@ -191,11 +212,14 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
         return false;
     }
 
-    const std::filesystem::path dumpPath =
-        std::filesystem::path(dumpDir) /
-        ce::crash_dump_policy::BuildSupplementalCrashDumpFileNameFromExternalSource(fileNameHint);
+    const std::string dumpFileName = ce::crash_dump_policy::BuildSupplementalCrashDumpFileNameFromExternalSource(
+        fileNameHint);
+    const std::string tempDumpFileName = ce::crash_dump_policy::BuildInProgressDumpFileName(dumpFileName.c_str());
+    const std::filesystem::path dumpPath = std::filesystem::path(dumpDir) / dumpFileName;
+    const std::filesystem::path tempDumpPath = std::filesystem::path(dumpDir) / tempDumpFileName;
 
-    HANDLE hFile = CreateFileA(dumpPath.string().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+    DeleteFileA(tempDumpPath.string().c_str());
+    HANDLE hFile = CreateFileA(tempDumpPath.string().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) {
         return false;
@@ -228,9 +252,16 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
         }
     }
 
+    LARGE_INTEGER dumpSize = {};
+    const bool hasNonEmptyDump = success && GetFileSizeEx(hFile, &dumpSize) && dumpSize.QuadPart > 0;
     CloseHandle(hFile);
-    if (!success) {
-        DeleteFileA(dumpPath.string().c_str());
+    if (!hasNonEmptyDump) {
+        DeleteFileA(tempDumpPath.string().c_str());
+        return false;
+    }
+
+    if (!MoveFileExA(tempDumpPath.string().c_str(), dumpPath.string().c_str(), MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileA(tempDumpPath.string().c_str());
         return false;
     }
 
@@ -351,6 +382,14 @@ void SetCrashProcessName(const char* name) {
     }
 }
 
+void RegisterCrashExecutionFaultHandler(CrashExecutionFaultHandler handler) {
+    g_ExecutionFaultHandler.store(handler, std::memory_order_release);
+}
+
+LONG DispatchCrashExecutionFaultHandlerForTesting(EXCEPTION_POINTERS* pExceptionPointers) {
+    return DispatchCrashExecutionFaultHandler(pExceptionPointers);
+}
+
 // Trace function for debugging the crash handler itself
 // Thread-safe: uses mutex to prevent concurrent file corruption
 void TraceCrash(const char* msg) {
@@ -400,10 +439,19 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     snprintf(buf, sizeof(buf), "%04u%02u%02u_%02u%02u%02u_%03u_pid%lu_tid%lu", st.wYear, st.wMonth, st.wDay, st.wHour,
              st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentProcessId(), params->threadId);
 
-    char dumpPath[MAX_PATH];
-    snprintf(dumpPath, sizeof(dumpPath), "%s\\crash_%s.dmp", dumpDir.c_str(), buf);
+    char dumpFileName[MAX_PATH];
+    snprintf(dumpFileName, sizeof(dumpFileName), "crash_%s.dmp", buf);
 
-    TraceCrash("Creating dump file...");
+    char dumpPath[MAX_PATH];
+    snprintf(dumpPath, sizeof(dumpPath), "%s\\%s", dumpDir.c_str(), dumpFileName);
+
+    const std::string tempDumpFileName = ce::crash_dump_policy::BuildInProgressDumpFileName(dumpFileName);
+    char tempDumpPath[MAX_PATH];
+    snprintf(tempDumpPath, sizeof(tempDumpPath), "%s\\%s", dumpDir.c_str(), tempDumpFileName.c_str());
+
+    TraceCrash("Creating in-progress dump file...");
+    TraceCrash(tempDumpPath);
+    TraceCrash("Final dump path after successful write:");
     TraceCrash(dumpPath);
 
     // Ensure directory exists with proper error checking
@@ -420,7 +468,8 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
         }
     }
 
-    HANDLE hFile = CreateFileA(dumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+    DeleteFileA(tempDumpPath);
+    HANDLE hFile = CreateFileA(tempDumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
 
     if (hFile == INVALID_HANDLE_VALUE) {
@@ -486,17 +535,30 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
             err = ERROR_PROC_NOT_FOUND;
         }
 
+        bool removeTempDump = false;
         if (rv) {
-            TraceCrash("MiniDumpWriteDump Success");
             FlushFileBuffers(hFile);
-            char msg[256];
-            snprintf(msg, sizeof(msg), "[CrashHandler] Minidump created at: %s\n", dumpPath);
-            OutputDebugStringA(msg);
-        } else {
+            LARGE_INTEGER dumpSize = {};
+            if (!GetFileSizeEx(hFile, &dumpSize) || dumpSize.QuadPart <= 0) {
+                TraceCrash("MiniDumpWriteDump returned success but dump file is empty");
+                rv = FALSE;
+                err = ERROR_WRITE_FAULT;
+                removeTempDump = true;
+            } else {
+                TraceCrash("MiniDumpWriteDump wrote non-empty in-progress dump");
+            }
+        }
+
+        if (!rv) {
             TraceCrash("MiniDumpWriteDump Failed");
             char msg[256];
             snprintf(msg, sizeof(msg), "[CrashHandler] MiniDumpWriteDump failed: %lu (0x%08lX)\n", err, err);
             OutputDebugStringA(msg);
+
+            LARGE_INTEGER dumpSize = {};
+            if (GetFileSizeEx(hFile, &dumpSize) && dumpSize.QuadPart == 0) {
+                removeTempDump = true;
+            }
 
             char errPath[MAX_PATH];
             snprintf(errPath, sizeof(errPath), "%s\\crash_error.txt", dumpDir.c_str());
@@ -507,6 +569,26 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
             }
         }
         CloseHandle(hFile);
+        if (rv) {
+            if (MoveFileExA(tempDumpPath, dumpPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                TraceCrash("MiniDumpWriteDump Success");
+                g_DumpSuccessfullyWritten.store(true, std::memory_order_release);
+                char msg[256];
+                snprintf(msg, sizeof(msg), "[CrashHandler] Minidump created at: %s\n", dumpPath);
+                OutputDebugStringA(msg);
+            } else {
+                err = GetLastError();
+                rv = FALSE;
+                char renameErrMsg[160];
+                snprintf(renameErrMsg, sizeof(renameErrMsg), "Failed to promote in-progress dump file (err=%lu)",
+                         err);
+                TraceCrash(renameErrMsg);
+                DeleteFileA(tempDumpPath);
+            }
+        } else if (removeTempDump) {
+            DeleteFileA(tempDumpPath);
+            TraceCrash("Deleted empty failed in-progress dump file");
+        }
     } else {
         TraceCrash("Failed to create dump file");
     }
@@ -520,69 +602,27 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // Track VEH call count for detecting runaway exception storms
     int callCount = g_VEHCallCount.fetch_add(1, std::memory_order_acq_rel);
 
+    const LONG executionFaultResult = DispatchCrashExecutionFaultHandler(pExceptionPointers);
+    if (executionFaultResult == EXCEPTION_CONTINUE_EXECUTION) {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
     if (code == EXCEPTION_ACCESS_VIOLATION && pExceptionPointers->ExceptionRecord->NumberParameters >= 2) {
         ULONG_PTR accessType = pExceptionPointers->ExceptionRecord->ExceptionInformation[0];
         ULONG_PTR faultAddr = pExceptionPointers->ExceptionRecord->ExceptionInformation[1];
 
-        // === Lazy-Exec Trampoline Pool Handler ===
-        // The trampoline pool is PAGE_READWRITE (non-executable) by default to
-        // prevent third-party memory scanners from misinterpreting it as a COM
-        // vtable. When a thread first tries to execute code from the pool, this
-        // handler catches the DEP violation, makes the pool executable, and retries
-        // the instruction. Subsequent trampoline calls through the same pool work
-        // without faulting (the pool stays executable).
-        //
-        // accessType == 8 means DEP violation (tried to execute non-executable).
-        // Only handle this in the hook DLL build where InlineHook is available.
-#ifdef BUILD_HOOK_DLL
-        if (accessType == 8) {
-            if (InlineHook::IsInTrampolinePool((void*)faultAddr)) {
-                char lazyMsg[256];
-                snprintf(lazyMsg, sizeof(lazyMsg),
-                         "LazyExec: Making trampoline pool executable at fault=0x%llX, RIP=0x%llX",
-                         (unsigned long long)faultAddr,
-#ifdef _WIN64
-                         (unsigned long long)pExceptionPointers->ContextRecord->Rip
-#else
-                         (unsigned long)pExceptionPointers->ContextRecord->Eip
-#endif
-                );
-                TraceCrash(lazyMsg);
-                InlineHook::SetTrampolinePoolProtection(PAGE_EXECUTE_READWRITE);
-#ifdef _WIN64
-                pExceptionPointers->ContextRecord->Rip = faultAddr;
-#else
-                pExceptionPointers->ContextRecord->Eip = (DWORD)faultAddr;
-#endif
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-        }
-#endif  // BUILD_HOOK_DLL
-
         // === Trampoline Region VTable Corruption ===
         // Detect RIP=0 (DEP crash executing at NULL) where RAX points into our
-        // trampoline pool. This happens when a third-party component (sl_interposer
-        // or Steam overlay) previously scanned the PAGE_EXECUTE_READWRITE pool
-        // (before our lazy-exec fix was applied) and wrote the pool address into
-        // a COM object's vtable pointer → vtable dispatch reads NULL → RIP=0.
-        //
-        // This is now a fallback diagnostic for pre-fix runs. With lazy-exec,
-        // the pool is no longer PAGE_EXECUTE_READWRITE by default, so scanners
-        // should not find it. If this still triggers, it means the vtable pointer
-        // was corrupted in an earlier session before the fix was deployed.
+        // trampoline-like address. This is diagnostic only; actual recoverable
+        // execute faults are handled by the registered hook-side callback above.
         if (faultAddr == 0 && accessType == 2) {
             CONTEXT* ctx = pExceptionPointers->ContextRecord;
 #ifdef _WIN64
             uintptr_t rax = ctx->Rax;
-#ifdef BUILD_HOOK_DLL
-            bool inPool = InlineHook::IsInTrampolinePool((void*)rax);
-#else
-            bool inPool = false;
-#endif
-            if (rax != 0 && rax >= 0x0000700000000000ULL && inPool) {
+            if (rax != 0 && rax >= 0x0000700000000000ULL) {
                 char diagMsg[256];
                 snprintf(diagMsg, sizeof(diagMsg),
-                         "Trampoline crash: vtable corruption detected at RAX=0x%llX - pool address read as vtable ptr",
+                         "Possible trampoline vtable dispatch crash at RAX=0x%llX - address read as vtable ptr",
                          (unsigned long long)rax);
                 TraceCrash(diagMsg);
             }
@@ -768,10 +808,17 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
 
     TraceCrash("CRASH DETECTED - Handling exception");
 
-    // Prevent duplicate dumps (VEH + UEF both fire for the same crash)
-    bool expected = false;
-    if (!g_DumpAlreadyWritten.compare_exchange_strong(expected, true)) {
-        TraceCrash("Dump already written by previous handler, skipping");
+    // Prevent duplicate dumps (VEH + UEF both fire for the same crash), but only
+    // suppress once a non-empty dump was actually written. A crashed/failed dump
+    // worker must not permanently block the top-level retry path.
+    if (g_DumpSuccessfullyWritten.load(std::memory_order_acquire)) {
+        TraceCrash("Dump already successfully written by previous handler, skipping");
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    bool expectedAttempt = false;
+    if (!g_DumpAttemptInProgress.compare_exchange_strong(expectedAttempt, true, std::memory_order_acq_rel)) {
+        TraceCrash("Dump attempt already in progress, skipping duplicate handler");
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -940,6 +987,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
 
     if (!g_pMiniDumpWriteDump) {
         TraceCrash("g_pMiniDumpWriteDump is NULL - cannot write dump!");
+        g_DumpAttemptInProgress.store(false, std::memory_order_release);
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -964,6 +1012,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         DumpWorker(params);  // Fallback to inline if thread creation fails (DumpWorker takes ownership)
     }
 
+    g_DumpAttemptInProgress.store(false, std::memory_order_release);
     TraceCrash("Handler finished - Returning EXCEPTION_CONTINUE_SEARCH");
     return EXCEPTION_CONTINUE_SEARCH;
 }

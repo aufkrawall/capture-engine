@@ -204,6 +204,22 @@ inline bool ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRunti
     return authoritativeStreamlineRuntimeQueue && !queueMatchesCurrentSwapchainQueue;
 }
 
+inline bool ShouldInvalidateConfirmedPostSLForFreshAuthoritativeStreamlineHandoff(
+    bool freshAuthoritativeStreamlineHandoff, bool postSLConfirmedRendering,
+    bool newQueueMatchesPreviousSwapchainQueue) {
+    // A PostSL confirmation proves only the swapchain/queue epoch it rendered on.
+    // GTA can create a fresh runtime-owned Streamline swapchain after pure DLSS
+    // has already confirmed on the original queue; carrying that proof forward
+    // lets CE touch Streamline's startup path while the new DLSSG queue is still
+    // initializing.
+    return freshAuthoritativeStreamlineHandoff && postSLConfirmedRendering && !newQueueMatchesPreviousSwapchainQueue;
+}
+
+inline bool ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(
+    bool freshAuthoritativeStreamlineHandoff, bool hasPostSLQueueProof, bool queueProofMatchesNewSwapchainQueue) {
+    return freshAuthoritativeStreamlineHandoff && hasPostSLQueueProof && !queueProofMatchesNewSwapchainQueue;
+}
+
 inline bool ShouldIgnoreThirdPartyOverlayQueueForGameTracking(bool callerFromThirdPartyOverlay,
                                                               bool hasOriginalGameQueue, bool queueMatchesPrimaryQueue,
                                                               bool queueMatchesOriginalGameQueue,
@@ -1568,6 +1584,27 @@ inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
     }
 
     return processFrameDormantMs >= 1000;
+}
+
+inline bool ShouldRetainStreamlineStartupActivationSwapchain(bool isD3D12SwapChain,
+                                                             bool freshAuthoritativeStreamlineHandoff,
+                                                             bool runtimeOwnedSwapchainActive) {
+    return isD3D12SwapChain && freshAuthoritativeStreamlineHandoff && runtimeOwnedSwapchainActive;
+}
+
+inline bool ShouldPreferRetainedStreamlineStartupActivationSwapchain(bool retainedSwapchainAvailable,
+                                                                     bool startupActivationPending,
+                                                                     bool postSLActiveButUnconfirmed) {
+    return retainedSwapchainAvailable && (startupActivationPending || postSLActiveButUnconfirmed);
+}
+
+inline bool ShouldServicePostSLStartupActivationWhileOffChurnDeferred(bool shouldKeepOffChurnDeferred,
+                                                                      bool startupTransitionWindowActive,
+                                                                      bool activationPending,
+                                                                      bool postSLActiveButUnconfirmed,
+                                                                      bool callbackInstalled) {
+    return shouldKeepOffChurnDeferred && !startupTransitionWindowActive && callbackInstalled &&
+           (activationPending || postSLActiveButUnconfirmed);
 }
 
 inline bool ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(

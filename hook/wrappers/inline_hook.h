@@ -74,8 +74,14 @@ void* CreateBypassTrampoline(void* target);
 // lazy-execution (pool is PAGE_READWRITE) vs a real crash.
 bool IsInTrampolinePool(void* address);
 
+// Returns pool base/protection for diagnostics when address is inside a pool.
+bool GetTrampolinePoolInfo(void* address, void** poolBaseOut, DWORD* protectOut);
+
 // Set the trampoline pool page protection. Used during lazy-exec toggling
 // and during trampoline construction.
 void SetTrampolinePoolProtection(DWORD newProtect);
+
+// Set protection only on the pool containing address.
+bool SetTrampolinePoolProtectionForAddress(void* address, DWORD newProtect);
 
 }  // namespace InlineHook

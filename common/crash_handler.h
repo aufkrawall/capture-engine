@@ -21,6 +21,12 @@ void SetCrashProcessName(const char* name);
 // Trace function for debugging the crash handler itself
 void TraceCrash(const char* msg);
 
+// Optional hook-module callback for recoverable execute faults such as lazy
+// trampoline-pool DEP faults. Passing nullptr unregisters the handler.
+using CrashExecutionFaultHandler = LONG (*)(EXCEPTION_POINTERS* pExceptionPointers, ULONG_PTR accessType,
+                                            ULONG_PTR faultAddr);
+void RegisterCrashExecutionFaultHandler(CrashExecutionFaultHandler handler);
+
 // Writes an additional CE-owned dump for externally handled crashes when we still
 // have a live process handle and want a session-local artifact with CE's naming.
 bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD processId,
@@ -28,3 +34,7 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
                                 PMINIDUMP_EXCEPTION_INFORMATION exceptionParam = nullptr,
                                 PMINIDUMP_USER_STREAM_INFORMATION userStreamParam = nullptr,
                                 PMINIDUMP_CALLBACK_INFORMATION callbackParam = nullptr);
+
+#ifdef CE_UNIT_TESTS
+LONG DispatchCrashExecutionFaultHandlerForTesting(EXCEPTION_POINTERS* pExceptionPointers);
+#endif

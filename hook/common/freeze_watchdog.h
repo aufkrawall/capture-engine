@@ -16,6 +16,10 @@ inline bool ShouldDeferImmediateDumpToWatchdogThread(DWORD callerThreadId, DWORD
     return targetThreadId != 0 && callerThreadId == targetThreadId;
 }
 
+inline bool ShouldCaptureWatchdogDump(bool dumpAlreadyCaptured) {
+    return !dumpAlreadyCaptured;
+}
+
 }  // namespace ce::freeze_watchdog_policy
 
 // Freeze detection watchdog - monitors thread heartbeats and creates dumps on freeze
@@ -105,6 +109,7 @@ private:
     std::atomic<DWORD> monitoredThreadId_{0};
     std::atomic<bool> forceMonitor_{false};
     std::atomic<uint64_t> lastDumpRequestMicros_{0};
+    std::atomic<bool> dumpCapturedForCurrentRun_{false};
     std::atomic<PreferredThreadProvider> preferredThreadProvider_{nullptr};
     std::atomic<bool> pendingImmediateDump_{false};
     std::mutex pendingImmediateDumpMutex_;

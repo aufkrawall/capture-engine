@@ -53,7 +53,7 @@ wgc_window_detection=(
 
 [Performance]
 ; process_priority - Values: idle, below_normal, normal, above_normal, high, realtime
-process_priority=normal
+process_priority=above_normal
 ; gpu_priority - Values: integer -7..7
 gpu_priority=0
 ; copy_queue_priority - Values: low, normal, high

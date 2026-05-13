@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-12 (updated: build 0.1.3044 — BioShock Infinite crash fix, CWrapD3D11Device no longer wraps IDXGIDevice)
+Last cross-checked: 2026-05-13 (updated: build 0.1.3084 — GTA DLSS FG startup activation and external dump storm fixes)
 
 Primary sources:
 - `AGENTS.md`
@@ -54,6 +54,8 @@ Primary sources:
   - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
 - `wgc-capture.md`
   - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, WGC CFR audio continuity/stop-tail policy, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-05-07. Stale-risk: medium.
+- `performance-priority.md`
+  - `[Performance]` config section: `process_priority` (CPU), `gpu_priority` (encoder GPU thread), `copy_queue_priority` (D3D12 overlay queue). Defaults, data flow, source anchors, and open questions.
 - `log.md`
   - Stub pointing to `log/recent.md` (recent activity) and `log/archive-YYYY-Www*.md` (weekly archives).
 

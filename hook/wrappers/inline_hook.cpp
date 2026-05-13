@@ -562,11 +562,58 @@ bool IsInTrampolinePool(void* address) {
     return false;
 }
 
+bool GetTrampolinePoolInfo(void* address, void** poolBaseOut, DWORD* protectOut) {
+    if (poolBaseOut) {
+        *poolBaseOut = nullptr;
+    }
+    if (protectOut) {
+        *protectOut = 0;
+    }
+    if (!address) {
+        return false;
+    }
+
+    uintptr_t addr = reinterpret_cast<uintptr_t>(address);
+    for (const auto& pool : g_trampolinePools) {
+        uintptr_t poolStart = reinterpret_cast<uintptr_t>(pool);
+        uintptr_t poolEnd = poolStart + TRAMPOLINE_POOL_SIZE;
+        if (addr >= poolStart && addr < poolEnd) {
+            if (poolBaseOut) {
+                *poolBaseOut = pool;
+            }
+            if (protectOut) {
+                MEMORY_BASIC_INFORMATION mbi = {};
+                if (VirtualQuery(address, &mbi, sizeof(mbi)) != 0) {
+                    *protectOut = mbi.Protect;
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 void SetTrampolinePoolProtection(DWORD newProtect) {
     for (const auto& pool : g_trampolinePools) {
         DWORD oldProtect;
         VirtualProtect((void*)pool, TRAMPOLINE_POOL_SIZE, newProtect, &oldProtect);
     }
+}
+
+bool SetTrampolinePoolProtectionForAddress(void* address, DWORD newProtect) {
+    if (!address) {
+        return false;
+    }
+    uintptr_t addr = reinterpret_cast<uintptr_t>(address);
+    for (const auto& pool : g_trampolinePools) {
+        uintptr_t poolStart = reinterpret_cast<uintptr_t>(pool);
+        uintptr_t poolEnd = poolStart + TRAMPOLINE_POOL_SIZE;
+        if (addr >= poolStart && addr < poolEnd) {
+            DWORD oldProtect;
+            return VirtualProtect((void*)pool, TRAMPOLINE_POOL_SIZE, newProtect, &oldProtect) != FALSE;
+        }
+    }
+    return false;
 }
 
 static bool IsTrampolinePoolNearTarget(const uint8_t* pool, void* nearAddr) {
@@ -2172,6 +2219,11 @@ void* CreateBypassTrampoline(void* target) {
         HookLog("BypassTrampoline: Failed to allocate trampoline slot near %p", target);
         return nullptr;
     }
+    void* trampolinePoolBase = nullptr;
+    DWORD trampolinePoolProtect = 0;
+    GetTrampolinePoolInfo(trampoline, &trampolinePoolBase, &trampolinePoolProtect);
+    HookLog("BypassTrampoline: Lazy-exec managed entry=%p pool=%p protect=0x%08lX", trampoline,
+            trampolinePoolBase, static_cast<unsigned long>(trampolinePoolProtect));
 
     // Step 5: Copy original instructions to trampoline with RIP-relative fixups.
     // The source bytes are from disk (original code), but RIP-relative addresses
@@ -2283,8 +2335,11 @@ void* CreateBypassTrampoline(void* target) {
 
     FlushInstructionCache(GetCurrentProcess(), trampoline, trampolineOffset);
 
-    HookLog("BypassTrampoline: Created at %p (%d bytes) — bypasses %d-byte external hook at %p", trampoline,
-            trampolineOffset, existingJmpSize, target);
+    GetTrampolinePoolInfo(trampoline, &trampolinePoolBase, &trampolinePoolProtect);
+    HookLog("BypassTrampoline: Created lazy-exec trampoline at %p (%d bytes, pool=%p protect=0x%08lX) "
+            "- bypasses %d-byte external hook at %p",
+            trampoline, trampolineOffset, trampolinePoolBase, static_cast<unsigned long>(trampolinePoolProtect),
+            existingJmpSize, target);
 
     return trampoline;
 }
