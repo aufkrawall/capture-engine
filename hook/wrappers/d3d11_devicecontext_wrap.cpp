@@ -47,6 +47,7 @@ static std::atomic<int> g_WrapperAFAllowed{0};
 static std::atomic<int> g_WrapperAFReplaced{0};
 static std::atomic<int> g_WrapperAFReconciled{0};
 static std::atomic<int> g_WrapperAFBindDeferred{0};
+static std::atomic<int> g_WrapperAFDrawCalls{0};
 static std::atomic<int> g_WrapperAFDrawReconciles{0};
 static std::atomic<int> g_WrapperPixelShaderMetadataCreated{0};
 static std::atomic<int> g_WrapperPixelShaderMetadataFailed{0};
@@ -807,6 +808,11 @@ int CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, 
 }
 
 void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
+    int drawIdx = g_WrapperAFDrawCalls.fetch_add(1, std::memory_order_relaxed);
+    if (drawIdx < 32) {
+        WrapperLog("Wrapper: AF draw hook hit ctx=%p dirty=%d (#%d)", this, m_PixelSamplerStateDirty ? 1 : 0,
+                   drawIdx + 1);
+    }
     if (!m_PixelSamplerStateDirty) {
         return;
     }

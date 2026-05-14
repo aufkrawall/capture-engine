@@ -84,6 +84,7 @@ static std::atomic<bool> g_AutoWgcFallbackArmed{false};
 static std::atomic<uint32_t> g_InjectBufferedTrimmedFrames{0};
 static std::atomic<uint32_t> g_InjectCadenceDroppedFrames{0};
 static std::atomic<uint32_t> g_WgcAdaptiveTargetFps{0};
+static std::atomic<uint64_t> g_ActivePathMismatchFramesDiscarded{0};
 
 struct WgcRetargetRequest {
     HWND window = NULL;
@@ -546,6 +547,20 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
                           int64_t rawTimestamp, bool isHDR, bool duplicateSourceTimestamp, int32_t captureLeft,
                           int32_t captureTop) {
     static std::atomic<int64_t> s_lastWgcTimestamp{0};
+    if (g_Recording.load(std::memory_order_acquire) && !IsActiveScreenGrab()) {
+        const uint64_t discarded =
+            g_ActivePathMismatchFramesDiscarded.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (discarded <= 3 || (discarded % 120ull) == 0ull) {
+            LogInfo(
+                "[WGC] Dropping standby WGC frame while inject capture is active (discarded=%llu, ts=%lld). This "
+                "prevents mid-recording encoder mode switches.",
+                static_cast<unsigned long long>(discarded), static_cast<long long>(timestamp));
+        }
+        if (texture) {
+            texture->Release();
+        }
+        return;
+    }
 
     QueuedFrame qf;
     qf.isInjectMode = false;
@@ -1081,63 +1096,41 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 const uint32_t queuePressureThreshold =
                     std::max<uint32_t>(24u, static_cast<uint32_t>(g_FrameQueue.Capacity() * 3 / 4));
                 const bool useSourceSidePacing = queueDepth >= queuePressureThreshold;
+                const int64_t pacingIntervalTicks =
+                    useSourceSidePacing ? targetIntervalTicks : std::max<int64_t>((targetIntervalTicks * 4) / 5, 1);
 
-                if (!useSourceSidePacing) {
-                    // When the queue is shallow and the encoder is healthy, apply a
-                    // lightweight decimation gate at ~125% of target cadence.  This
-                    // prevents queue overflow when game FPS >> recording FPS (e.g.
-                    // 240fps game → 120fps recording) while still giving the encoder
-                    // thread enough candidate frames for timestamp-aware selection.
-                    // Without this gate, the 32-slot FrameQueue overflows between
-                    // 1-second EMA updates, causing drop-oldest of frames the Bresenham
-                    // would have selected.
-                    int64_t overcaptureInterval = (targetIntervalTicks * 4) / 5;  // 125% rate
-                    if (nextPushTime == 0) {
-                        nextPushTime = slot.timestamp;
-                        shouldProcess = true;
-                    } else if (slot.timestamp >= nextPushTime) {
-                        shouldProcess = true;
-                        nextPushTime += overcaptureInterval;
-                        // Resync on time jumps
-                        if (slot.timestamp > nextPushTime + (targetIntervalTicks * 5)) {
-                            nextPushTime = slot.timestamp + overcaptureInterval;
-                        }
-                    } else {
-                        // Frame arrived before next cadence gate — drop it
-                        shouldProcess = false;
-                        pacingDroppedCount++;
-                        g_pSharedMem->runtimeState.injectPacingDrops.fetch_add(1, std::memory_order_relaxed);
-                    }
-                } else if (nextPushTime == 0) {
+                if (nextPushTime == 0) {
                     // First frame or resync
                     nextPushTime = slot.timestamp;
                     shouldProcess = true;
                 } else {
-                    // Under real backlog/bottleneck pressure, re-enable source-side pacing
-                    // to stop the queue from running away.
-                    int64_t jitterWindow = (targetIntervalTicks * 8) / 10;  // 80% tolerance
+                    // Keep inject input slightly above the CFR target in the normal shallow-queue
+                    // case.  This gives the encoder a candidate reserve without letting live
+                    // frames trail the game by hundreds of milliseconds.
+                    int64_t jitterWindow =
+                        useSourceSidePacing ? (pacingIntervalTicks * 8) / 10 : 0;  // 80% only under backlog
 
                     if (slot.timestamp >= nextPushTime - jitterWindow) {
                         shouldProcess = true;
 
                         // Advance target time by actual interval, not to current timestamp
                         // This maintains steady output cadence even with jittery input
-                        nextPushTime += targetIntervalTicks;
+                        nextPushTime += pacingIntervalTicks;
 
                         // Resync if game time jumped way ahead (e.g. pause/lag spike > 5
                         // frames) Increased from 3 to 5 frames to avoid unnecessary resyncs
-                        if (slot.timestamp > nextPushTime + (targetIntervalTicks * 5)) {
-                            nextPushTime = slot.timestamp + targetIntervalTicks;
+                        if (slot.timestamp > nextPushTime + (pacingIntervalTicks * 5)) {
+                            nextPushTime = slot.timestamp + pacingIntervalTicks;
                         }
                     } else {
                         // Frame is too early - only drop if we're not behind on processing
                         // Check if we have a backlog of frames waiting
                         uint32_t pendingFrames = (writeIndex > localReadIndex) ? (writeIndex - localReadIndex) : 0;
 
-                        if (pendingFrames > 2) {
+                        if (useSourceSidePacing && pendingFrames > 2) {
                             // We have a backlog, process this frame anyway to catch up
                             shouldProcess = true;
-                            nextPushTime = slot.timestamp + targetIntervalTicks;
+                            nextPushTime = slot.timestamp + pacingIntervalTicks;
                         } else {
                             // Frame is genuinely too early and no backlog - safe to drop
                             shouldProcess = false;
@@ -1706,6 +1699,18 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t lastPacketClampCount = 0;
     uint32_t lastNegativePtsCount = 0;
     uint32_t lastNonMonotonicPtsCount = 0;
+    uint32_t injectDeferredRequeuedThisWindow = 0;
+    uint32_t injectDeferredDroppedThisWindow = 0;
+    uint64_t injectDeferredRequeuedTotal = 0;
+    uint64_t injectDeferredDroppedTotal = 0;
+    uint32_t injectFreshCatchupThisWindow = 0;
+    uint32_t injectRepeatCatchupThisWindow = 0;
+    uint32_t injectLiveStaleTrimThisWindow = 0;
+    uint32_t activePathMismatchDiscardThisWindow = 0;
+    uint64_t injectFreshCatchupTotal = 0;
+    uint64_t injectRepeatCatchupTotal = 0;
+    uint64_t injectLiveStaleTrimTotal = 0;
+    uint64_t activePathMismatchDiscardTotal = 0;
     size_t pendingLiveInjectReadyFrames = 0;
     DWORD lastHealthLog = GetTickCount();
     LARGE_INTEGER liveStartQpc = {};
@@ -2050,6 +2055,31 @@ void EncoderThreadFunc(const AppConfig& config) {
 
         uint32_t outputShortfallTicks = 0;
         const bool activeScreenGrab = IsActiveScreenGrab();
+        const bool useScreenGrab = activeScreenGrab;
+        auto noteActivePathMismatchDiscard = [&](bool frameIsInjectMode, const char* source) {
+            ++activePathMismatchDiscardThisWindow;
+            ++activePathMismatchDiscardTotal;
+            const uint64_t discarded =
+                g_ActivePathMismatchFramesDiscarded.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (activePathMismatchDiscardThisWindow <= 3 || (discarded % 120ull) == 0ull) {
+                LogWarn(
+                    "[EncoderThread] Discarded %s frame on active %s path from %s (window=%u total=%llu). Preventing "
+                    "mid-recording encoder mode switch.",
+                    frameIsInjectMode ? "inject" : "WGC/D3D11", useScreenGrab ? "WGC" : "inject", source,
+                    activePathMismatchDiscardThisWindow, static_cast<unsigned long long>(discarded));
+            }
+        };
+        auto discardActivePathMismatchFrame = [&](QueuedFrame& mismatchedFrame, const char* source, bool queuedFrame) {
+            noteActivePathMismatchDiscard(mismatchedFrame.isInjectMode, source);
+            if (queuedFrame) {
+                DiscardQueuedFrame(mismatchedFrame);
+            } else {
+                if (!mismatchedFrame.isInjectMode) {
+                    ReleaseQueuedFrameTexture(mismatchedFrame);
+                }
+                mismatchedFrame = QueuedFrame{};
+            }
+        };
         if (!config.video.useVFR && recordingOutputLive) {
             LARGE_INTEGER shortfallNow;
             QueryPerformanceCounter(&shortfallNow);
@@ -2157,8 +2187,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcRecentInputMin250Fps, wgcNoFreshTickPermille, wgcLowSourceModeActive,
                     wgcAudioLeadExcessMsCurrent);
             } else {
-                catchupTicksThisLoop = ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks,
-                                                                                      encoderTooSlowForTargetCurrent);
+                catchupTicksThisLoop = ce::capture_policy::GetInjectCfrCatchupTicksThisLoop(
+                    outputShortfallTicks, encoderTooSlowForTargetCurrent);
             }
             if (activeScreenGrab && wgcLiveRecoveryModeActive && !wgcAudioLeadCatchupPressure) {
                 catchupTicksThisLoop = std::min<uint32_t>(catchupTicksThisLoop, 1u);
@@ -2225,8 +2255,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // Once recording is live, skip ahead when significantly late to prevent
                 // linear accumulation of encoder timer drift.  The buffered WGC frames
                 // provide continuity — the output PTS gap is filled from the frame pool.
-                const uint32_t timerRebaseThreshold =
-                    (recordingOutputLive && activeScreenGrab && !config.video.useVFR) ? 10000 : 2;
+                const uint32_t timerRebaseThreshold = ce::capture_policy::GetCfrTimerRebaseThresholdTicks(
+                    activeScreenGrab, config.video.useVFR, recordingOutputLive);
                 if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
                     nextSampleTime = now;
                 } else if (recordingOutputLive && encoderLateTickCount >= timerRebaseThreshold) {
@@ -2561,7 +2591,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         };
 
-        if (IsActiveScreenGrab()) {
+        if (useScreenGrab) {
             if (!bufferedInjectFrames.empty()) {
                 ClearBufferedInjectFrames();
             }
@@ -2929,6 +2959,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                         DiscardQueuedFrame(temp);
                         continue;
                     }
+                    if (!ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, temp.isInjectMode)) {
+                        discardActivePathMismatchFrame(temp, "WGC VFR queue", true);
+                        continue;
+                    }
                     if (popped && !frame.isInjectMode && frame.texture) {
                         frame.texture->Release();
                     }
@@ -2953,6 +2987,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 while (g_FrameQueue.Pop(temp, 0)) {
                     if (g_RejectInjectFrames.load(std::memory_order_acquire) && temp.isInjectMode) {
                         DiscardQueuedFrame(temp);
+                        continue;
+                    }
+                    if (!ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, temp.isInjectMode)) {
+                        discardActivePathMismatchFrame(temp, "inject CFR queue", true);
                         continue;
                     }
                     if (temp.isInjectMode && temp.timestamp > 0) {
@@ -2995,15 +3033,38 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 const size_t injectReserveFrames = ce::capture_policy::GetInjectReserveFrames(
                     config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs);
+                size_t minBufferedInjectFrames =
+                    ce::capture_policy::GetMinBufferedInjectFrames(injectReserveFrames, recordingOutputLive);
                 const size_t maxBufferedInjectFrames = ce::capture_policy::GetMaxBufferedInjectFrames(
                     injectReserveFrames, recordingOutputLive, recordingLiveTick, GetTickCount64());
                 maxBufferedInjectDepthSinceLog = std::max(maxBufferedInjectDepthSinceLog, bufferedInjectFrames.size());
                 uint32_t trimmedInjectFrames = 0;
+                uint32_t ageTrimmedInjectFrames = 0;
                 while (bufferedInjectFrames.size() > maxBufferedInjectFrames) {
                     QueuedFrame staleFrame = std::move(bufferedInjectFrames.front());
                     bufferedInjectFrames.pop_front();
                     DiscardQueuedFrame(staleFrame);
                     ++trimmedInjectFrames;
+                }
+                LARGE_INTEGER trimNowQpc;
+                QueryPerformanceCounter(&trimNowQpc);
+                const bool injectEncoderBottlenecked = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+                const int64_t maxInjectLiveAgeQpc = ce::capture_policy::GetInjectLiveMaxFrameAgeQpc(
+                    recordingOutputLive, injectEncoderBottlenecked, encoderTooSlowForTargetCurrent,
+                    targetIntervalTicks);
+                while (!bufferedInjectFrames.empty() &&
+                       ce::capture_policy::ShouldTrimStaleInjectLiveFrame(
+                           bufferedInjectFrames.front().timestamp, trimNowQpc.QuadPart, maxInjectLiveAgeQpc,
+                           bufferedInjectFrames.size(), minBufferedInjectFrames)) {
+                    QueuedFrame staleFrame = std::move(bufferedInjectFrames.front());
+                    bufferedInjectFrames.pop_front();
+                    DiscardQueuedFrame(staleFrame);
+                    ++trimmedInjectFrames;
+                    ++ageTrimmedInjectFrames;
+                }
+                if (ageTrimmedInjectFrames > 0) {
+                    injectLiveStaleTrimThisWindow += ageTrimmedInjectFrames;
+                    injectLiveStaleTrimTotal += ageTrimmedInjectFrames;
                 }
                 if (trimmedInjectFrames > 0) {
                     pendingInjectTrimmedLogCount += trimmedInjectFrames;
@@ -3024,15 +3085,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (pendingInjectTrimmedLogCount > 0 && now - lastInjectTrimLog >= 1000) {
                     LogInfo(
                         "[EncoderThread] Trimmed %u stale inject frame(s) to cap backlog (peak=%zu cap=%zu "
-                        "reserve=%zu)",
+                        "reserve=%zu ageTrim=%u maxAgeTicks=%u)",
                         pendingInjectTrimmedLogCount, maxBufferedInjectDepthSinceLog, maxBufferedInjectFrames,
-                        injectReserveFrames);
+                        injectReserveFrames, injectLiveStaleTrimThisWindow,
+                        maxInjectLiveAgeQpc > 0 && targetIntervalTicks > 0
+                            ? static_cast<unsigned>(maxInjectLiveAgeQpc / targetIntervalTicks)
+                            : 0u);
                     pendingInjectTrimmedLogCount = 0;
                     maxBufferedInjectDepthSinceLog = bufferedInjectFrames.size();
                     lastInjectTrimLog = now;
                 }
-                size_t minBufferedInjectFrames =
-                    ce::capture_policy::GetMinBufferedInjectFrames(injectReserveFrames, recordingOutputLive);
 
                 // Bresenham credit-based pacing: add credit proportional to the
                 // measured game-frame arrival rate.  When game fps >= target,
@@ -3158,6 +3220,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                         DiscardQueuedFrame(temp);
                         continue;
                     }
+                    if (!ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, temp.isInjectMode)) {
+                        discardActivePathMismatchFrame(temp, "inject VFR queue", true);
+                        continue;
+                    }
                     if (popped && !frame.isInjectMode && frame.texture) {
                         frame.texture->Release();
                     }
@@ -3173,6 +3239,17 @@ void EncoderThreadFunc(const AppConfig& config) {
         bool duplicateFromTimerRebase = false;
         bool wantsTrueRepeatLastFrame = false;
 
+        if (popped && !ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, frame.isInjectMode)) {
+            discardActivePathMismatchFrame(frame, "selected frame", true);
+            popped = false;
+        }
+
+        if (g_HasLastFrame &&
+            !ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, g_LastFrame.isInjectMode)) {
+            discardActivePathMismatchFrame(g_LastFrame, "cached last frame", false);
+            g_HasLastFrame = false;
+        }
+
         if (popped && frame.isInjectMode && g_RejectInjectFrames.load(std::memory_order_acquire)) {
             DiscardQueuedFrame(frame);
             popped = false;
@@ -3183,7 +3260,6 @@ void EncoderThreadFunc(const AppConfig& config) {
             g_HasLastFrame = false;
         }
 
-        const bool useScreenGrab = IsActiveScreenGrab();
         const bool hasRepeatLastFramePath =
             !config.video.useVFR &&
             ((useScreenGrab && MediaEngine_RepeatLastFrameWithTimeline) || MediaEngine_RepeatLastFrame);
@@ -3700,14 +3776,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                     if (nowTick - s_lastBudgetLog >= 1000) {
                         LogInfo(
                             "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms + "
-                            "tol=%.2fms). "
-                            "Switching to duplicate frames to preserve CFR timeline without stalling.",
-                            extraTick, elapsedFromTickStartMs, catchupBudgetMs, cfrSmoothnessToleranceMs);
+                            "tol=%.2fms). %s",
+                            extraTick, elapsedFromTickStartMs, catchupBudgetMs, cfrSmoothnessToleranceMs,
+                            useScreenGrab ? "Switching to duplicate frames to preserve CFR timeline without stalling."
+                                          : "Inject fresh catch-up remains gated by encoder health and queued credit.");
                         s_lastBudgetLog = nowTick;
                     }
                     if (config.video.useVFR || outputShortfallTicks == 0) {
                         break;
-                    } else {
+                    } else if (useScreenGrab) {
                         // CFR must not break to avoid timeline holes, but we must stop using expensive fresh frames!
                         allowFreshCatchup = false;
                     }
@@ -3715,6 +3792,228 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 const int64_t repeatScheduledQpc =
                     scheduledSampleQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
+
+                if (!useScreenGrab && !config.video.useVFR && MediaEngine_ProcessFrame) {
+                    const size_t catchupInjectReserveFrames = ce::capture_policy::GetInjectReserveFrames(
+                        config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs);
+                    const size_t catchupMinBufferedInjectFrames =
+                        ce::capture_policy::GetMinBufferedInjectFrames(catchupInjectReserveFrames,
+                                                                        recordingOutputLive);
+                    const bool encoderBottleneckedNow = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+                    const bool allowFreshInjectCatchup = ce::capture_policy::ShouldUseFreshInjectCatchup(
+                        config.video.useVFR, encoderBottleneckedNow, encoderTooSlowForTargetCurrent,
+                        bufferedInjectFrames.size(), catchupMinBufferedInjectFrames, frameCreditAccumulator,
+                        outputShortfallTicks);
+                    if (allowFreshInjectCatchup) {
+                        size_t availableCount = bufferedInjectFrames.size() - catchupMinBufferedInjectFrames;
+                        const int64_t catchupGridTick = encoderGridTickCount + 1;
+                        size_t bestIdx = 0;
+                        if (availableCount > 1 && encoderGridStartQpc > 0) {
+                            auto isAllowedCandidate = [&](const QueuedFrame& candidate) {
+                                return !MatchesInjectFrameLineage(candidate, lastDeferredLineage);
+                            };
+                            bestIdx = SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount,
+                                                                 encoderGridStartQpc, catchupGridTick,
+                                                                 targetIntervalTicks, isAllowedCandidate);
+                            if (bestIdx >= availableCount) {
+                                bestIdx = SelectFrameClosestToGrid(bufferedInjectFrames, availableCount,
+                                                                   encoderGridStartQpc, catchupGridTick,
+                                                                   targetIntervalTicks);
+                            }
+                        }
+
+                        if (bestIdx < availableCount) {
+                            for (size_t i = 0; i < bestIdx; ++i) {
+                                QueuedFrame stale = std::move(bufferedInjectFrames.front());
+                                bufferedInjectFrames.pop_front();
+                                DiscardQueuedFrame(stale);
+                                g_InjectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+                                if (g_pSharedMem) {
+                                    g_pSharedMem->runtimeState.injectCadenceDrops.fetch_add(
+                                        1, std::memory_order_relaxed);
+                                }
+                            }
+
+                            QueuedFrame catchupFrame = std::move(bufferedInjectFrames.front());
+                            bufferedInjectFrames.pop_front();
+                            const InjectFrameLineage catchupLineage = MakeInjectFrameLineage(catchupFrame);
+
+                            LARGE_INTEGER catchupStartEnc, catchupEndEnc;
+                            QueryPerformanceCounter(&catchupStartEnc);
+                            uint64_t frameAgeUs = 0;
+                            if (catchupFrame.timestamp > 0 && catchupStartEnc.QuadPart > catchupFrame.timestamp) {
+                                frameAgeUs = static_cast<uint64_t>(
+                                    (catchupStartEnc.QuadPart - catchupFrame.timestamp) * 1000000 /
+                                    qpcFreq.QuadPart);
+                            }
+                            cadenceCounters.frameAgeAccumUs += frameAgeUs;
+                            cadenceCounters.frameAgeSamples++;
+                            cadenceCounters.frameAgeMaxUs =
+                                std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
+                            if (repeatScheduledQpc > 0) {
+                                const int64_t signedOutputScheduleErrorUs =
+                                    ((catchupStartEnc.QuadPart - repeatScheduledQpc) * 1000000) / qpcFreq.QuadPart;
+                                const uint64_t absoluteOutputScheduleErrorUs =
+                                    static_cast<uint64_t>(signedOutputScheduleErrorUs >= 0
+                                                              ? signedOutputScheduleErrorUs
+                                                              : -signedOutputScheduleErrorUs);
+                                cadenceCounters.outputScheduleErrorAccumUs += absoluteOutputScheduleErrorUs;
+                                cadenceCounters.outputScheduleErrorSignedAccumUs += signedOutputScheduleErrorUs;
+                                cadenceCounters.outputScheduleErrorSamples++;
+                                cadenceCounters.outputScheduleErrorMaxUs =
+                                    std::max(cadenceCounters.outputScheduleErrorMaxUs,
+                                             SaturatingToUint32(absoluteOutputScheduleErrorUs));
+                                if (signedOutputScheduleErrorUs < 0) {
+                                    cadenceCounters.outputScheduleEarlyMaxUs =
+                                        std::max(cadenceCounters.outputScheduleEarlyMaxUs,
+                                                 SaturatingToUint32(
+                                                     static_cast<uint64_t>(-signedOutputScheduleErrorUs)));
+                                } else {
+                                    cadenceCounters.outputScheduleLateMaxUs =
+                                        std::max(cadenceCounters.outputScheduleLateMaxUs,
+                                                 SaturatingToUint32(
+                                                     static_cast<uint64_t>(signedOutputScheduleErrorUs)));
+                                }
+                            }
+
+                            const bool catchupEncodeSucceeded = MediaEngine_ProcessFrame(
+                                (uint64_t)catchupFrame.sharedHandle, (uint64_t)catchupFrame.fenceHandle,
+                                catchupFrame.fenceValue, catchupFrame.timestamp, catchupFrame.luidLow,
+                                catchupFrame.luidHigh, catchupFrame.sourcePid, catchupFrame.width,
+                                catchupFrame.height, catchupFrame.format, catchupFrame.isHDR, catchupFrame.isShmem,
+                                catchupFrame.shmemSlot);
+                            const bool catchupEncodeDeferred =
+                                MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
+                            QueryPerformanceCounter(&catchupEndEnc);
+
+                            const double currentEncodeMs =
+                                (double)(catchupEndEnc.QuadPart - catchupStartEnc.QuadPart) * 1000.0 /
+                                qpcFreq.QuadPart;
+                            const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
+                            if (pureEncodeMs > 0.0) {
+                                if (smoothedEncodeMs == 0.0) {
+                                    smoothedEncodeMs = pureEncodeMs;
+                                } else {
+                                    smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) +
+                                                       pureEncodeMs * kEncodeEmaAlpha;
+                                }
+                            }
+                            UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
+                                                        ce::capture_policy::IsEncoderStartupWindow(
+                                                            recordingOutputLive, recordingLiveTick,
+                                                            GetTickCount64()));
+
+                            if (catchupEncodeSucceeded && !catchupEncodeDeferred) {
+                                if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
+                                    g_LastFrame.texture->Release();
+                                    g_LastFrame.texture = nullptr;
+                                }
+
+                                const double currentFenceMs =
+                                    (double)MediaEngine_GetLastFrameFenceWaitUs() / 1000.0;
+                                if (smoothedInjectFenceMs == 0.0) {
+                                    smoothedInjectFenceMs = currentFenceMs;
+                                } else {
+                                    smoothedInjectFenceMs = smoothedInjectFenceMs * 0.90 + currentFenceMs * 0.10;
+                                }
+
+                                if (catchupFrame.frameIndex != 0) {
+                                    if (lastEncodedInjectFrameIndex != 0 &&
+                                        catchupFrame.frameIndex < lastEncodedInjectFrameIndex) {
+                                        LogWarn(
+                                            "[EncoderThread] Inject lineage regression during catch-up: encoded "
+                                            "frame=%u after frame=%u (ring=%u tex=%d ts=%lld)",
+                                            catchupFrame.frameIndex, lastEncodedInjectFrameIndex,
+                                            catchupFrame.ringIndex, catchupFrame.textureIndex,
+                                            static_cast<long long>(catchupFrame.timestamp));
+                                        if (g_pSharedMem) {
+                                            g_pSharedMem->runtimeState.frameIndexRegressions.fetch_add(
+                                                1, std::memory_order_relaxed);
+                                        }
+                                    }
+                                    lastEncodedInjectFrameIndex = catchupFrame.frameIndex;
+                                }
+                                if (IsInjectTextureIndexValid(catchupFrame.textureIndex)) {
+                                    uint32_t& lastTextureFrame =
+                                        lastEncodedFrameByTextureIndex[static_cast<size_t>(catchupFrame.textureIndex)];
+                                    if (lastTextureFrame != 0 && catchupFrame.frameIndex != 0 &&
+                                        catchupFrame.frameIndex <= lastTextureFrame) {
+                                        LogWarn(
+                                            "[EncoderThread] Texture slot reuse anomaly during catch-up: tex=%d "
+                                            "frame=%u previous=%u ring=%u fence=%llu ts=%lld",
+                                            catchupFrame.textureIndex, catchupFrame.frameIndex, lastTextureFrame,
+                                            catchupFrame.ringIndex,
+                                            static_cast<unsigned long long>(catchupFrame.fenceValue),
+                                            static_cast<long long>(catchupFrame.timestamp));
+                                        if (g_pSharedMem) {
+                                            g_pSharedMem->runtimeState.textureReuseAnomalies.fetch_add(
+                                                1, std::memory_order_relaxed);
+                                        }
+                                    }
+                                    lastTextureFrame = catchupFrame.frameIndex;
+                                }
+
+                                if (g_pSharedMem) {
+                                    if (currentEncodeMs > frameIntervalMs * 1.10) {
+                                        g_pSharedMem->runtimeState.lateFrames.fetch_add(1,
+                                                                                        std::memory_order_relaxed);
+                                    }
+                                    g_pSharedMem->runtimeState.framesEncoded.fetch_add(1,
+                                                                                       std::memory_order_relaxed);
+                                    g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(
+                                        1, std::memory_order_relaxed);
+                                    g_pSharedMem->frameRing.readIndex.store(catchupFrame.ringIndex + 1,
+                                                                            std::memory_order_release);
+                                }
+
+                                g_LastFrame = std::move(catchupFrame);
+                                g_HasLastFrame = true;
+                                lastDeferredLineage = {};
+                                frameCreditAccumulator -= 1.0;
+                                cadenceCounters.consecutiveDeferredFrames = 0;
+                                cadenceCounters.consecutiveDuplicateFrames = 0;
+                                cadenceCounters.liveTickEmitCount++;
+                                cadenceCounters.liveTickUniqueCount++;
+                                cadenceCounters.CommitHoldRun();
+                                cadenceCounters.holdTicksRunning = 1;
+                                ++liveTicksOutput;
+                                ++encoderGridTickCount;
+                                ++cfrCatchupTicksExecuted;
+                                ++injectFreshCatchupThisWindow;
+                                ++injectFreshCatchupTotal;
+                                nextSampleTime.QuadPart += targetIntervalTicks;
+                                continue;
+                            }
+
+                            if (catchupEncodeDeferred) {
+                                frameCreditAccumulator = std::max(frameCreditAccumulator, 1.0);
+                                g_InjectDeferredFrames.fetch_add(1, std::memory_order_relaxed);
+                                if (g_pSharedMem) {
+                                    g_pSharedMem->runtimeState.deferredFrames.fetch_add(1,
+                                                                                        std::memory_order_relaxed);
+                                }
+                                cadenceCounters.consecutiveDeferredFrames++;
+                                cadenceCounters.maxConsecutiveDeferredFrames =
+                                    std::max(cadenceCounters.maxConsecutiveDeferredFrames,
+                                             cadenceCounters.consecutiveDeferredFrames);
+                                lastDeferredLineage = catchupLineage;
+                                catchupFrame.deferCount++;
+                                if (!g_RejectInjectFrames.load(std::memory_order_acquire) &&
+                                    catchupFrame.deferCount <= ce::capture_policy::kMaxInjectDeferredFrameRetries) {
+                                    bufferedInjectFrames.push_front(std::move(catchupFrame));
+                                    ++injectDeferredRequeuedThisWindow;
+                                    ++injectDeferredRequeuedTotal;
+                                } else {
+                                    DiscardQueuedFrame(catchupFrame);
+                                    ++injectDeferredDroppedThisWindow;
+                                    ++injectDeferredDroppedTotal;
+                                }
+                            } else {
+                                DiscardQueuedFrame(catchupFrame);
+                            }
+                        }
+                    }
+                }
 
                 if (allowFreshCatchup && useScreenGrab && MediaEngine_ProcessFrameD3D11 && !bufferedWgcFrames.empty()) {
                     const int64_t catchupGridTick = encoderGridTickCount + 1;
@@ -3916,7 +4215,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 recordDuplicate(&g_LastFrame, duplicateLineage, false, false, false, true);
-                ++wgcRepeatCatchupCount;
+                if (useScreenGrab) {
+                    ++wgcRepeatCatchupCount;
+                } else {
+                    ++injectRepeatCatchupThisWindow;
+                    ++injectRepeatCatchupTotal;
+                }
                 cadenceCounters.liveTickEmitCount++;
                 cadenceCounters.liveTickDuplicateCount++;
                 cadenceCounters.holdTicksRunning++;
@@ -4092,22 +4396,31 @@ void EncoderThreadFunc(const AppConfig& config) {
                     cadenceCounters.maxConsecutiveDeferredFrames = std::max(
                         cadenceCounters.maxConsecutiveDeferredFrames, cadenceCounters.consecutiveDeferredFrames);
                     lastDeferredLineage = deferredLineage;
-                    if (g_HasLastFrame) {
-                        g_LastFrame.deferCount++;
-                        bufferedInjectFrames.push_front(std::move(g_LastFrame));
-                        g_HasLastFrame = false;
-                        g_LastFrame = QueuedFrame{};
+                    QueuedFrame deferredFrame = std::move(frame);
+                    deferredFrame.deferCount++;
+                    if (!g_RejectInjectFrames.load(std::memory_order_acquire) &&
+                        deferredFrame.deferCount <= ce::capture_policy::kMaxInjectDeferredFrameRetries) {
+                        bufferedInjectFrames.push_front(std::move(deferredFrame));
+                        ++injectDeferredRequeuedThisWindow;
+                        ++injectDeferredRequeuedTotal;
+                    } else {
+                        DiscardQueuedFrame(deferredFrame);
+                        ++injectDeferredDroppedThisWindow;
+                        ++injectDeferredDroppedTotal;
                     }
+                    frameToProcess = nullptr;
+                    popped = false;
                     static uint64_t s_lastDeferredLogTick = 0;
                     uint64_t nowTick = GetTickCount64();
                     if (nowTick - s_lastDeferredLogTick >= 1000) {
                         LogInfo(
                             "[EncoderThread] Deferred inject frame=%u ring=%u tex=%d fence=%llu ts=%lld buffered=%zu "
-                            "credit=%.3f",
+                            "credit=%.3f requeued=%llu dropped=%llu",
                             deferredLineage.frameIndex, deferredLineage.ringIndex, deferredLineage.textureIndex,
                             static_cast<unsigned long long>(deferredLineage.fenceValue),
                             static_cast<long long>(deferredLineage.timestamp), bufferedInjectFrames.size(),
-                            frameCreditAccumulator);
+                            frameCreditAccumulator, static_cast<unsigned long long>(injectDeferredRequeuedTotal),
+                            static_cast<unsigned long long>(injectDeferredDroppedTotal));
                         s_lastDeferredLogTick = nowTick;
                     }
 
@@ -4134,7 +4447,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                 }
 
-                if (popped && frameToProcess->isInjectMode && encodeSucceeded) {
+                if (popped && frameToProcess && frameToProcess->isInjectMode && encodeSucceeded) {
                     const double currentFenceMs = (double)MediaEngine_GetLastFrameFenceWaitUs() / 1000.0;
                     if (smoothedInjectFenceMs == 0.0) {
                         smoothedInjectFenceMs = currentFenceMs;
@@ -4154,7 +4467,7 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 cadenceCounters.consecutiveDeferredFrames = 0;
 
-                if (!isDuplicate && frameToProcess->frameIndex != 0) {
+                if (!isDuplicate && frameToProcess && frameToProcess->frameIndex != 0) {
                     if (lastEncodedInjectFrameIndex != 0 && frameToProcess->frameIndex < lastEncodedInjectFrameIndex) {
                         LogWarn(
                             "[EncoderThread] Inject lineage regression: encoded frame=%u after frame=%u (ring=%u "
@@ -4167,7 +4480,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                     lastEncodedInjectFrameIndex = frameToProcess->frameIndex;
                 }
-                if (!isDuplicate && IsInjectTextureIndexValid(frameToProcess->textureIndex)) {
+                if (!isDuplicate && frameToProcess && IsInjectTextureIndexValid(frameToProcess->textureIndex)) {
                     uint32_t& lastTextureFrame =
                         lastEncodedFrameByTextureIndex[static_cast<size_t>(frameToProcess->textureIndex)];
                     if (lastTextureFrame != 0 && frameToProcess->frameIndex != 0 &&
@@ -4193,7 +4506,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     } else if (isDrainPhase) {
                         g_pSharedMem->runtimeState.drainFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                     }
-                    g_pSharedMem->frameRing.readIndex.store(frameToProcess->ringIndex + 1, std::memory_order_release);
+                    if (frameToProcess) {
+                        g_pSharedMem->frameRing.readIndex.store(frameToProcess->ringIndex + 1,
+                                                                std::memory_order_release);
+                    }
                 }
             } else {
                 cadenceCounters.consecutiveDeferredFrames = 0;
@@ -4208,7 +4524,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             if (encodeSucceeded) {
-                if (selectionMetricTargetQpc > 0 && !frameToProcess->isInjectMode && !isDuplicate) {
+                if (selectionMetricTargetQpc > 0 && frameToProcess && !frameToProcess->isInjectMode && !isDuplicate) {
                     cadenceCounters.selectionErrorAccumUs += static_cast<uint64_t>(absoluteSelectionErrorUs);
                     cadenceCounters.selectionErrorSignedAccumUs += signedSelectionErrorUs;
                     cadenceCounters.selectionErrorSamples++;
@@ -4442,10 +4758,12 @@ void EncoderThreadFunc(const AppConfig& config) {
             LogInfo(
                 "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus "
                 "EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus "
-                "Hold=%u HoldFresh=%u Delay=%u Spend=%u CatchUp=%u CatchFresh=%u LiveClamp=%u/%uus | DefStreak=%u/%u "
+                "Hold=%u HoldFresh=%u Delay=%u Spend=%u CatchUp=%u CatchFresh=%u InjectCatch=%u/%u "
+                "InjectAgeTrim=%u PathMismatch=%u/%llu LiveClamp=%u/%uus | DefStreak=%u/%u "
                 "DupStreak=%u/%u | DupSrc=%u "
                 "DupDef=%u "
-                "DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | "
+                "DupTimer=%u DupDrain=%u InjectDefReQ=%u InjectDefDrop=%u | TickEmit=%u TickUnique=%u TickDup=%u "
+                "TickMiss=%u | "
                 "HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u/%.1fms FreshMiss=%upm "
                 "BufAvg=%upm BufMin=%u NoFresh=%u NoReserve=%u Oldest=%.1fms LeadExcess=%.1fms | WgcAct Fresh=%u "
                 "DupSrc=%u DropObs=%u "
@@ -4463,12 +4781,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                 cadenceCounters.outputScheduleLateMaxUs, avgWgcSelectionErrorUs, wgcSelectionErrorMaxUs,
                 avgSignedWgcSelectionErrorUs, wgcSelectionEarlyMaxUs, wgcSelectionLateMaxUs, wgcHoldForNextTickCount,
                 wgcHeldFreshFrameTickCount, wgcSelectionDelayTickCount, wgcReserveSpendTickCount,
-                cfrCatchupTicksExecuted, wgcFreshCatchupCount, wgcSelectionTargetClampCount,
-                wgcSelectionTargetClampMaxUs, cadenceCounters.consecutiveDeferredFrames,
+                cfrCatchupTicksExecuted, wgcFreshCatchupCount, injectFreshCatchupThisWindow,
+                injectRepeatCatchupThisWindow, injectLiveStaleTrimThisWindow, activePathMismatchDiscardThisWindow,
+                static_cast<unsigned long long>(g_ActivePathMismatchFramesDiscarded.load(std::memory_order_relaxed)),
+                wgcSelectionTargetClampCount, wgcSelectionTargetClampMaxUs, cadenceCounters.consecutiveDeferredFrames,
                 cadenceCounters.maxConsecutiveDeferredFrames, cadenceCounters.consecutiveDuplicateFrames,
                 cadenceCounters.maxConsecutiveDuplicateFrames, dupNoSource - lastDuplicateReasonNoSource,
                 dupDeferred - lastDuplicateReasonDeferred, dupTimer - lastDuplicateReasonTimerRebase,
-                dupDrain - lastDuplicateReasonDrain, cadenceCounters.liveTickEmitCount,
+                dupDrain - lastDuplicateReasonDrain, injectDeferredRequeuedThisWindow,
+                injectDeferredDroppedThisWindow, cadenceCounters.liveTickEmitCount,
                 cadenceCounters.liveTickUniqueCount, cadenceCounters.liveTickDuplicateCount,
                 cadenceCounters.liveTickMissCount, cadenceCounters.holdHist[0], cadenceCounters.holdHist[1],
                 cadenceCounters.holdHist[2], cadenceCounters.holdHist[3], cadenceCounters.holdHist[4],
@@ -4544,6 +4865,32 @@ void EncoderThreadFunc(const AppConfig& config) {
                             : 0);
                     s_lastWgcSourceLimitedInfoTick = nowTick;
                 }
+            } else if (!useScreenGrab && recordingOutputLive) {
+                s_wgcCapacityLimitedStreakSeconds = 0;
+                static uint64_t s_lastInjectRepeatPressureInfoTick = 0;
+                const uint32_t duplicateTicksThisWindow = cadenceCounters.liveTickDuplicateCount;
+                const uint32_t deferredRepeatsThisWindow = dupDeferred - lastDuplicateReasonDeferred;
+                const uint32_t sourceRepeatsThisWindow = dupNoSource - lastDuplicateReasonNoSource;
+                const bool hardEncoderPressure =
+                    (overloadFlags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0 ||
+                    (overloadFlags & ce::capture_policy::kEncoderOverloadFlagMux) != 0 ||
+                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+                const uint64_t nowTick = GetTickCount64();
+                if ((duplicateTicksThisWindow > 0 || injectDeferredRequeuedThisWindow > 0 ||
+                     injectFreshCatchupThisWindow > 0 || injectLiveStaleTrimThisWindow > 0) &&
+                    (nowTick - s_lastInjectRepeatPressureInfoTick) >= 5000) {
+                    LogInfo(
+                        "[Inject CFR] Repeat pressure: hardEncoderOverload=%d dup=%u srcLimited=%u fenceDeferred=%u "
+                        "timer=%u freshCatchup=%u repeatCatchup=%u staleTrim=%u requeued=%u droppedDeferred=%u "
+                        "tickEmit=%u unique=%u sourceFps=%.2f enc=%.2fms sustain=%.1ffps overload=0x%X",
+                        hardEncoderPressure ? 1 : 0, duplicateTicksThisWindow, sourceRepeatsThisWindow,
+                        deferredRepeatsThisWindow, dupTimer - lastDuplicateReasonTimerRebase,
+                        injectFreshCatchupThisWindow, injectRepeatCatchupThisWindow, injectLiveStaleTrimThisWindow,
+                        injectDeferredRequeuedThisWindow, injectDeferredDroppedThisWindow,
+                        cadenceCounters.liveTickEmitCount, cadenceCounters.liveTickUniqueCount,
+                        srcFpsX100Val / 100.0, smoothedEncodeMs, sustainableOutputFps, overloadFlags);
+                    s_lastInjectRepeatPressureInfoTick = nowTick;
+                }
             } else {
                 s_wgcCapacityLimitedStreakSeconds = 0;
             }
@@ -4559,6 +4906,12 @@ void EncoderThreadFunc(const AppConfig& config) {
             lastPacketClampCount = packetClamps;
             lastNegativePtsCount = negativePts;
             lastNonMonotonicPtsCount = nonMonotonicPts;
+            injectDeferredRequeuedThisWindow = 0;
+            injectDeferredDroppedThisWindow = 0;
+            injectFreshCatchupThisWindow = 0;
+            injectRepeatCatchupThisWindow = 0;
+            injectLiveStaleTrimThisWindow = 0;
+            activePathMismatchDiscardThisWindow = 0;
             cadenceCounters.Reset();
             cadenceCounters.holdTicksRunning = savedHoldTicks;  // Preserve in-progress hold run
             wgcSelectionErrorAccumUs = 0;
@@ -4703,14 +5056,22 @@ void EncoderThreadFunc(const AppConfig& config) {
         } else {
             LogInfo(
                 "[Inject CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% DupReason(src=%llu def=%llu timer=%llu "
-                "drain=%llu)",
+                "drain=%llu) FreshCatchup=%llu RepeatCatchup=%llu StaleTrim=%llu PathMismatch=%llu/%llu "
+                "DefRequeued=%llu DefDropped=%llu",
                 static_cast<unsigned long long>(liveTicksOutput),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
                 static_cast<double>(duplicatePermille) / 10.0,
                 static_cast<unsigned long long>(captureSessionSummary.duplicateNoSourceTicks),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateDeferredTicks),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTimerTicks),
-                static_cast<unsigned long long>(captureSessionSummary.duplicateDrainTicks));
+                static_cast<unsigned long long>(captureSessionSummary.duplicateDrainTicks),
+                static_cast<unsigned long long>(injectFreshCatchupTotal),
+                static_cast<unsigned long long>(injectRepeatCatchupTotal),
+                static_cast<unsigned long long>(injectLiveStaleTrimTotal),
+                static_cast<unsigned long long>(activePathMismatchDiscardTotal),
+                static_cast<unsigned long long>(g_ActivePathMismatchFramesDiscarded.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(injectDeferredRequeuedTotal),
+                static_cast<unsigned long long>(injectDeferredDroppedTotal));
             LogInfo(
                 "[Inject CFR SUMMARY] SourceFps=%.2f..%.2f JitterMax=%uus SelMax=%uus EncEmaMax=%.2fms "
                 "SustainMin=%.1ffps",
@@ -4775,6 +5136,7 @@ void StartRecording(const AppConfig& config) {
     g_InjectBufferedTrimmedFrames.store(0, std::memory_order_relaxed);
     g_InjectCadenceDroppedFrames.store(0, std::memory_order_relaxed);
     g_InjectDeferredFrames.store(0, std::memory_order_relaxed);
+    g_ActivePathMismatchFramesDiscarded.store(0, std::memory_order_relaxed);
 
     if (g_pSharedMem) {
         ResetRuntimeDiagnostics(g_pSharedMem);
@@ -4981,7 +5343,28 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     auto isExplicitInjectConfig = [&]() -> bool { return IsInjectCaptureMethod(config.captureMethod); };
     auto isExplicitWgcConfig = [&]() -> bool { return IsWgcCaptureMethod(config.captureMethod); };
     auto isAutoCaptureConfig = [&]() -> bool { return IsAutoCaptureMethod(config.captureMethod); };
-    auto setWgcPreferenceAfterFailure = [&]() { SetPreferredScreenGrab(isExplicitWgcConfig()); };
+    auto setWgcPreferenceAfterFailure = [&]() {
+        SetPreferredScreenGrab(isExplicitWgcConfig() || isAutoCaptureConfig());
+    };
+    auto isInjectCaptureTarget = [&](const std::string& processName) -> bool {
+        const bool gameWhitelistMatched =
+            !processName.empty() && MatchesProcessEntries(config.gameWhitelist, processName);
+        return ce::capture_policy::ShouldUseInjectCaptureForAutoTarget(isExplicitInjectConfig(), isAutoCaptureConfig(),
+                                                                       gameWhitelistMatched);
+    };
+    auto resolveSourceProcessName = [&](uint32_t sourcePid, const std::string& knownName = std::string{}) {
+        if (!knownName.empty() && knownName != "unknown") {
+            return knownName;
+        }
+        if (sourcePid == 0) {
+            return std::string{};
+        }
+        std::string resolvedName = GetProcessNameFromPID(sourcePid);
+        return resolvedName == "unknown" ? std::string{} : resolvedName;
+    };
+    auto isInjectCaptureTargetForSource = [&](uint32_t sourcePid, const std::string& knownName = std::string{}) {
+        return isInjectCaptureTarget(resolveSourceProcessName(sourcePid, knownName));
+    };
 
     if (isExplicitWgcConfig()) {
         SetPreferredScreenGrab(true);
@@ -5246,6 +5629,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
 
+        if (!isInjectCaptureTargetForSource(sourcePid)) {
+            return false;
+        }
+
         if (!ShouldPreferInjectCaptureForFullscreenWindow(targetWindow, sourcePid)) {
             return false;
         }
@@ -5395,14 +5782,21 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     auto prepareCaptureForRecordingStart = [&]() {
         const std::string processName = refreshActiveConfig(false);
         const uint32_t sourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
-        const bool injectWhitelisted =
-            isAutoCaptureConfig() && !processName.empty() && MatchesProcessEntries(config.gameWhitelist, processName);
+        const bool injectWhitelisted = isInjectCaptureTarget(processName);
 
         g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
 
         if (isExplicitInjectConfig()) {
             SetPreferredScreenGrab(false);
             clearCurrentWgcTarget();
+            return;
+        }
+
+        if (injectWhitelisted) {
+            SetPreferredScreenGrab(false);
+            clearCurrentWgcTarget();
+            LogInfo("[Media] Injection whitelist matched %s; auto mode will use inject capture",
+                    processName.c_str());
             return;
         }
 
@@ -5428,9 +5822,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             SetPreferredScreenGrab(true);
             HWND hGameWindow = GetMainWindowForProcess(sourcePid);
             if (hGameWindow) {
-                if (markInjectPreferredTarget(hGameWindow, sourcePid, "Overlay whitelist")) {
-                    return;
-                }
+                LogInfo("[Media] Overlay-only hook target %s; WGC capture selected", processName.c_str());
                 primeWgcWindowTarget(hGameWindow, false);
             } else if (!primeWgcMonitorTarget()) {
                 setWgcPreferenceAfterFailure();
@@ -5451,22 +5843,27 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             clearCurrentWgcTarget();
         }
 
-        SetPreferredScreenGrab(false);
+        if (isAutoCaptureConfig()) {
+            if (sourcePid != 0) {
+                HWND hGameWindow = GetMainWindowForProcess(sourcePid);
+                if (hGameWindow && primeWgcWindowTarget(hGameWindow, false)) {
+                    LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC window capture selected",
+                            processName.empty() ? "target" : processName.c_str());
+                    return;
+                }
+            }
 
-        if (injectWhitelisted) {
-            LogInfo("[Media] Injection whitelist matched %s; auto mode will stay on inject capture",
-                    processName.c_str());
+            if (primeWgcMonitorTarget()) {
+                LogInfo("[Media] Auto mode: no inject whitelist match; WGC monitor capture selected");
+            } else {
+                setWgcPreferenceAfterFailure();
+                clearCurrentWgcTarget();
+                LogWarn("[Media] Auto mode: WGC target unavailable and inject capture is not allowed for this target");
+            }
             return;
         }
 
-        if (isAutoCaptureConfig() && WGCCapture::IsSupported()) {
-            if (g_WgcCap || ensureWgcStandby()) {
-                g_AutoWgcFallbackArmed.store(true, std::memory_order_release);
-                LogInfo("[Media] WGC fallback armed for this recording");
-            } else {
-                LogWarn("[Media] Failed to arm WGC fallback for this recording");
-            }
-        }
+        SetPreferredScreenGrab(false);
     };
 
     while (g_Running) {
@@ -5637,12 +6034,11 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 }
                 LogInfo("[Media] Hook connected: %s (PID: %u)", procName.c_str(), currentSourcePid);
 
-                const bool forceWGC =
-                    !isExplicitInjectConfig() && MatchesProcessEntries(config.overlayWhitelist, procName);
-                const bool injectWhitelisted =
-                    isAutoCaptureConfig() && MatchesProcessEntries(config.gameWhitelist, procName);
+                const bool injectWhitelisted = isInjectCaptureTarget(procName);
+                const bool forceWGC = !isExplicitInjectConfig() && !injectWhitelisted &&
+                                      MatchesProcessEntries(config.overlayWhitelist, procName);
                 if (forceWGC) {
-                    LogInfo("[Media] Overlay whitelist matched %s; preferring WGC when the target allows it",
+                    LogInfo("[Media] Overlay-only hook target %s connected; WGC capture remains selected",
                             procName.c_str());
                     if (g_Recording && !IsActiveScreenGrab()) {
                         LogInfo(
@@ -5661,10 +6057,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     HWND matchedWindow =
                         config.wgcWindowTitles.empty() ? NULL : FindMatchingWgcWindow(config.wgcWindowTitles);
                     if (matchedWindow) {
-                        if (markInjectPreferredTarget(matchedWindow, currentSourcePid,
-                                                      "Overlay whitelist title match")) {
-                            continue;
-                        }
                         primeWgcWindowTarget(matchedWindow, false);
                         continue;
                     }
@@ -5678,13 +6070,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
                         HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
                         if (hGameWindow) {
-                            if (markInjectPreferredTarget(hGameWindow, currentSourcePid,
-                                                          "Overlay whitelist main window")) {
-                                continue;
-                            }
                             LogInfo(
-                                "[Media] Whitelist Optimization: Found main window 0x%p. "
-                                "Switching WGC to Window Mode.",
+                                "[Media] Overlay-only target: found main window 0x%p. "
+                                "Switching WGC to window mode.",
                                 hGameWindow);
 
                             if (primeWgcWindowTarget(hGameWindow, false)) {
@@ -5703,9 +6091,27 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                         }
                     }
 
+                } else if (!g_Recording && injectWhitelisted) {
+                    SetPreferredScreenGrab(false);
+                    clearCurrentWgcTarget();
+                    LogInfo("[Media] Injection whitelist matched %s; using inject capture", procName.c_str());
+                } else if (!g_Recording && isAutoCaptureConfig()) {
+                    HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
+                    if (hGameWindow && primeWgcWindowTarget(hGameWindow, false)) {
+                        LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC window capture selected",
+                                procName.c_str());
+                    } else if (primeWgcMonitorTarget()) {
+                        LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC monitor capture selected",
+                                procName.c_str());
+                    } else {
+                        setWgcPreferenceAfterFailure();
+                        clearCurrentWgcTarget();
+                        LogWarn("[Media] Auto mode: WGC target unavailable for %s; no inject capture fallback",
+                                procName.c_str());
+                    }
                 } else if (!g_Recording && !isExplicitWgcConfig()) {
                     SetPreferredScreenGrab(false);
-                    LogInfo("[Media] Using Inject Mode (Default)");
+                    LogInfo("[Media] Using Inject Mode (explicit/default)");
                 }
             }
         }

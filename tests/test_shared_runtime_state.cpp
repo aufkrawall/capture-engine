@@ -189,6 +189,34 @@ TEST(InjectOverlayPolicyTest, WgcOverlayOnlyInjectionKeepsOverlayTargetsOnly) {
     EXPECT_EQ(state.config.overlayWhitelist[0].pattern, "SocialClubD3D12Renderer.dll");
 }
 
+TEST(InjectOverlayPolicyTest, AutoOverlayOnlyInjectionKeepsOverlayTargetForHooking) {
+    AppConfig config;
+    config.captureMethod = "auto";
+    config.overlayWhitelist.push_back({.pattern = "overlay-only.exe"});
+
+    const InjectorConfigState state = BuildInjectorConfigState(config);
+
+    EXPECT_TRUE(state.allowInjection);
+    EXPECT_TRUE(state.config.gameWhitelist.empty());
+    ASSERT_EQ(state.config.overlayWhitelist.size(), 1u);
+    EXPECT_EQ(state.config.overlayWhitelist[0].pattern, "overlay-only.exe");
+}
+
+TEST(InjectOverlayPolicyTest, AutoInjectionKeepsGameAndOverlayTargetsSeparate) {
+    AppConfig config;
+    config.captureMethod = "auto";
+    config.gameWhitelist.push_back({.pattern = "capture-game.exe"});
+    config.overlayWhitelist.push_back({.pattern = "overlay-only.exe"});
+
+    const InjectorConfigState state = BuildInjectorConfigState(config);
+
+    EXPECT_TRUE(state.allowInjection);
+    ASSERT_EQ(state.config.gameWhitelist.size(), 1u);
+    ASSERT_EQ(state.config.overlayWhitelist.size(), 1u);
+    EXPECT_EQ(state.config.gameWhitelist[0].pattern, "capture-game.exe");
+    EXPECT_EQ(state.config.overlayWhitelist[0].pattern, "overlay-only.exe");
+}
+
 TEST(InjectOverlayPolicyTest, StandardInjectionKeepsGameWhitelist) {
     AppConfig config;
     config.captureMethod = "inject";

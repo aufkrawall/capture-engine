@@ -43,6 +43,7 @@ static bool IsCallerFromStreamlineModule(const void* returnAddress) {
            ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(callerPath);
 }
 #include "d3d11_device_wrap.h"
+#include "d3d11_devicecontext_wrap.h"
 #include "d3d9_device_wrap.h"
 #include "d3d9_wrap.h"
 #include "dxgi_factory_wrap.h"
@@ -51,6 +52,33 @@ static bool IsCallerFromStreamlineModule(const void* returnAddress) {
 #include "wrapper_hooks.h"
 // Forward declaration from dx11_hook.cpp (after D3D11 types are available)
 extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
+
+static bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DESC& desc) {
+    const auto& gfx = GetActiveGraphicsConfig();
+    if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
+        return false;
+    }
+
+    const UINT requested = static_cast<UINT>(gfx.backbufferCount);
+    const bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                         desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+    if (isFlip && requested < desc.BufferCount) {
+        WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount override skipped requested=%u game=%u "
+                   "swapEffect=%d (flip model)",
+                   requested, desc.BufferCount, desc.SwapEffect);
+        return false;
+    }
+    if (desc.BufferCount == requested) {
+        WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount already matches requested=%u swapEffect=%d",
+                   requested, desc.SwapEffect);
+        return false;
+    }
+
+    WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount override %u -> %u swapEffect=%d",
+               desc.BufferCount, requested, desc.SwapEffect);
+    desc.BufferCount = requested;
+    return true;
+}
 
 // ============================================================================
 // Original Function Pointers
@@ -443,23 +471,30 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE
 
     WrapperLog("Wrapped_D3D11CreateDevice: Original returned hr=0x%08X", hr);
 
+    CWrapD3D11Device* pWrapper = nullptr;
     if (SUCCEEDED(hr) && pRealDevice && ppDevice) {
-        auto* pWrapper = new CWrapD3D11Device(pRealDevice);
+        pWrapper = new CWrapD3D11Device(pRealDevice);
         *ppDevice = pWrapper;
         pRealDevice->Release();
         WrapperLog("Wrapped_D3D11CreateDevice: Created wrapped D3D11 device");
-    }
-
-    if (ppImmediateContext) {
-        *ppImmediateContext = pRealContext;
-        // Keep the runtime-created immediate context unchanged here; callers that
-        // need the wrapped variant can still obtain it via the wrapped device.
     }
 
     // Install vtable hooks immediately so the game cannot cache un-hooked Draw
     // function pointers from the real context before our detours are active.
     if (SUCCEEDED(hr)) {
         DX11Hook_InstallDeviceAndContextHooks(pRealDevice, pRealContext, NULL);
+    }
+
+    if (ppImmediateContext) {
+        if (SUCCEEDED(hr) && pRealContext) {
+            auto* wrappedContext = new CWrapD3D11DeviceContext(pRealContext, pWrapper);
+            *ppImmediateContext = wrappedContext;
+            pRealContext->Release();
+            WrapperLog("Wrapped_D3D11CreateDevice: Returned wrapped immediate context real=%p wrapper=%p",
+                       pRealContext, wrappedContext);
+        } else {
+            *ppImmediateContext = pRealContext;
+        }
     }
 
     return hr;
@@ -503,13 +538,32 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
 
     WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Calling original at %p", oD3D11CreateDeviceAndSwapChain);
 
+    DXGI_SWAP_CHAIN_DESC modifiedDesc = {};
+    const DXGI_SWAP_CHAIN_DESC* pDescToUse = pSwapChainDesc;
+    if (pSwapChainDesc) {
+        modifiedDesc = *pSwapChainDesc;
+        ApplyD3D11CreateDeviceSwapChainBackbufferOverride(modifiedDesc);
+        pDescToUse = &modifiedDesc;
+    }
+
     HRESULT hr = oD3D11CreateDeviceAndSwapChain(DeWrap(pAdapter), DriverType, Software, Flags, pFeatureLevels,
-                                                FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice,
+                                                FeatureLevels, SDKVersion, pDescToUse, ppSwapChain, ppDevice,
                                                 pFeatureLevel, ppImmediateContext);
 
     WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Original returned hr=0x%08X", hr);
 
     if (SUCCEEDED(hr)) {
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (ppSwapChain && *ppSwapChain && HasBackbufferCountOverride(gfx.backbufferCount)) {
+            DXGI_SWAP_CHAIN_DESC actualDesc = {};
+            if (SUCCEEDED((*ppSwapChain)->GetDesc(&actualDesc))) {
+                WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Actual BufferCount=%u requested=%d "
+                           "size=%ux%u swapEffect=%d",
+                           actualDesc.BufferCount, gfx.backbufferCount, actualDesc.BufferDesc.Width,
+                           actualDesc.BufferDesc.Height, actualDesc.SwapEffect);
+            }
+        }
+
         // Install vtable hooks immediately on device and context, before any
         // swapchain-specific setup, so the game cannot cache un-hooked function
         // pointers.
@@ -521,11 +575,20 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
         if (ppSwapChain && *ppSwapChain) {
             DX11Hook_OnSwapChainCreated(*ppSwapChain);
         }
+        if (ppImmediateContext && *ppImmediateContext) {
+            ID3D11DeviceContext* realContext = *ppImmediateContext;
+            auto* wrappedContext = new CWrapD3D11DeviceContext(realContext, nullptr);
+            *ppImmediateContext = wrappedContext;
+            realContext->Release();
+            WrapperLog(
+                "Wrapped_D3D11CreateDeviceAndSwapChain: Returned wrapped immediate context real=%p wrapper=%p",
+                realContext, wrappedContext);
+        }
         static std::atomic<int> s_D3D11CompatLogCount{0};
         if (s_D3D11CompatLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
             WrapperLog(
                 "Wrapped_D3D11CreateDeviceAndSwapChain: compatibility mode - "
-                "returning unwrapped objects");
+                "returning raw device/swapchain with wrapped context");
         }
     }
 

@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-05-13
+Last cross-checked: 2026-05-14
 
 Primary sources:
 - `AGENTS.md`
@@ -12,6 +12,7 @@ Primary sources:
 - `captureengine/inject_main.cpp`
 - `captureengine/pseudo_overlay.cpp`
 - `hook/apis/dx12_hook.cpp`
+- `hook/apis/dx11_hook.cpp`
 - `hook/apis/streamline_hook.cpp`
 - `hook/common/dxgi_shared.cpp`
 - `hook/common/dx12_overlay_policy.h`
@@ -23,6 +24,8 @@ Primary sources:
 - `hook/common/reflex_limiter_query_hook.inl`
 - `hook/common/overlay_metrics_publisher.cpp`
 - `hook/wrappers/dxgi_swapchain_wrap.cpp`
+- `hook/wrappers/wrapper_hooks.cpp`
+- `hook/wrappers/d3d11_devicecontext_wrap.cpp`
 - `hook/wrappers/iat_hook.cpp`
 - `common/crash_dump_policy.h`
 - `common/crash_handler.cpp`
@@ -82,6 +85,10 @@ Primary sources:
   - Publishes the currently discovered DX12 queue/swapchain device to native driver limiter consumers and logs the source, device, queue, and HookContext update/conflict state. This matters for explicit Reflex limiter mode, Anti-Lag 2, and XeLL paths that lazy-init from `HookContext`.
   - Startup-overlay resume diagnostics now also log whether CE is still waiting for a usable foreground window or intentionally tracking a same-process foreground window instead of the old swapchain HWND, which matters for late no-FG startup handoffs that can otherwise self-latch on `remaining=0ms`.
   - Native-FSR callback traces now also log callback-side HDR classification (`DX12: FFX present callback HDR check ... colorSpace=... isHDR=...`) and the FFX UI-composition contract (`premulAlpha=%d`) so visual FSR callback regressions can be distinguished from queue/routing failures.
+- `hook/apis/dx11_hook.cpp` / `hook/wrappers/wrapper_hooks.cpp`
+  - D3D11 forced-AF diagnostics should prove both coverage and safety: per-context `DX11: Deferred AF bootstrap ...`, `DX11: Runtime AF hook ensure ...`, `Wrapper: AF draw hook hit`, `Wrapper: AF sampler bind tracked`, `Wrapper: AF allow`, and `Wrapper: AF reconciled` lines show the draw path is active; detailed `AF skip` lines explain conservative skips.
+  - `backbuffer_count` should be proven at swapchain creation, not only after a resolution change. D3D11 `CreateDeviceAndSwapChain`, `CreateSwapChain`, and `CreateSwapChainForHwnd` paths log requested/actual buffer counts when an override is configured. DX12 swapchain refresh logs actual buffer count in `hook/apis/dx12_hook.cpp`.
+  - `cpu_prerender_limit` can still be active when `IDXGIDevice1::SetMaximumFrameLatency` fails: for D3D11, `Created manual prerender query ring buffer` plus `Prerender buffered wait lookback=...` proves the query-ring fallback is enforcing the limit.
 - `hook/common/fps_limiter.h` / `hook/common/reflex_limiter.h`
   - Basic/timer fallback limiter pacing is hook-local. Per-game config can enable the limiter after startup, so the hook must not wait for helper-process release events before running local cadence. For a 140 FPS basic cap, `fps_limiter_trace.log` should show `Apply: LOCAL timer start ...` and periodic `Apply: LOCAL timer stats ...`; repeated `TIMEOUT waiting for release` in basic/timer fallback mode is a regression.
   - Explicit Reflex limiter fallback logs now include whether a native device was available, and the Reflex limiter logs missing SetSleepMode/Sleep pointers, missing devices, SetSleepMode failures, and NvAPI Sleep failures with device/interval/game-active context.

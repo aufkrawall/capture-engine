@@ -185,6 +185,31 @@ TEST(FrameTimingUtilsTest, SelectFrameClosestToGridIfSkipsRejectedFrames) {
     EXPECT_EQ(bestIndex, 1u);
 }
 
+TEST(FrameTimingUtilsTest, SelectFrameClosestToGridIfPrefersReadyFrameNearGrid) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame olderReady;
+    olderReady.timestamp = 190;
+    olderReady.frameIndex = 1;
+    frames.push_back(std::move(olderReady));
+
+    QueuedFrame nearestNotReady;
+    nearestNotReady.timestamp = 202;
+    nearestNotReady.frameIndex = 2;
+    frames.push_back(std::move(nearestNotReady));
+
+    QueuedFrame newerReady;
+    newerReady.timestamp = 225;
+    newerReady.frameIndex = 3;
+    frames.push_back(std::move(newerReady));
+
+    const size_t bestIndex = SelectFrameClosestToGridIf(frames, frames.size(), 100, 3, 50,
+                                                        [](const QueuedFrame& frame) {
+                                                            return frame.frameIndex != 2;
+                                                        });
+    EXPECT_EQ(bestIndex, 0u);
+}
+
 TEST(FrameTimingUtilsTest, SelectFrameClosestToGridIfReturnsAvailableCountWhenNoFramesMatch) {
     std::deque<QueuedFrame> frames;
 

@@ -2455,7 +2455,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
 
       _putenv("FERMI_UNOPT_LOD_SPREAD=1");
       _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");
-      EarlyLog("DllMain: Process '%s' is a Whitelisted Game", fileName);
+      EarlyLog("DllMain: Process '%s' is a whitelisted hook target", fileName);
     } else {
       // Not whitelisted - assume blacklist
       g_ProcessCategory = ProcessCategory::Blacklisted;

@@ -4622,6 +4622,22 @@ static void RefreshPresentHooksForRealSwapchain(IDXGISwapChain* pSwapChain, cons
     }
 
     HookLogImportant("DX12: Refreshing Present hook path via %s swapchain %p", source ? source : "real", pSwapChain);
+    {
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
+            DXGI_SWAP_CHAIN_DESC desc = {};
+            if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
+                static std::atomic<int> s_backbufferLogCount{0};
+                int idx = s_backbufferLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (idx < 24) {
+                    HookLogImportant("DX12: Swapchain buffer count source=%s sc=%p actual=%u requested=%d "
+                                     "size=%ux%u swapEffect=%d (#%d)",
+                                     source ? source : "real", pSwapChain, desc.BufferCount, gfx.backbufferCount,
+                                     desc.BufferDesc.Width, desc.BufferDesc.Height, desc.SwapEffect, idx + 1);
+                }
+            }
+        }
+    }
     EnsurePresentInlineHooksForRealSwapchain(pSwapChain, source);
     DXGIShared::InstallHooks(pSwapChain, /*presentOnly=*/true);
     DXGIShared::RepairVTableHooksIfNeeded();
@@ -5556,11 +5572,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
-                HookLog("DetourCreateSwapChainGlobal: Skipping BufferCount override %u < game's %u (flip model)",
-                        requested, modifiedDesc.BufferCount);
+                HookLogImportant(
+                    "DetourCreateSwapChainGlobal: Skipping BufferCount override %u < game's %u (flip model)",
+                    requested, modifiedDesc.BufferCount);
             } else {
-                HookLog("DetourCreateSwapChainGlobal: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount,
-                        requested);
+                HookLogImportant("DetourCreateSwapChainGlobal: Overriding BufferCount %u -> %u",
+                                 modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
             }
         }

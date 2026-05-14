@@ -11,6 +11,9 @@ constexpr uint32_t kRecordingWarmupMaxMs = 350;
 constexpr size_t kInjectWarmupCommitFloorFrames = 3;
 constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
 constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
+constexpr uint32_t kMaxInjectDeferredFrameRetries = 3;
+constexpr uint32_t kInjectLiveHealthyMaxFrameAgeTicks = 3;
+constexpr uint32_t kInjectLivePressureMaxFrameAgeTicks = 12;
 constexpr uint64_t kEncoderStartupWindowMs = 1500;
 constexpr uint32_t kAutoWgcFallbackDelayNoPidMs = 100;
 constexpr uint32_t kAutoWgcFallbackDelayWithPidMs = 200;
@@ -76,6 +79,32 @@ inline bool ShouldDiscardCfrTimerRebaseDebt(bool useScreenGrab) {
     // content jump forward while audio remains continuous, which creates real
     // content-level A/V drift even when packet durations still match.
     return false;
+}
+
+inline bool ShouldUseInjectCaptureForAutoTarget(bool explicitInjectCapture, bool autoCapture,
+                                                bool gameWhitelistMatched) {
+    return explicitInjectCapture || (autoCapture && gameWhitelistMatched);
+}
+
+inline bool ShouldUseWgcCaptureForAutoTarget(bool explicitWgcCapture, bool autoCapture,
+                                             bool gameWhitelistMatched) {
+    return explicitWgcCapture || (autoCapture && !gameWhitelistMatched);
+}
+
+inline bool ShouldAcceptFrameForActiveCapturePath(bool activeScreenGrab, bool frameIsInjectMode) {
+    return activeScreenGrab ? !frameIsInjectMode : frameIsInjectMode;
+}
+
+inline uint32_t GetCfrTimerRebaseThresholdTicks(bool useScreenGrab, bool useVFR, bool recordingOutputLive) {
+    if (!recordingOutputLive || useVFR) {
+        return kCfrShortfallCatchupThresholdTicks;
+    }
+
+    if (useScreenGrab) {
+        return 10000u;
+    }
+
+    return kCfrShortfallForceCatchupThresholdTicks;
 }
 
 inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useScreenGrab, bool frameAvailable,
@@ -389,6 +418,32 @@ inline double GetEncoderSustainableOutputFps(double encodeMs) {
     }
 
     return 1000.0 / encodeMs;
+}
+
+inline uint32_t GetInjectCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks, bool encoderBottlenecked = false) {
+    if (outputShortfallTicks < kCfrShortfallForceCatchupThresholdTicks || encoderBottlenecked) {
+        return 1u;
+    }
+
+    return 2u;
+}
+
+inline bool ShouldUseFreshInjectCatchup(bool useVFR, bool encoderBottlenecked, bool encoderActivelyTooSlow,
+                                        size_t bufferedInjectFrames, size_t minBufferedInjectFrames,
+                                        double frameCreditAccumulator, uint32_t outputShortfallTicks) {
+    if (useVFR || encoderBottlenecked || encoderActivelyTooSlow) {
+        return false;
+    }
+
+    if (outputShortfallTicks < kCfrShortfallForceCatchupThresholdTicks) {
+        return false;
+    }
+
+    if (bufferedInjectFrames <= minBufferedInjectFrames || frameCreditAccumulator < 1.0) {
+        return false;
+    }
+
+    return true;
 }
 
 inline bool ShouldAllowBgra8WgcFallback(bool explicitTenBitVideo, bool hdrCapture) {
@@ -729,6 +784,31 @@ inline size_t GetInjectBufferedHeadroom(bool recordingOutputLive, uint64_t recor
 inline size_t GetMaxBufferedInjectFrames(size_t injectReserveFrames, bool recordingOutputLive,
                                          uint64_t recordingLiveTick, uint64_t nowTick) {
     return injectReserveFrames + GetInjectBufferedHeadroom(recordingOutputLive, recordingLiveTick, nowTick);
+}
+
+inline int64_t GetInjectLiveMaxFrameAgeQpc(bool recordingOutputLive, bool encoderBottlenecked,
+                                           bool encoderActivelyTooSlow, int64_t targetIntervalTicks) {
+    if (!recordingOutputLive || targetIntervalTicks <= 0) {
+        return 0;
+    }
+
+    const uint32_t maxAgeTicks = (encoderBottlenecked || encoderActivelyTooSlow)
+                                     ? kInjectLivePressureMaxFrameAgeTicks
+                                     : kInjectLiveHealthyMaxFrameAgeTicks;
+    return targetIntervalTicks * static_cast<int64_t>(maxAgeTicks);
+}
+
+inline bool ShouldTrimStaleInjectLiveFrame(int64_t frameTimestampQpc, int64_t liveNowQpc, int64_t maxFrameAgeQpc,
+                                           size_t bufferedInjectFrames, size_t minBufferedInjectFrames) {
+    if (frameTimestampQpc <= 0 || liveNowQpc <= frameTimestampQpc || maxFrameAgeQpc <= 0) {
+        return false;
+    }
+
+    if (bufferedInjectFrames <= minBufferedInjectFrames + 1) {
+        return false;
+    }
+
+    return (liveNowQpc - frameTimestampQpc) > maxFrameAgeQpc;
 }
 
 inline bool ResetWarmupOnCaptureModeChange(bool recordingOutputLive, bool useScreenGrab, uint64_t nowTick,

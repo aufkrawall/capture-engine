@@ -61,6 +61,8 @@ extern void DX12_SignalFSR4SwapchainRecreated();
 // Called BEFORE new swapchain creation to immediately invalidate overlay
 // (checked throughout Present)
 extern void DX12_InvalidateSwapchain();
+void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void* shaderBytecode,
+                                          SIZE_T bytecodeLength);
 
 // Globals
 // Cached device/context with AddRef — avoids calling GetDevice() every frame
@@ -83,9 +85,13 @@ static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
 static int64_t g_LastSleepUs = 0;
 
-// Deferred state bootstrap: used once after Present hook installation so games
-// that bound samplers before our vtable hooks still get a tracked logical state.
-static bool g_DeferredAFApplied = false;
+// Deferred state bootstrap: used after Present hook installation so games that
+// bound samplers before our vtable hooks still get a tracked logical state.
+// This must be per-context: UE3 titles can create several short-lived D3D11
+// devices before the real game swapchain, and a process-wide latch would make
+// the final context keep blurry original samplers forever.
+static std::mutex g_DeferredAFBootstrapMutex;
+static std::unordered_set<uintptr_t> g_DeferredAFBootstrappedContexts;
 
 // Sampler override diagnostic counters (rate-limited logging)
 static std::atomic<int> g_DiagSamplerAllowsAF{0};
@@ -110,6 +116,9 @@ static std::atomic<int> g_DiagSamplerDrawReconcileCalls{0};
 static std::atomic<int> g_DiagSamplerDrawHookCalls{0};
 static std::atomic<int> g_DiagSamplerDrawDirtyMisses{0};
 static std::atomic<int> g_DiagSamplerBindDeferred{0};
+static std::atomic<int> g_DiagDeferredAFBootstrapComplete{0};
+static std::atomic<int> g_DiagDeferredAFBootstrapRetry{0};
+static std::atomic<int> g_DiagDeferredAFBootstrapDisabled{0};
 static std::atomic<int> g_DiagSamplerMipBiasApplied{0};
 static std::atomic<int> g_DiagSamplerMipOverride{0};
 static std::atomic<int> g_DiagSamplerRuntimeHookInstalled{0};
@@ -190,6 +199,80 @@ static const char* GetDX11HookBaseAPIName(DXGIShared::APIType api) {
         default:
             return "Unknown";
     }
+}
+
+static bool IsDeferredAFBootstrapped11(ID3D11DeviceContext* context) {
+    if (!context) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_DeferredAFBootstrapMutex);
+    return g_DeferredAFBootstrappedContexts.find(reinterpret_cast<uintptr_t>(context)) !=
+           g_DeferredAFBootstrappedContexts.end();
+}
+
+static void MarkDeferredAFBootstrapped11(ID3D11DeviceContext* context) {
+    if (!context) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_DeferredAFBootstrapMutex);
+    g_DeferredAFBootstrappedContexts.insert(reinterpret_cast<uintptr_t>(context));
+}
+
+static void ClearDeferredAFBootstraps11() {
+    std::lock_guard<std::mutex> lock(g_DeferredAFBootstrapMutex);
+    g_DeferredAFBootstrappedContexts.clear();
+}
+
+static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc, const char* source) {
+    const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+    if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
+        return false;
+    }
+
+    const UINT requested = static_cast<UINT>(gfx.backbufferCount);
+    const bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                         desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+    if (isFlip && requested < desc.BufferCount) {
+        HookLogImportant("DX11: %s BufferCount override skipped requested=%u game=%u swapEffect=%d (flip model)",
+                         source ? source : "CreateSwapChain", requested, desc.BufferCount, desc.SwapEffect);
+        return false;
+    }
+    if (desc.BufferCount != requested) {
+        HookLogImportant("DX11: %s BufferCount override %u -> %u swapEffect=%d", source ? source : "CreateSwapChain",
+                         desc.BufferCount, requested, desc.SwapEffect);
+        desc.BufferCount = requested;
+        return true;
+    }
+
+    HookLogImportant("DX11: %s BufferCount already matches requested=%u swapEffect=%d",
+                     source ? source : "CreateSwapChain", requested, desc.SwapEffect);
+    return false;
+}
+
+static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc, const char* source) {
+    const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+    if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
+        return false;
+    }
+
+    const UINT requested = static_cast<UINT>(gfx.backbufferCount);
+    const bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                         desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+    if (isFlip && requested < desc.BufferCount) {
+        HookLogImportant("DX11: %s BufferCount override skipped requested=%u game=%u swapEffect=%d (flip model)",
+                         source ? source : "CreateSwapChainForHwnd", requested, desc.BufferCount, desc.SwapEffect);
+        return false;
+    }
+    if (desc.BufferCount != requested) {
+        HookLogImportant("DX11: %s BufferCount override %u -> %u swapEffect=%d",
+                         source ? source : "CreateSwapChainForHwnd", desc.BufferCount, requested, desc.SwapEffect);
+        desc.BufferCount = requested;
+        return true;
+    }
+
+    HookLogImportant("DX11: %s BufferCount already matches requested=%u swapEffect=%d",
+                     source ? source : "CreateSwapChainForHwnd", requested, desc.SwapEffect);
+    return false;
 }
 
 static bool IsDXVKD3D10OrD3D11Loaded() {
@@ -1532,6 +1615,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device,
     const HRESULT hr = oCreatePixelShader11(device, shaderBytecode, bytecodeLength, classLinkage, pixelShader);
     if (SUCCEEDED(hr) && pixelShader && *pixelShader) {
         RegisterPixelShaderAFMetadata11(*pixelShader, shaderBytecode, bytecodeLength);
+        RegisterWrapperPixelShaderAFMetadata(*pixelShader, shaderBytecode, bytecodeLength);
     }
     return hr;
 }
@@ -1889,25 +1973,48 @@ static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pCont
 
 
 void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
-    if (g_DeferredAFApplied)
-        return;
     if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
         return;
 
     ID3D11Device* dev = nullptr;
-    if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev))))
+    HRESULT deviceHr = pSwapChain ? pSwapChain->GetDevice(IID_PPV_ARGS(&dev)) : E_POINTER;
+    if (FAILED(deviceHr)) {
+        static std::atomic<int> s_deviceFailLogs{0};
+        int idx = s_deviceFailLogs.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 8) {
+            HookLogImportant("DX11: Deferred AF bootstrap skipped GetDevice failed hr=0x%08X sc=%p (#%d)",
+                             deviceHr, (void*)pSwapChain, idx + 1);
+        }
         return;
+    }
 
     ID3D11DeviceContext* ctx = nullptr;
     dev->GetImmediateContext(&ctx);
     if (!ctx) {
+        static std::atomic<int> s_noContextLogs{0};
+        int idx = s_noContextLogs.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 8) {
+            HookLogImportant("DX11: Deferred AF bootstrap skipped no immediate context dev=%p sc=%p (#%d)",
+                             (void*)dev, (void*)pSwapChain, idx + 1);
+        }
+        dev->Release();
+        return;
+    }
+
+    if (IsDeferredAFBootstrapped11(ctx)) {
+        ctx->Release();
         dev->Release();
         return;
     }
 
     const auto& gfx = GetActiveGraphicsConfig();
     if (!ce::sampler_override::IsAnisotropicOverrideEnabled(gfx)) {
-        g_DeferredAFApplied = true;
+        int idx = g_DiagDeferredAFBootstrapDisabled.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 8) {
+            HookLogImportant(
+                "DX11: Deferred AF bootstrap postponed ctx=%p AF disabled/current='%s' configBackbuffers=%d (#%d)",
+                (void*)ctx, gfx.anisotropicFiltering.c_str(), gfx.backbufferCount, idx + 1);
+        }
         ctx->Release();
         dev->Release();
         return;
@@ -1961,11 +2068,17 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
     }
 
     if (totalBoundSamplers > 0) {
-        HookLogImportant("DX11: Deferred AF bootstrap complete ctx=%p boundSamplers=%d drawReconcile=deferred",
-                         (void*)ctx, totalBoundSamplers);
-        g_DeferredAFApplied = true;
+        MarkDeferredAFBootstrapped11(ctx);
+        int idx = g_DiagDeferredAFBootstrapComplete.fetch_add(1, std::memory_order_relaxed);
+        HookLogImportant("DX11: Deferred AF bootstrap complete ctx=%p dev=%p sc=%p boundSamplers=%d "
+                         "drawReconcile=deferred (#%d)",
+                         (void*)ctx, (void*)dev, (void*)pSwapChain, totalBoundSamplers, idx + 1);
     } else {
-        HookLogImportant("DX11: Deferred AF bootstrap found no samplers — will retry");
+        int idx = g_DiagDeferredAFBootstrapRetry.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 16) {
+            HookLogImportant("DX11: Deferred AF bootstrap found no samplers ctx=%p dev=%p sc=%p - will retry (#%d)",
+                             (void*)ctx, (void*)dev, (void*)pSwapChain, idx + 1);
+        }
     }
     ctx->Release();
     dev->Release();
@@ -2245,21 +2358,7 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
         bool modified = false;
 
         // Backbuffer Count
-        int count = gfx.backbufferCount;
-        if (count >= 2 && count <= 6) {
-            bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                           desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            if (isFlip && (UINT)count < desc.BufferCount) {
-                HookLog(
-                    "DX11: CreateDeviceAndSwapChain: Skipping BufferCount override "
-                    "%d < game's %u (flip model)",
-                    count, desc.BufferCount);
-            } else {
-                desc.BufferCount = (UINT)count;
-                modified = true;
-                HookLog("DX11: CreateDeviceAndSwapChain: Overriding BufferCount to %d", count);
-            }
-        }
+        modified = ApplyDX11BackbufferCountOverride(desc, "CreateDeviceAndSwapChain") || modified;
 
         // MSAA Override
         const char* msaa = gfx.msaaSamples.c_str();
@@ -2304,6 +2403,17 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
                      pFinalDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
 
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+        if (ppSwapChain && *ppSwapChain && HasBackbufferCountOverride(gfx.backbufferCount)) {
+            DXGI_SWAP_CHAIN_DESC actualDesc = {};
+            if (SUCCEEDED((*ppSwapChain)->GetDesc(&actualDesc))) {
+                HookLogImportant("DX11: CreateDeviceAndSwapChain actual BufferCount=%u requested=%d "
+                                 "size=%ux%u swapEffect=%d",
+                                 actualDesc.BufferCount, gfx.backbufferCount, actualDesc.BufferDesc.Width,
+                                 actualDesc.BufferDesc.Height, actualDesc.SwapEffect);
+            }
+        }
+
         // Wrap the swapchain returned by D3D11CreateDeviceAndSwapChain so our
         // wrapper captures Present
         if (ppSwapChain && *ppSwapChain) {
@@ -2487,12 +2597,31 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory, I
         }
     }
 
-    HRESULT hr = oCreateSwapChain(pFactory, DeWrap(pDevice), pDesc, ppSwapChain);
+    DXGI_SWAP_CHAIN_DESC modifiedDesc = {};
+    DXGI_SWAP_CHAIN_DESC* pDescToUse = pDesc;
+    if (pDesc) {
+        modifiedDesc = *pDesc;
+        ApplyDX11BackbufferCountOverride(modifiedDesc, "CreateSwapChain");
+        pDescToUse = &modifiedDesc;
+    }
+
+    HRESULT hr = oCreateSwapChain(pFactory, DeWrap(pDevice), pDescToUse, ppSwapChain);
 
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        DXGI_SWAP_CHAIN_DESC actualDesc = {};
+        if (SUCCEEDED((*ppSwapChain)->GetDesc(&actualDesc))) {
+            const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+            if (HasBackbufferCountOverride(gfx.backbufferCount)) {
+                HookLogImportant("DX11: CreateSwapChain created sc=%p actualBufferCount=%u requested=%d "
+                                 "size=%ux%u swapEffect=%d",
+                                 *ppSwapChain, actualDesc.BufferCount, gfx.backbufferCount,
+                                 actualDesc.BufferDesc.Width, actualDesc.BufferDesc.Height, actualDesc.SwapEffect);
+            }
+        }
         // FSR4/FG swapchain recreation detection (shared with
         // CreateSwapChainForHwnd)
-        bool isGameSizedSwapchain = pDesc && pDesc->BufferDesc.Width >= 1920 && pDesc->BufferDesc.Height >= 1080;
+        bool isGameSizedSwapchain =
+            pDescToUse && pDescToUse->BufferDesc.Width >= 1920 && pDescToUse->BufferDesc.Height >= 1080;
         if (isGameSizedSwapchain) {
             if (g_FirstGameSwapchainCreated) {
                 // Recreation - likely FG taking over
@@ -2502,8 +2631,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory, I
                 DX12_SignalFSR4SwapchainRecreated();
             } else {
                 g_FirstGameSwapchainCreated = true;
-                HookLog("DX11: CreateSwapChain: First game-sized swapchain created (%ux%u)", pDesc->BufferDesc.Width,
-                        pDesc->BufferDesc.Height);
+                HookLog("DX11: CreateSwapChain: First game-sized swapchain created (%ux%u)",
+                        pDescToUse->BufferDesc.Width, pDescToUse->BufferDesc.Height);
             }
         }
 
@@ -2566,19 +2695,37 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFa
         }
     }
 
+    DXGI_SWAP_CHAIN_DESC1 modifiedDesc = {};
+    const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
+    if (pDesc) {
+        modifiedDesc = *pDesc;
+        ApplyDX11BackbufferCountOverride(modifiedDesc, "CreateSwapChainForHwnd");
+        pDescToUse = &modifiedDesc;
+    }
+
     // CRITICAL FG FIX: Track game-sized swapchain recreation for FG overlay
     // safety We DON'T invalidate BEFORE creation - that can cause DXGI lock
     // issues (E_ACCESSDENIED) Instead, we invalidate AFTER successful recreation
     // to clean up stale overlay resources
-    bool isGameSizedSwapchain = pDesc && pDesc->Width >= 1920 && pDesc->Height >= 1080;
+    bool isGameSizedSwapchain = pDescToUse && pDescToUse->Width >= 1920 && pDescToUse->Height >= 1080;
     bool wasRecreation = isGameSizedSwapchain && g_FirstGameSwapchainCreated;
 
     HookLog("DX11: BEFORE oCreateSwapChainForHwnd call");
-    HRESULT hr = oCreateSwapChainForHwnd(pFactory, DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput,
-                                         ppSwapChain);
+    HRESULT hr = oCreateSwapChainForHwnd(pFactory, DeWrap(pDevice), hWnd, pDescToUse, pFullscreenDesc,
+                                         pRestrictToOutput, ppSwapChain);
     HookLog("DX11: AFTER oCreateSwapChainForHwnd call (hr=0x%08X)", hr);
 
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        DXGI_SWAP_CHAIN_DESC actualDesc = {};
+        if (SUCCEEDED((*ppSwapChain)->GetDesc(&actualDesc))) {
+            const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+            if (HasBackbufferCountOverride(gfx.backbufferCount)) {
+                HookLogImportant("DX11: CreateSwapChainForHwnd created sc=%p actualBufferCount=%u requested=%d "
+                                 "size=%ux%u swapEffect=%d",
+                                 *ppSwapChain, actualDesc.BufferCount, gfx.backbufferCount,
+                                 actualDesc.BufferDesc.Width, actualDesc.BufferDesc.Height, actualDesc.SwapEffect);
+            }
+        }
         // Post-creation: Signal invalidation ONLY for successful recreation
         if (wasRecreation) {
             HookLog(
@@ -2594,7 +2741,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFa
                 HookLog(
                     "DX11: CreateSwapChainForHwnd: First game-sized swapchain "
                     "created (%ux%u)",
-                    pDesc->Width, pDesc->Height);
+                    pDescToUse->Width, pDescToUse->Height);
             }
         }
 
@@ -5194,6 +5341,9 @@ void DX11Hook::Shutdown() {
         int afDrawHooks = g_DiagSamplerDrawHookCalls.load(std::memory_order_relaxed);
         int afDrawDirtyMiss = g_DiagSamplerDrawDirtyMisses.load(std::memory_order_relaxed);
         int afBindDeferred = g_DiagSamplerBindDeferred.load(std::memory_order_relaxed);
+        int afBootstrapComplete = g_DiagDeferredAFBootstrapComplete.load(std::memory_order_relaxed);
+        int afBootstrapRetry = g_DiagDeferredAFBootstrapRetry.load(std::memory_order_relaxed);
+        int afBootstrapDisabled = g_DiagDeferredAFBootstrapDisabled.load(std::memory_order_relaxed);
         int afContextVTables = g_DiagD3D11ContextVTablesHooked.load(std::memory_order_relaxed);
         int afContextHookSkips = g_DiagD3D11ContextHookSkips.load(std::memory_order_relaxed);
         int afDeferredContexts = g_DiagCreateDeferredContext11.load(std::memory_order_relaxed);
@@ -5206,13 +5356,15 @@ void DX11Hook::Shutdown() {
                 "AF_shaderMeta(created=%d fail=%d) AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
                 "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
                 "unsafe=%d) AF_lodAllowed=%d bindDeferred=%d drawHooks=%d drawDirtyMiss=%d drawReconcile=%d "
+                "bootstrap(complete=%d retry=%d disabled=%d) "
                 "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
                 "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
                 afAllowed, afApplied, afReplaced, afRuntimeHooks, afShaderMeta, afShaderMetaFail, afNoMips, afBorder,
                 afReduction, afComparison, afStage, afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample,
                 afNoSRV, afFormat, afSingleMip, afUnsafe, afAllowLod, afBindDeferred, afDrawHooks, afDrawDirtyMiss,
-                afDrawReconcile, afContextVTables, afContextHookSkips, afDeferredContexts, afExecuteCommandLists,
-                mipBias, mipOverride, prerenderFrames, prerenderWaits);
+                afDrawReconcile, afBootstrapComplete, afBootstrapRetry, afBootstrapDisabled, afContextVTables,
+                afContextHookSkips, afDeferredContexts, afExecuteCommandLists, mipBias, mipOverride, prerenderFrames,
+                prerenderWaits);
     }
 
     // Cleanup OverlayAdapter
@@ -5225,6 +5377,7 @@ void DX11Hook::Shutdown() {
     ClearReplacementSamplerCache10();
     ClearReplacementSamplerCache11();
     ReleaseTrackedShaderResources11();
+    ClearDeferredAFBootstraps11();
     {
         std::lock_guard<std::mutex> lock(g_D3D11FormatSupportMutex);
         g_D3D11FormatSupportCache.clear();
@@ -5278,6 +5431,9 @@ void DX11Hook::OnHostDisconnect() {
         int afDrawHooks = g_DiagSamplerDrawHookCalls.load(std::memory_order_relaxed);
         int afDrawDirtyMiss = g_DiagSamplerDrawDirtyMisses.load(std::memory_order_relaxed);
         int afBindDeferred = g_DiagSamplerBindDeferred.load(std::memory_order_relaxed);
+        int afBootstrapComplete = g_DiagDeferredAFBootstrapComplete.load(std::memory_order_relaxed);
+        int afBootstrapRetry = g_DiagDeferredAFBootstrapRetry.load(std::memory_order_relaxed);
+        int afBootstrapDisabled = g_DiagDeferredAFBootstrapDisabled.load(std::memory_order_relaxed);
         int afContextVTables = g_DiagD3D11ContextVTablesHooked.load(std::memory_order_relaxed);
         int afContextHookSkips = g_DiagD3D11ContextHookSkips.load(std::memory_order_relaxed);
         int afDeferredContexts = g_DiagCreateDeferredContext11.load(std::memory_order_relaxed);
@@ -5290,13 +5446,15 @@ void DX11Hook::OnHostDisconnect() {
                 "AF_shaderMeta(created=%d fail=%d) AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
                 "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
                 "unsafe=%d) AF_lodAllowed=%d bindDeferred=%d drawHooks=%d drawDirtyMiss=%d drawReconcile=%d "	
+                "bootstrap(complete=%d retry=%d disabled=%d) "
                 "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "	
                 "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
                 afAllowed, afApplied, afReplaced, afRuntimeHooks, afShaderMeta, afShaderMetaFail, afNoMips, afBorder,
                 afReduction, afComparison, afStage, afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample,
                 afNoSRV, afFormat, afSingleMip, afUnsafe, afAllowLod, afBindDeferred, afDrawHooks, afDrawDirtyMiss,
-                afDrawReconcile, afContextVTables, afContextHookSkips, afDeferredContexts, afExecuteCommandLists,
-                mipBias, mipOverride, prerenderFrames, prerenderWaits);
+                afDrawReconcile, afBootstrapComplete, afBootstrapRetry, afBootstrapDisabled, afContextVTables,
+                afContextHookSkips, afDeferredContexts, afExecuteCommandLists, mipBias, mipOverride, prerenderFrames,
+                prerenderWaits);
     }
     HookLog("DX11Hook::OnHostDisconnect() - ready for reconnection");
     // DX11 capture is synchronous, nothing to stop
@@ -5304,5 +5462,6 @@ void DX11Hook::OnHostDisconnect() {
     ClearReplacementSamplerCache10();
     ClearReplacementSamplerCache11();
     ReleaseTrackedShaderResources11();
+    ClearDeferredAFBootstraps11();
     g_DX11Capture.Cleanup();
 }
