@@ -334,9 +334,7 @@ inline bool D3D11ShaderSamplerUsesUnsafeExplicitSample(const D3D11ShaderSamplerU
 
 inline bool D3D11ShaderSamplerUsesAFSafeSample(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
     return samplerSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT &&
-           (usage.samplerUsesImplicitSample[samplerSlot] || usage.samplerUsesBiasSample[samplerSlot] ||
-            usage.samplerUsesLodSample[samplerSlot]) &&
-           !D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, samplerSlot);
+           usage.samplerUsesImplicitSample[samplerSlot] && !usage.samplerUsesExplicitSample[samplerSlot];
 }
 
 inline bool D3D11ShaderSamplerUsesOnlyImplicitSample(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
@@ -360,6 +358,30 @@ inline bool D3D11ShaderSamplerUsesAnyTexture(const D3D11ShaderSamplerUsage& usag
         }
     }
     return false;
+}
+
+inline uint32_t D3D11ShaderSamplerMaskForTextureSlot(const D3D11ShaderSamplerUsage& usage, UINT textureSlot) {
+    if (textureSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+        return 0;
+    }
+
+    uint32_t mask = 0;
+    for (UINT sampler = 0; sampler < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++sampler) {
+        if (usage.samplerTextures[sampler][textureSlot]) {
+            mask |= (1u << sampler);
+        }
+    }
+    return mask;
+}
+
+inline uint32_t D3D11ShaderSamplerMaskForAnyTexture(const D3D11ShaderSamplerUsage& usage) {
+    uint32_t mask = 0;
+    for (UINT sampler = 0; sampler < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++sampler) {
+        if (D3D11ShaderSamplerUsesAnyTexture(usage, sampler)) {
+            mask |= (1u << sampler);
+        }
+    }
+    return mask;
 }
 
 inline UINT CountD3D11ShaderSamplerTextureUses(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot,
@@ -526,6 +548,21 @@ inline bool IsPotentiallyProblematicD3D11AFFormat(DXGI_FORMAT format) {
     }
 }
 
+inline bool IsLikelyColorD3D11AFFormat(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+        case DXGI_FORMAT_BC1_UNORM_SRGB:
+        case DXGI_FORMAT_BC2_UNORM_SRGB:
+        case DXGI_FORMAT_BC3_UNORM_SRGB:
+        case DXGI_FORMAT_BC7_UNORM_SRGB:
+            return true;
+        default:
+            return false;
+    }
+}
+
 enum class D3D11ForcedAFResourceDecision {
     Allow,
     UnsupportedFormat,
@@ -537,11 +574,43 @@ enum class D3D11ForcedAFResourceDecision {
     RenderTargetResource,
     UnorderedAccessResource,
     ProblematicFormat,
+    NonColorFormat,
     SingleVisibleMip,
 };
 
+inline const char* D3D11ForcedAFResourceDecisionName(D3D11ForcedAFResourceDecision decision) {
+    switch (decision) {
+        case D3D11ForcedAFResourceDecision::Allow:
+            return "allow";
+        case D3D11ForcedAFResourceDecision::UnsupportedFormat:
+            return "unsupported-format";
+        case D3D11ForcedAFResourceDecision::UnsupportedViewDimension:
+            return "unsupported-view-dimension";
+        case D3D11ForcedAFResourceDecision::Multisampled:
+            return "multisampled";
+        case D3D11ForcedAFResourceDecision::ArrayResource:
+            return "array-resource";
+        case D3D11ForcedAFResourceDecision::CubeResource:
+            return "cube-resource";
+        case D3D11ForcedAFResourceDecision::DepthStencilResource:
+            return "depth-stencil-resource";
+        case D3D11ForcedAFResourceDecision::RenderTargetResource:
+            return "render-target-resource";
+        case D3D11ForcedAFResourceDecision::UnorderedAccessResource:
+            return "unordered-access-resource";
+        case D3D11ForcedAFResourceDecision::ProblematicFormat:
+            return "problematic-format";
+        case D3D11ForcedAFResourceDecision::NonColorFormat:
+            return "non-color-format";
+        case D3D11ForcedAFResourceDecision::SingleVisibleMip:
+            return "single-visible-mip";
+    }
+    return "unknown";
+}
+
 struct D3D11Texture2DForcedAFInfo {
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT textureFormat = DXGI_FORMAT_UNKNOWN;
     D3D11_SRV_DIMENSION viewDimension = D3D11_SRV_DIMENSION_UNKNOWN;
     UINT width = 0;
     UINT height = 0;
@@ -582,6 +651,9 @@ inline D3D11ForcedAFResourceDecision ClassifyD3D11Texture2DForForcedAF(const D3D
     }
     if (IsPotentiallyProblematicD3D11AFFormat(info.format)) {
         return D3D11ForcedAFResourceDecision::ProblematicFormat;
+    }
+    if (!IsLikelyColorD3D11AFFormat(info.format)) {
+        return D3D11ForcedAFResourceDecision::NonColorFormat;
     }
 
     const UINT totalMipLevels = ResolveFullMipCount2D(info.width, info.height, info.mipLevels);

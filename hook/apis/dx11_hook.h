@@ -48,3 +48,9 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
 
 // Query-based CPU prerender limit for D3D11 — used by both vtable hook and wrapper paths
 void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
+
+// Marks wrapper-to-real ID3D11DeviceContext forwarding so vtable hooks can
+// bypass duplicate override tracking on the same real context.
+void DX11Hook_BeginWrapperContextForwarding();
+void DX11Hook_EndWrapperContextForwarding();
+bool DX11Hook_IsWrapperContextForwarding();
