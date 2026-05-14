@@ -56,6 +56,16 @@ static std::atomic<int> g_WrapperAFReconcileSlots{0};
 static std::atomic<int> g_WrapperAFEffectiveBinds{0};
 static std::atomic<int> g_WrapperAFEffectiveBindCalls{0};
 static std::atomic<int> g_WrapperAFEffectiveBindSkips{0};
+static std::atomic<int> g_WrapperAFPassthroughBinds{0};
+static std::atomic<int> g_WrapperAFCandidateDirtySuppressed{0};
+static std::atomic<int> g_WrapperAFResourceCacheHits{0};
+static std::atomic<int> g_WrapperAFResourceCacheMisses{0};
+static std::atomic<int> g_WrapperAFResourceCacheStores{0};
+static std::atomic<int> g_WrapperAFRealSamplerSetCalls{0};
+static std::atomic<int> g_WrapperAFUnchangedDirtyDeferred{0};
+static std::atomic<int> g_WrapperAFResourceWarmupSkips{0};
+static std::atomic<int> g_WrapperAFSamplerMixedRoleSkips{0};
+static std::atomic<int> g_WrapperAFSamplerMixedRoleBlocks{0};
 static std::atomic<int> g_WrapperPixelShaderMetadataCreated{0};
 static std::atomic<int> g_WrapperPixelShaderMetadataFailed{0};
 
@@ -159,6 +169,15 @@ static uint32_t WrapperSamplerRangeMask(UINT startSlot, UINT numSamplers) {
         mask |= (1u << (startSlot + i));
     }
     return mask;
+}
+
+static int WrapperPopCount(uint32_t mask) {
+    int count = 0;
+    while (mask != 0) {
+        count += (mask & 1u) ? 1 : 0;
+        mask >>= 1;
+    }
+    return count;
 }
 
 static void ClearWrapperSamplerCache() {
@@ -312,6 +331,178 @@ static bool SupportsWrapperD3D11SamplingFormat(ID3D11Device* device, DXGI_FORMAT
     return result;
 }
 
+// {CEAF1101-5A7D-4A4E-93B8-C3117E6DAF01}
+static const GUID kWrapperForcedAFViewCacheGuid = {
+    0xceaf1101, 0x5a7d, 0x4a4e, {0x93, 0xb8, 0xc3, 0x11, 0x7e, 0x6d, 0xaf, 0x01}};
+
+static constexpr UINT kWrapperForcedAFViewCacheMagic = 0x31464143u;
+static constexpr UINT kWrapperForcedAFViewCacheVersion = 2;
+static constexpr UINT kWrapperForcedAFViewWarmupDraws = 120000;
+static constexpr UINT kWrapperForcedAFViewWarmupObservations = 4;
+
+struct WrapperForcedAFViewCache {
+    UINT magic = kWrapperForcedAFViewCacheMagic;
+    UINT version = kWrapperForcedAFViewCacheVersion;
+    INT decision = 0;
+    UINT firstSeenDraw = 0;
+    UINT lastSeenDraw = 0;
+    UINT allowObservations = 0;
+    UINT stable = 0;
+    ce::sampler_override::D3D11Texture2DForcedAFInfo info = {};
+};
+
+static UINT WrapperAFCurrentDrawIndex() {
+    const int draw = g_WrapperAFDrawCalls.load(std::memory_order_relaxed);
+    return draw > 0 ? static_cast<UINT>(draw) : 0;
+}
+
+static bool TryReadWrapperForcedAFViewCache(ID3D11ShaderResourceView* view, WrapperForcedAFViewCache* outCache) {
+    if (!view || !outCache) {
+        return false;
+    }
+
+    WrapperForcedAFViewCache cache = {};
+    UINT dataSize = sizeof(cache);
+    if (FAILED(view->GetPrivateData(kWrapperForcedAFViewCacheGuid, &dataSize, &cache)) ||
+        dataSize != sizeof(cache) || cache.magic != kWrapperForcedAFViewCacheMagic ||
+        cache.version != kWrapperForcedAFViewCacheVersion) {
+        return false;
+    }
+
+    *outCache = cache;
+    return true;
+}
+
+static bool StoreWrapperForcedAFViewCache(ID3D11ShaderResourceView* view, const WrapperForcedAFViewCache& cache) {
+    if (!view) {
+        return false;
+    }
+
+    if (SUCCEEDED(view->SetPrivateData(kWrapperForcedAFViewCacheGuid, sizeof(cache), &cache))) {
+        g_WrapperAFResourceCacheStores.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
+static ce::sampler_override::D3D11ForcedAFResourceDecision ResolveWrapperForcedAFViewCacheDecision(
+    ID3D11ShaderResourceView* view, WrapperForcedAFViewCache& cache,
+    ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr) {
+    using ce::sampler_override::D3D11ForcedAFResourceDecision;
+    if (outInfo) {
+        *outInfo = cache.info;
+    }
+
+    const auto decision = static_cast<D3D11ForcedAFResourceDecision>(cache.decision);
+    if (decision != D3D11ForcedAFResourceDecision::Allow || cache.stable != 0) {
+        return decision;
+    }
+
+    const UINT currentDraw = WrapperAFCurrentDrawIndex();
+    if (cache.firstSeenDraw == 0) {
+        cache.firstSeenDraw = currentDraw;
+    }
+    cache.lastSeenDraw = currentDraw;
+    if (cache.allowObservations < kWrapperForcedAFViewWarmupObservations) {
+        ++cache.allowObservations;
+    }
+
+    const UINT drawAge = currentDraw >= cache.firstSeenDraw ? currentDraw - cache.firstSeenDraw : 0;
+    if (cache.allowObservations >= kWrapperForcedAFViewWarmupObservations &&
+        drawAge >= kWrapperForcedAFViewWarmupDraws) {
+        cache.stable = 1;
+        StoreWrapperForcedAFViewCache(view, cache);
+        return D3D11ForcedAFResourceDecision::Allow;
+    }
+
+    StoreWrapperForcedAFViewCache(view, cache);
+    return D3D11ForcedAFResourceDecision::PendingStableObservation;
+}
+
+// {CEAF1102-B58F-48E9-A54B-0A909654AF02}
+static const GUID kWrapperForcedAFSamplerRoleGuid = {
+    0xceaf1102, 0xb58f, 0x48e9, {0xa5, 0x4b, 0x0a, 0x90, 0x96, 0x54, 0xaf, 0x02}};
+
+static constexpr UINT kWrapperForcedAFSamplerRoleMagic = 0x32464143u;
+static constexpr UINT kWrapperForcedAFSamplerRoleVersion = 1;
+
+struct WrapperForcedAFSamplerRoleCache {
+    UINT magic = kWrapperForcedAFSamplerRoleMagic;
+    UINT version = kWrapperForcedAFSamplerRoleVersion;
+    UINT sawAllowedResource = 0;
+    UINT sawUnsafeResource = 0;
+    UINT blockedMixedRole = 0;
+    UINT allowObservations = 0;
+    UINT unsafeObservations = 0;
+    INT lastUnsafeDecision = 0;
+};
+
+static ce::sampler_override::D3D11ForcedAFSamplerRoleState WrapperSamplerRoleStateFromCache(
+    const WrapperForcedAFSamplerRoleCache& cache) {
+    ce::sampler_override::D3D11ForcedAFSamplerRoleState state = {};
+    state.sawAllowedResource = cache.sawAllowedResource != 0;
+    state.sawUnsafeResource = cache.sawUnsafeResource != 0;
+    state.blockedMixedRole = cache.blockedMixedRole != 0;
+    return state;
+}
+
+static void WrapperSamplerRoleStateToCache(const ce::sampler_override::D3D11ForcedAFSamplerRoleState& state,
+                                           WrapperForcedAFSamplerRoleCache& cache) {
+    cache.sawAllowedResource = state.sawAllowedResource ? 1u : 0u;
+    cache.sawUnsafeResource = state.sawUnsafeResource ? 1u : 0u;
+    cache.blockedMixedRole = state.blockedMixedRole ? 1u : 0u;
+}
+
+static bool TryReadWrapperForcedAFSamplerRole(ID3D11SamplerState* sampler, WrapperForcedAFSamplerRoleCache* outCache) {
+    if (!sampler || !outCache) {
+        return false;
+    }
+
+    WrapperForcedAFSamplerRoleCache cache = {};
+    UINT dataSize = sizeof(cache);
+    if (FAILED(sampler->GetPrivateData(kWrapperForcedAFSamplerRoleGuid, &dataSize, &cache)) ||
+        dataSize != sizeof(cache) || cache.magic != kWrapperForcedAFSamplerRoleMagic ||
+        cache.version != kWrapperForcedAFSamplerRoleVersion) {
+        return false;
+    }
+
+    *outCache = cache;
+    return true;
+}
+
+static void StoreWrapperForcedAFSamplerRole(ID3D11SamplerState* sampler,
+                                            const WrapperForcedAFSamplerRoleCache& cache) {
+    if (sampler) {
+        sampler->SetPrivateData(kWrapperForcedAFSamplerRoleGuid, sizeof(cache), &cache);
+    }
+}
+
+static bool WrapperSamplerRoleAlreadyBlocksForcedAF(ID3D11SamplerState* sampler) {
+    WrapperForcedAFSamplerRoleCache cache = {};
+    return TryReadWrapperForcedAFSamplerRole(sampler, &cache) && cache.blockedMixedRole != 0;
+}
+
+static bool ObserveWrapperSamplerRoleForForcedAF(
+    ID3D11SamplerState* sampler, ce::sampler_override::D3D11ForcedAFResourceDecision decision) {
+    if (!sampler || decision == ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation) {
+        return false;
+    }
+
+    WrapperForcedAFSamplerRoleCache cache = {};
+    TryReadWrapperForcedAFSamplerRole(sampler, &cache);
+    ce::sampler_override::D3D11ForcedAFSamplerRoleState state = WrapperSamplerRoleStateFromCache(cache);
+    const bool allowed = ce::sampler_override::ObserveD3D11ForcedAFSamplerRole(state, decision);
+    WrapperSamplerRoleStateToCache(state, cache);
+    if (decision == ce::sampler_override::D3D11ForcedAFResourceDecision::Allow) {
+        ++cache.allowObservations;
+    } else {
+        ++cache.unsafeObservations;
+        cache.lastUnsafeDecision = static_cast<INT>(decision);
+    }
+    StoreWrapperForcedAFSamplerRole(sampler, cache);
+    return allowed;
+}
+
 static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewForForcedAF(
     ID3D11Device* device, ID3D11ShaderResourceView* view,
     ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr) {
@@ -319,23 +510,39 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewFo
     if (!view)
         return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
 
+    WrapperForcedAFViewCache cachedView = {};
+    if (TryReadWrapperForcedAFViewCache(view, &cachedView)) {
+        g_WrapperAFResourceCacheHits.fetch_add(1, std::memory_order_relaxed);
+        return ResolveWrapperForcedAFViewCacheDecision(view, cachedView, outInfo);
+    }
+    g_WrapperAFResourceCacheMisses.fetch_add(1, std::memory_order_relaxed);
+
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     view->GetDesc(&srvDesc);
     const bool formatSupported = SupportsWrapperD3D11SamplingFormat(device, srvDesc.Format);
-    if (outInfo) {
-        *outInfo = {};
-        outInfo->format = srvDesc.Format;
-        outInfo->textureFormat = DXGI_FORMAT_UNKNOWN;
-        outInfo->viewDimension = srvDesc.ViewDimension;
-        outInfo->formatSupported = formatSupported;
-    }
+    ce::sampler_override::D3D11Texture2DForcedAFInfo info = {};
+    info.format = srvDesc.Format;
+    info.textureFormat = DXGI_FORMAT_UNKNOWN;
+    info.viewDimension = srvDesc.ViewDimension;
+    info.formatSupported = formatSupported;
+    auto finish = [&](D3D11ForcedAFResourceDecision decision) {
+        WrapperForcedAFViewCache cache = {};
+        cache.decision = static_cast<INT>(decision);
+        cache.info = info;
+        cache.firstSeenDraw = WrapperAFCurrentDrawIndex();
+        cache.lastSeenDraw = cache.firstSeenDraw;
+        cache.allowObservations = decision == D3D11ForcedAFResourceDecision::Allow ? 1u : 0u;
+        cache.stable = decision == D3D11ForcedAFResourceDecision::Allow ? 0u : 1u;
+        StoreWrapperForcedAFViewCache(view, cache);
+        return ResolveWrapperForcedAFViewCacheDecision(view, cache, outInfo);
+    };
     if (!formatSupported)
-        return D3D11ForcedAFResourceDecision::UnsupportedFormat;
+        return finish(D3D11ForcedAFResourceDecision::UnsupportedFormat);
 
     ID3D11Resource* resource = nullptr;
     view->GetResource(&resource);
     if (!resource)
-        return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
+        return finish(D3D11ForcedAFResourceDecision::UnsupportedViewDimension);
 
     D3D11ForcedAFResourceDecision decision = D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
     ID3D11Texture2D* texture2D = nullptr;
@@ -352,7 +559,6 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewFo
             viewMipLevels = 0;
         }
 
-        ce::sampler_override::D3D11Texture2DForcedAFInfo info = {};
         info.format = srvDesc.Format;
         info.textureFormat = textureDesc.Format;
         info.viewDimension = srvDesc.ViewDimension;
@@ -366,14 +572,11 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewFo
         info.bindFlags = textureDesc.BindFlags;
         info.miscFlags = textureDesc.MiscFlags;
         info.formatSupported = true;
-        if (outInfo) {
-            *outInfo = info;
-        }
         decision = ce::sampler_override::ClassifyD3D11Texture2DForForcedAF(info);
         texture2D->Release();
     }
     resource->Release();
-    return decision;
+    return finish(decision);
 }
 
 // Get or create a replacement sampler with AF override applied.
@@ -443,7 +646,8 @@ CWrapD3D11DeviceContext::CWrapD3D11DeviceContext(ID3D11DeviceContext* pReal, CWr
       m_RefCount(1),
       m_Version(0),
       m_CurrentPixelShader(nullptr),
-    m_PixelSamplerDirtyMask(0) {
+      m_PixelSamplerDirtyMask(0),
+      m_PixelForcedSamplerMask(0) {
     std::memset(m_TrackedSRVs, 0, sizeof(m_TrackedSRVs));
     std::memset(m_TrackedSamplers, 0, sizeof(m_TrackedSamplers));
     std::memset(m_RealSamplers, 0, sizeof(m_RealSamplers));
@@ -520,6 +724,7 @@ void CWrapD3D11DeviceContext::ClearForcedAFTracking() {
         m_CurrentPixelShader = nullptr;
     }
     m_PixelSamplerDirtyMask = 0;
+    m_PixelForcedSamplerMask = 0;
 }
 
 uint32_t CWrapD3D11DeviceContext::TrackedPixelSamplerMask() const {
@@ -532,6 +737,16 @@ uint32_t CWrapD3D11DeviceContext::TrackedPixelSamplerMask() const {
     return mask;
 }
 
+uint32_t CWrapD3D11DeviceContext::PixelAFCandidateSamplerMask() const {
+    WrapperPixelShaderAFMetadata metadata = {};
+    const bool hasMetadata = GetWrapperPixelShaderAFMetadata(m_CurrentPixelShader, &metadata);
+    if (!hasMetadata || !metadata.available) {
+        return 0;
+    }
+    return ce::sampler_override::D3D11ShaderAFSafeSamplerMaskForAnyTexture(metadata.usage) &
+           TrackedPixelSamplerMask();
+}
+
 uint32_t CWrapD3D11DeviceContext::DirtyMaskForPixelShaderResourceSlots(UINT startSlot, UINT numViews) const {
     if (startSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT || numViews == 0) {
         return 0;
@@ -540,14 +755,14 @@ uint32_t CWrapD3D11DeviceContext::DirtyMaskForPixelShaderResourceSlots(UINT star
     WrapperPixelShaderAFMetadata metadata = {};
     const bool hasMetadata = GetWrapperPixelShaderAFMetadata(m_CurrentPixelShader, &metadata);
     if (!hasMetadata || !metadata.available) {
-        return TrackedPixelSamplerMask();
+        return m_PixelForcedSamplerMask;
     }
 
     const UINT maxViews = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - startSlot;
     const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
     uint32_t mask = 0;
     for (UINT i = 0; i < actualViews; ++i) {
-        mask |= ce::sampler_override::D3D11ShaderSamplerMaskForTextureSlot(metadata.usage, startSlot + i);
+        mask |= ce::sampler_override::D3D11ShaderAFSafeSamplerMaskForTextureSlot(metadata.usage, startSlot + i);
     }
     return mask & TrackedPixelSamplerMask();
 }
@@ -601,7 +816,13 @@ uint32_t CWrapD3D11DeviceContext::TrackSamplers(UINT stageIndex, UINT startSlot,
         m_TrackedSamplers[stageIndex][slot] = sampler;
     }
     if (stageIndex == kWrapperStagePS && changedMask != 0) {
-        m_PixelSamplerDirtyMask |= changedMask;
+        const uint32_t relevantMask = PixelAFCandidateSamplerMask() | m_PixelForcedSamplerMask;
+        const uint32_t dirtyMask = changedMask & relevantMask;
+        m_PixelSamplerDirtyMask |= dirtyMask;
+        const uint32_t suppressedMask = changedMask & ~dirtyMask;
+        if (suppressedMask != 0) {
+            g_WrapperAFCandidateDirtySuppressed.fetch_add(WrapperPopCount(suppressedMask), std::memory_order_relaxed);
+        }
     }
     return changedMask;
 }
@@ -610,7 +831,6 @@ void CWrapD3D11DeviceContext::TrackPixelShader(ID3D11PixelShader* shader) {
     if (m_CurrentPixelShader == shader) {
         return;
     }
-    m_PixelSamplerDirtyMask |= TrackedPixelSamplerMask();
     if (shader) {
         shader->AddRef();
     }
@@ -618,6 +838,7 @@ void CWrapD3D11DeviceContext::TrackPixelShader(ID3D11PixelShader* shader) {
         m_CurrentPixelShader->Release();
     }
     m_CurrentPixelShader = shader;
+    m_PixelSamplerDirtyMask |= PixelAFCandidateSamplerMask() | m_PixelForcedSamplerMask;
 }
 
 void CWrapD3D11DeviceContext::RefreshPixelShader() {
@@ -732,6 +953,16 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
     original->GetDesc(&desc);
     if (!WrapperSamplerAllowsForcedAF(desc, gfx))
         return original;
+    if (WrapperSamplerRoleAlreadyBlocksForcedAF(original)) {
+        int idx = g_WrapperAFSamplerMixedRoleSkips.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 48) {
+            WrapperLog("Wrapper: AF skip (sampler mixed safe/unsafe resource role shader=%p slot=s%u sampler=%p "
+                       "Filter=0x%X Addr=%d/%d/%d #%d)",
+                       m_CurrentPixelShader, slot, original, desc.Filter, desc.AddressU, desc.AddressV,
+                       desc.AddressW, idx + 1);
+        }
+        return original;
+    }
 
     UINT firstTextureSlot = UINT_MAX;
     UINT lastTextureSlot = UINT_MAX;
@@ -768,17 +999,36 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
             std::atomic<int>* counter = &g_WrapperAFSkipUnsafeResource;
             if (resourceDecision == ce::sampler_override::D3D11ForcedAFResourceDecision::NonColorFormat) {
                 counter = &g_WrapperAFSkipNonColorResource;
+            } else if (resourceDecision ==
+                       ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation) {
+                counter = &g_WrapperAFResourceWarmupSkips;
+            }
+            if (resourceDecision !=
+                ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation) {
+                const bool wasBlocked = WrapperSamplerRoleAlreadyBlocksForcedAF(original);
+                ObserveWrapperSamplerRoleForForcedAF(original, resourceDecision);
+                if (!wasBlocked && WrapperSamplerRoleAlreadyBlocksForcedAF(original)) {
+                    int blockIdx = g_WrapperAFSamplerMixedRoleBlocks.fetch_add(1, std::memory_order_relaxed);
+                    if (blockIdx < 48) {
+                        WrapperLog("Wrapper: AF sampler role blocked after unsafe resource shader=%p slot=s%u "
+                                   "sampler=%p decision=%s/%d (#%d)",
+                                   m_CurrentPixelShader, slot, original,
+                                   ce::sampler_override::D3D11ForcedAFResourceDecisionName(resourceDecision),
+                                   (int)resourceDecision, blockIdx + 1);
+                    }
+                }
             }
             const char* decisionName = ce::sampler_override::D3D11ForcedAFResourceDecisionName(resourceDecision);
             int idx = counter->fetch_add(1, std::memory_order_relaxed);
             if (idx < 24)
-                WrapperLog("Wrapper: AF skip (sampled resource decision=%s/%d s%u->t%u srvFmt=%d sampleFmt=%d "
-                           "texFmt=%d dim=%d "
+                WrapperLog("Wrapper: AF skip (sampled resource decision=%s/%d shader=%p sampler=%p s%u->t%u "
+                           "srvFmt=%d sampleFmt=%d texFmt=%d dim=%d "
                            "size=%ux%u mips=%u viewMip=%u mostMip=%u bind=0x%X misc=0x%X sampledTextures=%u)",
-                           decisionName, (int)resourceDecision, slot, textureSlot, srvDesc.Format, resourceInfo.format,
-                           resourceInfo.textureFormat, resourceInfo.viewDimension, resourceInfo.width,
-                           resourceInfo.height, resourceInfo.mipLevels, resourceInfo.viewMipLevels,
-                           resourceInfo.mostDetailedMip, resourceInfo.bindFlags, resourceInfo.miscFlags, textureCount);
+                           decisionName, (int)resourceDecision, m_CurrentPixelShader, original, slot, textureSlot,
+                           srvDesc.Format, resourceInfo.format, resourceInfo.textureFormat,
+                           resourceInfo.viewDimension, resourceInfo.width, resourceInfo.height,
+                           resourceInfo.mipLevels, resourceInfo.viewMipLevels, resourceInfo.mostDetailedMip,
+                           resourceInfo.bindFlags, resourceInfo.miscFlags, textureCount);
             return original;
         }
 
@@ -789,6 +1039,17 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
         }
     }
 
+    if (!ObserveWrapperSamplerRoleForForcedAF(original, ce::sampler_override::D3D11ForcedAFResourceDecision::Allow)) {
+        int idx = g_WrapperAFSamplerMixedRoleSkips.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 48) {
+            WrapperLog("Wrapper: AF skip (sampler became mixed safe/unsafe resource role shader=%p slot=s%u "
+                       "sampler=%p sampledTextures=%u first=t%u last=t%u #%d)",
+                       m_CurrentPixelShader, slot, original, textureCount, firstTextureSlot, lastTextureSlot,
+                       idx + 1);
+        }
+        return original;
+    }
+
     {
         int idx = g_WrapperAFAllowed.fetch_add(1, std::memory_order_relaxed);
         if (ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot)) {
@@ -796,13 +1057,15 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
         }
         if (idx < 48) {
             WrapperLog(
-                "Wrapper: AF allow shader-paired sampler slot=s%u sampledTextures=%u first=t%u last=t%u "
+                "Wrapper: AF allow shader-paired sampler shader=%p sampler=%p slot=s%u sampledTextures=%u "
+                "first=t%u last=t%u "
                 "Filter=0x%X Aniso=%u Addr=%d/%d/%d sampleKinds(implicit=%d bias=%d lod=%d) "
                 "srvFmt=%d sampleFmt=%d texFmt=%d dim=%d "
                 "size=%ux%u mips=%u viewMip=%u "
                 "mostMip=%u bind=0x%X misc=0x%X (#%d)",
-                slot, textureCount, firstTextureSlot, lastTextureSlot, desc.Filter, desc.MaxAnisotropy, desc.AddressU,
-                desc.AddressV, desc.AddressW, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
+                m_CurrentPixelShader, original, slot, textureCount, firstTextureSlot, lastTextureSlot, desc.Filter,
+                desc.MaxAnisotropy, desc.AddressU, desc.AddressV, desc.AddressW,
+                metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
                 ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
                 ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot) ? 1 : 0,
                 firstSrvDesc.Format, firstResourceInfo.format, firstResourceInfo.textureFormat,
@@ -829,33 +1092,60 @@ void CWrapD3D11DeviceContext::RememberRealSampler(UINT stageIndex, UINT slot, ID
         tracked->Release();
     }
     tracked = sampler;
+    if (stageIndex == kWrapperStagePS) {
+        const uint32_t bit = (1u << slot);
+        if (sampler && IsWrapperReplacement(sampler)) {
+            m_PixelForcedSamplerMask |= bit;
+        } else {
+            m_PixelForcedSamplerMask &= ~bit;
+        }
+    }
 }
 
 void CWrapD3D11DeviceContext::SetRealSampler(UINT stageIndex, UINT slot, ID3D11SamplerState* sampler) {
+    ID3D11SamplerState* samplers[1] = {sampler};
+    SetRealSamplerRange(stageIndex, slot, 1, samplers);
+}
+
+void CWrapD3D11DeviceContext::SetRealSamplerRange(UINT stageIndex, UINT startSlot, UINT numSamplers,
+                                                  ID3D11SamplerState* const* samplers) {
+    if (!m_pReal || stageIndex >= 6 || startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT || numSamplers == 0) {
+        return;
+    }
+
+    const UINT maxSamplers = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
+    const UINT actualSamplers = (numSamplers < maxSamplers) ? numSamplers : maxSamplers;
+    if (actualSamplers == 0) {
+        return;
+    }
+
     {
         DX11WrapperForwardingScope forwardingScope;
         switch (stageIndex) {
             case kWrapperStagePS:
-                m_pReal->PSSetSamplers(slot, 1, &sampler);
+                m_pReal->PSSetSamplers(startSlot, actualSamplers, samplers);
                 break;
             case kWrapperStageVS:
-                m_pReal->VSSetSamplers(slot, 1, &sampler);
+                m_pReal->VSSetSamplers(startSlot, actualSamplers, samplers);
                 break;
             case kWrapperStageGS:
-                m_pReal->GSSetSamplers(slot, 1, &sampler);
+                m_pReal->GSSetSamplers(startSlot, actualSamplers, samplers);
                 break;
             case kWrapperStageHS:
-                m_pReal->HSSetSamplers(slot, 1, &sampler);
+                m_pReal->HSSetSamplers(startSlot, actualSamplers, samplers);
                 break;
             case kWrapperStageDS:
-                m_pReal->DSSetSamplers(slot, 1, &sampler);
+                m_pReal->DSSetSamplers(startSlot, actualSamplers, samplers);
                 break;
             case kWrapperStageCS:
-                m_pReal->CSSetSamplers(slot, 1, &sampler);
+                m_pReal->CSSetSamplers(startSlot, actualSamplers, samplers);
                 break;
         }
     }
-    RememberRealSampler(stageIndex, slot, sampler);
+    g_WrapperAFRealSamplerSetCalls.fetch_add(1, std::memory_order_relaxed);
+    for (UINT i = 0; i < actualSamplers; ++i) {
+        RememberRealSampler(stageIndex, startSlot + i, samplers ? samplers[i] : nullptr);
+    }
 }
 
 int CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots, uint32_t slotMask) {
@@ -870,6 +1160,8 @@ int CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, 
 
     const UINT maxSlots = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
     const UINT actualSlots = (numSlots < maxSlots) ? numSlots : maxSlots;
+    ID3D11SamplerState* desiredSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    bool changedSlots[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
     int rebound = 0;
     int visitedSlots = 0;
     for (UINT i = 0; i < actualSlots; ++i) {
@@ -879,12 +1171,11 @@ int CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, 
         }
         ++visitedSlots;
         ID3D11SamplerState* logicalSampler = m_TrackedSamplers[stageIndex][slot];
-        if (!logicalSampler)
-            continue;
-
-        ID3D11SamplerState* desiredSampler = ResolveForcedAFSampler(stageIndex, slot, realDevice, logicalSampler);
+        ID3D11SamplerState* desiredSampler =
+            logicalSampler ? ResolveForcedAFSampler(stageIndex, slot, realDevice, logicalSampler) : nullptr;
         if (m_RealSamplers[stageIndex][slot] != desiredSampler) {
-            SetRealSampler(stageIndex, slot, desiredSampler);
+            desiredSamplers[i] = desiredSampler;
+            changedSlots[i] = true;
             ++rebound;
             int idx = g_WrapperAFReconciled.fetch_add(1, std::memory_order_relaxed);
             if (idx < 48 && desiredSampler) {
@@ -894,6 +1185,17 @@ int CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, 
                            WrapperStageName(stageIndex), slot, desc.Filter, desc.MaxAnisotropy, idx + 1);
             }
         }
+    }
+    for (UINT i = 0; i < actualSlots;) {
+        if (!changedSlots[i]) {
+            ++i;
+            continue;
+        }
+        const UINT runStart = i;
+        while (i < actualSlots && changedSlots[i]) {
+            ++i;
+        }
+        SetRealSamplerRange(stageIndex, startSlot + runStart, i - runStart, &desiredSamplers[runStart]);
     }
     if (visitedSlots != 0) {
         g_WrapperAFReconcileSlots.fetch_add(visitedSlots, std::memory_order_relaxed);
@@ -905,13 +1207,17 @@ int CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, 
 void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
     int drawIdx = g_WrapperAFDrawCalls.fetch_add(1, std::memory_order_relaxed);
     if (drawIdx < 32) {
-        WrapperLog("Wrapper: AF draw hook hit ctx=%p dirtyMask=0x%04X (#%d)", this, m_PixelSamplerDirtyMask,
+        WrapperLog("Wrapper: AF draw hook hit ctx=%p dirtyMask=0x%04X forcedMask=0x%04X candidates=0x%04X (#%d)",
+                   this, m_PixelSamplerDirtyMask, m_PixelForcedSamplerMask, PixelAFCandidateSamplerMask(),
                    drawIdx + 1);
-    } else if (drawIdx > 0 && (drawIdx % 1000) == 0) {
-        WrapperLog("Wrapper: AF draw stats ctx=%p draws=%d dirtyMask=0x%04X allowed=%d nonColor=%d unsafe=%d "
+    } else if (drawIdx > 0 && (drawIdx % 60000) == 0) {
+        WrapperLog("Wrapper: AF draw stats ctx=%p draws=%d dirtyMask=0x%04X forcedMask=0x%04X candidates=0x%04X "
+                   "allowed=%d nonColor=%d unsafe=%d "
                    "reconcileCalls=%d reconcileSlots=%d rebound=%d effectiveBindCalls=%d effectiveBinds=%d "
-                   "bindSkips=%d",
-                   this, drawIdx, m_PixelSamplerDirtyMask, g_WrapperAFAllowed.load(std::memory_order_relaxed),
+                   "passThrough=%d bindSkips=%d dirtySuppressed=%d realSetCalls=%d unchangedDirtyDeferred=%d "
+                   "warmupSkips=%d mixedRole(skips=%d blocks=%d) srvCache(hit=%d miss=%d store=%d)",
+                   this, drawIdx, m_PixelSamplerDirtyMask, m_PixelForcedSamplerMask, PixelAFCandidateSamplerMask(),
+                   g_WrapperAFAllowed.load(std::memory_order_relaxed),
                    g_WrapperAFSkipNonColorResource.load(std::memory_order_relaxed),
                    g_WrapperAFSkipUnsafeResource.load(std::memory_order_relaxed),
                    g_WrapperAFDrawReconciles.load(std::memory_order_relaxed),
@@ -919,7 +1225,17 @@ void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
                    g_WrapperAFReconciled.load(std::memory_order_relaxed),
                    g_WrapperAFEffectiveBindCalls.load(std::memory_order_relaxed),
                    g_WrapperAFEffectiveBinds.load(std::memory_order_relaxed),
-                   g_WrapperAFEffectiveBindSkips.load(std::memory_order_relaxed));
+                   g_WrapperAFPassthroughBinds.load(std::memory_order_relaxed),
+                   g_WrapperAFEffectiveBindSkips.load(std::memory_order_relaxed),
+                   g_WrapperAFCandidateDirtySuppressed.load(std::memory_order_relaxed),
+                   g_WrapperAFRealSamplerSetCalls.load(std::memory_order_relaxed),
+                   g_WrapperAFUnchangedDirtyDeferred.load(std::memory_order_relaxed),
+                   g_WrapperAFResourceWarmupSkips.load(std::memory_order_relaxed),
+                   g_WrapperAFSamplerMixedRoleSkips.load(std::memory_order_relaxed),
+                   g_WrapperAFSamplerMixedRoleBlocks.load(std::memory_order_relaxed),
+                   g_WrapperAFResourceCacheHits.load(std::memory_order_relaxed),
+                   g_WrapperAFResourceCacheMisses.load(std::memory_order_relaxed),
+                   g_WrapperAFResourceCacheStores.load(std::memory_order_relaxed));
     }
     const uint32_t dirtyMask = m_PixelSamplerDirtyMask;
     if (dirtyMask == 0) {
@@ -987,12 +1303,68 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
     }
 
     const uint32_t rangeMask = WrapperSamplerRangeMask(startSlot, numSamplers);
+    const uint32_t changedRangeMask = changedMask & rangeMask;
     const uint32_t dirtyMask = m_PixelSamplerDirtyMask & rangeMask;
-    if (dirtyMask == 0) {
+    auto bindPassthroughSamplers = [&](uint32_t mask) {
+        if (mask == 0) {
+            return 0;
+        }
+        const UINT maxSamplers = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
+        const UINT actualSamplers = (numSamplers < maxSamplers) ? numSamplers : maxSamplers;
+        ID3D11SamplerState* desiredSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+        bool changedSlots[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+        int rebound = 0;
+        for (UINT i = 0; i < actualSamplers; ++i) {
+            const UINT slot = startSlot + i;
+            if ((mask & (1u << slot)) == 0) {
+                continue;
+            }
+            ID3D11SamplerState* logicalSampler = m_TrackedSamplers[stageIndex][slot];
+            if (m_RealSamplers[stageIndex][slot] != logicalSampler) {
+                desiredSamplers[i] = logicalSampler;
+                changedSlots[i] = true;
+                ++rebound;
+            }
+        }
+        for (UINT i = 0; i < actualSamplers;) {
+            if (!changedSlots[i]) {
+                ++i;
+                continue;
+            }
+            const UINT runStart = i;
+            while (i < actualSamplers && changedSlots[i]) {
+                ++i;
+            }
+            SetRealSamplerRange(stageIndex, startSlot + runStart, i - runStart, &desiredSamplers[runStart]);
+        }
+        if (rebound != 0) {
+            g_WrapperAFPassthroughBinds.fetch_add(rebound, std::memory_order_relaxed);
+        }
+        return rebound;
+    };
+    const uint32_t resolveMask = dirtyMask & changedRangeMask;
+    const uint32_t deferredDirtyMask = dirtyMask & ~resolveMask;
+    if (deferredDirtyMask != 0) {
+        const int deferredSlots = WrapperPopCount(deferredDirtyMask);
+        int deferredIdx =
+            g_WrapperAFUnchangedDirtyDeferred.fetch_add(deferredSlots, std::memory_order_relaxed);
+        if (deferredIdx < 48) {
+            WrapperLog("Wrapper: AF sampler bind deferred dirty stage=PS start=%u num=%u dirtyMask=0x%04X "
+                       "changedMask=0x%04X deferredMask=0x%04X deferredSlots=%d (#%d)",
+                       startSlot, numSamplers, dirtyMask, changedMask, deferredDirtyMask, deferredSlots,
+                       deferredIdx + 1);
+        }
+    }
+
+    const uint32_t passthroughMask = changedRangeMask & ~resolveMask;
+    if (resolveMask == 0) {
+        const int passThroughRebound = bindPassthroughSamplers(passthroughMask);
         int skipIdx = g_WrapperAFEffectiveBindSkips.fetch_add(1, std::memory_order_relaxed);
         if (skipIdx < 24) {
-            WrapperLog("Wrapper: AF sampler bind skipped stage=PS start=%u num=%u rangeMask=0x%04X (#%d)",
-                       startSlot, numSamplers, rangeMask, skipIdx + 1);
+            WrapperLog("Wrapper: AF sampler bind skipped stage=PS start=%u num=%u rangeMask=0x%04X "
+                       "changedMask=0x%04X dirtyMask=0x%04X passThroughMask=0x%04X passThrough=%d (#%d)",
+                       startSlot, numSamplers, rangeMask, changedMask, dirtyMask, passthroughMask,
+                       passThroughRebound, skipIdx + 1);
         }
         return;
     }
@@ -1004,14 +1376,17 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
         return;
     }
 
+    const int passThroughRebound = bindPassthroughSamplers(passthroughMask);
     const UINT maxSamplers = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
     const UINT actualSamplers = (numSamplers < maxSamplers) ? numSamplers : maxSamplers;
     int rebound = 0;
     int resolved = 0;
+    ID3D11SamplerState* desiredSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    bool changedSlots[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
     for (UINT i = 0; i < actualSamplers; ++i) {
         const UINT slot = startSlot + i;
         const uint32_t bit = (1u << slot);
-        if ((dirtyMask & bit) == 0) {
+        if ((resolveMask & bit) == 0) {
             continue;
         }
         ++resolved;
@@ -1019,19 +1394,35 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
         ID3D11SamplerState* desiredSampler =
             logicalSampler ? ResolveForcedAFSampler(stageIndex, slot, realDevice, logicalSampler) : nullptr;
         if (m_RealSamplers[stageIndex][slot] != desiredSampler) {
-            SetRealSampler(stageIndex, slot, desiredSampler);
+            desiredSamplers[i] = desiredSampler;
+            changedSlots[i] = true;
             ++rebound;
         }
     }
-    m_PixelSamplerDirtyMask &= ~rangeMask;
+    for (UINT i = 0; i < actualSamplers;) {
+        if (!changedSlots[i]) {
+            ++i;
+            continue;
+        }
+        const UINT runStart = i;
+        while (i < actualSamplers && changedSlots[i]) {
+            ++i;
+        }
+        SetRealSamplerRange(stageIndex, startSlot + runStart, i - runStart, &desiredSamplers[runStart]);
+    }
+    m_PixelSamplerDirtyMask &= ~resolveMask;
     realDevice->Release();
 
-    const int totalRebound = g_WrapperAFEffectiveBinds.fetch_add(rebound, std::memory_order_relaxed) + rebound;
+    const int totalChanged = rebound + passThroughRebound;
+    const int totalRebound = g_WrapperAFEffectiveBinds.fetch_add(totalChanged, std::memory_order_relaxed) + totalChanged;
     int bindIdx = g_WrapperAFEffectiveBindCalls.fetch_add(1, std::memory_order_relaxed);
     if (bindIdx < 48) {
-        WrapperLog("Wrapper: AF sampler bind effective stage=PS start=%u num=%u dirtyMask=0x%04X "
-                   "changedMask=0x%04X resolved=%d rebound=%d totalRebound=%d",
-                   startSlot, numSamplers, dirtyMask, changedMask, resolved, rebound, totalRebound);
+        WrapperLog("Wrapper: AF sampler bind effective stage=PS start=%u num=%u dirtyMask=0x%04X resolveMask=0x%04X "
+                   "changedMask=0x%04X deferredMask=0x%04X passThroughMask=0x%04X resolved=%d rebound=%d "
+                   "passThrough=%d forcedMask=0x%04X totalRebound=%d",
+                   startSlot, numSamplers, dirtyMask, resolveMask, changedMask, deferredDirtyMask, passthroughMask,
+                   resolved, rebound,
+                   passThroughRebound, m_PixelForcedSamplerMask, totalRebound);
     }
 }
 

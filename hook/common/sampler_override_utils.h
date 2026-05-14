@@ -360,6 +360,11 @@ inline bool D3D11ShaderSamplerUsesAnyTexture(const D3D11ShaderSamplerUsage& usag
     return false;
 }
 
+inline bool D3D11ShaderSamplerIsAFCandidate(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
+    return D3D11ShaderSamplerUsesAnyTexture(usage, samplerSlot) &&
+           D3D11ShaderSamplerUsesAFSafeSample(usage, samplerSlot);
+}
+
 inline uint32_t D3D11ShaderSamplerMaskForTextureSlot(const D3D11ShaderSamplerUsage& usage, UINT textureSlot) {
     if (textureSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
         return 0;
@@ -374,10 +379,34 @@ inline uint32_t D3D11ShaderSamplerMaskForTextureSlot(const D3D11ShaderSamplerUsa
     return mask;
 }
 
+inline uint32_t D3D11ShaderAFSafeSamplerMaskForTextureSlot(const D3D11ShaderSamplerUsage& usage, UINT textureSlot) {
+    if (textureSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+        return 0;
+    }
+
+    uint32_t mask = 0;
+    for (UINT sampler = 0; sampler < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++sampler) {
+        if (usage.samplerTextures[sampler][textureSlot] && D3D11ShaderSamplerUsesAFSafeSample(usage, sampler)) {
+            mask |= (1u << sampler);
+        }
+    }
+    return mask;
+}
+
 inline uint32_t D3D11ShaderSamplerMaskForAnyTexture(const D3D11ShaderSamplerUsage& usage) {
     uint32_t mask = 0;
     for (UINT sampler = 0; sampler < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++sampler) {
         if (D3D11ShaderSamplerUsesAnyTexture(usage, sampler)) {
+            mask |= (1u << sampler);
+        }
+    }
+    return mask;
+}
+
+inline uint32_t D3D11ShaderAFSafeSamplerMaskForAnyTexture(const D3D11ShaderSamplerUsage& usage) {
+    uint32_t mask = 0;
+    for (UINT sampler = 0; sampler < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++sampler) {
+        if (D3D11ShaderSamplerIsAFCandidate(usage, sampler)) {
             mask |= (1u << sampler);
         }
     }
@@ -565,6 +594,7 @@ inline bool IsLikelyColorD3D11AFFormat(DXGI_FORMAT format) {
 
 enum class D3D11ForcedAFResourceDecision {
     Allow,
+    PendingStableObservation,
     UnsupportedFormat,
     UnsupportedViewDimension,
     Multisampled,
@@ -582,6 +612,8 @@ inline const char* D3D11ForcedAFResourceDecisionName(D3D11ForcedAFResourceDecisi
     switch (decision) {
         case D3D11ForcedAFResourceDecision::Allow:
             return "allow";
+        case D3D11ForcedAFResourceDecision::PendingStableObservation:
+            return "pending-stable-observation";
         case D3D11ForcedAFResourceDecision::UnsupportedFormat:
             return "unsupported-format";
         case D3D11ForcedAFResourceDecision::UnsupportedViewDimension:
@@ -623,6 +655,29 @@ struct D3D11Texture2DForcedAFInfo {
     UINT miscFlags = 0;
     bool formatSupported = false;
 };
+
+struct D3D11ForcedAFSamplerRoleState {
+    bool sawAllowedResource = false;
+    bool sawUnsafeResource = false;
+    bool blockedMixedRole = false;
+};
+
+inline bool ObserveD3D11ForcedAFSamplerRole(D3D11ForcedAFSamplerRoleState& state,
+                                            D3D11ForcedAFResourceDecision decision) {
+    if (decision == D3D11ForcedAFResourceDecision::PendingStableObservation) {
+        return false;
+    }
+
+    if (decision == D3D11ForcedAFResourceDecision::Allow) {
+        state.sawAllowedResource = true;
+    } else {
+        state.sawUnsafeResource = true;
+    }
+    if (state.sawAllowedResource && state.sawUnsafeResource) {
+        state.blockedMixedRole = true;
+    }
+    return decision == D3D11ForcedAFResourceDecision::Allow && !state.blockedMixedRole;
+}
 
 inline D3D11ForcedAFResourceDecision ClassifyD3D11Texture2DForForcedAF(const D3D11Texture2DForcedAFInfo& info) {
     if (!info.formatSupported) {

@@ -131,15 +131,26 @@ TEST(SamplerOverrideUtilsTest, BuildsD3D11ShaderSamplerDirtyMasksFromTextureSlot
     const char disassembly[] =
         "    sample r0.xyzw, v0.xyxx, t0.xyzw, s0\n"
         "    sample r1.xyzw, v1.xyxx, t0.xyzw, s2\n"
-        "    sample r2.xyzw, v2.xyxx, t3.xyzw, s2\n";
+        "    sample r2.xyzw, v2.xyxx, t3.xyzw, s2\n"
+        "    sample_l r3.xyzw, v3.xyxx, t0.xyzw, s4, l(0)\n"
+        "    sample_d r4.xyzw, v4.xyxx, t3.xyzw, s5, r1.xyzw, r2.xyzw\n";
 
     const D3D11ShaderSamplerUsage usage =
         ParseD3D11ShaderSamplerUsage(disassembly, sizeof(disassembly) - 1);
 
-    EXPECT_EQ(D3D11ShaderSamplerMaskForTextureSlot(usage, 0), (1u << 0) | (1u << 2));
-    EXPECT_EQ(D3D11ShaderSamplerMaskForTextureSlot(usage, 3), (1u << 2));
+    EXPECT_EQ(D3D11ShaderSamplerMaskForTextureSlot(usage, 0), (1u << 0) | (1u << 2) | (1u << 4));
+    EXPECT_EQ(D3D11ShaderSamplerMaskForTextureSlot(usage, 3), (1u << 2) | (1u << 5));
     EXPECT_EQ(D3D11ShaderSamplerMaskForTextureSlot(usage, 8), 0u);
-    EXPECT_EQ(D3D11ShaderSamplerMaskForAnyTexture(usage), (1u << 0) | (1u << 2));
+    EXPECT_EQ(D3D11ShaderSamplerMaskForAnyTexture(usage), (1u << 0) | (1u << 2) | (1u << 4) | (1u << 5));
+
+    EXPECT_TRUE(D3D11ShaderSamplerIsAFCandidate(usage, 0));
+    EXPECT_TRUE(D3D11ShaderSamplerIsAFCandidate(usage, 2));
+    EXPECT_FALSE(D3D11ShaderSamplerIsAFCandidate(usage, 4));
+    EXPECT_FALSE(D3D11ShaderSamplerIsAFCandidate(usage, 5));
+    EXPECT_EQ(D3D11ShaderAFSafeSamplerMaskForTextureSlot(usage, 0), (1u << 0) | (1u << 2));
+    EXPECT_EQ(D3D11ShaderAFSafeSamplerMaskForTextureSlot(usage, 3), (1u << 2));
+    EXPECT_EQ(D3D11ShaderAFSafeSamplerMaskForTextureSlot(usage, 8), 0u);
+    EXPECT_EQ(D3D11ShaderAFSafeSamplerMaskForAnyTexture(usage), (1u << 0) | (1u << 2));
 }
 
 TEST(SamplerOverrideUtilsTest, TreatsOnlyImplicitD3D11SamplesAsAFSafe) {
@@ -284,6 +295,23 @@ TEST(SamplerOverrideUtilsTest, D3D11ForcedAFTexturePolicyAllowsOnlyMaterialLikeM
     info.format = DXGI_FORMAT_BC7_UNORM_SRGB;
     info.viewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
     EXPECT_EQ(ClassifyD3D11Texture2DForForcedAF(info), D3D11ForcedAFResourceDecision::UnsupportedViewDimension);
+}
+
+TEST(SamplerOverrideUtilsTest, BlocksD3D11ForcedAFSamplerRoleAfterMixedResourceUse) {
+    D3D11ForcedAFSamplerRoleState allowThenUnsafe;
+    EXPECT_TRUE(ObserveD3D11ForcedAFSamplerRole(allowThenUnsafe, D3D11ForcedAFResourceDecision::Allow));
+    EXPECT_FALSE(allowThenUnsafe.blockedMixedRole);
+    EXPECT_FALSE(
+        ObserveD3D11ForcedAFSamplerRole(allowThenUnsafe, D3D11ForcedAFResourceDecision::ProblematicFormat));
+    EXPECT_TRUE(allowThenUnsafe.blockedMixedRole);
+    EXPECT_FALSE(ObserveD3D11ForcedAFSamplerRole(allowThenUnsafe, D3D11ForcedAFResourceDecision::Allow));
+
+    D3D11ForcedAFSamplerRoleState unsafeThenAllow;
+    EXPECT_FALSE(
+        ObserveD3D11ForcedAFSamplerRole(unsafeThenAllow, D3D11ForcedAFResourceDecision::NonColorFormat));
+    EXPECT_FALSE(unsafeThenAllow.blockedMixedRole);
+    EXPECT_FALSE(ObserveD3D11ForcedAFSamplerRole(unsafeThenAllow, D3D11ForcedAFResourceDecision::Allow));
+    EXPECT_TRUE(unsafeThenAllow.blockedMixedRole);
 }
 
 }  // namespace

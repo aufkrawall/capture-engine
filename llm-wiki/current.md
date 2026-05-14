@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-05-14 — D3D11 forced-AF wrapper/vtable forwarding guard (build 0.1.3107 / tests 0.1.3108). BioShock Infinite `20260514_113020` proved the wrapper context and raw vtable AF paths were both acting on the same real context, causing sampler-state churn and likely GPU underutilization. The current tree guards wrapper-to-real context forwarding so raw vtable hooks bypass duplicate AF tracking for wrapper-origin calls. See `llm-wiki/dx11-forced-af.md` and `llm-wiki/log/recent.md`.
+Last cross-checked: 2026-05-14 — D3D11 forced-AF streamed-SRV warm-up and mixed-role sampler gate (build 0.1.3115 / tests 0.1.3116). BioShock Infinite `20260514_160317` still crashed in the same game-side render-thread null-read while texture streaming after save-game load; wrapper/vtable duplication was reduced, but real sampler set churn and fresh SRV cache misses stayed high. The current tree keeps the wrapper-forwarding guard and adds conservative warm-up for newly observed otherwise-safe SRVs plus a per-sampler mixed safe/unsafe resource-role block. See `llm-wiki/dx11-forced-af.md` and `llm-wiki/log/recent.md`.
 
 Primary sources:
 - `llm-wiki/log/recent.md`

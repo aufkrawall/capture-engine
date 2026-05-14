@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-14 (updated: build 0.1.3107 / tests 0.1.3108 - DX11 forced-AF wrapper/vtable forwarding guard)
+Last cross-checked: 2026-05-14 (updated: build 0.1.3115 / tests 0.1.3116 - DX11 forced-AF streamed-SRV warm-up and mixed-role sampler gate)
 
 Primary sources:
 - `AGENTS.md`
@@ -43,7 +43,7 @@ Primary sources:
 - `dx12-overlay-third-party-coexistence.md`
   - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS.
 - `dx11-forced-af.md`
-  - Current Blackwell-safe D3D11 forced anisotropic filtering policy, per-context bootstrap, wrapper-context draw path, wrapper/vtable forwarding guard, runtime sampler/SRV tracking, diagnostics, and stale-risk.
+  - Current Blackwell-safe D3D11 forced anisotropic filtering policy, per-context bootstrap, wrapper-context draw path, wrapper/vtable forwarding guard, streamed-SRV warm-up, mixed-role sampler blocking, runtime sampler/SRV tracking, diagnostics, and stale-risk.
 - `frame-generation-switching.md`
   - Stub pointing to `frame-generation/guardrails.md` (invariants) and `frame-generation/case-studies.md` (chronological deep-dive).
 - `overlay-fg-status.md`

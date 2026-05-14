@@ -347,6 +347,7 @@ private:
     int m_Version;
     ID3D11PixelShader* m_CurrentPixelShader;
     uint32_t m_PixelSamplerDirtyMask;
+    uint32_t m_PixelForcedSamplerMask;
     ID3D11ShaderResourceView* m_TrackedSRVs[6][D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
     ID3D11SamplerState* m_TrackedSamplers[6][D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
     ID3D11SamplerState* m_RealSamplers[6][D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
@@ -355,6 +356,7 @@ private:
     void ClearForcedAFTracking();
     uint32_t DirtyMaskForPixelShaderResourceSlots(UINT startSlot, UINT numViews) const;
     uint32_t TrackedPixelSamplerMask() const;
+    uint32_t PixelAFCandidateSamplerMask() const;
     void TrackShaderResources(UINT stageIndex, UINT startSlot, UINT numViews,
                               ID3D11ShaderResourceView* const* views);
     uint32_t TrackSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* samplers);
@@ -366,6 +368,8 @@ private:
     int ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots, uint32_t slotMask);
     void PreparePixelSamplersForDraw();
     void SetRealSampler(UINT stageIndex, UINT slot, ID3D11SamplerState* sampler);
+    void SetRealSamplerRange(UINT stageIndex, UINT startSlot, UINT numSamplers,
+                             ID3D11SamplerState* const* samplers);
     void RememberRealSampler(UINT stageIndex, UINT slot, ID3D11SamplerState* sampler);
     void BindTrackedSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers,
                              ID3D11SamplerState* const* samplers);
