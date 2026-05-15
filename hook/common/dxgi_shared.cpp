@@ -3816,6 +3816,11 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    {
+        static int s_logCount = 0;
+        if (s_logCount++ < 5)
+            HookLog("CallOriginalPresent: entering, calling WaitBackbufferFrameLatency");
+    }
     WaitBackbufferFrameLatency(pSwapChain);
     const PFN_Present presentTrampoline = oPresentTrampoline;
     const PFN_Present presentOriginal = oPresent;
