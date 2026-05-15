@@ -60,6 +60,14 @@ static bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DE
     }
 
     const UINT requested = static_cast<UINT>(gfx.backbufferCount);
+    const bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                         desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+    if (isFlip && requested < desc.BufferCount) {
+        WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount override skipped requested=%u game=%u "
+                   "swapEffect=%d (flip model)",
+                   requested, desc.BufferCount, desc.SwapEffect);
+        return false;
+    }
     if (desc.BufferCount == requested) {
         WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount already matches requested=%u swapEffect=%d",
                    requested, desc.SwapEffect);
