@@ -273,11 +273,9 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
         DetectSwapChainState();
 
         if (pDevice) {
-            ID3D12CommandQueue* pQueue = nullptr;
-            if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
+            if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&m_pD3D12Queue)))) {
                 m_IsD3D12 = true;
-                DX12_SetCommandQueue(pQueue);
-                pQueue->Release();
+                DX12_SetCommandQueue(m_pD3D12Queue);
                 // FIX: Mark overlay as ready - DX12 systems handle lazy initialization
                 // internally
                 m_OverlayResourcesValid.store(true, std::memory_order_release);
