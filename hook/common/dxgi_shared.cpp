@@ -3816,12 +3816,22 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    // Inline wait for DWM flip queue room (no separate function call)
     {
-        static int s_logCount = 0;
-        if (s_logCount++ < 5)
-            HookLog("CallOriginalPresent: entering, calling WaitBackbufferFrameLatency");
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
+            IDXGISwapChain2* pSC2 = nullptr;
+            HRESULT hrQI = pSwapChain->QueryInterface(IID_PPV_ARGS(&pSC2));
+            if (SUCCEEDED(hrQI) && pSC2) {
+                HANDLE hWaitable = pSC2->GetFrameLatencyWaitableObject();
+                if (hWaitable && hWaitable != INVALID_HANDLE_VALUE) {
+                    WaitForSingleObject(hWaitable, 16);
+                }
+                pSC2->Release();
+            }
+        }
     }
-    WaitBackbufferFrameLatency(pSwapChain);
+
     const PFN_Present presentTrampoline = oPresentTrampoline;
     const PFN_Present presentOriginal = oPresent;
     const PFN_Present presentBypass = EnsurePresentBypassTrampoline();
