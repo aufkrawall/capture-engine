@@ -219,6 +219,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
             }
         }
 
+        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDesc = &modifiedDesc;
     }
 
@@ -316,6 +317,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
             }
         }
 
+        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDesc = &modifiedDesc;
     }
 
@@ -376,6 +378,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
             }
         }
 
+        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDesc = &modifiedDesc;
     }
 
@@ -458,6 +461,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
                 WrapperLog("CreateSwapChainForComposition: Overriding BufferCount to %u", modifiedDesc.BufferCount);
             }
         }
+        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDesc = &modifiedDesc;
     }
 

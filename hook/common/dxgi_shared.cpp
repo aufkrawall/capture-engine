@@ -821,6 +821,25 @@ static UINT ResolvePresentFrameLatencyOverride(const char** sourceOut) {
     return 0;
 }
 
+// Wait for DWM flip queue room when backbuffer_count override is active.
+// Uses DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT (applied at
+// creation) to pace presents so the effective vsync queue depth matches
+// the override count, without changing the physical BufferCount.
+void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
+    const auto& gfx = GetActiveGraphicsConfig();
+    if (!HasBackbufferCountOverride(gfx.backbufferCount))
+        return;
+
+    IDXGISwapChain2* pSC2 = nullptr;
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&pSC2)))) {
+        HANDLE hWaitable = pSC2->GetFrameLatencyWaitableObject();
+        if (hWaitable && hWaitable != INVALID_HANDLE_VALUE) {
+            WaitForSingleObject(hWaitable, INFINITE);
+        }
+        pSC2->Release();
+    }
+}
+
 // Apply user-configured present-queue latency overrides to an existing swapchain.
 // NOTE: backbuffer_count is handled at swapchain creation and resize time.
 void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain) {
@@ -2277,6 +2296,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 HookLog("DetourPresent: Calling oPresent=%p (SL route, call #%d, tid=0x%04X)", oPresent, slCallNum,
                         GetCurrentThreadId());
             }
+            WaitBackbufferFrameLatency(pSwapChain);
             hr = oPresent(pSwapChain, SyncInterval, Flags);
             if (slCallNum <= 20 || (slCallNum % 500) == 0) {
                 HookLog("DetourPresent: oPresent returned hr=0x%08X (call #%d)", hr, slCallNum);
@@ -2813,6 +2833,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             s_slRoutingActive.store(false, std::memory_order_release);
             hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
         } else {
+            WaitBackbufferFrameLatency(pSwapChain);
             hr = oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     } else {
@@ -3765,6 +3786,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    WaitBackbufferFrameLatency(pSwapChain);
     const PFN_Present presentTrampoline = oPresentTrampoline;
     const PFN_Present presentOriginal = oPresent;
     const PFN_Present presentBypass = EnsurePresentBypassTrampoline();
@@ -4214,6 +4236,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    WaitBackbufferFrameLatency(pSwapChain);
     const PFN_Present1 present1Trampoline = oPresent1Trampoline;
     const PFN_Present1 present1Original = oPresent1;
     const PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();

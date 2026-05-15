@@ -198,13 +198,9 @@ private:
     void EnsurePromoted();  // Lazy promotion - only when needed
     void PromoteInterfaces();
     void CleanupOverlayResources();
-    void CleanupDummyBackBuffers();  // Release GetBuffer dummy resources
+    void WaitFrameLatency();  // Wait for DWM flip queue room (backbuffer pacing)
 
-    // Dummy backbuffer resources for GetBuffer index remapping.
-    // When backbuffer_count=N is active and the game requests GetBuffer(idx)
-    // with idx >= N, a standalone D3D12 committed resource is created to
-    // avoid aliasing the same physical backbuffer (which causes GPU hangs).
-    std::vector<ID3D12Resource*> m_DummyBackBuffers;
+    HANDLE m_hFrameLatencyWaitable = INVALID_HANDLE_VALUE;
     void DrawOverlay();
     bool IsFSRInternalSwapchain();  // FSR FG internal swapchain detection
     IDXGISwapChain* GetRealSafe();  // Thread-safe real swapchain access

@@ -145,6 +145,7 @@ PerformanceMetrics* GetPerformanceMetrics();
 uint32_t GetLatestSourceFrameIndex();
 void SetLatestSourceFrameIndex(uint32_t frameIndex);
 void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain);
+void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain);
 
 // Experimental: skip CE overlay rendering when Steam handler is invoked.
 // When enabled, DetourPresent skips HandleDX12ProcessFrame and CallOriginalPresent

@@ -55,6 +55,7 @@ extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11D
 
 static bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DESC& desc) {
     const auto& gfx = GetActiveGraphicsConfig();
+    desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
         return false;
     }

@@ -443,7 +443,6 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
 
     WrapperStateManager::Get().UnregisterSwapchain(this);
     CleanupOverlayResources();
-    CleanupDummyBackBuffers();
     if (m_pD3D12Queue)
         m_pD3D12Queue->Release();
     // CRITICAL FIX: Null out all real swapchain pointers BEFORE releasing them.
@@ -503,6 +502,20 @@ void CWrapDXGISwapChain::PromoteInterfaces() {
 void CWrapDXGISwapChain::CleanupOverlayResources() {
     // Atomic update - no mutex needed for simple flag
     m_OverlayResourcesValid.store(false, std::memory_order_release);
+}
+
+void CWrapDXGISwapChain::WaitFrameLatency() {
+    const auto& gfx = GetActiveGraphicsConfig();
+    if (!HasBackbufferCountOverride(gfx.backbufferCount))
+        return;
+
+    if (m_hFrameLatencyWaitable == INVALID_HANDLE_VALUE && m_pReal2) {
+        m_hFrameLatencyWaitable = m_pReal2->GetFrameLatencyWaitableObject();
+    }
+
+    if (m_hFrameLatencyWaitable != INVALID_HANDLE_VALUE && m_hFrameLatencyWaitable) {
+        WaitForSingleObject(m_hFrameLatencyWaitable, INFINITE);
+    }
 }
 
 void CWrapDXGISwapChain::DrawOverlay() {
@@ -645,7 +658,6 @@ ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::Release() {
         // and rejects forwarding to the already-destroyed swapchain.
         m_Releasing.store(true, std::memory_order_release);
         CleanupOverlayResources();
-        CleanupDummyBackBuffers();
     }
 
     // Release the real swapchain (if not already nulled by DestructionCallback)
@@ -1058,6 +1070,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         DX12_WaitForOverlayCompletion(nullptr);
     }
 
+    WaitFrameLatency();
     const int64_t presentCallStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
     if (SUCCEEDED(hr)) {
@@ -1368,6 +1381,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         DX12_WaitForOverlayCompletion(nullptr);
     }
 
+    WaitFrameLatency();
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     if (SUCCEEDED(hr)) {
         g_SharedFpsLimiter.ApplyPostPresent();

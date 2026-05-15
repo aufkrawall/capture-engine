@@ -5244,8 +5244,10 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
                 modifiedDesc.BufferCount = requested;
             }
         }
+        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDescToUse = &modifiedDesc;
     }
+
 
     // Try the call first — let the game/SL handle SC lifecycle naturally
     HRESULT hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
@@ -5418,8 +5420,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
                 modifiedDesc.BufferCount = requested;
             }
         }
+        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDescToUse = &modifiedDesc;
     }
+
 
     HRESULT hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
     HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
@@ -5591,8 +5595,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
                 modifiedDesc.BufferCount = requested;
             }
         }
+        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDescToUse = &modifiedDesc;
     }
+
 
     // Call original with (possibly) modified descriptor
     HRESULT hr = oCreateSwapChainGlobal(pThis, pDevice, pDescToUse, ppSwapChain);
@@ -5712,8 +5718,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
                 modifiedDesc.BufferCount = requested;
             }
         }
+        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDescToUse = &modifiedDesc;
     }
+
 
     // Forward the original external caller through the DXGI vtable -> real DXGI
     // function chain so our inline/deep hooks don't misclassify CE's own detour

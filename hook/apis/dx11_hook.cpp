@@ -228,8 +228,16 @@ static void ClearDeferredAFBootstraps11() {
     g_DeferredAFBootstrappedContexts.clear();
 }
 
+static void ApplyDX11WaitableFlag(DXGI_SWAP_CHAIN_DESC& desc) {
+    desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+}
+static void ApplyDX11WaitableFlag(DXGI_SWAP_CHAIN_DESC1& desc) {
+    desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+}
+
 static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc, const char* source) {
     const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+    ApplyDX11WaitableFlag(desc);
     if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
         return false;
     }
@@ -256,6 +264,7 @@ static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc, const c
 
 static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc, const char* source) {
     const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+    ApplyDX11WaitableFlag(desc);
     if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
         return false;
     }
