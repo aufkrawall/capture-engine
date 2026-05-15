@@ -460,9 +460,21 @@ bool PatchEAT(HMODULE exportingModule, const char* functionName, void* hookFunct
                 *outOriginal = reinterpret_cast<void*>(reinterpret_cast<BYTE*>(exportingModule) + funcRVA);
             }
 
-            // Calculate new RVA
-            DWORD newRVA =
-                static_cast<DWORD>(reinterpret_cast<BYTE*>(hookFunction) - reinterpret_cast<BYTE*>(exportingModule));
+            // Calculate new RVA with bounds check.
+            // hookFunction must be within the exporting module's address range.
+            MODULEINFO modInfo = {};
+            if (!GetModuleInformation(GetCurrentProcess(), exportingModule, &modInfo, sizeof(modInfo))) {
+                WrapperLog("EAT: Failed to get module info for %s", functionName);
+                break;
+            }
+            BYTE* modBase = reinterpret_cast<BYTE*>(exportingModule);
+            BYTE* hookAddr = reinterpret_cast<BYTE*>(hookFunction);
+            if (hookAddr < modBase || hookAddr >= modBase + modInfo.SizeOfImage) {
+                WrapperLog("EAT: hookFunction %p outside exporting module range [%p, %p) for %s",
+                           hookFunction, modBase, modBase + modInfo.SizeOfImage, functionName);
+                break;
+            }
+            DWORD newRVA = static_cast<DWORD>(hookAddr - modBase);
 
             DWORD oldProtect;
             if (VirtualProtect(&functions[ordinals[i]], sizeof(DWORD), PAGE_READWRITE, &oldProtect)) {

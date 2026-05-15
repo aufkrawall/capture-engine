@@ -1506,7 +1506,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 HookLogImportant(
                     "DetourPresent: heartbeat #%d gap=%.0fms presentOwner=0x%04X depth=%d slFG=%d tid=0x%04X",
                     s_heartbeatCount, gapMs, presentOwner, presentDepthVal,
-                    g_StreamlineFGRunning.load(std::memory_order_relaxed) ? 1 : 0, GetCurrentThreadId());
+                    g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0, GetCurrentThreadId());
             }
         }
         s_lastPresentTime = now;

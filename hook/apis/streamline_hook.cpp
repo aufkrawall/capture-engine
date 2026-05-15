@@ -561,6 +561,14 @@ slDLSSGOptions CloneDLSSGOptions(const slDLSSGOptions& source) {
     if (source.structVersion >= kSLStructVersion4) {
         copy.bReserved16 = source.bReserved16;
     }
+    if (source.structVersion > kSLStructVersion4) {
+        static std::atomic<bool> s_logged{false};
+        if (!s_logged.exchange(true)) {
+            HookLogImportant("SL: DLSSG options structVersion=%zu exceeds CE's max (4) — capping to prevent truncated-field read",
+                        source.structVersion);
+        }
+        copy.structVersion = kSLStructVersion4;
+    }
     return copy;
 }
 

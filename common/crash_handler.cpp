@@ -999,8 +999,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     HANDLE hThread = CreateThread(NULL, 0, DumpWorker, params, 0, NULL);
 
     if (hThread) {
-        TraceCrash("Worker thread spawned, waiting (15s timeout)...");
-        DWORD waitResult = WaitForSingleObject(hThread, 15000);
+        TraceCrash("Worker thread spawned, waiting (5s timeout)...");
+        DWORD waitResult = WaitForSingleObject(hThread, 5000);
         if (waitResult == WAIT_TIMEOUT) {
             TraceCrash("Worker thread timed out after 15s - continuing without dump");
         } else {
@@ -1072,7 +1072,12 @@ void InstallCrashHandler() {
             g_hDbgHelp = LoadLibraryA(sysDir);
         }
         if (!g_hDbgHelp) {
-            g_hDbgHelp = LoadLibraryA("DbgHelp.dll");
+            char sysDir2[MAX_PATH];
+            len = GetSystemDirectoryA(sysDir2, MAX_PATH);
+            if (len > 0 && len < MAX_PATH - 16) {
+                strcat(sysDir2, "\\DbgHelp.dll");
+                g_hDbgHelp = LoadLibraryExA(sysDir2, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            }
         }
         if (g_hDbgHelp) {
             g_pMiniDumpWriteDump = (MINIDUMPWRITEDUMP)GetProcAddress(g_hDbgHelp, "MiniDumpWriteDump");

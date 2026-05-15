@@ -792,15 +792,12 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     LogInfo("[SECURITY] DLL signature verified: %s", dllPath.c_str());
 #else
     // DEVELOPMENT BUILD: Warn about unsigned DLL but allow injection.
-    // Check for explicit opt-out via environment variable.
-#ifndef CE_PRODUCTION_BUILD
+    // SKIP_DLL_VERIFICATION=1 bypasses signature checks for local dev.
+    // This env var is never read in production builds (CE_PRODUCTION_BUILD).
     const char* skipVerification = getenv("SKIP_DLL_VERIFICATION");
     if (skipVerification && strcmp(skipVerification, "1") == 0) {
         LogWarn("[SECURITY] Skipping DLL verification (SKIP_DLL_VERIFICATION=1)");
-    } else
-#endif
-        if (!VerifyDLLSignature(dllPath, false)) {
-        // Log warning but do NOT block injection for dev/unsigned builds
+    } else if (!VerifyDLLSignature(dllPath, false)) {
         LogWarn("[SECURITY] DLL is not Authenticode-signed: %s", dllPath.c_str());
         LogWarn(
             "[SECURITY] This is expected for development builds. Set "

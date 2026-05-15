@@ -323,6 +323,8 @@ static std::atomic<int> g_SLOffHeuristicGrace{0};
 // to keep the first replacement swapchain on the guarded transition path.
 static std::atomic<int> g_SLOffSwapchainReinitGrace{0};
 
+
+
 // Reset flag for per-reinit submit diagnostic counter.
 static std::atomic<bool> g_ResetReinitSubmitCounter{false};
 
@@ -339,6 +341,8 @@ static std::atomic<bool> g_OuterTrackedSLFGRunning{false};
 // Locked queue for PostSL overlay — stays on the first successful queue
 // (game's render queue) instead of following SL's FG worker queue changes.
 // Reset when PostSL rendering is disabled (FG transition off).
+// Protected by atomic exchange in writer; readers must load via the
+// dedicated helper or raw pointer access when no concurrent write is possible.
 static ID3D12CommandQueue* g_PostSLLockedQueue = nullptr;
 
 // Tracks whether FSR FG was ever active during this session.
@@ -392,6 +396,11 @@ static ID3D12CommandQueue* g_PostSLDedicatedQueue = nullptr;
 // Survives FG transitions — used as preferred queue when PostSL re-activates
 // after FSR→DLSS switch (where g_CommandQueue or scQueue might be wrong).
 // AddRef'd to prevent use-after-free when g_CommandQueue is updated.
+// NOTE: this pointer is read by the ECL detour concurrently with FG-mode
+// switches that write it.  The writer (SetPostSLLastWorkingQueue) uses
+// exchange + AddRef/Release so the new pointer is alive before the old is
+// dropped.  ECL readers should grab a local AddRef'd copy; the PostSL path
+// runs under the lifecycle epoch guard which prevents concurrent release.
 static ID3D12CommandQueue* g_PostSLLastWorkingQueue = nullptr;
 
 static void SetPostSLLastWorkingQueue(ID3D12CommandQueue* queue) {
@@ -5092,6 +5101,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(commandQueueSettledToPrimary,
                                                                                g_HadFSRFGPhase, true));
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — deferring non-FG overlay reinit for %d frames so "
                 "Talos/Streamline teardown can settle before pre-SL resources are rebuilt",
@@ -10068,13 +10078,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     // DEVICE_REMOVED if Streamline teardown isn't complete, so we give
                     // a generous 15-second window.
                     cooldownFrames = ce::dx12_overlay_policy::ResolvePostFSRExtendedCooldownFrames(
-                        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed));
+                        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
                 }
                 g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
                     g_FGTransitionCooldown, cooldownFrames,
                     ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
                         commandQueueSettledToPrimary, g_HadFSRFGPhase, slOffSwapchainGrace > 0));
                 g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+                g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
                 g_PostSLConfirmedRendering.store(false, std::memory_order_release);
                 // Force sync re-init: old allocators/fence were on the old queue.
@@ -11743,6 +11754,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     commandQueueSettledToPrimary, g_HadFSRFGPhase,
                     previousWasFG && targetIsFGOff && !currentSLFGRunning));
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
 
             // Immediately disable post-SL rendering during FG transitions.
             // Keep the callback installed when Streamline is still running so
@@ -12506,7 +12518,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     "DX12: Overlay frame #%llu (deviceRemoved=0x%08X, fgActive=%d, "
                     "queue=%p, allocIdx=%d, slFGRunning=%d)",
                     (unsigned long long)frameNum, (unsigned)devRemovedHr, currentFGActive ? 1 : 0, gameQueue,
-                    g_State.allocIndex, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed) ? 1 : 0);
+                    g_State.allocIndex, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0);
             }
 
             // Check device removed BEFORE rendering.  On first detection, tear
@@ -13291,7 +13303,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     "bb=%p bufIdx=%d tid=0x%04X)",
                                                     s_postTransitionFrames, eclQueue, g_OriginalGameQueue,
                                                     (void*)g_CommandQueue.load(), g_FGCompat.IsFGActive() ? 1 : 0,
-                                                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed)
+                                                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)
                                                         ? 1
                                                         : 0,
                                                     usedDescFree ? 1 : 0, usedRealECL ? 1 : 0, (unsigned)devHr3, bb,
@@ -14160,7 +14172,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     ID3D12CommandQueue* classificationQueue = GetFrameClassificationQueue();
     char eclCallerModulePath[MAX_PATH] = {};
     const bool anyFGActiveEarly = IsActualFrameGenerationActive() ||
-                                  DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed) ||
+                                  DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
                                   IsNvidiaSmoothMotionActiveRuntime();
     ID3D12CommandQueue* currentQEarly = g_CommandQueue.load(std::memory_order_acquire);
     const bool isKnownQueueEarly = primaryQ && (pThis == primaryQ || pThis == currentQEarly ||
@@ -14187,7 +14199,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // avoid calling virtual methods (GetDesc/GetDevice) on freed objects.
     {
         const bool actualFGActive = IsActualFrameGenerationActive();
-        const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed);
+        const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         const bool anyFGActive = actualFGActive || IsNvidiaSmoothMotionActiveRuntime() || streamlineFGRunning;
         const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
         const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
@@ -14202,7 +14214,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         // This wrapper routes ECL through SL's internal handler to the correct
         // queue.  We need it for PostSL overlay rendering after FSR→DLSS
         // transitions where origGame and scQueue both fail BB barriers.
-        if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed) && pThis != g_OriginalGameQueue &&
+        if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) && pThis != g_OriginalGameQueue &&
             pThis != g_SwapchainQueue && pThis != primaryQ) {
             ID3D12CommandQueue* prevWrapper = g_SLWrapperQueue.load(std::memory_order_relaxed);
             if (prevWrapper != pThis) {
@@ -14400,7 +14412,7 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     // check covers these transient wrapper queues without affecting the game queue
     // or the swapchain queue that we need for overlay/heartbeat.
     if (queue != g_OriginalGameQueue && queue != g_SwapchainQueue &&
-        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed) &&
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
         DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
         static int s_skipSLWrapperVTableHookLog = 0;
         if (s_skipSLWrapperVTableHookLog < 10) {

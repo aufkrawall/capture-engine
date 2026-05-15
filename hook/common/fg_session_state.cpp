@@ -170,8 +170,6 @@ void FillTransportRisk(FGTransportRisk* risk) {
     risk->thirdPartyOverlayLoaded = overlayModule != nullptr;
     risk->steamOverlayLoaded = overlayModule != nullptr && strstr(overlayModule, "gameoverlayrenderer") != nullptr;
     risk->cleanNonWrappedDX12Entry = true;
-    risk->bypassAvailable = false;
-    risk->staleSteamPresentHookRisk = risk->steamOverlayLoaded && risk->bypassAvailable;
 }
 
 std::vector<std::string> ReadManifestLines(const char* path) {
