@@ -209,6 +209,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 WrapperLog(
                     "CreateSwapChain: Skipping BufferCount override %u < game's %u "
                     "(flip model)",
@@ -219,7 +220,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
             }
         }
 
-        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDesc = &modifiedDesc;
     }
 
@@ -307,6 +307,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 WrapperLog(
                     "CreateSwapChainForHwnd: Skipping BufferCount override %u < "
                     "game's %u (flip model)",
@@ -317,7 +318,6 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
             }
         }
 
-        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDesc = &modifiedDesc;
     }
 
@@ -368,6 +368,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 WrapperLog(
                     "CreateSwapChainForCoreWindow: Skipping BufferCount override "
                     "%u < game's %u (flip model)",
@@ -378,7 +379,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
             }
         }
 
-        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDesc = &modifiedDesc;
     }
 
@@ -452,6 +452,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 WrapperLog(
                     "CreateSwapChainForComposition: Skipping BufferCount override "
                     "%u < game's %u (flip model)",
@@ -461,7 +462,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
                 WrapperLog("CreateSwapChainForComposition: Overriding BufferCount to %u", modifiedDesc.BufferCount);
             }
         }
-        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+
         pDesc = &modifiedDesc;
     }
 

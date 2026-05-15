@@ -1138,7 +1138,8 @@ static std::atomic<bool> s_ResizeInProgress{false};
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                              DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
     WrapperLog("CWrapDXGISwapChain::ResizeBuffers called - Width=%u, Height=%u", Width, Height);
-    SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
+        SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_resizeThreadId{0};
@@ -1502,7 +1503,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
                                                               DXGI_FORMAT Format, UINT SwapChainFlags,
                                                               const UINT* pCreationNodeMask,
                                                               IUnknown* const* ppPresentQueue) {
-    SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
+        SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_resize1ThreadId{0};
     static std::atomic<int> s_resize1Depth{0};
