@@ -1086,6 +1086,30 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetBuffer(UINT Buffer, REFIID riid
     IDXGISwapChain* pReal = GetRealSafe();
     if (!pReal)
         return DXGI_ERROR_INVALID_CALL;
+
+    // Apply backbuffer count override remapping:
+    // When the game expects BufferCount=3 but we created with 2, remap
+    // buffer indices >= override count so GetBuffer never fails.
+    // E.g. GetBuffer(2) → returns buffer 0 (AddRef'd for proper refcounting).
+    // This prevents games from storing null buffer pointers that later crash
+    // in worker threads or during ResizeBuffers cleanup.
+    {
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
+            UINT overrideCount = (UINT)gfx.backbufferCount;
+            if (Buffer >= overrideCount) {
+                UINT remapped = Buffer % overrideCount;
+                WrapperLog("GetBuffer: Remapping buffer index %u -> %u (override count=%u)", Buffer, remapped,
+                           overrideCount);
+                HRESULT hr = pReal->GetBuffer(remapped, riid, ppSurface);
+                if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+                    static_cast<IUnknown*>(*ppSurface)->AddRef();
+                }
+                return hr;
+            }
+        }
+    }
+
     return pReal->GetBuffer(Buffer, riid, ppSurface);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget) {
@@ -1145,27 +1169,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
     }
 
     // Apply backbuffer count override from config
+    // Note: GetBuffer remaps indices >= override count so this is safe
+    // even when reducing flip-model swapchain buffer count at resize.
     if (g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
-            // Check swap effect from current swapchain desc
-            DXGI_SWAP_CHAIN_DESC scDesc = {};
-            bool isFlip = false;
-            if (SUCCEEDED(m_pReal->GetDesc(&scDesc))) {
-                isFlip = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                          scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            }
-            UINT gameCount = BufferCount > 0 ? BufferCount : scDesc.BufferCount;
-            if (isFlip && requested < gameCount) {
-                WrapperLog(
-                    "ResizeBuffers: Skipping BufferCount override %u < game's %u "
-                    "(flip model)",
-                    requested, gameCount);
-            } else {
-                BufferCount = requested;
-                WrapperLog("ResizeBuffers: Overriding BufferCount to %u", BufferCount);
-            }
+            BufferCount = requested;
+            WrapperLog("ResizeBuffers: Overriding BufferCount to %u", BufferCount);
         }
     }
 
