@@ -5242,9 +5242,9 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
             } else if (modifiedDesc.BufferCount != requested) {
                 HookLogImportant("DeepHook: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             }
         }
-        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDescToUse = &modifiedDesc;
     }
 
@@ -5418,9 +5418,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
             } else if (modifiedDesc.BufferCount != requested) {
                 HookLogImportant("INLINE: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             }
         }
-        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDescToUse = &modifiedDesc;
     }
 
@@ -5593,9 +5593,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
                 HookLogImportant("DetourCreateSwapChainGlobal: Overriding BufferCount %u -> %u",
                                  modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             }
         }
-        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDescToUse = &modifiedDesc;
     }
 
@@ -5716,9 +5716,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
                 HookLogImportant("DetourCreateSwapChainForHwndGlobal: Overriding BufferCount %u -> %u",
                                  modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             }
         }
-        modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         pDescToUse = &modifiedDesc;
     }
 

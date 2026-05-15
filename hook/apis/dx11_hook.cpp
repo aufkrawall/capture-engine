@@ -237,10 +237,10 @@ static void ApplyDX11WaitableFlag(DXGI_SWAP_CHAIN_DESC1& desc) {
 
 static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc, const char* source) {
     const GraphicsConfig& gfx = GetActiveGraphicsConfig();
-    ApplyDX11WaitableFlag(desc);
     if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
         return false;
     }
+    ApplyDX11WaitableFlag(desc);
 
     const UINT requested = static_cast<UINT>(gfx.backbufferCount);
     const bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
@@ -264,10 +264,10 @@ static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc, const c
 
 static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc, const char* source) {
     const GraphicsConfig& gfx = GetActiveGraphicsConfig();
-    ApplyDX11WaitableFlag(desc);
     if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
         return false;
     }
+    ApplyDX11WaitableFlag(desc);
 
     const UINT requested = static_cast<UINT>(gfx.backbufferCount);
     const bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
