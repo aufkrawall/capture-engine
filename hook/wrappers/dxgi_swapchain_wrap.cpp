@@ -1122,7 +1122,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetBuffer(UINT Buffer, REFIID riid
                         pRefBuffer->Release();
 
                         ID3D12Device* pDevice = nullptr;
-                        HRESULT hrDev = m_pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pDevice);
+                        HRESULT hrDev = E_FAIL;
+                        if (m_pD3D12Queue) {
+                            hrDev = m_pD3D12Queue->GetDevice(__uuidof(ID3D12Device), (void**)&pDevice);
+                        }
                         if (SUCCEEDED(hrDev) && pDevice) {
                             D3D12_HEAP_PROPERTIES heapProps = {};
                             heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
