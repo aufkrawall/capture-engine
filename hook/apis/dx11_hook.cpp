@@ -235,13 +235,6 @@ static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc, const c
     }
 
     const UINT requested = static_cast<UINT>(gfx.backbufferCount);
-    const bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                         desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-    if (isFlip && requested < desc.BufferCount) {
-        HookLogImportant("DX11: %s BufferCount override skipped requested=%u game=%u swapEffect=%d (flip model)",
-                         source ? source : "CreateSwapChain", requested, desc.BufferCount, desc.SwapEffect);
-        return false;
-    }
     if (desc.BufferCount != requested) {
         HookLogImportant("DX11: %s BufferCount override %u -> %u swapEffect=%d", source ? source : "CreateSwapChain",
                          desc.BufferCount, requested, desc.SwapEffect);
@@ -261,13 +254,6 @@ static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc, const 
     }
 
     const UINT requested = static_cast<UINT>(gfx.backbufferCount);
-    const bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                         desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-    if (isFlip && requested < desc.BufferCount) {
-        HookLogImportant("DX11: %s BufferCount override skipped requested=%u game=%u swapEffect=%d (flip model)",
-                         source ? source : "CreateSwapChainForHwnd", requested, desc.BufferCount, desc.SwapEffect);
-        return false;
-    }
     if (desc.BufferCount != requested) {
         HookLogImportant("DX11: %s BufferCount override %u -> %u swapEffect=%d",
                          source ? source : "CreateSwapChainForHwnd", desc.BufferCount, requested, desc.SwapEffect);

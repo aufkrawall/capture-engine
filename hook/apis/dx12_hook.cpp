@@ -5234,12 +5234,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
-            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            if (isFlip && requested < modifiedDesc.BufferCount) {
-                HookLogImportant("DeepHook: Skipping BufferCount override %u < game's %u (flip model)", requested,
-                                 modifiedDesc.BufferCount);
-            } else {
+            if (modifiedDesc.BufferCount != requested) {
                 HookLogImportant("DeepHook: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
             }
@@ -5408,12 +5403,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
-            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            if (isFlip && requested < modifiedDesc.BufferCount) {
-                HookLogImportant("INLINE: Skipping BufferCount override %u < game's %u (flip model)", requested,
-                                 modifiedDesc.BufferCount);
-            } else {
+            if (modifiedDesc.BufferCount != requested) {
                 HookLogImportant("INLINE: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
             }
@@ -5579,13 +5569,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
-            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            if (isFlip && requested < modifiedDesc.BufferCount) {
-                HookLogImportant(
-                    "DetourCreateSwapChainGlobal: Skipping BufferCount override %u < game's %u (flip model)",
-                    requested, modifiedDesc.BufferCount);
-            } else {
+            if (modifiedDesc.BufferCount != requested) {
                 HookLogImportant("DetourCreateSwapChainGlobal: Overriding BufferCount %u -> %u",
                                  modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
@@ -5700,13 +5684,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
-            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            if (isFlip && requested < modifiedDesc.BufferCount) {
-                HookLogImportant(
-                    "DetourCreateSwapChainForHwndGlobal: Skipping BufferCount override %u < game's %u (flip model)",
-                    requested, modifiedDesc.BufferCount);
-            } else {
+            if (modifiedDesc.BufferCount != requested) {
                 HookLogImportant("DetourCreateSwapChainForHwndGlobal: Overriding BufferCount %u -> %u",
                                  modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;

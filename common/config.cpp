@@ -564,7 +564,7 @@ mip_bias_mode=strict
 force_mip_bias_clamp=false
 ; cpu_prerender_limit - Values: -1, 0, 1-6
 cpu_prerender_limit=-1
-; backbuffer_count, affecting vsync - Values: -1, 2-6. Does not work in Steam D3D12 games, also potentially not other cases.
+; backbuffer_count, affecting vsync - Values: -1, 2-6. Can reduce flip-model buffer count at creation time; ResizeBuffers override still blocked by flip-model safety.
 backbuffer_count=-1
 
 ; global DLSS override options (you can also use per-profile overrides instead)
