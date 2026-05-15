@@ -4765,7 +4765,8 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
 
 // Handle SwapChain resize - must release RTV and reinitialize ImGui
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
-                                              DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     // CRITICAL: Check for shutdown first - if app is closing, don't touch
     // anything
     if (HookIsShuttingDown()) {

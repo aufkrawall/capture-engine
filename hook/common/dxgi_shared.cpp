@@ -2860,6 +2860,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    // Match creation-time waitable flag so ResizeBuffers doesn't E_INVALIDARG
+    SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+
     // CRITICAL: Check for global shutdown - if app is closing, don't touch
     // anything
     if (IsShuttingDown()) {
@@ -2979,8 +2982,10 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 }
 
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
-                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags,
-                                               const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue) {
+                                                DXGI_FORMAT NewFormat, UINT SwapChainFlags,
+                                                const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue) {
+    // Match creation-time waitable flag
+    SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     // Apply backbuffer count override from config
     {
         const auto& cfg = GetActiveGraphicsConfig();
