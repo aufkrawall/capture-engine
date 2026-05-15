@@ -2856,22 +2856,8 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         if (HasBackbufferCountOverride(cfg.backbufferCount)) {
             UINT requested = static_cast<UINT>(cfg.backbufferCount);
             if (requested > 0 && requested != BufferCount) {
-                // Check swap effect for flip-model safety
-                DXGI_SWAP_CHAIN_DESC scDesc = {};
-                bool canOverride = true;
-                if (SUCCEEDED(pSwapChain->GetDesc(&scDesc))) {
-                    bool isFlip = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                                   scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-                    if (isFlip && requested < BufferCount) {
-                        canOverride = false;
-                        HookLog("DetourResizeBuffers: Skipping BufferCount override %u < game's %u (flip model)",
-                                requested, BufferCount);
-                    }
-                }
-                if (canOverride) {
-                    HookLogImportant("DetourResizeBuffers: Overriding BufferCount %u -> %u", BufferCount, requested);
-                    BufferCount = requested;
-                }
+                HookLogImportant("DetourResizeBuffers: Overriding BufferCount %u -> %u", BufferCount, requested);
+                BufferCount = requested;
             }
         }
     }
@@ -2966,19 +2952,8 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
         if (HasBackbufferCountOverride(cfg.backbufferCount)) {
             UINT requested = static_cast<UINT>(cfg.backbufferCount);
             if (requested > 0 && requested != BufferCount) {
-                DXGI_SWAP_CHAIN_DESC scDesc = {};
-                bool canOverride = true;
-                if (SUCCEEDED(pSwapChain->GetDesc(&scDesc))) {
-                    bool isFlip = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                                   scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-                    if (isFlip && requested < BufferCount) {
-                        canOverride = false;
-                    }
-                }
-                if (canOverride) {
-                    HookLogImportant("DetourResizeBuffers1: Overriding BufferCount %u -> %u", BufferCount, requested);
-                    BufferCount = requested;
-                }
+                HookLogImportant("DetourResizeBuffers1: Overriding BufferCount %u -> %u", BufferCount, requested);
+                BufferCount = requested;
             }
         }
     }

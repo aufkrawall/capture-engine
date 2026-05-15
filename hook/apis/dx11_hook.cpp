@@ -4845,23 +4845,8 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
     // Apply backbuffer count override
     int count = GetActiveGraphicsConfig().backbufferCount;
     if (count >= 2 && count <= 6) {
-        // Check swap effect — don't reduce buffer count for flip model swapchains
-        DXGI_SWAP_CHAIN_DESC scDesc = {};
-        bool isFlip = false;
-        if (SUCCEEDED(pSwapChain->GetDesc(&scDesc))) {
-            isFlip = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                      scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-        }
-        UINT gameCount = BufferCount > 0 ? BufferCount : scDesc.BufferCount;
-        if (isFlip && (UINT)count < gameCount) {
-            HookLog(
-                "DX11: ResizeBuffers: Skipping BufferCount override %d < game's %u "
-                "(flip model)",
-                count, gameCount);
-        } else {
-            BufferCount = (UINT)count;
-            HookLog("DX11: ResizeBuffers: Overriding BufferCount to %d", count);
-        }
+        BufferCount = (UINT)count;
+        HookLog("DX11: ResizeBuffers: Overriding BufferCount to %d", count);
     }
 
     // Call original ResizeBuffers
