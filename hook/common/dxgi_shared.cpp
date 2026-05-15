@@ -827,8 +827,12 @@ static UINT ResolvePresentFrameLatencyOverride(const char** sourceOut) {
 // the override count, without changing the physical BufferCount.
 void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
     const auto& gfx = GetActiveGraphicsConfig();
-    if (!HasBackbufferCountOverride(gfx.backbufferCount))
+    if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
+        static int s_logCount = 0;
+        if (s_logCount++ < 3)
+            HookLog("WaitBackbufferFrameLatency: no override (count=%d)", gfx.backbufferCount);
         return;
+    }
 
     IDXGISwapChain2* pSC2 = nullptr;
     HRESULT hrQI = pSwapChain->QueryInterface(IID_PPV_ARGS(&pSC2));
