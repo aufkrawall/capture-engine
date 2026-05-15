@@ -233,6 +233,34 @@ TEST_F(ConfigTest, PseudoOverlayProcessListIsNormalized) {
     EXPECT_EQ(config.pseudoOverlay.processList, "FortniteClient-Win64-Shipping.exe|StrangeBrigade_DX12.exe");
 }
 
+TEST_F(ConfigTest, LogLevelNoneMapsToOff) {
+    WriteConfig(
+        "[General]\n"
+        "log_level=none\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.logLevel, LogLevel::Off);
+    EXPECT_FALSE(config.debugLogging);
+    EXPECT_FALSE(IsAnyLoggingEnabled(config.logLevel));
+    EXPECT_FALSE(IsDebugLoggingEnabled(config.logLevel));
+}
+
+TEST_F(ConfigTest, LogLevelOffMapsToOff) {
+    WriteConfig(
+        "[General]\n"
+        "log_level=off\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.logLevel, LogLevel::Off);
+    EXPECT_FALSE(config.debugLogging);
+    EXPECT_FALSE(IsAnyLoggingEnabled(config.logLevel));
+    EXPECT_FALSE(IsDebugLoggingEnabled(config.logLevel));
+}
+
 TEST_F(ConfigTest, LegacyPerfMetricsLoggingEnablesUnifiedDebugLogging) {
     std::string iniContent =
         "[General]\n"

@@ -141,7 +141,9 @@ bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName,
             return false;
     }
 
-    CreateDirectoryA(logDir, NULL);
+    if (HookDebugLoggingEnabled()) {
+        CreateDirectoryA(logDir, NULL);
+    }
 
     int written = snprintf(outPath, outPathLen, "%s\\%s", logDir, fileName);
     if (written <= 0 || (size_t)written >= outPathLen) {

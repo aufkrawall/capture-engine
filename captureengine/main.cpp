@@ -1251,10 +1251,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
     g_ConfigPath = baseDir + "\\config.ini";
 
-    // Install crash handler early (before config loading) so any startup crash
-    // produces a minidump. The dump directory will be updated after config loads.
+    // Load config early so directory and crash-handler setup can be gated on
+    // the configured log_level. When log_level=none/off we skip everything to
+    // guarantee the logs/ tree stays absent and no debug machinery runs.
+    LoadConfig(g_ConfigPath, g_Config);
+
     std::string logsRootDir = baseDir + "\\logs";
-    CreateDirectoryA(logsRootDir.c_str(), NULL);
 
     // Determine session directory: Controller generates a new timestamped folder,
     // child processes inherit the name from --session-dir= on the command line.
@@ -1265,7 +1267,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         snprintf(ts, sizeof(ts), "%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
                  st.wSecond);
         g_SessionDirName = ts;
-        CleanupOldSessionDirs(logsRootDir);
+        if (IsAnyLoggingEnabled(g_Config.logLevel)) {
+            CleanupOldSessionDirs(logsRootDir);
+        }
     } else {
         g_SessionDirName = ParseSessionDir(lpCmdLine);
     }
@@ -1276,12 +1280,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     } else {
         earlyLogsDir = logsRootDir;
     }
-    CreateDirectoryA(earlyLogsDir.c_str(), NULL);
-    SetCrashDumpDirectory(earlyLogsDir);
-    InstallCrashHandler();
 
-    // Load config
-    LoadConfig(g_ConfigPath, g_Config);
+    if (IsAnyLoggingEnabled(g_Config.logLevel)) {
+        CreateDirectoryA(logsRootDir.c_str(), NULL);
+        CreateDirectoryA(earlyLogsDir.c_str(), NULL);
+        SetCrashDumpDirectory(earlyLogsDir);
+        InstallCrashHandler();
+    } else {
+        OutputDebugStringA("[CaptureEngine] log_level=none: skipping log directory creation, crash handler, and all debug machinery\n");
+    }
 
     // Parse --auto-record flag: --auto-record=DELAY_MS,DURATION_MS
     // Parse --license flag
@@ -1331,10 +1338,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Setup logging with process-specific log file in session logs subfolder
     std::string logsDir = earlyLogsDir;
-    CreateDirectoryA(logsDir.c_str(), NULL);
     std::string logPath = logsDir + "\\" + GetLogFileName(mode);
     g_Config.logFilePath = logPath;
-    WriteSessionManifest(logsDir, g_Config, mode);
+    if (IsAnyLoggingEnabled(g_Config.logLevel)) {
+        CreateDirectoryA(logsDir.c_str(), NULL);
+        WriteSessionManifest(logsDir, g_Config, mode);
+    }
 
     if (IsAnyLoggingEnabled(g_Config.logLevel)) {
         Log_Init(logPath, g_Config.logLevel);
@@ -1382,7 +1391,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             crashDir = (std::filesystem::path(logsDir) / configured).string();
         }
     }
-    SetCrashDumpDirectory(crashDir);
+    if (IsAnyLoggingEnabled(g_Config.logLevel)) {
+        SetCrashDumpDirectory(crashDir);
+    }
 
     // Dispatch to appropriate process
     int result = 0;

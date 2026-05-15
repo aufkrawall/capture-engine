@@ -70,9 +70,10 @@ This page is the compact LLM entrypoint for current repo state. Read it before d
 - Build-only `python build.py --skip-updates` runs now skip optional Python tooling bootstrap, and x86 test-app builds use the clang64 cross-driver with isolated per-task temp dirs so the old pip noise and x86 temp rename failures no longer appear on the normal build path.
 
 ## Current Logging Model
-- `config.ini` now supports `log_level=off|error|warn|info|debug|trace`.
+- `config.ini` now supports `log_level=none|off|error|warn|info|debug|trace`.
 - `debug` is the normal debugging level and should be the default for day-to-day diagnosis.
 - `trace` is the forensic level for very verbose internals such as inline-hook byte dumps and the per-frame CSV perf logger.
+- `none` and `off` are equivalent: both map to `LogLevel::Off`. When `Off`, `IsAnyLoggingEnabled()` returns `false`, and the engine skips all debug machinery — no `logs\` directory is created, no session subfolder, no `session_manifest.txt`, no crash handler/minidump setup, no logger service process, no hook-side log directory creation. This is the maximum-performance mode with zero debug overhead.
 - Legacy `debug_logging=true/false` still works as a compatibility input and maps to `debug` / `off`.
 - Legacy `perf_metrics_logging=true` still works as a compatibility input and escalates to `trace`.
 

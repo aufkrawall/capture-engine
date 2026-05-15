@@ -16,6 +16,9 @@ struct LoggerSession {
 };
 
 int LoggerProcessMain(const AppConfig& config) {
+    if (!IsAnyLoggingEnabled(config.logLevel)) {
+        return 0;
+    }
     LogInfo("[Logger] Dedicated logging service started");
 
     // Handle Windows shutdown/logoff when controller may already be gone
