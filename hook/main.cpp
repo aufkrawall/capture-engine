@@ -857,6 +857,7 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
                    filenameLower.begin(), ::tolower);
 
     std::string overridePath;
+    bool isStreamlineMatch = false;
 
     // 1. DLSS/Streamline Logic - Only if no custom detour set
     if (overridePath.empty() && g_pLocalConfig) {
@@ -876,6 +877,7 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
                filenameLower == "nvngx_deepdvc.dll" ||
                filenameLower == "nvlowlatencyvk.dll") {
         overridePath = g_pLocalConfig->graphics.streamlineDllPath;
+        isStreamlineMatch = true;
       }
     }
 
@@ -921,6 +923,17 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
           finalPath = overridePath + filename;
         } else {
           finalPath = overridePath + "\\" + filename;
+        }
+      }
+
+      // For streamline DLLs, verify the file exists at the redirect path.
+      // If absent, fall back gracefully to the default load path.
+      if (isStreamlineMatch && !finalPath.empty()) {
+        if (GetFileAttributesA(finalPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+          HookLog("Streamline DLL %s not found at redirect path %s - "
+                  "falling back to default load path",
+                  filename.c_str(), finalPath.c_str());
+          return "";
         }
       }
 

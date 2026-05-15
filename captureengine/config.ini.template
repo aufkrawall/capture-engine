@@ -109,6 +109,10 @@ dlss_sr_dll_path=
 dlss_rr_dll_path=
 ; dlss_fg_dll_path - Values: empty, absolute DLL path, or absolute directory path
 dlss_fg_dll_path=
+; streamline_dll_path - Values: empty, absolute DLL path, or absolute directory path
+;   Redirects any sl.*.dll, nvngx_deepdvc.dll, or NvLowLatencyVk.dll to this path.
+;   If the specific DLL is not found at the custom path, the default load path is used.
+streamline_dll_path=
 
 [Video]
 ; encoder - Values: av1_nvenc, hevc_nvenc, h264_nvenc, av1_amf, hevc_amf, h264_amf, av1_qsv, hevc_qsv, h264_qsv, av1_mf, hevc_mf, h264_mf

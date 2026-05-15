@@ -150,3 +150,16 @@ TEST_F(ConfigOverrideTest, PerAppDLSSFGFactorOverride) {
     EXPECT_EQ(config.graphics.parsed.dlssFGFactor, 3);
     EXPECT_EQ(config.graphics.parsed.srPreset, 12u);
 }
+
+TEST_F(ConfigOverrideTest, StreamlineDllPathParsing) {
+    std::string iniContent =
+        "[Graphics]\n"
+        "streamline_dll_path=C:\\custom\\sl\\dlls\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "test.exe");
+
+    EXPECT_EQ(config.graphics.streamlineDllPath, "C:\\custom\\sl\\dlls");
+}
