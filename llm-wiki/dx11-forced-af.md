@@ -22,9 +22,10 @@ the returned wrapper-context path able to see shader metadata, sampler binds, SR
 and draws. When a wrapped context forwards calls to the real context, the raw vtable
 hook must bypass duplicate AF tracking for that forwarded call; otherwise the
 wrapper and raw state machines can fight over the same real sampler slots. The
-current stability policy also treats newly streamed SRVs and sampler objects reused
-across mixed safe/unsafe resource roles conservatively, because BioShock load-scene
-crashes correlate with texture streaming and high sampler replacement churn.
+current stability policy also treats newly streamed SRVs and shader sampler slots
+that genuinely mix safe/unsafe resource roles conservatively, because BioShock
+load-scene crashes correlate with texture streaming and high sampler replacement
+churn.
 
 ## Current Invariants
 - D3D11 `CreateSamplerState` must not enable forced AF-on because no SRV/resource
@@ -48,10 +49,12 @@ crashes correlate with texture streaming and high sampler replacement churn.
   The wrapper classifies them as `pending-stable-observation` until they have been
   seen repeatedly and are old enough in draw-count terms. Non-color/problematic
   resources still block immediately.
-- Original D3D11 sampler objects are treated as semantic roles. If one sampler
-  object is observed with both allowed material SRVs and unsafe/non-color/problem
-  SRVs, forced AF is blocked for that sampler object to avoid rapid AF/original
-  sampler flipping on material systems that reuse sampler states across roles.
+- Shader sampler slots are treated as semantic roles. If one pixel-shader sampler
+  slot is observed with both allowed material SRVs and unsafe/non-color/problem
+  SRVs, forced AF is blocked for that shader-slot role to avoid rapid AF/original
+  sampler flipping. This must not be keyed only by raw `ID3D11SamplerState` object:
+  UE3-style material systems reuse the same linear/wrap sampler object for diffuse,
+  normal, and mask slots, and object-level taint makes unrelated color slots blurry.
 - Present-time deferred AF bootstrap must also ensure D3D11 sampler/SRV vtable hooks
   are installed on the actual device/context being presented. A global original
   function pointer is not proof that this specific runtime vtable slot is patched;
@@ -130,10 +133,10 @@ immediately causing replacement-sampler churn during load-scene texture streamin
   no longer show raw `DX11: AF allow ...` lines that are sourced by wrapper-forwarded
   calls on the same real context.
 - Wrapper draw stats now also include real sampler call counts, deferred unchanged
-  dirty marks, streamed-resource warm-up skips, mixed-role sampler skip/block
-  counts, and SRV cache hit/miss/write counters. Useful new skip strings include
-  `pending-stable-observation`, `sampler mixed safe/unsafe resource role`, and
-  `sampler role blocked after unsafe resource`.
+  dirty marks, streamed-resource warm-up skips, mixed-role shader-slot skip/block
+  counts, and SRV cache hit/miss/write counters. Useful skip strings include
+  `pending-stable-observation`, `shader slot mixed safe/unsafe resource role`, and
+  `shader-slot role blocked after unsafe resource`.
 
 ## Verification
 - Focused shader/parser coverage still lives in `SamplerOverrideUtilsTest.*`.
@@ -143,21 +146,28 @@ immediately causing replacement-sampler churn during load-scene texture streamin
   `python build.py --no-build --run-tests --skip-updates --gtest-filter=SamplerOverrideUtilsTest.*`
   passed 17/17 tests on 2026-05-14. The command bumped displayed metadata to
   `0.1.3116`.
+- Full build: `python build.py --skip-updates` passed on 2026-05-15 and produced
+  build `0.1.3173`, compiling both x64/x86 hook DLLs.
+- Focused no-rebuild unit run:
+  `python build.py --no-build --run-tests --skip-updates --gtest-filter=SamplerOverrideUtilsTest.*`
+  passed 17/17 tests on 2026-05-15. The command bumped displayed metadata to
+  `0.1.3174`.
 
 ## Open Questions / Stale-Risk
-- BioShock Infinite should be rerun with AF=16x on build `0.1.3116` or later.
+- BioShock Infinite should be rerun with AF=16x on build `0.1.3174` or later.
   Expected proof is `Wrapped_D3D11CreateDevice: Returned wrapped immediate context`,
   `Wrapper: AF draw hook hit`, `Wrapper: AF sampler bind tracked`, lower wrapper
   reconcile/bind churn, and either `Wrapper: AF allow` / `Wrapper: AF reconciled`
   lines for eligible material textures or detailed skip lines explaining why
-  specific sampled SRVs stayed blurry. Raw `DX11: AF allow` should remain absent
-  for wrapper-forwarded state on the same context.
-- Latest pre-fix BioShock logs at `installed/captureengine/logs/20260514_160317`
-  still crashed in the same game-side render-thread null-read after save-game load.
-  The wrapper/vtable duplicate path was already reduced, but `realSetCalls` remained
-  very high and SRV cache misses jumped near the streaming window. Validate whether
-  the streamed-SRV warm-up and mixed-role sampler gate reduces this churn enough
-  without making all material textures blurry.
+  specific sampled SRVs stayed blurry. In particular, color slots that share a raw
+  sampler object with normal-map slots should no longer be blocked just because the
+  object was used on an unsafe slot. Raw `DX11: AF allow` should remain absent for
+  wrapper-forwarded state on the same context.
+- BioShock logs at `installed/captureengine/logs/20260515_140702` showed no crash
+  after save-game load and mostly recovered GPU utilization, but texture sharpness
+  remained poor because the object-level mixed-role gate produced millions of skips
+  while eligible sRGB color resources were present on other slots. Validate the
+  shader-slot keyed gate against that exact case.
 - Bias/LOD-only material textures may remain blurry under the current conservative
   rule. Re-expanding to `sample_b` or `sample_l` requires fresh Blackwell validation
   without artifacts and should keep the wrapper/vtable forwarding guard intact.

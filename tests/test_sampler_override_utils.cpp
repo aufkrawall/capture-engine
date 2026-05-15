@@ -312,6 +312,10 @@ TEST(SamplerOverrideUtilsTest, BlocksD3D11ForcedAFSamplerRoleAfterMixedResourceU
     EXPECT_FALSE(unsafeThenAllow.blockedMixedRole);
     EXPECT_FALSE(ObserveD3D11ForcedAFSamplerRole(unsafeThenAllow, D3D11ForcedAFResourceDecision::Allow));
     EXPECT_TRUE(unsafeThenAllow.blockedMixedRole);
+
+    D3D11ForcedAFSamplerRoleState independentColorSlot;
+    EXPECT_TRUE(ObserveD3D11ForcedAFSamplerRole(independentColorSlot, D3D11ForcedAFResourceDecision::Allow));
+    EXPECT_FALSE(independentColorSlot.blockedMixedRole);
 }
 
 }  // namespace

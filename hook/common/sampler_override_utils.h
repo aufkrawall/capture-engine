@@ -662,6 +662,10 @@ struct D3D11ForcedAFSamplerRoleState {
     bool blockedMixedRole = false;
 };
 
+// Track one semantic shader-sampler role, not a raw D3D sampler object. Engines
+// often reuse the same sampler state object for diffuse, normal, and mask slots.
+// Blocking by object would make one unsafe normal-map use suppress AF for unrelated
+// color slots that happen to share the same linear/wrap sampler.
 inline bool ObserveD3D11ForcedAFSamplerRole(D3D11ForcedAFSamplerRoleState& state,
                                             D3D11ForcedAFResourceDecision decision) {
     if (decision == D3D11ForcedAFResourceDecision::PendingStableObservation) {

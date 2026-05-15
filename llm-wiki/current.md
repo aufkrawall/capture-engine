@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-05-15 — Multi system audio and multi microphone capture (build 0.1.3117 / tests 0.1.3118). BioShock Infinite `20260514_160317` still crashed in the same game-side render-thread null-read while texture streaming after save-game load; wrapper/vtable duplication was reduced, but real sampler set churn and fresh SRV cache misses stayed high. The current tree keeps the wrapper-forwarding guard and adds conservative warm-up for newly observed otherwise-safe SRVs plus a per-sampler mixed safe/unsafe resource-role block. See `llm-wiki/dx11-forced-af.md` and `llm-wiki/log/recent.md`.
+Last cross-checked: 2026-05-15 — D3D11 forced-AF shader-slot mixed-role gate (build 0.1.3173 / tests 0.1.3174). BioShock Infinite `20260515_140702` no longer crashed after save-game load and GPU underutilization was mostly gone, but textures stayed blurry because the old object-level mixed-role gate tainted raw sampler objects reused by UE3 for both color and normal/mask slots. The current tree keeps streamed-SRV warm-up but now keys mixed safe/unsafe blocking by current pixel shader plus sampler slot, so unrelated color slots can receive forced AF even when they share the same `ID3D11SamplerState` object. See `llm-wiki/dx11-forced-af.md` and `llm-wiki/log/recent.md`.
 
 Primary sources:
 - `llm-wiki/log/recent.md`

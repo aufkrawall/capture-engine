@@ -419,88 +419,48 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision ResolveWrapperForcedA
     return D3D11ForcedAFResourceDecision::PendingStableObservation;
 }
 
-// {CEAF1102-B58F-48E9-A54B-0A909654AF02}
-static const GUID kWrapperForcedAFSamplerRoleGuid = {
-    0xceaf1102, 0xb58f, 0x48e9, {0xa5, 0x4b, 0x0a, 0x90, 0x96, 0x54, 0xaf, 0x02}};
+struct WrapperForcedAFShaderSlotKey {
+    ID3D11PixelShader* shader = nullptr;
+    UINT slot = 0;
 
-static constexpr UINT kWrapperForcedAFSamplerRoleMagic = 0x32464143u;
-static constexpr UINT kWrapperForcedAFSamplerRoleVersion = 1;
-
-struct WrapperForcedAFSamplerRoleCache {
-    UINT magic = kWrapperForcedAFSamplerRoleMagic;
-    UINT version = kWrapperForcedAFSamplerRoleVersion;
-    UINT sawAllowedResource = 0;
-    UINT sawUnsafeResource = 0;
-    UINT blockedMixedRole = 0;
-    UINT allowObservations = 0;
-    UINT unsafeObservations = 0;
-    INT lastUnsafeDecision = 0;
+    bool operator==(const WrapperForcedAFShaderSlotKey& other) const {
+        return shader == other.shader && slot == other.slot;
+    }
 };
 
-static ce::sampler_override::D3D11ForcedAFSamplerRoleState WrapperSamplerRoleStateFromCache(
-    const WrapperForcedAFSamplerRoleCache& cache) {
-    ce::sampler_override::D3D11ForcedAFSamplerRoleState state = {};
-    state.sawAllowedResource = cache.sawAllowedResource != 0;
-    state.sawUnsafeResource = cache.sawUnsafeResource != 0;
-    state.blockedMixedRole = cache.blockedMixedRole != 0;
-    return state;
-}
+struct WrapperForcedAFShaderSlotKeyHash {
+    size_t operator()(const WrapperForcedAFShaderSlotKey& key) const {
+        const size_t shaderHash = std::hash<ID3D11PixelShader*>{}(key.shader);
+        return shaderHash ^ (static_cast<size_t>(key.slot) + static_cast<size_t>(0x9e3779b9u) + (shaderHash << 6) +
+                             (shaderHash >> 2));
+    }
+};
 
-static void WrapperSamplerRoleStateToCache(const ce::sampler_override::D3D11ForcedAFSamplerRoleState& state,
-                                           WrapperForcedAFSamplerRoleCache& cache) {
-    cache.sawAllowedResource = state.sawAllowedResource ? 1u : 0u;
-    cache.sawUnsafeResource = state.sawUnsafeResource ? 1u : 0u;
-    cache.blockedMixedRole = state.blockedMixedRole ? 1u : 0u;
-}
+static std::mutex g_WrapperAFShaderSlotRoleMutex;
+static std::unordered_map<WrapperForcedAFShaderSlotKey, ce::sampler_override::D3D11ForcedAFSamplerRoleState,
+                          WrapperForcedAFShaderSlotKeyHash>
+    g_WrapperAFShaderSlotRoles;
 
-static bool TryReadWrapperForcedAFSamplerRole(ID3D11SamplerState* sampler, WrapperForcedAFSamplerRoleCache* outCache) {
-    if (!sampler || !outCache) {
+static bool WrapperShaderSlotRoleAlreadyBlocksForcedAF(ID3D11PixelShader* shader, UINT slot) {
+    if (!shader) {
         return false;
     }
 
-    WrapperForcedAFSamplerRoleCache cache = {};
-    UINT dataSize = sizeof(cache);
-    if (FAILED(sampler->GetPrivateData(kWrapperForcedAFSamplerRoleGuid, &dataSize, &cache)) ||
-        dataSize != sizeof(cache) || cache.magic != kWrapperForcedAFSamplerRoleMagic ||
-        cache.version != kWrapperForcedAFSamplerRoleVersion) {
+    std::lock_guard<std::mutex> lock(g_WrapperAFShaderSlotRoleMutex);
+    auto it = g_WrapperAFShaderSlotRoles.find({shader, slot});
+    return it != g_WrapperAFShaderSlotRoles.end() && it->second.blockedMixedRole;
+}
+
+static bool ObserveWrapperShaderSlotRoleForForcedAF(
+    ID3D11PixelShader* shader, UINT slot, ce::sampler_override::D3D11ForcedAFResourceDecision decision) {
+    if (!shader || decision == ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation) {
         return false;
     }
 
-    *outCache = cache;
-    return true;
-}
-
-static void StoreWrapperForcedAFSamplerRole(ID3D11SamplerState* sampler,
-                                            const WrapperForcedAFSamplerRoleCache& cache) {
-    if (sampler) {
-        sampler->SetPrivateData(kWrapperForcedAFSamplerRoleGuid, sizeof(cache), &cache);
-    }
-}
-
-static bool WrapperSamplerRoleAlreadyBlocksForcedAF(ID3D11SamplerState* sampler) {
-    WrapperForcedAFSamplerRoleCache cache = {};
-    return TryReadWrapperForcedAFSamplerRole(sampler, &cache) && cache.blockedMixedRole != 0;
-}
-
-static bool ObserveWrapperSamplerRoleForForcedAF(
-    ID3D11SamplerState* sampler, ce::sampler_override::D3D11ForcedAFResourceDecision decision) {
-    if (!sampler || decision == ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation) {
-        return false;
-    }
-
-    WrapperForcedAFSamplerRoleCache cache = {};
-    TryReadWrapperForcedAFSamplerRole(sampler, &cache);
-    ce::sampler_override::D3D11ForcedAFSamplerRoleState state = WrapperSamplerRoleStateFromCache(cache);
-    const bool allowed = ce::sampler_override::ObserveD3D11ForcedAFSamplerRole(state, decision);
-    WrapperSamplerRoleStateToCache(state, cache);
-    if (decision == ce::sampler_override::D3D11ForcedAFResourceDecision::Allow) {
-        ++cache.allowObservations;
-    } else {
-        ++cache.unsafeObservations;
-        cache.lastUnsafeDecision = static_cast<INT>(decision);
-    }
-    StoreWrapperForcedAFSamplerRole(sampler, cache);
-    return allowed;
+    std::lock_guard<std::mutex> lock(g_WrapperAFShaderSlotRoleMutex);
+    ce::sampler_override::D3D11ForcedAFSamplerRoleState& state =
+        g_WrapperAFShaderSlotRoles[{shader, slot}];
+    return ce::sampler_override::ObserveD3D11ForcedAFSamplerRole(state, decision);
 }
 
 static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewForForcedAF(
@@ -953,10 +913,10 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
     original->GetDesc(&desc);
     if (!WrapperSamplerAllowsForcedAF(desc, gfx))
         return original;
-    if (WrapperSamplerRoleAlreadyBlocksForcedAF(original)) {
+    if (WrapperShaderSlotRoleAlreadyBlocksForcedAF(m_CurrentPixelShader, slot)) {
         int idx = g_WrapperAFSamplerMixedRoleSkips.fetch_add(1, std::memory_order_relaxed);
         if (idx < 48) {
-            WrapperLog("Wrapper: AF skip (sampler mixed safe/unsafe resource role shader=%p slot=s%u sampler=%p "
+            WrapperLog("Wrapper: AF skip (shader slot mixed safe/unsafe resource role shader=%p slot=s%u sampler=%p "
                        "Filter=0x%X Addr=%d/%d/%d #%d)",
                        m_CurrentPixelShader, slot, original, desc.Filter, desc.AddressU, desc.AddressV,
                        desc.AddressW, idx + 1);
@@ -1005,12 +965,12 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
             }
             if (resourceDecision !=
                 ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation) {
-                const bool wasBlocked = WrapperSamplerRoleAlreadyBlocksForcedAF(original);
-                ObserveWrapperSamplerRoleForForcedAF(original, resourceDecision);
-                if (!wasBlocked && WrapperSamplerRoleAlreadyBlocksForcedAF(original)) {
+                const bool wasBlocked = WrapperShaderSlotRoleAlreadyBlocksForcedAF(m_CurrentPixelShader, slot);
+                ObserveWrapperShaderSlotRoleForForcedAF(m_CurrentPixelShader, slot, resourceDecision);
+                if (!wasBlocked && WrapperShaderSlotRoleAlreadyBlocksForcedAF(m_CurrentPixelShader, slot)) {
                     int blockIdx = g_WrapperAFSamplerMixedRoleBlocks.fetch_add(1, std::memory_order_relaxed);
                     if (blockIdx < 48) {
-                        WrapperLog("Wrapper: AF sampler role blocked after unsafe resource shader=%p slot=s%u "
+                        WrapperLog("Wrapper: AF shader-slot role blocked after unsafe resource shader=%p slot=s%u "
                                    "sampler=%p decision=%s/%d (#%d)",
                                    m_CurrentPixelShader, slot, original,
                                    ce::sampler_override::D3D11ForcedAFResourceDecisionName(resourceDecision),
@@ -1039,10 +999,11 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
         }
     }
 
-    if (!ObserveWrapperSamplerRoleForForcedAF(original, ce::sampler_override::D3D11ForcedAFResourceDecision::Allow)) {
+    if (!ObserveWrapperShaderSlotRoleForForcedAF(m_CurrentPixelShader, slot,
+                                                 ce::sampler_override::D3D11ForcedAFResourceDecision::Allow)) {
         int idx = g_WrapperAFSamplerMixedRoleSkips.fetch_add(1, std::memory_order_relaxed);
         if (idx < 48) {
-            WrapperLog("Wrapper: AF skip (sampler became mixed safe/unsafe resource role shader=%p slot=s%u "
+            WrapperLog("Wrapper: AF skip (shader slot became mixed safe/unsafe resource role shader=%p slot=s%u "
                        "sampler=%p sampledTextures=%u first=t%u last=t%u #%d)",
                        m_CurrentPixelShader, slot, original, textureCount, firstTextureSlot, lastTextureSlot,
                        idx + 1);
@@ -1215,7 +1176,7 @@ void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
                    "allowed=%d nonColor=%d unsafe=%d "
                    "reconcileCalls=%d reconcileSlots=%d rebound=%d effectiveBindCalls=%d effectiveBinds=%d "
                    "passThrough=%d bindSkips=%d dirtySuppressed=%d realSetCalls=%d unchangedDirtyDeferred=%d "
-                   "warmupSkips=%d mixedRole(skips=%d blocks=%d) srvCache(hit=%d miss=%d store=%d)",
+                   "warmupSkips=%d mixedRole(shaderSlotSkips=%d blocks=%d) srvCache(hit=%d miss=%d store=%d)",
                    this, drawIdx, m_PixelSamplerDirtyMask, m_PixelForcedSamplerMask, PixelAFCandidateSamplerMask(),
                    g_WrapperAFAllowed.load(std::memory_order_relaxed),
                    g_WrapperAFSkipNonColorResource.load(std::memory_order_relaxed),
