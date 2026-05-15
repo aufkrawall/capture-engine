@@ -5237,12 +5237,12 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 HookLogImportant("DeepHook: Skipping BufferCount override %u < game's %u (flip model)", requested,
                                  modifiedDesc.BufferCount);
             } else if (modifiedDesc.BufferCount != requested) {
                 HookLogImportant("DeepHook: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             }
         }
         pDescToUse = &modifiedDesc;
@@ -5413,12 +5413,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 HookLogImportant("INLINE: Skipping BufferCount override %u < game's %u (flip model)", requested,
                                  modifiedDesc.BufferCount);
             } else if (modifiedDesc.BufferCount != requested) {
                 HookLogImportant("INLINE: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             }
         }
         pDescToUse = &modifiedDesc;
@@ -5586,6 +5586,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 HookLogImportant(
                     "DetourCreateSwapChainGlobal: Skipping BufferCount override %u < game's %u (flip model)",
                     requested, modifiedDesc.BufferCount);
@@ -5593,7 +5594,6 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
                 HookLogImportant("DetourCreateSwapChainGlobal: Overriding BufferCount %u -> %u",
                                  modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             }
         }
         pDescToUse = &modifiedDesc;
@@ -5709,6 +5709,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 HookLogImportant(
                     "DetourCreateSwapChainForHwndGlobal: Skipping BufferCount override %u < game's %u (flip model)",
                     requested, modifiedDesc.BufferCount);
@@ -5716,7 +5717,6 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
                 HookLogImportant("DetourCreateSwapChainForHwndGlobal: Overriding BufferCount %u -> %u",
                                  modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             }
         }
         pDescToUse = &modifiedDesc;
