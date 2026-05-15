@@ -445,6 +445,7 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
 
     WrapperStateManager::Get().UnregisterSwapchain(this);
     CleanupOverlayResources();
+    CleanupDummyBackBuffers();
     if (m_pD3D12Queue)
         m_pD3D12Queue->Release();
     // CRITICAL FIX: Null out all real swapchain pointers BEFORE releasing them.
@@ -504,6 +505,17 @@ void CWrapDXGISwapChain::PromoteInterfaces() {
 void CWrapDXGISwapChain::CleanupOverlayResources() {
     // Atomic update - no mutex needed for simple flag
     m_OverlayResourcesValid.store(false, std::memory_order_release);
+}
+
+void CWrapDXGISwapChain::CleanupDummyBackBuffers() {
+    std::lock_guard<std::mutex> lock(m_ResourceLock);
+    for (auto* pBuf : m_DummyBackBuffers) {
+        if (pBuf) {
+            ULONG refs = pBuf->Release();
+            (void)refs;
+        }
+    }
+    m_DummyBackBuffers.clear();
 }
 
 void CWrapDXGISwapChain::DrawOverlay() {
@@ -646,6 +658,7 @@ ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::Release() {
         // and rejects forwarding to the already-destroyed swapchain.
         m_Releasing.store(true, std::memory_order_release);
         CleanupOverlayResources();
+        CleanupDummyBackBuffers();
     }
 
     // Release the real swapchain (if not already nulled by DestructionCallback)
@@ -1088,24 +1101,60 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetBuffer(UINT Buffer, REFIID riid
         return DXGI_ERROR_INVALID_CALL;
 
     // Apply backbuffer count override remapping:
-    // When the game expects BufferCount=3 but we created with 2, remap
-    // buffer indices >= override count so GetBuffer never fails.
-    // E.g. GetBuffer(2) → returns buffer 0 (AddRef'd for proper refcounting).
-    // This prevents games from storing null buffer pointers that later crash
-    // in worker threads or during ResizeBuffers cleanup.
+    // When the game expects BufferCount=3 but we created with 2, create a
+    // standalone D3D12 committed resource for out-of-range buffer indices.
+    // This avoids aliasing the same physical backbuffer (which causes GPU
+    // hangs from concurrent writes) while still preventing null pointer
+    // crashes in game code.
     {
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT overrideCount = (UINT)gfx.backbufferCount;
             if (Buffer >= overrideCount) {
-                UINT remapped = Buffer % overrideCount;
-                WrapperLog("GetBuffer: Remapping buffer index %u -> %u (override count=%u)", Buffer, remapped,
-                           overrideCount);
-                HRESULT hr = pReal->GetBuffer(remapped, riid, ppSurface);
-                if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
-                    static_cast<IUnknown*>(*ppSurface)->AddRef();
+                // For DX12, create a dummy committed resource matching the
+                // backbuffer format/size so the game gets a valid, independent
+                // resource pointer instead of an aliased one.
+                if (m_IsD3D12) {
+                    ID3D12Resource* pRefBuffer = nullptr;
+                    HRESULT hrRef = pReal->GetBuffer(0, __uuidof(ID3D12Resource), (void**)&pRefBuffer);
+                    if (SUCCEEDED(hrRef) && pRefBuffer) {
+                        D3D12_RESOURCE_DESC resDesc = pRefBuffer->GetDesc();
+                        pRefBuffer->Release();
+
+                        ID3D12Device* pDevice = nullptr;
+                        HRESULT hrDev = m_pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pDevice);
+                        if (SUCCEEDED(hrDev) && pDevice) {
+                            D3D12_HEAP_PROPERTIES heapProps = {};
+                            heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+                            ID3D12Resource* pDummy = nullptr;
+                            HRESULT hrDummy = pDevice->CreateCommittedResource(
+                                &heapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
+                                D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&pDummy));
+                            pDevice->Release();
+                            if (SUCCEEDED(hrDummy) && pDummy) {
+                                WrapperLog("GetBuffer: Created dummy buffer for index %u (override count=%u)", Buffer,
+                                           overrideCount);
+                                std::lock_guard<std::mutex> lock(m_ResourceLock);
+                                m_DummyBackBuffers.push_back(pDummy);
+                                *ppSurface = pDummy;
+                                return S_OK;
+                            }
+                        }
+                    }
                 }
-                return hr;
+                // Fallback for DX11 or if dummy allocation failed: return
+                // buffer 0 with AddRef. DX11 has no GPU aliasing hazard
+                // because the runtime copies on Present rather than aliasing.
+                {
+                    UINT remapped = Buffer % overrideCount;
+                    WrapperLog("GetBuffer: Fallback remapping buffer index %u -> %u (override count=%u)", Buffer,
+                               remapped, overrideCount);
+                    HRESULT hr = pReal->GetBuffer(remapped, riid, ppSurface);
+                    if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+                        static_cast<IUnknown*>(*ppSurface)->AddRef();
+                    }
+                    return hr;
+                }
             }
         }
     }
@@ -1179,6 +1228,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
             WrapperLog("ResizeBuffers: Overriding BufferCount to %u", BufferCount);
         }
     }
+
+    CleanupDummyBackBuffers();
 
     WrapperLog("ResizeBuffers: calling DX12_OnSwapchainResizeBegin");
     DX12_OnSwapchainResizeBegin();
