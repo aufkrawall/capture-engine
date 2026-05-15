@@ -511,10 +511,16 @@ void CWrapDXGISwapChain::WaitFrameLatency() {
 
     if (m_hFrameLatencyWaitable == INVALID_HANDLE_VALUE && m_pReal2) {
         m_hFrameLatencyWaitable = m_pReal2->GetFrameLatencyWaitableObject();
+        if (m_hFrameLatencyWaitable && m_hFrameLatencyWaitable != INVALID_HANDLE_VALUE) {
+            HookLog("WaitFrameLatency: Obtained waitable handle for backbuffer pacing");
+        }
     }
 
-    if (m_hFrameLatencyWaitable != INVALID_HANDLE_VALUE && m_hFrameLatencyWaitable) {
-        WaitForSingleObject(m_hFrameLatencyWaitable, INFINITE);
+    if (m_hFrameLatencyWaitable && m_hFrameLatencyWaitable != INVALID_HANDLE_VALUE) {
+        DWORD waitResult = WaitForSingleObject(m_hFrameLatencyWaitable, 16);
+        if (waitResult == WAIT_TIMEOUT) {
+            HookLog("WaitFrameLatency: timeout waiting for DWM flip queue drain");
+        }
     }
 }
 

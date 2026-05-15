@@ -834,7 +834,10 @@ void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
     if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&pSC2)))) {
         HANDLE hWaitable = pSC2->GetFrameLatencyWaitableObject();
         if (hWaitable && hWaitable != INVALID_HANDLE_VALUE) {
-            WaitForSingleObject(hWaitable, INFINITE);
+            DWORD waitResult = WaitForSingleObject(hWaitable, 16);
+            if (waitResult == WAIT_TIMEOUT) {
+                HookLog("WaitBackbufferFrameLatency: timeout waiting for DWM flip queue drain");
+            }
         }
         pSC2->Release();
     }
