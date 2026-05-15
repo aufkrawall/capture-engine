@@ -831,16 +831,34 @@ void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
         return;
 
     IDXGISwapChain2* pSC2 = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&pSC2)))) {
-        HANDLE hWaitable = pSC2->GetFrameLatencyWaitableObject();
-        if (hWaitable && hWaitable != INVALID_HANDLE_VALUE) {
-            DWORD waitResult = WaitForSingleObject(hWaitable, 16);
-            if (waitResult == WAIT_TIMEOUT) {
-                HookLog("WaitBackbufferFrameLatency: timeout waiting for DWM flip queue drain");
-            }
-        }
-        pSC2->Release();
+    HRESULT hrQI = pSwapChain->QueryInterface(IID_PPV_ARGS(&pSC2));
+    if (FAILED(hrQI) || !pSC2) {
+        static int s_logCount = 0;
+        if (s_logCount++ < 5)
+            HookLog("WaitBackbufferFrameLatency: IDXGISwapChain2 QI failed hr=0x%08X", hrQI);
+        return;
     }
+
+    HANDLE hWaitable = pSC2->GetFrameLatencyWaitableObject();
+    if (!hWaitable || hWaitable == INVALID_HANDLE_VALUE) {
+        static int s_logCount = 0;
+        if (s_logCount++ < 5)
+            HookLog("WaitBackbufferFrameLatency: GetFrameLatencyWaitableObject returned invalid handle");
+        pSC2->Release();
+        return;
+    }
+
+    DWORD waitResult = WaitForSingleObject(hWaitable, 16);
+    if (waitResult == WAIT_TIMEOUT) {
+        static int s_logCount = 0;
+        if (s_logCount++ < 10)
+            HookLog("WaitBackbufferFrameLatency: timeout");
+    } else if (waitResult == WAIT_OBJECT_0) {
+        static int s_logCount = 0;
+        if (s_logCount++ < 3)
+            HookLog("WaitBackbufferFrameLatency: wait succeeded");
+    }
+    pSC2->Release();
 }
 
 // Apply user-configured present-queue latency overrides to an existing swapchain.
