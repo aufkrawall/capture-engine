@@ -10,6 +10,8 @@
 
 #include "build_version.h"
 
+static constexpr int kMaxAudioSections = 8;
+
 struct AudioConfig {
     enum SourceType { SystemAudio, Microphone, AppAudio };
 

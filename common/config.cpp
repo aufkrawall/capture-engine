@@ -485,6 +485,23 @@ bit_depth=default
 ; downmix - Values: true, false
 downmix=false
 
+; [Audio.1]-[Audio.8] - Additional system audio capture devices
+;   Each section captures from a different audio output device.
+;   Codec/bitrate/sample_rate/bit_depth/downmix inherit from [Audio].
+; enabled - Values: true, false
+; device - Values: device name or WASAPI device ID, empty = default
+; track - Values: 1-8 or comma-separated list (default: track idx+10)
+;
+; Example:
+; [Audio.1]
+; enabled=true
+; device=Speakers (Realtek)
+; track=11
+; [Audio.2]
+; enabled=true
+; device=Headphones
+; track=12
+
 [Microphone]
 ; enabled - Values: true, false
 enabled=false
@@ -492,6 +509,19 @@ enabled=false
 device=
 ; track - Values: 1-8 or comma-separated list
 track=2
+
+; [Microphone.1]-[Microphone.8] - Additional microphone capture devices
+;   Each section captures from a different microphone input.
+;   Codec/bitrate/sample_rate/bit_depth/downmix inherit from [Audio].
+; enabled - Values: true, false
+; device - Values: device name or WASAPI device ID, empty = default
+; track - Values: 1-8 or comma-separated list (default: track idx+20)
+;
+; Example:
+; [Microphone.1]
+; enabled=true
+; device=Microphone (Blue Yeti)
+; track=21
 
 [Performance]
 ; For video capture. These usually don't need to be changed
@@ -1198,11 +1228,15 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         }
     }
 
-    // Audio - System (from [Audio] section)
+    config.audioSources.clear();
+
+    // --- Parse legacy [Audio] section (always, for inheritance + backward compat) ---
     AudioConfig sysAudio;
-    sysAudio.enabled = GetBool("Audio", "enabled", true);
-    sysAudio.tracks = GetIntList("Audio", "track", 1);  // Default track 1
-    sysAudio.device = GetStr("Audio", "device", "");    // Empty = default loopback device
+    std::string legacyAudioEnabledStr = GetStr("Audio", "enabled", "");
+    bool legacyAudioExplicitlySet = !legacyAudioEnabledStr.empty();
+    sysAudio.enabled = legacyAudioExplicitlySet ? ParseBool(legacyAudioEnabledStr) : true;
+    sysAudio.tracks = GetIntList("Audio", "track", 1);
+    sysAudio.device = GetStr("Audio", "device", "");
     sysAudio.codec = GetStr("Audio", "codec", "alac");
     sysAudio.bitrate = GetInt("Audio", "bitrate", 192);
     sysAudio.sampleRate = GetStr("Audio", "sample_rate", "default");
@@ -1210,37 +1244,84 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     sysAudio.downmix = GetBool("Audio", "downmix", false);
     sysAudio.sourceType = AudioConfig::SystemAudio;
 
-    config.audioSources.clear();
-    config.audioSources.push_back(sysAudio);
+    // Detect if any [Audio.N] sections exist
+    bool hasNumberedAudio = false;
+    for (int idx = 1; idx <= kMaxAudioSections && !hasNumberedAudio; idx++) {
+        char section[32];
+        snprintf(section, sizeof(section), "Audio.%d", idx);
+        hasNumberedAudio = !GetStr(section, "enabled", "").empty();
+    }
 
-    // Microphone (from [Microphone] section)
+    // Only add legacy [Audio] when no numbered sections exist, or when user explicitly enabled it
+    bool addLegacyAudio = (!hasNumberedAudio) || legacyAudioExplicitlySet;
+    if (addLegacyAudio && sysAudio.enabled) {
+        config.audioSources.push_back(sysAudio);
+    }
+
+    // --- Parse [Audio.1] .. [Audio.8] sections ---
+    for (int idx = 1; idx <= kMaxAudioSections; idx++) {
+        char section[32];
+        snprintf(section, sizeof(section), "Audio.%d", idx);
+        std::string enabledStr = GetStr(section, "enabled", "");
+        if (enabledStr.empty()) continue;
+
+        AudioConfig cfg;
+        cfg.enabled = ParseBool(enabledStr);
+        cfg.device = GetStr(section, "device", "");
+        cfg.tracks = GetIntList(section, "track", idx + 10);
+        cfg.codec = sysAudio.codec;
+        cfg.bitrate = sysAudio.bitrate;
+        cfg.sampleRate = sysAudio.sampleRate;
+        cfg.bitDepth = sysAudio.bitDepth;
+        cfg.downmix = sysAudio.downmix;
+        cfg.sourceType = AudioConfig::SystemAudio;
+        if (cfg.enabled) config.audioSources.push_back(cfg);
+    }
+
+    // --- Parse legacy [Microphone] section (backward compat) ---
     AudioConfig micAudio;
     micAudio.enabled = GetBool("Microphone", "enabled", false);
     micAudio.device = GetStr("Microphone", "device", "");
     micAudio.tracks = GetIntList("Microphone", "track", 2);
-    micAudio.codec = sysAudio.codec;      // usually same codec
-    micAudio.bitrate = sysAudio.bitrate;  // need this for encoder init
+    micAudio.codec = sysAudio.codec;
+    micAudio.bitrate = sysAudio.bitrate;
     micAudio.sampleRate = sysAudio.sampleRate;
     micAudio.bitDepth = sysAudio.bitDepth;
     micAudio.sourceType = AudioConfig::Microphone;
-    config.audioSources.push_back(micAudio);
+    if (micAudio.enabled) config.audioSources.push_back(micAudio);
 
-    // App Audio (from [AppAudio.1], [AppAudio.2], etc.)
-    for (int appIdx = 1; appIdx <= 8; appIdx++) {
+    // --- Parse [Microphone.1] .. [Microphone.8] sections ---
+    for (int idx = 1; idx <= kMaxAudioSections; idx++) {
+        char section[32];
+        snprintf(section, sizeof(section), "Microphone.%d", idx);
+        std::string enabledStr = GetStr(section, "enabled", "");
+        if (enabledStr.empty()) continue;
+
+        AudioConfig cfg;
+        cfg.enabled = ParseBool(enabledStr);
+        cfg.device = GetStr(section, "device", "");
+        cfg.tracks = GetIntList(section, "track", idx + 20);
+        cfg.codec = sysAudio.codec;
+        cfg.bitrate = sysAudio.bitrate;
+        cfg.sampleRate = sysAudio.sampleRate;
+        cfg.bitDepth = sysAudio.bitDepth;
+        cfg.sourceType = AudioConfig::Microphone;
+        if (cfg.enabled) config.audioSources.push_back(cfg);
+    }
+
+    // --- Parse [AppAudio.1] .. [AppAudio.8] sections (unchanged) ---
+    for (int appIdx = 1; appIdx <= kMaxAudioSections; appIdx++) {
         char section[32];
         snprintf(section, sizeof(section), "AppAudio.%d", appIdx);
 
-        // Check if section exists by reading enabled
         std::string enabledStr = GetStr(section, "enabled", "");
-        if (enabledStr.empty()) {
-            continue;  // Section doesn't exist
-        }
+        if (enabledStr.empty()) continue;
 
         AudioConfig appAudio;
         appAudio.enabled = ParseBool(enabledStr);
         appAudio.processName = GetStr(section, "process", "");
         appAudio.processId = (DWORD)GetInt(section, "process_id", 0);
-        appAudio.tracks = GetIntList(section, "track", appIdx + 2);  // Default tracks 3+
+        appAudio.tracks = GetIntList(section, "track", appIdx + 2);
         appAudio.codec = GetStr(section, "codec", sysAudio.codec.c_str());
         appAudio.bitrate = GetInt(section, "bitrate", sysAudio.bitrate);
         appAudio.sampleRate = GetStr(section, "sample_rate", sysAudio.sampleRate.c_str());

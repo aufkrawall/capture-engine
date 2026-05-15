@@ -52,6 +52,8 @@ Primary sources:
   - Available Windows debug tools (cdb, windbg, Sysinternals) and their installed paths.
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
+- `multi-audio-capture.md` (planned)
+  - Multi system audio (`[Audio.N]`) and multi microphone (`[Microphone.N]`) capture. Device ID selection via `GetDevice` + friendly-name fallback. Config format, default track numbering, and codec inheritance from `[Audio]`.
 - `wgc-capture.md`
   - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, WGC CFR audio continuity/stop-tail policy, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-05-07. Stale-risk: medium.
 - `cfr-capture-sync.md`

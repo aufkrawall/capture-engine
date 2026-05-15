@@ -198,6 +198,18 @@ bit_depth=default
 ; downmix - Values: true, false
 downmix=false
 
+; [Audio.1]-[Audio.8] - Additional system audio capture devices
+;   Codec/bitrate/sample_rate/bit_depth/downmix inherit from [Audio].
+; enabled - Values: true, false
+; device - Values: device name or WASAPI device ID, empty = default
+; track - Values: 1-8 or comma-separated list (default: track idx+10)
+;
+; Example:
+; [Audio.1]
+; enabled=true
+; device=Speakers (Realtek)
+; track=11
+
 [Microphone]
 ; enabled - Values: true, false
 enabled=false
@@ -205,6 +217,18 @@ enabled=false
 device=
 ; track - Values: 1-8 or comma-separated list
 track=2
+
+; [Microphone.1]-[Microphone.8] - Additional microphone capture devices
+;   Codec/bitrate/sample_rate/bit_depth/downmix inherit from [Audio].
+; enabled - Values: true, false
+; device - Values: device name or WASAPI device ID, empty = default
+; track - Values: 1-8 or comma-separated list (default: track idx+20)
+;
+; Example:
+; [Microphone.1]
+; enabled=true
+; device=Microphone (Blue Yeti)
+; track=21
 
 [AppAudio.1]
 ; enabled - Values: true, false

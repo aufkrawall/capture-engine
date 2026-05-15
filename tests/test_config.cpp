@@ -498,6 +498,224 @@ TEST_F(WhitelistEntryTest, WgcWindowDetectionEntries) {
     }
 }
 
+TEST_F(ConfigTest, ParseNumberedAudioSections) {
+    std::string iniContent =
+        "[Audio]\n"
+        "enabled=true\n"
+        "device=\n"
+        "codec=flac\n"
+        "bitrate=320\n"
+        "\n"
+        "[Audio.1]\n"
+        "enabled=true\n"
+        "device=Speakers\n"
+        "track=11\n"
+        "\n"
+        "[Audio.2]\n"
+        "enabled=true\n"
+        "device=Headphones\n"
+        "track=12\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    // Should have: [Audio], [Audio.1], [Audio.2], [Microphone] (disabled)
+    size_t sysCount = 0;
+    size_t micCount = 0;
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::SystemAudio) sysCount++;
+        if (src.sourceType == AudioConfig::Microphone) micCount++;
+    }
+    EXPECT_EQ(sysCount, 3);
+    EXPECT_EQ(micCount, 0);
+
+    // Check that [Audio.1] and [Audio.2] have correct devices and tracks
+    bool foundSpeakers = false, foundHeadphones = false;
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::SystemAudio && src.tracks.size() == 1) {
+            if (src.tracks[0] == 11) {
+                foundSpeakers = true;
+                EXPECT_EQ(src.device, "Speakers");
+                EXPECT_EQ(src.codec, "flac");
+            }
+            if (src.tracks[0] == 12) {
+                foundHeadphones = true;
+                EXPECT_EQ(src.device, "Headphones");
+                EXPECT_EQ(src.codec, "flac");
+            }
+        }
+    }
+    EXPECT_TRUE(foundSpeakers);
+    EXPECT_TRUE(foundHeadphones);
+}
+
+TEST_F(ConfigTest, ParseNumberedMicrophoneSections) {
+    std::string iniContent =
+        "[Audio]\n"
+        "enabled=true\n"
+        "codec=opus\n"
+        "\n"
+        "[Microphone.1]\n"
+        "enabled=true\n"
+        "device=Blue Yeti\n"
+        "track=21\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    bool foundMic = false;
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::Microphone) {
+            foundMic = true;
+            EXPECT_EQ(src.device, "Blue Yeti");
+            EXPECT_TRUE(!src.tracks.empty() && src.tracks[0] == 21);
+            EXPECT_EQ(src.codec, "opus");
+        }
+    }
+    EXPECT_TRUE(foundMic);
+}
+
+TEST_F(ConfigTest, ParseSuppressLegacyWhenNumbered) {
+    std::string iniContent =
+        "[Audio.1]\n"
+        "enabled=true\n"
+        "device=Speakers\n"
+        "track=11\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    // Should have: [Audio.1] only (no legacy [Audio], no mic)
+    size_t sysCount = 0;
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::SystemAudio) sysCount++;
+    }
+    EXPECT_EQ(sysCount, 1);
+
+    // Verify the single source is the numbered one, not legacy
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::SystemAudio) {
+            EXPECT_EQ(src.device, "Speakers");
+            EXPECT_TRUE(!src.tracks.empty() && src.tracks[0] == 11);
+        }
+    }
+}
+
+TEST_F(ConfigTest, ParseLegacyWhenNumberedWithExplicitEnabled) {
+    std::string iniContent =
+        "[Audio]\n"
+        "enabled=true\n"
+        "\n"
+        "[Audio.1]\n"
+        "enabled=true\n"
+        "device=Speakers\n"
+        "track=11\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    // Should have: [Audio] (default) + [Audio.1], no mic
+    size_t sysCount = 0;
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::SystemAudio) sysCount++;
+    }
+    EXPECT_EQ(sysCount, 2);
+}
+
+TEST_F(ConfigTest, ParseNumberedDisabled) {
+    std::string iniContent =
+        "[Audio]\n"
+        "enabled=true\n"
+        "\n"
+        "[Audio.1]\n"
+        "enabled=false\n"
+        "device=Speakers\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    // Should have only [Audio] and disabled mic — [Audio.1] is not added
+    bool foundAudio1 = false;
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::SystemAudio && !src.device.empty()) {
+            foundAudio1 = true;
+        }
+    }
+    EXPECT_FALSE(foundAudio1);
+}
+
+TEST_F(ConfigTest, ParseNumberedEmptySection) {
+    std::string iniContent =
+        "[Audio]\n"
+        "enabled=true\n"
+        "\n"
+        "[Audio.1]\n"
+        // No keys at all — GetStr returns empty, section is skipped
+        "\n"
+        "[Audio.2]\n"
+        "enabled=true\n"
+        "device=Headphones\n"
+        "track=12\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    // Should have: [Audio] + [Audio.2] (Audio.1 has no keys, skipped)
+    size_t sysCount = 0;
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::SystemAudio) sysCount++;
+    }
+
+    // [Audio] (default device="") + [Audio.2] (device=Headphones)
+    EXPECT_EQ(sysCount, 2);
+
+    bool foundHeadphones = false;
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::SystemAudio && src.device == "Headphones") {
+            foundHeadphones = true;
+        }
+    }
+    EXPECT_TRUE(foundHeadphones);
+}
+
+TEST_F(ConfigTest, ParseAudioNumberedInheritsCodec) {
+    std::string iniContent =
+        "[Audio]\n"
+        "enabled=true\n"
+        "codec=alac\n"
+        "bitrate=192\n"
+        "\n"
+        "[Audio.1]\n"
+        "enabled=true\n"
+        "device=Speakers\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    // [Audio.1] should inherit codec/bitrate from [Audio]
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::SystemAudio && src.device == "Speakers") {
+            EXPECT_EQ(src.codec, "alac");
+            EXPECT_EQ(src.bitrate, 192);
+        }
+    }
+}
+
+
 TEST_F(WhitelistEntryTest, OverlayWhitelistEntries) {
     std::string iniContent =
         "[Injection]\n"

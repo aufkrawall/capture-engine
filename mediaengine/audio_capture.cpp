@@ -1,5 +1,6 @@
 #include "audio_capture.h"
 #include <iostream>
+#include <functiondiscoverykeys_devpkey.h>  // PKEY_Device_FriendlyName
 #include "audio_time_utils.h"
 #include "mediaengine.h"  // For DLL_Log
 
@@ -61,18 +62,69 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
         return false;
 
     if (deviceId.empty()) {
-        // For loopback (system audio), we capture from render device
-        // For microphone, we capture from capture device
         EDataFlow dataFlow = isLoopback ? eRender : eCapture;
         hr = pEnumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &pDevice);
         DLL_Log("[AudioCapture] Using default %s endpoint", isLoopback ? "render (loopback)" : "capture (microphone)");
     } else {
-        // Find device by ID or name
-        // For now, try to get default based on data flow
         EDataFlow dataFlow = isLoopback ? eRender : eCapture;
-        hr = pEnumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &pDevice);
-        DLL_Log("[AudioCapture] Using default %s endpoint (deviceId ignored for now)",
-                isLoopback ? "render" : "capture");
+
+        // 1. Try exact device ID match (opaque WASAPI device ID string)
+        int wideLen = MultiByteToWideChar(CP_UTF8, 0, deviceId.c_str(), -1, nullptr, 0);
+        if (wideLen > 0) {
+            std::wstring wideId(static_cast<size_t>(wideLen), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, deviceId.c_str(), -1, wideId.data(), wideLen);
+            hr = pEnumerator->GetDevice(wideId.c_str(), &pDevice);
+            if (SUCCEEDED(hr)) {
+                DLL_Log("[AudioCapture] Using device by ID: %s", deviceId.c_str());
+            }
+        } else {
+            hr = E_FAIL;
+        }
+
+        // 2. If GetDevice failed, try matching by friendly name
+        if (FAILED(hr)) {
+            IMMDeviceCollection* pDevices = nullptr;
+            HRESULT enumHr = pEnumerator->EnumAudioEndpoints(dataFlow, DEVICE_STATE_ACTIVE, &pDevices);
+            if (SUCCEEDED(enumHr)) {
+                UINT count = 0;
+                pDevices->GetCount(&count);
+                for (UINT i = 0; i < count && !pDevice; i++) {
+                    IMMDevice* pCandidate = nullptr;
+                    if (SUCCEEDED(pDevices->Item(i, &pCandidate)) && pCandidate) {
+                        IPropertyStore* pProps = nullptr;
+                        if (SUCCEEDED(pCandidate->OpenPropertyStore(STGM_READ, &pProps)) && pProps) {
+                            PROPVARIANT var = {};
+                            if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &var)) && var.vt == VT_LPWSTR && var.pwszVal) {
+                                int nameLen = WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, nullptr, 0, nullptr, nullptr);
+                                if (nameLen > 0) {
+                                    std::string friendlyName(static_cast<size_t>(nameLen), L'\0');
+                                    WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, friendlyName.data(), nameLen, nullptr, nullptr);
+                                    if (!friendlyName.empty() && friendlyName.back() == '\0')
+                                        friendlyName.pop_back();
+                                    if (friendlyName == deviceId) {
+                                        pDevice = pCandidate;
+                                        pDevice->AddRef();
+                                        hr = S_OK;
+                                        DLL_Log("[AudioCapture] Using device by friendly name: %s", deviceId.c_str());
+                                    }
+                                }
+                            }
+                            if (var.vt == VT_LPWSTR && var.pwszVal)
+                                CoTaskMemFree(var.pwszVal);
+                            pProps->Release();
+                        }
+                        pCandidate->Release();
+                    }
+                }
+                pDevices->Release();
+            }
+        }
+
+        // 3. If both failed, fall back to default endpoint
+        if (!pDevice) {
+            DLL_Log("[AudioCapture] Device '%s' not found by ID or name, falling back to default", deviceId.c_str());
+            hr = pEnumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &pDevice);
+        }
     }
     if (FAILED(hr)) {
         DLL_Log("[AudioCapture] GetDefaultAudioEndpoint failed: 0x%x", hr);
