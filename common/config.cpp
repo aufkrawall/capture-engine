@@ -602,7 +602,7 @@ always_render_only_when_game=false
 show_encoder_overload_warnings=false
 ; process_list - Process names for "NOT RECORDING" warning detection.
 ; These are the processes where "NOT RECORDING" warning shows when focused but not recording.
-; Format: pipe-delimited (single line) or multi-line parenthesized block (see below).
+; Format: multi-line parenthesized block (see below).
 process_list=(
 ;FortniteClient-Win64-Shipping.exe
 ;StrangeBrigade_DX12.exe
