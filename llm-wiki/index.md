@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-15 (updated: build 0.1.3173 / tests 0.1.3174 - DX11 forced-AF shader-slot mixed-role gate)
+Last cross-checked: 2026-05-16 (updated: build 0.1.3176 / tests 0.1.3176 - idle power optimization)
 
 Primary sources:
 - `AGENTS.md`
