@@ -621,8 +621,29 @@ static fs::path GetExecutableDirectory() {
     return ec ? fs::path(".") : cwd;
 }
 
+static bool IsDirectoryWritable(const fs::path& dir) {
+    DWORD attrs = GetFileAttributesW(dir.wstring().c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return false;
+    }
+    return true;
+}
+
+static fs::path ResolveFallbackDir(const fs::path& exeDir) {
+    fs::path fallbackDir = exeDir / "captures";
+    std::error_code ec;
+    if (!fs::exists(fallbackDir, ec)) {
+        fs::create_directories(fallbackDir, ec);
+    }
+    return fallbackDir;
+}
+
 static std::string GenerateOutputFilename(const VideoConfig& config) {
     const fs::path exeDir = GetExecutableDirectory();
+    const fs::path capturesDir = ResolveFallbackDir(exeDir);
 
     // Respect output_dir when set. When left empty, keep the documented behavior
     // of writing next to the executable.
@@ -631,21 +652,29 @@ static std::string GenerateOutputFilename(const VideoConfig& config) {
         outDir = exeDir / outDir;
     }
 
-    // Create directory if it doesn't exist
+    bool useFallback = false;
+
+    // Check if the configured directory is usable
     std::error_code ec;
     if (!fs::exists(outDir, ec)) {
-        if (fs::create_directories(outDir, ec)) {
-            DLL_Log("[VideoEncoder] Created output directory: %s", outDir.string().c_str());
-        } else {
+        if (!fs::create_directories(outDir, ec)) {
             DLL_Log(
                 "[VideoEncoder] Failed to create output directory: %s (Error: "
-                "%d). Falling back to executable directory.",
+                "%d). Falling back to captures subfolder.",
                 outDir.string().c_str(), ec.value());
-            outDir = exeDir;
+            useFallback = true;
+        } else {
+            DLL_Log("[VideoEncoder] Created output directory: %s", outDir.string().c_str());
         }
-    } else {
-        // DLL_Log("[VideoEncoder] Output directory exists: %s",
-        // outDir.string().c_str());
+    } else if (!IsDirectoryWritable(outDir)) {
+        DLL_Log(
+            "[VideoEncoder] Output directory not accessible: %s. Falling back to captures subfolder.",
+            outDir.string().c_str());
+        useFallback = true;
+    }
+
+    if (useFallback) {
+        outDir = capturesDir;
     }
 
     std::string filenameOnly = "capture_" + std::to_string(GetTickCount64()) + "." + config.container;
@@ -654,8 +683,10 @@ static std::string GenerateOutputFilename(const VideoConfig& config) {
     // Handle Windows backslashes for FFmpeg
     std::filesystem::path absPath = std::filesystem::absolute(fullPath, ec);
     if (!ec) {
+        DLL_Log("[VideoEncoder] Output file: %s", absPath.string().c_str());
         return absPath.string();
     }
+    DLL_Log("[VideoEncoder] Output file: %s", fullPath.string().c_str());
     return fullPath.string();
 }
 
@@ -4326,10 +4357,19 @@ void VideoEncoder::Stop() {
     }
 
     // Always wait for writer thread to finish (writes trailer + closes file)
+    // Use a timeout to prevent hanging on I/O when the output path is inaccessible
     if (writerThread.joinable()) {
-        DLL_Log("[VideoEncoder] Stop: Waiting for writer thread to finish...");
-        writerThread.join();
-        DLL_Log("[VideoEncoder] Stop: Writer thread joined.");
+        DLL_Log("[VideoEncoder] Stop: Waiting for writer thread to finish (5s timeout)...");
+        HANDLE hThread = writerThread.native_handle();
+        DWORD waitResult = WaitForSingleObject(hThread, 5000);
+        if (waitResult == WAIT_OBJECT_0) {
+            writerThread.join();
+            DLL_Log("[VideoEncoder] Stop: Writer thread joined.");
+        } else {
+            DLL_Log("[VideoEncoder] Stop: WARNING - Writer thread did not finish in 5s (result=%lu), detaching.",
+                    waitResult);
+            writerThread.detach();
+        }
     }
 
     // Fallback: if thread wasn't running and file is still open, close it now
