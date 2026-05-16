@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-16 (updated: build 0.1.3176 / tests 0.1.3176 - idle power optimization)
+Last cross-checked: 2026-05-16 (updated: build 0.1.3184 / tests 0.1.3184 - idle power optimization final)
 
 Primary sources:
 - `AGENTS.md`
