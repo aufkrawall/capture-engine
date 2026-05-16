@@ -519,7 +519,7 @@ track=2,3
 ;track=21
 
 [Performance]
-process_priority=above_normal
+process_priority=high
 gpu_priority=7
 
 [FpsLimiter]
