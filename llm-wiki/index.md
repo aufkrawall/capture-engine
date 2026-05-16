@@ -35,7 +35,7 @@ Primary sources:
 - `codestyle.md`
   - Formatter-backed style rules, Python tooling config, and common tree conventions.
 - `build.py.md`
-  - Supported `build.py` flags, interactions, environment variables, and operational notes.
+  - Supported `build.py` flags, interactions, environment variables, operational notes, and MinGW cross-compile pitfalls (INITGUID/PKEY, `mediaengine/audio_capture.cpp`).
 - `repo-map.md`
   - Top-level repo layout and subsystem ownership.
 - `dx12-injection-bootstrap.md`

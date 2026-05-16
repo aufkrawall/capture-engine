@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-04-23
+Last cross-checked: 2026-05-16 (added: MinGW cross-compile pitfalls section)
 
 Primary sources:
 - `build.py`
@@ -142,6 +142,11 @@ Default quality mode currently:
 - `--jobs` is now applied after environment initialization, fixing the earlier `env`-before-initialization bug in `main()`.
 - On Windows hosts, the build now emits CodeView debug info plus sidecar `.pdb` files for the built PE outputs while staying on the existing clang/lld toolchain.
 - On Linux and WSL, the script uses cross-compilers and downloaded MSYS2 packages for dependencies.
+
+### MinGW Cross-Compile Pitfalls
+
+- **`PKEY_Device_FriendlyName` link error (INITGUID)**: Debian mingw-w64 cross-compile fails with `undefined reference to PKEY_Device_FriendlyName` because `INITGUID` is never defined. The `<functiondiscoverykeys_devpkey.h>` header uses `DEFINE_PROPERTYKEY`, which only produces an `extern` declaration when `INITGUID` is not defined — the backing definition is never emitted. The fix is to avoid the header entirely and define the `PROPERTYKEY` locally with the raw GUID `{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}` and PID 14. Source anchor: `mediaengine/audio_capture.cpp:3-7`, commit `3ef86ff`.
+
 - There is no strict unknown-flag validator. Flags that the script does not inspect are not automatically rejected.
 
 ## Common Commands
