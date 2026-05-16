@@ -600,9 +600,13 @@ always_render=false
 always_render_only_when_game=false
 ; show_encoder_overload_warnings - Show "Encoder overloaded!" warning
 show_encoder_overload_warnings=false
-; process_list - Pipe-delimited list of process names for warning detection (e.g. game1.exe|game2.exe)
-; These are the processes where "NOT RECORDING" warning shows when focused but not recording
-;process_list=FortniteClient-Win64-Shipping.exe|StrangeBrigade_DX12.exe
+; process_list - Process names for "NOT RECORDING" warning detection.
+; These are the processes where "NOT RECORDING" warning shows when focused but not recording.
+; Format: pipe-delimited (single line) or multi-line parenthesized block (see below).
+;process_list=(
+;FortniteClient-Win64-Shipping.exe
+;StrangeBrigade_DX12.exe
+;)
 
 [Screenshot]
 ; screenshot_dir - Output directory for screenshots. Empty = "screenshots" subfolder next to exe
@@ -896,6 +900,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.gameWhitelist.clear();
     // We use a manual pass to support both comma-separated (legacy) and
     // newline-separated entries
+    bool pseudoProcessListSet = false;
     std::string cfgText;
     if (ReadTextFile(path, cfgText)) {
         std::stringstream cfgFile(cfgText);
@@ -904,6 +909,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         bool inWhitelist = false;
         bool inOverlayWhitelist = false;
         bool inWgcWindowDetection = false;
+        bool inPseudoOverlay = false;
+        bool inPseudoProcessList = false;
+        std::string pseudoProcessList;
 
         auto AddEntry = [&](const std::string& raw, std::vector<WhitelistEntry>& targetList) {
             WhitelistEntry entry = ParseEntry(raw);
@@ -932,7 +940,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
             if (trimmed[0] == '[') {
                 inInjection = (trimmed.find("[Injection]") != std::string::npos);
+                inPseudoOverlay = (trimmed.find("[pseudo-overlay]") != std::string::npos);
                 inWhitelist = false;
+                inOverlayWhitelist = false;
+                inWgcWindowDetection = false;
+                inPseudoProcessList = false;
                 continue;
             }
 
@@ -958,6 +970,33 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                     inWgcWindowDetection = false;
                 } else if (trimmed != "(") {
                     AddEntry(trimmed, config.wgcWindowTitles);
+                }
+            }
+
+            // process_list in [pseudo-overlay] supports multi-line parenthesized format
+            if (inPseudoOverlay && trimmed.find("process_list=") == 0) {
+                std::string rest = trimmed.substr(trimmed.find('=') + 1);
+                rest = Trim(rest);
+                if (rest == "(") {
+                    inPseudoProcessList = true;
+                    pseudoProcessList.clear();
+                    pseudoProcessListSet = true;
+                } else if (!rest.empty() && rest != ")") {
+                    config.pseudoOverlay.processList = NormalizePseudoOverlayProcessList(rest);
+                    pseudoProcessListSet = true;
+                }
+            } else if (inPseudoProcessList) {
+                if (trimmed == ")" || trimmed.empty()) {
+                    inPseudoProcessList = false;
+                    if (!pseudoProcessList.empty()) {
+                        config.pseudoOverlay.processList = NormalizePseudoOverlayProcessList(pseudoProcessList);
+                    }
+                } else if (trimmed.find('=') != std::string::npos) {
+                    inPseudoProcessList = false;
+                } else if (trimmed != "(") {
+                    if (!pseudoProcessList.empty())
+                        pseudoProcessList += "|";
+                    pseudoProcessList += trimmed;
                 }
             }
 
@@ -1347,11 +1386,14 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.pseudoOverlay.alwaysRenderOnlyWhenGame = GetBool("pseudo-overlay", "always_render_only_when_game", false);
     config.pseudoOverlay.showEncoderOverloadWarn = GetBool("pseudo-overlay", "show_encoder_overload_warnings", true);
     {
-        std::string procList = GetStr("pseudo-overlay", "process_list", "");
-        // Process list is pipe-delimited in INI (same as OBSIndicator convention)
-        if (procList.size() > 2048)
-            procList.resize(2048);
-        config.pseudoOverlay.processList = NormalizePseudoOverlayProcessList(procList);
+        if (!pseudoProcessListSet) {
+            std::string procList = GetStr("pseudo-overlay", "process_list", "");
+            if (procList.size() > 2048)
+                procList.resize(2048);
+            config.pseudoOverlay.processList = NormalizePseudoOverlayProcessList(procList);
+        } else if (config.pseudoOverlay.processList.size() > 2048) {
+            config.pseudoOverlay.processList.resize(2048);
+        }
     }
 
     // Hotkeys
