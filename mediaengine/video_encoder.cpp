@@ -645,9 +645,8 @@ static std::string GenerateOutputFilename(const VideoConfig& config) {
     const fs::path exeDir = GetExecutableDirectory();
     const fs::path capturesDir = ResolveFallbackDir(exeDir);
 
-    // Respect output_dir when set. When left empty, keep the documented behavior
-    // of writing next to the executable.
-    fs::path outDir = config.outputDir.empty() ? exeDir : fs::path(config.outputDir);
+    // Respect output_dir when set. When left empty, write to captures subfolder.
+    fs::path outDir = config.outputDir.empty() ? capturesDir : fs::path(config.outputDir);
     if (!config.outputDir.empty() && outDir.is_relative()) {
         outDir = exeDir / outDir;
     }

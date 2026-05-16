@@ -572,11 +572,24 @@ bool TakeScreenshot(const std::string& screenshotDir) {
     DllDirGuard dllDir(ffmpegDir.c_str());
 
     // Determine output directory
-    std::string outDir = screenshotDir;
-    if (outDir.empty()) {
-        outDir = exeDir + "\\screenshots";
+    std::filesystem::path outDir;
+    if (screenshotDir.empty()) {
+        outDir = std::filesystem::path(exeDir) / "screenshots";
+    } else {
+        outDir = std::filesystem::path(screenshotDir);
+        if (outDir.is_relative()) {
+            outDir = std::filesystem::path(exeDir) / outDir;
+        }
+        std::error_code ec;
+        if (!std::filesystem::exists(outDir, ec)) {
+            if (!std::filesystem::create_directories(outDir, ec)) {
+                Log(LogLevel::Warn, "[Screenshot] Failed to create screenshot directory (%s). Falling back to screenshots subfolder.", ec.message().c_str());
+                outDir = std::filesystem::path(exeDir) / "screenshots";
+            }
+        }
     }
-    std::filesystem::create_directories(outDir);
+    std::error_code ec;
+    std::filesystem::create_directories(outDir, ec);
 
     // Generate base filename (no extension — .png or .avif appended based on format)
     SYSTEMTIME st;
@@ -584,7 +597,7 @@ bool TakeScreenshot(const std::string& screenshotDir) {
     char baseFilename[128];
     snprintf(baseFilename, sizeof(baseFilename), "screenshot_%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth, st.wDay,
              st.wHour, st.wMinute, st.wSecond);
-    std::string basePath = outDir + "\\" + baseFilename;
+    std::string basePath = outDir.string() + "\\" + baseFilename;
     std::string pngPath = basePath + ".png";
     std::string avifPath = basePath + ".avif";
     std::string fullPath = pngPath;  // Default to .png, changed to .avif for HDR
