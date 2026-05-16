@@ -1091,8 +1091,14 @@ int ControllerMain(HINSTANCE hInstance) {
 
         // Process messages
         int msgCount = 0;
+        int msgTimers = 0;
+        int msgOthers = 0;
+        int msgHotkeys = 0;
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             msgCount++;
+            if (msg.message == WM_TIMER) msgTimers++;
+            else if (msg.message == WM_HOTKEY) msgHotkeys++;
+            else if (msg.message != WM_QUIT && msg.message != kMsgCompleteControllerStartup) msgOthers++;
             if (msg.message == WM_QUIT) {
                 g_Running = false;
                 continue;
@@ -1243,9 +1249,9 @@ int ControllerMain(HINSTANCE hInstance) {
             LogDebug("[ControllerDiag] iter=%llu breakdown: msg=%lld health=%lld config=%lld tot=%lld",
                      (unsigned long long)iterCount, (long long)msgUs, (long long)healthUs, (long long)configUs,
                      (long long)preWaitUs);
-            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d lastCfg=%lu now=%lu",
-                     (unsigned long long)iterCount, waitMs, msgCount, (unsigned long)lastConfigCheck,
-                     (unsigned long)GetTickCount());
+            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d (timer=%d other=%d hk=%d) lastCfg=%lu now=%lu",
+                     (unsigned long long)iterCount, waitMs, msgCount, msgTimers, msgOthers, msgHotkeys,
+                     (unsigned long)lastConfigCheck, (unsigned long)GetTickCount());
         }
 
         if (waitMs == 0 && iterRateLogCount == 0) {
