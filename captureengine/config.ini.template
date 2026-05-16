@@ -15,9 +15,9 @@ capture_method=auto
 ; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay. Favors capturing found window over capturing the entire screen.
 ; Format: process:window:mode - see [Injection] section for full format documentation.
 ; Safe with anti-cheats (no guarantees!). Tries to find corresponding window name when providing process name instead. Continues to capture screen when game window closes.
-;wgc_window_detection=(
+wgc_window_detection=(
 ;FortniteClient-Win64-Shipping.exe
-;)
+)
 
 ; WGC performance options. wgc_same_device_capture=true should have lowest overhead.
 wgc_same_device_capture=true
