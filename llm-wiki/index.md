@@ -50,6 +50,8 @@ Primary sources:
   - Current visible FG status publication rules for the overlay.
 - `debug-tools.md`
   - Available Windows debug tools (cdb, windbg, Sysinternals) and their installed paths.
+- `pseudo-overlay.md`
+  - Controller-side pseudo-overlay for WGC capture: architecture, modes, foreground detection, process_list config parsing, known pitfalls (Trim charset, `;` comment skipping), debug logging, source anchors.
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
 - `multi-audio-capture.md` (planned)

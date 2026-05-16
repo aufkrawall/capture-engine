@@ -1,6 +1,8 @@
 # Current State
 
-Last cross-checked: 2026-05-15 — D3D11 forced-AF shader-slot mixed-role gate (build 0.1.3173 / tests 0.1.3174). BioShock Infinite `20260515_140702` no longer crashed after save-game load and GPU underutilization was mostly gone, but textures stayed blurry because the old object-level mixed-role gate tainted raw sampler objects reused by UE3 for both color and normal/mask slots. The current tree keeps streamed-SRV warm-up but now keys mixed safe/unsafe blocking by current pixel shader plus sampler slot, so unrelated color slots can receive forced AF even when they share the same `ID3D11SamplerState` object. See `llm-wiki/dx11-forced-af.md` and `llm-wiki/log/recent.md`.
+Last cross-checked: 2026-05-16 — Pseudo-overlay process_list Trim bug + multi-line format fix (build 0.1.3213 / tests 0.1.3213). Fixed `Trim()` default charset stripping `(` from `process_list=(` opener, preventing multi-line block detection. Added debug logging to `IsForegroundTarget`, `OnTimerTick`, `UpdateOverlay`. Added multi-line process_list regression tests. See `llm-wiki/pseudo-overlay.md` and `llm-wiki/log/recent.md`.
+
+Previous: D3D11 forced-AF shader-slot mixed-role gate (build 0.1.3173 / tests 0.1.3174). BioShock Infinite `20260515_140702` no longer crashed after save-game load and GPU underutilization was mostly gone, but textures stayed blurry because the old object-level mixed-role gate tainted raw sampler objects reused by UE3 for both color and normal/mask slots. The current tree keeps streamed-SRV warm-up but now keys mixed safe/unsafe blocking by current pixel shader plus sampler slot, so unrelated color slots can receive forced AF even when they share the same `ID3D11SamplerState` object. See `llm-wiki/dx11-forced-af.md` and `llm-wiki/log/recent.md`.
 
 Primary sources:
 - `llm-wiki/log/recent.md`

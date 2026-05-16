@@ -291,17 +291,25 @@ void PseudoOverlay::UpdateScaleForDpi(UINT dpi) {
 // ---- Foreground process detection (ported from OBSIndicator) ----
 
 bool PseudoOverlay::IsForegroundTarget() {
-    if (config_.processList.empty())
+    if (config_.processList.empty()) {
+        LogDebug("[PseudoOverlay] IsForegroundTarget: processList empty");
         return false;
+    }
+
+    LogDebug("[PseudoOverlay] IsForegroundTarget: processList='%s'", config_.processList.c_str());
 
     HWND hFg = GetForegroundWindow();
-    if (!hFg)
+    if (!hFg) {
+        LogDebug("[PseudoOverlay] IsForegroundTarget: GetForegroundWindow returned NULL");
         return false;
+    }
 
     DWORD pid = 0;
     GetWindowThreadProcessId(hFg, &pid);
-    if (pid == 0)
+    if (pid == 0) {
+        LogDebug("[PseudoOverlay] IsForegroundTarget: GetWindowThreadProcessId returned pid=0");
         return false;
+    }
 
     // Cache results to avoid overhead while the same window is focused
     static DWORD lastPid = 0;
@@ -309,8 +317,11 @@ bool PseudoOverlay::IsForegroundTarget() {
     static ULONGLONG lastCheckTime = 0;
 
     // Re-validate every 2 seconds in case config changed
-    if (pid == lastPid && (GetTickCount64() - lastCheckTime < 2000))
+    if (pid == lastPid && (GetTickCount64() - lastCheckTime < 2000)) {
+        LogDebug("[PseudoOverlay] IsForegroundTarget: cache hit pid=%lu result=%d (%.1fs left)", pid, lastRes,
+                 (2000.0 - (GetTickCount64() - lastCheckTime)) / 1000.0);
         return lastRes;
+    }
 
     bool match = false;
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -324,6 +335,8 @@ bool PseudoOverlay::IsForegroundTarget() {
                 exeName = exeName.substr(lastSlash + 1);
             exeName = NormalizeProcessName(exeName);
 
+            LogDebug("[PseudoOverlay] IsForegroundTarget: pid=%lu exe='%s'", pid, exeName.c_str());
+
             std::stringstream ss(config_.processList);
             std::string item;
             while (std::getline(ss, item, '|')) {
@@ -332,17 +345,27 @@ bool PseudoOverlay::IsForegroundTarget() {
                     continue;
 
                 if (exeName == normalizedItem) {
+                    LogDebug("[PseudoOverlay] IsForegroundTarget: MATCH pid=%lu exe='%s' == '%s'", pid,
+                             exeName.c_str(), normalizedItem.c_str());
                     match = true;
                     break;
                 }
+                LogDebug("[PseudoOverlay] IsForegroundTarget: no match exe='%s' != '%s'", exeName.c_str(),
+                         normalizedItem.c_str());
             }
+        } else {
+            LogDebug("[PseudoOverlay] IsForegroundTarget: QueryFullProcessImageNameA failed pid=%lu error=%lu",
+                     pid, GetLastError());
         }
         CloseHandle(hProcess);
+    } else {
+        LogDebug("[PseudoOverlay] IsForegroundTarget: OpenProcess failed pid=%lu error=%lu", pid, GetLastError());
     }
 
     lastPid = pid;
     lastRes = match;
     lastCheckTime = GetTickCount64();
+    LogDebug("[PseudoOverlay] IsForegroundTarget: result=%d for pid=%lu", match, pid);
     return match;
 }
 
@@ -523,10 +546,12 @@ void PseudoOverlay::OnTimerTick() {
 
     if (config_.mode == 1 || config_.mode == 2) {
         bool warnTargetFocused = IsForegroundTarget();
-        bool condition = warnTargetFocused && !isRecording_.load();
+        bool isRecording = isRecording_.load();
+        bool condition = warnTargetFocused && !isRecording;
 
         if (condition) {
             if (!warnActive_) {
+                LogInfo("[PseudoOverlay] NOT RECORDING warning activated (foreground target focused, not recording)");
                 warnActive_ = true;
                 warnCycleStart_ = now;
                 warnVisible_ = true;
@@ -541,11 +566,19 @@ void PseudoOverlay::OnTimerTick() {
                 }
             }
         } else if (warnActive_ || warnVisible_) {
+            if (warnActive_) {
+                if (isRecording) {
+                    LogInfo("[PseudoOverlay] NOT RECORDING warning deactivated: recording started");
+                } else {
+                    LogInfo("[PseudoOverlay] NOT RECORDING warning deactivated: foreground target lost");
+                }
+            }
             warnActive_ = false;
             warnVisible_ = false;
             UpdateOverlay();
         }
     } else if (warnActive_ || warnVisible_) {
+        LogInfo("[PseudoOverlay] NOT RECORDING warning deactivated: mode changed to %d", config_.mode);
         warnActive_ = false;
         warnVisible_ = false;
         UpdateOverlay();
@@ -631,11 +664,16 @@ void PseudoOverlay::UpdateOverlay() {
     if (!initialized_)
         return;
 
+    const bool isRecording = isRecording_.load();
     const bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
 
     const bool shouldHaveVisibleOverlay =
-        ShouldOverlayBeVisible(config_, isRecording_.load(), warnVisible_, overloadWarnUntil_.load(),
+        ShouldOverlayBeVisible(config_, isRecording, warnVisible_, overloadWarnUntil_.load(),
                                screenshotNotifyUntil_.load(), ghostActive);
+
+    LogDebug("[PseudoOverlay] UpdateOverlay: mode=%d isRecording=%d warnVisible=%d ghost=%d shouldHaveVisible=%d",
+             config_.mode, isRecording ? 1 : 0, warnVisible_ ? 1 : 0, ghostActive ? 1 : 0,
+             shouldHaveVisibleOverlay ? 1 : 0);
 
     if (!config_.enabled) {
         DestroyOverlayWindows();
@@ -647,11 +685,14 @@ void PseudoOverlay::UpdateOverlay() {
     }
 
     // Suppress when inject overlay is active in a hooked game
+    const bool injectPending = IsInjectOverlayPending();
+    const bool injectActive = IsInjectOverlayActive();
     const bool suppressOverlay =
-        ShouldSuppressPseudoOverlayForInjectOverlayHandoff(IsInjectOverlayPending(), IsInjectOverlayActive());
+        ShouldSuppressPseudoOverlayForInjectOverlayHandoff(injectPending, injectActive);
     if (suppressOverlay) {
         if (!lastOverlaySuppressed_) {
-            LogInfo("[PseudoOverlay] Suppressed while inject overlay handoff is active");
+            LogInfo("[PseudoOverlay] Suppressed while inject overlay handoff is active (pending=%d active=%d)",
+                    injectPending ? 1 : 0, injectActive ? 1 : 0);
         }
         DestroyOverlayWindows();
         lastOv_ = {};
@@ -668,7 +709,8 @@ void PseudoOverlay::UpdateOverlay() {
 
     if (!shouldHaveVisibleOverlay) {
         if (hOv_ || hWarn_) {
-            LogInfo("[PseudoOverlay] Destroying idle overlay windows");
+            LogInfo("[PseudoOverlay] Destroying idle overlay windows (isRecording=%d warnVis=%d ghost=%d)",
+                    isRecording ? 1 : 0, warnVisible_ ? 1 : 0, ghostActive ? 1 : 0);
             DestroyOverlayWindows();
         }
         lastOv_ = {};
@@ -677,8 +719,11 @@ void PseudoOverlay::UpdateOverlay() {
     }
 
     if (!EnsureOverlayWindows()) {
+        LogWarn("[PseudoOverlay] EnsureOverlayWindows failed");
         return;
     }
+
+    LogDebug("[PseudoOverlay] Overlay windows present: hOv=%p hWarn=%p", (void*)hOv_, (void*)hWarn_);
 
     const AnchorInfo anchor = ResolveAnchorInfo();
     if (anchor.fullscreenLike) {
@@ -991,8 +1036,11 @@ void PseudoOverlay::UpdateOverlay() {
         SIZE szWnd = {wW, wH};
         POINT ptSrc = {0, 0};
         BLENDFUNCTION blend = {AC_SRC_OVER, 0, warnAlpha, 0};
-        UpdateLayeredWindow(hWarn_, NULL, &ptDst, &szWnd, hdcWarn_, &ptSrc, RGB(0, 0, 0), &blend,
-                            ULW_COLORKEY | ULW_ALPHA);
+        const BOOL ulwOk = UpdateLayeredWindow(hWarn_, NULL, &ptDst, &szWnd, hdcWarn_, &ptSrc, RGB(0, 0, 0), &blend,
+                                               ULW_COLORKEY | ULW_ALPHA);
+
+        LogDebug("[PseudoOverlay] Warning overlay: msg='%s' alpha=%d wx=%d wy=%d w=%d h=%d ulw=%d",
+                 msg, warnAlpha, wx, wy, wW, wH, ulwOk ? 1 : 0);
 
         lastWarnVis_ = warnAlpha > 0;
     }

@@ -948,6 +948,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 continue;
             }
 
+
+
             // wgc_window_detection is in [General], not [Injection] - parse outside section check
             if (trimmed.find("wgc-window-detection=") == 0 || trimmed.find("wgc_window_detection=") == 0) {
                 size_t eqPos = trimmed.find('=');
@@ -976,7 +978,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             // process_list in [pseudo-overlay] supports multi-line parenthesized format
             if (inPseudoOverlay && trimmed.find("process_list=") == 0) {
                 std::string rest = trimmed.substr(trimmed.find('=') + 1);
-                rest = Trim(rest);
+                rest = Trim(rest, " \t\r\n\"");
                 if (rest == "(") {
                     inPseudoProcessList = true;
                     pseudoProcessList.clear();

@@ -233,6 +233,62 @@ TEST_F(ConfigTest, PseudoOverlayProcessListIsNormalized) {
     EXPECT_EQ(config.pseudoOverlay.processList, "FortniteClient-Win64-Shipping.exe|StrangeBrigade_DX12.exe");
 }
 
+TEST_F(ConfigTest, PseudoOverlayProcessListMultiLine) {
+    std::string iniContent =
+        "[pseudo-overlay]\n"
+        "enabled=true\n"
+        "mode=2\n"
+        "process_list=(\n"
+        "FortniteClient-Win64-Shipping.exe\n"
+        "StrangeBrigade_DX12.exe\n"
+        ")\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.pseudoOverlay.enabled);
+    EXPECT_EQ(config.pseudoOverlay.mode, 2);
+    EXPECT_EQ(config.pseudoOverlay.processList, "FortniteClient-Win64-Shipping.exe|StrangeBrigade_DX12.exe");
+}
+
+TEST_F(ConfigTest, PseudoOverlayProcessListMultiLineWithComments) {
+    std::string iniContent =
+        "[pseudo-overlay]\n"
+        "enabled=true\n"
+        "process_list=(\n"
+        "FortniteClient-Win64-Shipping.exe\n"
+        ";StrangeBrigade_DX12.exe\n"
+        ")\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.pseudoOverlay.enabled);
+    EXPECT_EQ(config.pseudoOverlay.processList, "FortniteClient-Win64-Shipping.exe");
+}
+
+TEST_F(ConfigTest, PseudoOverlayProcessListMultiLineEmpty) {
+    std::string iniContent =
+        "[pseudo-overlay]\n"
+        "enabled=true\n"
+        "process_list=(\n"
+        ";FortniteClient-Win64-Shipping.exe\n"
+        ";StrangeBrigade_DX12.exe\n"
+        ")\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.pseudoOverlay.enabled);
+    EXPECT_TRUE(config.pseudoOverlay.processList.empty());
+}
+
 TEST_F(ConfigTest, LogLevelNoneMapsToOff) {
     WriteConfig(
         "[General]\n"
