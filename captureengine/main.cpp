@@ -1169,7 +1169,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
         // Config hot-reload
         DWORD configNow = GetTickCount();
-        if (configNow - lastConfigCheck > 1000) {
+        if (configNow - lastConfigCheck >= 1000) {
             WIN32_FILE_ATTRIBUTE_DATA fileInfo;
             if (GetFileAttributesExA(g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
                 static FILETIME lastWriteTime = fileInfo.ftLastWriteTime;
@@ -1241,48 +1241,23 @@ int ControllerMain(HINSTANCE hInstance) {
 
         const DWORD waitMs = GetControllerLoopWaitMs(lastConfigCheck);
 
-        // One-shot: dump waitMs for first 100 iterations to see distribution
-        static int diagCount = 0;
-        if (diagCount < 100) {
-            diagCount++;
-            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu cfgElapsed=%lu lastCfg=%lu now=%lu",
-                     (unsigned long long)iterCount, waitMs,
-                     (unsigned long)(GetTickCount() - lastConfigCheck),
-                     (unsigned long)lastConfigCheck, (unsigned long)GetTickCount());
-        }
-
         // Log per-iteration timing breakdown at trace level when rate is logged
-        if (iterRateLogCount == 0 && diagCount >= 100) {
+        if (iterRateLogCount == 0) {
             const int64_t msgUs = postMsgUs - iterNowUs;
             const int64_t healthUs = postHealthUs - postMsgUs;
             const int64_t configUs = preWaitUs - postHealthUs;
-            LogDebug("[ControllerDiag] iter=%llu breakdown: msg=%lld health=%lld config=%lld tot=%lld",
-                     (unsigned long long)iterCount, (long long)msgUs, (long long)healthUs, (long long)configUs,
-                     (long long)preWaitUs);
-            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d (timer=%d other=%d hk=%d) lastCfg=%lu now=%lu",
-                     (unsigned long long)iterCount, waitMs, msgCount, msgTimers, msgOthers, msgHotkeys,
-                     (unsigned long)lastConfigCheck, (unsigned long)GetTickCount());
-        }
-
-        if (waitMs == 0 && iterRateLogCount == 0 && diagCount >= 100) {
-            LogDebug("[ControllerDiag] iter=%llu WAITMS_ZERO cfgElapsed=%lu autoRec=%d autoStart=%llu",
-                     (unsigned long long)iterCount,
-                     (unsigned long)(GetTickCount() - lastConfigCheck),
-                     (int)g_AutoRecordEnabled,
-                     (unsigned long long)g_AutoRecordStartTime);
-        }
-
-        if (waitMs > 0) {
-            const DWORD waitStart = GetTickCount();
-            MsgWaitForMultipleObjectsEx(0, nullptr, waitMs, QS_ALLINPUT, 0);
-            const DWORD waitDelta = GetTickCount() - waitStart;
-            if (waitDelta < waitMs && iterRateLogCount == 0 && diagCount >= 100) {
-                LogDebug("[ControllerDiag] iter=%llu MsgWait early return: expected=%lu actual=%lu delta=%lu",
-                         (unsigned long long)iterCount, waitMs, waitDelta, waitDelta);
+            LogDebug("[ControllerDiag] iter=%llu breakdown: msg=%lld health=%lld config=%lld",
+                     (unsigned long long)iterCount, (long long)msgUs, (long long)healthUs, (long long)configUs);
+            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d (timer=%d other=%d hk=%d)",
+                     (unsigned long long)iterCount, waitMs, msgCount, msgTimers, msgOthers, msgHotkeys);
+            if (waitMs == 0) {
+                LogDebug("[ControllerDiag] iter=%llu WAITMS_ZERO cfgElapsed=%lu",
+                         (unsigned long long)iterCount,
+                         (unsigned long)(GetTickCount() - lastConfigCheck));
             }
-        } else {
-            MsgWaitForMultipleObjectsEx(0, nullptr, 0, QS_ALLINPUT, 0);
         }
+
+        MsgWaitForMultipleObjectsEx(0, nullptr, waitMs, QS_ALLINPUT, 0);
     }
 
     // Unregister hotkeys first
