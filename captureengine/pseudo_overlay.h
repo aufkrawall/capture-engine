@@ -125,7 +125,7 @@ private:
 
     // Timer ID
     static constexpr UINT_PTR kTimerId = 1001;
-    static constexpr UINT kTimerInterval = 100;  // ms
+    static constexpr UINT kTimerInterval = 500;  // ms
 
     // Window class names
     static constexpr const char* kIndicatorClass = "CE_PseudoOv";

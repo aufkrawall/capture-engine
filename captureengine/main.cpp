@@ -170,14 +170,14 @@ void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, P
 }
 
 DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
-    DWORD waitMs = 1000;
+    DWORD waitMs = 2000;
     DWORD now = GetTickCount();
 
     DWORD configElapsed = now - lastConfigCheck;
     if (configElapsed >= 250) {
         return 0;
     }
-    DWORD configWaitMs = 250 - configElapsed;
+    DWORD configWaitMs = 1000 - configElapsed;
     if (configWaitMs < waitMs) {
         waitMs = configWaitMs;
     }
@@ -1133,7 +1133,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
         // Config hot-reload
         static DWORD lastConfigCheck = 0;
-        if (GetTickCount() - lastConfigCheck > 250) {
+        if (GetTickCount() - lastConfigCheck > 1000) {
             WIN32_FILE_ATTRIBUTE_DATA fileInfo;
             if (GetFileAttributesExA(g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
                 static FILETIME lastWriteTime = fileInfo.ftLastWriteTime;

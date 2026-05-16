@@ -468,9 +468,14 @@ int InjectProcessMain(const AppConfig& config) {
 
     // Main loop
     while (g_Running) {
-        // Check for IPC commands
+        // Check for IPC commands (throttled when idle)
         ProcessCommand cmd;
-        if (ipc.PollCommand(cmd)) {
+        static DWORD lastIpcPoll = 0;
+        DWORD ipcNow = GetTickCount();
+        bool hasGame = pSharedMem && pSharedMem->GetSourcePid() != 0;
+        if (hasGame || (ipcNow - lastIpcPoll) >= 250) {
+            lastIpcPoll = ipcNow;
+            if (ipc.PollCommand(cmd)) {
             switch (cmd) {
                 case ProcessCommand::Shutdown:
                     LogInfo("[Inject] Shutdown command received");
@@ -543,6 +548,7 @@ int InjectProcessMain(const AppConfig& config) {
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
             }
+            }
         }
 
         // Monitor sourcePid for config reloads (CBT hook support)
@@ -583,7 +589,11 @@ int InjectProcessMain(const AppConfig& config) {
             SetInjectOverlayRuntimeState(pSharedMem, hasPending, hasActive, "injector:update");
         }
 
-        Sleep(injector ? 100 : 250);
+        if (injector && pSharedMem && pSharedMem->GetSourcePid() != 0) {
+            Sleep(100);
+        } else {
+            Sleep(250);
+        }
     }
 
     // Signal hook to exit

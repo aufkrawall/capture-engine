@@ -5096,6 +5096,8 @@ void StartRecording(const AppConfig& config) {
 
     LogInfo("[Media] Starting recording...");
 
+    timeBeginPeriod(1);
+
     bool useScreenGrab = IsPreferredScreenGrab();
     if (IsWgcCaptureMethod(config.captureMethod)) {
         useScreenGrab = true;
@@ -5109,6 +5111,7 @@ void StartRecording(const AppConfig& config) {
         SetActiveScreenGrab(false);
         SetCaptureRequestedState(false);
         SetRecordingVisibleState(false);
+        timeEndPeriod(1);
         return;
     }
 
@@ -5150,6 +5153,7 @@ void StartRecording(const AppConfig& config) {
         LogError("[Media] Failed to start MediaEngine recording");
         SetCaptureRequestedState(false);
         SetRecordingVisibleState(false);
+        timeEndPeriod(1);
         return;
     }
 
@@ -5172,6 +5176,7 @@ void StartRecording(const AppConfig& config) {
             SetRecordingVisibleState(false);
             MediaEngine_StopRecording();
             SetActiveScreenGrab(false);
+            timeEndPeriod(1);
             return;
         }
         LogInfo("[Media] Active recording path: WGC bounded pull-drain CFR (%d fps output)", config.video.fps);
@@ -5260,12 +5265,12 @@ void StopRecording() {
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     LogInfo("[Media] Recording stopped");
+    timeEndPeriod(1);
 }
 
 int MediaProcessMain(const AppConfig& initialConfig) {
     AppConfig config = initialConfig;
     Log_SetLevel(config.logLevel);
-    timeBeginPeriod(1);
     SetConsoleCtrlHandler(MediaConsoleHandler, TRUE);
 
     // Get exe directory for DLL loading
@@ -5319,12 +5324,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     ProcessIPCServer ipc(ProcessMode::Media);
     if (!ipc.Init()) {
         LogError("[Media] Failed to initialize IPC");
-        timeEndPeriod(1);
         return 1;
     }
 
     if (!ensureMediaEngineReady()) {
-        timeEndPeriod(1);
         return 1;
     }
 
@@ -5440,7 +5443,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     } else if (isExplicitInjectConfig()) {
         LogError("[Media] Failed to connect to shared memory in inject mode!");
         unloadMediaEngineIdle();
-        timeEndPeriod(1);
         return 1;
     } else {
         SetPreferredScreenGrab(true);
@@ -5457,7 +5459,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
     if (IsPreferredScreenGrab() || isAutoCaptureConfig()) {
         if (!ensureMediaEngineReady()) {
-            timeEndPeriod(1);
             return 1;
         }
         d3dDevice = MediaEngine_GetD3D11Device();
@@ -5465,7 +5466,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             if (IsPreferredScreenGrab()) {
                 LogError("[Media] Failed to get D3D11 device");
                 unloadMediaEngineIdle();
-                timeEndPeriod(1);
                 return 1;
             }
         } else {
@@ -5483,7 +5483,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     if (IsPreferredScreenGrab()) {
                         LogError("[Media] WGC capture init failed");
                         unloadMediaEngineIdle();
-                        timeEndPeriod(1);
                         return 1;
                     } else {
                         LogInfo("[Media] WGC init failed - inject mode only");
@@ -6269,7 +6268,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         UnmapViewOfFile(g_pSharedMem);
     if (g_hMapFile)
         CloseHandle(g_hMapFile);
-    timeEndPeriod(1);
 
     LogInfo("[Media] Process exiting");
     return 0;

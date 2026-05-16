@@ -49,6 +49,11 @@ int SensorProcessMain(const AppConfig& config) {
         hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
     }
 
+    // Cache DiscoveryInfo handle/mapping once, avoid kernel calls per iteration
+    HANDLE hDisc = INVALID_HANDLE_VALUE;
+    DiscoveryInfo* pDisc = nullptr;
+    bool loggedDiscMissing = false;
+
     std::map<uint32_t, SensorSession> sessions;
     static bool loggedDiscoveryAttempt = false;
 
@@ -57,45 +62,49 @@ int SensorProcessMain(const AppConfig& config) {
 
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     while (g_SensorRunning.load(std::memory_order_acquire)) {
-        // 1. Discover new sessions
-        HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-        if (hDisc) {
-            DiscoveryInfo* info = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-            if (info) {
-                if (info->magic == DISCOVERY_MAGIC) {
-                    uint32_t pid = info->injectPid;
-                    if (!loggedDiscoveryAttempt) {
-                        LogInfo("[Sensors] Discovery found inject PID %u", pid);
-                        loggedDiscoveryAttempt = true;
-                    }
-                    if (pid != 0 && sessions.find(pid) == sessions.end()) {
-                        wchar_t smName[64];
-                        GenerateSharedMemName(smName, 64, pid);
-                        HANDLE hSM = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, smName);
-                        if (hSM) {
-                            SharedMemoryLayout* shm = (SharedMemoryLayout*)MapViewOfFile(hSM, FILE_MAP_ALL_ACCESS, 0, 0,
-                                                                                         sizeof(SharedMemoryLayout));
-                            if (shm) {
-                                LogInfo(
-                                    "[Sensors] Discovered new session: Inject PID %u, Game "
-                                    "PID %u",
-                                    pid, shm->GetSourcePid());
-                                sessions[pid] = {hSM, shm};
-                            } else {
-                                LogError("[Sensors] Failed to map shared memory for PID %u", pid);
-                                CloseHandle(hSM);
-                            }
+        // 1. Discover new sessions (cached handle, open/map once)
+        if (hDisc == INVALID_HANDLE_VALUE) {
+            hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+            if (hDisc) {
+                pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+                if (!pDisc) {
+                    CloseHandle(hDisc);
+                    hDisc = INVALID_HANDLE_VALUE;
+                }
+            }
+        }
+        if (hDisc != INVALID_HANDLE_VALUE && pDisc) {
+            if (pDisc->magic == DISCOVERY_MAGIC) {
+                uint32_t pid = pDisc->injectPid;
+                if (!loggedDiscoveryAttempt) {
+                    LogInfo("[Sensors] Discovery found inject PID %u", pid);
+                    loggedDiscoveryAttempt = true;
+                }
+                if (pid != 0 && sessions.find(pid) == sessions.end()) {
+                    wchar_t smName[64];
+                    GenerateSharedMemName(smName, 64, pid);
+                    HANDLE hSM = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, smName);
+                    if (hSM) {
+                        SharedMemoryLayout* shm = (SharedMemoryLayout*)MapViewOfFile(hSM, FILE_MAP_ALL_ACCESS, 0, 0,
+                                                                                     sizeof(SharedMemoryLayout));
+                        if (shm) {
+                            LogInfo(
+                                "[Sensors] Discovered new session: Inject PID %u, Game "
+                                "PID %u",
+                                pid, shm->GetSourcePid());
+                            sessions[pid] = {hSM, shm};
                         } else {
-                            LogError("[Sensors] Failed to open shared memory for PID %u: %d", pid, GetLastError());
+                            LogError("[Sensors] Failed to map shared memory for PID %u", pid);
+                            CloseHandle(hSM);
                         }
+                    } else {
+                        LogError("[Sensors] Failed to open shared memory for PID %u: %d", pid, GetLastError());
                     }
                 }
-                UnmapViewOfFile(info);
             }
-            CloseHandle(hDisc);
-        } else if (!loggedDiscoveryAttempt) {
+        } else if (!loggedDiscMissing) {
             LogInfo("[Sensors] Waiting for discovery shared memory...");
-            loggedDiscoveryAttempt = true;
+            loggedDiscMissing = true;
         }
 
         // 2. Poll metrics for all active sessions
@@ -155,6 +164,12 @@ int SensorProcessMain(const AppConfig& config) {
 
     if (hShutdownEvent != INVALID_HANDLE_VALUE)
         CloseHandle(hShutdownEvent);
+
+    // Cleanup cached DiscoveryInfo handles
+    if (pDisc)
+        UnmapViewOfFile(pDisc);
+    if (hDisc != INVALID_HANDLE_VALUE)
+        CloseHandle(hDisc);
 
     return 0;
 }
