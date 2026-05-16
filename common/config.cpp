@@ -271,35 +271,28 @@ void CreateDefaultConfig(const std::string& path) {
 
     cfg << R"CFG(; =============================================================================
 ; CaptureEngine Configuration
-; All keys below can also be overridden per process in [App.N] sections.
 ; =============================================================================
 
 [General]
-; log_level - Values: off, error, warn, info, debug, trace
-;   debug = normal debugging logs
-;   trace = debug plus forensic / very verbose traces (hook byte dumps, CSV perf logs)
-log_level=debug
-; debug_logging - Legacy compatibility alias. Prefer log_level above.
-debug_logging=true
+; log_level - Values: none, trace
+log_level=trace
+
 ; capture_method - Values: inject, wgc, auto
 ;   inject = injected shared-memory capture only
-;   wgc    = Windows Graphics Capture only (legacy aliases: screengrab, framegrab, desktop_dup)
+;   wgc    = Windows Graphics Capture only (screen or window grab, requires DWM present "fullscreen optimization" for older games)
 ;   auto   = WGC, unless application is on inject whitelist
 capture_method=auto
-; wgc_skip_split_device_flush - Experimental. Skip producer-side Flush() after split-device WGC CopyResource.
-; Leave false until GPU-bound validation confirms no corruption or encoder underfeed.
-wgc_skip_split_device_flush=false
-; wgc_same_device_capture - Experimental. Reuse the encoder D3D11 device for WGC instead of a dedicated capture device.
-; Leave false unless same-device validation improves capture/game pacing on your system.
-wgc_same_device_capture=false
-; When [Video] bit_depth=10 is explicitly selected, WGC requires a high-precision
-; capture format and fails loudly instead of silently falling back to BGRA8.
 
-; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay.
+; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay. Favors capturing found window over capturing the entire screen.
 ; Format: process:window:mode - see [Injection] section for full format documentation.
-; Safe with anti-cheats (no guarantees!). Tries to find corresponding window name when providing process name instead.
-wgc_window_detection=(
-)
+; Safe with anti-cheats (no guarantees!). Tries to find corresponding window name when providing process name instead. Continues to capture screen when game window closes.
+;wgc_window_detection=(
+;FortniteClient-Win64-Shipping.exe
+;)
+
+; WGC performance options. wgc_same_device_capture=true should have lowest overhead.
+wgc_same_device_capture=true
+;wgc_skip_split_device_flush=false
 
 [Injection]
 ; Entry format: process:window:mode
@@ -323,31 +316,34 @@ wgc_window_detection=(
 ; whitelist - Processes to inject into. Enables overlay and render feature overrides.
 ; DO NOT USE IN MULTIPLAYER GAMES!
 whitelist=(
+;Talos1-Win64-Shipping.exe
+;dx6_test.exe
+;dx7_test.exe
+;directdraw7_test.exe
+;dx8_test.exe
+;dx9_test.exe
+;dx9ex_test.exe
+;dx10_test.exe
+;dx11_test.exe
+;dx12_test.exe
+;opengl_test.exe
+;opengl_legacy_test.exe
+;MirrorsEdge.exe
+;StrangeBrigade_DX12.exe
+;StrangeBrigade_Vulkan.exe
+;BioShockInfinite.exe
+;GTA5_Enhanced.exe
 )
 
-; overlay_whitelist - Overlay-only injection (no capture). For use with WGC capture.
+; overlay_whitelist - Overlay-only injection (no capture). For use with WGC capture, e.g. with D3D9 non-ex when zero copy inject capture is not available.
 ; DO NOT USE IN MULTIPLAYER GAMES!
 overlay_whitelist=(
+;MirrorsEdge.exe
 )
 
 [Overlay]
 ; enabled - Values: true, false
 enabled=true
-; observer_only - Values: true, false
-;   true = keep injection/hooks/logging active, but do not render the overlay,
-;          do not install/use PostSL, and do not mutate Streamline startup state.
-observer_only=false
-; observer_policy_only - Values: true, false
-;   true = only meaningful with observer_only=true. Keeps DX12/PostSL/startup-Present
-;          behavior passive, but allows Streamline startup-policy mutation for staged
-;          active-path bisecting.
-observer_policy_only=false
-; observer_startup_present_only - Values: true, false
-;   true = only meaningful with observer_only=true and observer_policy_only=true.
-;          Keeps PostSL and special Streamline Present routing passive, but still
-;          allows the remaining non-Streamline startup-Present probe pieces
-;          (such as the FFX startup bypass) for staged active-path bisecting.
-observer_startup_present_only=false
 ; capture_include_overlay - Values: true, false
 capture_include_overlay=true
 ; screenshot_include_overlay - Values: true, false
@@ -383,6 +379,11 @@ rounded_corners=8
 ; text_update_interval (untested) - Values: integer milliseconds
 text_update_interval=500
 
+;Debug options
+;observer_only=false
+;observer_policy_only=false
+;observer_startup_present_only=false
+
 [Hotkeys]
 ; start_stop - Values: key string (e.g. F9, Ctrl+Shift+F10)
 start_stop=F9
@@ -398,7 +399,7 @@ encoder=av1_nvenc
 fps=120
 ; container - Values: mkv, mp4, mov
 container=mkv
-; output_dir - Values: path, empty = captures subfolder
+; output_dir - Values: path, empty = executable directory
 output_dir=captures
 ; rate_control - Values: VBR, CBR, CQ, CQP
 ;   VBR  = Variable Bitrate (uses bitrate + max_bitrate)
@@ -407,9 +408,9 @@ output_dir=captures
 ;   CQP  = True Constant QP (like OBS "CQP"); uses qp only, no bitrate limit at all
 rate_control=VBR
 ; bitrate - Values: e.g. 75Mbps, 60000Kbps, 60000000
-bitrate=75Mbps
+bitrate=125Mbps
 ; max_bitrate - Values: same format as bitrate
-max_bitrate=150Mbps
+max_bitrate=200Mbps
 ; keyframe_interval - Values: integer seconds
 keyframe_interval=2
 ; profile - Values: auto (recommended), or codec-specific values like baseline, main, high, high10, main10, rext
@@ -421,11 +422,11 @@ custom_options=
 ; capture_cursor - Values: true, false
 capture_cursor=true
 ; bit_depth - Values: auto, 8, 10
-bit_depth=auto
+bit_depth=8
 ; color_space - Values: auto, bt709, bt2020
 color_space=auto
 ; color_range - Values: auto, full, limited
-color_range=auto
+color_range=limited
 ; chroma_subsampling - Values: auto, 420, 422, 444 (422 and 444 currently unsupported)
 chroma_subsampling=auto
 
@@ -473,7 +474,7 @@ enabled=true
 ; device - Values: device name/ID, empty = default system device
 device=
 ; track - Values: 1-8 or comma-separated list
-track=1
+track=1,2
 ; codec - Values: aac, alac, flac, opus, pcm
 codec=alac
 ; bitrate (ignored with lossless codecs)- Values: integer Kbps
@@ -486,67 +487,56 @@ bit_depth=default
 downmix=false
 
 ; [Audio.1]-[Audio.8] - Additional system audio capture devices
-;   Each section captures from a different audio output device.
-;   Codec/bitrate/sample_rate/bit_depth/downmix inherit from [Audio].
-; enabled - Values: true, false
-; device - Values: device name or WASAPI device ID, empty = default
-; track - Values: 1-8 or comma-separated list (default: track idx+10)
+;Codec/bitrate/sample_rate/bit_depth/downmix inherit from [Audio].
+;enabled - Values: true, false
+;device - Values: device name or WASAPI device ID, empty = default
+;track - Values: 1-8 or comma-separated list (default: track idx+10)
 ;
-; Example:
-; [Audio.1]
-; enabled=true
-; device=Speakers (Realtek)
-; track=11
-; [Audio.2]
-; enabled=true
-; device=Headphones
-; track=12
+;Example:
+;[Audio.1]
+;enabled=true
+;device=Speakers (Realtek)
+;track=11
 
 [Microphone]
 ; enabled - Values: true, false
-enabled=false
+enabled=true
 ; device - Values: device name/ID, empty = default microphone
 device=
 ; track - Values: 1-8 or comma-separated list
-track=2
+track=2,3
 
 ; [Microphone.1]-[Microphone.8] - Additional microphone capture devices
-;   Each section captures from a different microphone input.
-;   Codec/bitrate/sample_rate/bit_depth/downmix inherit from [Audio].
-; enabled - Values: true, false
-; device - Values: device name or WASAPI device ID, empty = default
-; track - Values: 1-8 or comma-separated list (default: track idx+20)
+;Codec/bitrate/sample_rate/bit_depth/downmix inherit from [Audio].
+;enabled - Values: true, false
+;device - Values: device name or WASAPI device ID, empty = default
+;track - Values: 1-8 or comma-separated list (default: track idx+20)
 ;
-; Example:
-; [Microphone.1]
-; enabled=true
-; device=Microphone (Blue Yeti)
-; track=21
+;Example:
+;[Microphone.1]
+;enabled=true
+;device=Microphone (Blue Yeti)
+;track=21
 
 [Performance]
-; For video capture. These usually don't need to be changed
-; process_priority - Values: idle, below_normal, normal, above_normal, high, realtime
 process_priority=above_normal
-; gpu_priority - Values: integer -7..7
-gpu_priority=0
-; copy_queue_priority - Values: low, normal, high
-copy_queue_priority=normal
+gpu_priority=7
 
 [FpsLimiter]
 ; capture_sync_enabled, limits game fps to video fps - Values: true, false
 capture_sync_enabled=false
 ; capture_sync_multiplier, e.g. set to 2 to make fps limiter run at 120fps for still smooth 60fps video capture - Values: 1-8
-capture_sync_multiplier=1
+capture_sync_multiplier=2
 ; capture_sync_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
 ; auto probing order: reflex (NVIDIA, requires game activation) → anti_lag2 (AMD, requires game activation) → xell (Intel, requires game activation) → fg_fallback (when DLSS/FSR FG active) → basic
-capture_sync_limiter_mode=auto
+capture_sync_limiter_mode=basic
 ; general_enabled, general fps limiter also without active video capture - Values: true, false
 general_enabled=false
 ; general_fps - Values: integer > 0
-general_fps=120
+general_fps=60
 ; general_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
 ; auto probing order: reflex (NVIDIA, requires game activation) → anti_lag2 (AMD, requires game activation) → xell (Intel, requires game activation) → fg_fallback (when DLSS/FSR FG active) → basic
-general_limiter_mode=auto
+general_limiter_mode=basic
 
 [Graphics]
 ; global graphics overrides (you can also use per-profile overrides instead)
@@ -564,7 +554,7 @@ mip_bias_mode=strict
 force_mip_bias_clamp=false
 ; cpu_prerender_limit - Values: -1, 0, 1-6
 cpu_prerender_limit=-1
-; backbuffer_count, affecting vsync - Values: -1, 2-6. Can reduce flip-model buffer count at creation time; ResizeBuffers override still blocked by flip-model safety.
+; backbuffer_count, affecting vsync - Values: -1, 2-6. Does not work in Steam D3D12 games, also potentially not other cases.
 backbuffer_count=-1
 
 ; global DLSS override options (you can also use per-profile overrides instead)
@@ -586,64 +576,77 @@ dlss_sr_dll_path=
 dlss_rr_dll_path=
 ; dlss_fg_dll_path - Values: empty, absolute DLL path, or absolute directory path
 dlss_fg_dll_path=
-
-; Application overrides and application audio settings. Comment out all/most lines to use per-profile overrides instead.
-
-; [AppAudio.1]
-; enabled=true
-; Process=StrangeBrigade_DX12.exe
-; track - Values: 1-8 or comma-separated list
-; track=2,3
-; downmix - Values: true, false
-; downmix=false
-
-; [AppAudio.2]
-; ...
+; streamline_dll_path - Values: empty, absolute DLL path, or absolute directory path
+;   If the specific DLL is not found at the custom path, the default load path is used.
+streamline_dll_path=
 
 [pseudo-overlay]
-; Controller-side pseudo-overlay indicator for WGC capture (no injection required)
-; Uses layered desktop windows and keeps the ghost keepalive / animated warning
-; behavior, while reducing extra z-order churn and using target-aware anchoring
-; Shows a colored circle in screen corner while recording
+; Pseudo-overlay indicator for WGC capture (no injection required)
+; Shows a colored circle in screen corner when recording
 ; Blinking warning appears when a whitelisted game is focused but not recording
 ; enabled - Values: true, false
-enabled=false
+enabled=true
 ; size - Values: 10-200 (indicator circle diameter in pixels)
-size=30
+size=20
 ; pad - Values: 0-100 (padding from screen edge in pixels)
 pad=20
 ; pos - Values: 0=BottomRight, 1=BottomLeft, 2=TopRight, 3=TopLeft
 pos=0
 ; mode - Values: 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
-mode=0
-; always_render - Keep the indicator window alive with a 1x1 alpha=1 ghost pixel when idle
+mode=2
+; always_render - Keep overlay window always present (invisible when idle). May allow overlay window changes not affecting VRR, but unreliable. Better use mode=2 to avoid this once recording is active.
 always_render=false
 ; always_render_only_when_game - Only use always_render when a whitelisted game is focused
 always_render_only_when_game=false
-; show_encoder_overload_warnings - Show encoder overload status warning
-show_encoder_overload_warnings=true
+; show_encoder_overload_warnings - Show "Encoder overloaded!" warning
+show_encoder_overload_warnings=false
 ; process_list - Pipe-delimited list of process names for warning detection (e.g. game1.exe|game2.exe)
 ; These are the processes where "NOT RECORDING" warning shows when focused but not recording
-process_list=
+;process_list=FortniteClient-Win64-Shipping.exe|StrangeBrigade_DX12.exe
 
 [Screenshot]
 ; screenshot_dir - Output directory for screenshots. Empty = "screenshots" subfolder next to exe
 screenshot_dir=
 
-; [App.1]
-; Process=StrangeBrigade_DX12.exe
-; anisotropic_filtering=16x
-; cpu_prerender_limit=1
-; backbuffer_count=2
-; vsync_mode=fifo
-; mip_bias=-3.0
+; Application audio sources and per process overrides
 
-; [App.2]
-; Process=Talos1-Win64-Shipping.exe
-; anisotropic_filtering=16x
-; cpu_prerender_limit=1
-; vsync_mode=fifo
-; mip_bias=-3.0
+;[AppAudio.1]
+;enabled=true
+;Process=FortniteClient-Win64-Shipping.exe
+;track=1,2
+
+;[AppAudio.2]
+;enabled=true
+;Process=StrangeBrigade_DX12.exe
+;track=1,2
+
+;[AppAudio.3]
+;enabled=true
+;Process=StrangeBrigade_Vulkan.exe
+;track=1,2
+
+; [AppAudio.n]
+
+;[App.1]
+;Process=BioShockInfinite.exe
+;anisotropic_filtering=16x
+;cpu_prerender_limit=1
+;backbuffer_count=2
+;vsync_mode=fifo
+;;mip_bias=-3.0
+;general_enabled=true
+;general_fps=140
+;general_limiter_mode=basic
+
+;[App.2]
+;Process=StrangeBrigade_DX12.exe
+;anisotropic_filtering=16x
+;cpu_prerender_limit=1
+;backbuffer_count=2
+;vsync_mode=fifo
+;mip_bias=-3.0
+
+; [App.n]
 )CFG";
 
     cfg.close();

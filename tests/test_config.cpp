@@ -76,12 +76,12 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
 
     LoadConfig(missingFile, config);
 
-    // Default is TRUE in config.cpp
+    // log_level=trace in default
     EXPECT_TRUE(config.debugLogging);
-    EXPECT_EQ(config.logLevel, LogLevel::Debug);
+    EXPECT_EQ(config.logLevel, LogLevel::Trace);
     EXPECT_EQ(config.captureMethod, "auto");
     EXPECT_FALSE(config.wgcSkipSplitDeviceFlush);
-    EXPECT_FALSE(config.wgcSameDeviceCapture);
+    EXPECT_TRUE(config.wgcSameDeviceCapture);
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
@@ -94,7 +94,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("; capture_method - Values: inject, wgc, auto"), std::string::npos);
     EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_skip_split_device_flush=false"), std::string::npos);
-    EXPECT_NE(generatedText.find("wgc_same_device_capture=false"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_same_device_capture=true"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);
@@ -102,7 +102,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("capture_include_overlay=true"), std::string::npos);
     EXPECT_NE(generatedText.find("screenshot_include_overlay=true"), std::string::npos);
     EXPECT_EQ(generatedText.find("perf_metrics_logging="), std::string::npos);
-    EXPECT_NE(generatedText.find("log_level=debug"), std::string::npos);
+    EXPECT_NE(generatedText.find("log_level=trace"), std::string::npos);
     EXPECT_EQ(generatedText.find("nvidia_smooth_motion_compat="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr_audio_sync="), std::string::npos);
