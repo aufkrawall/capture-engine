@@ -1233,6 +1233,8 @@ int ControllerMain(HINSTANCE hInstance) {
 
         const int64_t preWaitUs = Log_GetQpcUs();
 
+        const DWORD waitMs = GetControllerLoopWaitMs(lastConfigCheck);
+
         // Log per-iteration timing breakdown at trace level when rate is logged
         if (iterRateLogCount == 0) {
             const int64_t msgUs = postMsgUs - iterNowUs;
@@ -1241,12 +1243,30 @@ int ControllerMain(HINSTANCE hInstance) {
             LogDebug("[ControllerDiag] iter=%llu breakdown: msg=%lld health=%lld config=%lld tot=%lld",
                      (unsigned long long)iterCount, (long long)msgUs, (long long)healthUs, (long long)configUs,
                      (long long)preWaitUs);
-            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d", (unsigned long long)iterCount,
-                     GetControllerLoopWaitMs(lastConfigCheck), msgCount);
+            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d lastCfg=%lu now=%lu",
+                     (unsigned long long)iterCount, waitMs, msgCount, (unsigned long)lastConfigCheck,
+                     (unsigned long)GetTickCount());
         }
 
-        MsgWaitForMultipleObjectsEx(0, nullptr, GetControllerLoopWaitMs(lastConfigCheck), QS_ALLINPUT,
-                                    MWMO_INPUTAVAILABLE);
+        if (waitMs == 0 && iterRateLogCount == 0) {
+            LogDebug("[ControllerDiag] iter=%llu WAITMS_ZERO cfgElapsed=%lu autoRec=%d autoStart=%llu",
+                     (unsigned long long)iterCount,
+                     (unsigned long)(GetTickCount() - lastConfigCheck),
+                     (int)g_AutoRecordEnabled,
+                     (unsigned long long)g_AutoRecordStartTime);
+        }
+
+        if (waitMs > 0) {
+            const DWORD waitStart = GetTickCount();
+            MsgWaitForMultipleObjectsEx(0, nullptr, waitMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            const DWORD waitDelta = GetTickCount() - waitStart;
+            if (waitDelta < waitMs && iterRateLogCount == 0) {
+                LogDebug("[ControllerDiag] iter=%llu MsgWait early return: expected=%lu actual=%lu delta=%lu",
+                         (unsigned long long)iterCount, waitMs, waitDelta, waitDelta);
+            }
+        } else {
+            MsgWaitForMultipleObjectsEx(0, nullptr, 0, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        }
     }
 
     // Unregister hotkeys first
