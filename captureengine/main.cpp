@@ -1264,14 +1264,14 @@ int ControllerMain(HINSTANCE hInstance) {
 
         if (waitMs > 0) {
             const DWORD waitStart = GetTickCount();
-            MsgWaitForMultipleObjectsEx(0, nullptr, waitMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            MsgWaitForMultipleObjectsEx(0, nullptr, waitMs, QS_ALLINPUT, 0);
             const DWORD waitDelta = GetTickCount() - waitStart;
             if (waitDelta < waitMs && iterRateLogCount == 0) {
                 LogDebug("[ControllerDiag] iter=%llu MsgWait early return: expected=%lu actual=%lu delta=%lu",
                          (unsigned long long)iterCount, waitMs, waitDelta, waitDelta);
             }
         } else {
-            MsgWaitForMultipleObjectsEx(0, nullptr, 0, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            MsgWaitForMultipleObjectsEx(0, nullptr, 0, QS_ALLINPUT, 0);
         }
     }
 
