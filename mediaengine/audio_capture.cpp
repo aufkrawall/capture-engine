@@ -1,6 +1,10 @@
 #include "audio_capture.h"
 #include <iostream>
-#include <functiondiscoverykeys_devpkey.h>  // PKEY_Device_FriendlyName
+// PKEY_Device_FriendlyName defined locally to avoid cross-compile link errors
+// (MinGW on Linux needs INITGUID for the header definition, this is portable)
+static const PROPERTYKEY PKEY_Device_FriendlyName = {
+    {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14
+};
 #include "audio_time_utils.h"
 #include "mediaengine.h"  // For DLL_Log
 
