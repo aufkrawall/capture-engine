@@ -399,8 +399,8 @@ encoder=av1_nvenc
 fps=120
 ; container - Values: mkv, mp4, mov
 container=mkv
-; output_dir - Values: path, empty = executable directory
-output_dir=captures
+; output_dir - Values: path, Empty = "captures" subfolder next to exe
+output_dir=
 ; rate_control - Values: VBR, CBR, CQ, CQP
 ;   VBR  = Variable Bitrate (uses bitrate + max_bitrate)
 ;   CBR  = Constant Bitrate  (uses bitrate + max_bitrate)
