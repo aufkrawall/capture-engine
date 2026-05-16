@@ -332,10 +332,10 @@ show_encoder_overload_warnings=false
 ; process_list - Process names for "NOT RECORDING" warning detection.
 ; These are the processes where "NOT RECORDING" warning shows when focused but not recording.
 ; Format: pipe-delimited (single line) or multi-line parenthesized block (see below).
-;process_list=(
+process_list=(
 ;FortniteClient-Win64-Shipping.exe
 ;StrangeBrigade_DX12.exe
-;)
+)
 
 [Screenshot]
 ; screenshot_dir - Output directory for screenshots. Empty = "screenshots" subfolder next to exe
