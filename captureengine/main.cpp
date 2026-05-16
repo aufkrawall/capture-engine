@@ -174,7 +174,7 @@ DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
     DWORD now = GetTickCount();
 
     DWORD configElapsed = now - lastConfigCheck;
-    if (configElapsed >= 250) {
+    if (configElapsed >= 1000) {
         return 0;
     }
     DWORD configWaitMs = 1000 - configElapsed;
