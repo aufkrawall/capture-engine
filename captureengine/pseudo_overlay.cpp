@@ -518,6 +518,7 @@ void PseudoOverlay::OnTimerTick() {
         return;
     }
 
+    const int64_t tickStartUs = Log_GetQpcUs();
     ULONGLONG now = GetTickCount64();
 
     if (config_.mode == 1 || config_.mode == 2) {
@@ -598,6 +599,12 @@ void PseudoOverlay::OnTimerTick() {
             lastMode0Check = now;
             UpdateOverlay();
         }
+    }
+
+    const int64_t tickEndUs = Log_GetQpcUs();
+    const int64_t tickElapsedUs = tickEndUs - tickStartUs;
+    if (tickElapsedUs > 1000) {
+        LogDebug("[PseudoOverlay] TimerTick took %lld us", (long long)tickElapsedUs);
     }
 }
 

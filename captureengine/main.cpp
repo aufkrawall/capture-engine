@@ -1064,9 +1064,35 @@ int ControllerMain(HINSTANCE hInstance) {
     // Main message loop
     MSG msg;
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+
+    // Diagnostic loop timing
+    static int64_t loopStartUs = Log_GetQpcUs();
+    static uint64_t iterCount = 0;
+    static uint64_t iterRateLogCount = 0;
+    static int64_t iterRateLogStartUs = Log_GetQpcUs();
+    static DWORD lastConfigCheck = 0;
+
     while (g_Running) {
+        iterCount++;
+        const int64_t iterNowUs = Log_GetQpcUs();
+        const int64_t iterDeltaUs = iterNowUs - loopStartUs;
+        loopStartUs = iterNowUs;
+
+        // Log iteration rate every ~5s at trace level
+        iterRateLogCount++;
+        const int64_t rateLogElapsedUs = iterNowUs - iterRateLogStartUs;
+        if (rateLogElapsedUs > 5000000) {
+            const double rateHz = static_cast<double>(iterRateLogCount) / (rateLogElapsedUs / 1000000.0);
+            LogDebug("[ControllerDiag] iter=%llu rate=%.1f Hz delta=%lld us waitMs=%lu msgProc=%d", (unsigned long long)iterCount,
+                     rateHz, (long long)iterDeltaUs, GetControllerLoopWaitMs(lastConfigCheck), 0);
+            iterRateLogCount = 0;
+            iterRateLogStartUs = iterNowUs;
+        }
+
         // Process messages
+        int msgCount = 0;
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+            msgCount++;
             if (msg.message == WM_QUIT) {
                 g_Running = false;
                 continue;
@@ -1128,12 +1154,16 @@ int ControllerMain(HINSTANCE hInstance) {
             DispatchMessage(&msg);
         }
 
+        const int64_t postMsgUs = Log_GetQpcUs();
+
         // Check child process health
         CheckChildProcessHealth();
 
+        const int64_t postHealthUs = Log_GetQpcUs();
+
         // Config hot-reload
-        static DWORD lastConfigCheck = 0;
-        if (GetTickCount() - lastConfigCheck > 1000) {
+        DWORD configNow = GetTickCount();
+        if (configNow - lastConfigCheck > 1000) {
             WIN32_FILE_ATTRIBUTE_DATA fileInfo;
             if (GetFileAttributesExA(g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
                 static FILETIME lastWriteTime = fileInfo.ftLastWriteTime;
@@ -1199,6 +1229,20 @@ int ControllerMain(HINSTANCE hInstance) {
                 ToggleRecording();
                 g_Running = false;  // Exit after auto-record completes
             }
+        }
+
+        const int64_t preWaitUs = Log_GetQpcUs();
+
+        // Log per-iteration timing breakdown at trace level when rate is logged
+        if (iterRateLogCount == 0) {
+            const int64_t msgUs = postMsgUs - iterNowUs;
+            const int64_t healthUs = postHealthUs - postMsgUs;
+            const int64_t configUs = preWaitUs - postHealthUs;
+            LogDebug("[ControllerDiag] iter=%llu breakdown: msg=%lld health=%lld config=%lld tot=%lld",
+                     (unsigned long long)iterCount, (long long)msgUs, (long long)healthUs, (long long)configUs,
+                     (long long)preWaitUs);
+            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d", (unsigned long long)iterCount,
+                     GetControllerLoopWaitMs(lastConfigCheck), msgCount);
         }
 
         MsgWaitForMultipleObjectsEx(0, nullptr, GetControllerLoopWaitMs(lastConfigCheck), QS_ALLINPUT,
