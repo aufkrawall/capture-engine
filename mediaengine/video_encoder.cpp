@@ -5009,19 +5009,23 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             bool isTypelessHdr = (vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS ||
                                   vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
             if (isTypelessHdr) {
-                // WGC with 10-bit display provides R16G16B16A16_TYPELESS.
-                // The D3D11 VideoProcessor doesn't accept TYPELESS on all HW.
-                // Convert to R10G10B10A2_UNORM (widely VP-compatible) with
-                // linear passthrough - WGC data is already gamma-corrected.
-                const HRESULT stagingHr = hr;
-                // Force linear passthrough: WGC data is already gamma-corrected.
-                bool savedIsHdr = currentIsHDR;
-                currentIsHDR = true;  // Makes encodeSdrGamma=false in prepareFp16CompatInput
-                bool converted = prepareFp16CompatInput(stagingHr);
-                currentIsHDR = savedIsHdr;
-                if (!converted) {
+                // WGC provides R16G16B16A16_TYPELESS with 10-bit displays.
+                // Create an FP16 staging texture instead - no clamp, no gamma,
+                // pure passthrough. The VP accepts FP16 input natively.
+                ID3D11Texture2D* fp16Tex = RenderFullscreenCopy(
+                    vpInputTexture, vpInputDesc.Width, vpInputDesc.Height,
+                    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    vpInputFp16Staging, vpInputFp16StagingRTV,
+                    vpInputFp16StagingW, vpInputFp16StagingH,
+                    "VP-FP16", false);
+                if (!fp16Tex) {
+                    DLL_Log("[VP] Failed to create FP16 staging for TYPELESS input");
                     return false;
                 }
+                vpInputTexture = fp16Tex;
+                needReleaseConverted = true;
+                // Also potentially W_previous texture that was released
+                vpInputTexture->GetDesc(&vpInputDesc);
                 try {
                     hr = videoDevice->CreateVideoProcessorInputView(vpInputTexture, videoProcessorEnum, &inputViewDesc,
                                                                     &localInputView);
@@ -5029,10 +5033,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                     hr = E_FAIL;
                 }
                 if (FAILED(hr)) {
-                    DLL_Log("[VP] Failed to create RGB10A2 VP input view: HR=%x", hr);
+                    DLL_Log("[VP] FP16 staging input view failed: HR=%x", hr);
                     return false;
                 }
-                fp16VpInputStrategy = Fp16VpInputStrategy::kUseRgb10Compat;
+                DLL_Log("[VP] Using FP16 staging input for TYPELESS source");
             } else {
                 DLL_Log("[VP] Failed to create input view from staging: HR=%x", hr);
                 return false;
@@ -5469,6 +5473,11 @@ void VideoEncoder::CleanupVideoProcessor() {
     }
     videoProcessorInit = false;
     use10BitPipeline = false;
+
+    if (vpInputFp16StagingRTV) { vpInputFp16StagingRTV->Release(); vpInputFp16StagingRTV = nullptr; }
+    if (vpInputFp16Staging) { vpInputFp16Staging->Release(); vpInputFp16Staging = nullptr; }
+    vpInputFp16StagingW = 0;
+    vpInputFp16StagingH = 0;
 
     // Cleanup SwapRB shader resources
     if (swapRBTextureRTV) {

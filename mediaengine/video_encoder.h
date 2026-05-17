@@ -320,6 +320,10 @@ private:
     ID3D11RenderTargetView* rgb10IntermediateRTV = nullptr;
     uint32_t rgb10IntermediateWidth = 0;
     uint32_t rgb10IntermediateHeight = 0;
+    ID3D11Texture2D* vpInputFp16Staging = nullptr;
+    ID3D11RenderTargetView* vpInputFp16StagingRTV = nullptr;
+    uint32_t vpInputFp16StagingW = 0;
+    uint32_t vpInputFp16StagingH = 0;
     bool swapRBShaderCreated = false;
 
     // Per-recording log flags (reset each recording via CleanupVideoProcessor)
