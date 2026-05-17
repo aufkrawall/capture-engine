@@ -651,12 +651,12 @@ public:
             }
             DLL_Log("MediaEngine: Audio-only recording writing to %s", audioOnlyFilename.c_str());
 
-            // Set stream indices from muxer
+            // Set stream indices from muxer - only on OWNER encoders
             for (auto& src : audioSources) {
-                if (src.sharedEncoderPtr) {
+                if (src.encoder) {
                     for (unsigned int si = 0; si < audioOnlyFmtCtx->nb_streams; si++) {
                         if (audioOnlyFmtCtx->streams[si]->id == src.track) {
-                            src.sharedEncoderPtr->SetStreamIndex((int)si);
+                            src.encoder->SetStreamIndex((int)si);
                             break;
                         }
                     }
