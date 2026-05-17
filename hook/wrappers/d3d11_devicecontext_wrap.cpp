@@ -6,18 +6,19 @@
  */
 
 #include "d3d11_devicecontext_wrap.h"
-#include "d3d11_device_wrap.h"
-#include "hook_common.h"
-#include "../apis/dx11_hook.h"
-#include "../common/sampler_override_utils.h"
+#include <d3dcompiler.h>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <d3dcompiler.h>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
 #include <vector>
+#include "../apis/dx11_hook.h"
+#include "../common/sampler_override_utils.h"
+#include "d3d11_device_wrap.h"
+#include "hook_common.h"
 
 struct WrapperSamplerEntry {
     ID3D11Device* device;
@@ -64,10 +65,41 @@ static std::atomic<int> g_WrapperAFResourceCacheStores{0};
 static std::atomic<int> g_WrapperAFRealSamplerSetCalls{0};
 static std::atomic<int> g_WrapperAFUnchangedDirtyDeferred{0};
 static std::atomic<int> g_WrapperAFResourceWarmupSkips{0};
+static std::atomic<int> g_WrapperAFResourceStreamingQuietSkips{0};
+static std::atomic<int> g_WrapperAFResourceGlobalStreamingQuietSkips{0};
+static std::atomic<int> g_WrapperAFResourceStableGlobalQuietBypasses{0};
+static std::atomic<int> g_WrapperAFResourceGraduated{0};
+static std::atomic<int> g_WrapperAFResourceAcceleratedGraduated{0};
+static std::atomic<int> g_WrapperAFResourceWriteMarks{0};
+static std::atomic<int> g_WrapperAFResourceWriteMarkFailures{0};
+static std::atomic<int> g_WrapperAFResourceWriteFiltered{0};
+static std::atomic<int> g_WrapperAFResourceWriteUnmarkedSkipped{0};
+static std::atomic<int> g_WrapperAFResourceWriteCoalesced{0};
+static std::atomic<int> g_WrapperAFResourceWriteViewInvalidations{0};
+static std::atomic<int> g_WrapperAFResourceWriteBindInvalidations{0};
+static std::atomic<int> g_WrapperAFResourceCandidateMarkers{0};
+static std::atomic<int> g_WrapperAFResourceCandidateRegistryHits{0};
+static std::atomic<int> g_WrapperAFResourceCandidateRegistryMisses{0};
+static std::atomic<int> g_WrapperAFResourceCandidateRegistryStale{0};
+static std::atomic<int> g_WrapperAFResourceCandidateRegistryNegativeHits{0};
+static std::atomic<int> g_WrapperAFGlobalQuietTransitions{0};
+static std::atomic<int> g_WrapperAFGlobalQuietTransitionDirtySlots{0};
+static std::atomic<int> g_WrapperAFQuietReopenDelayed{0};
+static std::atomic<int> g_WrapperAFQuietReopenDelayedSlots{0};
+static std::atomic<int> g_WrapperAFPermanentUnsafeDirtySkips{0};
 static std::atomic<int> g_WrapperAFSamplerMixedRoleSkips{0};
 static std::atomic<int> g_WrapperAFSamplerMixedRoleBlocks{0};
+static std::atomic<int> g_WrapperAFSamplerMixedRoleProbationSkips{0};
+static std::atomic<int> g_WrapperAFSamplerMixedRoleRecoveries{0};
 static std::atomic<int> g_WrapperPixelShaderMetadataCreated{0};
 static std::atomic<int> g_WrapperPixelShaderMetadataFailed{0};
+static std::atomic<int> g_WrapperAFRuntimeDisabledSamplerPassthroughs{0};
+static std::atomic<int> g_WrapperAFRuntimeDisabledSRVPassthroughs{0};
+static std::atomic<int> g_WrapperAFRuntimeDisabledShaderPassthroughs{0};
+static std::atomic<bool> g_WrapperAFRuntimeDisabledDrawLogged{false};
+static std::atomic<bool> g_WrapperAFRuntimeDisabledResourceWriteLogged{false};
+static std::atomic<UINT> g_WrapperAFLastResourceCacheMissDraw{0};
+static std::atomic<UINT> g_WrapperAFLastCandidateResourceWriteDraw{0};
 
 struct WrapperPixelShaderAFMetadata {
     ce::sampler_override::D3D11ShaderSamplerUsage usage = {};
@@ -113,14 +145,14 @@ void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void*
     int idx = g_WrapperPixelShaderMetadataCreated.fetch_add(1, std::memory_order_relaxed);
     if (idx < 48) {
         const auto summary = ce::sampler_override::SummarizeD3D11ShaderSamplerUsage(metadata.usage);
-        WrapperLog("Wrapper: AF pixel-shader metadata shader=%p available=%d failed=%d samplers=%u pairs=%u "
-                   "kinds(implicit=%u bias=%u lod=%u grad=%u comp=%u other=%u safe=%u unsafe=%u) "
-                   "unsupported=%d (#%d)",
-                   shader, metadata.available ? 1 : 0, metadata.disassembleFailed ? 1 : 0, summary.samplerCount,
-                   summary.texturePairCount, summary.implicitSamplers, summary.biasSamplers, summary.lodSamplers,
-                   summary.gradientSamplers, summary.comparisonSamplers, summary.otherExplicitSamplers,
-                   summary.afSafeSamplers, summary.unsafeExplicitSamplers,
-                   metadata.usage.sawUnsupportedRegister ? 1 : 0, idx + 1);
+        WrapperLog(
+            "Wrapper: AF pixel-shader metadata shader=%p available=%d failed=%d samplers=%u pairs=%u "
+            "kinds(implicit=%u bias=%u lod=%u grad=%u comp=%u other=%u safe=%u unsafe=%u) "
+            "unsupported=%d (#%d)",
+            shader, metadata.available ? 1 : 0, metadata.disassembleFailed ? 1 : 0, summary.samplerCount,
+            summary.texturePairCount, summary.implicitSamplers, summary.biasSamplers, summary.lodSamplers,
+            summary.gradientSamplers, summary.comparisonSamplers, summary.otherExplicitSamplers, summary.afSafeSamplers,
+            summary.unsafeExplicitSamplers, metadata.usage.sawUnsupportedRegister ? 1 : 0, idx + 1);
     }
 }
 
@@ -180,9 +212,75 @@ static int WrapperPopCount(uint32_t mask) {
     return count;
 }
 
+static bool WrapperForcedAFRuntimeEnabled() {
+    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    static std::atomic<uint32_t> s_lastConfigVersion{0xFFFFFFFFu};
+    static std::atomic<DWORD> s_lastCheckTick{0};
+    static std::atomic<bool> s_cachedEnabled{false};
+
+    uint32_t currentVersion = 0;
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        currentVersion = g_IPC->GetSharedMem()->configVersion.load(std::memory_order_acquire);
+    }
+
+    const DWORD now = GetTickCount();
+    const uint32_t lastVersion = s_lastConfigVersion.load(std::memory_order_relaxed);
+    const DWORD lastTick = s_lastCheckTick.load(std::memory_order_relaxed);
+    if (currentVersion == lastVersion && now - lastTick < 250) {
+        return s_cachedEnabled.load(std::memory_order_relaxed);
+    }
+
+    const GraphicsConfig gfx = GetActiveGraphicsConfig();
+    const bool enabled = ce::sampler_override::IsAnisotropicOverrideEnabled(gfx);
+    s_cachedEnabled.store(enabled, std::memory_order_relaxed);
+    s_lastConfigVersion.store(currentVersion, std::memory_order_relaxed);
+    s_lastCheckTick.store(now, std::memory_order_relaxed);
+    return enabled;
+}
+
+static void WrapperLogAFRuntimeDisabledPassthrough(std::atomic<int>& counter, const char* surface) {
+    const int idx = counter.fetch_add(1, std::memory_order_relaxed);
+    if (idx < 8) {
+        const GraphicsConfig gfx = GetActiveGraphicsConfig();
+        WrapperLog(
+            "Wrapper: AF runtime tracking disabled for %s; forwarding without AF bookkeeping "
+            "graphicsActive=%d af=%s (#%d)",
+            surface ? surface : "unknown", g_GraphicsOverridesActive.load(std::memory_order_acquire) ? 1 : 0,
+            gfx.anisotropicFiltering.c_str(), idx + 1);
+    }
+}
+
+static void WrapperLogAFRuntimeDisabledDrawOnce() {
+    bool expected = false;
+    if (g_WrapperAFRuntimeDisabledDrawLogged.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+        const GraphicsConfig gfx = GetActiveGraphicsConfig();
+        WrapperLog(
+            "Wrapper: AF draw path inactive; forwarding draws without AF bookkeeping "
+            "graphicsActive=%d af=%s",
+            g_GraphicsOverridesActive.load(std::memory_order_acquire) ? 1 : 0, gfx.anisotropicFiltering.c_str());
+    }
+}
+
+static void WrapperLogAFRuntimeDisabledResourceWriteOnce(const char* reason) {
+    bool expected = false;
+    if (g_WrapperAFRuntimeDisabledResourceWriteLogged.compare_exchange_strong(expected, true,
+                                                                              std::memory_order_relaxed)) {
+        const GraphicsConfig gfx = GetActiveGraphicsConfig();
+        WrapperLog(
+            "Wrapper: AF resource-write tracking inactive; skipping mutation bookkeeping "
+            "reason=%s graphicsActive=%d af=%s",
+            reason ? reason : "unknown", g_GraphicsOverridesActive.load(std::memory_order_acquire) ? 1 : 0,
+            gfx.anisotropicFiltering.c_str());
+    }
+}
+
 static void ClearWrapperSamplerCache() {
     for (auto* s : g_WrapperReplacementSamplers) {
-        if (s) s->Release();
+        if (s)
+            s->Release();
     }
     g_WrapperReplacementSamplers.clear();
     g_WrapperSamplerCache.clear();
@@ -195,8 +293,7 @@ static uint64_t HashWrapperSamplerConfig(const GraphicsConfig& gfx) {
 
 static bool SameWrapperSamplerDesc(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b) {
     return a.Filter == b.Filter && a.AddressU == b.AddressU && a.AddressV == b.AddressV && a.AddressW == b.AddressW &&
-           a.MipLODBias == b.MipLODBias && a.MaxAnisotropy == b.MaxAnisotropy &&
-           a.ComparisonFunc == b.ComparisonFunc &&
+           a.MipLODBias == b.MipLODBias && a.MaxAnisotropy == b.MaxAnisotropy && a.ComparisonFunc == b.ComparisonFunc &&
            std::memcmp(a.BorderColor, b.BorderColor, sizeof(a.BorderColor)) == 0 && a.MinLOD == b.MinLOD &&
            a.MaxLOD == b.MaxLOD;
 }
@@ -213,7 +310,8 @@ static bool IsWrapperReplacement(ID3D11SamplerState* sampler) {
 static ID3D11SamplerState* FindWrapperReplacement(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc) {
     std::shared_lock<std::shared_mutex> lock(g_WrapperSamplerCacheMutex);
     for (const auto& entry : g_WrapperSamplerCache) {
-        if (entry.device == device && SameWrapperSamplerDesc(entry.desc, desc)) return entry.replacement;
+        if (entry.device == device && SameWrapperSamplerDesc(entry.desc, desc))
+            return entry.replacement;
     }
     return nullptr;
 }
@@ -285,8 +383,8 @@ static bool WrapperApplyBindTimeAF(D3D11_SAMPLER_DESC& desc, const GraphicsConfi
         desc.MaxAnisotropy = maxAniso;
         int idx = g_WrapperAFApplied.fetch_add(1, std::memory_order_relaxed);
         if (idx < 48) {
-            WrapperLog("Wrapper: AF bind-time override Filter=0x%X->0x%X Aniso=%u->%u (#%d)",
-                       origFilter, desc.Filter, origAniso, desc.MaxAnisotropy, idx + 1);
+            WrapperLog("Wrapper: AF bind-time override Filter=0x%X->0x%X Aniso=%u->%u (#%d)", origFilter, desc.Filter,
+                       origAniso, desc.MaxAnisotropy, idx + 1);
         }
         return true;
     }
@@ -336,9 +434,14 @@ static const GUID kWrapperForcedAFViewCacheGuid = {
     0xceaf1101, 0x5a7d, 0x4a4e, {0x93, 0xb8, 0xc3, 0x11, 0x7e, 0x6d, 0xaf, 0x01}};
 
 static constexpr UINT kWrapperForcedAFViewCacheMagic = 0x31464143u;
-static constexpr UINT kWrapperForcedAFViewCacheVersion = 2;
+static constexpr UINT kWrapperForcedAFViewCacheVersion = 9;
 static constexpr UINT kWrapperForcedAFViewWarmupDraws = 120000;
 static constexpr UINT kWrapperForcedAFViewWarmupObservations = 4;
+static constexpr UINT kWrapperForcedAFViewStreamingQuietDraws = 600000;
+static constexpr UINT kWrapperForcedAFViewAcceleratedObservations = 4;
+static constexpr UINT kWrapperForcedAFViewAcceleratedStreamingDraws = 30000;
+static constexpr UINT kWrapperForcedAFViewObservationCap = 4096;
+static constexpr UINT kWrapperForcedAFGlobalStreamingQuietDraws = 120000;
 
 struct WrapperForcedAFViewCache {
     UINT magic = kWrapperForcedAFViewCacheMagic;
@@ -348,12 +451,92 @@ struct WrapperForcedAFViewCache {
     UINT lastSeenDraw = 0;
     UINT allowObservations = 0;
     UINT stable = 0;
+    UINT resourceWriteDraw = 0;
+    UINT stableRequiresGlobalQuiet = 0;
     ce::sampler_override::D3D11Texture2DForcedAFInfo info = {};
 };
+
+// {CEAF1102-5A7D-4A4E-93B8-C3117E6DAF02}
+static const GUID kWrapperForcedAFResourceMutationGuid = {
+    0xceaf1102, 0x5a7d, 0x4a4e, {0x93, 0xb8, 0xc3, 0x11, 0x7e, 0x6d, 0xaf, 0x02}};
+
+static constexpr UINT kWrapperForcedAFResourceMutationMagic = 0x31464152u;
+static constexpr UINT kWrapperForcedAFResourceMutationVersion = 1;
+
+struct WrapperForcedAFResourceMutation {
+    UINT magic = kWrapperForcedAFResourceMutationMagic;
+    UINT version = kWrapperForcedAFResourceMutationVersion;
+    UINT lastWriteDraw = 0;
+    UINT writeCount = 0;
+};
+
+static std::shared_mutex g_WrapperAFCandidateResourceRegistryMutex;
+static std::unordered_map<ID3D11Resource*, UINT> g_WrapperAFCandidateResourceRegistry;
+static std::atomic<UINT> g_WrapperAFCandidateResourceRegistryEpoch{1};
+
+struct WrapperAFCandidateResourceNegativeCacheEntry {
+    ID3D11Resource* resource = nullptr;
+    UINT epoch = 0;
+};
+
+static std::array<WrapperAFCandidateResourceNegativeCacheEntry, 256>& WrapperAFCandidateResourceNegativeCache() {
+    thread_local std::array<WrapperAFCandidateResourceNegativeCacheEntry, 256> cache = {};
+    return cache;
+}
+
+static size_t WrapperAFCandidateResourceNegativeCacheIndex(ID3D11Resource* resource) {
+    const uintptr_t value = reinterpret_cast<uintptr_t>(resource);
+    return (value >> 4) & (WrapperAFCandidateResourceNegativeCache().size() - 1);
+}
+
+static bool IsWrapperAFCandidateResourceNegativeCached(ID3D11Resource* resource, UINT epoch) {
+    if (!resource) {
+        return false;
+    }
+    const auto& entry =
+        WrapperAFCandidateResourceNegativeCache()[WrapperAFCandidateResourceNegativeCacheIndex(resource)];
+    return entry.resource == resource && entry.epoch == epoch;
+}
+
+static void RememberWrapperAFCandidateResourceNegative(ID3D11Resource* resource, UINT epoch) {
+    if (!resource) {
+        return;
+    }
+    auto& entry = WrapperAFCandidateResourceNegativeCache()[WrapperAFCandidateResourceNegativeCacheIndex(resource)];
+    entry.resource = resource;
+    entry.epoch = epoch;
+}
 
 static UINT WrapperAFCurrentDrawIndex() {
     const int draw = g_WrapperAFDrawCalls.load(std::memory_order_relaxed);
     return draw > 0 ? static_cast<UINT>(draw) : 0;
+}
+
+static UINT WrapperAFDrawAge(UINT currentDraw, UINT olderDraw) {
+    if (olderDraw == 0) {
+        return UINT_MAX;
+    }
+    return currentDraw >= olderDraw ? currentDraw - olderDraw : 0;
+}
+
+static bool WrapperAFGlobalStreamingWindowIsQuiet(UINT currentDraw, UINT* outLastMissAge = nullptr,
+                                                  UINT* outLastWriteAge = nullptr) {
+    const UINT lastMissDraw = g_WrapperAFLastResourceCacheMissDraw.load(std::memory_order_relaxed);
+    const UINT lastWriteDraw = g_WrapperAFLastCandidateResourceWriteDraw.load(std::memory_order_relaxed);
+    const bool quiet = ce::sampler_override::D3D11ForcedAFStreamingWindowIsQuiet(
+        currentDraw, lastMissDraw, lastWriteDraw, kWrapperForcedAFGlobalStreamingQuietDraws);
+    if (outLastMissAge) {
+        *outLastMissAge = WrapperAFDrawAge(currentDraw, lastMissDraw);
+    }
+    if (outLastWriteAge) {
+        *outLastWriteAge = WrapperAFDrawAge(currentDraw, lastWriteDraw);
+    }
+    return quiet;
+}
+
+static bool WrapperForcedAFViewUsesAcceleratedWarmup(const ce::sampler_override::D3D11Texture2DForcedAFInfo& info) {
+    return ce::sampler_override::IsHighConfidenceColorD3D11AFFormat(info.format) && info.width >= 512 &&
+           info.height >= 512 && info.mipLevels >= 6;
 }
 
 static bool TryReadWrapperForcedAFViewCache(ID3D11ShaderResourceView* view, WrapperForcedAFViewCache* outCache) {
@@ -363,9 +546,8 @@ static bool TryReadWrapperForcedAFViewCache(ID3D11ShaderResourceView* view, Wrap
 
     WrapperForcedAFViewCache cache = {};
     UINT dataSize = sizeof(cache);
-    if (FAILED(view->GetPrivateData(kWrapperForcedAFViewCacheGuid, &dataSize, &cache)) ||
-        dataSize != sizeof(cache) || cache.magic != kWrapperForcedAFViewCacheMagic ||
-        cache.version != kWrapperForcedAFViewCacheVersion) {
+    if (FAILED(view->GetPrivateData(kWrapperForcedAFViewCacheGuid, &dataSize, &cache)) || dataSize != sizeof(cache) ||
+        cache.magic != kWrapperForcedAFViewCacheMagic || cache.version != kWrapperForcedAFViewCacheVersion) {
         return false;
     }
 
@@ -385,38 +567,201 @@ static bool StoreWrapperForcedAFViewCache(ID3D11ShaderResourceView* view, const 
     return false;
 }
 
+static bool TryReadWrapperForcedAFResourceMutation(ID3D11Resource* resource,
+                                                   WrapperForcedAFResourceMutation* outMutation) {
+    if (!resource || !outMutation) {
+        return false;
+    }
+    WrapperForcedAFResourceMutation mutation = {};
+    UINT dataSize = sizeof(mutation);
+    if (FAILED(resource->GetPrivateData(kWrapperForcedAFResourceMutationGuid, &dataSize, &mutation)) ||
+        dataSize != sizeof(mutation) || mutation.magic != kWrapperForcedAFResourceMutationMagic ||
+        mutation.version != kWrapperForcedAFResourceMutationVersion) {
+        return false;
+    }
+    *outMutation = mutation;
+    return true;
+}
+
+static bool StoreWrapperForcedAFResourceMutation(ID3D11Resource* resource,
+                                                 const WrapperForcedAFResourceMutation& mutation) {
+    return resource &&
+           SUCCEEDED(resource->SetPrivateData(kWrapperForcedAFResourceMutationGuid, sizeof(mutation), &mutation));
+}
+
+static void RegisterWrapperForcedAFCandidateResource(ID3D11Resource* resource) {
+    if (!resource) {
+        return;
+    }
+    std::unique_lock<std::shared_mutex> lock(g_WrapperAFCandidateResourceRegistryMutex);
+    if (g_WrapperAFCandidateResourceRegistry.emplace(resource, 1).second) {
+        g_WrapperAFCandidateResourceRegistryEpoch.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+static void UnregisterWrapperForcedAFCandidateResource(ID3D11Resource* resource) {
+    if (!resource) {
+        return;
+    }
+    std::unique_lock<std::shared_mutex> lock(g_WrapperAFCandidateResourceRegistryMutex);
+    auto it = g_WrapperAFCandidateResourceRegistry.find(resource);
+    if (it == g_WrapperAFCandidateResourceRegistry.end()) {
+        return;
+    }
+    if (it->second > 1) {
+        --it->second;
+    } else {
+        g_WrapperAFCandidateResourceRegistry.erase(it);
+        g_WrapperAFCandidateResourceRegistryEpoch.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+static bool IsRegisteredWrapperForcedAFCandidateResource(ID3D11Resource* resource) {
+    if (!resource) {
+        return false;
+    }
+    std::shared_lock<std::shared_mutex> lock(g_WrapperAFCandidateResourceRegistryMutex);
+    return g_WrapperAFCandidateResourceRegistry.find(resource) != g_WrapperAFCandidateResourceRegistry.end();
+}
+
+static void EnsureWrapperForcedAFResourceMutationMarker(ID3D11Resource* resource) {
+    if (!resource) {
+        return;
+    }
+    WrapperForcedAFResourceMutation mutation = {};
+    if (TryReadWrapperForcedAFResourceMutation(resource, &mutation)) {
+        RegisterWrapperForcedAFCandidateResource(resource);
+        return;
+    }
+    mutation.magic = kWrapperForcedAFResourceMutationMagic;
+    mutation.version = kWrapperForcedAFResourceMutationVersion;
+    if (StoreWrapperForcedAFResourceMutation(resource, mutation)) {
+        RegisterWrapperForcedAFCandidateResource(resource);
+        const int idx = g_WrapperAFResourceCandidateMarkers.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 48) {
+            WrapperLog("Wrapper: AF candidate resource marker installed resource=%p (#%d)", resource, idx + 1);
+        }
+    }
+}
+
 static ce::sampler_override::D3D11ForcedAFResourceDecision ResolveWrapperForcedAFViewCacheDecision(
     ID3D11ShaderResourceView* view, WrapperForcedAFViewCache& cache,
-    ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr) {
+    ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr, WrapperForcedAFViewCache* outCache = nullptr) {
     using ce::sampler_override::D3D11ForcedAFResourceDecision;
     if (outInfo) {
         *outInfo = cache.info;
     }
 
     const auto decision = static_cast<D3D11ForcedAFResourceDecision>(cache.decision);
-    if (decision != D3D11ForcedAFResourceDecision::Allow || cache.stable != 0) {
+    if (decision != D3D11ForcedAFResourceDecision::Allow) {
+        if (outCache) {
+            *outCache = cache;
+        }
         return decision;
     }
 
     const UINT currentDraw = WrapperAFCurrentDrawIndex();
-    if (cache.firstSeenDraw == 0) {
-        cache.firstSeenDraw = currentDraw;
-    }
-    cache.lastSeenDraw = currentDraw;
-    if (cache.allowObservations < kWrapperForcedAFViewWarmupObservations) {
-        ++cache.allowObservations;
+    UINT lastGlobalMissAge = UINT_MAX;
+    UINT lastGlobalWriteAge = UINT_MAX;
+    const bool globalStreamingQuiet =
+        WrapperAFGlobalStreamingWindowIsQuiet(currentDraw, &lastGlobalMissAge, &lastGlobalWriteAge);
+    if (cache.stable != 0) {
+        const auto gatedDecision = ce::sampler_override::ApplyD3D11ForcedAFGlobalStreamingGate(
+            D3D11ForcedAFResourceDecision::Allow, globalStreamingQuiet, true);
+        if (!globalStreamingQuiet) {
+            const int idx = g_WrapperAFResourceStableGlobalQuietBypasses.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 48 || (idx > 0 && (idx % 250000) == 0)) {
+                WrapperLog(
+                    "Wrapper: AF stable resource bypassed global streaming gate srv=%p draw=%u "
+                    "globalMissAge=%u globalWriteAge=%u quietRequired=%u fmt=%d texFmt=%d "
+                    "size=%ux%u mips=%u observations=%u (#%d)",
+                    view, currentDraw, lastGlobalMissAge, lastGlobalWriteAge, kWrapperForcedAFGlobalStreamingQuietDraws,
+                    cache.info.format, cache.info.textureFormat, cache.info.width, cache.info.height,
+                    cache.info.mipLevels, cache.allowObservations, idx + 1);
+            }
+        }
+        if (outCache) {
+            *outCache = cache;
+        }
+        return gatedDecision;
     }
 
-    const UINT drawAge = currentDraw >= cache.firstSeenDraw ? currentDraw - cache.firstSeenDraw : 0;
-    if (cache.allowObservations >= kWrapperForcedAFViewWarmupObservations &&
-        drawAge >= kWrapperForcedAFViewWarmupDraws) {
+    bool cacheChanged = false;
+    if (cache.firstSeenDraw == 0) {
+        cache.firstSeenDraw = currentDraw;
+        cacheChanged = true;
+    }
+    const UINT warmupStartDraw =
+        ce::sampler_override::ResolveD3D11ForcedAFViewWarmupStartDraw(cache.firstSeenDraw, cache.resourceWriteDraw);
+    if (warmupStartDraw != cache.firstSeenDraw) {
+        cache.firstSeenDraw = warmupStartDraw;
+        cache.allowObservations = 0;
+        cache.stable = 0;
+        cacheChanged = true;
+    }
+    cache.lastSeenDraw = currentDraw;
+    if (cache.allowObservations < kWrapperForcedAFViewObservationCap) {
+        ++cache.allowObservations;
+        cacheChanged = true;
+    }
+
+    const bool acceleratedWarmup = WrapperForcedAFViewUsesAcceleratedWarmup(cache.info) && globalStreamingQuiet;
+    const UINT acceleratedObservations = acceleratedWarmup ? kWrapperForcedAFViewAcceleratedObservations : 0;
+    const UINT acceleratedStreamingDraws = acceleratedWarmup ? kWrapperForcedAFViewAcceleratedStreamingDraws : 0;
+    const UINT viewAge = WrapperAFDrawAge(currentDraw, cache.firstSeenDraw);
+    const UINT writeAge = WrapperAFDrawAge(currentDraw, cache.resourceWriteDraw);
+    const auto warmupDecision = ce::sampler_override::ResolveD3D11ForcedAFViewWarmupDecision(
+        currentDraw, cache.firstSeenDraw, cache.allowObservations, kWrapperForcedAFViewWarmupObservations,
+        kWrapperForcedAFViewWarmupDraws, kWrapperForcedAFViewStreamingQuietDraws, acceleratedObservations,
+        acceleratedStreamingDraws);
+    const auto gatedWarmupDecision =
+        ce::sampler_override::ApplyD3D11ForcedAFGlobalStreamingGate(warmupDecision, globalStreamingQuiet, false);
+    if (gatedWarmupDecision == D3D11ForcedAFResourceDecision::Allow) {
         cache.stable = 1;
+        cache.stableRequiresGlobalQuiet = 1;
         StoreWrapperForcedAFViewCache(view, cache);
+        if (outCache) {
+            *outCache = cache;
+        }
+        const bool acceleratedGraduation = acceleratedWarmup &&
+                                           cache.allowObservations >= kWrapperForcedAFViewAcceleratedObservations &&
+                                           viewAge < kWrapperForcedAFViewStreamingQuietDraws;
+        if (acceleratedGraduation) {
+            g_WrapperAFResourceAcceleratedGraduated.fetch_add(1, std::memory_order_relaxed);
+        }
+        const int idx = g_WrapperAFResourceGraduated.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 96 || (acceleratedGraduation && (idx < 256 || (idx % 25) == 0)) || (idx > 0 && (idx % 10000) == 0)) {
+            const UINT lastMissDraw = g_WrapperAFLastResourceCacheMissDraw.load(std::memory_order_relaxed);
+            WrapperLog(
+                "Wrapper: AF resource warmup complete srv=%p draw=%u firstSeen=%u age=%u "
+                "observations=%u writeDraw=%u writeAge=%u quietAge=%u quietRequired=%u "
+                "globalMissAge=%u globalWriteAge=%u globalQuietRequired=%u "
+                "accelerated=%d stableRequiresGlobalQuiet=%u fastObs=%u fastAge=%u "
+                "fmt=%d texFmt=%d size=%ux%u mips=%u viewMip=%u mostMip=%u bind=0x%X misc=0x%X (#%d)",
+                view, currentDraw, cache.firstSeenDraw, viewAge, cache.allowObservations, cache.resourceWriteDraw,
+                writeAge, viewAge, kWrapperForcedAFViewStreamingQuietDraws, lastGlobalMissAge, lastGlobalWriteAge,
+                kWrapperForcedAFGlobalStreamingQuietDraws, acceleratedGraduation ? 1 : 0,
+                cache.stableRequiresGlobalQuiet, acceleratedObservations, acceleratedStreamingDraws, cache.info.format,
+                cache.info.textureFormat, cache.info.width, cache.info.height, cache.info.mipLevels,
+                cache.info.viewMipLevels, cache.info.mostDetailedMip, cache.info.bindFlags, cache.info.miscFlags,
+                idx + 1);
+            WrapperLog("Wrapper: AF resource warmup context srv=%p lastSrvMissAge=%u cacheStores=%d", view,
+                       WrapperAFDrawAge(currentDraw, lastMissDraw),
+                       g_WrapperAFResourceCacheStores.load(std::memory_order_relaxed));
+        }
         return D3D11ForcedAFResourceDecision::Allow;
     }
 
-    StoreWrapperForcedAFViewCache(view, cache);
-    return D3D11ForcedAFResourceDecision::PendingStableObservation;
+    if (gatedWarmupDecision == D3D11ForcedAFResourceDecision::PendingStreamingQuiet && !globalStreamingQuiet) {
+        g_WrapperAFResourceGlobalStreamingQuietSkips.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (cacheChanged) {
+        StoreWrapperForcedAFViewCache(view, cache);
+    }
+    if (outCache) {
+        *outCache = cache;
+    }
+    return gatedWarmupDecision;
 }
 
 struct WrapperForcedAFShaderSlotKey {
@@ -451,21 +796,40 @@ static bool WrapperShaderSlotRoleAlreadyBlocksForcedAF(ID3D11PixelShader* shader
     return it != g_WrapperAFShaderSlotRoles.end() && it->second.blockedMixedRole;
 }
 
-static bool ObserveWrapperShaderSlotRoleForForcedAF(
-    ID3D11PixelShader* shader, UINT slot, ce::sampler_override::D3D11ForcedAFResourceDecision decision) {
-    if (!shader || decision == ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation) {
+static bool ObserveWrapperShaderSlotRoleForForcedAF(ID3D11PixelShader* shader, UINT slot,
+                                                    ce::sampler_override::D3D11ForcedAFResourceDecision decision,
+                                                    bool* outRecovered = nullptr, bool* outProbationSkip = nullptr) {
+    if (!shader || decision == ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation ||
+        decision == ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStreamingQuiet) {
+        if (outRecovered) {
+            *outRecovered = false;
+        }
+        if (outProbationSkip) {
+            *outProbationSkip = false;
+        }
         return false;
     }
 
     std::lock_guard<std::mutex> lock(g_WrapperAFShaderSlotRoleMutex);
-    ce::sampler_override::D3D11ForcedAFSamplerRoleState& state =
-        g_WrapperAFShaderSlotRoles[{shader, slot}];
-    return ce::sampler_override::ObserveD3D11ForcedAFSamplerRole(state, decision);
+    ce::sampler_override::D3D11ForcedAFSamplerRoleState& state = g_WrapperAFShaderSlotRoles[{shader, slot}];
+    const UINT previousRecoveryCount = state.recoveryCount;
+    const bool allow = ce::sampler_override::ObserveD3D11ForcedAFSamplerRole(state, decision);
+    if (outRecovered) {
+        *outRecovered = state.recoveryCount != previousRecoveryCount;
+    }
+    if (outProbationSkip) {
+        *outProbationSkip =
+            decision == ce::sampler_override::D3D11ForcedAFResourceDecision::Allow && state.blockedMixedRole;
+    }
+    if (state.recoveryCount != previousRecoveryCount) {
+        g_WrapperAFSamplerMixedRoleRecoveries.fetch_add(1, std::memory_order_relaxed);
+    }
+    return allow;
 }
 
 static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewForForcedAF(
     ID3D11Device* device, ID3D11ShaderResourceView* view,
-    ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr) {
+    ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr, WrapperForcedAFViewCache* outCache = nullptr) {
     using ce::sampler_override::D3D11ForcedAFResourceDecision;
     if (!view)
         return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
@@ -473,7 +837,7 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewFo
     WrapperForcedAFViewCache cachedView = {};
     if (TryReadWrapperForcedAFViewCache(view, &cachedView)) {
         g_WrapperAFResourceCacheHits.fetch_add(1, std::memory_order_relaxed);
-        return ResolveWrapperForcedAFViewCacheDecision(view, cachedView, outInfo);
+        return ResolveWrapperForcedAFViewCacheDecision(view, cachedView, outInfo, outCache);
     }
     g_WrapperAFResourceCacheMisses.fetch_add(1, std::memory_order_relaxed);
 
@@ -485,16 +849,18 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewFo
     info.textureFormat = DXGI_FORMAT_UNKNOWN;
     info.viewDimension = srvDesc.ViewDimension;
     info.formatSupported = formatSupported;
+    UINT resourceWriteDraw = 0;
     auto finish = [&](D3D11ForcedAFResourceDecision decision) {
         WrapperForcedAFViewCache cache = {};
         cache.decision = static_cast<INT>(decision);
         cache.info = info;
-        cache.firstSeenDraw = WrapperAFCurrentDrawIndex();
-        cache.lastSeenDraw = cache.firstSeenDraw;
-        cache.allowObservations = decision == D3D11ForcedAFResourceDecision::Allow ? 1u : 0u;
+        cache.firstSeenDraw = resourceWriteDraw != 0 ? resourceWriteDraw : WrapperAFCurrentDrawIndex();
+        cache.lastSeenDraw = WrapperAFCurrentDrawIndex();
+        cache.allowObservations = 0;
         cache.stable = decision == D3D11ForcedAFResourceDecision::Allow ? 0u : 1u;
+        cache.resourceWriteDraw = resourceWriteDraw;
         StoreWrapperForcedAFViewCache(view, cache);
-        return ResolveWrapperForcedAFViewCacheDecision(view, cache, outInfo);
+        return ResolveWrapperForcedAFViewCacheDecision(view, cache, outInfo, outCache);
     };
     if (!formatSupported)
         return finish(D3D11ForcedAFResourceDecision::UnsupportedFormat);
@@ -503,6 +869,11 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewFo
     view->GetResource(&resource);
     if (!resource)
         return finish(D3D11ForcedAFResourceDecision::UnsupportedViewDimension);
+
+    WrapperForcedAFResourceMutation mutation = {};
+    if (TryReadWrapperForcedAFResourceMutation(resource, &mutation)) {
+        resourceWriteDraw = mutation.lastWriteDraw;
+    }
 
     D3D11ForcedAFResourceDecision decision = D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
     ID3D11Texture2D* texture2D = nullptr;
@@ -533,6 +904,10 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewFo
         info.miscFlags = textureDesc.MiscFlags;
         info.formatSupported = true;
         decision = ce::sampler_override::ClassifyD3D11Texture2DForForcedAF(info);
+        if (decision == D3D11ForcedAFResourceDecision::Allow) {
+            EnsureWrapperForcedAFResourceMutationMarker(resource);
+            g_WrapperAFLastResourceCacheMissDraw.store(WrapperAFCurrentDrawIndex(), std::memory_order_relaxed);
+        }
         texture2D->Release();
     }
     resource->Release();
@@ -541,8 +916,7 @@ static ce::sampler_override::D3D11ForcedAFResourceDecision WrapperClassifyViewFo
 
 // Get or create a replacement sampler with AF override applied.
 // Uses the real device to create the replacement.
-static ID3D11SamplerState* GetOrCreateWrapperReplacementSampler(ID3D11Device* realDevice,
-                                                                ID3D11SamplerState* original,
+static ID3D11SamplerState* GetOrCreateWrapperReplacementSampler(ID3D11Device* realDevice, ID3D11SamplerState* original,
                                                                 const GraphicsConfig& gfx,
                                                                 bool allowAnisotropicOverride) {
     if (!realDevice || !original)
@@ -586,8 +960,8 @@ static ID3D11SamplerState* GetOrCreateWrapperReplacementSampler(ID3D11Device* re
     }
     int idx = g_WrapperAFReplaced.fetch_add(1, std::memory_order_relaxed);
     if (idx < 48) {
-        WrapperLog("Wrapper: Created AF replacement sampler Filter=0x%X Aniso=%u Bias=%.2f (#%d)",
-                   desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, idx + 1);
+        WrapperLog("Wrapper: Created AF replacement sampler Filter=0x%X Aniso=%u Bias=%.2f (#%d)", desc.Filter,
+                   desc.MaxAnisotropy, desc.MipLODBias, idx + 1);
     }
     return replacement;
 }
@@ -607,7 +981,10 @@ CWrapD3D11DeviceContext::CWrapD3D11DeviceContext(ID3D11DeviceContext* pReal, CWr
       m_Version(0),
       m_CurrentPixelShader(nullptr),
       m_PixelSamplerDirtyMask(0),
-      m_PixelForcedSamplerMask(0) {
+      m_PixelForcedSamplerMask(0),
+      m_AFStreamingQuietInitialized(false),
+      m_AFLastStreamingQuiet(false),
+      m_AFQuietReopenDirtyPending(false) {
     std::memset(m_TrackedSRVs, 0, sizeof(m_TrackedSRVs));
     std::memset(m_TrackedSamplers, 0, sizeof(m_TrackedSamplers));
     std::memset(m_RealSamplers, 0, sizeof(m_RealSamplers));
@@ -685,6 +1062,9 @@ void CWrapD3D11DeviceContext::ClearForcedAFTracking() {
     }
     m_PixelSamplerDirtyMask = 0;
     m_PixelForcedSamplerMask = 0;
+    m_AFStreamingQuietInitialized = false;
+    m_AFLastStreamingQuiet = false;
+    m_AFQuietReopenDirtyPending = false;
 }
 
 uint32_t CWrapD3D11DeviceContext::TrackedPixelSamplerMask() const {
@@ -703,8 +1083,7 @@ uint32_t CWrapD3D11DeviceContext::PixelAFCandidateSamplerMask() const {
     if (!hasMetadata || !metadata.available) {
         return 0;
     }
-    return ce::sampler_override::D3D11ShaderAFSafeSamplerMaskForAnyTexture(metadata.usage) &
-           TrackedPixelSamplerMask();
+    return ce::sampler_override::D3D11ShaderAFSafeSamplerMaskForAnyTexture(metadata.usage) & TrackedPixelSamplerMask();
 }
 
 uint32_t CWrapD3D11DeviceContext::DirtyMaskForPixelShaderResourceSlots(UINT startSlot, UINT numViews) const {
@@ -712,6 +1091,26 @@ uint32_t CWrapD3D11DeviceContext::DirtyMaskForPixelShaderResourceSlots(UINT star
         return 0;
     }
 
+    WrapperPixelShaderAFMetadata metadata = {};
+    const bool hasMetadata = GetWrapperPixelShaderAFMetadata(m_CurrentPixelShader, &metadata);
+    const UINT maxViews = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - startSlot;
+    const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
+    uint32_t mask = 0;
+    for (UINT i = 0; i < actualViews; ++i) {
+        const UINT slot = startSlot + i;
+        if (!hasMetadata || !metadata.available) {
+            mask |= m_PixelForcedSamplerMask;
+        } else {
+            mask |= DirtyMaskForPixelShaderResourceViewSlot(slot, m_TrackedSRVs[kWrapperStagePS][slot]);
+        }
+    }
+    return mask & TrackedPixelSamplerMask();
+}
+
+uint32_t CWrapD3D11DeviceContext::ForcedRestoreMaskForPixelShaderResourceSlots(UINT startSlot, UINT numViews) const {
+    if (startSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT || numViews == 0) {
+        return 0;
+    }
     WrapperPixelShaderAFMetadata metadata = {};
     const bool hasMetadata = GetWrapperPixelShaderAFMetadata(m_CurrentPixelShader, &metadata);
     if (!hasMetadata || !metadata.available) {
@@ -724,7 +1123,48 @@ uint32_t CWrapD3D11DeviceContext::DirtyMaskForPixelShaderResourceSlots(UINT star
     for (UINT i = 0; i < actualViews; ++i) {
         mask |= ce::sampler_override::D3D11ShaderAFSafeSamplerMaskForTextureSlot(metadata.usage, startSlot + i);
     }
-    return mask & TrackedPixelSamplerMask();
+    return mask & m_PixelForcedSamplerMask;
+}
+
+uint32_t CWrapD3D11DeviceContext::DirtyMaskForPixelShaderResourceViewSlot(UINT slot,
+                                                                          ID3D11ShaderResourceView* view) const {
+    if (slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+        return 0;
+    }
+    WrapperPixelShaderAFMetadata metadata = {};
+    const bool hasMetadata = GetWrapperPixelShaderAFMetadata(m_CurrentPixelShader, &metadata);
+    if (!hasMetadata || !metadata.available) {
+        return m_PixelForcedSamplerMask;
+    }
+
+    const uint32_t candidateMask =
+        ce::sampler_override::D3D11ShaderAFSafeSamplerMaskForTextureSlot(metadata.usage, slot) &
+        TrackedPixelSamplerMask();
+    if (candidateMask == 0) {
+        return 0;
+    }
+    const uint32_t forcedMask = candidateMask & m_PixelForcedSamplerMask;
+    if (!view) {
+        return forcedMask;
+    }
+
+    WrapperForcedAFViewCache cache = {};
+    if (!TryReadWrapperForcedAFViewCache(view, &cache)) {
+        return candidateMask;
+    }
+
+    const auto decision = static_cast<ce::sampler_override::D3D11ForcedAFResourceDecision>(cache.decision);
+    if (decision == ce::sampler_override::D3D11ForcedAFResourceDecision::Allow ||
+        decision == ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation ||
+        decision == ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStreamingQuiet) {
+        return candidateMask;
+    }
+
+    if (forcedMask == 0) {
+        g_WrapperAFPermanentUnsafeDirtySkips.fetch_add(WrapperPopCount(candidateMask), std::memory_order_relaxed);
+        return 0;
+    }
+    return forcedMask;
 }
 
 void CWrapD3D11DeviceContext::TrackShaderResources(UINT stageIndex, UINT startSlot, UINT numViews,
@@ -733,23 +1173,162 @@ void CWrapD3D11DeviceContext::TrackShaderResources(UINT stageIndex, UINT startSl
         return;
     const UINT maxViews = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - startSlot;
     const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
-    bool changed = false;
+    uint32_t dirtyMask = 0;
     for (UINT i = 0; i < actualViews; ++i) {
         const UINT slot = startSlot + i;
         ID3D11ShaderResourceView* view = views ? views[i] : nullptr;
         if (m_TrackedSRVs[stageIndex][slot] == view) {
             continue;
         }
-        changed = true;
+        if (stageIndex == kWrapperStagePS) {
+            dirtyMask |= DirtyMaskForPixelShaderResourceViewSlot(slot, view);
+        }
         if (view)
             view->AddRef();
         if (m_TrackedSRVs[stageIndex][slot])
             m_TrackedSRVs[stageIndex][slot]->Release();
         m_TrackedSRVs[stageIndex][slot] = view;
     }
-    if (stageIndex == kWrapperStagePS && changed) {
-        m_PixelSamplerDirtyMask |= DirtyMaskForPixelShaderResourceSlots(startSlot, actualViews);
+    if (stageIndex == kWrapperStagePS && dirtyMask != 0) {
+        m_PixelSamplerDirtyMask |= dirtyMask;
     }
+}
+
+void CWrapD3D11DeviceContext::InvalidateTrackedForcedAFViewsForResourceMutation(ID3D11Resource* resource,
+                                                                                UINT writeDraw, const char* reason) {
+    if (!resource || writeDraw == 0) {
+        return;
+    }
+
+    uint32_t dirtyMask = 0;
+    for (UINT slot = 0; slot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++slot) {
+        ID3D11ShaderResourceView* view = m_TrackedSRVs[kWrapperStagePS][slot];
+        if (!view) {
+            continue;
+        }
+        ID3D11Resource* viewResource = nullptr;
+        view->GetResource(&viewResource);
+        const bool matches = viewResource == resource;
+        if (viewResource) {
+            viewResource->Release();
+        }
+        if (!matches) {
+            continue;
+        }
+
+        WrapperForcedAFViewCache cache = {};
+        if (TryReadWrapperForcedAFViewCache(view, &cache) &&
+            static_cast<ce::sampler_override::D3D11ForcedAFResourceDecision>(cache.decision) ==
+                ce::sampler_override::D3D11ForcedAFResourceDecision::Allow) {
+            cache.resourceWriteDraw = writeDraw;
+            cache.firstSeenDraw = writeDraw;
+            cache.lastSeenDraw = writeDraw;
+            cache.allowObservations = 0;
+            cache.stable = 0;
+            StoreWrapperForcedAFViewCache(view, cache);
+            g_WrapperAFResourceWriteBindInvalidations.fetch_add(1, std::memory_order_relaxed);
+            const int idx = g_WrapperAFResourceWriteViewInvalidations.fetch_add(1, std::memory_order_relaxed);
+            if (idx < 24 || (idx > 0 && (idx % 10000) == 0)) {
+                WrapperLog(
+                    "Wrapper: AF invalidated tracked SRV after resource write srv=%p resource=%p slot=t%u "
+                    "reason=%s draw=%u (#%d)",
+                    view, resource, slot, reason ? reason : "unknown", writeDraw, idx + 1);
+            }
+        }
+        dirtyMask |= DirtyMaskForPixelShaderResourceSlots(slot, 1);
+    }
+
+    if (dirtyMask != 0) {
+        m_PixelSamplerDirtyMask |= dirtyMask;
+    }
+}
+
+void CWrapD3D11DeviceContext::MarkForcedAFResourceMutation(ID3D11Resource* resource, const char* reason,
+                                                           UINT subresource) {
+    if (!resource) {
+        return;
+    }
+
+    if (!WrapperForcedAFRuntimeEnabled()) {
+        WrapperLogAFRuntimeDisabledResourceWriteOnce(reason);
+        return;
+    }
+
+    const UINT registryEpoch = g_WrapperAFCandidateResourceRegistryEpoch.load(std::memory_order_relaxed);
+    if (IsWrapperAFCandidateResourceNegativeCached(resource, registryEpoch)) {
+        g_WrapperAFResourceCandidateRegistryNegativeHits.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    if (!IsRegisteredWrapperForcedAFCandidateResource(resource)) {
+        const int idx = g_WrapperAFResourceCandidateRegistryMisses.fetch_add(1, std::memory_order_relaxed);
+        RememberWrapperAFCandidateResourceNegative(resource, registryEpoch);
+        if (idx < 24 || (idx > 0 && (idx % 1000000) == 0)) {
+            WrapperLog("Wrapper: AF resource write skipped registry-miss resource=%p reason=%s subresource=%u (#%d)",
+                       resource, reason ? reason : "unknown", subresource, idx + 1);
+        }
+        return;
+    }
+    g_WrapperAFResourceCandidateRegistryHits.fetch_add(1, std::memory_order_relaxed);
+
+    WrapperForcedAFResourceMutation mutation = {};
+    const bool hadMutation = TryReadWrapperForcedAFResourceMutation(resource, &mutation);
+    if (!hadMutation) {
+        UnregisterWrapperForcedAFCandidateResource(resource);
+        RememberWrapperAFCandidateResourceNegative(
+            resource, g_WrapperAFCandidateResourceRegistryEpoch.load(std::memory_order_relaxed));
+        g_WrapperAFResourceCandidateRegistryStale.fetch_add(1, std::memory_order_relaxed);
+        const int idx = g_WrapperAFResourceWriteUnmarkedSkipped.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 24 || (idx > 0 && (idx % 1000000) == 0)) {
+            WrapperLog("Wrapper: AF resource write ignored unmarked resource=%p reason=%s subresource=%u (#%d)",
+                       resource, reason ? reason : "unknown", subresource, idx + 1);
+        }
+        return;
+    }
+
+    const UINT currentDraw = WrapperAFCurrentDrawIndex();
+    if (mutation.writeCount != 0 && mutation.lastWriteDraw == currentDraw) {
+        g_WrapperAFResourceWriteCoalesced.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    mutation.magic = kWrapperForcedAFResourceMutationMagic;
+    mutation.version = kWrapperForcedAFResourceMutationVersion;
+    mutation.lastWriteDraw = currentDraw;
+    ++mutation.writeCount;
+
+    if (!StoreWrapperForcedAFResourceMutation(resource, mutation)) {
+        const int failIdx = g_WrapperAFResourceWriteMarkFailures.fetch_add(1, std::memory_order_relaxed);
+        if (failIdx < 16) {
+            WrapperLog("Wrapper: AF resource write mark failed resource=%p reason=%s subresource=%u draw=%u (#%d)",
+                       resource, reason ? reason : "unknown", subresource, mutation.lastWriteDraw, failIdx + 1);
+        }
+        return;
+    }
+
+    const int idx = g_WrapperAFResourceWriteMarks.fetch_add(1, std::memory_order_relaxed);
+    if (mutation.lastWriteDraw != 0) {
+        g_WrapperAFLastCandidateResourceWriteDraw.store(mutation.lastWriteDraw, std::memory_order_relaxed);
+    }
+    if (idx < 48 || (idx > 0 && (idx % 10000) == 0)) {
+        WrapperLog("Wrapper: AF candidate resource write resource=%p reason=%s subresource=%u draw=%u writes=%u (#%d)",
+                   resource, reason ? reason : "unknown", subresource, mutation.lastWriteDraw, mutation.writeCount,
+                   idx + 1);
+    }
+    InvalidateTrackedForcedAFViewsForResourceMutation(resource, mutation.lastWriteDraw, reason);
+}
+
+void CWrapD3D11DeviceContext::MarkForcedAFViewMutation(ID3D11View* view, const char* reason) {
+    if (!view) {
+        return;
+    }
+
+    ID3D11Resource* resource = nullptr;
+    view->GetResource(&resource);
+    if (!resource) {
+        return;
+    }
+    MarkForcedAFResourceMutation(resource, reason, UINT_MAX);
+    resource->Release();
 }
 
 uint32_t CWrapD3D11DeviceContext::TrackSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers,
@@ -847,7 +1426,8 @@ void CWrapD3D11DeviceContext::RefreshShaderResources(UINT stageIndex, UINT start
     }
 }
 
-ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIndex, UINT slot, ID3D11Device* realDevice,
+ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIndex, UINT slot,
+                                                                    ID3D11Device* realDevice,
                                                                     ID3D11SamplerState* original) {
     if (!original || !realDevice || stageIndex >= 6)
         return original;
@@ -897,15 +1477,16 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
     if (!ce::sampler_override::D3D11ShaderSamplerUsesAFSafeSample(metadata.usage, slot)) {
         int idx = g_WrapperAFSkipExplicitSample.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24)
-            WrapperLog("Wrapper: AF skip (pixel shader uses non-implicit sample opcode with s%u implicit=%d bias=%d "
-                       "lod=%d grad=%d comp=%d other=%d explicit=%d)",
-                       slot, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
-                       ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
-                       ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot) ? 1 : 0,
-                       ce::sampler_override::D3D11ShaderSamplerUsesGradientSample(metadata.usage, slot) ? 1 : 0,
-                       ce::sampler_override::D3D11ShaderSamplerUsesComparisonSample(metadata.usage, slot) ? 1 : 0,
-                       ce::sampler_override::D3D11ShaderSamplerUsesOtherExplicitSample(metadata.usage, slot) ? 1 : 0,
-                       ce::sampler_override::D3D11ShaderSamplerUsesExplicitSample(metadata.usage, slot) ? 1 : 0);
+            WrapperLog(
+                "Wrapper: AF skip (pixel shader uses non-implicit sample opcode with s%u implicit=%d bias=%d "
+                "lod=%d grad=%d comp=%d other=%d explicit=%d)",
+                slot, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesGradientSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesComparisonSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesOtherExplicitSample(metadata.usage, slot) ? 1 : 0,
+                ce::sampler_override::D3D11ShaderSamplerUsesExplicitSample(metadata.usage, slot) ? 1 : 0);
         return original;
     }
 
@@ -913,22 +1494,11 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
     original->GetDesc(&desc);
     if (!WrapperSamplerAllowsForcedAF(desc, gfx))
         return original;
-    if (WrapperShaderSlotRoleAlreadyBlocksForcedAF(m_CurrentPixelShader, slot)) {
-        int idx = g_WrapperAFSamplerMixedRoleSkips.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 48) {
-            WrapperLog("Wrapper: AF skip (shader slot mixed safe/unsafe resource role shader=%p slot=s%u sampler=%p "
-                       "Filter=0x%X Addr=%d/%d/%d #%d)",
-                       m_CurrentPixelShader, slot, original, desc.Filter, desc.AddressU, desc.AddressV,
-                       desc.AddressW, idx + 1);
-        }
-        return original;
-    }
 
     UINT firstTextureSlot = UINT_MAX;
     UINT lastTextureSlot = UINT_MAX;
-    const UINT textureCount =
-        ce::sampler_override::CountD3D11ShaderSamplerTextureUses(metadata.usage, slot, &firstTextureSlot,
-                                                                 &lastTextureSlot);
+    const UINT textureCount = ce::sampler_override::CountD3D11ShaderSamplerTextureUses(
+        metadata.usage, slot, &firstTextureSlot, &lastTextureSlot);
     D3D11_SHADER_RESOURCE_VIEW_DESC firstSrvDesc = {};
     ce::sampler_override::D3D11Texture2DForcedAFInfo firstResourceInfo = {};
     bool capturedFirstResource = false;
@@ -954,7 +1524,8 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
         D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         view->GetDesc(&srvDesc);
         ce::sampler_override::D3D11Texture2DForcedAFInfo resourceInfo = {};
-        const auto resourceDecision = WrapperClassifyViewForForcedAF(realDevice, view, &resourceInfo);
+        WrapperForcedAFViewCache resourceCache = {};
+        const auto resourceDecision = WrapperClassifyViewForForcedAF(realDevice, view, &resourceInfo, &resourceCache);
         if (resourceDecision != ce::sampler_override::D3D11ForcedAFResourceDecision::Allow) {
             std::atomic<int>* counter = &g_WrapperAFSkipUnsafeResource;
             if (resourceDecision == ce::sampler_override::D3D11ForcedAFResourceDecision::NonColorFormat) {
@@ -962,33 +1533,60 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
             } else if (resourceDecision ==
                        ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation) {
                 counter = &g_WrapperAFResourceWarmupSkips;
+            } else if (resourceDecision == ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStreamingQuiet) {
+                counter = &g_WrapperAFResourceStreamingQuietSkips;
             }
-            if (resourceDecision !=
-                ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation) {
+            if (resourceDecision != ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStableObservation &&
+                resourceDecision != ce::sampler_override::D3D11ForcedAFResourceDecision::PendingStreamingQuiet) {
                 const bool wasBlocked = WrapperShaderSlotRoleAlreadyBlocksForcedAF(m_CurrentPixelShader, slot);
                 ObserveWrapperShaderSlotRoleForForcedAF(m_CurrentPixelShader, slot, resourceDecision);
                 if (!wasBlocked && WrapperShaderSlotRoleAlreadyBlocksForcedAF(m_CurrentPixelShader, slot)) {
                     int blockIdx = g_WrapperAFSamplerMixedRoleBlocks.fetch_add(1, std::memory_order_relaxed);
                     if (blockIdx < 48) {
-                        WrapperLog("Wrapper: AF shader-slot role blocked after unsafe resource shader=%p slot=s%u "
-                                   "sampler=%p decision=%s/%d (#%d)",
-                                   m_CurrentPixelShader, slot, original,
-                                   ce::sampler_override::D3D11ForcedAFResourceDecisionName(resourceDecision),
-                                   (int)resourceDecision, blockIdx + 1);
+                        WrapperLog(
+                            "Wrapper: AF shader-slot role blocked after unsafe resource shader=%p slot=s%u "
+                            "sampler=%p decision=%s/%d (#%d)",
+                            m_CurrentPixelShader, slot, original,
+                            ce::sampler_override::D3D11ForcedAFResourceDecisionName(resourceDecision),
+                            (int)resourceDecision, blockIdx + 1);
                     }
                 }
             }
             const char* decisionName = ce::sampler_override::D3D11ForcedAFResourceDecisionName(resourceDecision);
             int idx = counter->fetch_add(1, std::memory_order_relaxed);
-            if (idx < 24)
-                WrapperLog("Wrapper: AF skip (sampled resource decision=%s/%d shader=%p sampler=%p s%u->t%u "
-                           "srvFmt=%d sampleFmt=%d texFmt=%d dim=%d "
-                           "size=%ux%u mips=%u viewMip=%u mostMip=%u bind=0x%X misc=0x%X sampledTextures=%u)",
-                           decisionName, (int)resourceDecision, m_CurrentPixelShader, original, slot, textureSlot,
-                           srvDesc.Format, resourceInfo.format, resourceInfo.textureFormat,
-                           resourceInfo.viewDimension, resourceInfo.width, resourceInfo.height,
-                           resourceInfo.mipLevels, resourceInfo.viewMipLevels, resourceInfo.mostDetailedMip,
-                           resourceInfo.bindFlags, resourceInfo.miscFlags, textureCount);
+            if (idx < 24 || (idx > 0 && (idx % 25000) == 0)) {
+                const UINT currentDraw = WrapperAFCurrentDrawIndex();
+                const UINT lastMissDraw = g_WrapperAFLastResourceCacheMissDraw.load(std::memory_order_relaxed);
+                const UINT viewAge = WrapperAFDrawAge(currentDraw, resourceCache.firstSeenDraw);
+                const UINT writeAge = WrapperAFDrawAge(currentDraw, resourceCache.resourceWriteDraw);
+                const UINT lastMissAge = WrapperAFDrawAge(currentDraw, lastMissDraw);
+                UINT lastGlobalMissAge = UINT_MAX;
+                UINT lastGlobalWriteAge = UINT_MAX;
+                const bool globalStreamingQuiet =
+                    WrapperAFGlobalStreamingWindowIsQuiet(currentDraw, &lastGlobalMissAge, &lastGlobalWriteAge);
+                const bool acceleratedWarmup =
+                    WrapperForcedAFViewUsesAcceleratedWarmup(resourceCache.info) && globalStreamingQuiet;
+                WrapperLog(
+                    "Wrapper: AF skip (sampled resource decision=%s/%d shader=%p sampler=%p s%u->t%u "
+                    "srvFmt=%d sampleFmt=%d texFmt=%d dim=%d "
+                    "size=%ux%u mips=%u viewMip=%u mostMip=%u bind=0x%X misc=0x%X sampledTextures=%u)",
+                    decisionName, (int)resourceDecision, m_CurrentPixelShader, original, slot, textureSlot,
+                    srvDesc.Format, resourceInfo.format, resourceInfo.textureFormat, resourceInfo.viewDimension,
+                    resourceInfo.width, resourceInfo.height, resourceInfo.mipLevels, resourceInfo.viewMipLevels,
+                    resourceInfo.mostDetailedMip, resourceInfo.bindFlags, resourceInfo.miscFlags, textureCount);
+                WrapperLog(
+                    "Wrapper: AF skip timing decision=%s/%d draw=%u firstSeen=%u viewAge=%u "
+                    "observations=%u stable=%u writeDraw=%u writeAge=%u lastSrvMissAge=%u "
+                    "warmupDraws=%u streamingAgeDraws=%u "
+                    "globalMissAge=%u globalWriteAge=%u globalQuietRequired=%u "
+                    "fastWarmup=%d fastObs=%u fastAge=%u obsCap=%u #%d",
+                    decisionName, (int)resourceDecision, currentDraw, resourceCache.firstSeenDraw, viewAge,
+                    resourceCache.allowObservations, resourceCache.stable, resourceCache.resourceWriteDraw, writeAge,
+                    lastMissAge, kWrapperForcedAFViewWarmupDraws, kWrapperForcedAFViewStreamingQuietDraws,
+                    lastGlobalMissAge, lastGlobalWriteAge, kWrapperForcedAFGlobalStreamingQuietDraws,
+                    acceleratedWarmup ? 1 : 0, kWrapperForcedAFViewAcceleratedObservations,
+                    kWrapperForcedAFViewAcceleratedStreamingDraws, kWrapperForcedAFViewObservationCap, idx + 1);
+            }
             return original;
         }
 
@@ -999,14 +1597,44 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
         }
     }
 
-    if (!ObserveWrapperShaderSlotRoleForForcedAF(m_CurrentPixelShader, slot,
-                                                 ce::sampler_override::D3D11ForcedAFResourceDecision::Allow)) {
+    const bool wasBlocked = WrapperShaderSlotRoleAlreadyBlocksForcedAF(m_CurrentPixelShader, slot);
+    bool recoveredRole = false;
+    bool probationSkip = false;
+    const bool roleAllows = ObserveWrapperShaderSlotRoleForForcedAF(
+        m_CurrentPixelShader, slot, ce::sampler_override::D3D11ForcedAFResourceDecision::Allow, &recoveredRole,
+        &probationSkip);
+    const bool nowBlocked = WrapperShaderSlotRoleAlreadyBlocksForcedAF(m_CurrentPixelShader, slot);
+    if (recoveredRole) {
+        const int recoveryIdx = g_WrapperAFSamplerMixedRoleRecoveries.load(std::memory_order_relaxed);
+        if (recoveryIdx <= 48 || (recoveryIdx > 0 && (recoveryIdx % 1000) == 0)) {
+            WrapperLog(
+                "Wrapper: AF shader-slot role recovered after safe probation shader=%p slot=s%u "
+                "sampler=%p sampledTextures=%u first=t%u last=t%u recoveries=%d",
+                m_CurrentPixelShader, slot, original, textureCount, firstTextureSlot, lastTextureSlot, recoveryIdx);
+        }
+    }
+    if (!roleAllows) {
+        if (!wasBlocked && nowBlocked) {
+            int blockIdx = g_WrapperAFSamplerMixedRoleBlocks.fetch_add(1, std::memory_order_relaxed);
+            if (blockIdx < 48) {
+                WrapperLog(
+                    "Wrapper: AF shader-slot role blocked after safe resource shader=%p slot=s%u "
+                    "sampler=%p sampledTextures=%u first=t%u last=t%u (#%d)",
+                    m_CurrentPixelShader, slot, original, textureCount, firstTextureSlot, lastTextureSlot,
+                    blockIdx + 1);
+            }
+        }
+        if (probationSkip) {
+            g_WrapperAFSamplerMixedRoleProbationSkips.fetch_add(1, std::memory_order_relaxed);
+        }
         int idx = g_WrapperAFSamplerMixedRoleSkips.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 48) {
-            WrapperLog("Wrapper: AF skip (shader slot became mixed safe/unsafe resource role shader=%p slot=s%u "
-                       "sampler=%p sampledTextures=%u first=t%u last=t%u #%d)",
-                       m_CurrentPixelShader, slot, original, textureCount, firstTextureSlot, lastTextureSlot,
-                       idx + 1);
+        if (idx < 48 || (idx > 0 && (idx % 250000) == 0)) {
+            WrapperLog(
+                "Wrapper: AF skip (current resources safe but shader-slot role is mixed shader=%p "
+                "slot=s%u sampler=%p sampledTextures=%u first=t%u last=t%u wasBlocked=%d nowBlocked=%d "
+                "probation=%d #%d)",
+                m_CurrentPixelShader, slot, original, textureCount, firstTextureSlot, lastTextureSlot,
+                wasBlocked ? 1 : 0, nowBlocked ? 1 : 0, probationSkip ? 1 : 0, idx + 1);
         }
         return original;
     }
@@ -1110,8 +1738,10 @@ void CWrapD3D11DeviceContext::SetRealSamplerRange(UINT stageIndex, UINT startSlo
 }
 
 int CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots, uint32_t slotMask) {
+    const bool runtimeEnabled = WrapperForcedAFRuntimeEnabled();
+    const bool restoresForcedSampler = stageIndex == kWrapperStagePS && (slotMask & m_PixelForcedSamplerMask) != 0;
     if (!m_pReal || stageIndex >= 6 || startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT || numSlots == 0 ||
-        slotMask == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire))
+        slotMask == 0 || (!runtimeEnabled && !restoresForcedSampler))
         return 0;
 
     ID3D11Device* realDevice = nullptr;
@@ -1166,38 +1796,127 @@ int CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot, 
 }
 
 void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
+    const bool runtimeEnabled = WrapperForcedAFRuntimeEnabled();
+    if (!runtimeEnabled) {
+        m_AFStreamingQuietInitialized = false;
+        m_AFLastStreamingQuiet = false;
+        m_AFQuietReopenDirtyPending = false;
+        if (m_PixelForcedSamplerMask == 0) {
+            m_PixelSamplerDirtyMask = 0;
+            WrapperLogAFRuntimeDisabledDrawOnce();
+            return;
+        }
+        m_PixelSamplerDirtyMask = m_PixelForcedSamplerMask;
+    }
+
     int drawIdx = g_WrapperAFDrawCalls.fetch_add(1, std::memory_order_relaxed);
     if (drawIdx < 32) {
-        WrapperLog("Wrapper: AF draw hook hit ctx=%p dirtyMask=0x%04X forcedMask=0x%04X candidates=0x%04X (#%d)",
-                   this, m_PixelSamplerDirtyMask, m_PixelForcedSamplerMask, PixelAFCandidateSamplerMask(),
-                   drawIdx + 1);
+        WrapperLog("Wrapper: AF draw hook hit ctx=%p dirtyMask=0x%04X forcedMask=0x%04X candidates=0x%04X (#%d)", this,
+                   m_PixelSamplerDirtyMask, m_PixelForcedSamplerMask, PixelAFCandidateSamplerMask(), drawIdx + 1);
     } else if (drawIdx > 0 && (drawIdx % 60000) == 0) {
-        WrapperLog("Wrapper: AF draw stats ctx=%p draws=%d dirtyMask=0x%04X forcedMask=0x%04X candidates=0x%04X "
-                   "allowed=%d nonColor=%d unsafe=%d "
-                   "reconcileCalls=%d reconcileSlots=%d rebound=%d effectiveBindCalls=%d effectiveBinds=%d "
-                   "passThrough=%d bindSkips=%d dirtySuppressed=%d realSetCalls=%d unchangedDirtyDeferred=%d "
-                   "warmupSkips=%d mixedRole(shaderSlotSkips=%d blocks=%d) srvCache(hit=%d miss=%d store=%d)",
-                   this, drawIdx, m_PixelSamplerDirtyMask, m_PixelForcedSamplerMask, PixelAFCandidateSamplerMask(),
-                   g_WrapperAFAllowed.load(std::memory_order_relaxed),
-                   g_WrapperAFSkipNonColorResource.load(std::memory_order_relaxed),
-                   g_WrapperAFSkipUnsafeResource.load(std::memory_order_relaxed),
-                   g_WrapperAFDrawReconciles.load(std::memory_order_relaxed),
-                   g_WrapperAFReconcileSlots.load(std::memory_order_relaxed),
-                   g_WrapperAFReconciled.load(std::memory_order_relaxed),
-                   g_WrapperAFEffectiveBindCalls.load(std::memory_order_relaxed),
-                   g_WrapperAFEffectiveBinds.load(std::memory_order_relaxed),
-                   g_WrapperAFPassthroughBinds.load(std::memory_order_relaxed),
-                   g_WrapperAFEffectiveBindSkips.load(std::memory_order_relaxed),
-                   g_WrapperAFCandidateDirtySuppressed.load(std::memory_order_relaxed),
-                   g_WrapperAFRealSamplerSetCalls.load(std::memory_order_relaxed),
-                   g_WrapperAFUnchangedDirtyDeferred.load(std::memory_order_relaxed),
-                   g_WrapperAFResourceWarmupSkips.load(std::memory_order_relaxed),
-                   g_WrapperAFSamplerMixedRoleSkips.load(std::memory_order_relaxed),
-                   g_WrapperAFSamplerMixedRoleBlocks.load(std::memory_order_relaxed),
-                   g_WrapperAFResourceCacheHits.load(std::memory_order_relaxed),
-                   g_WrapperAFResourceCacheMisses.load(std::memory_order_relaxed),
-                   g_WrapperAFResourceCacheStores.load(std::memory_order_relaxed));
+        const UINT currentDraw = static_cast<UINT>(drawIdx);
+        const UINT lastMissDraw = g_WrapperAFLastResourceCacheMissDraw.load(std::memory_order_relaxed);
+        const UINT lastMissAge = currentDraw >= lastMissDraw ? currentDraw - lastMissDraw : 0;
+        UINT lastGlobalMissAge = UINT_MAX;
+        UINT lastGlobalWriteAge = UINT_MAX;
+        WrapperAFGlobalStreamingWindowIsQuiet(currentDraw, &lastGlobalMissAge, &lastGlobalWriteAge);
+        WrapperLog(
+            "Wrapper: AF draw stats ctx=%p draws=%d dirtyMask=0x%04X forcedMask=0x%04X candidates=0x%04X "
+            "allowed=%d nonColor=%d unsafe=%d "
+            "reconcileCalls=%d reconcileSlots=%d rebound=%d effectiveBindCalls=%d effectiveBinds=%d "
+            "passThrough=%d bindSkips=%d dirtySuppressed=%d realSetCalls=%d unchangedDirtyDeferred=%d "
+            "warmupSkips=%d streamQuietSkips=%d globalQuietSkips=%d stableGlobalBypass=%d "
+            "graduated=%d fastGraduated=%d "
+            "resourceWrites(mark=%d fail=%d filtered=%d unmarked=%d coalesced=%d invalid=%d bindInvalid=%d "
+            "candidateMarkers=%d registryHit=%d registryMiss=%d registryStale=%d registryNegHit=%d) "
+            "lastSrvMissAge=%u globalMissAge=%u globalWriteAge=%u globalQuietRequired=%u "
+            "globalQuietTransitions=%d transitionDirtySlots=%d quietReopenPending=%d "
+            "quietReopenDelayed=%d quietReopenDelayedSlots=%d permanentDirtySkips=%d "
+            "mixedRole(historySkips=%d safeAfterUnsafeSkips=%d blocks=%d probationSkips=%d recoveries=%d) "
+            "srvCache(hit=%d miss=%d store=%d)",
+            this, drawIdx, m_PixelSamplerDirtyMask, m_PixelForcedSamplerMask, PixelAFCandidateSamplerMask(),
+            g_WrapperAFAllowed.load(std::memory_order_relaxed),
+            g_WrapperAFSkipNonColorResource.load(std::memory_order_relaxed),
+            g_WrapperAFSkipUnsafeResource.load(std::memory_order_relaxed),
+            g_WrapperAFDrawReconciles.load(std::memory_order_relaxed),
+            g_WrapperAFReconcileSlots.load(std::memory_order_relaxed),
+            g_WrapperAFReconciled.load(std::memory_order_relaxed),
+            g_WrapperAFEffectiveBindCalls.load(std::memory_order_relaxed),
+            g_WrapperAFEffectiveBinds.load(std::memory_order_relaxed),
+            g_WrapperAFPassthroughBinds.load(std::memory_order_relaxed),
+            g_WrapperAFEffectiveBindSkips.load(std::memory_order_relaxed),
+            g_WrapperAFCandidateDirtySuppressed.load(std::memory_order_relaxed),
+            g_WrapperAFRealSamplerSetCalls.load(std::memory_order_relaxed),
+            g_WrapperAFUnchangedDirtyDeferred.load(std::memory_order_relaxed),
+            g_WrapperAFResourceWarmupSkips.load(std::memory_order_relaxed),
+            g_WrapperAFResourceStreamingQuietSkips.load(std::memory_order_relaxed),
+            g_WrapperAFResourceGlobalStreamingQuietSkips.load(std::memory_order_relaxed),
+            g_WrapperAFResourceStableGlobalQuietBypasses.load(std::memory_order_relaxed),
+            g_WrapperAFResourceGraduated.load(std::memory_order_relaxed),
+            g_WrapperAFResourceAcceleratedGraduated.load(std::memory_order_relaxed),
+            g_WrapperAFResourceWriteMarks.load(std::memory_order_relaxed),
+            g_WrapperAFResourceWriteMarkFailures.load(std::memory_order_relaxed),
+            g_WrapperAFResourceWriteFiltered.load(std::memory_order_relaxed),
+            g_WrapperAFResourceWriteUnmarkedSkipped.load(std::memory_order_relaxed),
+            g_WrapperAFResourceWriteCoalesced.load(std::memory_order_relaxed),
+            g_WrapperAFResourceWriteViewInvalidations.load(std::memory_order_relaxed),
+            g_WrapperAFResourceWriteBindInvalidations.load(std::memory_order_relaxed),
+            g_WrapperAFResourceCandidateMarkers.load(std::memory_order_relaxed),
+            g_WrapperAFResourceCandidateRegistryHits.load(std::memory_order_relaxed),
+            g_WrapperAFResourceCandidateRegistryMisses.load(std::memory_order_relaxed),
+            g_WrapperAFResourceCandidateRegistryStale.load(std::memory_order_relaxed),
+            g_WrapperAFResourceCandidateRegistryNegativeHits.load(std::memory_order_relaxed), lastMissAge,
+            lastGlobalMissAge, lastGlobalWriteAge, kWrapperForcedAFGlobalStreamingQuietDraws,
+            g_WrapperAFGlobalQuietTransitions.load(std::memory_order_relaxed),
+            g_WrapperAFGlobalQuietTransitionDirtySlots.load(std::memory_order_relaxed),
+            m_AFQuietReopenDirtyPending ? 1 : 0, g_WrapperAFQuietReopenDelayed.load(std::memory_order_relaxed),
+            g_WrapperAFQuietReopenDelayedSlots.load(std::memory_order_relaxed),
+            g_WrapperAFPermanentUnsafeDirtySkips.load(std::memory_order_relaxed),
+            g_WrapperAFSamplerMixedRoleSkips.load(std::memory_order_relaxed),
+            g_WrapperAFSamplerMixedRoleSkips.load(std::memory_order_relaxed),
+            g_WrapperAFSamplerMixedRoleBlocks.load(std::memory_order_relaxed),
+            g_WrapperAFSamplerMixedRoleProbationSkips.load(std::memory_order_relaxed),
+            g_WrapperAFSamplerMixedRoleRecoveries.load(std::memory_order_relaxed),
+            g_WrapperAFResourceCacheHits.load(std::memory_order_relaxed),
+            g_WrapperAFResourceCacheMisses.load(std::memory_order_relaxed),
+            g_WrapperAFResourceCacheStores.load(std::memory_order_relaxed));
     }
+
+    if (runtimeEnabled) {
+        const UINT currentDraw = static_cast<UINT>(drawIdx);
+        UINT lastGlobalMissAge = UINT_MAX;
+        UINT lastGlobalWriteAge = UINT_MAX;
+        const bool globalQuiet =
+            WrapperAFGlobalStreamingWindowIsQuiet(currentDraw, &lastGlobalMissAge, &lastGlobalWriteAge);
+        if (!m_AFStreamingQuietInitialized) {
+            m_AFStreamingQuietInitialized = true;
+            m_AFLastStreamingQuiet = globalQuiet;
+        } else if (globalQuiet != m_AFLastStreamingQuiet) {
+            m_AFLastStreamingQuiet = globalQuiet;
+            g_WrapperAFGlobalQuietTransitions.fetch_add(1, std::memory_order_relaxed);
+            bool pendingReopen = m_AFQuietReopenDirtyPending;
+            const uint32_t transitionDirtyMask = ce::sampler_override::ResolveD3D11ForcedAFQuietTransitionDirtyMask(
+                globalQuiet, true, PixelAFCandidateSamplerMask(), m_PixelForcedSamplerMask, pendingReopen);
+            m_AFQuietReopenDirtyPending = pendingReopen;
+            if (transitionDirtyMask != 0) {
+                m_PixelSamplerDirtyMask |= transitionDirtyMask;
+                g_WrapperAFGlobalQuietTransitionDirtySlots.fetch_add(WrapperPopCount(transitionDirtyMask),
+                                                                     std::memory_order_relaxed);
+            }
+        } else if (m_AFQuietReopenDirtyPending && globalQuiet) {
+            bool pendingReopen = true;
+            const uint32_t delayedDirtyMask = ce::sampler_override::ResolveD3D11ForcedAFQuietTransitionDirtyMask(
+                globalQuiet, false, PixelAFCandidateSamplerMask(), m_PixelForcedSamplerMask, pendingReopen);
+            m_AFQuietReopenDirtyPending = pendingReopen;
+            if (delayedDirtyMask != 0) {
+                m_PixelSamplerDirtyMask |= delayedDirtyMask;
+                g_WrapperAFQuietReopenDelayed.fetch_add(1, std::memory_order_relaxed);
+                g_WrapperAFQuietReopenDelayedSlots.fetch_add(WrapperPopCount(delayedDirtyMask),
+                                                             std::memory_order_relaxed);
+            }
+        }
+    }
+
     const uint32_t dirtyMask = m_PixelSamplerDirtyMask;
     if (dirtyMask == 0) {
         return;
@@ -1245,8 +1964,16 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
         }
     };
 
-    if (numSamplers == 0 || startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT ||
-        !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+    if (numSamplers == 0 || startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+        forwardSamplerRange();
+        return;
+    }
+
+    if (!WrapperForcedAFRuntimeEnabled()) {
+        WrapperLogAFRuntimeDisabledPassthrough(g_WrapperAFRuntimeDisabledSamplerPassthroughs, "sampler bind");
+        if (stageIndex == kWrapperStagePS && m_PixelForcedSamplerMask != 0) {
+            TrackSamplers(stageIndex, startSlot, numSamplers, samplers);
+        }
         forwardSamplerRange();
         return;
     }
@@ -1307,13 +2034,12 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
     const uint32_t deferredDirtyMask = dirtyMask & ~resolveMask;
     if (deferredDirtyMask != 0) {
         const int deferredSlots = WrapperPopCount(deferredDirtyMask);
-        int deferredIdx =
-            g_WrapperAFUnchangedDirtyDeferred.fetch_add(deferredSlots, std::memory_order_relaxed);
+        int deferredIdx = g_WrapperAFUnchangedDirtyDeferred.fetch_add(deferredSlots, std::memory_order_relaxed);
         if (deferredIdx < 48) {
-            WrapperLog("Wrapper: AF sampler bind deferred dirty stage=PS start=%u num=%u dirtyMask=0x%04X "
-                       "changedMask=0x%04X deferredMask=0x%04X deferredSlots=%d (#%d)",
-                       startSlot, numSamplers, dirtyMask, changedMask, deferredDirtyMask, deferredSlots,
-                       deferredIdx + 1);
+            WrapperLog(
+                "Wrapper: AF sampler bind deferred dirty stage=PS start=%u num=%u dirtyMask=0x%04X "
+                "changedMask=0x%04X deferredMask=0x%04X deferredSlots=%d (#%d)",
+                startSlot, numSamplers, dirtyMask, changedMask, deferredDirtyMask, deferredSlots, deferredIdx + 1);
         }
     }
 
@@ -1322,10 +2048,11 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
         const int passThroughRebound = bindPassthroughSamplers(passthroughMask);
         int skipIdx = g_WrapperAFEffectiveBindSkips.fetch_add(1, std::memory_order_relaxed);
         if (skipIdx < 24) {
-            WrapperLog("Wrapper: AF sampler bind skipped stage=PS start=%u num=%u rangeMask=0x%04X "
-                       "changedMask=0x%04X dirtyMask=0x%04X passThroughMask=0x%04X passThrough=%d (#%d)",
-                       startSlot, numSamplers, rangeMask, changedMask, dirtyMask, passthroughMask,
-                       passThroughRebound, skipIdx + 1);
+            WrapperLog(
+                "Wrapper: AF sampler bind skipped stage=PS start=%u num=%u rangeMask=0x%04X "
+                "changedMask=0x%04X dirtyMask=0x%04X passThroughMask=0x%04X passThrough=%d (#%d)",
+                startSlot, numSamplers, rangeMask, changedMask, dirtyMask, passthroughMask, passThroughRebound,
+                skipIdx + 1);
         }
         return;
     }
@@ -1375,15 +2102,16 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
     realDevice->Release();
 
     const int totalChanged = rebound + passThroughRebound;
-    const int totalRebound = g_WrapperAFEffectiveBinds.fetch_add(totalChanged, std::memory_order_relaxed) + totalChanged;
+    const int totalRebound =
+        g_WrapperAFEffectiveBinds.fetch_add(totalChanged, std::memory_order_relaxed) + totalChanged;
     int bindIdx = g_WrapperAFEffectiveBindCalls.fetch_add(1, std::memory_order_relaxed);
     if (bindIdx < 48) {
-        WrapperLog("Wrapper: AF sampler bind effective stage=PS start=%u num=%u dirtyMask=0x%04X resolveMask=0x%04X "
-                   "changedMask=0x%04X deferredMask=0x%04X passThroughMask=0x%04X resolved=%d rebound=%d "
-                   "passThrough=%d forcedMask=0x%04X totalRebound=%d",
-                   startSlot, numSamplers, dirtyMask, resolveMask, changedMask, deferredDirtyMask, passthroughMask,
-                   resolved, rebound,
-                   passThroughRebound, m_PixelForcedSamplerMask, totalRebound);
+        WrapperLog(
+            "Wrapper: AF sampler bind effective stage=PS start=%u num=%u dirtyMask=0x%04X resolveMask=0x%04X "
+            "changedMask=0x%04X deferredMask=0x%04X passThroughMask=0x%04X resolved=%d rebound=%d "
+            "passThrough=%d forcedMask=0x%04X totalRebound=%d",
+            startSlot, numSamplers, dirtyMask, resolveMask, changedMask, deferredDirtyMask, passthroughMask, resolved,
+            rebound, passThroughRebound, m_PixelForcedSamplerMask, totalRebound);
     }
 }
 
@@ -1521,7 +2249,11 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetShaderResources(
         DX11WrapperForwardingScope forwardingScope;
         m_pReal->PSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
     }
-    TrackShaderResources(kWrapperStagePS, StartSlot, NumViews, ppShaderResourceViews);
+    if (WrapperForcedAFRuntimeEnabled()) {
+        TrackShaderResources(kWrapperStagePS, StartSlot, NumViews, ppShaderResourceViews);
+    } else {
+        WrapperLogAFRuntimeDisabledPassthrough(g_WrapperAFRuntimeDisabledSRVPassthroughs, "PS SRV bind");
+    }
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetShader(ID3D11PixelShader* pPixelShader,
@@ -1531,7 +2263,11 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetShader(ID3D11PixelShader* p
         DX11WrapperForwardingScope forwardingScope;
         m_pReal->PSSetShader(pPixelShader, ppClassInstances, NumClassInstances);
     }
-    TrackPixelShader(pPixelShader);
+    if (WrapperForcedAFRuntimeEnabled()) {
+        TrackPixelShader(pPixelShader);
+    } else {
+        WrapperLogAFRuntimeDisabledPassthrough(g_WrapperAFRuntimeDisabledShaderPassthroughs, "PS shader bind");
+    }
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::VSSetShader(ID3D11VertexShader* pVertexShader,
@@ -1559,7 +2295,12 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::Draw(UINT VertexCount, UINT Star
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11DeviceContext::Map(ID3D11Resource* pResource, UINT Subresource, D3D11_MAP MapType,
                                                        UINT MapFlags, D3D11_MAPPED_SUBRESOURCE* pMappedResource) {
-    return m_pReal->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
+    HRESULT hr = m_pReal->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
+    if (SUCCEEDED(hr) && (MapType == D3D11_MAP_WRITE || MapType == D3D11_MAP_WRITE_DISCARD ||
+                          MapType == D3D11_MAP_WRITE_NO_OVERWRITE || MapType == D3D11_MAP_READ_WRITE)) {
+        MarkForcedAFResourceMutation(pResource, "MapWrite", Subresource);
+    }
+    return hr;
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::Unmap(ID3D11Resource* pResource, UINT Subresource) {
@@ -1739,46 +2480,55 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::CopySubresourceRegion(ID3D11Reso
                                                                       const D3D11_BOX* pSrcBox) {
     m_pReal->CopySubresourceRegion(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource,
                                    pSrcBox);
+    MarkForcedAFResourceMutation(pDstResource, "CopySubresourceRegion", DstSubresource);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::CopyResource(ID3D11Resource* pDstResource,
                                                              ID3D11Resource* pSrcResource) {
     m_pReal->CopyResource(pDstResource, pSrcResource);
+    MarkForcedAFResourceMutation(pDstResource, "CopyResource", UINT_MAX);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::UpdateSubresource(ID3D11Resource* pDstResource, UINT DstSubresource,
                                                                   const D3D11_BOX* pDstBox, const void* pSrcData,
                                                                   UINT SrcRowPitch, UINT SrcDepthPitch) {
     m_pReal->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
+    MarkForcedAFResourceMutation(pDstResource, "UpdateSubresource", DstSubresource);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::CopyStructureCount(ID3D11Buffer* pDstBuffer, UINT DstAlignedByteOffset,
                                                                    ID3D11UnorderedAccessView* pSrcView) {
     m_pReal->CopyStructureCount(pDstBuffer, DstAlignedByteOffset, pSrcView);
+    MarkForcedAFResourceMutation(pDstBuffer, "CopyStructureCount", UINT_MAX);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::ClearRenderTargetView(ID3D11RenderTargetView* pRenderTargetView,
                                                                       const FLOAT ColorRGBA[4]) {
     m_pReal->ClearRenderTargetView(pRenderTargetView, ColorRGBA);
+    MarkForcedAFViewMutation(pRenderTargetView, "ClearRenderTargetView");
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::ClearUnorderedAccessViewUint(
     ID3D11UnorderedAccessView* pUnorderedAccessView, const UINT Values[4]) {
     m_pReal->ClearUnorderedAccessViewUint(pUnorderedAccessView, Values);
+    MarkForcedAFViewMutation(pUnorderedAccessView, "ClearUnorderedAccessViewUint");
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::ClearUnorderedAccessViewFloat(
     ID3D11UnorderedAccessView* pUnorderedAccessView, const FLOAT Values[4]) {
     m_pReal->ClearUnorderedAccessViewFloat(pUnorderedAccessView, Values);
+    MarkForcedAFViewMutation(pUnorderedAccessView, "ClearUnorderedAccessViewFloat");
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::ClearDepthStencilView(ID3D11DepthStencilView* pDepthStencilView,
                                                                       UINT ClearFlags, FLOAT Depth, UINT8 Stencil) {
     m_pReal->ClearDepthStencilView(pDepthStencilView, ClearFlags, Depth, Stencil);
+    MarkForcedAFViewMutation(pDepthStencilView, "ClearDepthStencilView");
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::GenerateMips(ID3D11ShaderResourceView* pShaderResourceView) {
     m_pReal->GenerateMips(pShaderResourceView);
+    MarkForcedAFViewMutation(pShaderResourceView, "GenerateMips");
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::SetResourceMinLOD(ID3D11Resource* pResource, FLOAT MinLOD) {
@@ -1793,6 +2543,7 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::ResolveSubresource(ID3D11Resourc
                                                                    ID3D11Resource* pSrcResource, UINT SrcSubresource,
                                                                    DXGI_FORMAT Format) {
     m_pReal->ResolveSubresource(pDstResource, DstSubresource, pSrcResource, SrcSubresource, Format);
+    MarkForcedAFResourceMutation(pDstResource, "ResolveSubresource", DstSubresource);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::ExecuteCommandList(ID3D11CommandList* pCommandList,
@@ -2097,6 +2848,7 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::CopySubresourceRegion1(ID3D11Res
     if (m_pReal1)
         m_pReal1->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource,
                                          pSrcBox, CopyFlags);
+    MarkForcedAFResourceMutation(pDstResource, "CopySubresourceRegion1", DstSubresource);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::UpdateSubresource1(ID3D11Resource* pDstResource, UINT DstSubresource,
@@ -2106,16 +2858,19 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::UpdateSubresource1(ID3D11Resourc
     if (m_pReal1)
         m_pReal1->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch,
                                      CopyFlags);
+    MarkForcedAFResourceMutation(pDstResource, "UpdateSubresource1", DstSubresource);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DiscardResource(ID3D11Resource* pResource) {
     if (m_pReal1)
         m_pReal1->DiscardResource(pResource);
+    MarkForcedAFResourceMutation(pResource, "DiscardResource", UINT_MAX);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DiscardView(ID3D11View* pResourceView) {
     if (m_pReal1)
         m_pReal1->DiscardView(pResourceView);
+    MarkForcedAFViewMutation(pResourceView, "DiscardView");
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::VSSetConstantBuffers1(UINT StartSlot, UINT NumBuffers,
@@ -2218,12 +2973,14 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::ClearView(ID3D11View* pView, con
                                                           const D3D11_RECT* pRect, UINT NumRects) {
     if (m_pReal1)
         m_pReal1->ClearView(pView, Color, pRect, NumRects);
+    MarkForcedAFViewMutation(pView, "ClearView");
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DiscardView1(ID3D11View* pResourceView, const D3D11_RECT* pRects,
                                                              UINT NumRects) {
     if (m_pReal1)
         m_pReal1->DiscardView1(pResourceView, pRects, NumRects);
+    MarkForcedAFViewMutation(pResourceView, "DiscardView1");
 }
 
 // ============================================================================
