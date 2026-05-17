@@ -693,13 +693,18 @@ public:
             }
             // Collect unique encoder pointers for track padding
             trackEncoders.clear();
+            int encCount = 0, shmCount = 0;
             for (auto& src : audioSources) {
                 if (src.encoder) {
+                    encCount++;
                     bool dup = false;
                     for (auto* e : trackEncoders) { if (e == src.encoder.get()) { dup = true; break; } }
                     if (!dup) trackEncoders.push_back(src.encoder.get());
                 }
+                if (src.sharedEncoderPtr) shmCount++;
             }
+            DLL_Log("[StartAudio] trackEncoders: %zu unique from %d owners (%d shared), %zu sources",
+                    trackEncoders.size(), encCount, shmCount, audioSources.size());
             if (startedCount > 0) {
                 audioRunning = true;
                 audioThread = std::thread(&MediaEngine::AudioLoop, this);
