@@ -5009,19 +5009,18 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             bool isTypelessHdr = (vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS ||
                                   vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
             if (isTypelessHdr) {
-                // WGC provides R16G16B16A16_TYPELESS with 10-bit displays.
-                // VP doesn't accept TYPELESS or FP16 on this HW.
-                // Convert to R10G10B10A2_UNORM (VP-compatible on all HW).
-                // Use linearToSrgb=false: WGC data is already gamma-corrected.
-                // Read as UNORM (TYPELESS data is integer 0-65535, not FP16)
+                // WGC provides R16G16B16A16_TYPELESS. GPU rejects typed SRVs (UNORM, FP16).
+                // Use DXGI_FORMAT_R16G16B16A16_TYPELESS as SRV format (same as the texture)
+                // and blit to R10G10B10A2 via GPU shader. The shader reads float4 which
+                // the hardware normalizes from 16-bit UNORM.
                 ID3D11Texture2D* rgb10Tex = RenderFullscreenCopy(
                     vpInputTexture, vpInputDesc.Width, vpInputDesc.Height,
-                    DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+                    DXGI_FORMAT_R16G16B16A16_TYPELESS, DXGI_FORMAT_R10G10B10A2_UNORM,
                     rgb10IntermediateTexture, rgb10IntermediateRTV,
                     rgb10IntermediateWidth, rgb10IntermediateHeight,
                     "RGB10", false);
                 if (!rgb10Tex) {
-                    DLL_Log("[VP] Failed to convert TYPELESS to RGB10A2 for VP");
+                    DLL_Log("[VP] Failed to convert TYPELESS to RGB10A2 via GPU blit");
                     return false;
                 }
                 vpInputTexture = rgb10Tex;
@@ -5037,7 +5036,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                     DLL_Log("[VP] RGB10A2 VP input view failed: HR=%x", hr);
                     return false;
                 }
-                DLL_Log("[VP] Using RGB10A2 staging input for TYPELESS source");
+                DLL_Log("[VP] Using RGB10A2 VP input for TYPELESS source");
             } else {
                 DLL_Log("[VP] Failed to create input view from staging: HR=%x", hr);
                 return false;
