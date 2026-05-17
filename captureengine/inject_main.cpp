@@ -487,9 +487,9 @@ int InjectProcessMain(const AppConfig& config) {
                         pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
                         pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
                     }
-                    // Clear audio-only flag for normal recording (audio-only sets it via shmem beforehand)
-                    pSharedMem->runtimeState.audioOnly.store(false, std::memory_order_release);
                     // Set command flag for media process to poll (use atomic store)
+                    // Note: audioOnly flag is managed by the controller — do NOT clear
+                    // it here — the controller may have set it for audio-only recording.
                     pSharedMem->runtimeState.cmdStartRecording.store(true, std::memory_order_release);
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;

@@ -616,6 +616,42 @@ void SendCommandToAll(ProcessCommand cmd) {
     }
 }
 
+// Helper: open inject's shared memory and run a callback with a writable view.
+// Returns true if the shared memory was opened and the callback executed.
+static bool WithInjectSharedMem(std::function<void(SharedMemoryLayout*)> fn) {
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (!hDisc)
+        return false;
+    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+    if (!pDisc || pDisc->GetMagic() != DISCOVERY_MAGIC) {
+        if (pDisc)
+            UnmapViewOfFile(pDisc);
+        CloseHandle(hDisc);
+        return false;
+    }
+    uint32_t injPid = pDisc->GetInjectPid();
+    UnmapViewOfFile(pDisc);
+    CloseHandle(hDisc);
+    if (injPid == 0)
+        return false;
+
+    wchar_t shmName[64];
+    GenerateSharedMemName(shmName, 64, injPid);
+    HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
+    if (!hShm)
+        return false;
+    auto* pShm = (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0,
+                                                     sizeof(SharedMemoryLayout));
+    if (!pShm) {
+        CloseHandle(hShm);
+        return false;
+    }
+    fn(pShm);
+    UnmapViewOfFile(pShm);
+    CloseHandle(hShm);
+    return true;
+}
+
 // Toggle recording - controller notifies inject which sets shared memory
 // Media process polls shared memory flags - more reliable than pipe IPC
 void ToggleRecording() {
@@ -633,6 +669,11 @@ void ToggleRecording() {
                 g_PseudoOverlay->SetRecordingState(false);
             return;
         }
+
+        // Ensure audio-only flag is cleared for normal recording
+        WithInjectSharedMem([](SharedMemoryLayout* shm) {
+            shm->runtimeState.audioOnly.store(false, std::memory_order_release);
+        });
 
         if (g_Config.fpsLimiter.captureSyncEnabled && !EnsureLimiterProcessReady(10000)) {
             LogError("[Controller] Limiter process is not ready for capture-synced recording");
@@ -691,42 +732,6 @@ void ToggleRecording() {
 
     if (g_PseudoOverlay)
         g_PseudoOverlay->SetRecordingState(g_Recording);
-}
-
-// Helper: open inject's shared memory and run a callback with a writable view.
-// Returns true if the shared memory was opened and the callback executed.
-static bool WithInjectSharedMem(std::function<void(SharedMemoryLayout*)> fn) {
-    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-    if (!hDisc)
-        return false;
-    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-    if (!pDisc || pDisc->GetMagic() != DISCOVERY_MAGIC) {
-        if (pDisc)
-            UnmapViewOfFile(pDisc);
-        CloseHandle(hDisc);
-        return false;
-    }
-    uint32_t injPid = pDisc->GetInjectPid();
-    UnmapViewOfFile(pDisc);
-    CloseHandle(hDisc);
-    if (injPid == 0)
-        return false;
-
-    wchar_t shmName[64];
-    GenerateSharedMemName(shmName, 64, injPid);
-    HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
-    if (!hShm)
-        return false;
-    auto* pShm = (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0,
-                                                     sizeof(SharedMemoryLayout));
-    if (!pShm) {
-        CloseHandle(hShm);
-        return false;
-    }
-    fn(pShm);
-    UnmapViewOfFile(pShm);
-    CloseHandle(hShm);
-    return true;
 }
 
 // Audio-only recording toggle (no video capture/encoding)
