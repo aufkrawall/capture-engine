@@ -350,19 +350,6 @@ private:
     bool ScaleCursorOnGPU(ID3D11Texture2D* srcTex, uint32_t srcW, uint32_t srcH, ID3D11Texture2D** dstTex,
                           uint32_t dstW, uint32_t dstH);
 
-    // GPU compute shader for RGB→YUV P010 conversion (10-bit SDR/HDR capture)
-    ID3D11ComputeShader* rgbToYuvCS = nullptr;
-    ID3D11Buffer* gammaCB = nullptr;  // Constant buffer for isLinear flag
-    bool rgbToYuvInit = false;
-    bool InitRgbToYuvCS();  // Compile compute shader + create CB (once)
-    bool ConvertRGBtoP010_GPU(ID3D11Texture2D* srcTex, DXGI_FORMAT srcFmt, ID3D11Texture2D** dstTex, uint32_t w,
-                              uint32_t h);
-    void SetP010ShaderInput(bool isLinear, bool isHDR);  // Update constant buffer flags
-
-    // P010 output textures for 10-bit encoding
-    static constexpr int kP010BufferCount = 3;
-    ID3D11Texture2D* p010Textures[kP010BufferCount] = {};
-    int currentP010Buffer = 0;
     bool use10BitPipeline = false;  // Set when input is 10-bit/HDR
 
     // LRU Cursor Cache - avoids recreating textures for common cursor shapes
@@ -420,7 +407,6 @@ private:
                                           ID3D11RenderTargetView*& cachedRTV, uint32_t& cachedWidth,
                                           uint32_t& cachedHeight, const char* logPrefix, bool linearToSrgb = false);
     ID3D11Texture2D* SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h);
-    ID3D11Texture2D* ConvertFP16ToRGB10A2(ID3D11Texture2D* input, uint32_t w, uint32_t h, bool linearToSrgb);
 
     // ASYNC PACKET WRITER
     // Decouples file I/O from the capture thread to prevent stalls on network

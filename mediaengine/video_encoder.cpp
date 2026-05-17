@@ -6,6 +6,7 @@
 #include "mediaengine.h"
 #include "mux_invariants.h"
 #include "video_encoder_options.h"
+#include "video_format_policy.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -471,11 +472,6 @@ bool ResolveVideoFormat(const VideoConfig& config, bool isHDR, bool prefer10Bit,
     return false;
 }
 
-bool IsHighPrecisionRgbInputFormat(DXGI_FORMAT format) {
-    return format == DXGI_FORMAT_R10G10B10A2_UNORM || format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
-           format == DXGI_FORMAT_R16G16B16A16_TYPELESS;  // WGC provides TYPELESS with 10-bit display
-}
-
 bool WantsFullOutputRange(const std::string& colorRange) {
     return !colorRange.empty() && _stricmp(colorRange.c_str(), "full") == 0;
 }
@@ -508,7 +504,7 @@ void ApplyFrameColorMetadata(AVFrame* frame, const AVCodecContext* codec) {
 }
 
 DXGI_COLOR_SPACE_TYPE GetVideoProcessorInputColorSpace(DXGI_FORMAT format, bool isHDR, bool forceLinear = false) {
-    if (forceLinear || format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+    if (forceLinear || ce::video_format::IsFp16RgbInputFormat(format)) {
         return DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
     }
     if (isHDR) {
@@ -1198,27 +1194,12 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
     D3D11_TEXTURE2D_DESC srcDesc = {};
     srcTexture->GetDesc(&srcDesc);
 
-    DXGI_FORMAT inputSrvFormat = DXGI_FORMAT_UNKNOWN;
-    bool linearToSrgb = false;
-    switch (srcDesc.Format) {
-        case DXGI_FORMAT_B8G8R8A8_UNORM:
-        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
-            inputSrvFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
-            break;
-        case DXGI_FORMAT_R8G8B8A8_UNORM:
-            inputSrvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-            break;
-        case DXGI_FORMAT_R10G10B10A2_UNORM:
-            inputSrvFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
-            break;
-        case DXGI_FORMAT_R16G16B16A16_FLOAT:
-            inputSrvFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
-            linearToSrgb = !currentIsHDR;
-            break;
-        default:
-            DLL_Log("[VideoEncoder] Direct D3D11 encode path does not support source format %d", srcDesc.Format);
-            return false;
+    const DXGI_FORMAT inputSrvFormat = ce::video_format::GetRgbShaderResourceViewFormat(srcDesc.Format);
+    if (inputSrvFormat == DXGI_FORMAT_UNKNOWN) {
+        DLL_Log("[VideoEncoder] Direct D3D11 encode path does not support source format %d", srcDesc.Format);
+        return false;
     }
+    const bool linearToSrgb = ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(srcDesc.Format, currentIsHDR);
 
     ID3D11Texture2D* srvSourceTexture = srcTexture;
     ID3D11Texture2D* srvCompatTexture = nullptr;
@@ -2575,7 +2556,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 fenceValue);
     }
 
-    const bool wants10BitInput = isHDR || IsHighPrecisionRgbInputFormat(static_cast<DXGI_FORMAT>(format));
+    const bool wants10BitInput = isHDR || ce::video_format::IsHighPrecisionRgbInputFormat(static_cast<DXGI_FORMAT>(format));
     if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
         const bool reinitializingActiveRecording = initDone;
         const std::string preservedOutputFilename = outputFilename;
@@ -3562,7 +3543,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     D3D11_TEXTURE2D_DESC texDesc = {};
     bgraTexture->GetDesc(&texDesc);
-    const bool wants10BitInput = IsHighPrecisionRgbInputFormat(texDesc.Format);
+    const bool wants10BitInput = ce::video_format::IsHighPrecisionRgbInputFormat(texDesc.Format);
     if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
         const bool reinitializingActiveRecording = initDone;
         const std::string preservedOutputFilename = outputFilename;
@@ -4777,7 +4758,8 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     {
         D3D11_TEXTURE2D_DESC srcDesc;
         bgraTexture->GetDesc(&srcDesc);
-        const bool shouldUse10BitPipeline = IsHighPrecisionRgbInputFormat(srcDesc.Format) && ShouldUse10BitOutput();
+        const bool shouldUse10BitPipeline =
+            ce::video_format::IsHighPrecisionRgbInputFormat(srcDesc.Format) && ShouldUse10BitOutput();
         if (shouldUse10BitPipeline != use10BitPipeline) {
             use10BitPipeline = shouldUse10BitPipeline;
             DLL_Log("[VP] Input fmt=%d, VP output pipeline=%s", srcDesc.Format, use10BitPipeline ? "P010" : "NV12");
@@ -4833,12 +4815,27 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     bool vpInputIsLinear = false;
     bool wantsFp16VpStagingPath = false;
     D3D11_TEXTURE2D_DESC vpInputDesc = {};
-    auto prepareFp16CompatInput = [&](HRESULT priorHr) -> bool {
-        const bool encodeSdrGamma = !currentIsHDR;
-        ID3D11Texture2D* converted =
-            ConvertFP16ToRGB10A2(vpInputTexture, vpInputDesc.Width, vpInputDesc.Height, encodeSdrGamma);
+    auto releaseConvertedInput = [&]() {
+        if (needReleaseConverted && vpInputTexture && vpInputTexture != bgraTexture) {
+            vpInputTexture->Release();
+        }
+        needReleaseConverted = false;
+    };
+    auto prepareHighPrecisionRgb10CompatInput = [&](HRESULT priorHr) -> bool {
+        const DXGI_FORMAT sourceFormat = vpInputDesc.Format;
+        const DXGI_FORMAT inputSrvFormat = ce::video_format::GetRgbShaderResourceViewFormat(sourceFormat);
+        if (inputSrvFormat == DXGI_FORMAT_UNKNOWN) {
+            DLL_Log("[VP] High-precision RGB10 fallback unsupported source format: fmt=%d", sourceFormat);
+            return false;
+        }
+        const bool encodeSdrGamma = ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(sourceFormat, currentIsHDR);
+        ID3D11Texture2D* converted = RenderFullscreenCopy(
+            vpInputTexture, vpInputDesc.Width, vpInputDesc.Height, inputSrvFormat, DXGI_FORMAT_R10G10B10A2_UNORM,
+            rgb10IntermediateTexture, rgb10IntermediateRTV, rgb10IntermediateWidth, rgb10IntermediateHeight, "RGB10",
+            encodeSdrGamma);
         if (!converted) {
-            DLL_Log("[VP] Failed to convert FP16 input to RGB10A2 before VP");
+            DLL_Log("[VP] Failed to convert high-precision input to RGB10A2 before VP (srcFmt=%d srvFmt=%d)",
+                    sourceFormat, inputSrvFormat);
             return false;
         }
         if (needReleaseConverted && vpInputTexture != bgraTexture) {
@@ -4847,11 +4844,13 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         vpInputTexture = converted;
         needReleaseConverted = true;
         allowVpInputView = true;
-        vpInputIsLinear = !encodeSdrGamma;
+        vpInputIsLinear = ce::video_format::IsFp16RgbInputFormat(sourceFormat) && !encodeSdrGamma;
         vpInputTexture->GetDesc(&vpInputDesc);
-        if (priorHr != S_OK && !vpFp16CompatLogged) {
-            DLL_Log("[VP] FP16 input fallback: HR=%x final=RGB10A2 path=%s", priorHr,
-                    encodeSdrGamma ? "SDR gamma encoded" : "linear passthrough");
+        if (!vpFp16CompatLogged) {
+            DLL_Log("[VP] High-precision input fallback: HR=%x srcFmt=%d srvFmt=%d final=RGB10A2 path=%s output=%s",
+                    priorHr, sourceFormat, inputSrvFormat,
+                    encodeSdrGamma ? "SDR linear-to-sRGB" : (vpInputIsLinear ? "linear passthrough" : "typed passthrough"),
+                    ShouldUse10BitOutput() ? "P010" : "NV12");
             vpFp16CompatLogged = true;
         }
         return true;
@@ -4876,13 +4875,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         // and MinGW catch(...) CANNOT catch SEH exceptions (__fastfail).
         // We must prevent the call by checking format compatibility first.
         vpInputTexture->GetDesc(&vpInputDesc);
-        wantsFp16VpStagingPath =
-            !allowDirectInputView && vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT && ShouldUse10BitOutput();
+        wantsFp16VpStagingPath = !allowDirectInputView && ce::video_format::IsFp16RgbInputFormat(vpInputDesc.Format);
         if (wantsFp16VpStagingPath && fp16VpInputStrategy == Fp16VpInputStrategy::kUseRgb10Compat) {
-            if (!prepareFp16CompatInput(S_OK)) {
-                if (needReleaseConverted && vpInputTexture != bgraTexture) {
-                    vpInputTexture->Release();
-                }
+            if (!prepareHighPrecisionRgb10CompatInput(S_OK)) {
+                releaseConvertedInput();
                 return false;
             }
         }
@@ -4890,14 +4886,13 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             (vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
              vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
              vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS ||  // WGC can provide TYPELESS with 10-bit display
-             vpInputDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || vpInputDesc.Format == DXGI_FORMAT_NV12 ||
+             vpInputDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ||
+             vpInputDesc.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS || vpInputDesc.Format == DXGI_FORMAT_NV12 ||
              vpInputDesc.Format == DXGI_FORMAT_P010);
 
         if (!vpCompatible) {
             DLL_Log("[VP] Texture format %d not VP-compatible, frame dropped", vpInputDesc.Format);
-            if (needReleaseConverted && vpInputTexture != bgraTexture) {
-                vpInputTexture->Release();
-            }
+            releaseConvertedInput();
             return false;  // Cannot convert - format not supported by VP
         }
     }
@@ -4978,6 +4973,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
 
             if (FAILED(hr)) {
                 DLL_Log("[VP] Failed to create staging texture: HR=%x", hr);
+                releaseConvertedInput();
                 return false;
             }
             DLL_Log("[VP] Created staging texture: %ux%u fmt=%d", vpInputDesc.Width, vpInputDesc.Height,
@@ -5006,26 +5002,16 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             hr = E_FAIL;
         }
         if (FAILED(hr)) {
-            bool isTypelessHdr = (vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS ||
-                                  vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
-            if (isTypelessHdr) {
-                // WGC provides R16G16B16A16_TYPELESS. GPU rejects typed SRVs (UNORM, FP16).
-                // Use DXGI_FORMAT_R16G16B16A16_TYPELESS as SRV format (same as the texture)
-                // and blit to R10G10B10A2 via GPU shader. The shader reads float4 which
-                // the hardware normalizes from 16-bit UNORM.
-                ID3D11Texture2D* rgb10Tex = RenderFullscreenCopy(
-                    vpInputTexture, vpInputDesc.Width, vpInputDesc.Height,
-                    DXGI_FORMAT_R16G16B16A16_TYPELESS, DXGI_FORMAT_R10G10B10A2_UNORM,
-                    rgb10IntermediateTexture, rgb10IntermediateRTV,
-                    rgb10IntermediateWidth, rgb10IntermediateHeight,
-                    "RGB10", false);
-                if (!rgb10Tex) {
-                    DLL_Log("[VP] Failed to convert TYPELESS to RGB10A2 via GPU blit");
+            const DXGI_FORMAT failedVpInputFormat = vpInputDesc.Format;
+            if (ce::video_format::IsHighPrecisionRgbInputFormat(failedVpInputFormat)) {
+                if (ce::video_format::IsFp16RgbInputFormat(failedVpInputFormat)) {
+                    fp16VpInputStrategy = Fp16VpInputStrategy::kUseRgb10Compat;
+                }
+                if (!prepareHighPrecisionRgb10CompatInput(hr)) {
+                    DLL_Log("[VP] Failed high-precision RGB10A2 compatibility blit after staging input failure");
+                    releaseConvertedInput();
                     return false;
                 }
-                vpInputTexture = rgb10Tex;
-                needReleaseConverted = true;
-                vpInputTexture->GetDesc(&vpInputDesc);
                 try {
                     hr = videoDevice->CreateVideoProcessorInputView(vpInputTexture, videoProcessorEnum, &inputViewDesc,
                                                                     &localInputView);
@@ -5033,17 +5019,20 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                     hr = E_FAIL;
                 }
                 if (FAILED(hr)) {
-                    DLL_Log("[VP] RGB10A2 VP input view failed: HR=%x", hr);
+                    DLL_Log("[VP] RGB10A2 VP input view failed after high-precision fallback: srcFmt=%d HR=%x",
+                            failedVpInputFormat, hr);
+                    releaseConvertedInput();
                     return false;
                 }
-                DLL_Log("[VP] Using RGB10A2 VP input for TYPELESS source");
+                DLL_Log("[VP] Using RGB10A2 VP input for high-precision source fmt=%d", failedVpInputFormat);
             } else {
                 DLL_Log("[VP] Failed to create input view from staging: HR=%x", hr);
+                releaseConvertedInput();
                 return false;
             }
         } else if (wantsFp16VpStagingPath && fp16VpInputStrategy == Fp16VpInputStrategy::kUnknown) {
             fp16VpInputStrategy = Fp16VpInputStrategy::kUseStaging;
-            DLL_Log("[VP] Using native FP16 staging input for 10-bit VP path");
+            DLL_Log("[VP] Using native FP16 staging input for %s VP path", ShouldUse10BitOutput() ? "10-bit" : "8-bit");
         }
         // inputTexture = bgraStagingTexture;
     }
@@ -5372,9 +5361,15 @@ ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy(ID3D11Texture2D* input, uint
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = 1;
     ID3D11ShaderResourceView* srv = nullptr;
+    D3D11_TEXTURE2D_DESC inputDesc = {};
+    input->GetDesc(&inputDesc);
     HRESULT hr = d3d11Device->CreateShaderResourceView(input, &srvDesc, &srv);
     if (FAILED(hr)) {
-        DLL_Log("[%s] Failed to create SRV for input fmt=%d: HR=%x", logPrefix, inputSrvFormat, hr);
+        static std::atomic<int> srvFailLogCount{0};
+        if (srvFailLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+            DLL_Log("[%s] Failed to create SRV: texFmt=%d srvFmt=%d bind=%x misc=%x HR=%x", logPrefix,
+                    inputDesc.Format, inputSrvFormat, inputDesc.BindFlags, inputDesc.MiscFlags, hr);
+        }
         return nullptr;
     }
 
@@ -5421,12 +5416,6 @@ ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy(ID3D11Texture2D* input, uint
 ID3D11Texture2D* VideoEncoder::SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h) {
     return RenderFullscreenCopy(input, w, h, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, swapRBTexture,
                                 swapRBTextureRTV, swapRBTexWidth, swapRBTexHeight, "SwapRB");
-}
-
-ID3D11Texture2D* VideoEncoder::ConvertFP16ToRGB10A2(ID3D11Texture2D* input, uint32_t w, uint32_t h, bool linearToSrgb) {
-    return RenderFullscreenCopy(input, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R10G10B10A2_UNORM,
-                                rgb10IntermediateTexture, rgb10IntermediateRTV, rgb10IntermediateWidth,
-                                rgb10IntermediateHeight, "RGB10", linearToSrgb);
 }
 
 void VideoEncoder::CleanupVideoProcessor() {
@@ -5517,22 +5506,6 @@ void VideoEncoder::CleanupVideoProcessor() {
     swapRBTexHeight = 0;
     rgb10IntermediateWidth = 0;
     rgb10IntermediateHeight = 0;
-
-    if (rgbToYuvCS) {
-        rgbToYuvCS->Release();
-        rgbToYuvCS = nullptr;
-    }
-    if (gammaCB) {
-        gammaCB->Release();
-        gammaCB = nullptr;
-    }
-    for (int i = 0; i < kP010BufferCount; ++i) {
-        if (p010Textures[i]) {
-            p010Textures[i]->Release();
-            p010Textures[i] = nullptr;
-        }
-    }
-    currentP010Buffer = 0;
 
     // Reset per-recording log flags
     vpFirstCallLogged = false;
@@ -5785,570 +5758,6 @@ bool VideoEncoder::ScaleCursorOnGPU(ID3D11Texture2D* srcTex, uint32_t srcW, uint
 
     *dstTex = scaledTex;
     return true;
-}
-
-// ============================================================================
-// GPU Compute Shader: RGB→YUV P010 Conversion for 10-bit SDR/HDR Capture
-// ============================================================================
-
-// Compute shader: writes Y and UV values to StructuredBuffers.
-// Handles sRGB (BGRA8), linear SDR (FP16), and linear HDR (FP16/PQ) input.
-static const char* RGB_TO_YUV_CS_SRC = R"(
-Texture2D<float4> srcTex : register(t0);
-RWStructuredBuffer<uint> yOut : register(u0);    // w*h entries, one Y per pixel
-RWStructuredBuffer<uint> uvUOut : register(u1);  // (w/2)*(h/2) entries
-RWStructuredBuffer<uint> uvVOut : register(u2);  // (w/2)*(h/2) entries
-
-cbuffer GammaCB : register(b0)
-{
-    uint isLinear;  // 1 = input is linear RGB (FP16)
-    uint isHDR;     // 1 = use BT.2020 + PQ (HDR10), 0 = use BT.709 + sRGB (SDR)
-    uint _pad0;
-    uint _pad1;
-};
-
-// Approximate sRGB gamma encoding: linear -> sRGB
-float3 LinearToSRGB(float3 c)
-{
-    float3 lo = c * 12.92;
-    float3 hi = 1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055;
-    return float3(c.r < 0.0031308 ? lo.r : hi.r,
-                  c.g < 0.0031308 ? lo.g : hi.g,
-                  c.b < 0.0031308 ? lo.b : hi.b);
-}
-
-// SMPTE ST 2084 (PQ) transfer function: linear [0,1] -> PQ [0,1]
-float3 LinearToPQ(float3 c)
-{
-    float m1 = 0.1593017578125;   // (2610 / 16384)
-    float m2 = 78.84375;          // (2523 / 32) * 128
-    float c1 = 0.8359375;         // 3424 / 4096
-    float c2 = 18.8515625;        // (2413 / 128)
-    float c3 = 18.6875;           // (2392 / 128)
-    float3 cp = pow(max(c, 0.0), m1);
-    return pow((c1 + c2 * cp) / (1.0 + c3 * cp), m2);
-}
-
-[numthreads(8, 8, 1)]
-void CSMain(uint3 dtid : SV_DispatchThreadID)
-{
-    uint w, h;
-    srcTex.GetDimensions(w, h);
-    if (dtid.x >= w || dtid.y >= h) return;
-
-    float4 c = srcTex.Load(dtid.xyz);
-    float3 rgb = c.rgb;
-
-    float Yf, Uf, Vf;
-
-    if (isHDR != 0)
-    {
-        // HDR path: linear -> PQ, then BT.2020 RGB->YUV
-        rgb = LinearToPQ(saturate(rgb));
-        Yf = saturate(0.2627 * rgb.r + 0.6780 * rgb.g + 0.0593 * rgb.b);
-        Uf = saturate(-0.1396 * rgb.r - 0.3604 * rgb.g + 0.5000 * rgb.b + 0.5);
-        Vf = saturate(0.5000 * rgb.r - 0.4392 * rgb.g - 0.0608 * rgb.b + 0.5);
-    }
-    else
-    {
-        // SDR path: linear -> sRGB (if needed), then BT.709 RGB->YUV
-        if (isLinear != 0)
-            rgb = LinearToSRGB(saturate(rgb));
-        Yf = saturate(0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b);
-        Uf = saturate(-0.1146 * rgb.r - 0.3854 * rgb.g + 0.5000 * rgb.b + 0.5);
-        Vf = saturate(0.5000 * rgb.r - 0.4542 * rgb.g - 0.0458 * rgb.b + 0.5);
-    }
-
-    // P010 range: 10-bit in 16-bit container
-    uint Y = (uint)(Yf * 65472.0 + 0.5);
-    uint U = (uint)(Uf * 65472.0 + 0.5);
-    uint V = (uint)(Vf * 65472.0 + 0.5);
-
-    // Y: one value per pixel
-    yOut[dtid.y * w + dtid.x] = Y;
-
-    // UV: 4:2:0 subsampling, one value per 2x2 block (top-left pixel writes)
-    if ((dtid.x & 1) == 0 && (dtid.y & 1) == 0) {
-        uint uvIdx = (dtid.y >> 1) * (w >> 1) + (dtid.x >> 1);
-        uvUOut[uvIdx] = U;
-        uvVOut[uvIdx] = V;
-    }
-}
-)";
-
-bool VideoEncoder::InitRgbToYuvCS() {
-    if (rgbToYuvInit)
-        return true;
-
-    if (!d3d11Device) {
-        DLL_Log("[P010] InitRgbToYuvCS: d3d11Device is null");
-        return false;
-    }
-
-    // Load compiler
-    HMODULE d3dCompiler = LoadLibraryW(L"d3dcompiler_47.dll");
-    if (!d3dCompiler) {
-        DLL_Log("[P010] InitRgbToYuvCS: failed to load d3dcompiler_47.dll");
-        return false;
-    }
-    typedef HRESULT(WINAPI * PFN_D3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
-                                             LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
-    auto d3dCompile = (PFN_D3DCompile)GetProcAddress(d3dCompiler, "D3DCompile");
-    if (!d3dCompile) {
-        FreeLibrary(d3dCompiler);
-        return false;
-    }
-
-    ID3D11Device* baseDev = nullptr;
-    d3d11Device->QueryInterface(IID_PPV_ARGS(&baseDev));
-    if (!baseDev) {
-        FreeLibrary(d3dCompiler);
-        return false;
-    }
-
-    HRESULT hr;
-
-    // 1. Compile compute shader
-    {
-        ID3DBlob* csBlob = nullptr;
-        ID3DBlob* errBlob = nullptr;
-        hr = d3dCompile(RGB_TO_YUV_CS_SRC, strlen(RGB_TO_YUV_CS_SRC), nullptr, nullptr, nullptr, "CSMain", "cs_5_0", 0,
-                        0, &csBlob, &errBlob);
-        if (FAILED(hr)) {
-            if (errBlob) {
-                DLL_Log("[P010] CS compile error: %s", (const char*)errBlob->GetBufferPointer());
-                errBlob->Release();
-            }
-            baseDev->Release();
-            FreeLibrary(d3dCompiler);
-            return false;
-        }
-        hr = baseDev->CreateComputeShader(csBlob->GetBufferPointer(), csBlob->GetBufferSize(), nullptr, &rgbToYuvCS);
-        csBlob->Release();
-        if (FAILED(hr)) {
-            DLL_Log("[P010] InitRgbToYuvCS: CreateComputeShader failed HR=0x%08X", hr);
-            baseDev->Release();
-            FreeLibrary(d3dCompiler);
-            return false;
-        }
-    }
-
-    FreeLibrary(d3dCompiler);
-
-    // 2. Create constant buffer for gamma flag
-    D3D11_BUFFER_DESC cbDesc = {};
-    cbDesc.ByteWidth = 16;  // 4 uints (aligned to 16 bytes)
-    cbDesc.Usage = D3D11_USAGE_DYNAMIC;
-    cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    hr = baseDev->CreateBuffer(&cbDesc, nullptr, &gammaCB);
-    baseDev->Release();
-    if (FAILED(hr)) {
-        DLL_Log("[P010] Failed to create gamma constant buffer: HR=0x%08X", hr);
-        return false;
-    }
-
-    rgbToYuvInit = true;
-    return true;
-}
-
-void VideoEncoder::SetP010ShaderInput(bool isLinear, bool isHDR) {
-    if (!gammaCB || !d3d11Context)
-        return;
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    HRESULT hr = d3d11Context->Map(gammaCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (SUCCEEDED(hr)) {
-        uint32_t* data = (uint32_t*)mapped.pData;
-        data[0] = isLinear ? 1u : 0u;  // isLinear flag
-        data[1] = isHDR ? 1u : 0u;     // isHDR flag
-        data[2] = 0;
-        data[3] = 0;
-        d3d11Context->Unmap(gammaCB, 0);
-    }
-}
-
-bool VideoEncoder::ConvertRGBtoP010_GPU(ID3D11Texture2D* srcTex, DXGI_FORMAT srcFmt, ID3D11Texture2D** dstTex,
-                                        uint32_t w, uint32_t h) {
-    static int failCount = 0;
-    auto logFail = [&](const char* step, HRESULT hr) {
-        if (failCount++ < 5)
-            DLL_Log("[P010] FAILED at %s: HR=0x%08X %ux%u fmt=%d", step, hr, w, h, srcFmt);
-    };
-
-    if (!InitRgbToYuvCS()) {
-        logFail("InitRgbToYuvCS", E_FAIL);
-        return false;
-    }
-
-    ID3D11Device* baseDev = nullptr;
-    d3d11Device->QueryInterface(IID_PPV_ARGS(&baseDev));
-    if (!baseDev)
-        return false;
-
-    ID3D11DeviceContext* baseCtx = nullptr;
-    d3d11Context->QueryInterface(IID_PPV_ARGS(&baseCtx));
-    if (!baseCtx) {
-        baseDev->Release();
-        return false;
-    }
-
-    HRESULT hr;
-
-    // Source texture (WGC pool) may not have SHADER_RESOURCE bind flag.
-    // Copy to an intermediate texture with SRV support.
-    D3D11_TEXTURE2D_DESC srcDesc;
-    srcTex->GetDesc(&srcDesc);
-
-    D3D11_TEXTURE2D_DESC srvTexDesc = srcDesc;
-    srvTexDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    srvTexDesc.MiscFlags = 0;
-    srvTexDesc.CPUAccessFlags = 0;
-
-    ID3D11Texture2D* srvTex = nullptr;
-    hr = baseDev->CreateTexture2D(&srvTexDesc, nullptr, &srvTex);
-    if (FAILED(hr)) {
-        logFail("CreateSRVTex", hr);
-        baseDev->Release();
-        baseCtx->Release();
-        return false;
-    }
-    baseCtx->CopyResource(srvTex, srcTex);
-
-    // Create source SRV
-    ID3D11ShaderResourceView* srcSRV = nullptr;
-    hr = baseDev->CreateShaderResourceView(srvTex, nullptr, &srcSRV);
-    if (FAILED(hr)) {
-        logFail("CreateShaderResourceView", hr);
-        srvTex->Release();
-        baseDev->Release();
-        baseCtx->Release();
-        return false;
-    }
-
-    // Create StructuredBuffers: one uint per pixel/value (no packing)
-    uint32_t yCount = w * h;
-    uint32_t uvCount = (w / 2) * (h / 2);
-
-    auto createBuffer = [&](uint32_t count, ID3D11Buffer** out) -> bool {
-        D3D11_BUFFER_DESC desc = {};
-        desc.ByteWidth = count * sizeof(uint32_t);
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
-        desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-        desc.StructureByteStride = sizeof(uint32_t);
-        HRESULT r = baseDev->CreateBuffer(&desc, nullptr, out);
-        if (FAILED(r))
-            logFail("CreateBuffer", r);
-        return SUCCEEDED(r);
-    };
-
-    ID3D11Buffer* yBuf = nullptr;
-    ID3D11Buffer* uvUBuf = nullptr;
-    ID3D11Buffer* uvVBuf = nullptr;
-    if (!createBuffer(yCount, &yBuf) || !createBuffer(uvCount, &uvUBuf) || !createBuffer(uvCount, &uvVBuf)) {
-        if (yBuf)
-            yBuf->Release();
-        if (uvUBuf)
-            uvUBuf->Release();
-        srcSRV->Release();
-        baseDev->Release();
-        baseCtx->Release();
-        return false;
-    }
-
-    // Create UAVs
-    D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-    uavDesc.Format = DXGI_FORMAT_UNKNOWN;
-    uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-    uavDesc.Buffer.FirstElement = 0;
-    uavDesc.Buffer.Flags = 0;
-
-    ID3D11UnorderedAccessView* yUAV = nullptr;
-    ID3D11UnorderedAccessView* uvUUAV = nullptr;
-    ID3D11UnorderedAccessView* uvVUAV = nullptr;
-
-    uavDesc.Buffer.NumElements = yCount;
-    hr = baseDev->CreateUnorderedAccessView(yBuf, &uavDesc, &yUAV);
-    if (FAILED(hr)) {
-        logFail("CreateUAV_Y", hr);
-        goto cleanup;
-    }
-    uavDesc.Buffer.NumElements = uvCount;
-    hr = baseDev->CreateUnorderedAccessView(uvUBuf, &uavDesc, &uvUUAV);
-    if (FAILED(hr)) {
-        logFail("CreateUAV_U", hr);
-        goto cleanup;
-    }
-    hr = baseDev->CreateUnorderedAccessView(uvVBuf, &uavDesc, &uvVUAV);
-    if (FAILED(hr)) {
-        logFail("CreateUAV_V", hr);
-        goto cleanup;
-    }
-
-    // Clear and dispatch compute shader
-    {
-        UINT clear[4] = {0, 0, 0, 0};
-        baseCtx->ClearUnorderedAccessViewUint(yUAV, clear);
-        baseCtx->ClearUnorderedAccessViewUint(uvUUAV, clear);
-        baseCtx->ClearUnorderedAccessViewUint(uvVUAV, clear);
-
-        baseCtx->CSSetShader(rgbToYuvCS, nullptr, 0);
-        baseCtx->CSSetShaderResources(0, 1, &srcSRV);
-        baseCtx->CSSetConstantBuffers(0, 1, &gammaCB);  // isLinear flag
-        ID3D11UnorderedAccessView* uavs[] = {yUAV, uvUUAV, uvVUAV};
-        UINT initialCounts[] = {0, 0, 0};
-        baseCtx->CSSetUnorderedAccessViews(0, 3, uavs, initialCounts);
-        UINT groupsX = (w + 7) / 8;
-        UINT groupsY = (h + 7) / 8;
-
-        // Set gamma flag: FP16 input is linear RGB (needs gamma encoding before BT.709)
-        bool isLinear = (srcFmt == DXGI_FORMAT_R16G16B16A16_FLOAT || srcFmt == DXGI_FORMAT_R16G16B16A16_UNORM);
-        SetP010ShaderInput(isLinear, currentIsHDR);
-
-        baseCtx->Dispatch(groupsX, groupsY, 1);
-
-        // Unbind
-        ID3D11UnorderedAccessView* nullUAVs[] = {nullptr, nullptr, nullptr};
-        ID3D11ShaderResourceView* nullSRV = nullptr;
-        UINT zeroCounts[] = {0, 0, 0};
-        baseCtx->CSSetUnorderedAccessViews(0, 3, nullUAVs, zeroCounts);
-        baseCtx->CSSetShaderResources(0, 1, &nullSRV);
-        baseCtx->Flush();
-    }
-
-    // Create staging buffers for CPU readback
-    {
-        D3D11_BUFFER_DESC stageDesc = {};
-        stageDesc.Usage = D3D11_USAGE_STAGING;
-        stageDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        stageDesc.StructureByteStride = sizeof(uint32_t);
-
-        ID3D11Buffer* yStage = nullptr;
-        ID3D11Buffer* uvUStage = nullptr;
-        ID3D11Buffer* uvVStage = nullptr;
-
-        stageDesc.ByteWidth = yCount * sizeof(uint32_t);
-        baseDev->CreateBuffer(&stageDesc, nullptr, &yStage);
-        stageDesc.ByteWidth = uvCount * sizeof(uint32_t);
-        baseDev->CreateBuffer(&stageDesc, nullptr, &uvUStage);
-        baseDev->CreateBuffer(&stageDesc, nullptr, &uvVStage);
-
-        if (!yStage || !uvUStage || !uvVStage) {
-            logFail("CreateStagingBuffers", E_FAIL);
-            if (yStage)
-                yStage->Release();
-            if (uvUStage)
-                uvUStage->Release();
-            if (uvVStage)
-                uvVStage->Release();
-            goto cleanup;
-        }
-
-        // Copy GPU buffers to staging
-        baseCtx->CopyResource(yStage, yBuf);
-        baseCtx->CopyResource(uvUStage, uvUBuf);
-        baseCtx->CopyResource(uvVStage, uvVBuf);
-
-        // Create P010 output texture
-        D3D11_TEXTURE2D_DESC p010Desc = {};
-        p010Desc.Width = w;
-        p010Desc.Height = h;
-        p010Desc.MipLevels = 1;
-        p010Desc.ArraySize = 1;
-        p010Desc.Format = DXGI_FORMAT_P010;
-        p010Desc.SampleDesc.Count = 1;
-        p010Desc.Usage = D3D11_USAGE_DEFAULT;
-        p010Desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        p010Desc.CPUAccessFlags = 0;
-
-        ID3D11Texture2D* p010Tex = nullptr;
-        hr = baseDev->CreateTexture2D(&p010Desc, nullptr, &p010Tex);
-        if (FAILED(hr)) {
-            logFail("CreateP010Texture", hr);
-            yStage->Release();
-            uvUStage->Release();
-            uvVStage->Release();
-            goto cleanup;
-        }
-
-        // Flush to ensure GPU work (CopyResource) completes before CPU readback
-        baseCtx->Flush();
-
-        // Map Y staging buffer and copy to P010 subresource 0
-        D3D11_MAPPED_SUBRESOURCE yMapped = {}, uvUMapped = {}, uvVMapped = {};
-        hr = baseCtx->Map(yStage, 0, D3D11_MAP_READ, 0, &yMapped);
-        if (FAILED(hr) || !yMapped.pData) {
-            logFail("MapYStage", hr);
-            p010Tex->Release();
-            yStage->Release();
-            uvUStage->Release();
-            uvVStage->Release();
-            goto cleanup;
-        }
-        hr = baseCtx->Map(uvUStage, 0, D3D11_MAP_READ, 0, &uvUMapped);
-        if (FAILED(hr) || !uvUMapped.pData) {
-            logFail("MapUVUStage", hr);
-            baseCtx->Unmap(yStage, 0);
-            p010Tex->Release();
-            yStage->Release();
-            uvUStage->Release();
-            uvVStage->Release();
-            goto cleanup;
-        }
-        hr = baseCtx->Map(uvVStage, 0, D3D11_MAP_READ, 0, &uvVMapped);
-        if (FAILED(hr) || !uvVMapped.pData) {
-            logFail("MapUVVStage", hr);
-            baseCtx->Unmap(uvUStage, 0);
-            baseCtx->Unmap(yStage, 0);
-            p010Tex->Release();
-            yStage->Release();
-            uvUStage->Release();
-            uvVStage->Release();
-            goto cleanup;
-        }
-
-        // Build P010 Y and UV data in CPU buffers, then upload via a P010 staging texture.
-        // Strategy:
-        //   1. Create P010 staging texture (USAGE_STAGING + CPU_ACCESS_WRITE)
-        //   2. Map subresource 0 (Y plane) - works on all drivers
-        //   3. Write Y data via mapped pointer
-        //   4. For UV plane (subresource 1): Map may fail on some drivers (E_INVALIDARG)
-        //      → fallback to UpdateSubresource on the staging texture (safe, only fails on DEFAULT)
-        //   5. CopyResource from staging to final P010 DEFAULT texture (fast GPU blit)
-        {
-            const uint32_t* yData = (const uint32_t*)yMapped.pData;
-            const uint32_t* uData = (const uint32_t*)uvUMapped.pData;
-            const uint32_t* vData = (const uint32_t*)uvVMapped.pData;
-
-            // Create P010 staging texture
-            D3D11_TEXTURE2D_DESC p010StageDesc = p010Desc;
-            p010StageDesc.Usage = D3D11_USAGE_STAGING;
-            p010StageDesc.BindFlags = 0;
-            p010StageDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ;
-
-            ID3D11Texture2D* p010Stage = nullptr;
-            hr = baseDev->CreateTexture2D(&p010StageDesc, nullptr, &p010Stage);
-            if (FAILED(hr) || !p010Stage) {
-                logFail("CreateP010Stage", hr);
-                baseCtx->Unmap(uvVStage, 0);
-                baseCtx->Unmap(uvUStage, 0);
-                baseCtx->Unmap(yStage, 0);
-                yStage->Release();
-                uvUStage->Release();
-                uvVStage->Release();
-                p010Tex->Release();
-                goto cleanup;
-            }
-
-            // Map Y plane (subresource 0) - should work on all drivers
-            D3D11_MAPPED_SUBRESOURCE stageYMap = {};
-            hr = baseCtx->Map(p010Stage, 0, D3D11_MAP_WRITE, 0, &stageYMap);
-            if (FAILED(hr) || !stageYMap.pData) {
-                logFail("MapP010StageY", hr);
-                p010Stage->Release();
-                baseCtx->Unmap(uvVStage, 0);
-                baseCtx->Unmap(uvUStage, 0);
-                baseCtx->Unmap(yStage, 0);
-                yStage->Release();
-                uvUStage->Release();
-                uvVStage->Release();
-                p010Tex->Release();
-                goto cleanup;
-            }
-
-            // Write Y data
-            for (uint32_t row = 0; row < h; row++) {
-                uint16_t* dstRow = (uint16_t*)((uint8_t*)stageYMap.pData + row * stageYMap.RowPitch);
-                const uint32_t* srcRow = yData + row * w;
-                for (uint32_t col = 0; col < w; col++) {
-                    dstRow[col] = (uint16_t)(srcRow[col] & 0xFFFFu);
-                }
-            }
-            baseCtx->Unmap(p010Stage, 0);
-
-            // Try Map for UV plane (subresource 1) - may fail on some drivers
-            D3D11_MAPPED_SUBRESOURCE stageUVMap = {};
-            hr = baseCtx->Map(p010Stage, 1, D3D11_MAP_WRITE, 0, &stageUVMap);
-            if (SUCCEEDED(hr) && stageUVMap.pData) {
-                // Map succeeded - write UV data directly
-                uint32_t uvH = h / 2;
-                uint32_t uvW = w / 2;
-                for (uint32_t row = 0; row < uvH; row++) {
-                    uint32_t* dstRow = (uint32_t*)((uint8_t*)stageUVMap.pData + row * stageUVMap.RowPitch);
-                    const uint32_t* uRow = uData + row * uvW;
-                    const uint32_t* vRow = vData + row * uvW;
-                    for (uint32_t col = 0; col < uvW; col++) {
-                        dstRow[col] = (uRow[col] & 0xFFFFu) | ((vRow[col] & 0xFFFFu) << 16);
-                    }
-                }
-                baseCtx->Unmap(p010Stage, 1);
-            } else {
-                // Map failed (common on some drivers for P010 subresource 1)
-                // Use UpdateSubresource on staging texture (safe - only DEFAULT textures crash on NVIDIA)
-                uint32_t uvH = h / 2;
-                uint32_t uvW = w / 2;
-                uint32_t uvPitch = w * 2;
-                auto uvBuf = std::make_unique<uint8_t[]>(uvPitch * uvH);
-                for (uint32_t row = 0; row < uvH; row++) {
-                    uint32_t* dstRow = (uint32_t*)(uvBuf.get() + row * uvPitch);
-                    const uint32_t* uRow = uData + row * uvW;
-                    const uint32_t* vRow = vData + row * uvW;
-                    for (uint32_t col = 0; col < uvW; col++) {
-                        dstRow[col] = (uRow[col] & 0xFFFFu) | ((vRow[col] & 0xFFFFu) << 16);
-                    }
-                }
-                D3D11_BOX dstBox = {};
-                dstBox.right = w / 2;
-                dstBox.bottom = uvH;
-                dstBox.back = 1;
-                baseCtx->UpdateSubresource(p010Stage, 1, &dstBox, uvBuf.get(), uvPitch, 0);
-            }
-
-            // Copy staging P010 to final P010 DEFAULT texture (fast GPU blit)
-            baseCtx->CopySubresourceRegion(p010Tex, 0, 0, 0, 0, p010Stage, 0, nullptr);
-            baseCtx->CopySubresourceRegion(p010Tex, 1, 0, 0, 0, p010Stage, 1, nullptr);
-            p010Stage->Release();
-
-            // Unmap source buffers
-            baseCtx->Unmap(uvVStage, 0);
-            baseCtx->Unmap(uvUStage, 0);
-            baseCtx->Unmap(yStage, 0);
-
-            // Cleanup staging buffers
-            yStage->Release();
-            uvUStage->Release();
-            uvVStage->Release();
-
-            *dstTex = p010Tex;
-            static int p010Count = 0;
-            if (p010Count++ < 3)
-                DLL_Log("[P010] GPU converted %ux%u (fmt=%d) → P010 (P010 staging → CopySubresource)", w, h, srcFmt);
-        }  // end P010 data block
-    }  // end staging buffers block
-
-cleanup:
-    if (uvVUAV)
-        uvVUAV->Release();
-    if (uvUUAV)
-        uvUUAV->Release();
-    if (yUAV)
-        yUAV->Release();
-    if (uvVBuf)
-        uvVBuf->Release();
-    if (uvUBuf)
-        uvUBuf->Release();
-    if (yBuf)
-        yBuf->Release();
-    srcSRV->Release();
-    srvTex->Release();
-    baseDev->Release();
-    baseCtx->Release();
-
-    bool success = (*dstTex != nullptr);
-    if (!success && failCount++ < 5) {
-        DLL_Log("[P010] FAILED (unspecified) %ux%u fmt=%d dstTex=null", w, h, srcFmt);
-    }
-    return success;
 }
 
 VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle) {

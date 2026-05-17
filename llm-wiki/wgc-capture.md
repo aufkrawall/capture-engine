@@ -1,6 +1,6 @@
 # WGC Capture
 
-Last cross-checked: 2026-05-13
+Last cross-checked: 2026-05-17
 Stale-risk: medium
 
 Primary sources:
@@ -13,11 +13,13 @@ Primary sources:
 - `captureengine/pseudo_overlay.cpp`
 - `mediaengine/mediaengine.cpp`
 - `mediaengine/video_encoder.cpp`
+- `mediaengine/video_format_policy.h`
 - `mediaengine/audio_sync_utils.h`
 - `common/config.cpp`
 - `common/config.h`
 - `captureengine/config.ini.template`
 - `tests/test_capture_pipeline_policy.cpp`
+- `tests/test_video_format_policy.cpp`
 - `tests/test_audio_sync_utils.cpp`
 - `tests/test_mux_invariants.cpp`
 - `tests/test_shared_runtime_state.cpp`
@@ -27,6 +29,8 @@ Primary sources:
 Windows Graphics Capture remains the default non-injected capture path. The current implementation keeps the dedicated capture D3D11 device as the default for split-device WGC, with keyed mutex synchronization on shared texture-pool slots.
 
 WGC CFR now aims for smooth output with lower steady-state pressure on the game: it starts capture at a modest over-target cadence (`ceil(output_fps * 1.25)`), switches to max-rate only while recovering from source starvation, and restores the cap after sustained fresh input. Explicit 10-bit capture is quality-mandatory: when `Video.bit_depth=10`, WGC must stay on a high-precision input path (`R10G10B10A2` first, FP16 as the only fallback) and fail loudly if no high-precision frame-pool path is available. BGRA8 throughput fallback is allowed only for 8-bit or automatic SDR paths.
+
+When a 10-bpc SDR WGC source cannot create an `R10G10B10A2` frame pool, it may fall back to `R16G16B16A16_FLOAT`. That FP16 source must still convert to `bit_depth=8` output entirely on the GPU: prefer native D3D11 VideoProcessor FP16 input when the driver accepts it, otherwise blit through the fullscreen shader to `R10G10B10A2_UNORM` using a typed `R16G16B16A16_FLOAT` SRV and SDR linear-to-sRGB encoding before VP conversion to NV12. Shader SRVs must not use typeless DXGI formats. For explicit 10-bit output, the final VP/encoder surface remains P010 and compatibility fallbacks must not introduce BGRA8/NV12 intermediates.
 
 WGC CFR startup A/V sync now uses one shared start anchor by construction. Capture performs the existing pre-live cadence/encoder settling delay first, flushes pre-anchor warmup material, arms a one-frame startup barrier, then waits for the first usable post-delay WGC frame at or after that barrier. Mediaengine selects that accepted video timestamp as the shared audio/video anchor. First stream packets should start at PTS zero, with startup anchor delta logged as `0us`; the accepted frame should also be fresh instead of carrying the old pre-live delay as startup frame age.
 
@@ -41,6 +45,7 @@ Diagnostics now keep timing concepts separate. CFR frame spacing (`8.33 ms` at 1
 - `[General] wgc_skip_split_device_flush=false`: when true, split-device WGC skips the producer-side `ID3D11DeviceContext::Flush()` after `CopyResource`. Keyed mutex acquire/release remains unchanged. Treat this as a GPU-bound performance experiment until runtime validation proves it does not corrupt frames or underfeed the encoder.
 - `[General] wgc_same_device_capture=false`: when true, WGC attempts to reuse the encoder D3D11 device/context instead of creating a dedicated capture device. A live option change requests WGC retarget/reset so the device choice is reinitialized. Keep false by default until load testing proves it helps.
 - `[Video] bit_depth=10`: explicit 10-bit capture is non-negotiable. WGC can use `R10G10B10A2` or FP16 internally, and the encoder output remains 10-bit. It must not silently fall back to BGRA8.
+- `[Video] bit_depth=8` with a high-precision WGC source: final output is NV12, but the source-side fallback stays high precision until the final RGB/YUV conversion. FP16 SDR fallback uses typed FP16 SRVs plus gamma encoding before RGB10A2/NV12 compatibility conversion; no CPU readback/upload path is allowed.
 
 ## Telemetry
 
@@ -89,5 +94,6 @@ Validated in this implementation pass:
 - `installed/captureengine/logs/20260507_174233` on build `0.1.2917` showed the desired audio result after disabling live audio trims under WGC CFR overload: startup delta `0us`, final `maxDelta=0 us`, all active audio sources ending at `diff=+0 (+0.0 ms)`, no underruns/overflow, and subjective playback without audible artifacts. The remaining video smoothness limit was expected source-limited CFR repetition: roughly 24% duplicates because WGC/game delivery was below the 120 fps CFR target for long stretches.
 - `python build.py --skip-updates` passed on build `0.1.2918`.
 - `python build.py --no-build --run-tests --skip-updates` passed 693/693 tests; the test-only command bumped displayed version metadata to `0.1.2919` without rebuilding binaries.
+- `installed/captureengine/logs/20260517_151109` on build `0.1.3300` showed the WGC 10-bpc SDR failure mode: R10 frame-pool creation failed, WGC correctly fell back to FP16 (`fmt=10`), but the encoder requested a typeless FP16 SRV (`fmt=9`) during 8-bit NV12 conversion. D3D11 rejected the SRV with `E_INVALIDARG`, every frame failed GPU color conversion, and output had zero encoded video frames. Build `0.1.3304` fixes the policy: FP16/typeless high-precision RGB sources resolve to typed SRVs, SDR FP16 compatibility applies linear-to-sRGB before RGB10A2, and the dead CPU-readback P010 path was removed. Focused `VideoFormatPolicyTest.*:CapturePipelinePolicyTest.WgcExplicitTenBitDisallowsBgraFallback` passed 6/6 tests; `python build.py --skip-updates` passed; `python build.py --no-build --run-tests --skip-updates` passed 759/759 tests (displayed metadata `0.1.3305`).
 
 Manual validation is still required for WGC CFR 4K120 10-bit AV1 capture under normal load, high CPU load, high GPU load, `wgc_skip_split_device_flush=0/1`, and optional `wgc_same_device_capture=1`. Watch for corruption, device removal, source-starved duplicates, encoder starvation, unbounded queue growth, startup anchor deltas, final stream duration deltas, and game-performance regression.
