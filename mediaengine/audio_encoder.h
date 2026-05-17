@@ -61,6 +61,7 @@ public:
     }
 
     int64_t GetSamplesCount() const { return samplesCount; }
+    int GetStreamIndex() const { return streamIndex; }
     void Stop();
 
 private:
