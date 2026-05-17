@@ -664,11 +664,14 @@ public:
             audioSyncPending.store(false);
             recordingStartSystemQPCMs.store(GetTickCount64());
 
-            // Reset and start audio sources directly
+            // Reset audio encoder state (normally done by SyncAudioToFirstVideoFrame)
             for (auto& src : audioSources) {
                 if (src.ringBuffer) src.ringBuffer->Clear();
                 if (src.syncResampler) src.syncResampler->Reset();
                 src.syncSamplesOutput = 0;
+                if (src.sharedEncoderPtr) {
+                    src.sharedEncoderPtr->SetRecordingStart(0);
+                }
             }
 
             int startedCount = 0;
@@ -3380,11 +3383,6 @@ private:
                                     src.qpcAlignedWrittenSamples += writtenFloats / targetFmt.channels;
                                     // Audio-only: encode resampled float data to encoder
                                     if (audioOnly && writeSamples > 0 && src.encoder && src.encoder->IsReady()) {
-                                        static int encodeCount = 0;
-                                        if (++encodeCount <= 3) {
-                                            DLL_Log("[AudioOnlyEncode] Encode src=%d track=%d samples=%d",
-                                                    (int)srcIdx, src.track, (int)writeSamples);
-                                        }
                                         int sizeBytes = (int)(writeSamples * targetFmt.channels * sizeof(float));
                                         src.encoder->EncodeSamples(
                                             (const uint8_t*)writeFloats, sizeBytes,
