@@ -472,7 +472,8 @@ bool ResolveVideoFormat(const VideoConfig& config, bool isHDR, bool prefer10Bit,
 }
 
 bool IsHighPrecisionRgbInputFormat(DXGI_FORMAT format) {
-    return format == DXGI_FORMAT_R10G10B10A2_UNORM || format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    return format == DXGI_FORMAT_R10G10B10A2_UNORM || format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
+           format == DXGI_FORMAT_R16G16B16A16_TYPELESS;  // WGC provides TYPELESS with 10-bit display
 }
 
 bool WantsFullOutputRange(const std::string& colorRange) {
@@ -4888,6 +4889,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         bool vpCompatible =
             (vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
              vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
+             vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS ||  // WGC can provide TYPELESS with 10-bit display
              vpInputDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || vpInputDesc.Format == DXGI_FORMAT_NV12 ||
              vpInputDesc.Format == DXGI_FORMAT_P010);
 
@@ -5004,7 +5006,14 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             hr = E_FAIL;
         }
         if (FAILED(hr)) {
-            if (wantsFp16VpStagingPath && vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+            bool isTypelessFormat = (vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS);
+            if ((wantsFp16VpStagingPath || isTypelessFormat) &&
+                (vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
+                 vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS)) {
+                // TYPELESS: treat like FP16 for the conversion path
+                if (isTypelessFormat) {
+                    vpInputDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                }
                 const HRESULT stagingHr = hr;
                 if (!prepareFp16CompatInput(stagingHr)) {
                     return false;
