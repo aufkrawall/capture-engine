@@ -5344,6 +5344,18 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     };
 
     auto ensureMediaEngineReady = [&]() -> bool {
+        // When switching to audio-only mode with an already-initialized engine,
+        // force reinit so Init() skips the VideoEncoder and creates the audio-only muxer.
+        if (mediaEngineReady && g_AudioOnly) {
+            LogInfo("[Media] Re-initializing MediaEngine for audio-only mode");
+            if (MediaEngine_Shutdown) {
+                MediaEngine_Shutdown();
+            }
+            MediaEngine_Unload();
+            mediaEngineReady = false;
+            // Fall through to full init below
+        }
+
         if (mediaEngineReady) {
             return true;
         }

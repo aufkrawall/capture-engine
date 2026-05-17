@@ -804,18 +804,9 @@ public:
 
             DLL_Log("MediaEngine: Audio-only recording started (%d audio source(s))", startedCount);
             recording = true;
+            recordingStartTime = std::chrono::steady_clock::now();
             return true;
         }
-
-        // Start Video (Write Header / Open File)
-        if (!videoEnc->Start())
-            return false;
-
-        // Audio stream is now added in EnsureDevice after video stream
-        // We don't add it here anymore - just set the index when it becomes
-        // available The stream index will be set after first frame in ProcessFrame
-        timingModeFrozenForSession = true;
-        sessionUseVfr = config.video.useVFR;
 
         // Start Audio Capture and Processing Thread
         if (!audioSources.empty()) {
@@ -831,7 +822,7 @@ public:
             // timestamps
             firstVideoFrameMs = 0;               // Reset for new recording
             videoElapsedMs.store(0);             // CRITICAL: Reset video clock for new recording
-                                                 // to prevent stale timestamps
+                                                  // to prevent stale timestamps
             recordingStartSystemQPCMs.store(0);  // CRITICAL: Reset QPC start time for new recording
             recordingStartSystemQpc100ns.store(0);
             injectTimelineState.Reset();
@@ -3486,6 +3477,16 @@ private:
             // ===================================================================
             // PULL MODEL (Phase 2): Legacy audio mixing logic removed
             // ===================================================================
+
+            // Audio-only mode: drive audio encoding from wall-clock timeline
+            if (audioOnly) {
+                int64_t elapsedUs = 0;
+                auto now = std::chrono::steady_clock::now();
+                if (recordingStartTime.time_since_epoch().count() > 0) {
+                    elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(now - recordingStartTime).count();
+                }
+                PullAndEncodeAudio(elapsedUs);
+            }
 
             if (!gotAnyPacket) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
