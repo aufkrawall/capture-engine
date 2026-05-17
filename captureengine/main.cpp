@@ -761,6 +761,7 @@ void ToggleAudioOnlyRecording() {
         }
 
         // Notify inject process - it sets cmdStartRecording in shared memory
+        // The audioOnly flag was already set in shared memory above
         if (g_InjectClient && g_InjectClient->IsConnected()) {
             ProcessResponse resp;
             if (g_InjectClient->SendCommand(ProcessCommand::StartRecording, nullptr, &resp, 5000)) {
@@ -771,18 +772,11 @@ void ToggleAudioOnlyRecording() {
                 if (g_PseudoOverlay)
                     g_PseudoOverlay->SetRecordingState(false);
             }
-        } else {
-            LogWarn("[Controller] Inject not connected - sending StartRecording directly to media");
-            // Send directly to media process via pipe
-            if (g_MediaClient && g_MediaClient->IsConnected()) {
-                ProcessResponse resp;
-                if (!g_MediaClient->SendCommand(ProcessCommand::StartRecording, "audio_only", &resp, 5000)) {
-                    LogError("[Controller] Failed to send audio-only start to media process");
-                    g_Recording = false;
-                    if (g_PseudoOverlay)
-                        g_PseudoOverlay->SetRecordingState(false);
-                }
-            }
+        }
+        // Also notify media process directly via IPC payload as a backup path
+        if (g_MediaClient && g_MediaClient->IsConnected()) {
+            ProcessResponse resp;
+            g_MediaClient->SendCommand(ProcessCommand::StartRecording, "audio_only", &resp, 5000);
         }
     } else {
         LogInfo("[Controller] Stopping audio-only recording...");

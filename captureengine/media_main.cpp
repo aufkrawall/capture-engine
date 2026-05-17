@@ -6040,9 +6040,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             if (LoadAcquire(g_pSharedMem->runtimeState.cmdStartRecording)) {
                 StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
                 if (!g_Recording) {
-                    // Shared memory path is inject-mediated (normal recording only).
-                    // Audio-only uses IPC with "audio_only" payload. Clear stale flag.
-                    g_AudioOnly = false;
+                    // Check audioOnly flag from shared memory (set by controller for audio-only via inject)
+                    g_AudioOnly = LoadAcquire(g_pSharedMem->runtimeState.audioOnly);
+                    // Always clear after consuming to prevent stale carry-over
                     StoreRelease(g_pSharedMem->runtimeState.audioOnly, false);
                     if (!ensureMediaEngineReady()) {
                         LogError("[Media] Failed to reinitialize MediaEngine for shared-memory recording start");
