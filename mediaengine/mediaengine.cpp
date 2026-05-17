@@ -1544,14 +1544,16 @@ public:
                 audioTargetUs = videoEnc->GetExpectedFinalDurationUs();
             }
         }
-        // Audio-only: use wall-clock elapsed without any video dependency
-        if (audioOnly && audioTargetUs <= 0) {
-            audioTargetUs = std::max<int64_t>(1, videoTimelineUs);
-        }
         if (audioTargetUs <= 0) {
             audioTargetUs = wallVideoMs * 1000;
         }
         if (audioTargetUs <= 0) {
+            static int earlyReturnCount = 0;
+            if (++earlyReturnCount <= 5) {
+                DLL_Log("[PullAudio] early return #%d: audioTargetUs=0 videoEnc=%d isCfr=%d wallMs=%lld",
+                        earlyReturnCount, (int)(videoEnc != nullptr), (int)isCfrRecording,
+                        (long long)wallVideoMs);
+            }
             return;
         }
         int64_t audioTargetMs = audioTargetUs / 1000;
@@ -3500,16 +3502,6 @@ private:
             // ===================================================================
             // PULL MODEL (Phase 2): Legacy audio mixing logic removed
             // ===================================================================
-
-            // Audio-only mode: drive audio encoding from wall-clock timeline
-            if (audioOnly) {
-                int64_t elapsedUs = 0;
-                auto now = std::chrono::steady_clock::now();
-                if (recordingStartTime.time_since_epoch().count() > 0) {
-                    elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(now - recordingStartTime).count();
-                }
-                PullAndEncodeAudio(elapsedUs);
-            }
 
             if (!gotAnyPacket) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
