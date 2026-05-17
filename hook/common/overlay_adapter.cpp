@@ -762,6 +762,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "REC 00:00:00 !ENCODER OVERLOAD!");
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
+            snprintf(recBuf, sizeof(recBuf), "AUDIO 00:00:00");
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
         }
 
         cachedContentWidth = measuredWidth;
@@ -1129,6 +1131,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // Recording status line
     if (cfg.showRecording && isRecording) {
+        bool isAudioOnly = mem.runtimeState.audioOnly.load(std::memory_order_acquire);
+        const char* recLabel = isAudioOnly ? "AUDIO" : "REC";
+
         int64_t startTime = mem.runtimeState.recordingStartTime.load(std::memory_order_acquire);
         int64_t elapsed = 0;
         if (startTime > 0) {
@@ -1160,11 +1165,11 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             const uint32_t targetFps = mem.runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
             const uint32_t sustainFpsX100 = mem.runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
             const std::string overloadLabel = FormatEncoderOverloadLabel(sustainFpsX100, targetFps);
-            std::snprintf(buf, sizeof(buf), "REC %02d:%02d:%02d %s", hours, minutes, seconds, overloadLabel.c_str());
+            std::snprintf(buf, sizeof(buf), "%s %02d:%02d:%02d %s", recLabel, hours, minutes, seconds, overloadLabel.c_str());
             renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
         } else {
             // Normal recording display
-            snprintf(buf, 64, "REC %02d:%02d:%02d", hours, minutes, seconds);
+            snprintf(buf, 64, "%s %02d:%02d:%02d", recLabel, hours, minutes, seconds);
             renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
         }
         cursorY += lineHeight;

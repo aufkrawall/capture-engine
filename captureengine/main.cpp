@@ -39,6 +39,7 @@ extern int SensorProcessMain(const AppConfig& config);
 // Hotkey IDs
 #define HOTKEY_ID_RECORD 1
 #define HOTKEY_ID_SCREENSHOT 2
+#define HOTKEY_ID_AUDIO_ONLY 3
 
 // Controller state
 static bool g_Running = true;
@@ -692,6 +693,128 @@ void ToggleRecording() {
         g_PseudoOverlay->SetRecordingState(g_Recording);
 }
 
+// Helper: open inject's shared memory and run a callback with a writable view.
+// Returns true if the shared memory was opened and the callback executed.
+static bool WithInjectSharedMem(std::function<void(SharedMemoryLayout*)> fn) {
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (!hDisc)
+        return false;
+    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+    if (!pDisc || pDisc->GetMagic() != DISCOVERY_MAGIC) {
+        if (pDisc)
+            UnmapViewOfFile(pDisc);
+        CloseHandle(hDisc);
+        return false;
+    }
+    uint32_t injPid = pDisc->GetInjectPid();
+    UnmapViewOfFile(pDisc);
+    CloseHandle(hDisc);
+    if (injPid == 0)
+        return false;
+
+    wchar_t shmName[64];
+    GenerateSharedMemName(shmName, 64, injPid);
+    HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
+    if (!hShm)
+        return false;
+    auto* pShm = (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0,
+                                                     sizeof(SharedMemoryLayout));
+    if (!pShm) {
+        CloseHandle(hShm);
+        return false;
+    }
+    fn(pShm);
+    UnmapViewOfFile(pShm);
+    CloseHandle(hShm);
+    return true;
+}
+
+// Audio-only recording toggle (no video capture/encoding)
+void ToggleAudioOnlyRecording() {
+    g_Recording = !g_Recording;
+
+    if (g_Recording) {
+        LogInfo("[Controller] Starting audio-only recording...");
+
+        if (!EnsureMediaProcessReady(10000)) {
+            LogError("[Controller] Media process is not ready, cannot start audio-only recording");
+            g_Recording = false;
+            if (g_Tray)
+                g_Tray->SetRecordingState(false);
+            if (g_PseudoOverlay)
+                g_PseudoOverlay->SetRecordingState(false);
+            return;
+        }
+
+        // Set audioOnly flag in shared memory BEFORE notifying inject
+        bool audioOnlySet = WithInjectSharedMem([](SharedMemoryLayout* shm) {
+            shm->runtimeState.audioOnly.store(true, std::memory_order_release);
+        });
+
+        if (!audioOnlySet) {
+            LogWarn("[Controller] No inject shared memory found for audio-only flag - media will use separate IPC");
+        }
+
+        // Notify inject process - it sets cmdStartRecording in shared memory
+        if (g_InjectClient && g_InjectClient->IsConnected()) {
+            ProcessResponse resp;
+            if (g_InjectClient->SendCommand(ProcessCommand::StartRecording, nullptr, &resp, 5000)) {
+                LogInfo("[Controller] Audio-only recording started");
+            } else {
+                LogError("[Controller] Failed to notify inject for audio-only recording");
+                g_Recording = false;
+                if (g_PseudoOverlay)
+                    g_PseudoOverlay->SetRecordingState(false);
+            }
+        } else {
+            LogWarn("[Controller] Inject not connected - sending StartRecording directly to media");
+            // Send directly to media process via pipe
+            if (g_MediaClient && g_MediaClient->IsConnected()) {
+                ProcessResponse resp;
+                if (!g_MediaClient->SendCommand(ProcessCommand::StartRecording, "audio_only", &resp, 5000)) {
+                    LogError("[Controller] Failed to send audio-only start to media process");
+                    g_Recording = false;
+                    if (g_PseudoOverlay)
+                        g_PseudoOverlay->SetRecordingState(false);
+                }
+            }
+        }
+    } else {
+        LogInfo("[Controller] Stopping audio-only recording...");
+
+        // Notify inject process to stop
+        if (g_InjectClient && g_InjectClient->IsConnected()) {
+            ProcessResponse resp;
+            if (!g_InjectClient->SendCommand(ProcessCommand::StopRecording, nullptr, &resp, 5000)) {
+                LogError("[Controller] Stop failed - retrying once");
+                g_InjectClient->SendCommand(ProcessCommand::StopRecording, nullptr, &resp, 5000);
+            }
+        }
+
+        // Also notify media process directly (in case inject is not active)
+        if (g_MediaClient && g_MediaClient->IsConnected()) {
+            ProcessResponse resp;
+            g_MediaClient->SendCommand(ProcessCommand::StopRecording, nullptr, &resp, 5000);
+        }
+
+        // Media process self-exits after recording stops.
+        if (g_MediaClient)
+            g_MediaClient->Disconnect();
+        if (g_hMediaProcess) {
+            CloseHandle(g_hMediaProcess);
+            g_hMediaProcess = NULL;
+        }
+
+        LogInfo("[Controller] Audio-only recording stopped");
+    }
+
+    if (g_Tray)
+        g_Tray->SetRecordingState(g_Recording);
+
+    if (g_PseudoOverlay)
+        g_PseudoOverlay->SetRecordingState(g_Recording);
+}
+
 // Shutdown all child processes gracefully
 void ShutdownChildProcesses() {
     LogInfo("[Controller] Shutting down child processes...");
@@ -924,8 +1047,12 @@ bool CompleteControllerStartup() {
     const int64_t hotkeyStartUs = Log_GetQpcUs();
     RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(), g_Config.hotkeyStartStop.vkey);
     if (g_Config.hotkeyScreenshot.vkey != 0) {
-        RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, g_Config.hotkeyScreenshot.GetModifiers(),
-                       g_Config.hotkeyScreenshot.vkey);
+    RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, g_Config.hotkeyScreenshot.GetModifiers(),
+                   g_Config.hotkeyScreenshot.vkey);
+    }
+    if (g_Config.hotkeyAudioOnly.vkey != 0) {
+        RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, g_Config.hotkeyAudioOnly.GetModifiers(),
+                       g_Config.hotkeyAudioOnly.vkey);
     }
     const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
 
@@ -1113,6 +1240,8 @@ int ControllerMain(HINSTANCE hInstance) {
             if (msg.message == WM_HOTKEY) {
                 if (msg.wParam == HOTKEY_ID_RECORD) {
                     ToggleRecording();
+                } else if (msg.wParam == HOTKEY_ID_AUDIO_ONLY) {
+                    ToggleAudioOnlyRecording();
                 } else if (msg.wParam == HOTKEY_ID_SCREENSHOT) {
                     if (TakeScreenshot(g_Config.screenshotDir)) {
                         // Show notification in pseudo-overlay (WGC/desktop)
@@ -1195,6 +1324,16 @@ int ControllerMain(HINSTANCE hInstance) {
                             if (!RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, g_Config.hotkeyScreenshot.GetModifiers(),
                                                 g_Config.hotkeyScreenshot.vkey)) {
                                 LogError("[Controller] Failed to re-register screenshot hotkey");
+                            }
+                        }
+                    }
+
+                    if (!HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, g_Config.hotkeyAudioOnly)) {
+                        UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
+                        if (g_Config.hotkeyAudioOnly.vkey != 0) {
+                            if (!RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, g_Config.hotkeyAudioOnly.GetModifiers(),
+                                                g_Config.hotkeyAudioOnly.vkey)) {
+                                LogError("[Controller] Failed to re-register audio-only hotkey");
                             }
                         }
                     }

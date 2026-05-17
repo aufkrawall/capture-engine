@@ -28,6 +28,10 @@ MEDIAENGINE_API void MediaEngine_ReloadConfig(const AppConfig* config);
 // current recording session. true = WGC/screen-grab, false = inject.
 MEDIAENGINE_API void MediaEngine_SetActiveScreenGrab(bool activeScreenGrab);
 
+// Enable audio-only recording mode (no video capture/encoding).
+// Must be called before MediaEngine_Init to take effect.
+MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly);
+
 // Process a frame from D3D12 shared handle (inject mode)
 MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
                                               int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,

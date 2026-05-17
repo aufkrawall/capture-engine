@@ -410,6 +410,7 @@ struct alignas(8) CaptureState {
 
     std::atomic<bool> captureRequested{false};       // Hooks should keep feeding frames (warmup + live recording)
     std::atomic<bool> isRecording{false};            // File output and REC overlay indicator are live
+    std::atomic<bool> audioOnly{false};              // true = audio-only recording mode (no video)
     std::atomic<bool> vulkanLayerActive{false};      // Set by Vulkan layer when initialized
     std::atomic<uint32_t> runtimeFlags{0};           // Cross-API coordination (overlay ownership, etc.)
     std::atomic<uint32_t> vulkanPresentThreadId{0};  // Thread ID currently presenting via Vulkan

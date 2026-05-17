@@ -1418,6 +1418,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         config.hotkeyScreenshot = ParseHotkey(screenshotKey);
     }
 
+    std::string audioOnlyKey = GetStr("Hotkeys", "audio_only", "");
+    if (!audioOnlyKey.empty()) {
+        config.hotkeyAudioOnly = ParseHotkey(audioOnlyKey);
+    }
+
     // Screenshot
     config.screenshotDir = GetStr("Screenshot", "screenshot_dir", "");
 }

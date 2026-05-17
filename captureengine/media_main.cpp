@@ -68,6 +68,9 @@ static SharedMemoryLayout* g_pSharedMem = nullptr;
 static HANDLE g_hMapShmem = NULL;
 static ShmemBuffer* g_pShmem = nullptr;
 
+// Audio-only recording flag (set via IPC or shared memory)
+static bool g_AudioOnly = false;
+
 // Inject thread specific
 static std::atomic<bool> g_InjectCaptureRunning{false};
 static std::atomic<bool> g_InjectCaptureShutdown{false};
@@ -334,9 +337,12 @@ void SetRecordingVisibleState(bool enabled) {
         if (!wasVisible) {
             g_pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
         }
+        // Propagate audio-only flag so overlay can show AUDIO vs REC
+        g_pSharedMem->runtimeState.audioOnly.store(g_AudioOnly, std::memory_order_release);
     } else {
         g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
         g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+        g_pSharedMem->runtimeState.audioOnly.store(false, std::memory_order_release);
     }
 }
 
@@ -5098,6 +5104,32 @@ void StartRecording(const AppConfig& config) {
 
     timeBeginPeriod(1);
 
+    if (g_AudioOnly) {
+        LogInfo("[Media] Audio-only recording mode - skipping video capture");
+
+        // Clear any stale shared memory state
+        if (g_pSharedMem) {
+            StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
+            StoreRelease(g_pSharedMem->runtimeState.cmdStopRecording, false);
+            SetRecordingVisibleState(false);
+        }
+
+        if (!MediaEngine_StartRecording || !MediaEngine_StartRecording()) {
+            LogError("[Media] Failed to start MediaEngine audio-only recording");
+            SetRecordingVisibleState(false);
+            timeEndPeriod(1);
+            g_AudioOnly = false;
+            return;
+        }
+
+        g_Recording = true;
+        SetRecordingVisibleState(true);
+        SetCapturePipelinePhase(CapturePipelinePhase::kLive);
+
+        LogInfo("[Media] Audio-only recording active");
+        return;
+    }
+
     bool useScreenGrab = IsPreferredScreenGrab();
     if (IsWgcCaptureMethod(config.captureMethod)) {
         useScreenGrab = true;
@@ -5200,6 +5232,27 @@ void StopRecording() {
 
     LogInfo("[Media] Stopping recording...");
 
+    // Audio-only: skip all video/capture cleanup
+    if (g_AudioOnly) {
+        g_Recording = false;
+        SetRecordingVisibleState(false);
+        SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
+
+        MediaEngine_StopRecording();
+
+        if (g_pSharedMem) {
+            ResetRuntimeDiagnostics(g_pSharedMem);
+            g_pSharedMem->encoderQueueDepth.store(0, std::memory_order_relaxed);
+            g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
+        }
+
+        SetActiveScreenGrab(false);
+        g_AudioOnly = false;
+        timeEndPeriod(1);
+        LogInfo("[Media] Audio-only recording stopped");
+        return;
+    }
+
     const bool drainOutstandingCfrTicks = !g_RecordingUsesVfr.load(std::memory_order_acquire);
     int64_t drainStopQpc = 0;
     if (drainOutstandingCfrTicks) {
@@ -5301,6 +5354,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
+        // Propagate audio-only flag to MediaEngine before Init
+        if (g_AudioOnly && MediaEngine_SetAudioOnly) {
+            MediaEngine_SetAudioOnly(true);
+        }
         if (!MediaEngine_Init(&config)) {
             LogError("[Media] Failed to initialize MediaEngine");
             if (MediaEngine_Shutdown) {
@@ -5903,7 +5960,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         ProcessCommand cmd;
-        if (ipc.PollCommand(cmd)) {
+        char cmdPayload[256] = {};
+        if (ipc.PollCommand(cmd, cmdPayload, sizeof(cmdPayload))) {
             switch (cmd) {
                 case ProcessCommand::Shutdown:
                     LogInfo("[Media] Shutdown command received");
@@ -5911,6 +5969,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
                 case ProcessCommand::StartRecording:
+                    g_AudioOnly = (strcmp(cmdPayload, "audio_only") == 0);
                     if (!ensureMediaEngineReady()) {
                         LogError("[Media] Failed to reinitialize MediaEngine for recording start");
                         ipc.SendResponse(ProcessResponse::Ack);
@@ -5918,6 +5977,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     }
                     prepareCaptureForRecordingStart();
                     StartRecording(config);
+                    g_AudioOnly = false;  // Reset after StartRecording consumed it
                     ipc.SendResponse(ProcessResponse::RecordingStarted);
                     break;
                 case ProcessCommand::StopRecording:
@@ -5968,11 +6028,13 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             if (LoadAcquire(g_pSharedMem->runtimeState.cmdStartRecording)) {
                 StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
                 if (!g_Recording) {
+                    g_AudioOnly = LoadAcquire(g_pSharedMem->runtimeState.audioOnly);
                     if (!ensureMediaEngineReady()) {
                         LogError("[Media] Failed to reinitialize MediaEngine for shared-memory recording start");
                     } else {
                         prepareCaptureForRecordingStart();
                         StartRecording(config);
+                        g_AudioOnly = false;
                         g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
                     }
                 }

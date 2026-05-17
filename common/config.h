@@ -339,6 +339,7 @@ struct AppConfig {
     HotkeyConfig hotkeyStartStop;
     HotkeyConfig hotkeyToggleFPS;
     HotkeyConfig hotkeyScreenshot;
+    HotkeyConfig hotkeyAudioOnly;
 
     // Screenshot
     std::string screenshotDir;  // Output directory (empty = "screenshots" next to exe)

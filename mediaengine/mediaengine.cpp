@@ -150,6 +150,11 @@ public:
     std::vector<AudioSource> audioSources;
     SharedMemoryLayout* sharedMemLayout = nullptr;
 
+    // Audio-only recording mode (no video capture/encoding)
+    bool audioOnly = false;
+    AVFormatContext* audioOnlyFmtCtx = nullptr;
+    std::string audioOnlyFilename;
+
     AppConfig config;
     std::recursive_mutex muxMutex;  // Must be recursive - WritePacket callback from EncodeFrame
     bool recording;
@@ -420,6 +425,32 @@ public:
         activeScreenGrab = enabled;
     }
 
+    void SetAudioOnly(bool enabled) {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        audioOnly = enabled;
+    }
+
+    void InitAudioOnlyMuxer() {
+        std::string filename = "capture_audio_" + std::to_string(GetTickCount64()) + ".mka";
+        audioOnlyFilename = filename;
+
+        if (avformat_alloc_output_context2(&audioOnlyFmtCtx, nullptr, "matroska", audioOnlyFilename.c_str()) < 0) {
+            DLL_Log("MediaEngine: Failed to create audio-only muxer");
+            audioOnlyFmtCtx = nullptr;
+        }
+    }
+
+    void CleanupAudioOnlyMuxer() {
+        if (audioOnlyFmtCtx) {
+            if (audioOnlyFmtCtx->pb) {
+                avio_closep(&audioOnlyFmtCtx->pb);
+            }
+            avformat_free_context(audioOnlyFmtCtx);
+            audioOnlyFmtCtx = nullptr;
+        }
+        audioOnlyFilename.clear();
+    }
+
     // Trusted System QPC Frequency
     int64_t qpcFreq = 0;
 
@@ -435,19 +466,25 @@ public:
 
         this->config = *config;
 
-        // Setup Video (Alloc Only)
-        DLL_Log("MediaEngine::Init creating VideoEncoder");
-        videoEnc = std::make_unique<VideoEncoder>();
-        DLL_Log("MediaEngine::Init calling VideoEncoder::Init");
-        bool vRes = videoEnc->Init(config->video, 0, 0,
-                                   config->video.fps,  // Resolution deferred to first frame
-                                   [this](AVPacket* pkt) { this->WritePacket(pkt); });
+        // Setup Video (Alloc Only) - skip for audio-only mode
+        if (audioOnly) {
+            DLL_Log("MediaEngine::Init audio-only mode - skipping VideoEncoder");
+            videoEnc = nullptr;
+            InitAudioOnlyMuxer();
+        } else {
+            DLL_Log("MediaEngine::Init creating VideoEncoder");
+            videoEnc = std::make_unique<VideoEncoder>();
+            DLL_Log("MediaEngine::Init calling VideoEncoder::Init");
+            bool vRes = videoEnc->Init(config->video, 0, 0,
+                                       config->video.fps,  // Resolution deferred to first frame
+                                       [this](AVPacket* pkt) { this->WritePacket(pkt); });
 
-        if (!vRes) {
-            DLL_Log("MediaEngine::Init VideoEncoder init failed");
-            return false;
+            if (!vRes) {
+                DLL_Log("MediaEngine::Init VideoEncoder init failed");
+                return false;
+            }
+            DLL_Log("MediaEngine::Init VideoEncoder initialized OK");
         }
-        DLL_Log("MediaEngine::Init VideoEncoder initialized OK");
 
         // Setup Audio Sources (supports multiple: system audio, microphone, etc.)
         DLL_Log("MediaEngine::Init audio sources count=%d", (int)config->audioSources.size());
@@ -495,8 +532,10 @@ public:
                         continue;
                     }
 
-                    // Register with VideoEncoder for stream creation
-                    videoEnc->AddAudioContext(audioConfig, newEncoder->GetCodecContext(), track);
+                    // Register with VideoEncoder for stream creation (skip in audio-only mode)
+                    if (!audioOnly && videoEnc) {
+                        videoEnc->AddAudioContext(audioConfig, newEncoder->GetCodecContext(), track);
+                    }
 
                     encoderForTrack = newEncoder.get();
                     trackToEncoder[track] = encoderForTrack;
@@ -560,6 +599,26 @@ public:
 
         DLL_Log("MediaEngine::Init complete. Audio sources: %zu, unique tracks: %zu", audioSources.size(),
                 trackToEncoder.size());
+
+        // In audio-only mode, create audio streams in the muxer for each track
+        if (audioOnly && audioOnlyFmtCtx) {
+            for (auto& kv : trackToEncoder) {
+                int track = kv.first;
+                AudioEncoder* enc = kv.second;
+                AVStream* stream = avformat_new_stream(audioOnlyFmtCtx, enc->GetCodecContext()->codec);
+                if (stream) {
+                    stream->id = track;
+                    stream->time_base = enc->GetCodecContext()->time_base;
+                    stream->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+                    if (avcodec_parameters_from_context(stream->codecpar, enc->GetCodecContext()) < 0) {
+                        DLL_Log("MediaEngine: Failed to copy audio codec params to muxer stream");
+                    }
+                    DLL_Log("MediaEngine: Created audio-only muxer stream for track %d (stream idx %d)", track,
+                            stream->index);
+                }
+            }
+        }
+
         return true;
     }
 
@@ -574,14 +633,16 @@ public:
         if (recording)
             return true;
 
-        if (!videoEnc)
+        // Audio-only mode does not require video encoder
+        if (!videoEnc && !audioOnly)
             return false;
 
         // REFRESH AUDIO CONTEXTS IN VIDEO ENCODER
         // AudioEncoder recreates its AVCodecContext on Stop(), invalidating
         // pointers held by VideoEncoder. We must clear and re-add the current valid
         // contexts.
-        videoEnc->ClearAudioContexts();
+        if (videoEnc)
+            videoEnc->ClearAudioContexts();
         for (auto& src : audioSources) {
             if (src.encoder) {
                 // If encoder failed to reinit during Stop(), reinit now
@@ -593,16 +654,158 @@ public:
                     }
                     DLL_Log("MediaEngine: Audio encoder reinit successful");
                 }
-                videoEnc->AddAudioContext(src.config, src.encoder->GetCodecContext(), src.track);
+                if (!audioOnly && videoEnc) {
+                    videoEnc->AddAudioContext(src.config, src.encoder->GetCodecContext(), src.track);
+                }
                 src.sharedEncoderPtr = src.encoder.get();
             }
         }
-        // Shared sources must re-acquire the pointer from their reference
-        // (Actually simpler: just re-iterate and update sharedEncoderPtr?
-        // No, sharedEncoderPtr points to local AudioEncoder instance in another
-        // source. That instance is stable, but its internal codecCtx execution
-        // pointer changed. VideoEncoder needs the new CodecCtx. audioSources
-        // already have the right encoder object.)
+
+        // Audio-only mode: open muxer, write header, skip video, start audio directly
+        if (audioOnly) {
+            if (!audioOnlyFmtCtx) {
+                DLL_Log("MediaEngine: Audio-only muxer not initialized");
+                return false;
+            }
+            if (avio_open(&audioOnlyFmtCtx->pb, audioOnlyFilename.c_str(), AVIO_FLAG_WRITE) < 0) {
+                DLL_Log("MediaEngine: Failed to open audio-only output file: %s", audioOnlyFilename.c_str());
+                return false;
+            }
+            AVDictionary* opts = nullptr;
+            int ret = avformat_write_header(audioOnlyFmtCtx, &opts);
+            if (ret < 0) {
+                DLL_Log("MediaEngine: Failed to write audio-only header (error %d)", ret);
+                return false;
+            }
+            DLL_Log("MediaEngine: Audio-only recording writing to %s", audioOnlyFilename.c_str());
+
+            // Set stream indices on audio encoders from muxer stream indices
+            for (auto& src : audioSources) {
+                if (src.sharedEncoderPtr) {
+                    for (unsigned int si = 0; si < audioOnlyFmtCtx->nb_streams; si++) {
+                        AVStream* st = audioOnlyFmtCtx->streams[si];
+                        if (st->id == src.track) {
+                            src.sharedEncoderPtr->SetStreamIndex((int)si);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Start audio immediately (no video to sync to)
+            audioSyncPending.store(false);
+            recordingStartSystemQPCMs.store(GetTickCount64());
+
+            // Reset audio encoding state for new recording
+            encodedSamplesPerSource.clear();
+            encodedSamplesPerSource.resize(audioSources.size(), 0);
+            trackWasSilent.clear();
+            trackSilentSamples.clear();
+            trackSilentChunks.clear();
+            trackSilenceTransitions.clear();
+            trackLastSilenceLogTick.clear();
+            trackBootstrapComplete.clear();
+            trackFirstPullAfterBootstrap.clear();
+            trackBootstrapWaitLogCounters.clear();
+
+            cachedTrackToSources.clear();
+            for (size_t i = 0; i < audioSources.size(); i++) {
+                auto& src = audioSources[i];
+                if (src.ringBuffer && src.sharedEncoderPtr) {
+                    cachedTrackToSources[src.track].push_back(i);
+                }
+            }
+
+            warpCount = 0;
+            dropLogCounter = 0;
+            driftLogCounter = 0;
+            trackSyncCheckCounters.clear();
+            injectFrameLogCount = 0;
+            screengrabFrameLogCount = 0;
+            silenceLogCounter = 0;
+            mixLogCounter = 0;
+
+            // Reset per-source audio state
+            for (auto& src : audioSources) {
+                if (src.ringBuffer) src.ringBuffer->Clear();
+                if (src.syncResampler) src.syncResampler->Reset();
+                src.resampler.reset();
+                src.postResampleBuffer.clear();
+                src.syncSamplesOutput = 0;
+                src.dropFadeSamplesRemaining = 0;
+                src.dropFadeStartL = 0.0f;
+                src.dropFadeStartR = 0.0f;
+                src.underrunFadeSamplesRemaining = 0;
+                src.packetBoundaryFadeInSamplesRemaining = 0;
+                src.overflowDropSamples = 0;
+                src.retainedNewestTrimSamples = 0;
+                src.latencyTrimSamples = 0;
+                src.tier2TrimSamples = 0;
+                src.bootstrapTrimSamples = 0;
+                src.postResampleTrimSamples = 0;
+                src.underrunPadSamples = 0;
+                src.coverageLossTrimSamples = 0;
+                src.startupSyntheticRingSamples = 0;
+                src.startupSyntheticResamplerSamples = 0;
+                src.startupSyntheticPostSamples = 0;
+                src.startupGapProtectionSamples = 0;
+                src.qpcAlignedWrittenSamples = 0;
+                src.packetTimelineGapSamples = 0;
+                src.packetTimelineOverlapSamples = 0;
+                src.startupRebasedGapSamples = 0;
+                src.alignedStartMs = -1;
+                src.observedLateStartMs = 0;
+                src.hasAlignedStart = false;
+                src.isPrimed = false;
+                src.bootstrapComplete = false;
+                src.pendingUnderrunRecoveryFade = false;
+                src.sawSyncPendingPackets = false;
+                src.startupRealAudioSeen = false;
+                src.pendingStartupJoinFade = false;
+                src.pendingRetainedTrimSamples = 0;
+                src.pendingRetainedTrimEvents = 0;
+                src.pendingLatencyTrimSamples = 0;
+                src.pendingLatencyTrimEvents = 0;
+                src.pendingTier2TrimSamples = 0;
+                src.pendingTier2TrimEvents = 0;
+                src.pendingCoverageLossTrimSamples = 0;
+                src.pendingCoverageLossTrimEvents = 0;
+                src.lastRetainedTrimWarnTick = 0;
+                src.lastPacketTimelineAdjustWarnTick = 0;
+                src.wgcCoverageLossTrimAccumulator = 0.0;
+                src.prevLeadSamples = 0;
+                src.prevLeadSnapshotMs = 0;
+                src.lastRateUpdateMs = 0;
+                src.currentRateDelta = 0;
+                src.targetRateDelta = 0;
+                src.rateCompActive = false;
+                src.targetRateSaturated = false;
+            }
+
+            int startedCount = 0;
+            for (auto& src : audioSources) {
+                bool started = false;
+                if (src.sourceType == AudioConfig::AppAudio && src.appCapture) {
+                    if (!src.config.processName.empty()) {
+                        started = src.appCapture->StartByName(src.config.processName);
+                    } else if (src.config.processId != 0) {
+                        started = src.appCapture->StartByPID(src.config.processId);
+                    }
+                } else if (src.capture) {
+                    bool isLoopback = (src.sourceType == AudioConfig::SystemAudio);
+                    started = src.capture->Start(src.config.device, isLoopback);
+                }
+                if (started) startedCount++;
+            }
+            if (startedCount > 0) {
+                audioRunning = true;
+                audioThread = std::thread(&MediaEngine::AudioLoop, this);
+            }
+
+            DLL_Log("MediaEngine: Audio-only recording started (%d audio source(s))", startedCount);
+            recording = true;
+            return true;
+        }
 
         // Start Video (Write Header / Open File)
         if (!videoEnc->Start())
@@ -786,6 +989,43 @@ public:
     }
 
     void StopRecording() {
+        // Audio-only stop path: stop audio thread, stop sources, write trailer, close muxer
+        if (audioOnly) {
+            {
+                std::lock_guard<std::recursive_mutex> lock(muxMutex);
+                if (!recording)
+                    return;
+                recording = false;
+            }
+            audioRunning = false;
+            if (audioThread.joinable()) {
+                audioThread.join();
+            }
+            // Stop all audio sources
+            for (auto& src : audioSources) {
+                if (src.capture) src.capture->Stop();
+                if (src.appCapture) src.appCapture->Stop();
+                if (src.encoder) src.encoder->Stop();
+                if (src.ringBuffer) src.ringBuffer->Clear();
+                if (src.syncResampler) src.syncResampler->Reset();
+            }
+            // Write trailer and close audio-only muxer
+            if (audioOnlyFmtCtx) {
+                av_write_trailer(audioOnlyFmtCtx);
+                DLL_Log("[StopAudio] Audio-only recording finalized: %s", audioOnlyFilename.c_str());
+                CleanupAudioOnlyMuxer();
+            }
+            // Reset video frame tracking
+            firstVideoFrameMs = 0;
+            lastVideoFrameMs = 0;
+            recordingStartSystemQPCMs.store(0);
+            recordingStartSystemQpc100ns.store(0);
+            injectTimelineState.Reset();
+            d3d11TimelineState.Reset();
+            DLL_Log("[STOP SUMMARY] Audio-only recording finalized");
+            return;
+        }
+
         int64_t endUs = 0;
         constexpr int kStopSampleRate = 48000;
         const int64_t expectedVideoUsForStop = videoEnc ? videoEnc->GetExpectedFinalDurationUs() : 0;
@@ -2763,7 +3003,10 @@ public:
 
     void WritePacket(AVPacket* pkt) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
-        if (videoEnc) {
+        if (audioOnly && audioOnlyFmtCtx) {
+            // Route audio packets directly to the audio-only muxer
+            av_interleaved_write_frame(audioOnlyFmtCtx, pkt);
+        } else if (videoEnc) {
             videoEnc->WriteFrame(pkt);
         }
     }
@@ -3258,6 +3501,7 @@ private:
 
 static std::unique_ptr<MediaEngine> g_Engine;
 static std::recursive_mutex g_EngineApiMutex;
+static bool g_PendingAudioOnly = false;  // Set before Init, consumed during Init
 
 extern "C" {
 
@@ -3285,8 +3529,14 @@ MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback callback) {
 MEDIAENGINE_API bool MediaEngine_Init(const AppConfig* config) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     DLL_Log("[Media] MediaEngine_Init Called. Version: %s (Built: %s)", CAPTURE_VERSION, BUILD_TIMESTAMP);
-    if (!g_Engine)
+    if (!g_Engine) {
         g_Engine = std::make_unique<MediaEngine>();
+    }
+    if (g_PendingAudioOnly) {
+        g_Engine->SetAudioOnly(true);
+        g_PendingAudioOnly = false;
+        DLL_Log("[Media] MediaEngine_Init: audio-only mode enabled");
+    }
     // config is a pointer, pass it directly
     return g_Engine->Init(config);
 }
@@ -3308,6 +3558,15 @@ MEDIAENGINE_API void MediaEngine_SetActiveScreenGrab(bool activeScreenGrab) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         g_Engine->SetActiveScreenGrab(activeScreenGrab);
+}
+
+MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    g_PendingAudioOnly = audioOnly;
+    if (g_Engine)
+        g_Engine->SetAudioOnly(audioOnly);
+    else
+        DLL_Log("[Media] MediaEngine_SetAudioOnly: pending %d for next Init", audioOnly ? 1 : 0);
 }
 
 MEDIAENGINE_API void MediaEngine_StopRecording() {
