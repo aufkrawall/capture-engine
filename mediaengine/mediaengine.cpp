@@ -921,36 +921,7 @@ public:
                 if (src.capture) src.capture->Stop();
                 if (src.appCapture) src.appCapture->Stop();
             }
-            // Pad shorter tracks with silence to match the longest track
-            // Use unique stream index mapping to avoid shared-encoder collisions
-            std::map<int, AudioEncoder*> streamEncoders;
-            for (auto& src : audioSources) {
-                if (src.encoder && src.encoder->IsReady()) {
-                    int si = src.encoder->GetStreamIndex();
-                    if (si >= 0 && streamEncoders.find(si) == streamEncoders.end()) {
-                        streamEncoders[si] = src.encoder.get();
-                    }
-                }
-            }
-            if (streamEncoders.size() > 1) {
-                int64_t maxSamples = 0;
-                for (auto& [si, enc] : streamEncoders) {
-                    int64_t s = enc->GetSamplesCount();
-                    if (s > maxSamples) maxSamples = s;
-                }
-                for (auto& [si, enc] : streamEncoders) {
-                    int64_t current = enc->GetSamplesCount();
-                    int64_t pad = maxSamples - current;
-                    if (pad > 0) {
-                        std::vector<float> silence(pad * 2, 0.0f);
-                        enc->EncodeSamples(
-                            (const uint8_t*)silence.data(), (int)(silence.size() * sizeof(float)),
-                            2, 48000, 32, 32, 8, true, GetTickCount64());
-                        DLL_Log("[StopAudio] Padded stream %d with %lld silence samples",
-                                si, (long long)pad);
-                    }
-                }
-            }
+
             for (auto& src : audioSources) {
                 if (src.encoder) src.encoder->Stop();
                 if (src.ringBuffer) src.ringBuffer->Clear();
