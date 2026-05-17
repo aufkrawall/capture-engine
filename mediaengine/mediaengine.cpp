@@ -3379,15 +3379,29 @@ private:
                                         src.ringBuffer->WriteRetainNew(writeFloats, writeSamples * targetFmt.channels);
                                     src.qpcAlignedWrittenSamples += writtenFloats / targetFmt.channels;
                                     // Audio-only: encode raw WASAPI data directly to encoder
-                                    if (audioOnly && src.encoder && src.encoder->IsReady()) {
-                                        src.encoder->EncodeSamples(
-                                            packet.data.data(), (int)packet.data.size(),
-                                            packet.channels, packet.sampleRate,
-                                            packet.bitsPerSample,
-                                            packet.validBitsPerSample > 0 ? packet.validBitsPerSample : packet.bitsPerSample,
-                                            (packet.channels * packet.bitsPerSample) / 8,
-                                            packet.isFloat,
-                                            GetTickCount64());
+                                    if (audioOnly) {
+                                        if (src.encoder && src.encoder->IsReady()) {
+                                            static int encodeCount = 0;
+                                            if (++encodeCount <= 3) {
+                                                DLL_Log("[AudioOnlyEncode] EncodeSamples src=%d track=%d size=%d",
+                                                        (int)srcIdx, src.track, (int)packet.data.size());
+                                            }
+                                            src.encoder->EncodeSamples(
+                                                packet.data.data(), (int)packet.data.size(),
+                                                packet.channels, packet.sampleRate,
+                                                packet.bitsPerSample,
+                                                packet.validBitsPerSample > 0 ? packet.validBitsPerSample : packet.bitsPerSample,
+                                                (packet.channels * packet.bitsPerSample) / 8,
+                                                packet.isFloat,
+                                                GetTickCount64());
+                                        } else {
+                                            static int missCount = 0;
+                                            if (++missCount <= 3) {
+                                                DLL_Log("[AudioOnlyEncode] MISS: audioOnly=%d src.encoder=%d isReady=%d",
+                                                        (int)audioOnly, (int)(src.encoder != nullptr),
+                                                        (int)(src.encoder ? src.encoder->IsReady() : 0));
+                                            }
+                                        }
                                     }
                                 }
                             } else if (src.ringBuffer && audioSyncPending.load()) {
