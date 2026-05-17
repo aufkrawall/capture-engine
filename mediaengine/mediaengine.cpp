@@ -3378,30 +3378,22 @@ private:
                                     const size_t writtenFloats =
                                         src.ringBuffer->WriteRetainNew(writeFloats, writeSamples * targetFmt.channels);
                                     src.qpcAlignedWrittenSamples += writtenFloats / targetFmt.channels;
-                                    // Audio-only: encode raw WASAPI data directly to encoder
-                                    if (audioOnly) {
-                                        if (src.encoder && src.encoder->IsReady()) {
-                                            static int encodeCount = 0;
-                                            if (++encodeCount <= 3) {
-                                                DLL_Log("[AudioOnlyEncode] EncodeSamples src=%d track=%d size=%d",
-                                                        (int)srcIdx, src.track, (int)packet.data.size());
-                                            }
-                                            src.encoder->EncodeSamples(
-                                                packet.data.data(), (int)packet.data.size(),
-                                                packet.channels, packet.sampleRate,
-                                                packet.bitsPerSample,
-                                                packet.validBitsPerSample > 0 ? packet.validBitsPerSample : packet.bitsPerSample,
-                                                (packet.channels * packet.bitsPerSample) / 8,
-                                                packet.isFloat,
-                                                GetTickCount64());
-                                        } else {
-                                            static int missCount = 0;
-                                            if (++missCount <= 3) {
-                                                DLL_Log("[AudioOnlyEncode] MISS: audioOnly=%d src.encoder=%d isReady=%d",
-                                                        (int)audioOnly, (int)(src.encoder != nullptr),
-                                                        (int)(src.encoder ? src.encoder->IsReady() : 0));
-                                            }
+                                    // Audio-only: encode resampled float data to encoder
+                                    if (audioOnly && writeSamples > 0 && src.encoder && src.encoder->IsReady()) {
+                                        static int encodeCount = 0;
+                                        if (++encodeCount <= 3) {
+                                            DLL_Log("[AudioOnlyEncode] Encode src=%d track=%d samples=%d",
+                                                    (int)srcIdx, src.track, (int)writeSamples);
                                         }
+                                        int sizeBytes = (int)(writeSamples * targetFmt.channels * sizeof(float));
+                                        src.encoder->EncodeSamples(
+                                            (const uint8_t*)writeFloats, sizeBytes,
+                                            targetFmt.channels, targetFmt.sampleRate,
+                                            sizeof(float) * 8,  // bitsPerSample = 32
+                                            sizeof(float) * 8,  // validBitsPerSample
+                                            targetFmt.channels * (int)sizeof(float),  // blockAlign
+                                            true,   // isFloat
+                                            GetTickCount64());
                                     }
                                 }
                             } else if (src.ringBuffer && audioSyncPending.load()) {
