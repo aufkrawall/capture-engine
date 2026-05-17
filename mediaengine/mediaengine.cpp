@@ -812,6 +812,16 @@ public:
             return true;
         }
 
+        // Start Video (Write Header / Open File)
+        if (!videoEnc->Start())
+            return false;
+
+        // Audio stream is now added in EnsureDevice after video stream
+        // We don't add it here anymore - just set the index when it becomes
+        // available The stream index will be set after first frame in ProcessFrame
+        timingModeFrozenForSession = true;
+        sessionUseVfr = config.video.useVFR;
+
         // Start Audio Capture and Processing Thread
         if (!audioSources.empty()) {
             // NOTE: Don't set recording start time here!
