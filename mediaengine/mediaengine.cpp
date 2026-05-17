@@ -964,10 +964,17 @@ public:
                         int64_t cur = enc->GetSamplesCount();
                         int64_t pad = maxS2 - cur;
                         if (pad > 0) {
-                            std::vector<float> silence(pad * 2, 0.0f);
-                            enc->EncodeSamples((const uint8_t*)silence.data(),
-                                (int)(silence.size() * sizeof(float)),
-                                2, 48000, 32, 32, 8, true, GetTickCount64());
+                            // Pad in chunks to avoid FIFO overflow (max ~240k samples)
+                            constexpr int kChunkSamples = 4096;
+                            std::vector<float> silence(kChunkSamples * 2, 0.0f);
+                            int64_t remaining = pad;
+                            while (remaining > 0) {
+                                int chunk = (int)(std::min)(remaining, (int64_t)kChunkSamples);
+                                enc->EncodeSamples((const uint8_t*)silence.data(),
+                                    chunk * 2 * (int)sizeof(float),
+                                    2, 48000, 32, 32, 8, true, GetTickCount64());
+                                remaining -= chunk;
+                            }
                             DLL_Log("[StopAudio] Padded stream %d with %lld silence samples from %lld to %lld",
                                     si, (long long)pad, (long long)cur, (long long)maxS2);
                         }
