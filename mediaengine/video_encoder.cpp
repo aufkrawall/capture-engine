@@ -5006,16 +5006,20 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             hr = E_FAIL;
         }
         if (FAILED(hr)) {
-            bool isTypelessFormat = (vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS);
-            if ((wantsFp16VpStagingPath || isTypelessFormat) &&
-                (vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
-                 vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS)) {
-                // TYPELESS: treat like FP16 for the conversion path
-                if (isTypelessFormat) {
-                    vpInputDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-                }
+            bool isTypelessHdr = (vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS ||
+                                  vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+            if (isTypelessHdr) {
+                // WGC with 10-bit display provides R16G16B16A16_TYPELESS.
+                // The D3D11 VideoProcessor doesn't accept TYPELESS on all HW.
+                // Convert to R10G10B10A2_UNORM (widely VP-compatible) with
+                // linear passthrough - WGC data is already gamma-corrected.
                 const HRESULT stagingHr = hr;
-                if (!prepareFp16CompatInput(stagingHr)) {
+                // Force linear passthrough: WGC data is already gamma-corrected.
+                bool savedIsHdr = currentIsHDR;
+                currentIsHDR = true;  // Makes encodeSdrGamma=false in prepareFp16CompatInput
+                bool converted = prepareFp16CompatInput(stagingHr);
+                currentIsHDR = savedIsHdr;
+                if (!converted) {
                     return false;
                 }
                 try {
@@ -5023,13 +5027,9 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                                                                     &localInputView);
                 } catch (...) {
                     hr = E_FAIL;
-                    DLL_Log(
-                        "[VP] CreateVideoProcessorInputView threw exception after FP16 compatibility conversion "
-                        "(fmt=%d)",
-                        vpInputDesc.Format);
                 }
                 if (FAILED(hr)) {
-                    DLL_Log("[VP] Failed to create RGB10A2 compatibility input view: HR=%x", hr);
+                    DLL_Log("[VP] Failed to create RGB10A2 VP input view: HR=%x", hr);
                     return false;
                 }
                 fp16VpInputStrategy = Fp16VpInputStrategy::kUseRgb10Compat;
