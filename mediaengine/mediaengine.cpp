@@ -651,16 +651,21 @@ public:
             }
             DLL_Log("MediaEngine: Audio-only recording writing to %s", audioOnlyFilename.c_str());
 
-            // Set stream indices from muxer - only on OWNER encoders
-            for (auto& src : audioSources) {
-                if (src.encoder) {
-                    for (unsigned int si = 0; si < audioOnlyFmtCtx->nb_streams; si++) {
-                        if (audioOnlyFmtCtx->streams[si]->id == src.track) {
+            // Set stream indices from muxer - only on OWNER encoders (unique)
+            {
+                int ownerCount = 0;
+                for (unsigned int si = 0; si < audioOnlyFmtCtx->nb_streams; si++) {
+                    int targetTrack = audioOnlyFmtCtx->streams[si]->id;
+                    for (auto& src : audioSources) {
+                        if (src.encoder && src.track == targetTrack) {
                             src.encoder->SetStreamIndex((int)si);
+                            DLL_Log("[AudioSetup] Stream %d -> track %d encoder %p", si, targetTrack, (void*)src.encoder.get());
+                            ownerCount++;
                             break;
                         }
                     }
                 }
+                DLL_Log("[AudioSetup] %d owner encoders assigned, %d streams", ownerCount, (int)audioOnlyFmtCtx->nb_streams);
             }
 
             audioSyncPending.store(false);
