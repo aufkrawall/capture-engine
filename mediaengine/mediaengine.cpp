@@ -922,23 +922,30 @@ public:
                 if (src.appCapture) src.appCapture->Stop();
             }
             // Pad shorter tracks with silence to match the longest track
-            if (trackEncodedSamples.size() > 1) {
-                int64_t maxTrackSamples = 0;
-                for (auto& [track, samples] : trackEncodedSamples) {
-                    if (samples > maxTrackSamples) maxTrackSamples = samples;
+            // Use encoder's actual samplesCount for accuracy
+            std::unordered_map<int, AudioEncoder*> uniqTrackEncoders;
+            for (auto& src : audioSources) {
+                if (src.encoder && src.encoder->IsReady() &&
+                    uniqTrackEncoders.find(src.track) == uniqTrackEncoders.end()) {
+                    uniqTrackEncoders[src.track] = src.encoder.get();
                 }
-                for (auto& src : audioSources) {
-                    if (src.encoder && src.encoder->IsReady()) {
-                        int64_t current = trackEncodedSamples[src.track];
-                        int64_t pad = maxTrackSamples - current;
-                        if (pad > 0) {
-                            std::vector<float> silence(pad * 2, 0.0f);
-                            src.encoder->EncodeSamples(
-                                (const uint8_t*)silence.data(), (int)(silence.size() * sizeof(float)),
-                                2, 48000, 32, 32, 8, true, GetTickCount64());
-                            DLL_Log("[StopAudio] Padded track %d with %lld silence samples",
-                                    src.track, (long long)pad);
-                        }
+            }
+            if (uniqTrackEncoders.size() > 1) {
+                int64_t maxSamples = 0;
+                for (auto& [track, enc] : uniqTrackEncoders) {
+                    int64_t s = enc->GetSamplesCount();
+                    if (s > maxSamples) maxSamples = s;
+                }
+                for (auto& [track, enc] : uniqTrackEncoders) {
+                    int64_t current = enc->GetSamplesCount();
+                    int64_t pad = maxSamples - current;
+                    if (pad > 0) {
+                        std::vector<float> silence(pad * 2, 0.0f);
+                        enc->EncodeSamples(
+                            (const uint8_t*)silence.data(), (int)(silence.size() * sizeof(float)),
+                            2, 48000, 32, 32, 8, true, GetTickCount64());
+                        DLL_Log("[StopAudio] Padded track %d with %lld silence samples",
+                                track, (long long)pad);
                     }
                 }
             }

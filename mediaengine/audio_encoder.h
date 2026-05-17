@@ -60,6 +60,7 @@ public:
         videoTimeGetter = std::move(getter);
     }
 
+    int64_t GetSamplesCount() const { return samplesCount; }
     void Stop();
 
 private:
