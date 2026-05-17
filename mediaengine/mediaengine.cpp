@@ -944,22 +944,29 @@ public:
                     int64_t s = enc->GetSamplesCount();
                     if (s > maxS) maxS = s;
                 }
-                int idx = 0;
-                for (auto* enc : trackEncoders) {
-                    int64_t cur = enc->GetSamplesCount();
-                    int64_t pad = maxS - cur;
-                    DLL_Log("[StopAudio] Encoder[%d]=%p si=%d cur=%lld max=%lld pad=%lld",
-                            idx, (void*)enc, enc->GetStreamIndex(), (long long)cur,
-                            (long long)maxS, (long long)pad);
-                    if (pad > 0) {
-                        std::vector<float> silence(pad * 2, 0.0f);
-                        enc->EncodeSamples(
-                            (const uint8_t*)silence.data(), (int)(silence.size() * sizeof(float)),
-                            2, 48000, 32, 32, 8, true, GetTickCount64());
-                        DLL_Log("[StopAudio] Padded encoder %p with %lld silence samples",
-                                (void*)enc, (long long)pad);
+                // Pad each unique muxer stream's encoder by checking ALL audio sources
+                std::map<int, AudioEncoder*> streamEnc2;
+                for (auto& src2 : audioSources) {
+                    if (src2.encoder) {
+                        int si = src2.encoder->GetStreamIndex();
+                        if (si >= 0) streamEnc2[si] = src2.encoder.get();
                     }
-                    idx++;
+                }
+                if (streamEnc2.size() > 1) {
+                    int64_t maxS2 = 0;
+                    for (auto& [si, enc] : streamEnc2) maxS2 = (std::max)(maxS2, enc->GetSamplesCount());
+                    for (auto& [si, enc] : streamEnc2) {
+                        int64_t cur = enc->GetSamplesCount();
+                        int64_t pad = maxS2 - cur;
+                        if (pad > 0) {
+                            std::vector<float> silence(pad * 2, 0.0f);
+                            enc->EncodeSamples((const uint8_t*)silence.data(),
+                                (int)(silence.size() * sizeof(float)),
+                                2, 48000, 32, 32, 8, true, GetTickCount64());
+                            DLL_Log("[StopAudio] Padded stream %d with %lld silence samples from %lld to %lld",
+                                    si, (long long)pad, (long long)cur, (long long)maxS2);
+                        }
+                    }
                 }
             }
             for (auto& src : audioSources) {
