@@ -154,6 +154,7 @@ public:
     bool audioOnly = false;
     AVFormatContext* audioOnlyFmtCtx = nullptr;
     std::string audioOnlyFilename;
+    std::unordered_map<int, int64_t> trackEncodedSamples;  // per-track sample count for audio-only padding
 
     AppConfig config;
     std::recursive_mutex muxMutex;  // Must be recursive - WritePacket callback from EncodeFrame
@@ -915,9 +916,33 @@ public:
             }
             audioRunning = false;
             if (audioThread.joinable()) audioThread.join();
+            // Stop all capture sources first, then pad tracks to equal length
             for (auto& src : audioSources) {
                 if (src.capture) src.capture->Stop();
                 if (src.appCapture) src.appCapture->Stop();
+            }
+            // Pad shorter tracks with silence to match the longest track
+            if (trackEncodedSamples.size() > 1) {
+                int64_t maxTrackSamples = 0;
+                for (auto& [track, samples] : trackEncodedSamples) {
+                    if (samples > maxTrackSamples) maxTrackSamples = samples;
+                }
+                for (auto& src : audioSources) {
+                    if (src.encoder && src.encoder->IsReady()) {
+                        int64_t current = trackEncodedSamples[src.track];
+                        int64_t pad = maxTrackSamples - current;
+                        if (pad > 0) {
+                            std::vector<float> silence(pad * 2, 0.0f);
+                            src.encoder->EncodeSamples(
+                                (const uint8_t*)silence.data(), (int)(silence.size() * sizeof(float)),
+                                2, 48000, 32, 32, 8, true, GetTickCount64());
+                            DLL_Log("[StopAudio] Padded track %d with %lld silence samples",
+                                    src.track, (long long)pad);
+                        }
+                    }
+                }
+            }
+            for (auto& src : audioSources) {
                 if (src.encoder) src.encoder->Stop();
                 if (src.ringBuffer) src.ringBuffer->Clear();
                 if (src.syncResampler) src.syncResampler->Reset();
@@ -3392,6 +3417,8 @@ private:
                                             targetFmt.channels * (int)sizeof(float),  // blockAlign
                                             true,   // isFloat
                                             GetTickCount64());
+                                        // Track samples encoded per track for length alignment
+                                        trackEncodedSamples[src.track] += writeSamples;
                                     }
                                 }
                             } else if (src.ringBuffer && audioSyncPending.load()) {
