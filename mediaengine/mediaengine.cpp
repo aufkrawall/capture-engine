@@ -430,9 +430,13 @@ public:
         audioOnly = enabled;
     }
 
-    void InitAudioOnlyMuxer() {
-        std::string filename = "capture_audio_" + std::to_string(GetTickCount64()) + ".mka";
-        audioOnlyFilename = filename;
+    void InitAudioOnlyMuxer(const AppConfig* config) {
+        // Use the configured output directory, fall back to CWD
+        std::string outDir = config->video.outputDir;
+        if (outDir.empty()) {
+            outDir = ".";
+        }
+        audioOnlyFilename = outDir + "\\capture_audio_" + std::to_string(GetTickCount64()) + ".mka";
 
         if (avformat_alloc_output_context2(&audioOnlyFmtCtx, nullptr, "matroska", audioOnlyFilename.c_str()) < 0) {
             DLL_Log("MediaEngine: Failed to create audio-only muxer");
@@ -470,7 +474,7 @@ public:
         if (audioOnly) {
             DLL_Log("MediaEngine::Init audio-only mode - skipping VideoEncoder");
             videoEnc = nullptr;
-            InitAudioOnlyMuxer();
+            InitAudioOnlyMuxer(config);
         } else {
             DLL_Log("MediaEngine::Init creating VideoEncoder");
             videoEnc = std::make_unique<VideoEncoder>();
@@ -2995,8 +2999,23 @@ public:
     void WritePacket(AVPacket* pkt) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (audioOnly && audioOnlyFmtCtx) {
-            // Route audio packets directly to the audio-only muxer
-            av_interleaved_write_frame(audioOnlyFmtCtx, pkt);
+            // Route audio packets directly to the audio-only muxer.
+            // Rescale timestamps from audio codec time_base (1/sample_rate)
+            // to the muxer stream time_base which may have been changed by
+            // avformat_write_header.
+            if (pkt->stream_index >= 0 && (unsigned int)pkt->stream_index < audioOnlyFmtCtx->nb_streams) {
+                AVStream* st = audioOnlyFmtCtx->streams[pkt->stream_index];
+                AVRational codec_tb = {1, st->codecpar->sample_rate};
+                if (codec_tb.den > 0) {
+                    av_packet_rescale_ts(pkt, codec_tb, st->time_base);
+                }
+            }
+            int ret = av_interleaved_write_frame(audioOnlyFmtCtx, pkt);
+            if (ret < 0) {
+                char errBuf[256] = {};
+                av_strerror(ret, errBuf, sizeof(errBuf));
+                DLL_Log("[MediaEngine] WritePacket audio-only: av_interleaved_write_frame error %d: %s", ret, errBuf);
+            }
         } else if (videoEnc) {
             videoEnc->WriteFrame(pkt);
         }
