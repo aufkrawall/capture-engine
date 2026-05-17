@@ -1528,14 +1528,16 @@ public:
         const int64_t wallVideoMs = this->videoElapsedMs.load();
         int64_t encodedVideoMs = 0;
         int64_t audioTargetUs = videoTimelineUs;
-        if (videoEnc && !isCfrRecording) {
+        // Audio-only mode: use wall-clock elapsed time directly as audio target
+        if (audioOnly) {
+            audioTargetUs = std::max<int64_t>(1, audioTargetUs);
+        } else if (videoEnc && !isCfrRecording) {
             int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
             if (encodedVideoUs > 0) {
                 encodedVideoMs = encodedVideoUs / 1000;
                 audioTargetUs = encodedVideoUs;
             }
-        }
-        if (isCfrRecording && videoEnc) {
+        } else if (isCfrRecording && videoEnc) {
             int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
             if (encodedVideoUs > 0) {
                 encodedVideoMs = encodedVideoUs / 1000;
