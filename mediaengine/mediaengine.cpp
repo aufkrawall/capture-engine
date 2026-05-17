@@ -944,9 +944,13 @@ public:
                     int64_t s = enc->GetSamplesCount();
                     if (s > maxS) maxS = s;
                 }
+                int idx = 0;
                 for (auto* enc : trackEncoders) {
                     int64_t cur = enc->GetSamplesCount();
                     int64_t pad = maxS - cur;
+                    DLL_Log("[StopAudio] Encoder[%d]=%p si=%d cur=%lld max=%lld pad=%lld",
+                            idx, (void*)enc, enc->GetStreamIndex(), (long long)cur,
+                            (long long)maxS, (long long)pad);
                     if (pad > 0) {
                         std::vector<float> silence(pad * 2, 0.0f);
                         enc->EncodeSamples(
@@ -955,6 +959,7 @@ public:
                         DLL_Log("[StopAudio] Padded encoder %p with %lld silence samples",
                                 (void*)enc, (long long)pad);
                     }
+                    idx++;
                 }
             }
             for (auto& src : audioSources) {
