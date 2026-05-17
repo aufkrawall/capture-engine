@@ -958,13 +958,18 @@ public:
                     }
                 }
                 if (streamEnc2.size() > 1) {
+                    constexpr int64_t kFrameAlign = 4096;  // ALAC frame size
                     int64_t maxS2 = 0;
-                    for (auto& [si, enc] : streamEnc2) maxS2 = (std::max)(maxS2, enc->GetSamplesCount());
+                    for (auto& [si, enc] : streamEnc2) {
+                        int64_t s = enc->GetSamplesCount();
+                        int64_t aligned = ((s + kFrameAlign - 1) / kFrameAlign) * kFrameAlign;
+                        if (aligned > maxS2) maxS2 = aligned;
+                    }
                     for (auto& [si, enc] : streamEnc2) {
                         int64_t cur = enc->GetSamplesCount();
                         int64_t pad = maxS2 - cur;
+                        if (pad < 0) pad = 0;
                         if (pad > 0) {
-                            // Pad in chunks to avoid FIFO overflow (max ~240k samples)
                             constexpr int kChunkSamples = 4096;
                             std::vector<float> silence(kChunkSamples * 2, 0.0f);
                             int64_t remaining = pad;
