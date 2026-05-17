@@ -958,20 +958,19 @@ public:
                     }
                 }
                 if (streamEnc2.size() > 1) {
-                    constexpr int64_t kFrameAlign = 4096;  // ALAC frame size
+                    constexpr int kChunkSamples = 4096;
+                    std::vector<float> silence(kChunkSamples * 2, 0.0f);
                     int64_t maxS2 = 0;
                     for (auto& [si, enc] : streamEnc2) {
                         int64_t s = enc->GetSamplesCount();
-                        int64_t aligned = ((s + kFrameAlign - 1) / kFrameAlign) * kFrameAlign;
-                        if (aligned > maxS2) maxS2 = aligned;
+                        if (s > maxS2) maxS2 = s;
                     }
+                    // Round max to next ALAC frame boundary
+                    maxS2 = ((maxS2 + kChunkSamples - 1) / kChunkSamples) * kChunkSamples;
                     for (auto& [si, enc] : streamEnc2) {
                         int64_t cur = enc->GetSamplesCount();
                         int64_t pad = maxS2 - cur;
-                        if (pad < 0) pad = 0;
                         if (pad > 0) {
-                            constexpr int kChunkSamples = 4096;
-                            std::vector<float> silence(kChunkSamples * 2, 0.0f);
                             int64_t remaining = pad;
                             while (remaining > 0) {
                                 int chunk = (int)(std::min)(remaining, (int64_t)kChunkSamples);
@@ -980,9 +979,39 @@ public:
                                     2, 48000, 32, 32, 8, true, GetTickCount64());
                                 remaining -= chunk;
                             }
-                            DLL_Log("[StopAudio] Padded stream %d with %lld silence samples from %lld to %lld",
-                                    si, (long long)pad, (long long)cur, (long long)maxS2);
                         }
+                    }
+                    // Converge: re-pad shorter encoders until all match
+                    for (int iter = 0; iter < 10; iter++) {
+                        maxS2 = 0;
+                        for (auto& [si, enc] : streamEnc2) {
+                            int64_t s = enc->GetSamplesCount();
+                            if (s > maxS2) maxS2 = s;
+                        }
+                        bool allMatch = true;
+                        for (auto& [si, enc] : streamEnc2) {
+                            int64_t cur = enc->GetSamplesCount();
+                            int64_t pad = maxS2 - cur;
+                            if (pad > 0) {
+                                allMatch = false;
+                                int64_t remaining = pad;
+                                while (remaining > 0) {
+                                    int chunk = (int)(std::min)(remaining, (int64_t)kChunkSamples);
+                                    enc->EncodeSamples((const uint8_t*)silence.data(),
+                                        chunk * 2 * (int)sizeof(float),
+                                        2, 48000, 32, 32, 8, true, GetTickCount64());
+                                    remaining -= chunk;
+                                }
+                                DLL_Log("[StopAudio] Convergence iter %d: padded stream %d +%lld to %lld",
+                                        iter, si, (long long)pad, (long long)maxS2);
+                            }
+                        }
+                        if (allMatch) break;
+                    }
+                    // Log final lengths for verification
+                    for (auto& [si, enc] : streamEnc2) {
+                        DLL_Log("[StopAudio] Final stream %d: %lld samples",
+                                si, (long long)enc->GetSamplesCount());
                     }
                 }
             }
