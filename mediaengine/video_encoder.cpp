@@ -5013,9 +5013,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                 // VP doesn't accept TYPELESS or FP16 on this HW.
                 // Convert to R10G10B10A2_UNORM (VP-compatible on all HW).
                 // Use linearToSrgb=false: WGC data is already gamma-corrected.
+                // Read as UNORM (TYPELESS data is integer 0-65535, not FP16)
                 ID3D11Texture2D* rgb10Tex = RenderFullscreenCopy(
                     vpInputTexture, vpInputDesc.Width, vpInputDesc.Height,
-                    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R10G10B10A2_UNORM,
+                    DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
                     rgb10IntermediateTexture, rgb10IntermediateRTV,
                     rgb10IntermediateWidth, rgb10IntermediateHeight,
                     "RGB10", false);
