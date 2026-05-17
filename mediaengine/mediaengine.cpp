@@ -154,6 +154,7 @@ public:
     bool audioOnly = false;
     AVFormatContext* audioOnlyFmtCtx = nullptr;
     std::string audioOnlyFilename;
+    std::vector<AudioEncoder*> trackEncoders;  // All unique encoders for audio-only padding
     std::unordered_map<int, int64_t> trackEncodedSamples;  // per-track sample count for audio-only padding
 
     AppConfig config;
@@ -690,6 +691,15 @@ public:
                 }
                 if (started) startedCount++;
             }
+            // Collect unique encoder pointers for track padding
+            trackEncoders.clear();
+            for (auto& src : audioSources) {
+                if (src.encoder) {
+                    bool dup = false;
+                    for (auto* e : trackEncoders) { if (e == src.encoder.get()) { dup = true; break; } }
+                    if (!dup) trackEncoders.push_back(src.encoder.get());
+                }
+            }
             if (startedCount > 0) {
                 audioRunning = true;
                 audioThread = std::thread(&MediaEngine::AudioLoop, this);
@@ -922,6 +932,26 @@ public:
                 if (src.appCapture) src.appCapture->Stop();
             }
 
+            // Pad shorter tracks with silence to match the longest
+            if (trackEncoders.size() > 1) {
+                int64_t maxS = 0;
+                for (auto* enc : trackEncoders) {
+                    int64_t s = enc->GetSamplesCount();
+                    if (s > maxS) maxS = s;
+                }
+                for (auto* enc : trackEncoders) {
+                    int64_t cur = enc->GetSamplesCount();
+                    int64_t pad = maxS - cur;
+                    if (pad > 0) {
+                        std::vector<float> silence(pad * 2, 0.0f);
+                        enc->EncodeSamples(
+                            (const uint8_t*)silence.data(), (int)(silence.size() * sizeof(float)),
+                            2, 48000, 32, 32, 8, true, GetTickCount64());
+                        DLL_Log("[StopAudio] Padded encoder %p with %lld silence samples",
+                                (void*)enc, (long long)pad);
+                    }
+                }
+            }
             for (auto& src : audioSources) {
                 if (src.encoder) src.encoder->Stop();
                 if (src.ringBuffer) src.ringBuffer->Clear();
