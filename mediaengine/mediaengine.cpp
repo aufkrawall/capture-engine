@@ -930,6 +930,7 @@ public:
             recordingStartSystemQpc100ns.store(0);
             injectTimelineState.Reset();
             d3d11TimelineState.Reset();
+            audioOnly = false;
             DLL_Log("[STOP SUMMARY] Audio-only recording finalized");
             return;
         }
@@ -3377,6 +3378,17 @@ private:
                                     const size_t writtenFloats =
                                         src.ringBuffer->WriteRetainNew(writeFloats, writeSamples * targetFmt.channels);
                                     src.qpcAlignedWrittenSamples += writtenFloats / targetFmt.channels;
+                                    // Audio-only: encode raw WASAPI data directly to encoder
+                                    if (audioOnly && src.encoder && src.encoder->IsReady()) {
+                                        src.encoder->EncodeSamples(
+                                            packet.data.data(), (int)packet.data.size(),
+                                            packet.channels, packet.sampleRate,
+                                            packet.bitsPerSample,
+                                            packet.validBitsPerSample > 0 ? packet.validBitsPerSample : packet.bitsPerSample,
+                                            (packet.channels * packet.bitsPerSample) / 8,
+                                            packet.isFloat,
+                                            GetTickCount64());
+                                    }
                                 }
                             } else if (src.ringBuffer && audioSyncPending.load()) {
                                 // The sync gate is still closed, so this packet is
