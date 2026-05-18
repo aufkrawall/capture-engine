@@ -149,9 +149,14 @@ bool HookIsPostSLOverlayConfirmedButStartupSettling();
 bool HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
 int HookGetPostSLRuntimeStateStabilizationLastFrame();
 
-// DX12 exports this narrower GetState-only warmup guard so Streamline can
-// ignore transient inactive GetState polls until PostSL reaches the broader
-// warmup proof threshold, without extending explicit SetOptions(OFF) suppression.
+// DX12 exports this narrow stale-OFF warmup guard so Streamline can ignore
+// transient inactive DLSSG polls/requests until PostSL reaches the broader
+// warmup proof threshold, without extending startup routing or handoff state.
+bool HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
+int HookGetPostSLStaleOffWarmupProtectionLastFrame();
+
+// Back-compat aliases for call sites and tests that reason specifically about
+// inactive GetState jitter.
 bool HookIsPostSLOverlayConfirmedButGetStateOffWarmupProtected();
 int HookGetPostSLGetStateOffWarmupProtectionLastFrame();
 

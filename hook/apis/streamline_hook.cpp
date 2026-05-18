@@ -879,10 +879,10 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
     const bool sourceWasSetOptions = source && strcmp(source, "SetOptions") == 0;
     const bool sourceWasGetState = source && strcmp(source, "GetState") == 0;
     const bool postSLConfirmedButRuntimeStateStabilizingBase = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
-    const bool postSLConfirmedButGetStateOffWarmupProtected =
-        !active && sourceWasGetState && HookIsPostSLOverlayConfirmedButGetStateOffWarmupProtected();
+    const bool postSLConfirmedButStaleOffWarmupProtected =
+        !active && HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
     const bool postSLConfirmedButRuntimeStateStabilizing =
-        postSLConfirmedButRuntimeStateStabilizingBase || postSLConfirmedButGetStateOffWarmupProtected;
+        postSLConfirmedButRuntimeStateStabilizingBase || postSLConfirmedButStaleOffWarmupProtected;
     const bool explicitSetOptionsActivationForCurrentComeback =
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
     const bool hadFSRFGPhase = HookHasFSRFGHistory();
@@ -939,7 +939,7 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
                                 signalUpdate.effectiveActive, updatedExplicitSetOptionsActivation);
     if (signalUpdate.deferredOffDuringStartupWindow && !startupWindowActive) {
         if (!active && !postSLConfirmedButStartupSettling && sourceWasGetState &&
-            postSLConfirmedButGetStateOffWarmupProtected && !postSLConfirmedButRuntimeStateStabilizingBase) {
+            postSLConfirmedButStaleOffWarmupProtected && !postSLConfirmedButRuntimeStateStabilizingBase) {
             static std::atomic<bool> s_loggedGetStateWarmupProofSuppression{false};
             if (!s_loggedGetStateWarmupProofSuppression.exchange(true, std::memory_order_relaxed)) {
                 HookLogImportant(
@@ -948,7 +948,7 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
                     hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
                     safePostFSRBootstrapPath ? 1 : 0,
                     ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationFirstFrame(),
-                    HookGetPostSLGetStateOffWarmupProtectionLastFrame());
+                    HookGetPostSLStaleOffWarmupProtectionLastFrame());
             }
         } else if (!active && !postSLConfirmedButStartupSettling && postSLConfirmedButRuntimeStateStabilizingBase &&
                    sourceWasGetState) {
@@ -1971,7 +1971,9 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
         const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
         const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
-        const bool postSLConfirmedButRuntimeStateStabilizing = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
+        const bool postSLConfirmedButRuntimeStateStabilizing =
+            HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
+            HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
         const bool explicitSetOptionsActivationForCurrentComeback =
             g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
         const bool hadFSRFGPhase = HookHasFSRFGHistory();
@@ -2080,7 +2082,9 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
         const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
         const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
-        const bool postSLConfirmedButRuntimeStateStabilizing = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
+        const bool postSLConfirmedButRuntimeStateStabilizing =
+            HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
+            HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
         const bool explicitSetOptionsActivationForCurrentComeback =
             g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
         const bool hadFSRFGPhase = HookHasFSRFGHistory();
@@ -2130,7 +2134,11 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
     const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
     const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
-    const bool postSLConfirmedButRuntimeStateStabilizing = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
+    const bool postSLConfirmedButRuntimeStateStabilizingBase = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
+    const bool postSLConfirmedButStaleOffWarmupProtected =
+        requestedDisabled && HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
+    const bool postSLConfirmedButRuntimeStateStabilizing =
+        postSLConfirmedButRuntimeStateStabilizingBase || postSLConfirmedButStaleOffWarmupProtected;
     const bool explicitSetOptionsActivationForCurrentComeback =
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
     const bool hadFSRFGPhase = HookHasFSRFGHistory();
@@ -2145,6 +2153,19 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     const bool setOptionsCallSuppressed = suppressOffCall;
     slResult result;
     if (suppressOffCall) {
+        if (postSLConfirmedButStaleOffWarmupProtected && !postSLConfirmedButRuntimeStateStabilizingBase) {
+            static std::atomic<bool> s_loggedSetOptionsWarmupProofSuppression{false};
+            if (!s_loggedSetOptionsWarmupProofSuppression.exchange(true, std::memory_order_relaxed)) {
+                HookLogImportant(
+                    "Streamline Hook: Suppressing slDLSSGSetOptions(OFF) during PostSL warmup proof "
+                    "(hadFSR=%d explicit=%d safeBootstrap=%d stableProtectionWindow=%d-%d) — treating it as "
+                    "startup stale-OFF churn until PostSL proves stable",
+                    hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
+                    safePostFSRBootstrapPath ? 1 : 0,
+                    ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationFirstFrame(),
+                    HookGetPostSLStaleOffWarmupProtectionLastFrame());
+            }
+        }
         HookLogImportant(
             "Streamline Hook: Suppressing slDLSSGSetOptions(OFF) while DLSS comeback remains startup-protected "
             "(viewport=%u mode=%u startupWindow=%d hadFSR=%d explicitComeback=%d safeBootstrap=%d pending=%d "
@@ -2686,7 +2707,9 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
     const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
     const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
     const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
-    const bool postSLConfirmedButRuntimeStateStabilizing = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing();
+    const bool postSLConfirmedButRuntimeStateStabilizing =
+        HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
+        HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
     const bool explicitSetOptionsActivationForCurrentComeback =
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
     const bool hadFSRFGPhase = HookHasFSRFGHistory();

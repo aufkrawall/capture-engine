@@ -295,14 +295,22 @@ int HookGetPostSLRuntimeStateStabilizationLastFrame() {
         g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.load(std::memory_order_acquire));
 }
 
-bool HookIsPostSLOverlayConfirmedButGetStateOffWarmupProtected() {
-    return ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(
+bool HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected() {
+    return ce::dx12_overlay_policy::ShouldDeferStaleOffDuringConfirmedPostSLWarmup(
         g_PostSLConfirmedRendering.load(std::memory_order_acquire),
         g_PostSLStableFrameCount.load(std::memory_order_acquire));
 }
 
+int HookGetPostSLStaleOffWarmupProtectionLastFrame() {
+    return ce::dx12_overlay_policy::GetConfirmedPostSLStaleOffWarmupProtectionLastFrame();
+}
+
+bool HookIsPostSLOverlayConfirmedButGetStateOffWarmupProtected() {
+    return HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
+}
+
 int HookGetPostSLGetStateOffWarmupProtectionLastFrame() {
-    return ce::dx12_overlay_policy::GetConfirmedPostSLGetStateOffWarmupProtectionLastFrame();
+    return HookGetPostSLStaleOffWarmupProtectionLastFrame();
 }
 
 // Flag to reset the queue-change heuristic's internal state.  Set during FG

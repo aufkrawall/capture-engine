@@ -2199,7 +2199,15 @@ TEST(DXGISharedTest, ConfirmedPostSLRuntimeStateStabilizationStartsRightAfterSet
 }
 
 TEST(DXGISharedTest, GetStateOffWarmupProtectionExtendsToPostSLProofThreshold) {
+    EXPECT_EQ(30, ce::dx12_overlay_policy::GetConfirmedPostSLStaleOffWarmupProtectionLastFrame());
     EXPECT_EQ(30, ce::dx12_overlay_policy::GetConfirmedPostSLGetStateOffWarmupProtectionLastFrame());
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferStaleOffDuringConfirmedPostSLWarmup(true, 8));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferStaleOffDuringConfirmedPostSLWarmup(true, 9));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferStaleOffDuringConfirmedPostSLWarmup(true, 13));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferStaleOffDuringConfirmedPostSLWarmup(true, 30));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferStaleOffDuringConfirmedPostSLWarmup(true, 31));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferStaleOffDuringConfirmedPostSLWarmup(false, 13));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(true, 8));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(true, 9));

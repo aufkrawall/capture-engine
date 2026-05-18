@@ -511,12 +511,15 @@ TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackStaysDeferredD
 TEST(StreamlineRuntimePolicyTest, GetStateWarmupProtectionKeepsPureDLSSOffChurnDeferred) {
     const bool getStateWarmupProtection =
         ce::dx12_overlay_policy::ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(true, 13);
+    const bool staleOffWarmupProtection =
+        ce::dx12_overlay_policy::ShouldDeferStaleOffDuringConfirmedPostSLWarmup(true, 13);
 
     EXPECT_TRUE(getStateWarmupProtection);
+    EXPECT_TRUE(staleOffWarmupProtection);
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
-        false, false, true, false, false, false, true, false, getStateWarmupProtection));
+        false, false, true, false, false, false, true, false, staleOffWarmupProtection));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
-        false, true, false, true, false, getStateWarmupProtection));
+        false, true, false, true, false, staleOffWarmupProtection));
 }
 
 TEST(StreamlineRuntimePolicyTest,

@@ -1540,21 +1540,29 @@ inline bool ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(bool po
            stablePostSLFrameCount <= GetConfirmedPostSLRuntimeStateStabilizationLastFrame(extendForChurnedReactivation);
 }
 
-inline constexpr int GetConfirmedPostSLGetStateOffWarmupProtectionLastFrame() {
+inline constexpr int GetConfirmedPostSLStaleOffWarmupProtectionLastFrame() {
     return GetConfirmedPostSLWarmupProofFrameThreshold();
+}
+
+inline bool ShouldDeferStaleOffDuringConfirmedPostSLWarmup(bool postSLConfirmedRendering,
+                                                           int stablePostSLFrameCount) {
+    // GTA can keep reporting transient inactive Streamline DLSSG data after the
+    // generic startup stale-OFF guard has done its job and PostSL is already
+    // submitting successfully. Treat only startup-protected OFF churn as warmup
+    // jitter until the same 30-frame proof threshold used by the PostSL stall
+    // fallback is reached; a later OFF after proof still wins normally.
+    return postSLConfirmedRendering &&
+           stablePostSLFrameCount >= GetConfirmedPostSLRuntimeStateStabilizationFirstFrame() &&
+           stablePostSLFrameCount <= GetConfirmedPostSLStaleOffWarmupProtectionLastFrame();
+}
+
+inline constexpr int GetConfirmedPostSLGetStateOffWarmupProtectionLastFrame() {
+    return GetConfirmedPostSLStaleOffWarmupProtectionLastFrame();
 }
 
 inline bool ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(bool postSLConfirmedRendering,
                                                               int stablePostSLFrameCount) {
-    // GTA can keep reporting transient inactive slDLSSGGetState data after the
-    // generic SetOptions stale-OFF guard has done its job and PostSL is already
-    // submitting successfully. Treat only GetState OFF as warmup jitter until
-    // the same 30-frame proof threshold used by the PostSL stall fallback is
-    // reached. This deliberately does not extend explicit slDLSSGSetOptions(OFF)
-    // suppression.
-    return postSLConfirmedRendering &&
-           stablePostSLFrameCount >= GetConfirmedPostSLRuntimeStateStabilizationFirstFrame() &&
-           stablePostSLFrameCount <= GetConfirmedPostSLGetStateOffWarmupProtectionLastFrame();
+    return ShouldDeferStaleOffDuringConfirmedPostSLWarmup(postSLConfirmedRendering, stablePostSLFrameCount);
 }
 
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,
