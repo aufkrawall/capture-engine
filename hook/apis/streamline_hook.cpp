@@ -2844,6 +2844,7 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool callbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
     const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
     const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
     const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool postSLConfirmedButRuntimeStateStabilizing =
@@ -2866,7 +2867,7 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             effectivePostSLRuntimeStateStabilizing);
     if (shouldKeepDeferred) {
         if (ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(
-                shouldKeepDeferred, windowStillActive, activationPending, postSLActiveButUnconfirmed,
+                shouldKeepDeferred, windowStillActive, activationPending, postSLStartupActivationEntered,
                 callbackInstalled)) {
             const bool serviced = TryServicePostSLStartupActivation(
                 "StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded deferred OFF churn", true);
@@ -2875,8 +2876,10 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             if (logCount < 10 || (logCount % 100) == 0) {
                 HookLogImportant(
                     "Streamline Hook: Startup-protected OFF churn serviced PostSL startup activation before "
-                    "remaining deferred (serviced=%d pending=%d unconfirmed=%d)",
-                    serviced ? 1 : 0, activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0);
+                    "remaining deferred (serviced=%d pending=%d activeButUnconfirmed=%d "
+                    "startupActivationEntered=%d)",
+                    serviced ? 1 : 0, activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
+                    postSLStartupActivationEntered ? 1 : 0);
             }
         }
         return;
@@ -2884,15 +2887,17 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
 
     const bool shouldTriggerDirectCallback =
         ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(
-            activationPending, postSLActiveButUnconfirmed);
+            activationPending, postSLStartupActivationEntered);
 
     auto logSkippedDirectCallbackAfterActivation = [&]() {
         static std::atomic<int> s_skipLogCount{0};
         const int logCount = s_skipLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 100) == 0) {
             HookLogImportant(
-                "Streamline Hook: Startup window expired but PostSL activation already completed — skipping "
-                "redundant direct callback until first confirmed render");
+                "Streamline Hook: Startup window expired but PostSL startup activation callback already entered — "
+                "skipping redundant direct callback until first confirmed render "
+                "(activeButUnconfirmed=%d startupActivationEntered=%d)",
+                postSLActiveButUnconfirmed ? 1 : 0, postSLStartupActivationEntered ? 1 : 0);
         }
     };
 
@@ -2941,11 +2946,10 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
         // before Streamline receives the OFF signal and potentially destabilizes its
         // FG pipeline.
         //
-        // We check activationPending alone (not postSLActive).  The callback being
-        // installed does not mean PostSL is rendering-active — if the startup window
-        // is still active, the callback is deferred and g_PostSLOverlayActive stays
-        // false.  activationPending is the ground truth for "PostSL activation has
-        // not yet completed."
+        // We intentionally distinguish ProcessFrame pre-arming PostSL from the
+        // startup callback actually entering.  Pre-armed-but-unentered still needs
+        // the retained activation wake path; once the callback entered, repeated
+        // direct callbacks stay blocked until the normal Present route confirms.
         //
         // This is critical for GTA V Enhanced DLSS FG startup, where only one
         // startup-handoff Present arrives via the top-level path (bypassing the
@@ -2960,7 +2964,7 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 "StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded after OFF flush", true);
             HookLogImportant("Streamline Hook: PostSL startup activation service after OFF flush returned %d",
                              serviced ? 1 : 0);
-        } else if (activationPending && callbackInstalled && postSLActiveButUnconfirmed) {
+        } else if (activationPending && callbackInstalled && postSLStartupActivationEntered) {
             logSkippedDirectCallbackAfterActivation();
         }
         return;
@@ -2980,7 +2984,7 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             "StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded expiry", true);
         HookLogImportant("Streamline Hook: PostSL startup activation service after startup expiry returned %d",
                          serviced ? 1 : 0);
-    } else if (activationPending && callbackInstalled && postSLActiveButUnconfirmed) {
+    } else if (activationPending && callbackInstalled && postSLStartupActivationEntered) {
         logSkippedDirectCallbackAfterActivation();
     }
 }

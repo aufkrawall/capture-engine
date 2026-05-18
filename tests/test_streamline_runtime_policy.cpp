@@ -553,7 +553,7 @@ TEST(StreamlineRuntimePolicyTest,
     EXPECT_EQ(2, update.effectiveMultiplier);
 }
 
-TEST(StreamlineRuntimePolicyTest, DirectPostSLCallbackTriggerStopsAfterActivationCompletes) {
+TEST(StreamlineRuntimePolicyTest, DirectPostSLCallbackTriggerStopsAfterStartupCallbackEnters) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(true, false));
 
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(true, true));

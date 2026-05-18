@@ -238,6 +238,10 @@ bool HookIsPostSLOverlayActiveButUnconfirmed() {
             !g_PostSLConfirmedRendering.load(std::memory_order_acquire));
 }
 
+bool HookHasPostSLSyntheticStartupActivationEntered() {
+    return g_PostSLSyntheticStartupActivatedButUnconfirmed.load(std::memory_order_acquire);
+}
+
 bool HookIsPostSLOverlayConfirmedRendering() {
     return g_PostSLConfirmedRendering.load(std::memory_order_acquire);
 }
@@ -1395,12 +1399,13 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
             HookLogImportant(
                 "DX12: Skipping retained-swapchain PostSL startup activation callback "
                 "(reason=%s source=%s swapchain=%p clearWindow=%d startupPending=%d "
-                "activeButUnconfirmed=%d confirmed=%d inProgress=%d tid=0x%04X)",
+                "activeButUnconfirmed=%d startupActivationEntered=%d confirmed=%d inProgress=%d tid=0x%04X)",
                 reason ? reason : "policy", source ? source : "unknown", activationSwapchain,
                 clearStartupWindow ? 1 : 0,
                 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1
                                                                                                                   : 0,
                 HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0,
+                HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
                 g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0, inProgress ? 1 : 0,
                 GetCurrentThreadId());
         }
@@ -1408,16 +1413,16 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
 
     const bool activationPending =
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
-    const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
     const bool postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
     const bool serviceAlreadyInProgress =
         g_PostSLStartupActivationServiceInProgress.load(std::memory_order_acquire);
     if (!ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
-            true, true, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+            true, true, activationPending, postSLStartupActivationEntered, postSLConfirmedRendering,
             serviceAlreadyInProgress)) {
         const char* reason = serviceAlreadyInProgress        ? "in-progress"
                              : postSLConfirmedRendering      ? "already-confirmed"
-                             : postSLActiveButUnconfirmed    ? "already-active-unconfirmed"
+                             : postSLStartupActivationEntered ? "startup-activation-entered"
                              : !activationPending            ? "activation-not-pending"
                                                              : "policy";
         logSkippedActivationService(reason, serviceAlreadyInProgress);
@@ -1435,13 +1440,13 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
 
     const bool activationPendingAfterClaim =
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
-    const bool postSLActiveButUnconfirmedAfterClaim = HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool postSLStartupActivationEnteredAfterClaim = HookHasPostSLSyntheticStartupActivationEntered();
     const bool postSLConfirmedRenderingAfterClaim = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
     if (!ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
-            true, true, activationPendingAfterClaim, postSLActiveButUnconfirmedAfterClaim,
+            true, true, activationPendingAfterClaim, postSLStartupActivationEnteredAfterClaim,
             postSLConfirmedRenderingAfterClaim, false)) {
         const char* reason = postSLConfirmedRenderingAfterClaim   ? "already-confirmed"
-                             : postSLActiveButUnconfirmedAfterClaim ? "already-active-unconfirmed"
+                             : postSLStartupActivationEnteredAfterClaim ? "startup-activation-entered"
                              : !activationPendingAfterClaim       ? "activation-not-pending"
                                                                   : "policy";
         logSkippedActivationService(reason, false);
@@ -1456,15 +1461,19 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
 
     HookLogImportant(
         "DX12: Invoking retained-swapchain PostSL startup activation callback "
-        "(source=%s swapchain=%p clearWindow=%d startupPending=1 tid=0x%04X)",
-        source ? source : "unknown", activationSwapchain, clearStartupWindow ? 1 : 0, GetCurrentThreadId());
+        "(source=%s swapchain=%p clearWindow=%d startupPending=1 activeButUnconfirmed=%d "
+        "startupActivationEntered=0 tid=0x%04X)",
+        source ? source : "unknown", activationSwapchain, clearStartupWindow ? 1 : 0,
+        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, GetCurrentThreadId());
     postSLCallback(activationSwapchain);
     HookLogImportant(
         "DX12: Retained-swapchain PostSL startup activation callback returned "
-        "(source=%s swapchain=%p startupPending=%d activeButUnconfirmed=%d confirmed=%d tid=0x%04X)",
+        "(source=%s swapchain=%p startupPending=%d activeButUnconfirmed=%d startupActivationEntered=%d "
+        "confirmed=%d tid=0x%04X)",
         source ? source : "unknown", activationSwapchain,
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1 : 0,
         HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0,
+        HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
         g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0, GetCurrentThreadId());
     g_PostSLStartupActivationServiceInProgress.store(false, std::memory_order_release);
     activationSwapchain->Release();
@@ -14185,6 +14194,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool callbackInstalled =
             DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
         const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+        const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
         const bool postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
         const bool overlayVisible = GetHookOverlayConfig().showOverlay;
         const bool windowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
@@ -14203,7 +14213,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 safePostFSRBootstrapPath);
         const bool continueVisibleOverlayStartupProgress =
             ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
-                overlayVisible, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+                overlayVisible, activationPending, postSLStartupActivationEntered, postSLConfirmedRendering,
                 callbackInstalled, activationSwapchainAvailable, g_HadFSRFGPhase, safePostFSRBootstrapPath);
         const ULONGLONG nowMs = GetTickCount64();
         const ULONGLONG lastVisibleOverlayStartupProgressTriggerMs =
@@ -14223,15 +14233,19 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                     HookLogImportant(
                         "DX12: ECL hook detected startup transition window expiry with pending PostSL activation — "
                         "triggering retained-swapchain PostSL activation service "
-                        "(startupWindowExpired=1 activationPending=1 callbackInstalled=1)");
+                        "(startupWindowExpired=1 activationPending=1 activeButUnconfirmed=%d "
+                        "startupActivationEntered=%d callbackInstalled=1)",
+                        postSLActiveButUnconfirmed ? 1 : 0, postSLStartupActivationEntered ? 1 : 0);
                 } else {
                     const int logCount =
                         s_visibleOverlayStartupProgressLogCount.fetch_add(1, std::memory_order_relaxed);
                     if (logCount < 10 || (logCount % 120) == 0) {
                         HookLogImportant(
                             "DX12: ECL hook continuing visible-overlay PostSL startup progress while render remains "
-                            "unconfirmed (startupPending=%d activeButUnconfirmed=%d retainedSwapchain=1)",
-                            activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0);
+                            "unconfirmed (startupPending=%d activeButUnconfirmed=%d "
+                            "startupActivationEntered=%d retainedSwapchain=1)",
+                            activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
+                            postSLStartupActivationEntered ? 1 : 0);
                     }
                 }
 

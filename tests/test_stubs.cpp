@@ -103,6 +103,10 @@ bool HookIsPostSLOverlayActiveButUnconfirmed() {
     return false;
 }
 
+bool HookHasPostSLSyntheticStartupActivationEntered() {
+    return false;
+}
+
 bool HookIsPostSLOverlayConfirmedRendering() {
     return false;
 }

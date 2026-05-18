@@ -505,8 +505,8 @@ inline bool ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(bool reques
 }
 
 inline bool ShouldTriggerDirectPostSLCallbackAfterStartupWindowExpiry(bool activationPending,
-                                                                      bool postSLActiveButUnconfirmed) {
-    return activationPending && !postSLActiveButUnconfirmed;
+                                                                      bool postSLStartupActivationEntered) {
+    return activationPending && !postSLStartupActivationEntered;
 }
 
 inline ObserverOnlyHeuristicCleanup ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(bool active) {

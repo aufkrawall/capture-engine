@@ -134,6 +134,10 @@ inline bool HookOverlayObserverStartupPresentOnlyEnabled() {
 // PostSL path from the still-fragile post-activation warm-up phase.
 bool HookIsPostSLOverlayActiveButUnconfirmed();
 
+// DX12 exports this narrower state so startup activation helpers can distinguish
+// ProcessFrame pre-arming from the PostSL startup callback actually entering.
+bool HookHasPostSLSyntheticStartupActivationEntered();
+
 // DX12 exports this so shared routing code can tell when PostSL has already
 // proved the live FG present path can render successfully at least once.
 bool HookIsPostSLOverlayConfirmedRendering();

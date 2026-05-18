@@ -1619,23 +1619,23 @@ inline bool ShouldPreferRetainedStreamlineStartupActivationSwapchain(bool retain
 inline bool ShouldServicePostSLStartupActivationWhileOffChurnDeferred(bool shouldKeepOffChurnDeferred,
                                                                       bool startupTransitionWindowActive,
                                                                       bool activationPending,
-                                                                      bool postSLActiveButUnconfirmed,
+                                                                      bool postSLStartupActivationEntered,
                                                                       bool callbackInstalled) {
     return shouldKeepOffChurnDeferred && !startupTransitionWindowActive && callbackInstalled &&
-           activationPending && !postSLActiveButUnconfirmed;
+           activationPending && !postSLStartupActivationEntered;
 }
 
 inline bool ShouldInvokeRetainedPostSLStartupActivationService(bool callbackInstalled,
                                                                bool activationSwapchainAvailable,
                                                                bool activationPending,
-                                                               bool postSLActiveButUnconfirmed,
+                                                               bool postSLStartupActivationEntered,
                                                                bool postSLConfirmedRendering,
                                                                bool activationServiceInProgress) {
     if (!callbackInstalled || !activationSwapchainAvailable || postSLConfirmedRendering || activationServiceInProgress) {
         return false;
     }
 
-    return activationPending && !postSLActiveButUnconfirmed;
+    return activationPending && !postSLStartupActivationEntered;
 }
 
 inline bool ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
@@ -1686,7 +1686,8 @@ inline bool ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfAr
 }
 
 inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible, bool startupActivationPending,
-                                                         bool postSLActiveButUnconfirmed, bool postSLConfirmedRendering,
+                                                         bool postSLStartupActivationEntered,
+                                                         bool postSLConfirmedRendering,
                                                          bool callbackInstalled, bool cachedSwapchainAvailable,
                                                          bool hadFSRFGPhase, bool safePostFSRBootstrapPath) {
     if (!overlayVisible || !callbackInstalled || !cachedSwapchainAvailable || postSLConfirmedRendering) {
@@ -1698,10 +1699,12 @@ inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible, bo
     }
 
     // The retained-swapchain service exists to wake a dormant startup activation
-    // path. Once PostSL is already active-but-unconfirmed, repeated direct
-    // service callbacks can re-enter DLSSG startup/pacing workers; continued
-    // rendering progress must come from the normal Present callback route.
-    return startupActivationPending && !postSLActiveButUnconfirmed;
+    // path. ProcessFrame may pre-arm PostSL before the startup callback ever
+    // enters; that state still needs this wake path. Once the callback has
+    // actually entered, repeated direct service callbacks can re-enter DLSSG
+    // startup/pacing workers; continued rendering progress must come from the
+    // normal Present callback route.
+    return startupActivationPending && !postSLStartupActivationEntered;
 }
 
 inline bool ShouldTriggerExpiryDrivenECLPostSLStartupActivation(bool startupTransitionWindowJustExpired,
