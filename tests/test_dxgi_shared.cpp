@@ -2359,11 +2359,11 @@ TEST(DXGISharedTest, ReinitCooldownAlsoPreservesHalfArmedSyntheticStartupState) 
         ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(false, false, true, false));
 }
 
-TEST(DXGISharedTest, VisibleOverlayCanContinueECLDrivenStartupProgressUntilFirstConfirmation) {
+TEST(DXGISharedTest, VisibleOverlayCanWakeECLDrivenStartupActivationBeforePostSLIsActive) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(true, true, false, false, true,
                                                                                       true, false, false));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(true, false, true, false, true,
-                                                                                      true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(true, false, true, false, true,
+                                                                                       true, false, false));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(false, true, false, false, true,
                                                                                        true, false, false));
@@ -2385,8 +2385,8 @@ TEST(DXGISharedTest, VisibleOverlayBlocksECLDrivenStartupProgressForPostFSRWitho
 
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(true, true, false, false, true,
                                                                                       true, true, true));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(true, false, true, false, true,
-                                                                                      true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(true, false, true, false, true,
+                                                                                       true, true, true));
 }
 
 TEST(DXGISharedTest, ExpiryDrivenECLStartupActivationRespectsPostFSRSafeBootstrapGate) {
@@ -2425,8 +2425,8 @@ TEST(DXGISharedTest, RetainedStartupActivationSwapchainPreferredOnlyWhileHalfArm
 TEST(DXGISharedTest, DeferredOffChurnServicesStartupActivationAfterWindowExpiry) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(true, false, true,
                                                                                                    false, true));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(true, false, false,
-                                                                                                   true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(true, false, false,
+                                                                                                    true, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(false, false, true,
                                                                                                     false, true));
@@ -2436,6 +2436,24 @@ TEST(DXGISharedTest, DeferredOffChurnServicesStartupActivationAfterWindowExpiry)
                                                                                                     false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(true, false, true,
                                                                                                     false, false));
+}
+
+TEST(DXGISharedTest, RetainedStartupActivationServiceIsWakeOnly) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
+        true, true, true, false, false, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
+        false, true, true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
+        true, false, true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
+        true, true, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
+        true, true, true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
+        true, true, true, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
+        true, true, true, false, false, true));
 }
 
 TEST(DXGISharedTest, PostSLOnlyLatchesSuspensionForFullyInactiveSignalDrop) {

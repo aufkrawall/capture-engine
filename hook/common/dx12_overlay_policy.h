@@ -1622,7 +1622,20 @@ inline bool ShouldServicePostSLStartupActivationWhileOffChurnDeferred(bool shoul
                                                                       bool postSLActiveButUnconfirmed,
                                                                       bool callbackInstalled) {
     return shouldKeepOffChurnDeferred && !startupTransitionWindowActive && callbackInstalled &&
-           (activationPending || postSLActiveButUnconfirmed);
+           activationPending && !postSLActiveButUnconfirmed;
+}
+
+inline bool ShouldInvokeRetainedPostSLStartupActivationService(bool callbackInstalled,
+                                                               bool activationSwapchainAvailable,
+                                                               bool activationPending,
+                                                               bool postSLActiveButUnconfirmed,
+                                                               bool postSLConfirmedRendering,
+                                                               bool activationServiceInProgress) {
+    if (!callbackInstalled || !activationSwapchainAvailable || postSLConfirmedRendering || activationServiceInProgress) {
+        return false;
+    }
+
+    return activationPending && !postSLActiveButUnconfirmed;
 }
 
 inline bool ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
@@ -1684,7 +1697,11 @@ inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible, bo
         return false;
     }
 
-    return startupActivationPending || postSLActiveButUnconfirmed;
+    // The retained-swapchain service exists to wake a dormant startup activation
+    // path. Once PostSL is already active-but-unconfirmed, repeated direct
+    // service callbacks can re-enter DLSSG startup/pacing workers; continued
+    // rendering progress must come from the normal Present callback route.
+    return startupActivationPending && !postSLActiveButUnconfirmed;
 }
 
 inline bool ShouldTriggerExpiryDrivenECLPostSLStartupActivation(bool startupTransitionWindowJustExpired,

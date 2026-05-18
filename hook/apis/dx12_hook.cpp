@@ -1214,6 +1214,7 @@ static std::atomic<int> g_LastKnownSwapchainColorSpace{-1};
 static std::mutex g_StreamlineStartupActivationSwapchainMutex;
 static IDXGISwapChain* g_StreamlineStartupActivationSwapchain = nullptr;
 static std::atomic<uint64_t> g_StreamlineStartupActivationSwapchainGeneration{0};
+static std::atomic<bool> g_PostSLStartupActivationServiceInProgress{false};
 
 static void UpdateLastKnownSwapchainHDRStateCache(DXGI_FORMAT format, bool isActualHDR, int outputColorSpace) {
     const bool trustedHDRState =
@@ -1387,15 +1388,85 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
         return false;
     }
 
+    auto logSkippedActivationService = [&](const char* reason, bool inProgress) {
+        static std::atomic<int> s_activationServiceSkipLogCount{0};
+        const int logCount = s_activationServiceSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 200) == 0) {
+            HookLogImportant(
+                "DX12: Skipping retained-swapchain PostSL startup activation callback "
+                "(reason=%s source=%s swapchain=%p clearWindow=%d startupPending=%d "
+                "activeButUnconfirmed=%d confirmed=%d inProgress=%d tid=0x%04X)",
+                reason ? reason : "policy", source ? source : "unknown", activationSwapchain,
+                clearStartupWindow ? 1 : 0,
+                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1
+                                                                                                                  : 0,
+                HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0,
+                g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0, inProgress ? 1 : 0,
+                GetCurrentThreadId());
+        }
+    };
+
+    const bool activationPending =
+        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool postSLConfirmedRendering = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    const bool serviceAlreadyInProgress =
+        g_PostSLStartupActivationServiceInProgress.load(std::memory_order_acquire);
+    if (!ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
+            true, true, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+            serviceAlreadyInProgress)) {
+        const char* reason = serviceAlreadyInProgress        ? "in-progress"
+                             : postSLConfirmedRendering      ? "already-confirmed"
+                             : postSLActiveButUnconfirmed    ? "already-active-unconfirmed"
+                             : !activationPending            ? "activation-not-pending"
+                                                             : "policy";
+        logSkippedActivationService(reason, serviceAlreadyInProgress);
+        activationSwapchain->Release();
+        return false;
+    }
+
+    bool expectedInProgress = false;
+    if (!g_PostSLStartupActivationServiceInProgress.compare_exchange_strong(
+            expectedInProgress, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+        logSkippedActivationService("in-progress-race", true);
+        activationSwapchain->Release();
+        return false;
+    }
+
+    const bool activationPendingAfterClaim =
+        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    const bool postSLActiveButUnconfirmedAfterClaim = HookIsPostSLOverlayActiveButUnconfirmed();
+    const bool postSLConfirmedRenderingAfterClaim = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    if (!ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
+            true, true, activationPendingAfterClaim, postSLActiveButUnconfirmedAfterClaim,
+            postSLConfirmedRenderingAfterClaim, false)) {
+        const char* reason = postSLConfirmedRenderingAfterClaim   ? "already-confirmed"
+                             : postSLActiveButUnconfirmedAfterClaim ? "already-active-unconfirmed"
+                             : !activationPendingAfterClaim       ? "activation-not-pending"
+                                                                  : "policy";
+        logSkippedActivationService(reason, false);
+        g_PostSLStartupActivationServiceInProgress.store(false, std::memory_order_release);
+        activationSwapchain->Release();
+        return false;
+    }
+
     if (clearStartupWindow) {
         DXGIShared::ClearStreamlineStartupTransitionWindow();
     }
 
     HookLogImportant(
         "DX12: Invoking retained-swapchain PostSL startup activation callback "
-        "(source=%s swapchain=%p clearWindow=%d)",
-        source ? source : "unknown", activationSwapchain, clearStartupWindow ? 1 : 0);
+        "(source=%s swapchain=%p clearWindow=%d startupPending=1 tid=0x%04X)",
+        source ? source : "unknown", activationSwapchain, clearStartupWindow ? 1 : 0, GetCurrentThreadId());
     postSLCallback(activationSwapchain);
+    HookLogImportant(
+        "DX12: Retained-swapchain PostSL startup activation callback returned "
+        "(source=%s swapchain=%p startupPending=%d activeButUnconfirmed=%d confirmed=%d tid=0x%04X)",
+        source ? source : "unknown", activationSwapchain,
+        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1 : 0,
+        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0,
+        g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0, GetCurrentThreadId());
+    g_PostSLStartupActivationServiceInProgress.store(false, std::memory_order_release);
     activationSwapchain->Release();
     return true;
 }
