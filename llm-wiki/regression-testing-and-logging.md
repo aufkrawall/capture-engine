@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-05-14
+Last cross-checked: 2026-05-18
 
 Primary sources:
 - `AGENTS.md`
@@ -27,6 +27,8 @@ Primary sources:
 - `hook/wrappers/wrapper_hooks.cpp`
 - `hook/wrappers/d3d11_devicecontext_wrap.cpp`
 - `hook/wrappers/iat_hook.cpp`
+- `hook/wrappers/inline_hook.cpp`
+- `hook/wrappers/inline_hook_policy.h`
 - `common/crash_dump_policy.h`
 - `common/crash_handler.cpp`
 - `common/process_ipc.cpp`
@@ -110,7 +112,9 @@ Primary sources:
   - Logs source-specific suppression when post-settling `slDLSSGGetState` OFF polls are held through the 30-frame PostSL warmup proof window. In GTA `20260425_000339`, Reflex/NVAPI hooks were inactive, while the decisive collapse was a GetState OFF immediately after frame-12 stabilization ended.
   - Loaded-module feature-owner scans now retry transient Toolhelp `ERROR_BAD_LENGTH` failures and log retry recovery. Talos `20260425_173428` showed this error early in the session, so a single failed module snapshot must not permanently suppress later `sl.*.dll` fallback discovery.
 - `hook/common/dxgi_shared.cpp`
-  - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths.
+  - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths. For GTA-style pure-DLSS startup, `Streamline startup normal-route transport allowed` with `transportRisk=0` / `steamRisk=0` is the healthy shape; `Streamline startup normal-route bypass` should now mean a real stale/third-party Present-hook risk exists.
+- `hook/wrappers/inline_hook.cpp`
+  - Bypass/deep-hook diagnostics should prove external patch resume safety. `Extended resume offset past patched fill bytes` means CE skipped over a third-party `E9 ... CC ...` patch span and resumed only at a verified disk-matching instruction boundary.
 - `hook/common/freeze_watchdog.cpp`
   - Logs watchdog startup, monitored thread selection, dialog-triggered dumps, freeze-triggered dumps, explicit immediate dump requests, duplicate immediate-dump suppression, and temp/rename watchdog dump writes. Watchdog dump capture is one-shot per run; ordinary freeze dumps still do not force-kill the game.
 - `hook/main.cpp`

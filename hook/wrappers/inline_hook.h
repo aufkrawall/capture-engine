@@ -13,8 +13,8 @@
 
 #pragma once
 
-#include <cstdint>
 #include <windows.h>
+#include <cstdint>
 
 namespace InlineHook {
 
@@ -60,11 +60,12 @@ bool RemoveDeepHook(void* target);
 // with an E9/FF25 JMP by an external hook (e.g. Streamline).
 //
 // Reads original (unhooked) bytes from the DLL on disk and builds a trampoline
-// that executes the original prologue, then jumps past the patch to resume
-// normal execution. Does NOT modify the target function.
+// that executes the original prologue, then jumps past the verified live patch
+// span to resume normal execution. Does NOT modify the target function.
 //
 // Use case: calling the returned pointer invokes the real function body while
-// completely skipping the external E9/FF25 JMP hook at the entry point.
+// completely skipping the external E9/FF25 JMP hook at the entry point, including
+// any patched filler bytes after that jump.
 //
 // Returns callable trampoline pointer, or nullptr on failure.
 void* CreateBypassTrampoline(void* target);

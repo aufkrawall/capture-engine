@@ -8,6 +8,7 @@
  */
 
 #include "inline_hook.h"
+#include "inline_hook_policy.h"
 
 #include <windows.h>
 #include <algorithm>
@@ -536,8 +537,7 @@ static uint8_t* AllocateTrampolinePool(void* nearAddr) {
             // Align to allocation granularity (64KB)
             uintptr_t aligned = (addr + 0xFFFF) & ~(uintptr_t)0xFFFF;
             if (aligned + TRAMPOLINE_POOL_SIZE <= addr + mbi.RegionSize) {
-                void* p = VirtualAlloc((void*)aligned, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE,
-                                       PAGE_READWRITE);
+                void* p = VirtualAlloc((void*)aligned, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
                 if (p)
                     return (uint8_t*)p;
             }
@@ -1786,6 +1786,79 @@ static bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count) {
     return success;
 }
 
+struct VerifiedResumeOffset {
+    int resumeOffset = 0;
+    int firstCandidateOffset = 0;
+};
+
+static bool TryFindVerifiedExternalHookResumeOffset(const char* context, const uint8_t* liveCode,
+                                                    const uint8_t* origDiskBytes, int availableBytes,
+                                                    int existingJmpSize, bool is64bit, VerifiedResumeOffset* result) {
+    constexpr int kCompareBytes = 8;
+    constexpr int kMaxResumeScanBytes = 48;
+    int resumeOffset = 0;
+    int firstCandidateOffset = 0;
+
+    while (resumeOffset < kMaxResumeScanBytes) {
+        int len = GetInstructionLength(origDiskBytes + resumeOffset, is64bit);
+        if (len == 0 || resumeOffset + len > availableBytes) {
+            HookLogImportant(
+                "%s: Failed to decode disk bytes while finding verified resume offset "
+                "(offset=%d len=%d jump=%d)",
+                context, resumeOffset, len, existingJmpSize);
+            return false;
+        }
+
+        resumeOffset += len;
+        if (resumeOffset < existingJmpSize) {
+            continue;
+        }
+
+        if (firstCandidateOffset == 0) {
+            firstCandidateOffset = resumeOffset;
+        }
+        if (resumeOffset + kCompareBytes > availableBytes) {
+            HookLogImportant(
+                "%s: Refusing unsafe resume offset +%d; not enough disk bytes to verify "
+                "%d-byte live/disk match (jump=%d)",
+                context, resumeOffset, kCompareBytes, existingJmpSize);
+            return false;
+        }
+
+        const bool liveBytesMatchDisk =
+            memcmp(liveCode + resumeOffset, origDiskBytes + resumeOffset, kCompareBytes) == 0;
+        if (ce::inline_hook_policy::IsVerifiedExternalHookResumeOffset(resumeOffset, existingJmpSize,
+                                                                       liveBytesMatchDisk)) {
+            if (ce::inline_hook_policy::ShouldExtendExternalHookResumeOffset(firstCandidateOffset, resumeOffset,
+                                                                             liveBytesMatchDisk)) {
+                HookLogImportant(
+                    "%s: Extended resume offset past patched fill bytes "
+                    "(firstCandidate=%d selected=%d jump=%d compare=%d)",
+                    context, firstCandidateOffset, resumeOffset, existingJmpSize, kCompareBytes);
+            } else {
+                HookLog("%s: Verified resume offset = %d (past %d-byte external JMP, compare=%d)", context,
+                        resumeOffset, existingJmpSize, kCompareBytes);
+            }
+            if (result) {
+                result->resumeOffset = resumeOffset;
+                result->firstCandidateOffset = firstCandidateOffset;
+            }
+            return true;
+        }
+
+        HookLogImportant(
+            "%s: Resume candidate +%d is still inside a patched live span "
+            "(jump=%d live0=0x%02X disk0=0x%02X)",
+            context, resumeOffset, existingJmpSize, liveCode[resumeOffset], origDiskBytes[resumeOffset]);
+    }
+
+    HookLogImportant(
+        "%s: Refusing unsafe external-hook trampoline; no verified live/disk resume "
+        "match found after jump (jump=%d firstCandidate=%d scan=%d)",
+        context, existingJmpSize, firstCandidateOffset, kMaxResumeScanBytes);
+    return false;
+}
+
 void* InstallDeepHook(void* target, void* wrapperFn) {
 #ifndef _WIN64
     HookLog("DeepHook: Only supported on x64");
@@ -1834,27 +1907,15 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
                 origDiskBytes[i + 6], origDiskBytes[i + 7]);
     }
 
-    // Step 3: Determine resume offset (first instruction boundary >= external JMP size)
-    int resumeOffset = 0;
-    while (resumeOffset < existingJmpSize) {
-        int len = GetInstructionLength(origDiskBytes + resumeOffset, true);
-        if (len == 0) {
-            HookLog("DeepHook: Failed to decode instruction at disk offset %d", resumeOffset);
-            return nullptr;
-        }
-        resumeOffset += len;
+    // Step 3: Determine a verified resume offset after the full live patch span.
+    VerifiedResumeOffset verifiedResume = {};
+    if (!TryFindVerifiedExternalHookResumeOffset("DeepHook", code, origDiskBytes, 64, existingJmpSize, true,
+                                                 &verifiedResume)) {
+        return nullptr;
     }
-
-    HookLog("DeepHook: Resume offset = %d (past %d-byte external JMP)", resumeOffset, existingJmpSize);
-
-    // Verify live bytes at resumeOffset match disk (external hook only patches [0, jmpSize))
-    bool bytesMatch = (memcmp(code + resumeOffset, origDiskBytes + resumeOffset, 16) == 0);
-    if (!bytesMatch) {
-        HookLog("DeepHook: WARNING - live bytes at +%d differ from disk!", resumeOffset);
-        for (int i = 0; i < 16; i++)
-            HookLog("  live[%02d]=0x%02X  disk[%02d]=0x%02X", resumeOffset + i, code[resumeOffset + i],
-                    resumeOffset + i, origDiskBytes[resumeOffset + i]);
-    }
+    int resumeOffset = verifiedResume.resumeOffset;
+    HookLog("DeepHook: Resume offset = %d (past %d-byte external JMP, firstCandidate=%d)", resumeOffset,
+            existingJmpSize, verifiedResume.firstCandidateOffset);
 
     // Step 4: Count push instructions in [0, resumeOffset) to determine stack undo
     // These pushes are executed by the external hook's trampoline before reaching
@@ -2191,27 +2252,15 @@ void* CreateBypassTrampoline(void* target) {
                 origDiskBytes[i + 6], origDiskBytes[i + 7]);
     }
 
-    // Step 3: Find first instruction boundary >= external JMP size
-    int resumeOffset = 0;
-    while (resumeOffset < existingJmpSize) {
-        int len = GetInstructionLength(origDiskBytes + resumeOffset, kIs64Bit);
-        if (len == 0) {
-            HookLog("BypassTrampoline: Failed to decode instruction at disk offset %d", resumeOffset);
-            return nullptr;
-        }
-        resumeOffset += len;
+    // Step 3: Find a safe instruction boundary after the full live patch span.
+    VerifiedResumeOffset verifiedResume = {};
+    if (!TryFindVerifiedExternalHookResumeOffset("BypassTrampoline", code, origDiskBytes, 64, existingJmpSize, kIs64Bit,
+                                                 &verifiedResume)) {
+        return nullptr;
     }
-
-    HookLog("BypassTrampoline: Resume offset = %d (past %d-byte external JMP)", resumeOffset, existingJmpSize);
-
-    // Verify live bytes at resumeOffset match disk (external hook only patches [0, jmpSize))
-    bool bytesMatch = (memcmp(code + resumeOffset, origDiskBytes + resumeOffset, 16) == 0);
-    if (!bytesMatch) {
-        HookLog("BypassTrampoline: WARNING - live bytes at +%d differ from disk!", resumeOffset);
-        for (int i = 0; i < 16; i++)
-            HookLog("  live[%02d]=0x%02X  disk[%02d]=0x%02X", resumeOffset + i, code[resumeOffset + i],
-                    resumeOffset + i, origDiskBytes[resumeOffset + i]);
-    }
+    int resumeOffset = verifiedResume.resumeOffset;
+    HookLog("BypassTrampoline: Resume offset = %d (past %d-byte external JMP, firstCandidate=%d)", resumeOffset,
+            existingJmpSize, verifiedResume.firstCandidateOffset);
 
     // Step 4: Allocate trampoline slot near the target
     uint8_t* trampoline = GetTrampolineSlot(target);
@@ -2222,8 +2271,8 @@ void* CreateBypassTrampoline(void* target) {
     void* trampolinePoolBase = nullptr;
     DWORD trampolinePoolProtect = 0;
     GetTrampolinePoolInfo(trampoline, &trampolinePoolBase, &trampolinePoolProtect);
-    HookLog("BypassTrampoline: Lazy-exec managed entry=%p pool=%p protect=0x%08lX", trampoline,
-            trampolinePoolBase, static_cast<unsigned long>(trampolinePoolProtect));
+    HookLog("BypassTrampoline: Lazy-exec managed entry=%p pool=%p protect=0x%08lX", trampoline, trampolinePoolBase,
+            static_cast<unsigned long>(trampolinePoolProtect));
 
     // Step 5: Copy original instructions to trampoline with RIP-relative fixups.
     // The source bytes are from disk (original code), but RIP-relative addresses
@@ -2336,10 +2385,11 @@ void* CreateBypassTrampoline(void* target) {
     FlushInstructionCache(GetCurrentProcess(), trampoline, trampolineOffset);
 
     GetTrampolinePoolInfo(trampoline, &trampolinePoolBase, &trampolinePoolProtect);
-    HookLog("BypassTrampoline: Created lazy-exec trampoline at %p (%d bytes, pool=%p protect=0x%08lX) "
-            "- bypasses %d-byte external hook at %p",
-            trampoline, trampolineOffset, trampolinePoolBase, static_cast<unsigned long>(trampolinePoolProtect),
-            existingJmpSize, target);
+    HookLog(
+        "BypassTrampoline: Created lazy-exec trampoline at %p (%d bytes, pool=%p protect=0x%08lX) "
+        "- bypasses %d-byte external hook at %p (resume=%d firstCandidate=%d)",
+        trampoline, trampolineOffset, trampolinePoolBase, static_cast<unsigned long>(trampolinePoolProtect),
+        existingJmpSize, target, resumeOffset, verifiedResume.firstCandidateOffset);
 
     return trampoline;
 }

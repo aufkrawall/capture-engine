@@ -31,8 +31,8 @@ LONG RecoverSyntheticExecuteFault(EXCEPTION_POINTERS* exceptionPointers, ULONG_P
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 
-EXCEPTION_POINTERS MakeSyntheticExceptionPointers(EXCEPTION_RECORD& record, CONTEXT& context,
-                                                  ULONG_PTR accessType, ULONG_PTR faultAddr) {
+EXCEPTION_POINTERS MakeSyntheticExceptionPointers(EXCEPTION_RECORD& record, CONTEXT& context, ULONG_PTR accessType,
+                                                  ULONG_PTR faultAddr) {
     record = {};
     context = {};
     record.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
@@ -66,8 +66,7 @@ TEST(CrashHandlerTest, RegisteredExecutionFaultHandlerCanRecoverSyntheticDepFaul
 
     EXCEPTION_RECORD record = {};
     CONTEXT context = {};
-    EXCEPTION_POINTERS pointers =
-        MakeSyntheticExceptionPointers(record, context, 8, kSyntheticExecuteFault);
+    EXCEPTION_POINTERS pointers = MakeSyntheticExceptionPointers(record, context, 8, kSyntheticExecuteFault);
 
     const LONG result = DispatchCrashExecutionFaultHandlerForTesting(&pointers);
 
@@ -89,8 +88,7 @@ TEST(CrashHandlerTest, RegisteredExecutionFaultHandlerIgnoresReadWriteAccessViol
 
     EXCEPTION_RECORD record = {};
     CONTEXT context = {};
-    EXCEPTION_POINTERS pointers =
-        MakeSyntheticExceptionPointers(record, context, 0, kSyntheticExecuteFault);
+    EXCEPTION_POINTERS pointers = MakeSyntheticExceptionPointers(record, context, 0, kSyntheticExecuteFault);
 
     const LONG result = DispatchCrashExecutionFaultHandlerForTesting(&pointers);
 
@@ -110,9 +108,11 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     ASSERT_FALSE(contents.empty());
     EXPECT_NE(contents.find("LazyExec: Recovered trampoline DEP fault"), std::string::npos);
     EXPECT_NE(contents.find("BypassTrampoline: Created lazy-exec trampoline"), std::string::npos);
+    EXPECT_NE(contents.find("Extended resume offset past patched fill bytes"), std::string::npos);
     EXPECT_NE(contents.find("Guarded Steam Present hook installed Steam null-callback VEH recovery"),
               std::string::npos);
     EXPECT_NE(contents.find("Streamline startup-handoff normal-route bypass"), std::string::npos);
+    EXPECT_NE(contents.find("Streamline startup normal-route transport allowed"), std::string::npos);
     EXPECT_NE(contents.find("Fresh authoritative Streamline handoff invalidated stale PostSL confirmation"),
               std::string::npos);
     EXPECT_NE(contents.find("Retained Streamline startup activation swapchain"), std::string::npos);

@@ -3,6 +3,17 @@
 #include "../hook/common/dx12_overlay_policy.h"
 #include "../hook/common/dxgi_factory_policy.h"
 #include "../hook/common/dxgi_shared.h"
+#include "../hook/wrappers/inline_hook_policy.h"
+
+TEST(DXGISharedTest, ExternalHookBypassResumeExtendsPastPatchedFillBytes) {
+    EXPECT_FALSE(ce::inline_hook_policy::IsVerifiedExternalHookResumeOffset(5, 5, false));
+    EXPECT_TRUE(ce::inline_hook_policy::IsVerifiedExternalHookResumeOffset(14, 5, true));
+    EXPECT_FALSE(ce::inline_hook_policy::IsVerifiedExternalHookResumeOffset(4, 5, true));
+
+    EXPECT_TRUE(ce::inline_hook_policy::ShouldExtendExternalHookResumeOffset(5, 14, true));
+    EXPECT_FALSE(ce::inline_hook_policy::ShouldExtendExternalHookResumeOffset(5, 5, true));
+    EXPECT_FALSE(ce::inline_hook_policy::ShouldExtendExternalHookResumeOffset(5, 14, false));
+}
 
 TEST(DXGISharedTest, ExternalPresentDetourPathRequiresBypassSupport) {
     EXPECT_TRUE(DXGIShared::CanSafelyInstallExternalPresentDetourPath(false, false));
@@ -98,7 +109,7 @@ TEST(DXGISharedTest, SteamDX12BypassRequiresCleanNonWrappedEntryPath) {
     // crashes because vtable[8] = DetourPresent.  The bypass trampoline must be
     // used instead.
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
-                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+                                                               ce::fg_runtime::RuntimeMode::kOff, false, false));
 }
 
 // Regression: Strange Brigade DX12 crash.  When Steam overlay hooks dxgi!Present
@@ -108,29 +119,24 @@ TEST(DXGISharedTest, SteamDX12BypassRequiresCleanNonWrappedEntryPath) {
 // "next" handler, and calls through NULL (RIP=0).
 TEST(DXGISharedTest, StartupCompatPassRequiresBypassForSteamOverlayVtableHookPath) {
     // Steam overlay + vtable hook (no trampoline) + bypass available: allow pass
-    EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
-        true, false, false, false, true,
-        ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
+                                                                      ce::fg_runtime::RuntimeMode::kOff, false));
 
     // Without bypass trampoline: no safe forwarding path, block the pass
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
-        true, false, false, false, false,
-        ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, false,
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
 
     // With inline trampoline present: normal path, allow pass
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
-        true, true, false, false, true,
-        ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, true, false, false, true,
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
 
     // No third-party overlay: no startup compat pass needed
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
-        false, false, false, false, true,
-        ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(false, false, false, false, true,
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
 
     // With active frame generation: block the pass (let FG routing handle it)
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
-        true, false, false, false, true,
-        ce::fg_runtime::RuntimeMode::kDLSSFG, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
+                                                                       ce::fg_runtime::RuntimeMode::kDLSSFG, false));
 }
 
 // Regression: Strange Brigade DX12 non-SL Steam overlay bypass.  When Steam
@@ -141,7 +147,7 @@ TEST(DXGISharedTest, StartupCompatPassRequiresBypassForSteamOverlayVtableHookPat
 TEST(DXGISharedTest, SteamDX12BypassForNonSLSteamOverlay) {
     // Steam overlay + bypass available + no SL + no NV: must force bypass
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
-                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+                                                               ce::fg_runtime::RuntimeMode::kOff, false, false));
 
     // Still requires bypassAvailable
     EXPECT_FALSE(DXGIShared::ShouldForceSteamDX12BypassForState(false, true, true, false, false, false,
@@ -165,16 +171,16 @@ TEST(DXGISharedTest, SteamDX12BypassForNonSLSteamOverlay) {
 
     // SL loaded without FG still forces bypass (existing behavior preserved)
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, true,
-                                                                ce::fg_runtime::RuntimeMode::kOff, false, false));
+                                                               ce::fg_runtime::RuntimeMode::kOff, false, false));
 
     // NvPresent loaded still forces bypass (existing behavior preserved)
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
-                                                                ce::fg_runtime::RuntimeMode::kOff, false, true));
+                                                               ce::fg_runtime::RuntimeMode::kOff, false, true));
 }
 
 TEST(DXGISharedTest, GuardedSteamOverlayInvokeRequiresBypassAndCleanDX12Path) {
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                   false, false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
+                                                                                   false, false, false));
 
     EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(false, true, true, true, false,
                                                                                     false, false, false, false));
@@ -184,30 +190,26 @@ TEST(DXGISharedTest, GuardedSteamOverlayInvokeRequiresBypassAndCleanDX12Path) {
                                                                                     false, false, false, false));
     EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, false, false,
                                                                                     false, false, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, true,
-                                                                                    false, false, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                    true, false, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, true, false,
+                                                                                    false, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, true,
+                                                                                    false, false, false));
     EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
                                                                                     false, true, false, false));
 }
 
 TEST(DXGISharedTest, GuardedSteamOverlayInvokeOnStreamlineStackRequiresPluginLookupGuard) {
     EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                    false, false, true, false,
-                                                                                    true));
+                                                                                    false, false, true, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                    false, false, true, true,
-                                                                                    false));
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                   false, false, true, true,
-                                                                                   true));
+                                                                                    false, false, true, true, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
+                                                                                   false, true, true, true));
 }
 
 TEST(DXGISharedTest, GuardedSteamOverlayInvokeWithoutStreamlineStackDoesNotRequireSteamNullGuard) {
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
-                                                                                   false, false, false, false,
-                                                                                   false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
+                                                                                   false, false, false, false));
 }
 
 TEST(DXGISharedTest, GuardedSteamOverlayFallbackUsesBypassOnFailureOrMissingBackbufferAdvance) {
@@ -271,7 +273,7 @@ TEST(DXGISharedTest, SteamDX12HookRiskExtendsToProtectedPostFSRStartupHandoff) {
 
 TEST(DXGISharedTest, DX12StartupPresentPassStaysAvailableOnlyForInactiveNonBypassStartup) {
     EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
-                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
+                                                                      ce::fg_runtime::RuntimeMode::kOff, false));
     EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
         true, false, false, false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
     EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
@@ -280,24 +282,24 @@ TEST(DXGISharedTest, DX12StartupPresentPassStaysAvailableOnlyForInactiveNonBypas
 
 TEST(DXGISharedTest, DX12StartupPresentPassDisablesWhenRealFGOrBypassOwnsPath) {
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(false, false, false, false, true,
-                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, true, false, false, true,
-                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, true, false, true,
-                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, true, true,
-                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
-                                                                        ce::fg_runtime::RuntimeMode::kDLSSFG, false));
+                                                                       ce::fg_runtime::RuntimeMode::kDLSSFG, false));
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
-                                                                        ce::fg_runtime::RuntimeMode::kFSRFG, false));
+                                                                       ce::fg_runtime::RuntimeMode::kFSRFG, false));
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
-                                                                        ce::fg_runtime::RuntimeMode::kOff, true));
+                                                                       ce::fg_runtime::RuntimeMode::kOff, true));
 }
 
 TEST(DXGISharedTest, DX12StartupPresentPassStaysDisabledWhenSteamBypassAlreadyOwnsStartupPath) {
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, true, true,
-                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
         true, false, false, true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
 }
@@ -308,14 +310,14 @@ TEST(DXGISharedTest, DX12StartupPresentPassDisablesWhenNoBypassAvailableForVtabl
     // CallOriginalPresent would route through the external overlay's E9 JMP
     // causing a null-pointer crash (RIP=0).
     EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, false,
-                                                                        ce::fg_runtime::RuntimeMode::kOff, false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, false,
-                                                                        ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
-    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, false,
-                                                                        ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false));
+                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
+    EXPECT_FALSE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(
+        true, false, false, false, false, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false));
     // When bypass IS available, the pass should still work (no regression)
     EXPECT_TRUE(DXGIShared::ShouldAllowDX12StartupPresentPassForState(true, false, false, false, true,
-                                                                       ce::fg_runtime::RuntimeMode::kOff, false));
+                                                                      ce::fg_runtime::RuntimeMode::kOff, false));
 }
 
 TEST(DXGISharedTest, GlobalCreateSwapchainPathsCaptureQueueWhenSkippingWrapForStreamline) {
@@ -364,12 +366,12 @@ TEST(DXGISharedTest, FreshStreamlineHandoffInvalidatesPostSLProofFromPreviousQue
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvalidateConfirmedPostSLForFreshAuthoritativeStreamlineHandoff(
         true, true, true));
 
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(
-        true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(
-        true, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(
-        true, false, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(true, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(true, true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(true, false, false));
 }
 
 TEST(DXGISharedTest, VTableRepairDefersDuringFreshStreamlineStartupEvenWithOlderConfirmation) {
@@ -488,40 +490,45 @@ TEST(DXGISharedTest, WrapperBackedSyntheticStartupPresentCanStayOnNormalRouteInA
 
 TEST(DXGISharedTest, PostFSRStartupNormalRouteUsesBypassUntilPostSLSettles) {
     EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, true, false, false, false, true));
-    EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, true, true, true, false, true));
+        true, true, false, false, false, true));
+    EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(true, true, true, true,
+                                                                                                 false, true));
 
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        false, true, true, false, false, false, true));
+        false, true, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, false, true, false, false, false, true));
+        true, false, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, false, false, false, false, true));
+        true, true, true, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, true, true, false, false, true));
-    EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, true, false, false, false, false));
+        true, true, false, false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+        true, true, false, false, true, false));
 }
 
-TEST(DXGISharedTest, RuntimeOwnedStreamlineStartupNormalRouteUsesBypassForPureDLSSUntilPostSLSettles) {
-    EXPECT_TRUE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
-        true, false, false, true, true, true, true, true));
+TEST(DXGISharedTest, RuntimeOwnedPureDLSSStartupNormalRouteAllowsActivationWithoutThirdPartyRisk) {
+    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, false, true, true,
+                                                                                      true, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
+        true, true, false, false, false, false));
+
+    EXPECT_TRUE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, false, true, true,
+                                                                                     true, true, true, true));
     EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, false, false, false, true, false));
+        true, true, false, false, true, false));
     EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, false, true, true, true, false));
+        true, true, true, true, true, false));
 
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-        true, true, false, true, false, true, false));
-    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
-        true, true, false, true, true, true, true, true));
-    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
-        true, false, true, true, true, true, true, true));
-    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
-        true, false, false, false, true, true, true, true));
-    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
-        true, false, false, true, true, true, false, true));
+        true, true, true, false, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, true, false, true, true,
+                                                                                      true, true, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, true, true, true,
+                                                                                      true, true, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, false, false, true,
+                                                                                      true, true, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, false, true, true,
+                                                                                      true, false, true, true));
 }
 
 TEST(DXGISharedTest, SteamDX12HookRiskExtendsToProtectedPostFSRStartupNormalRoute) {
@@ -1152,13 +1159,13 @@ TEST(DXGISharedTest, StaleRuntimeOwnedStreamlineNoFGRequiresLongRealFrameRunBefo
 }
 
 TEST(DXGISharedTest, StaleRuntimeOwnedStreamlineNoFGCleanupReleasesRetainedActivationSwapchain) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(
-        true, true));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(true, true));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(
-        false, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(
-        true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(false, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(true, false));
 }
 
 TEST(DXGISharedTest, DescFreeBackendUsesAdapterShutdownWhenAdapterOwnsCustomBackend) {
@@ -2303,22 +2310,16 @@ TEST(DXGISharedTest, SteamDX12HookRiskExtendsToPostFSRConfirmedStandaloneNormalR
         true, true, true, false, false, true, false));
 }
 
-TEST(DXGISharedTest, StreamlineStartupHandoffNormalRouteUsesBypassForFreshRuntimeOwnedOrPostFSRRisk) {
-    EXPECT_TRUE(DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
-        true, false, true, true, false));
-    EXPECT_TRUE(DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
-        true, true, true, false, true));
+TEST(DXGISharedTest, StreamlineStartupHandoffNormalRouteBypassesOnlyForTransportOrThirdPartyRisk) {
+    EXPECT_TRUE(DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(true, true, true, false));
+    EXPECT_TRUE(DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(true, true, false, true));
 
-    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
-        false, false, true, true, false));
-    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
-        true, false, false, true, false));
-    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
-        true, false, true, false, false));
-    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
-        true, false, true, false, true));
-    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
-        true, true, true, false, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(false, true, true, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(true, false, true, false));
+    EXPECT_FALSE(
+        DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(true, true, false, false));
 }
 
 TEST(DXGISharedTest, SyntheticStartupStateStaysHalfArmedUntilConfirmedRender) {
@@ -2593,27 +2594,26 @@ TEST(DXGISharedTest, StrangeBrigadeSteamOverlayCrashWithoutStreamline) {
     // The policy says: YES, invoke Steam's overlay hook.  But this crashes
     // because Steam reads vtable[8] (=DetourPresent), finds no valid "next"
     // handler, and calls through NULL (RIP=0).
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
-        true, true, true, true, false, false, false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
+                                                                                   false, false, false));
 
     // If Streamline IS on the stack but the plugin guard is not ready,
     // the policy correctly refuses (re-entrancy protection).
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
-        true, true, true, true, false, false, false, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
+                                                                                    false, false, true, false));
 
     // With Streamline on the stack, both the plugin lookup guard and the Steam
     // NULL-callback recovery guard must be ready before direct invocation.
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
-        true, true, true, true, false, false, false, true, true, true));
-    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
-        true, true, true, true, false, false, false, true, true, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
+                                                                                   false, true, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
+                                                                                    false, false, true, true, false));
 
     // The fix in CallOriginalPresent uses one-time vtable unhook + Steam init +
     // re-hook for the non-SL Steam overlay case.  The policy alone still allows
     // the dangerous path — the call-site fix is what prevents the crash.
-    const bool isNonSLStrangeBrigadeScenario =
-        DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
-            true, true, true, true, false, false, false, false, false);
+    const bool isNonSLStrangeBrigadeScenario = DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        true, true, true, true, false, false, false, false, false);
     EXPECT_TRUE(isNonSLStrangeBrigadeScenario);
     // The crash is prevented by the call-site logic in CallOriginalPresent
     // (AttemptSteamDX12OverlayInit with one-time vtable unhook), not by the policy.
@@ -2642,12 +2642,11 @@ TEST(DXGISharedTest, StrangeBrigadeSteamOverlayCrashWithoutStreamline) {
 TEST(DXGISharedTest, StrangeBrigadeSteamOverlayVisibleNonSL) {
     // The policy functions still return the same results — the fix is at the
     // CallOriginalPresent call site (one-time vtable unhook + init + re-hook).
-    EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(
-        true, true, true, false, false, false,
-        ce::fg_runtime::RuntimeMode::kOff, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
+                                                               ce::fg_runtime::RuntimeMode::kOff, false, false));
 
-    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
-        true, true, true, true, false, false, false, false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false, false,
+                                                                                   false, false, false));
 
     // Verify the recursion guard works for the vtable[8] re-entry path.
     // When Steam calls DetourPresent as the "next" handler, the reentrancy guard
@@ -2658,10 +2657,8 @@ TEST(DXGISharedTest, StrangeBrigadeSteamOverlayVisibleNonSL) {
 
     // The behavioral change is at the call site: one-time vtable unhook + init
     // is used instead of direct oPresent routing.  The policy layer is unchanged.
-    const bool newCallSiteBehaviorActive =
-        DXGIShared::ShouldForceSteamDX12BypassForState(
-            true, true, true, false, false, false,
-            ce::fg_runtime::RuntimeMode::kOff, false, false);
+    const bool newCallSiteBehaviorActive = DXGIShared::ShouldForceSteamDX12BypassForState(
+        true, true, true, false, false, false, ce::fg_runtime::RuntimeMode::kOff, false, false);
     EXPECT_TRUE(newCallSiteBehaviorActive);
 }
 

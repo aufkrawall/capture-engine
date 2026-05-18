@@ -491,21 +491,22 @@ inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(bool
 inline bool ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
     bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain, bool bypassAvailable,
     bool callerFromStreamlineModule, bool streamlineStartupHandoffInProgress, bool runtimeOwnedSwapchainActive,
-    bool startupNormalRouteCandidate) {
-    // A fresh runtime-owned Streamline swapchain handoff can expose a normal
-    // startup Present before the shared dxgi Present hook chain is safe to enter
-    // directly. Keep the logical normal route so startup/PostSL state advances,
-    // but use bypass transport while that fresh runtime-owned handoff is live.
+    bool startupNormalRouteCandidate, bool thirdPartyPresentHookRisk) {
+    // Runtime ownership alone is not a transport hazard. GTA's all-off -> DLSS FG
+    // Apply path needs real Streamline Present traffic after the EOS-backed
+    // runtime-owned handoff, otherwise DLSSG startup never activates. Use bypass
+    // transport only when the same startup family also carries a stale/fragile
+    // third-party Present hook risk.
     return isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain && bypassAvailable &&
            callerFromStreamlineModule && streamlineStartupHandoffInProgress && runtimeOwnedSwapchainActive &&
-           startupNormalRouteCandidate;
+           startupNormalRouteCandidate && thirdPartyPresentHookRisk;
 }
 
 inline bool ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
-    bool isD3D12SwapChain, bool hadFSRFGPhase, bool startupTopLevelCandidate,
-    bool freshRuntimeOwnedHandoffTransportRisk, bool staleThirdPartyPresentHookRisk) {
+    bool isD3D12SwapChain, bool startupTopLevelCandidate, bool startupNormalRouteTransportRisk,
+    bool staleThirdPartyPresentHookRisk) {
     return isD3D12SwapChain && startupTopLevelCandidate &&
-           (freshRuntimeOwnedHandoffTransportRisk || (hadFSRFGPhase && staleThirdPartyPresentHookRisk));
+           (startupNormalRouteTransportRisk || staleThirdPartyPresentHookRisk);
 }
 
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
@@ -536,20 +537,17 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
 }
 
 inline bool ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
-    bool isD3D12SwapChain, bool keepStartupPresentOnNormalRoute, bool hadFSRFGPhase, bool postSLConfirmedRendering,
-    bool postSLConfirmedButStartupSettling, bool freshRuntimeOwnedHandoffTransportRisk,
-    bool staleThirdPartyPresentHookRisk) {
+    bool isD3D12SwapChain, bool keepStartupPresentOnNormalRoute, bool postSLConfirmedRendering,
+    bool postSLConfirmedButStartupSettling, bool startupNormalRouteTransportRisk, bool staleThirdPartyPresentHookRisk) {
     // After a fresh runtime-owned Streamline handoff, the shared routing layer can
     // correctly decide that decisive startup Presents must stay in the normal
-    // Streamline family so PostSL keeps making progress. But the new swapchain
-    // can still have a fragile dxgi Present hook chain. Keep the callback/routing
-    // decision, but transport the actual Present through the bypass trampoline
-    // until PostSL has both confirmed a successful render and left startup
-    // settling. The older post-FSR stale-Steam risk remains an additional reason
-    // to use the same transport.
+    // Streamline family so PostSL keeps making progress. If that same family has
+    // a stale third-party hook chain, keep the callback/routing decision but
+    // transport the actual Present through the bypass trampoline until PostSL has
+    // both confirmed a successful render and left startup settling.
     return isD3D12SwapChain && keepStartupPresentOnNormalRoute &&
            (!postSLConfirmedRendering || postSLConfirmedButStartupSettling) &&
-           (freshRuntimeOwnedHandoffTransportRisk || (hadFSRFGPhase && staleThirdPartyPresentHookRisk));
+           (startupNormalRouteTransportRisk || staleThirdPartyPresentHookRisk);
 }
 
 inline bool ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute(

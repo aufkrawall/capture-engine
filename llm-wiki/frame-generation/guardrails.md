@@ -1,6 +1,6 @@
 # Frame Generation Switching
 
-Last cross-checked: 2026-05-13
+Last cross-checked: 2026-05-18
 
 Primary sources:
 - `AGENTS.md`
@@ -12,6 +12,8 @@ Primary sources:
 - `hook/common/dxgi_shared.cpp`
 - `hook/common/dx12_overlay_policy.h`
 - `hook/common/freeze_watchdog.cpp`
+- `hook/wrappers/inline_hook.cpp`
+- `hook/wrappers/inline_hook_policy.h`
 - `common/crash_dump_policy.h`
 - `tests/test_dx12_fg_trace_replay.cpp`
 - `tests/test_dxgi_shared.cpp`
@@ -21,6 +23,7 @@ Primary sources:
 - `installed/captureengine/logs/20260413_192027/hook_debug.log`
 - `installed/captureengine/logs/20260423_044543/hook_debug.log`
 - `installed/captureengine/logs/20260423_215138/hook_debug.log`
+- `installed/captureengine/logs/20260518_084035/hook_debug.log`
 
 ## Scope
 This page records current guardrails and tested transition families for no-FG, DLSS FG, and FSR FG switching. The goal is generic support across games, not a pile of title-specific hacks.
@@ -52,6 +55,8 @@ This page records current guardrails and tested transition families for no-FG, D
 - Build `0.1.2822` extends the startup bypass window from 4000ms to 10000ms (`kStreamlineStartupTransitionGraceMs` in `dxgi_shared.h:97`) and removes premature clearing of the transition window in `PostSLOverlayRender`. The original window was too short — PostSL confirmed at T+25.105 but the window expired at T+25.049 (armed at T+21.049). `ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering()` at `dx12_overlay_policy.h:1439` is now dead code with no callers.
 - Build `0.1.3084` fixes the GTA V Enhanced all-FG-off -> DLSS FG startup stall by retaining the authoritative runtime-owned Streamline startup activation swapchain across the bypass-transport return. DX12 now exposes a startup activation service that acquires a retained/fresh non-null swapchain, clears the startup window only immediately before a real PostSL callback, and releases the local ref after the callback. Streamline flush and ECL-expiry paths request that service instead of calling PostSL with `nullptr`, so startup activation can progress even when `ProcessFrame` has stale swapchain state.
 - Build `0.1.3084` also adds external dump storm hygiene for hung Streamline/Rockstar dump loops: mirrored external dumps and supplemental CE dumps use non-overwriting `.inprogress` temp/rename files, names include a short source-path hash, strong external crash signatures produce at most one mirror and one supplemental dump before duplicate suppression, and only repeated strong signatures after a preserved supplemental dump may request one controlled process termination. Watchdog freeze dumps are one-shot per run and still do not force-kill ordinary freezes.
+- Build `0.1.3314` narrows the GTA V Enhanced pure-DLSS startup transport rule: an authoritative runtime-owned Streamline handoff is not by itself unsafe transport. The `all FG off -> DLSS FG` Apply path behind EOS needs real normal Streamline Present traffic, otherwise CE can keep the logical normal route but transport every startup Present through the bypass trampoline until Streamline/DLSSG activation is starved and startup OFF churn wins. `DetourPresent` / `DetourPresent1` now use bypass transport for this startup family only when a real Steam/third-party stale Present-hook risk is present, while post-FSR and Steam stale-hook families remain protected. Logs should distinguish `Streamline startup normal-route transport allowed` from `Streamline startup normal-route bypass` and include `transportRisk` plus `steamRisk`.
+- Build `0.1.3314` also hardens bypass/deep-hook trampolines against externally patched DXGI Present prologues. Resume offsets are accepted only at instruction boundaries whose live bytes match the clean on-disk image; CE extends past patched `E9 ... CC ...` filler bytes instead of jumping into the middle of a third-party patch. The expected diagnostic is `Extended resume offset past patched fill bytes`.
 
 ## Open Questions / Stale-Risk
 - Stale risk is high because FG switching behavior is spread across runtime classification, queue routing, startup coexistence, and visible metrics publication.
@@ -62,7 +67,7 @@ This page records current guardrails and tested transition families for no-FG, D
 - Re-check this page after changes to post-FSR safe-bootstrap classification. Talos `20260425_173428` proved that 2D-menu `FSR FG -> DLSS FG` may have no SL wrapper traffic before leaving the menu, so the captured runtime-owned Streamline swapchain queue itself can be the only safe bootstrap proof available.
 - Re-check this page after changes to Reflex hook coverage. GTA `20260424_020300` proved that `slReflexSetConstants` alone is not enough for current Streamline integrations; missing `slReflexSetOptions` leaves both limiter state and useful diagnostics invisible.
 - Re-check this page after changes to source-specific `slDLSSGGetState` OFF handling. GTA `20260425_000339` proved that GetState OFF jitter and explicit SetOptions OFF need separate protection windows during pure-DLSS startup.
-- Re-check this page after changes to retained Streamline startup activation or external dump storm handling. GTA `20260513_083935` showed that bypassing the patched Present crash path can still starve PostSL startup activation unless a real startup swapchain is retained and serviced, and repeated external dumps can otherwise keep a hung process alive while rewriting session dumps.
+- Re-check this page after changes to retained Streamline startup activation, Streamline startup Present transport, inline-hook bypass resume verification, or external dump storm handling. GTA `20260513_083935` showed that bypassing the patched Present crash path can still starve PostSL startup activation unless a real startup swapchain is retained and serviced, `20260518_084035` showed that pure-DLSS runtime-owned startup must not keep bypass transport solely because the swapchain is runtime-owned, and repeated external dumps can otherwise keep a hung process alive while rewriting session dumps.
 - Re-check this page after changes to `ProbeRealD3D12ECL` or `DX12_HookQueueVTable`. Talos `20260502_233427` proved that creating a temporary COMPUTE queue during Streamline's startup window (for the ECL probe) can crash Streamline with a null pointer call (RIP=0). The fix defers `ProbeRealD3D12ECL` while the Streamline startup window is active, skips vtable hooking on non-origGame queues during the window, guards FFX inline hooks (`ffxCreateContext`/`ffxDestroyContext`/`ffxConfigure`) from CE-side processing, and also guards `RepairVTableHooksIfNeeded()` inside `Hooked_slDLSSGGetState` from accessing the swapchain vtable (which triggers Steam's `gameoverlayrenderer64` overlay code during SL's DllMain window). The startup window was also extended from 1500ms to 4000ms because the crash happened 1440ms after arming. Any rework must preserve all four deferral guards plus the `DX12_ServiceDeferredECLProbe()` fallback.
 - Re-check this page after changes to FFX module-hook refresh, `ffxConfigure` parsing/interpretation, or the native-FSR callback bridge. `installed/captureengine/logs/20260416_140309` shows that losing FFX callback/API authority can now present as a pure visibility regression rather than a crash: the runtime-owned FSR swapchain stays active, but the overlay falls back into the passive `separate overlay GPU work is unsafe` path forever.
 - Re-check this page after changes to `dx12_overlay_policy.h`, FG transition tests, or overlay metrics publication behavior.

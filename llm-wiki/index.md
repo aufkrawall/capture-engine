@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-16 (updated: build 0.1.3184 / tests 0.1.3184 - idle power optimization final)
+Last cross-checked: 2026-05-18 (updated: build 0.1.3314 / tests 0.1.3316 - GTA pure-DLSS Streamline startup transport fix)
 
 Primary sources:
 - `AGENTS.md`
@@ -45,7 +45,7 @@ Primary sources:
 - `dx11-forced-af.md`
   - Current Blackwell-safe D3D11 forced anisotropic filtering policy, per-context bootstrap, wrapper-context draw path, wrapper/vtable forwarding guard, streamed-SRV warm-up, shader-slot role probation/recovery, runtime enabled gating, candidate-resource registry/negative cache, runtime sampler/SRV tracking, diagnostics, and stale-risk.
 - `frame-generation-switching.md`
-  - Stub pointing to `frame-generation/guardrails.md` (invariants) and `frame-generation/case-studies.md` (chronological deep-dive).
+  - Stub pointing to `frame-generation/guardrails.md` (invariants, including current Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive).
 - `overlay-fg-status.md`
   - Current visible FG status publication rules for the overlay.
 - `debug-tools.md`
