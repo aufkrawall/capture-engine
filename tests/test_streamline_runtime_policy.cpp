@@ -522,6 +522,26 @@ TEST(StreamlineRuntimePolicyTest, GetStateWarmupProtectionKeepsPureDLSSOffChurnD
         false, true, false, true, false, staleOffWarmupProtection));
 }
 
+TEST(StreamlineRuntimePolicyTest, StartupProtectedOffChurnWaitsForActiveProofAfterPostSLConfirmation) {
+    EXPECT_EQ(3u, ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProofUpdateThreshold());
+
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
+        true, 0, true, true, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
+        true, 2, true, true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
+        true, 3, true, true, false));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
+        false, 0, true, true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
+        true, 0, false, true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
+        true, 0, true, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
+        true, 0, true, true, true));
+}
+
 TEST(StreamlineRuntimePolicyTest,
      CombinedRuntimeStateDefersHalfArmedStartupProtectedPostFSRComebackOffAfterWindowExpiry) {
     const bool deferOff = ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(

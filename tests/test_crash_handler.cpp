@@ -114,6 +114,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Streamline startup-handoff normal-route bypass"), std::string::npos);
     EXPECT_NE(contents.find("Streamline startup normal-route transport allowed"), std::string::npos);
     EXPECT_NE(contents.find("Suppressing slDLSSGSetOptions(OFF) during PostSL warmup proof"), std::string::npos);
+    EXPECT_NE(contents.find("Startup-protected OFF churn quiet proof reached"), std::string::npos);
     EXPECT_NE(contents.find("Fresh authoritative Streamline handoff invalidated stale PostSL confirmation"),
               std::string::npos);
     EXPECT_NE(contents.find("Retained Streamline startup activation swapchain"), std::string::npos);

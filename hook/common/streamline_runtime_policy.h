@@ -433,6 +433,27 @@ inline bool ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
                postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
 }
 
+inline constexpr uint32_t GetStartupProtectedOffChurnActiveProofUpdateThreshold() {
+    return 3;
+}
+
+inline bool HasStartupProtectedOffChurnActiveProof(uint32_t consecutiveActiveRuntimeUpdatesAfterOffChurn) {
+    return consecutiveActiveRuntimeUpdatesAfterOffChurn >= GetStartupProtectedOffChurnActiveProofUpdateThreshold();
+}
+
+inline bool ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
+    bool startupProtectedOffChurnObserved, uint32_t consecutiveActiveRuntimeUpdatesAfterOffChurn,
+    bool startupProtectedComebackProof, bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling) {
+    // PostSL overlay submission proves CE can render through the recovered route,
+    // but GTA can keep delivering stale Streamline OFF state after that render
+    // path is already confirmed. Once startup-protected OFF churn has been seen,
+    // require a few real active Streamline runtime updates after the last OFF
+    // before accepting an inactive edge as a genuine disable.
+    return startupProtectedOffChurnObserved &&
+           !HasStartupProtectedOffChurnActiveProof(consecutiveActiveRuntimeUpdatesAfterOffChurn) &&
+           startupProtectedComebackProof && postSLConfirmedRendering && !postSLConfirmedButStartupSettling;
+}
+
 inline bool ResolveCurrentComebackExplicitSetOptionsActivation(bool previousExplicitSetOptionsActivation,
                                                                bool effectiveSignalActive, bool freshActivationEdge,
                                                                bool explicitSetOptionsEnableSignal) {

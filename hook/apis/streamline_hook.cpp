@@ -22,6 +22,9 @@
 
 namespace {
 
+std::atomic<bool> g_StartupProtectedOffChurnNeedsActiveProof{false};
+std::atomic<uint32_t> g_StartupProtectedOffChurnActiveProofCount{0};
+
 bool IsObserverOnlyModeActive() {
     return HookOverlayObserverOnlyEnabled();
 }
@@ -69,6 +72,84 @@ bool TryServicePostSLStartupActivation(const char* source, bool clearStartupWind
     }
 
     return service(source, clearStartupWindow);
+}
+
+void ResetStartupProtectedOffChurnActiveProof(const char* reason) {
+    const bool wasPending = g_StartupProtectedOffChurnNeedsActiveProof.exchange(false, std::memory_order_acq_rel);
+    const uint32_t previousProof = g_StartupProtectedOffChurnActiveProofCount.exchange(0, std::memory_order_acq_rel);
+    if (wasPending || previousProof > 0) {
+        static std::atomic<int> s_resetLogCount{0};
+        const int logCount = s_resetLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Reset startup-protected OFF quiet proof "
+                "(reason=%s wasPending=%d activeProof=%u)",
+                reason ? reason : "unknown", wasPending ? 1 : 0, previousProof);
+        }
+    }
+}
+
+void MarkStartupProtectedOffChurnObserved(const char* source, bool postSLConfirmedRendering,
+                                          bool postSLConfirmedButStartupSettling,
+                                          bool postSLConfirmedButRuntimeStateStabilizing) {
+    const bool wasPending = g_StartupProtectedOffChurnNeedsActiveProof.exchange(true, std::memory_order_acq_rel);
+    const uint32_t previousProof = g_StartupProtectedOffChurnActiveProofCount.exchange(0, std::memory_order_acq_rel);
+    if (!wasPending || previousProof > 0) {
+        static std::atomic<int> s_churnLogCount{0};
+        const int logCount = s_churnLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Startup-protected OFF churn requires fresh active proof before accepting disable "
+                "(source=%s previousProof=%u required=%u confirmed=%d settling=%d stabilizing=%d)",
+                source ? source : "runtime-state", previousProof,
+                ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProofUpdateThreshold(),
+                postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
+                postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
+        }
+    }
+}
+
+void MarkStartupProtectedActiveRuntimeProof(const char* source, int multiplier) {
+    if (!g_StartupProtectedOffChurnNeedsActiveProof.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    const uint32_t previousProof = g_StartupProtectedOffChurnActiveProofCount.load(std::memory_order_acquire);
+    if (ce::streamline_runtime_policy::HasStartupProtectedOffChurnActiveProof(previousProof)) {
+        return;
+    }
+
+    const uint32_t newProof =
+        g_StartupProtectedOffChurnActiveProofCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (ce::streamline_runtime_policy::HasStartupProtectedOffChurnActiveProof(newProof)) {
+        const bool wasPending = g_StartupProtectedOffChurnNeedsActiveProof.exchange(false, std::memory_order_acq_rel);
+        if (wasPending) {
+            HookLogImportant(
+                "Streamline Hook: Startup-protected OFF churn quiet proof reached "
+                "(source=%s activeProof=%u required=%u multiplier=%dx) — future OFF edges may be accepted",
+                source ? source : "runtime-state", newProof,
+                ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProofUpdateThreshold(), multiplier);
+        }
+    } else {
+        static std::atomic<int> s_activeProofLogCount{0};
+        const int logCount = s_activeProofLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Startup-protected OFF churn active proof progress "
+                "(source=%s activeProof=%u/%u multiplier=%dx)",
+                source ? source : "runtime-state", newProof,
+                ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProofUpdateThreshold(), multiplier);
+        }
+    }
+}
+
+bool IsStartupProtectedOffChurnAwaitingActiveProof(bool startupProtectedComebackProof,
+                                                   bool postSLConfirmedRendering,
+                                                   bool postSLConfirmedButStartupSettling) {
+    return ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
+        g_StartupProtectedOffChurnNeedsActiveProof.load(std::memory_order_acquire),
+        g_StartupProtectedOffChurnActiveProofCount.load(std::memory_order_acquire), startupProtectedComebackProof,
+        postSLConfirmedRendering, postSLConfirmedButStartupSettling);
 }
 
 thread_local int g_ExternalOverlayPresentGuardDepth = 0;
@@ -887,12 +968,17 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
     const bool hadFSRFGPhase = HookHasFSRFGHistory();
     const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+    const bool startupProtectedComebackProof =
+        explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
+    const bool postSLConfirmedButOffChurnAwaitingActiveProof = IsStartupProtectedOffChurnAwaitingActiveProof(
+        startupProtectedComebackProof, postSLConfirmedRendering, postSLConfirmedButStartupSettling);
     const bool deferOffSignal =
         !active &&
         ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
             startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
             safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
-            postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
+            postSLConfirmedButStartupSettling,
+            postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof);
     const bool previousSignal = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const auto signalUpdate = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(
         active, deferOffSignal, previousSignal, multiplier);
@@ -914,6 +1000,15 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
                                                           std::memory_order_release);
     g_FGCompat.SetStreamlineFGSignal(signalUpdate.effectiveActive);
     ApplyCombinedDLSSFGState(signalUpdate.effectiveActive, signalUpdate.effectiveMultiplier);
+    if (!active && signalUpdate.deferredOffDuringStartupWindow) {
+        MarkStartupProtectedOffChurnObserved(source, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
+                                             postSLConfirmedButRuntimeStateStabilizing ||
+                                                 postSLConfirmedButOffChurnAwaitingActiveProof);
+    } else if (active) {
+        MarkStartupProtectedActiveRuntimeProof(source, signalUpdate.effectiveMultiplier);
+    } else if (!signalUpdate.effectiveActive) {
+        ResetStartupProtectedOffChurnActiveProof("accepted inactive Streamline runtime signal");
+    }
 
     if (!previousExplicitSetOptionsActivation && updatedExplicitSetOptionsActivation && signalUpdate.effectiveActive &&
         explicitSetOptionsActivation && !signalUpdate.freshActivationEdge) {
@@ -950,6 +1045,18 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
                     ce::dx12_overlay_policy::GetConfirmedPostSLRuntimeStateStabilizationFirstFrame(),
                     HookGetPostSLStaleOffWarmupProtectionLastFrame());
             }
+        } else if (!active && !postSLConfirmedButStartupSettling && sourceWasGetState &&
+                   postSLConfirmedButOffChurnAwaitingActiveProof) {
+            static std::atomic<bool> s_loggedGetStateActiveProofSuppression{false};
+            if (!s_loggedGetStateActiveProofSuppression.exchange(true, std::memory_order_relaxed)) {
+                HookLogImportant(
+                    "Streamline Hook: Suppressing GetState OFF until startup OFF churn receives active proof "
+                    "(hadFSR=%d explicit=%d safeBootstrap=%d activeProof=%u/%u)",
+                    hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
+                    safePostFSRBootstrapPath ? 1 : 0,
+                    g_StartupProtectedOffChurnActiveProofCount.load(std::memory_order_acquire),
+                    ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProofUpdateThreshold());
+            }
         } else if (!active && !postSLConfirmedButStartupSettling && postSLConfirmedButRuntimeStateStabilizingBase &&
                    sourceWasGetState) {
             static std::atomic<bool> s_loggedPostSettlingGetStateSuppression{false};
@@ -970,11 +1077,12 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
             HookLogImportant(
                 "Streamline Hook: Keeping OFF churn deferred after startup window expiry because Streamline DLSS "
                 "startup is still startup-protected (hadFSR=%d explicit=%d safeBootstrap=%d pending=%d "
-                "unconfirmed=%d confirmed=%d settling=%d stabilizing=%d source=%s)",
+                "unconfirmed=%d confirmed=%d settling=%d stabilizing=%d activeProofPending=%d source=%s)",
                 hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
                 safePostFSRBootstrapPath ? 1 : 0, startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
                 postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
-                postSLConfirmedButRuntimeStateStabilizing ? 1 : 0, source ? source : "runtime-state");
+                (postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof) ? 1 : 0,
+                postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0, source ? source : "runtime-state");
         }
     }
     if (signalUpdate.deferredOffDuringStartupWindow && signalUpdate.shouldExtendStartupTransitionWindow) {
@@ -1978,27 +2086,35 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
             g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
         const bool hadFSRFGPhase = HookHasFSRFGHistory();
         const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+        const bool startupProtectedComebackProof =
+            explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
+        const bool postSLConfirmedButOffChurnAwaitingActiveProof = IsStartupProtectedOffChurnAwaitingActiveProof(
+            startupProtectedComebackProof, postSLConfirmedRendering, postSLConfirmedButStartupSettling);
+        const bool effectivePostSLRuntimeStateStabilizing =
+            postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof;
         const bool shouldKeepDeferred =
             ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
                 startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
                 safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
-                postSLConfirmedRendering, postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling,
+                effectivePostSLRuntimeStateStabilizing);
         if (g_SuppressedSetOptionsOffDuringStartup && !shouldKeepDeferred) {
             if (ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
                     hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-                    postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing)) {
+                    postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing)) {
                 LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
                     g_SuppressedOffViewportKey, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
                     safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
                     postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-                    postSLConfirmedButRuntimeStateStabilizing);
+                    effectivePostSLRuntimeStateStabilizing);
             } else if (auto originalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
                 HookLogImportant(
                     "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via GetState — startup window "
-                    "expired (viewport=%u settling=%d stabilizing=%d)",
+                    "expired (viewport=%u settling=%d stabilizing=%d activeProofPending=%d)",
                     g_SuppressedOffViewportKey, postSLConfirmedButStartupSettling ? 1 : 0,
-                    postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
+                    effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                    postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
                 const slResult offResult = originalSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
                 if (offResult != kSlResultOk) {
                     HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via GetState returned %d",
@@ -2089,27 +2205,35 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
         const bool hadFSRFGPhase = HookHasFSRFGHistory();
         const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+        const bool startupProtectedComebackProof =
+            explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
+        const bool postSLConfirmedButOffChurnAwaitingActiveProof = IsStartupProtectedOffChurnAwaitingActiveProof(
+            startupProtectedComebackProof, postSLConfirmedRendering, postSLConfirmedButStartupSettling);
+        const bool effectivePostSLRuntimeStateStabilizing =
+            postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof;
         const bool shouldKeepDeferred =
             ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
                 startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
                 safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
-                postSLConfirmedRendering, postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling,
+                effectivePostSLRuntimeStateStabilizing);
         if (g_SuppressedSetOptionsOffDuringStartup && !shouldKeepDeferred) {
             if (ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
                     hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-                    postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing)) {
+                    postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing)) {
                 LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
                     g_SuppressedOffViewportKey, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
                     safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
                     postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-                    postSLConfirmedButRuntimeStateStabilizing);
+                    effectivePostSLRuntimeStateStabilizing);
             } else if (auto suppressedOriginalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
                 HookLogImportant(
                     "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) — startup window expired "
-                    "(viewport=%u settling=%d stabilizing=%d)",
+                    "(viewport=%u settling=%d stabilizing=%d activeProofPending=%d)",
                     g_SuppressedOffViewportKey, postSLConfirmedButStartupSettling ? 1 : 0,
-                    postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
+                    effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                    postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
                 const slResult offResult =
                     suppressedOriginalSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
                 if (offResult != kSlResultOk) {
@@ -2143,12 +2267,18 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
     const bool hadFSRFGPhase = HookHasFSRFGHistory();
     const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+    const bool startupProtectedComebackProof =
+        explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
+    const bool postSLConfirmedButOffChurnAwaitingActiveProof = IsStartupProtectedOffChurnAwaitingActiveProof(
+        startupProtectedComebackProof, postSLConfirmedRendering, postSLConfirmedButStartupSettling);
+    const bool effectivePostSLRuntimeStateStabilizing =
+        postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof;
     const bool suppressOffCall =
         !pureObserverOnly && requestedDisabled &&
         ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
             startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
             safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
-            postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
+            postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
 
     const bool setOptionsCallSuppressed = suppressOffCall;
     slResult result;
@@ -2169,12 +2299,16 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         HookLogImportant(
             "Streamline Hook: Suppressing slDLSSGSetOptions(OFF) while DLSS comeback remains startup-protected "
             "(viewport=%u mode=%u startupWindow=%d hadFSR=%d explicitComeback=%d safeBootstrap=%d pending=%d "
-            "unconfirmed=%d confirmed=%d settling=%d stabilizing=%d) — preventing Streamline FG de-initialization "
-            "before recovery proves stable",
+            "unconfirmed=%d confirmed=%d settling=%d stabilizing=%d activeProofPending=%d) — preventing Streamline "
+            "FG de-initialization before recovery proves stable",
             viewportKey, options.mode, startupWindowActive ? 1 : 0, HookHasFSRFGHistory() ? 1 : 0,
             explicitSetOptionsActivationForCurrentComeback ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
             startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-            postSLConfirmedButStartupSettling ? 1 : 0, postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
+            postSLConfirmedButStartupSettling ? 1 : 0, effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+            postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
+        MarkStartupProtectedOffChurnObserved("SetOptions", postSLConfirmedRendering,
+                                             postSLConfirmedButStartupSettling,
+                                             effectivePostSLRuntimeStateStabilizing);
         {
             std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
             g_SuppressedSetOptionsOffDuringStartup = true;
@@ -2192,7 +2326,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                                  pureObserverOnly, startupWindowActive, hadFSRFGPhase,
                                  explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
                                  startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
-                                 postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
+                                 postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
 
     // SL may overwrite our vtable hooks during slDLSSGSetOptions (especially
     // when re-activating FG).  Verify and repair immediately.
@@ -2259,6 +2393,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         } else if (!pureObserverOnly && requestedDisabled &&
                    ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(
                        result == kSlResultOk, setOptionsCallSuppressed)) {
+            ResetStartupProtectedOffChurnActiveProof("forwarded explicit SetOptions disable");
             g_SuppressNewGetStateActivationUntilMs.store(0, std::memory_order_release);
             const bool wasBlockingGetStateOnlyReactivation =
                 g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.exchange(true, std::memory_order_acq_rel);
@@ -2287,10 +2422,11 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                 HookLogImportant(
                     "Streamline Hook: Skipping local runtime-state reduction for suppressed slDLSSGSetOptions(OFF) "
                     "because Streamline never observed that disable edge (viewport=%u startupWindow=%d pending=%d "
-                    "unconfirmed=%d confirmed=%d settling=%d stabilizing=%d)",
+                    "unconfirmed=%d confirmed=%d settling=%d stabilizing=%d activeProofPending=%d)",
                     viewportKey, startupWindowActive ? 1 : 0, startupActivationPending ? 1 : 0,
                     postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-                    postSLConfirmedButStartupSettling ? 1 : 0, postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
+                    postSLConfirmedButStartupSettling ? 1 : 0, effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                    postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
             }
         }
 
@@ -2645,6 +2781,7 @@ void OnAuthoritativeFFXTakeover() {
     g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(true, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     g_StartupWindowOffExtensionPending.store(false, std::memory_order_release);
+    ResetStartupProtectedOffChurnActiveProof("authoritative FFX takeover");
     // A new FSR takeover resets the entire FG session context; any stale DLSS-only
     // reactivation block from a previous epoch must not outlive the FSR phase.
     const bool hadStaleExplicitSetOptionsBlock =
@@ -2664,6 +2801,7 @@ void OnAuthoritativeStreamlineStartupHandoff() {
     g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
                                                  std::memory_order_release);
     g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
+    ResetStartupProtectedOffChurnActiveProof("authoritative Streamline startup handoff");
     HookLogImportant(
         "Streamline Hook: Authoritative Streamline startup handoff observed — suppressing fresh GetState-only "
         "reactivation for %llums until explicit enable or stable startup evidence arrives",
@@ -2682,6 +2820,7 @@ void Shutdown() {
     g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(false, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     g_StartupWindowOffExtensionPending.store(false, std::memory_order_release);
+    ResetStartupProtectedOffChurnActiveProof("Streamline shutdown");
     {
         std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
         g_SuppressedSetOptionsOffDuringStartup = false;
@@ -2714,11 +2853,17 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
     const bool hadFSRFGPhase = HookHasFSRFGHistory();
     const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+    const bool startupProtectedComebackProof =
+        explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
+    const bool postSLConfirmedButOffChurnAwaitingActiveProof = IsStartupProtectedOffChurnAwaitingActiveProof(
+        startupProtectedComebackProof, postSLConfirmedRendering, postSLConfirmedButStartupSettling);
+    const bool effectivePostSLRuntimeStateStabilizing =
+        postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof;
     const bool shouldKeepDeferred =
         ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
             windowStillActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
             activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-            postSLConfirmedButRuntimeStateStabilizing);
+            effectivePostSLRuntimeStateStabilizing);
     if (shouldKeepDeferred) {
         if (ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(
                 shouldKeepDeferred, windowStillActive, activationPending, postSLActiveButUnconfirmed,
@@ -2758,12 +2903,13 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
         if (ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
                 hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), postSLConfirmedButStartupSettling,
-                postSLConfirmedButRuntimeStateStabilizing)) {
+                effectivePostSLRuntimeStateStabilizing)) {
             LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
                 g_SuppressedOffViewportKey, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
                 safePostFSRBootstrapPath, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
-                postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
+                postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
             g_SuppressedSetOptionsOffDuringStartup = false;
+            ResetStartupProtectedOffChurnActiveProof("dropped stale suppressed OFF after active proof");
         } else {
             auto originalSetOptions = GetCallableOriginalDLSSGSetOptions();
             if (!originalSetOptions) {
@@ -2771,15 +2917,17 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             }
             HookLogImportant(
                 "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via periodic flush — startup window "
-                "expired (viewport=%u, activationPending=%d settling=%d stabilizing=%d)",
+                "expired (viewport=%u, activationPending=%d settling=%d stabilizing=%d activeProofPending=%d)",
                 g_SuppressedOffViewportKey, activationPending ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
-                postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
+                effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
             const slResult offResult = originalSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
             if (offResult != kSlResultOk) {
                 HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via periodic flush returned %d",
                                  offResult);
             }
             g_SuppressedSetOptionsOffDuringStartup = false;
+            ResetStartupProtectedOffChurnActiveProof("forwarded suppressed OFF after startup expiry");
         }
 
         // When the startup-handoff Present was promoted to top-level and bypassed
