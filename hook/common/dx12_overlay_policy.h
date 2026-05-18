@@ -700,6 +700,16 @@ inline bool ShouldClearStaleRuntimeOwnedStreamlineNoFGAfterRealFrameRun(int real
     return realFrameRunLength >= 120;
 }
 
+inline bool ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(bool retainedSwapchainAvailable,
+                                                                                 bool staleNoFGCleanupActive) {
+    return retainedSwapchainAvailable && staleNoFGCleanupActive;
+}
+
+inline bool ShouldShutdownDescFreeBackendViaOverlayAdapter(bool descFreeBackendPresent, bool adapterInitialized,
+                                                           bool adapterBackendMatchesDescFree) {
+    return descFreeBackendPresent && adapterInitialized && adapterBackendMatchesDescFree;
+}
+
 inline bool ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(bool authoritativeFSRActive,
                                                                    bool runtimeTargetIsNone, int fgTransitionCooldown) {
     // Talos can briefly suspend native FSR FG during startup/menu transitions

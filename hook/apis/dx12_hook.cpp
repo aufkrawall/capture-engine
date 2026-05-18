@@ -1009,6 +1009,54 @@ static OverlayAdapter g_FFXPresentOverlayAdapter;
 static ID3D12Device* g_FFXPresentOverlayDevice = nullptr;
 static DXGI_FORMAT g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
 
+static void ShutdownDescFreeBackend(const char* reason, bool shutdownMode = false) {
+    DX12DescFreeBackend* backend = g_DescFreeBackend;
+    const bool adapterInitialized = g_D3D11On12Adapter.IsInitialized();
+    if (!backend && !adapterInitialized) {
+        return;
+    }
+
+    CustomOverlay::RendererBackend* adapterBackend = adapterInitialized ? g_D3D11On12Adapter.GetBackend() : nullptr;
+    const OverlayBackendType adapterType =
+        adapterInitialized ? g_D3D11On12Adapter.GetBackendType() : OverlayBackendType::None;
+    const bool adapterOwnsBackend = backend && adapterBackend == backend;
+
+    if (ce::dx12_overlay_policy::ShouldShutdownDescFreeBackendViaOverlayAdapter(
+            backend != nullptr, adapterInitialized, adapterOwnsBackend)) {
+        HookLogImportant(
+            "DX12: Shutting down adapter-owned DescFree backend (reason=%s backend=%p adapterBackend=%p "
+            "adapterType=%d shutdownMode=%d)",
+            reason ? reason : "unknown", backend, adapterBackend, (int)adapterType, shutdownMode ? 1 : 0);
+        if (shutdownMode) {
+            g_D3D11On12Adapter.SetShutdownMode(true);
+        }
+        g_D3D11On12Adapter.Shutdown();
+        g_DescFreeBackend = nullptr;
+        return;
+    }
+
+    if (adapterInitialized) {
+        HookLogImportant(
+            "DX12: Shutting down DX12 overlay adapter without tracked DescFree ownership "
+            "(reason=%s backend=%p adapterBackend=%p adapterType=%d shutdownMode=%d)",
+            reason ? reason : "unknown", backend, adapterBackend, (int)adapterType, shutdownMode ? 1 : 0);
+        if (shutdownMode) {
+            g_D3D11On12Adapter.SetShutdownMode(true);
+        }
+        g_D3D11On12Adapter.Shutdown();
+    }
+
+    if (backend) {
+        HookLogImportant("DX12: Shutting down standalone DescFree backend (reason=%s backend=%p)",
+                         reason ? reason : "unknown", backend);
+        backend->Shutdown();
+        delete backend;
+        if (g_DescFreeBackend == backend) {
+            g_DescFreeBackend = nullptr;
+        }
+    }
+}
+
 // CRITICAL FIX: Use atomic pointers for thread-safe access
 // These are read/written from multiple threads (hook thread, present thread, etc.)
 std::atomic<ID3D12Device*> g_Device{nullptr};
@@ -1213,6 +1261,11 @@ static void ReleaseStreamlineStartupActivationSwapchain(const char* source) {
                          oldSwapchain, source ? source : "unknown");
         oldSwapchain->Release();
     }
+}
+
+static bool HasRetainedStreamlineStartupActivationSwapchain() {
+    std::lock_guard<std::mutex> lock(g_StreamlineStartupActivationSwapchainMutex);
+    return g_StreamlineStartupActivationSwapchain != nullptr;
 }
 
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
@@ -6603,17 +6656,7 @@ static bool RenderOverlayViaD3D11On12(int bufferIdx, bool isRealFrame) {
 
 static void CleanupD3D11On12() {
     // Clean up descriptor-free adapter (primary DX12 rendering path)
-    if (g_D3D11On12Adapter.IsInitialized()) {
-        g_D3D11On12Adapter.SetShutdownMode(true);
-        g_D3D11On12Adapter.Shutdown();
-        // Shutdown() deleted g_DescFreeBackend via `delete backend`
-        g_DescFreeBackend = nullptr;
-    } else if (g_DescFreeBackend) {
-        // InitCustom was never called — we still own the backend
-        g_DescFreeBackend->Shutdown();
-        delete g_DescFreeBackend;
-        g_DescFreeBackend = nullptr;
-    }
+    ShutdownDescFreeBackend("CleanupD3D11On12", true);
     // Clean up SL FG D3D11On12 adapter
     if (g_SLFGAdapter.IsInitialized()) {
         g_SLFGAdapter.SetShutdownMode(true);
@@ -8674,9 +8717,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             // Recreate DescFree backend with correct format
             HookLogImportant("DX12: PostSL format MISMATCH (bb=%d pso=%d) — recreating DescFree backend", (int)bbFmt,
                              (int)psoFmt);
-            g_D3D11On12Adapter.Shutdown();
-            delete g_DescFreeBackend;
-            g_DescFreeBackend = nullptr;
+            ShutdownDescFreeBackend("PostSL format mismatch");
             g_State.format = bbFmt;
 
             auto* backend = new DX12DescFreeBackend();
@@ -13761,6 +13802,10 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             }
         }
         g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.store(true, std::memory_order_release);
+        if (ce::dx12_overlay_policy::ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(
+                HasRetainedStreamlineStartupActivationSwapchain(), true)) {
+            ReleaseStreamlineStartupActivationSwapchain("DX12: stale runtime-owned Streamline no-FG cleanup");
+        }
         DXGIShared::ResetStreamlineStartupTransitionState();
         ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
     }
@@ -14781,11 +14826,7 @@ void DX12Hook::Shutdown() {
     g_PrerenderEvents.clear();
 
     // Clean up descriptor-free backend
-    if (g_DescFreeBackend) {
-        g_DescFreeBackend->Shutdown();
-        delete g_DescFreeBackend;
-        g_DescFreeBackend = nullptr;
-    }
+    ShutdownDescFreeBackend("DX12Hook::Shutdown", true);
 
     {
         std::lock_guard<std::recursive_mutex> lock(g_DeviceQueuesMutex);

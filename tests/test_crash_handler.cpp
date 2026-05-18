@@ -116,5 +116,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Fresh authoritative Streamline handoff invalidated stale PostSL confirmation"),
               std::string::npos);
     EXPECT_NE(contents.find("Retained Streamline startup activation swapchain"), std::string::npos);
+    EXPECT_NE(contents.find("stale runtime-owned Streamline no-FG cleanup"), std::string::npos);
+    EXPECT_NE(contents.find("Shutting down adapter-owned DescFree backend"), std::string::npos);
     EXPECT_NE(contents.find("External dump storm threshold reached"), std::string::npos);
 }
