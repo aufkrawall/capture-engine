@@ -454,6 +454,23 @@ inline bool ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
            startupProtectedComebackProof && postSLConfirmedRendering && !postSLConfirmedButStartupSettling;
 }
 
+inline bool ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+    bool requestedInactive, bool startupTransitionWindowActive, bool startupProtectedComebackProof,
+    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLStartupActivationEntered,
+    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling,
+    bool postSLConfirmedButRuntimeStateStabilizing) {
+    // A Streamline OFF edge that arrives after retained PostSL activation has
+    // entered but before the first confirmed render is no longer the early stale
+    // startup churn this guard was designed to swallow. In GTA this is the
+    // settings-menu suspend edge; deferring it keeps SL half-active and can stall
+    // the runtime. Only accept it once the literal startup window is gone, and
+    // only for a proven comeback that is still unconfirmed.
+    return requestedInactive && !startupTransitionWindowActive && startupProtectedComebackProof &&
+           (startupActivationPending || postSLActiveButUnconfirmed) && postSLActiveButUnconfirmed &&
+           postSLStartupActivationEntered && !postSLConfirmedRendering && !postSLConfirmedButStartupSettling &&
+           !postSLConfirmedButRuntimeStateStabilizing;
+}
+
 inline bool ResolveCurrentComebackExplicitSetOptionsActivation(bool previousExplicitSetOptionsActivation,
                                                                bool effectiveSignalActive, bool freshActivationEdge,
                                                                bool explicitSetOptionsEnableSignal) {

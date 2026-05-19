@@ -511,8 +511,8 @@ inline bool ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
 
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
     bool observerOnlyMode, bool hadFSRFGPhase, bool explicitSetOptionsActivation, bool safePostFSRBootstrapPath,
-    bool postSLStartupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedButStartupSettling,
-    bool streamlineSyntheticReentrant) {
+    bool postSLStartupActivationPending, bool postSLActiveButUnconfirmed, bool postSLStartupActivationEntered,
+    bool postSLConfirmedButStartupSettling, bool streamlineSyntheticReentrant) {
     // Once PostSL has already confirmed at least one successful render, GTA's
     // startup family can still need a few more Streamline-originated Presents to
     // advance the stable-frame counter and keep the visible overlay alive. Those
@@ -523,6 +523,13 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
     }
 
     if (postSLConfirmedButStartupSettling) {
+        return true;
+    }
+
+    // Once the retained-startup service has entered PostSL, progress must move
+    // through the normal Streamline Present family. Blocking the callback here
+    // leaves pure-DLSS resume paths active-but-unconfirmed forever.
+    if (postSLStartupActivationEntered && postSLActiveButUnconfirmed) {
         return true;
     }
 

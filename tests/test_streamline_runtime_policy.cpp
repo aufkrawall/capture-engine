@@ -542,6 +542,30 @@ TEST(StreamlineRuntimePolicyTest, StartupProtectedOffChurnWaitsForActiveProofAft
         true, 0, true, true, true));
 }
 
+TEST(StreamlineRuntimePolicyTest, ActivatedUnconfirmedStreamlineResumeAcceptsRealSuspendOffEdge) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        true, false, true, true, true, true, false, false, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        true, false, true, false, true, true, false, false, false));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        false, false, true, true, true, true, false, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        true, true, true, true, true, true, false, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        true, false, false, true, true, true, false, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        true, false, true, true, false, true, false, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        true, false, true, true, true, false, false, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        true, false, true, true, true, true, true, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        true, false, true, true, true, true, false, true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+        true, false, true, true, true, true, false, false, true));
+}
+
 TEST(StreamlineRuntimePolicyTest,
      CombinedRuntimeStateDefersHalfArmedStartupProtectedPostFSRComebackOffAfterWindowExpiry) {
     const bool deferOff = ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedPostFSRComeback(

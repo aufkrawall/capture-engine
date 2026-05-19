@@ -2233,33 +2233,35 @@ TEST(DXGISharedTest, ChurnedPostSLReactivationExtendsRuntimeStateStabilizationTo
 
 TEST(DXGISharedTest, ConfirmedStartupSettlingCanStillInvokePostSLWithoutSyntheticBypass) {
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, false, false, true, true));
+        false, false, false, false, false, false, false, true, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, true, true, false, false, true));
+        false, true, true, true, true, false, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, true, false, true, false, true));
+        false, true, true, true, false, true, false, false, true));
     // safePostFSRBootstrapPath is now sufficient; explicitSetOptionsActivation is no longer required
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, false, true, true, false, false, true));
+        false, true, false, true, true, false, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, false, true, false, true, false, true));
+        false, true, false, true, false, true, false, false, true));
+    EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+        false, false, true, false, true, true, true, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, false, false, true, false, false, true));
+        false, true, false, false, true, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, false, true, false, false, true));
+        false, true, true, false, true, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, false, false, true, false, true));
+        false, true, true, false, false, true, false, false, true));
 
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        true, false, false, false, false, false, true, true));
+        true, false, false, false, false, false, false, true, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, false, false, false, true));
+        false, false, false, false, false, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, false, false, true, false));
+        false, false, false, false, false, false, false, true, false));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, true, true, false, true));
+        false, false, false, false, true, true, true, false, false));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, false, false, true, true));
+        false, false, false, false, false, false, false, true, true));
 }
 
 TEST(DXGISharedTest, ConfirmedStandaloneStreamlinePresentCanStillInvokePostSLOnNormalRouteAfterStartupSettles) {

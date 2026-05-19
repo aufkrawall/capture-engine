@@ -120,6 +120,10 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Retained Streamline startup activation swapchain"), std::string::npos);
     EXPECT_NE(contents.find("Skipping retained-swapchain PostSL startup activation callback"), std::string::npos);
     EXPECT_NE(contents.find("startupActivationEntered"), std::string::npos);
+    EXPECT_NE(contents.find("activated-but-unconfirmed Streamline startup normal route"), std::string::npos);
+    EXPECT_NE(contents.find("Accepting Streamline OFF during activated-but-unconfirmed startup resume"),
+              std::string::npos);
+    EXPECT_NE(contents.find("Late Reflex feature hook retry during DLSSG runtime activity"), std::string::npos);
     EXPECT_NE(contents.find("stale runtime-owned Streamline no-FG cleanup"), std::string::npos);
     EXPECT_NE(contents.find("Shutting down adapter-owned DescFree backend"), std::string::npos);
     EXPECT_NE(contents.find("External dump storm threshold reached"), std::string::npos);
