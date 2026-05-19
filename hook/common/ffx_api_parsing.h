@@ -206,4 +206,11 @@ inline bool ShouldInlineHookFFXExportsForModule(const char* moduleNameOrPath) {
     return !IsOfficialAMDFFXRuntimeModuleName(moduleNameOrPath);
 }
 
+inline bool ShouldPatchFFXImportsForModule(const char* moduleNameOrPath) {
+    if (!moduleNameOrPath || !*moduleNameOrPath) {
+        return false;
+    }
+    return !IsOfficialAMDFFXRuntimeModuleName(moduleNameOrPath);
+}
+
 }  // namespace ce::ffx_api
