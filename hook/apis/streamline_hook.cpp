@@ -2431,16 +2431,23 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                     HookGetPostSLStaleOffWarmupProtectionLastFrame());
             }
         }
-        HookLogImportant(
-            "Streamline Hook: Suppressing slDLSSGSetOptions(OFF) while DLSS comeback remains startup-protected "
-            "(viewport=%u mode=%u startupWindow=%d hadFSR=%d explicitComeback=%d safeBootstrap=%d pending=%d "
-            "unconfirmed=%d confirmed=%d settling=%d stabilizing=%d activeProofPending=%d) — preventing Streamline "
-            "FG de-initialization before recovery proves stable",
-            viewportKey, options.mode, startupWindowActive ? 1 : 0, HookHasFSRFGHistory() ? 1 : 0,
-            explicitSetOptionsActivationForCurrentComeback ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
-            startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-            postSLConfirmedButStartupSettling ? 1 : 0, effectivePostSLRuntimeStateStabilizing ? 1 : 0,
-            postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
+        static std::atomic<uint64_t> s_startupProtectedSetOptionsOffSuppressionLogCount{0};
+        const uint64_t suppressionLogCount =
+            s_startupProtectedSetOptionsOffSuppressionLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (suppressionLogCount <= 20 || (suppressionLogCount % 200) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Suppressing slDLSSGSetOptions(OFF) while DLSS comeback remains startup-protected "
+                "(viewport=%u mode=%u startupWindow=%d hadFSR=%d explicitComeback=%d safeBootstrap=%d pending=%d "
+                "unconfirmed=%d confirmed=%d settling=%d stabilizing=%d activeProofPending=%d suppressCount=%llu) — "
+                "preventing Streamline FG de-initialization before recovery proves stable",
+                viewportKey, options.mode, startupWindowActive ? 1 : 0, HookHasFSRFGHistory() ? 1 : 0,
+                explicitSetOptionsActivationForCurrentComeback ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
+                startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
+                postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
+                effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0,
+                static_cast<unsigned long long>(suppressionLogCount));
+        }
         MarkStartupProtectedOffChurnObserved("SetOptions", postSLConfirmedRendering,
                                              postSLConfirmedButStartupSettling,
                                              effectivePostSLRuntimeStateStabilizing);

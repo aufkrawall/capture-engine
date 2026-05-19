@@ -126,5 +126,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Late Reflex feature hook retry during DLSSG runtime activity"), std::string::npos);
     EXPECT_NE(contents.find("stale runtime-owned Streamline no-FG cleanup"), std::string::npos);
     EXPECT_NE(contents.find("Shutting down adapter-owned DescFree backend"), std::string::npos);
+    EXPECT_NE(contents.find("inline CreateSwapChainForHwnd hook already handled forwarded swapchain side-effects"),
+              std::string::npos);
     EXPECT_NE(contents.find("External dump storm threshold reached"), std::string::npos);
 }

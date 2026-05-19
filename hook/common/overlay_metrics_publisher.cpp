@@ -62,6 +62,8 @@ void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const PublicationInput
     const int publishedMultiplier = publishedActive ? (input.multiplier >= 2 ? input.multiplier : 2) : 1;
     const float publishedOutputFPS = publishedActive ? input.outputFPS : 0.0f;
     const float publishedBaseFPS = publishedActive ? input.baseFPS : 0.0f;
+    const fg_runtime::RuntimeMode loggedRuntimeMode =
+        publishedActive ? input.runtimeMode : fg_runtime::RuntimeMode::kOff;
 
     if (input.effectiveFGActive && publishedType == 0) {
         HookLogImportant("FG publication invariant: source=%s active=1 runtime=%s published_type=0 multiplier=%d",
@@ -72,17 +74,17 @@ void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const PublicationInput
     metrics->SetFGMetrics(publishedOutputFPS, publishedBaseFPS, publishedMultiplier, publishedType);
 
     auto& last = LastPublishedState();
-    if (!last.valid || last.effectiveFGActive != publishedActive || last.runtimeMode != input.runtimeMode ||
+    if (!last.valid || last.effectiveFGActive != publishedActive || last.runtimeMode != loggedRuntimeMode ||
         last.publishedType != publishedType || last.publishedMultiplier != publishedMultiplier) {
         HookLogImportant(
             "FG publication: source=%s runtime=%s active=%d published_type=%d published_multiplier=%d base_fps=%.2f "
             "output_fps=%.2f",
             input.publicationSource ? input.publicationSource : "unknown",
-            ce::fg_runtime::GetRuntimeModeName(input.runtimeMode), publishedActive ? 1 : 0, publishedType,
+            ce::fg_runtime::GetRuntimeModeName(loggedRuntimeMode), publishedActive ? 1 : 0, publishedType,
             publishedMultiplier, publishedBaseFPS, publishedOutputFPS);
         last.valid = true;
         last.effectiveFGActive = publishedActive;
-        last.runtimeMode = input.runtimeMode;
+        last.runtimeMode = loggedRuntimeMode;
         last.publishedType = publishedType;
         last.publishedMultiplier = publishedMultiplier;
     }

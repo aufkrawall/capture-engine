@@ -187,6 +187,16 @@ inline bool ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntim
            callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
 }
 
+inline bool ShouldSkipGlobalCreateSwapchainForHwndSideEffectsAfterInlineForward(
+    bool inlineHookHandledForwardedCall) {
+    // Global IDXGIFactory2 vtable calls can forward into the real DXGI export,
+    // which our inline hook also owns. If the inline hook already handled the
+    // forwarded CreateSwapChainForHwnd call, the global detour must not replay
+    // queue capture, Present repair, transition cooldown, or wrapper decisions
+    // for the same returned swapchain.
+    return inlineHookHandledForwardedCall;
+}
+
 inline bool ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(bool authoritativeStreamlineRuntimeCreator,
                                                                       bool hasOriginalGameQueue,
                                                                       bool queueMatchesOriginalGameQueue) {

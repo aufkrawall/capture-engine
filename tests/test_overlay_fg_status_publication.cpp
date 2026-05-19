@@ -122,6 +122,21 @@ TEST(OverlayFGStatusPublicationTest, TransitionBackToOffClearsPublishedStatus) {
     EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
 }
 
+TEST(OverlayFGStatusPublicationTest, InactiveStreamlineNoFGPublishesSameBaselineAsOff) {
+    PerformanceMetrics metrics;
+
+    Publish(metrics, true, ce::fg_runtime::RuntimeMode::kDLSSFG, 2, 120.0f, 60.0f);
+    ASSERT_TRUE(metrics.IsFGActive());
+
+    Publish(metrics, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 1, 200.0f, 100.0f);
+
+    EXPECT_FALSE(metrics.IsFGActive());
+    EXPECT_EQ(metrics.GetFGMultiplier(), 1);
+    EXPECT_FLOAT_EQ(metrics.GetFGBaseFPS(), 0.0f);
+    EXPECT_FLOAT_EQ(metrics.GetFGOutputFPS(), 0.0f);
+    EXPECT_STREQ(metrics.GetFGTypeLabel(), "FG");
+}
+
 TEST(OverlayFGStatusPublicationTest, PlannerDrivenPublicationUsesPlannerRuntimeAndActiveState) {
     PerformanceMetrics metrics;
 

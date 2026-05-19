@@ -44,6 +44,11 @@ struct SessionState {
     uint32_t lastManifestSchemaVersion = 0;
     bool manifestInitialized = false;
     uint32_t presentDecisionLogsRemaining = 0;
+    bool runtimeUpdateEventLogValid = false;
+    fg_runtime::RuntimeMode lastRuntimeUpdateEventRuntime = fg_runtime::RuntimeMode::kUnknown;
+    bool lastRuntimeUpdateEventActive = false;
+    bool lastRuntimeUpdateEventExplicit = false;
+    uint64_t runtimeUpdateEventLogCount = 0;
 };
 
 struct SnapshotBuildResult {
@@ -65,6 +70,32 @@ const char* BoolName(bool value) {
 
 const char* SafeString(const char* value) {
     return value ? value : "none";
+}
+
+bool IsHighVolumeRuntimeUpdateEvent(FGEventKind kind) {
+    return kind == FGEventKind::kStreamlineGetStateRuntimeUpdate ||
+           kind == FGEventKind::kStreamlineSetOptionsRuntimeUpdate;
+}
+
+bool ShouldLogFGEventLocked(SessionState& state, const FGEvent& event) {
+    if (!IsHighVolumeRuntimeUpdateEvent(event.kind)) {
+        return true;
+    }
+
+    const uint64_t logCount = ++state.runtimeUpdateEventLogCount;
+    const bool runtimeStateChanged =
+        !state.runtimeUpdateEventLogValid || state.lastRuntimeUpdateEventRuntime != event.hintedRuntimeMode ||
+        state.lastRuntimeUpdateEventActive != event.hintedActive ||
+        state.lastRuntimeUpdateEventExplicit != event.hintedExplicitActivation;
+    if (runtimeStateChanged) {
+        state.runtimeUpdateEventLogValid = true;
+        state.lastRuntimeUpdateEventRuntime = event.hintedRuntimeMode;
+        state.lastRuntimeUpdateEventActive = event.hintedActive;
+        state.lastRuntimeUpdateEventExplicit = event.hintedExplicitActivation;
+        return true;
+    }
+
+    return logCount <= 16 || (logCount % 512) == 0;
 }
 
 FGAuthorityKind ResolveAuthorityKind(const FGSessionSnapshot& snapshot) {
@@ -765,6 +796,10 @@ void EmitFGEvent(const FGEvent& event) {
         return;
     }
 
+    if (!ShouldLogFGEventLocked(state, event)) {
+        return;
+    }
+
     HookLogImportant(
         "FG EVENT kind=%s source=%s ptrA=%p ptrB=%p runtime=%s active=%d explicit=%d ts=%llu sessionEpoch=%u "
         "runtimeEpoch=%u swapchainEpoch=%u queueEpoch=%u",
@@ -837,6 +872,11 @@ void ResetFGSessionStateForTests() {
     state.lastManifestSchemaVersion = 0;
     state.manifestInitialized = false;
     state.presentDecisionLogsRemaining = 0;
+    state.runtimeUpdateEventLogValid = false;
+    state.lastRuntimeUpdateEventRuntime = fg_runtime::RuntimeMode::kUnknown;
+    state.lastRuntimeUpdateEventActive = false;
+    state.lastRuntimeUpdateEventExplicit = false;
+    state.runtimeUpdateEventLogCount = 0;
 }
 
 const char* GetFGAuthorityKindName(FGAuthorityKind kind) {

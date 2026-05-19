@@ -1167,12 +1167,21 @@ static void DX12_PublishNativeLimiterDevice(ID3D12Device* device, ID3D12CommandQ
 
     static std::atomic<ID3D12Device*> s_lastPublishedDevice{nullptr};
     static std::atomic<ID3D12CommandQueue*> s_lastPublishedQueue{nullptr};
+    static std::atomic<uint64_t> s_nativeLimiterPublishChangeCount{0};
     ID3D12Device* previousDevice = s_lastPublishedDevice.exchange(device, std::memory_order_acq_rel);
     ID3D12CommandQueue* previousQueue = s_lastPublishedQueue.exchange(queue, std::memory_order_acq_rel);
-    if (previousDevice != device || previousQueue != queue) {
-        HookLogImportant(
-            "DX12: Published native limiter device from %s (device=%p queue=%p ctxUpdated=%d ctxApiConflict=%d)",
-            source && source[0] ? source : "unknown", device, queue, ctxUpdated ? 1 : 0, ctxApiConflict ? 1 : 0);
+    const bool deviceChanged = previousDevice != device;
+    const bool queueChanged = previousQueue != queue;
+    if (deviceChanged || queueChanged) {
+        const uint64_t changeCount = s_nativeLimiterPublishChangeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (deviceChanged || changeCount <= 32 || (changeCount % 512) == 0) {
+            HookLogImportant(
+                "DX12: Published native limiter device from %s (device=%p queue=%p ctxUpdated=%d ctxApiConflict=%d "
+                "deviceChanged=%d queueChanged=%d changeCount=%llu)",
+                source && source[0] ? source : "unknown", device, queue, ctxUpdated ? 1 : 0,
+                ctxApiConflict ? 1 : 0, deviceChanged ? 1 : 0, queueChanged ? 1 : 0,
+                static_cast<unsigned long long>(changeCount));
+        }
     }
 }
 
@@ -1901,6 +1910,39 @@ public:
 private:
     ForwardedCreateSwapchainForHwndCallerContext previousContext_;
 };
+
+static thread_local int s_forwardedCreateSwapchainForHwndInlineDepth = 0;
+static thread_local bool s_forwardedCreateSwapchainForHwndInlineHandled = false;
+
+class ScopedForwardedCreateSwapchainForHwndInlineSideEffectGuard {
+public:
+    ScopedForwardedCreateSwapchainForHwndInlineSideEffectGuard()
+        : previousDepth_(s_forwardedCreateSwapchainForHwndInlineDepth),
+          previousHandled_(s_forwardedCreateSwapchainForHwndInlineHandled) {
+        s_forwardedCreateSwapchainForHwndInlineDepth = previousDepth_ + 1;
+        s_forwardedCreateSwapchainForHwndInlineHandled = false;
+    }
+
+    ~ScopedForwardedCreateSwapchainForHwndInlineSideEffectGuard() {
+        s_forwardedCreateSwapchainForHwndInlineDepth = previousDepth_;
+        s_forwardedCreateSwapchainForHwndInlineHandled = previousHandled_;
+    }
+
+    bool InlineHandledForwardedCall() const {
+        return s_forwardedCreateSwapchainForHwndInlineHandled;
+    }
+
+private:
+    int previousDepth_ = 0;
+    bool previousHandled_ = false;
+};
+
+static void MarkForwardedCreateSwapchainForHwndInlineSideEffectsHandled() {
+    if (s_forwardedCreateSwapchainForHwndInlineDepth <= 0) {
+        return;
+    }
+    s_forwardedCreateSwapchainForHwndInlineHandled = true;
+}
 
 static bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modulePathOut, size_t modulePathOutCount,
                                             HMODULE* moduleHandleOut = nullptr) {
@@ -5525,6 +5567,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         return s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     }
 
+    MarkForwardedCreateSwapchainForHwndInlineSideEffectsHandled();
+
     const CreateSwapchainForHwndCallerContext callerContext = ResolveCreateSwapchainForHwndCallerContext();
     const void* callerAddress = callerContext.callerAddress;
     const bool callerFromFFXFGModule = callerContext.callerFromFFXFGModule;
@@ -5867,8 +5911,24 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
     // Forward the original external caller through the DXGI vtable -> real DXGI
     // function chain so our inline/deep hooks don't misclassify CE's own detour
     // frame as the authoritative CreateSwapChainForHwnd caller.
+    ScopedForwardedCreateSwapchainForHwndInlineSideEffectGuard inlineSideEffectGuard;
     ScopedForwardedCreateSwapchainForHwndCallerContext forwardedCallerContext(callerAddress, callerModulePath);
     HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+
+    if (ce::dx12_overlay_policy::ShouldSkipGlobalCreateSwapchainForHwndSideEffectsAfterInlineForward(
+            inlineSideEffectGuard.InlineHandledForwardedCall())) {
+        static std::atomic<int> s_inlineHandledForwardedGlobalLogCount{0};
+        const int logCount = s_inlineHandledForwardedGlobalLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 128) == 0) {
+            HookLogImportant(
+                "DetourCreateSwapChainForHwndGlobal: inline CreateSwapChainForHwnd hook already handled forwarded "
+                "swapchain side-effects (hr=0x%08X sc=%p hwnd=%p caller=%s count=%d) — skipping duplicate global "
+                "processing",
+                hr, (ppSC && *ppSC) ? *ppSC : nullptr, hWnd,
+                callerModulePath[0] ? callerModulePath : "unknown", logCount + 1);
+        }
+        return hr;
+    }
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
         if (callerFromThirdPartyOverlay) {
