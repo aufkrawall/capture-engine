@@ -331,6 +331,68 @@ void TryInstallFatalTerminationDumpHooks() {
     patchRtlExit("ntdll.dll");
     patchNtTerminate("ntdll.dll");
 
+    std::vector<void*> inlineHookTargets;
+    auto installInlineHook = [&patchedAny, &inlineHookTargets](const char* moduleName, const char* functionName,
+                                                               void* hookFunction) -> void* {
+      void* target = ResolveModuleExport(moduleName, functionName);
+      if (!target || target == hookFunction) {
+        return nullptr;
+      }
+      if (std::find(inlineHookTargets.begin(), inlineHookTargets.end(), target) != inlineHookTargets.end()) {
+        return nullptr;
+      }
+
+      void* trampoline = nullptr;
+      if (!InlineHook::Install(target, hookFunction, &trampoline)) {
+        HookLog("FatalExitDump: Inline pre-termination hook failed for %s!%s at %p", moduleName, functionName,
+                target);
+        return nullptr;
+      }
+
+      inlineHookTargets.push_back(target);
+      patchedAny = true;
+      HookLogImportant("FatalExitDump: Installed inline pre-termination hook for %s!%s at %p (trampoline=%p)",
+                       moduleName, functionName, target, trampoline);
+      return trampoline;
+    };
+
+    if (void* trampoline = installInlineHook("KERNELBASE.dll", "RaiseFailFastException",
+                                             reinterpret_cast<void*>(&HookedRaiseFailFastException))) {
+      g_OriginalRaiseFailFastException.store(reinterpret_cast<RaiseFailFastException_t>(trampoline),
+                                             std::memory_order_release);
+    }
+    if (void* trampoline = installInlineHook("kernel32.dll", "RaiseFailFastException",
+                                             reinterpret_cast<void*>(&HookedRaiseFailFastException))) {
+      g_OriginalRaiseFailFastException.store(reinterpret_cast<RaiseFailFastException_t>(trampoline),
+                                             std::memory_order_release);
+    }
+    if (void* trampoline =
+            installInlineHook("KERNELBASE.dll", "TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess))) {
+      g_OriginalTerminateProcess.store(reinterpret_cast<TerminateProcess_t>(trampoline), std::memory_order_release);
+    }
+    if (void* trampoline =
+            installInlineHook("kernel32.dll", "TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess))) {
+      g_OriginalTerminateProcess.store(reinterpret_cast<TerminateProcess_t>(trampoline), std::memory_order_release);
+    }
+    if (void* trampoline =
+            installInlineHook("KERNELBASE.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess))) {
+      g_OriginalExitProcess.store(reinterpret_cast<ExitProcess_t>(trampoline), std::memory_order_release);
+    }
+    if (void* trampoline =
+            installInlineHook("kernel32.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess))) {
+      g_OriginalExitProcess.store(reinterpret_cast<ExitProcess_t>(trampoline), std::memory_order_release);
+    }
+    if (void* trampoline =
+            installInlineHook("ntdll.dll", "RtlExitUserProcess", reinterpret_cast<void*>(&HookedRtlExitUserProcess))) {
+      g_OriginalRtlExitUserProcess.store(reinterpret_cast<RtlExitUserProcess_t>(trampoline),
+                                         std::memory_order_release);
+    }
+    if (void* trampoline =
+            installInlineHook("ntdll.dll", "NtTerminateProcess", reinterpret_cast<void*>(&HookedNtTerminateProcess))) {
+      g_OriginalNtTerminateProcess.store(reinterpret_cast<NtTerminateProcess_t>(trampoline),
+                                         std::memory_order_release);
+    }
+
     IATHook::RegisterDynamicHook("RaiseFailFastException", reinterpret_cast<void*>(&HookedRaiseFailFastException),
                                  nullptr);
     IATHook::RegisterDynamicHook("TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess), nullptr);
@@ -339,9 +401,10 @@ void TryInstallFatalTerminationDumpHooks() {
     IATHook::RegisterDynamicHook("NtTerminateProcess", reinterpret_cast<void*>(&HookedNtTerminateProcess), nullptr);
 
     HookLogImportant(
-        "FatalExitDump: Installed pre-termination dump hooks (patched=%d raiseOriginal=%p terminateOriginal=%p "
+        "FatalExitDump: Installed pre-termination dump hooks (patched=%d inline=%zu raiseOriginal=%p terminateOriginal=%p "
         "exitOriginal=%p rtlExitOriginal=%p ntTerminateOriginal=%p)",
-        patchedAny ? 1 : 0, reinterpret_cast<void*>(g_OriginalRaiseFailFastException.load(std::memory_order_acquire)),
+        patchedAny ? 1 : 0, inlineHookTargets.size(),
+        reinterpret_cast<void*>(g_OriginalRaiseFailFastException.load(std::memory_order_acquire)),
         reinterpret_cast<void*>(g_OriginalTerminateProcess.load(std::memory_order_acquire)),
         reinterpret_cast<void*>(g_OriginalExitProcess.load(std::memory_order_acquire)),
         reinterpret_cast<void*>(g_OriginalRtlExitUserProcess.load(std::memory_order_acquire)),

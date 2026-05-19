@@ -133,21 +133,23 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("Native FSR configure disabled; not installing DX12 present-callback bridge"),
               std::string::npos);
-    EXPECT_NE(contents.find("Native FSR disabled startup-arming configure forwarded without CE present-callback bridge"),
-              std::string::npos);
+    EXPECT_NE(
+        contents.find("Native FSR disabled startup-arming configure forwarded without CE present-callback bridge"),
+        std::string::npos);
     EXPECT_NE(contents.find("Native FSR disabled configure used for startup arming"), std::string::npos);
     EXPECT_NE(contents.find("Native FSR startup configure arming"), std::string::npos);
-    EXPECT_NE(contents.find("Official FFX takeover side-effects staged until enabled ffxConfigure"),
-              std::string::npos);
+    EXPECT_NE(contents.find("Official FFX takeover side-effects staged until enabled ffxConfigure"), std::string::npos);
     EXPECT_NE(contents.find("Finalizing staged official FFX takeover after enabled ffxConfigure"), std::string::npos);
+    EXPECT_NE(contents.find("Protected official FFX startup swapchain pass-through"), std::string::npos);
+    EXPECT_NE(contents.find("Finalizing protected official FFX startup pass-through after enabled ffxConfigure"),
+              std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);
+    EXPECT_NE(contents.find("FatalExitDump: Installed inline pre-termination hook"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Capturing pre-termination dump before crash-like process exit"),
               std::string::npos);
     EXPECT_NE(contents.find("RtlExitUserProcess"), std::string::npos);
     EXPECT_NE(contents.find("NtTerminateProcess"), std::string::npos);
     EXPECT_NE(contents.find("Registered module-filtered dynamic hooks for FFX exports"), std::string::npos);
-    EXPECT_NE(contents.find("Using GetProcAddress-only hooks for protected official FFX module"),
-              std::string::npos);
-    EXPECT_NE(contents.find("IAT import patching skipped to avoid startup fail-fast"),
-              std::string::npos);
+    EXPECT_NE(contents.find("Using GetProcAddress-only hooks for protected official FFX module"), std::string::npos);
+    EXPECT_NE(contents.find("IAT import patching skipped to avoid startup fail-fast"), std::string::npos);
 }

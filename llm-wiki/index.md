@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-19 (updated: build 0.1.3347 / tests 0.1.3349 - GTA native-FSR re-enable startup-arming fix)
+Last cross-checked: 2026-05-20 (updated: build 0.1.3362 / tests 0.1.3364 - GTA official FFX startup pass-through and inline fatal-exit dump hook)
 
 Primary sources:
 - `AGENTS.md`

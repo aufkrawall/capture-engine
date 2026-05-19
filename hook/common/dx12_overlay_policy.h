@@ -565,7 +565,7 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
 inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     bool runtimeOwnsSwapchain, bool streamlineFGRunning, fg_runtime::RuntimeMode runtimeMode,
     bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath, bool ffxPresentCallbackStalled = false) {
-    if (!runtimeOwnsSwapchain || streamlineFGRunning) {
+    if ((!runtimeOwnsSwapchain && !runtimeOwnedNativeFGPresentPath) || streamlineFGRunning) {
         return false;
     }
 
@@ -607,10 +607,8 @@ inline bool ShouldEndRuntimeOwnedNativeFGTeardownOnOriginalQueueReturn(bool queu
 }
 
 inline bool ShouldTreatNativeFSRDisabledConfigureAsStartupArming(bool recognizedFrameGenerationConfigure,
-                                                                 bool frameGenerationEnabled,
-                                                                 bool startupArmingPending,
-                                                                 bool runtimeOwnsSwapchain,
-                                                                 bool authoritativeFSRActive,
+                                                                 bool frameGenerationEnabled, bool startupArmingPending,
+                                                                 bool runtimeOwnsSwapchain, bool authoritativeFSRActive,
                                                                  bool hasDirectFFXApiConfirmation) {
     // GTA can create the native FSR runtime-owned swapchain first, then send an
     // initial disabled ffxConfigure packet while the real enable path is still
@@ -1814,6 +1812,24 @@ inline bool ShouldDeferOfficialFFXTakeoverSideEffectsUntilEnabledConfigure(bool 
     // teardown until direct API proof arrives.
     return runtimeOwnsSwapchain && callerFromFFXFGModule && officialAMDFFXRuntimeCreator &&
            !hasDirectFFXApiConfirmation;
+}
+
+inline bool ShouldProtectOfficialFFXStartupSwapchainCreateFromCESideEffects(bool authoritativeFFXRuntimeCreator,
+                                                                            bool officialAMDFFXRuntimeCreator,
+                                                                            bool hasDirectFFXApiConfirmation) {
+    // The official AMD runtime can fail fast immediately after creating its
+    // startup swapchain, before the enabled ffxConfigure packet is visible.
+    // During that window CE must not refresh Present hooks, inspect the AMD
+    // export table, or otherwise mutate the runtime-owned swapchain path.
+    return authoritativeFFXRuntimeCreator && officialAMDFFXRuntimeCreator && !hasDirectFFXApiConfirmation;
+}
+
+inline bool ShouldTreatNativeFSRSwapchainAsRuntimeOwnedForConfigure(bool runtimeOwnsSwapchain,
+                                                                    bool protectedOfficialFFXStartupPending) {
+    // The first disabled startup-arming ffxConfigure can arrive before CE has
+    // safely claimed the official AMD runtime swapchain queue. Keep that packet
+    // in the startup-arming path instead of treating it as a real OFF.
+    return runtimeOwnsSwapchain || protectedOfficialFFXStartupPending;
 }
 
 inline bool ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(
