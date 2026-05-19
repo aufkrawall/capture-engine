@@ -133,6 +133,11 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("Native FSR configure disabled; not installing DX12 present-callback bridge"),
               std::string::npos);
+    EXPECT_NE(contents.find("Native FSR disabled startup-arming configure forwarded without CE present-callback bridge"),
+              std::string::npos);
     EXPECT_NE(contents.find("Native FSR disabled configure used for startup arming"), std::string::npos);
     EXPECT_NE(contents.find("Native FSR startup configure arming"), std::string::npos);
+    EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);
+    EXPECT_NE(contents.find("FatalExitDump: Capturing pre-termination dump before crash-like process exit"),
+              std::string::npos);
 }

@@ -621,18 +621,15 @@ inline bool ShouldTreatNativeFSRDisabledConfigureAsStartupArming(bool recognized
 }
 
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
-                                                              bool frameGenerationEnabled,
-                                                              bool disabledStartupArmingConfigure = false) {
+                                                              bool frameGenerationEnabled) {
     // Disabled configure traffic can repeat rapidly during native-FSR teardown.
     // Installing a new CE present-callback bridge on those OFF packets keeps CE
     // entangled in the old runtime-owned Present path and adds log churn even
     // though FFX is explicitly disabling frame generation.
-    //
-    // The one exception is the fresh-startup arming packet described above: it
-    // is where the runtime hands CE the callback slot before the first enabled
-    // configure, so skipping the bridge there can leave FSR activation without
-    // a valid overlay composition callback.
-    return recognizedFrameGenerationConfigure && (frameGenerationEnabled || disabledStartupArmingConfigure);
+    // Fresh startup-arming disabled packets are also forwarded unmodified. GTA
+    // can fail-fast if a disabled setup configure receives a synthetic callback
+    // pointer before native FSR has accepted the real enabled configure.
+    return recognizedFrameGenerationConfigure && frameGenerationEnabled;
 }
 
 inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,

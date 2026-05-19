@@ -331,7 +331,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
                 g_FGCompat.HasDirectFFXApiConfirmation());
         DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(localConfig.swapChain);
         if (ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(
-                true, localConfig.frameGenerationEnabled != 0, disabledStartupArmingConfigure)) {
+                true, localConfig.frameGenerationEnabled != 0)) {
             void* bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
             bridgedOriginalCallback =
                 localConfig.presentCallback ? localConfig.presentCallback : g_DefaultPresentCallback;
@@ -368,6 +368,14 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
             originalDesc->frameGenerationEnabled ? 1 : 0, disabledStartupArmingConfigure ? 1 : 0,
             reinterpret_cast<void*>(originalDesc->presentCallback), reinterpret_cast<void*>(bridgedOriginalCallback),
             usingDefaultPresentCallback ? 1 : 0);
+    } else if (disabledStartupArmingConfigure) {
+        const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
+        HookLogImportant(
+            "FFX Hook: Native FSR disabled startup-arming configure forwarded without CE present-callback bridge "
+            "(context=%p frameID=%llu retainedBridge=%d originalPresent=%p)",
+            context, static_cast<unsigned long long>(originalDesc->frameID),
+            retainedExistingBridgeForDisabledConfigure ? 1 : 0,
+            reinterpret_cast<void*>(originalDesc->presentCallback));
     } else if (recognizedFGConfigure) {
         static std::atomic<int> s_disabledConfigureNoBridgeLogCount{0};
         const int logCount = s_disabledConfigureNoBridgeLogCount.fetch_add(1, std::memory_order_relaxed);

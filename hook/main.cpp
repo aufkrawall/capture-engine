@@ -56,17 +56,222 @@ static std::atomic<bool> g_ProcessTerminating{false};
 namespace {
 
 using MiniDumpWriteDump_t = decltype(&MiniDumpWriteDump);
+using RaiseFailFastException_t = VOID(WINAPI*)(PEXCEPTION_RECORD, PCONTEXT, DWORD);
+using TerminateProcess_t = BOOL(WINAPI*)(HANDLE, UINT);
+using ExitProcess_t = VOID(WINAPI*)(UINT);
 
 BOOL WINAPI HookedMiniDumpWriteDump(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
                                     PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
                                     PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
                                     PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
+VOID WINAPI HookedRaiseFailFastException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, DWORD Flags);
+BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode);
+VOID WINAPI HookedExitProcess(UINT uExitCode);
 
 std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
 std::atomic<bool> g_MiniDumpWriteDumpHookInstalled{false};
 std::once_flag g_MiniDumpWriteDumpHookOnce;
 
+std::atomic<RaiseFailFastException_t> g_OriginalRaiseFailFastException{nullptr};
+std::atomic<TerminateProcess_t> g_OriginalTerminateProcess{nullptr};
+std::atomic<ExitProcess_t> g_OriginalExitProcess{nullptr};
+std::atomic<bool> g_PreTerminationDumpAttempted{false};
+std::once_flag g_FatalTerminationDumpHookOnce;
+
 thread_local bool t_InMiniDumpWriteDumpHook = false;
+thread_local bool t_InFatalTerminationDumpHook = false;
+
+void* ResolveKernelExport(const char* functionName) {
+  const char* modules[] = {"KERNELBASE.dll", "kernel32.dll"};
+  for (const char* moduleName : modules) {
+    HMODULE module = GetModuleHandleA(moduleName);
+    if (!module) {
+      continue;
+    }
+
+    if (void* exportAddress = reinterpret_cast<void*>(GetProcAddress(module, functionName))) {
+      return exportAddress;
+    }
+  }
+  return nullptr;
+}
+
+bool IsCurrentProcessHandle(HANDLE processHandle) {
+  if (!processHandle) {
+    return false;
+  }
+  if (processHandle == GetCurrentProcess()) {
+    return true;
+  }
+
+  const DWORD targetPid = GetProcessId(processHandle);
+  return targetPid != 0 && targetPid == GetCurrentProcessId();
+}
+
+bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool targetIsCurrentProcess,
+                                       PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord) {
+  const bool alreadyAttempted = g_PreTerminationDumpAttempted.load(std::memory_order_acquire);
+  if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted)) {
+    return false;
+  }
+
+  bool expected = false;
+  if (!g_PreTerminationDumpAttempted.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+                                                             std::memory_order_acquire)) {
+    return false;
+  }
+
+  if (t_InFatalTerminationDumpHook) {
+    return false;
+  }
+
+  t_InFatalTerminationDumpHook = true;
+
+  CONTEXT capturedContext = {};
+  if (!contextRecord) {
+    RtlCaptureContext(&capturedContext);
+    contextRecord = &capturedContext;
+  }
+
+  EXCEPTION_RECORD synthesizedRecord = {};
+  if (!exceptionRecord) {
+    synthesizedRecord.ExceptionCode = exitCode;
+    synthesizedRecord.ExceptionAddress = __builtin_return_address(0);
+    exceptionRecord = &synthesizedRecord;
+  }
+
+  EXCEPTION_POINTERS pointers = {};
+  pointers.ExceptionRecord = exceptionRecord;
+  pointers.ContextRecord = contextRecord;
+
+  MINIDUMP_EXCEPTION_INFORMATION exceptionInfo = {};
+  exceptionInfo.ThreadId = GetCurrentThreadId();
+  exceptionInfo.ExceptionPointers = &pointers;
+  exceptionInfo.ClientPointers = FALSE;
+
+  char dumpHint[160] = {};
+  snprintf(dumpHint, sizeof(dumpHint), "fatal_exit_%s_%08lx.dmp", source ? source : "unknown",
+           static_cast<unsigned long>(exitCode));
+
+  HookLogImportant(
+      "FatalExitDump: Capturing pre-termination dump before crash-like process exit "
+      "(source=%s code=0x%08lX exceptionAddr=%p)",
+      source ? source : "unknown", static_cast<unsigned long>(exitCode), exceptionRecord->ExceptionAddress);
+  OutputDebugStringA("[FatalExitDump] Capturing pre-termination crash dump.\n");
+
+  const bool wroteDump = WriteSupplementalCrashDump(dumpHint, GetCurrentProcess(), GetCurrentProcessId(),
+                                                    ce::crash_dump_policy::kQuickAssertDumpType, &exceptionInfo);
+  HookLogImportant("FatalExitDump: Pre-termination dump %s (source=%s code=0x%08lX hint=%s)",
+                   wroteDump ? "captured" : "failed", source ? source : "unknown",
+                   static_cast<unsigned long>(exitCode), dumpHint);
+
+  t_InFatalTerminationDumpHook = false;
+  return wroteDump;
+}
+
+VOID WINAPI HookedRaiseFailFastException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, DWORD Flags) {
+  const DWORD code = ExceptionRecord ? ExceptionRecord->ExceptionCode : ce::crash_dump_policy::kFailFastExceptionExitCode;
+  CapturePreTerminationDumpIfNeeded("RaiseFailFastException", code, true, ExceptionRecord, ContextRecord);
+
+  const auto original = g_OriginalRaiseFailFastException.load(std::memory_order_acquire);
+  if (original) {
+    original(ExceptionRecord, ContextRecord, Flags);
+    return;
+  }
+
+  RaiseFailFastException(ExceptionRecord, ContextRecord, Flags);
+}
+
+BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode) {
+  CapturePreTerminationDumpIfNeeded("TerminateProcess", static_cast<DWORD>(uExitCode), IsCurrentProcessHandle(hProcess),
+                                    nullptr, nullptr);
+
+  const auto original = g_OriginalTerminateProcess.load(std::memory_order_acquire);
+  if (original) {
+    return original(hProcess, uExitCode);
+  }
+
+  return TerminateProcess(hProcess, uExitCode);
+}
+
+VOID WINAPI HookedExitProcess(UINT uExitCode) {
+  CapturePreTerminationDumpIfNeeded("ExitProcess", static_cast<DWORD>(uExitCode), true, nullptr, nullptr);
+
+  const auto original = g_OriginalExitProcess.load(std::memory_order_acquire);
+  if (original) {
+    original(uExitCode);
+    return;
+  }
+
+  ExitProcess(uExitCode);
+}
+
+void TryInstallFatalTerminationDumpHooks() {
+  std::call_once(g_FatalTerminationDumpHookOnce, []() {
+    g_OriginalRaiseFailFastException.store(
+        reinterpret_cast<RaiseFailFastException_t>(ResolveKernelExport("RaiseFailFastException")),
+        std::memory_order_release);
+    g_OriginalTerminateProcess.store(reinterpret_cast<TerminateProcess_t>(ResolveKernelExport("TerminateProcess")),
+                                     std::memory_order_release);
+    g_OriginalExitProcess.store(reinterpret_cast<ExitProcess_t>(ResolveKernelExport("ExitProcess")),
+                                std::memory_order_release);
+
+    bool patchedAny = false;
+    auto patchRaise = [&patchedAny](const char* sourceModule) {
+      void* patchedOriginal = nullptr;
+      if (IATHook::PatchIATAllModules(sourceModule, "RaiseFailFastException",
+                                      reinterpret_cast<void*>(&HookedRaiseFailFastException), &patchedOriginal)) {
+        patchedAny = true;
+        if (patchedOriginal && !g_OriginalRaiseFailFastException.load(std::memory_order_acquire)) {
+          g_OriginalRaiseFailFastException.store(reinterpret_cast<RaiseFailFastException_t>(patchedOriginal),
+                                                 std::memory_order_release);
+        }
+      }
+    };
+
+    auto patchTerminate = [&patchedAny](const char* sourceModule) {
+      void* patchedOriginal = nullptr;
+      if (IATHook::PatchIATAllModules(sourceModule, "TerminateProcess",
+                                      reinterpret_cast<void*>(&HookedTerminateProcess), &patchedOriginal)) {
+        patchedAny = true;
+        if (patchedOriginal && !g_OriginalTerminateProcess.load(std::memory_order_acquire)) {
+          g_OriginalTerminateProcess.store(reinterpret_cast<TerminateProcess_t>(patchedOriginal),
+                                           std::memory_order_release);
+        }
+      }
+    };
+
+    auto patchExit = [&patchedAny](const char* sourceModule) {
+      void* patchedOriginal = nullptr;
+      if (IATHook::PatchIATAllModules(sourceModule, "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess),
+                                      &patchedOriginal)) {
+        patchedAny = true;
+        if (patchedOriginal && !g_OriginalExitProcess.load(std::memory_order_acquire)) {
+          g_OriginalExitProcess.store(reinterpret_cast<ExitProcess_t>(patchedOriginal), std::memory_order_release);
+        }
+      }
+    };
+
+    patchRaise("kernel32.dll");
+    patchRaise("KERNELBASE.dll");
+    patchTerminate("kernel32.dll");
+    patchTerminate("KERNELBASE.dll");
+    patchExit("kernel32.dll");
+    patchExit("KERNELBASE.dll");
+
+    IATHook::RegisterDynamicHook("RaiseFailFastException", reinterpret_cast<void*>(&HookedRaiseFailFastException),
+                                 nullptr);
+    IATHook::RegisterDynamicHook("TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess), nullptr);
+    IATHook::RegisterDynamicHook("ExitProcess", reinterpret_cast<void*>(&HookedExitProcess), nullptr);
+
+    HookLogImportant(
+        "FatalExitDump: Installed pre-termination dump hooks (patched=%d raiseOriginal=%p terminateOriginal=%p "
+        "exitOriginal=%p)",
+        patchedAny ? 1 : 0, reinterpret_cast<void*>(g_OriginalRaiseFailFastException.load(std::memory_order_acquire)),
+        reinterpret_cast<void*>(g_OriginalTerminateProcess.load(std::memory_order_acquire)),
+        reinterpret_cast<void*>(g_OriginalExitProcess.load(std::memory_order_acquire)));
+  });
+}
 
 struct ExternalDumpStormRecord {
   ULONGLONG firstHitMs = 0;
@@ -174,7 +379,7 @@ void TerminateProcessAfterExternalDumpStorm(const ExternalDumpGateDecision& deci
       "(hits=%u strong=%d signature=%s)",
       decision.hitCount, decision.strongSignature ? 1 : 0, decision.key.c_str());
   OutputDebugStringA("[CrashMirror] External dump storm threshold reached; terminating process.\n");
-  TerminateProcess(GetCurrentProcess(), 0xE000D00D);
+  TerminateProcess(GetCurrentProcess(), ce::crash_dump_policy::kExternalDumpStormTerminationExitCode);
 }
 
 std::string BuildExternalDumpMirrorPath(const char* sourcePath) {
@@ -2096,6 +2301,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   OriginalLoadLibraryExW.store(tmpLoadLibraryExW, std::memory_order_release);
   OriginalCreateProcessA.store(tmpCreateProcessA, std::memory_order_release);
   OriginalCreateProcessW.store(tmpCreateProcessW, std::memory_order_release);
+
+  // GTA and some middleware can terminate with fail-fast style status codes
+  // before VEH/UEF crash filters get control. Keep this narrow and passive:
+  // one CE-owned dump for current-process fatal exits, then forward.
+  IATHook::InitializeGetProcAddressHook();
+  TryInstallFatalTerminationDumpHooks();
 
   // Install RegQueryValueExW for DLSS Debug Overlay
   if (GetModuleHandleA("advapi32.dll")) {

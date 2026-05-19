@@ -126,3 +126,15 @@ TEST(CrashDumpPolicyTest, WeakExternalDumpSignatureCanDedupButCannotTerminate) {
     EXPECT_FALSE(policy::ShouldTerminateAfterExternalDumpStorm(policy::IsStrongExternalDumpSignature(signature), 5, 10,
                                                               20, true, false));
 }
+
+TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesOnlyCurrentProcessCrashLikeExitCodesOnce) {
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, policy::kFailFastExceptionExitCode, false));
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, EXCEPTION_ACCESS_VIOLATION, false));
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 0xC000001D, false));
+
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(false, policy::kFailFastExceptionExitCode, false));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, policy::kFailFastExceptionExitCode, true));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, policy::kExternalDumpStormTerminationExitCode, false));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 0, false));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 1, false));
+}

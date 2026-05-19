@@ -21,6 +21,8 @@ inline constexpr const char* kSupplementalExternalCrashDumpPrefix = "crash_exter
 inline constexpr const char* kSupplementalExternalCrashDumpFallbackFileName = "crash_external_dump.dmp";
 inline constexpr ULONGLONG kExternalDumpStormWindowMs = 30'000;
 inline constexpr uint32_t kExternalDumpStormTerminateHitThreshold = 3;
+inline constexpr DWORD kExternalDumpStormTerminationExitCode = 0xE000D00D;
+inline constexpr DWORD kFailFastExceptionExitCode = 0xC0000409;
 
 inline constexpr MINIDUMP_TYPE kRichCrashDumpType = static_cast<MINIDUMP_TYPE>(
     MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
@@ -277,6 +279,24 @@ inline bool ShouldTerminateAfterExternalDumpStorm(bool strongSignature, uint32_t
         return false;
     }
     return currentHitMs >= firstHitMs && (currentHitMs - firstHitMs) <= kExternalDumpStormWindowMs;
+}
+
+inline bool IsCrashLikeProcessExitCode(DWORD exitCode) {
+    if (exitCode == kExternalDumpStormTerminationExitCode) {
+        return false;
+    }
+    if (exitCode == kFailFastExceptionExitCode || exitCode == EXCEPTION_ACCESS_VIOLATION ||
+        exitCode == EXCEPTION_ILLEGAL_INSTRUCTION || exitCode == EXCEPTION_STACK_OVERFLOW) {
+        return true;
+    }
+
+    // NTSTATUS severity bits 11xx identify error/status-failure exits. Normal
+    // app exits such as 0, 1, or HRESULT-style success/warning codes stay out.
+    return (exitCode & 0xC0000000UL) == 0xC0000000UL;
+}
+
+inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD exitCode, bool alreadyAttempted) {
+    return targetIsCurrentProcess && !alreadyAttempted && IsCrashLikeProcessExitCode(exitCode);
 }
 
 }  // namespace ce::crash_dump_policy
