@@ -140,4 +140,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Capturing pre-termination dump before crash-like process exit"),
               std::string::npos);
+    EXPECT_NE(contents.find("Registered module-filtered dynamic hooks for FFX exports"), std::string::npos);
+    EXPECT_NE(contents.find("Using IAT/GetProcAddress-only hooks for protected official FFX module"),
+              std::string::npos);
 }

@@ -11,6 +11,7 @@
 #include "../common/fg_detection.h"
 #include "../common/fg_session_state.h"
 #include "../common/hook_common.h"
+#include "../common/overlay_compat.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
 #include "dx12_hook.h"
@@ -67,6 +68,7 @@ std::mutex g_InitMutex;
 std::atomic<bool> g_Initialized{false};
 std::atomic<int> g_ActiveFGContextCount{0};
 std::atomic<bool> g_NoModulesLogged{false};
+std::once_flag g_DynamicHookRegistrationOnce;
 
 // CRITICAL FIX: Track context types to know if destroyed context is FG
 std::mutex g_ContextMapMutex;
@@ -423,6 +425,34 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
 // Hook Installation via GetProcAddress Detour
 // ============================================================================
 
+bool IsFFXDynamicHookOwnerModule(const char* moduleBaseName, HMODULE module) {
+    if (moduleBaseName && ce::overlay_compat::IsFFXFrameGenerationModulePath(moduleBaseName)) {
+        return true;
+    }
+
+    char modulePath[MAX_PATH] = {};
+    if (module && GetModuleFileNameA(module, modulePath, sizeof(modulePath))) {
+        return ce::overlay_compat::IsFFXFrameGenerationModulePath(modulePath);
+    }
+
+    return false;
+}
+
+void RegisterDynamicHooksOnce() {
+    std::call_once(g_DynamicHookRegistrationOnce, [] {
+        IATHook::RegisterDynamicHookFiltered("ffxCreateContext", reinterpret_cast<void*>(Hooked_ffxCreateContext),
+                                             reinterpret_cast<void**>(&g_Original_ffxCreateContext),
+                                             IsFFXDynamicHookOwnerModule);
+        IATHook::RegisterDynamicHookFiltered("ffxDestroyContext", reinterpret_cast<void*>(Hooked_ffxDestroyContext),
+                                             reinterpret_cast<void**>(&g_Original_ffxDestroyContext),
+                                             IsFFXDynamicHookOwnerModule);
+        IATHook::RegisterDynamicHookFiltered("ffxConfigure", reinterpret_cast<void*>(Hooked_ffxConfigure),
+                                             reinterpret_cast<void**>(&g_Original_ffxConfigure),
+                                             IsFFXDynamicHookOwnerModule);
+        HookLogImportant("FFX Hook: Registered module-filtered dynamic hooks for FFX exports");
+    });
+}
+
 bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     if (!hModule)
         return false;
@@ -467,45 +497,68 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     }
     g_HookedModule = hModule;
 
-    // Install IAT hooks in all loaded modules to intercept calls to FFX functions
-    // This patches the import tables of the game exe and all loaded DLLs
+    RegisterDynamicHooksOnce();
+
+    const bool allowInlineHooks = ce::ffx_api::ShouldInlineHookFFXExportsForModule(moduleName);
+    if (!allowInlineHooks && firstSeenModule) {
+        HookLogImportant(
+            "FFX Hook: Using IAT/GetProcAddress-only hooks for protected official FFX module %s; inline export "
+            "patching skipped to avoid startup fail-fast",
+            moduleName);
+    }
+
+    // Install IAT hooks in loaded non-system/non-overlay modules to intercept calls to FFX functions.
+    // Official AMD runtime DLLs are intentionally not inline-patched: GTA Enhanced has been observed to
+    // fail fast immediately after export-byte mutation during native-FSR startup.
 
     void* dummy = nullptr;
-    bool hookedAnything = false;
+    bool routedAnything = false;
+    bool inlineHookedAnything = false;
+    bool iatPatchedAnything = false;
     if (createCtx) {
-        hookedAnything |= InstallInlineHookOnce(
-            reinterpret_cast<void*>(createCtx), reinterpret_cast<void*>(Hooked_ffxCreateContext),
-            g_Original_ffxCreateContext, g_ffxCreateContextInlineHooked, g_ffxCreateContextTarget, "ffxCreateContext");
-        HookLog("FFX Hook: ffxCreateContext found at %p, hooking via IAT", createCtx);
-        // Patch IAT for all modules that import from the FFX DLL
-        IATHook::PatchIATAllModules(moduleName, "ffxCreateContext", (void*)Hooked_ffxCreateContext, &dummy);
-        // Also register for dynamic hook (GetProcAddress interception)
-        IATHook::RegisterDynamicHook("ffxCreateContext", (void*)Hooked_ffxCreateContext,
-                                     (void**)&g_Original_ffxCreateContext);
+        routedAnything = true;
+        if (allowInlineHooks) {
+            inlineHookedAnything |= InstallInlineHookOnce(
+                reinterpret_cast<void*>(createCtx), reinterpret_cast<void*>(Hooked_ffxCreateContext),
+                g_Original_ffxCreateContext, g_ffxCreateContextInlineHooked, g_ffxCreateContextTarget,
+                "ffxCreateContext");
+        }
+        HookLog("FFX Hook: ffxCreateContext found at %p, hooking via IAT/dynamic (inline=%d)", createCtx,
+                allowInlineHooks ? 1 : 0);
+        iatPatchedAnything |=
+            IATHook::PatchIATAllModules(moduleName, "ffxCreateContext", (void*)Hooked_ffxCreateContext, &dummy);
     }
 
     if (destroyCtx) {
-        hookedAnything |=
-            InstallInlineHookOnce(reinterpret_cast<void*>(destroyCtx),
-                                  reinterpret_cast<void*>(Hooked_ffxDestroyContext), g_Original_ffxDestroyContext,
-                                  g_ffxDestroyContextInlineHooked, g_ffxDestroyContextTarget, "ffxDestroyContext");
-        HookLog("FFX Hook: ffxDestroyContext found at %p, hooking via IAT", destroyCtx);
-        IATHook::PatchIATAllModules(moduleName, "ffxDestroyContext", (void*)Hooked_ffxDestroyContext, &dummy);
-        IATHook::RegisterDynamicHook("ffxDestroyContext", (void*)Hooked_ffxDestroyContext,
-                                     (void**)&g_Original_ffxDestroyContext);
+        routedAnything = true;
+        if (allowInlineHooks) {
+            inlineHookedAnything |=
+                InstallInlineHookOnce(reinterpret_cast<void*>(destroyCtx),
+                                      reinterpret_cast<void*>(Hooked_ffxDestroyContext), g_Original_ffxDestroyContext,
+                                      g_ffxDestroyContextInlineHooked, g_ffxDestroyContextTarget, "ffxDestroyContext");
+        }
+        HookLog("FFX Hook: ffxDestroyContext found at %p, hooking via IAT/dynamic (inline=%d)", destroyCtx,
+                allowInlineHooks ? 1 : 0);
+        iatPatchedAnything |=
+            IATHook::PatchIATAllModules(moduleName, "ffxDestroyContext", (void*)Hooked_ffxDestroyContext, &dummy);
     }
 
     if (configureCtx) {
-        hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(configureCtx),
-                                                reinterpret_cast<void*>(Hooked_ffxConfigure), g_Original_ffxConfigure,
-                                                g_ffxConfigureInlineHooked, g_ffxConfigureTarget, "ffxConfigure");
-        HookLog("FFX Hook: ffxConfigure found at %p, hooking via IAT", configureCtx);
-        IATHook::PatchIATAllModules(moduleName, "ffxConfigure", (void*)Hooked_ffxConfigure, &dummy);
-        IATHook::RegisterDynamicHook("ffxConfigure", (void*)Hooked_ffxConfigure, (void**)&g_Original_ffxConfigure);
+        routedAnything = true;
+        if (allowInlineHooks) {
+            inlineHookedAnything |= InstallInlineHookOnce(
+                reinterpret_cast<void*>(configureCtx), reinterpret_cast<void*>(Hooked_ffxConfigure),
+                g_Original_ffxConfigure, g_ffxConfigureInlineHooked, g_ffxConfigureTarget, "ffxConfigure");
+        }
+        HookLog("FFX Hook: ffxConfigure found at %p, hooking via IAT/dynamic (inline=%d)", configureCtx,
+                allowInlineHooks ? 1 : 0);
+        iatPatchedAnything |=
+            IATHook::PatchIATAllModules(moduleName, "ffxConfigure", (void*)Hooked_ffxConfigure, &dummy);
     }
 
-    if (hookedAnything) {
-        HookLog("FFX Hook: Hooks installed successfully for %s", moduleName);
+    if (routedAnything) {
+        HookLog("FFX Hook: Hooks installed successfully for %s (inline=%d iat=%d dynamic=1)", moduleName,
+                inlineHookedAnything ? 1 : 0, iatPatchedAnything ? 1 : 0);
     }
     return true;
 }
@@ -531,6 +584,8 @@ void Init() {
     if (!g_Initialized.load(std::memory_order_acquire) && !g_NoModulesLogged.load(std::memory_order_acquire)) {
         HookLog("FFX Hook: Initializing...");
     }
+
+    RegisterDynamicHooksOnce();
 
     // Try to find FFX modules.
     // These cover both the older explicit FG DLL names and newer generic

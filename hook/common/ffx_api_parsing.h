@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 
 namespace ce::ffx_api {
 
@@ -147,6 +148,62 @@ inline bool ResolvePresentCallbackUsePremulAlpha(const CallbackDescFrameGenerati
     }
 
     return false;
+}
+
+inline char ToLowerAscii(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+inline const char* PathFileName(const char* path) {
+    if (!path) {
+        return "";
+    }
+
+    const char* fileName = path;
+    for (const char* cursor = path; *cursor; ++cursor) {
+        if (*cursor == '\\' || *cursor == '/') {
+            fileName = cursor + 1;
+        }
+    }
+    return fileName;
+}
+
+inline bool ContainsAsciiInsensitive(const char* value, const char* needle) {
+    if (!value || !needle || !*needle) {
+        return false;
+    }
+
+    const size_t needleLen = std::strlen(needle);
+    for (const char* cursor = value; *cursor; ++cursor) {
+        size_t matched = 0;
+        while (matched < needleLen && cursor[matched] &&
+               ToLowerAscii(cursor[matched]) == ToLowerAscii(needle[matched])) {
+            ++matched;
+        }
+        if (matched == needleLen) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool IsOfficialAMDFFXRuntimeModuleName(const char* moduleNameOrPath) {
+    const char* fileName = PathFileName(moduleNameOrPath);
+    if (!fileName || !*fileName) {
+        return false;
+    }
+
+    return ContainsAsciiInsensitive(fileName, "amd_fidelityfx_framegeneration") ||
+           ContainsAsciiInsensitive(fileName, "amd_fidelityfx_dx12") ||
+           ContainsAsciiInsensitive(fileName, "amd_fidelityfx_vk") ||
+           ContainsAsciiInsensitive(fileName, "amd_fidelityfx_fg");
+}
+
+inline bool ShouldInlineHookFFXExportsForModule(const char* moduleNameOrPath) {
+    if (!moduleNameOrPath || !*moduleNameOrPath) {
+        return false;
+    }
+    return !IsOfficialAMDFFXRuntimeModuleName(moduleNameOrPath);
 }
 
 }  // namespace ce::ffx_api

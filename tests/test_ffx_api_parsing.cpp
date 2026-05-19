@@ -106,6 +106,29 @@ TEST(FFXApiParsingTest, PresentCallbackPremulAlphaReadsLinkedExtension) {
     EXPECT_TRUE(ce::ffx_api::ResolvePresentCallbackUsePremulAlpha(&desc));
 }
 
+TEST(FFXApiParsingTest, OfficialAMDFFXRuntimeModulesUseNonInlineExportHooks) {
+    EXPECT_TRUE(ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName("amd_fidelityfx_dx12.dll"));
+    EXPECT_TRUE(ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName(
+        "C:\\Games\\GTAV\\amd_fidelityfx_framegeneration_dx12.dll"));
+    EXPECT_TRUE(ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName("AMD_FidelityFX_FG.dll"));
+
+    EXPECT_FALSE(ce::ffx_api::ShouldInlineHookFFXExportsForModule("amd_fidelityfx_dx12.dll"));
+    EXPECT_FALSE(ce::ffx_api::ShouldInlineHookFFXExportsForModule(
+        "C:\\Games\\GTAV\\amd_fidelityfx_framegeneration_dx12.dll"));
+    EXPECT_FALSE(ce::ffx_api::ShouldInlineHookFFXExportsForModule(nullptr));
+}
+
+TEST(FFXApiParsingTest, ProxyAndLegacyFFXModulesCanStillUseInlineExportHooks) {
+    EXPECT_FALSE(ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName("ffx_frameinterpolation_x64.dll"));
+    EXPECT_FALSE(ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName("nvngx_dlssg.dll"));
+    EXPECT_FALSE(ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName("fsr3fg.dll"));
+
+    EXPECT_TRUE(ce::ffx_api::ShouldInlineHookFFXExportsForModule("ffx_frameinterpolation_x64.dll"));
+    EXPECT_TRUE(ce::ffx_api::ShouldInlineHookFFXExportsForModule("ffx_framegeneration.dll"));
+    EXPECT_TRUE(ce::ffx_api::ShouldInlineHookFFXExportsForModule("nvngx_dlssg.dll"));
+    EXPECT_TRUE(ce::ffx_api::ShouldInlineHookFFXExportsForModule("fsr3mod.dll"));
+}
+
 TEST(FFXHookValidationTest, ProbeRecognizesExpectedInlineDetourSnapshot) {
 #ifdef _WIN64
     std::array<unsigned char, 14> snapshot{};
