@@ -606,13 +606,33 @@ inline bool ShouldEndRuntimeOwnedNativeFGTeardownOnOriginalQueueReturn(bool queu
            !authoritativeFSRActive && !fg_runtime::RuntimeModeUsesFSR(runtimeMode);
 }
 
+inline bool ShouldTreatNativeFSRDisabledConfigureAsStartupArming(bool recognizedFrameGenerationConfigure,
+                                                                 bool frameGenerationEnabled,
+                                                                 bool startupArmingPending,
+                                                                 bool runtimeOwnsSwapchain,
+                                                                 bool authoritativeFSRActive,
+                                                                 bool hasDirectFFXApiConfirmation) {
+    // GTA can create the native FSR runtime-owned swapchain first, then send an
+    // initial disabled ffxConfigure packet while the real enable path is still
+    // arming. Treat that packet as setup, not as an explicit user OFF signal,
+    // until the current FFX takeover has produced direct enabled API proof.
+    return recognizedFrameGenerationConfigure && !frameGenerationEnabled && startupArmingPending &&
+           runtimeOwnsSwapchain && authoritativeFSRActive && !hasDirectFFXApiConfirmation;
+}
+
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
-                                                              bool frameGenerationEnabled) {
+                                                              bool frameGenerationEnabled,
+                                                              bool disabledStartupArmingConfigure = false) {
     // Disabled configure traffic can repeat rapidly during native-FSR teardown.
     // Installing a new CE present-callback bridge on those OFF packets keeps CE
     // entangled in the old runtime-owned Present path and adds log churn even
     // though FFX is explicitly disabling frame generation.
-    return recognizedFrameGenerationConfigure && frameGenerationEnabled;
+    //
+    // The one exception is the fresh-startup arming packet described above: it
+    // is where the runtime hands CE the callback slot before the first enabled
+    // configure, so skipping the bridge there can leave FSR activation without
+    // a valid overlay composition callback.
+    return recognizedFrameGenerationConfigure && (frameGenerationEnabled || disabledStartupArmingConfigure);
 }
 
 inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,

@@ -286,6 +286,7 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
             HookLog(
                 "FFX Hook: FSR Frame Generation DEACTIVATED (all contexts "
                 "destroyed)");
+            DX12_ClearNativeFSRStartupConfigureArming("FFX FG context destroy");
             g_FGCompat.SetFSRFGActive(false);
             ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kFFXContextDestroy,
                                         "FFXHook::Hooked_ffxDestroyContext", context, nullptr,
@@ -320,11 +321,17 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     bool usingDefaultPresentCallback = false;
     bool installedPresentCallbackBridge = false;
     bool retainedExistingBridgeForDisabledConfigure = false;
+    bool disabledStartupArmingConfigure = false;
     if (recognizedFGConfigure) {
         localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
+        disabledStartupArmingConfigure =
+            ce::dx12_overlay_policy::ShouldTreatNativeFSRDisabledConfigureAsStartupArming(
+                true, localConfig.frameGenerationEnabled != 0, DX12_IsNativeFSRStartupConfigureArmingPending(),
+                DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration(), g_FGCompat.IsFSRFGApiActive(),
+                g_FGCompat.HasDirectFFXApiConfirmation());
         DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(localConfig.swapChain);
         if (ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(
-                true, localConfig.frameGenerationEnabled != 0)) {
+                true, localConfig.frameGenerationEnabled != 0, disabledStartupArmingConfigure)) {
             void* bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
             bridgedOriginalCallback =
                 localConfig.presentCallback ? localConfig.presentCallback : g_DefaultPresentCallback;
@@ -356,10 +363,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
         HookLogImportant(
             "FFX Hook: Installed DX12 overlay present-callback bridge for context=%p frameID=%llu enabled=%d "
-            "originalPresent=%p resolvedPresent=%p usedDefaultPresent=%d",
+            "startupArming=%d originalPresent=%p resolvedPresent=%p usedDefaultPresent=%d",
             context, static_cast<unsigned long long>(originalDesc->frameID),
-            originalDesc->frameGenerationEnabled ? 1 : 0, reinterpret_cast<void*>(originalDesc->presentCallback),
-            reinterpret_cast<void*>(bridgedOriginalCallback), usingDefaultPresentCallback ? 1 : 0);
+            originalDesc->frameGenerationEnabled ? 1 : 0, disabledStartupArmingConfigure ? 1 : 0,
+            reinterpret_cast<void*>(originalDesc->presentCallback), reinterpret_cast<void*>(bridgedOriginalCallback),
+            usingDefaultPresentCallback ? 1 : 0);
     } else if (recognizedFGConfigure) {
         static std::atomic<int> s_disabledConfigureNoBridgeLogCount{0};
         const int logCount = s_disabledConfigureNoBridgeLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -377,6 +385,16 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     HookLog("FFX Hook: Frame Generation configure %s (context=%p, frameID=%llu, type=0x%llx)",
             parsed.enabled ? "ENABLED" : "DISABLED", context, (unsigned long long)parsed.frameId,
             (unsigned long long)desc->type);
+
+    if (!parsed.enabled && disabledStartupArmingConfigure) {
+        HookLogImportant(
+            "FFX Hook: Native FSR disabled configure used for startup arming; preserving authoritative FSR state "
+            "until direct enabled configure arrives (context=%p frameID=%llu runtimeOwned=%d directFFX=%d)",
+            context, static_cast<unsigned long long>(parsed.frameId),
+            DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() ? 1 : 0,
+            g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0);
+        return result;
+    }
 
     // Native FSR can keep its context alive while toggling FG on/off via
     // ffxConfigure. Trust that runtime signal over context lifetime.
@@ -632,6 +650,7 @@ void Shutdown() {
     g_HookedModule = nullptr;
     g_DefaultPresentCallback = nullptr;
     g_ActiveFGContextCount.store(0, std::memory_order_release);
+    DX12_ClearNativeFSRStartupConfigureArming("FFX hook shutdown");
     g_FGCompat.SetFSRFGActive(false);
     g_FGCompat.SetFSRFGSupportPresent(false);
     g_NoModulesLogged.store(false, std::memory_order_release);

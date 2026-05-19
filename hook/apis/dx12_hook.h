@@ -94,6 +94,8 @@ void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
 void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);
 void DX12_ServiceDeferredECLProbe();
 void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled);
+bool DX12_IsNativeFSRStartupConfigureArmingPending();
+void DX12_ClearNativeFSRStartupConfigureArming(const char* reason);
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* callbackDesc,
                                                  void* userCtx);
 void RemoveGlobalVTableHooks();
