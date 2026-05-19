@@ -129,4 +129,8 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("inline CreateSwapChainForHwnd hook already handled forwarded swapchain side-effects"),
               std::string::npos);
     EXPECT_NE(contents.find("External dump storm threshold reached"), std::string::npos);
+    EXPECT_NE(contents.find("Explicit native FSR OFF plus origGame swapchain return ending runtime-owned native-FG"),
+              std::string::npos);
+    EXPECT_NE(contents.find("Native FSR configure disabled; not installing DX12 present-callback bridge"),
+              std::string::npos);
 }

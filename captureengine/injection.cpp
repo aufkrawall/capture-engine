@@ -277,6 +277,10 @@ void InjectionManager::Update() {
                        [](const InjectedProcess& p) {
                            DWORD exitCode;
                            if (GetExitCodeProcess(p.hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+                               LogInfo(
+                                   "[Inject] Tracked injected process exited: %s (PID: %lu, exit=0x%08lX). If no "
+                                   "session dump exists, the process ended outside CE's in-process crash/dump path.",
+                                   p.name.c_str(), (unsigned long)p.pid, (unsigned long)exitCode);
                                CloseHandle(p.hProcess);
                                return true;
                            }

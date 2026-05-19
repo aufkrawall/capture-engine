@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-18 (updated: build 0.1.3314 / tests 0.1.3316 - GTA pure-DLSS Streamline startup transport fix)
+Last cross-checked: 2026-05-19 (updated: build 0.1.3340 / tests 0.1.3342 - GTA native-FSR OFF teardown fix)
 
 Primary sources:
 - `AGENTS.md`

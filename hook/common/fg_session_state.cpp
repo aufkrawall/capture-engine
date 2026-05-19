@@ -74,7 +74,7 @@ const char* SafeString(const char* value) {
 
 bool IsHighVolumeRuntimeUpdateEvent(FGEventKind kind) {
     return kind == FGEventKind::kStreamlineGetStateRuntimeUpdate ||
-           kind == FGEventKind::kStreamlineSetOptionsRuntimeUpdate;
+           kind == FGEventKind::kStreamlineSetOptionsRuntimeUpdate || kind == FGEventKind::kNativeFSRConfigureOff;
 }
 
 bool ShouldLogFGEventLocked(SessionState& state, const FGEvent& event) {
@@ -83,10 +83,10 @@ bool ShouldLogFGEventLocked(SessionState& state, const FGEvent& event) {
     }
 
     const uint64_t logCount = ++state.runtimeUpdateEventLogCount;
-    const bool runtimeStateChanged =
-        !state.runtimeUpdateEventLogValid || state.lastRuntimeUpdateEventRuntime != event.hintedRuntimeMode ||
-        state.lastRuntimeUpdateEventActive != event.hintedActive ||
-        state.lastRuntimeUpdateEventExplicit != event.hintedExplicitActivation;
+    const bool runtimeStateChanged = !state.runtimeUpdateEventLogValid ||
+                                     state.lastRuntimeUpdateEventRuntime != event.hintedRuntimeMode ||
+                                     state.lastRuntimeUpdateEventActive != event.hintedActive ||
+                                     state.lastRuntimeUpdateEventExplicit != event.hintedExplicitActivation;
     if (runtimeStateChanged) {
         state.runtimeUpdateEventLogValid = true;
         state.lastRuntimeUpdateEventRuntime = event.hintedRuntimeMode;

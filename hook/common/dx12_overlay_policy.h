@@ -187,8 +187,7 @@ inline bool ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntim
            callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
 }
 
-inline bool ShouldSkipGlobalCreateSwapchainForHwndSideEffectsAfterInlineForward(
-    bool inlineHookHandledForwardedCall) {
+inline bool ShouldSkipGlobalCreateSwapchainForHwndSideEffectsAfterInlineForward(bool inlineHookHandledForwardedCall) {
     // Global IDXGIFactory2 vtable calls can forward into the real DXGI export,
     // which our inline hook also owns. If the inline hook already handled the
     // forwarded CreateSwapChainForHwnd call, the global detour must not replay
@@ -225,8 +224,9 @@ inline bool ShouldInvalidateConfirmedPostSLForFreshAuthoritativeStreamlineHandof
     return freshAuthoritativeStreamlineHandoff && postSLConfirmedRendering && !newQueueMatchesPreviousSwapchainQueue;
 }
 
-inline bool ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(
-    bool freshAuthoritativeStreamlineHandoff, bool hasPostSLQueueProof, bool queueProofMatchesNewSwapchainQueue) {
+inline bool ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(bool freshAuthoritativeStreamlineHandoff,
+                                                                              bool hasPostSLQueueProof,
+                                                                              bool queueProofMatchesNewSwapchainQueue) {
     return freshAuthoritativeStreamlineHandoff && hasPostSLQueueProof && !queueProofMatchesNewSwapchainQueue;
 }
 
@@ -590,6 +590,29 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     // callback-owned Present path, even while the temporary effective runtime
     // label says Off.
     return authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode) || runtimeOwnedNativeFGPresentPath;
+}
+
+inline bool ShouldEndRuntimeOwnedNativeFGTeardownOnOriginalQueueReturn(bool queueMatchesOriginalGameQueue,
+                                                                       bool explicitNativeFSROffPending,
+                                                                       bool authoritativeFSRActive,
+                                                                       fg_runtime::RuntimeMode runtimeMode,
+                                                                       bool runtimeOwnedNativeFGPresentPath) {
+    // An explicit native-FSR OFF configure is the stronger signal we were
+    // waiting for. Once the live swapchain queue has returned to the original
+    // game queue and no FSR runtime state remains active, a stale
+    // runtimeOwnedNativeFGPresentPath latch must not keep CE classified as
+    // runtime-owned FSR forever.
+    return queueMatchesOriginalGameQueue && explicitNativeFSROffPending && runtimeOwnedNativeFGPresentPath &&
+           !authoritativeFSRActive && !fg_runtime::RuntimeModeUsesFSR(runtimeMode);
+}
+
+inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
+                                                              bool frameGenerationEnabled) {
+    // Disabled configure traffic can repeat rapidly during native-FSR teardown.
+    // Installing a new CE present-callback bridge on those OFF packets keeps CE
+    // entangled in the old runtime-owned Present path and adds log churn even
+    // though FFX is explicitly disabling frame generation.
+    return recognizedFrameGenerationConfigure && frameGenerationEnabled;
 }
 
 inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,
@@ -1554,8 +1577,7 @@ inline constexpr int GetConfirmedPostSLStaleOffWarmupProtectionLastFrame() {
     return GetConfirmedPostSLWarmupProofFrameThreshold();
 }
 
-inline bool ShouldDeferStaleOffDuringConfirmedPostSLWarmup(bool postSLConfirmedRendering,
-                                                           int stablePostSLFrameCount) {
+inline bool ShouldDeferStaleOffDuringConfirmedPostSLWarmup(bool postSLConfirmedRendering, int stablePostSLFrameCount) {
     // GTA can keep reporting transient inactive Streamline DLSSG data after the
     // generic startup stale-OFF guard has done its job and PostSL is already
     // submitting successfully. Treat only startup-protected OFF churn as warmup
@@ -1631,17 +1653,15 @@ inline bool ShouldServicePostSLStartupActivationWhileOffChurnDeferred(bool shoul
                                                                       bool activationPending,
                                                                       bool postSLStartupActivationEntered,
                                                                       bool callbackInstalled) {
-    return shouldKeepOffChurnDeferred && !startupTransitionWindowActive && callbackInstalled &&
-           activationPending && !postSLStartupActivationEntered;
+    return shouldKeepOffChurnDeferred && !startupTransitionWindowActive && callbackInstalled && activationPending &&
+           !postSLStartupActivationEntered;
 }
 
-inline bool ShouldInvokeRetainedPostSLStartupActivationService(bool callbackInstalled,
-                                                               bool activationSwapchainAvailable,
-                                                               bool activationPending,
-                                                               bool postSLStartupActivationEntered,
-                                                               bool postSLConfirmedRendering,
-                                                               bool activationServiceInProgress) {
-    if (!callbackInstalled || !activationSwapchainAvailable || postSLConfirmedRendering || activationServiceInProgress) {
+inline bool ShouldInvokeRetainedPostSLStartupActivationService(
+    bool callbackInstalled, bool activationSwapchainAvailable, bool activationPending,
+    bool postSLStartupActivationEntered, bool postSLConfirmedRendering, bool activationServiceInProgress) {
+    if (!callbackInstalled || !activationSwapchainAvailable || postSLConfirmedRendering ||
+        activationServiceInProgress) {
         return false;
     }
 
@@ -1697,9 +1717,9 @@ inline bool ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfAr
 
 inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible, bool startupActivationPending,
                                                          bool postSLStartupActivationEntered,
-                                                         bool postSLConfirmedRendering,
-                                                         bool callbackInstalled, bool cachedSwapchainAvailable,
-                                                         bool hadFSRFGPhase, bool safePostFSRBootstrapPath) {
+                                                         bool postSLConfirmedRendering, bool callbackInstalled,
+                                                         bool cachedSwapchainAvailable, bool hadFSRFGPhase,
+                                                         bool safePostFSRBootstrapPath) {
     if (!overlayVisible || !callbackInstalled || !cachedSwapchainAvailable || postSLConfirmedRendering) {
         return false;
     }
