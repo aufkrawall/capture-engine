@@ -59,6 +59,8 @@ using MiniDumpWriteDump_t = decltype(&MiniDumpWriteDump);
 using RaiseFailFastException_t = VOID(WINAPI*)(PEXCEPTION_RECORD, PCONTEXT, DWORD);
 using TerminateProcess_t = BOOL(WINAPI*)(HANDLE, UINT);
 using ExitProcess_t = VOID(WINAPI*)(UINT);
+using RtlExitUserProcess_t = VOID(NTAPI*)(NTSTATUS);
+using NtTerminateProcess_t = NTSTATUS(NTAPI*)(HANDLE, NTSTATUS);
 
 BOOL WINAPI HookedMiniDumpWriteDump(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
                                     PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
@@ -67,6 +69,8 @@ BOOL WINAPI HookedMiniDumpWriteDump(HANDLE hProcess, DWORD ProcessId, HANDLE hFi
 VOID WINAPI HookedRaiseFailFastException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, DWORD Flags);
 BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode);
 VOID WINAPI HookedExitProcess(UINT uExitCode);
+VOID NTAPI HookedRtlExitUserProcess(NTSTATUS ExitStatus);
+NTSTATUS NTAPI HookedNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus);
 
 std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
 std::atomic<bool> g_MiniDumpWriteDumpHookInstalled{false};
@@ -75,25 +79,34 @@ std::once_flag g_MiniDumpWriteDumpHookOnce;
 std::atomic<RaiseFailFastException_t> g_OriginalRaiseFailFastException{nullptr};
 std::atomic<TerminateProcess_t> g_OriginalTerminateProcess{nullptr};
 std::atomic<ExitProcess_t> g_OriginalExitProcess{nullptr};
+std::atomic<RtlExitUserProcess_t> g_OriginalRtlExitUserProcess{nullptr};
+std::atomic<NtTerminateProcess_t> g_OriginalNtTerminateProcess{nullptr};
 std::atomic<bool> g_PreTerminationDumpAttempted{false};
 std::once_flag g_FatalTerminationDumpHookOnce;
 
 thread_local bool t_InMiniDumpWriteDumpHook = false;
 thread_local bool t_InFatalTerminationDumpHook = false;
 
+void* ResolveModuleExport(const char* moduleName, const char* functionName) {
+  HMODULE module = GetModuleHandleA(moduleName);
+  if (!module) {
+    module = LoadLibraryA(moduleName);
+  }
+  return module ? reinterpret_cast<void*>(GetProcAddress(module, functionName)) : nullptr;
+}
+
 void* ResolveKernelExport(const char* functionName) {
   const char* modules[] = {"KERNELBASE.dll", "kernel32.dll"};
   for (const char* moduleName : modules) {
-    HMODULE module = GetModuleHandleA(moduleName);
-    if (!module) {
-      continue;
-    }
-
-    if (void* exportAddress = reinterpret_cast<void*>(GetProcAddress(module, functionName))) {
+    if (void* exportAddress = ResolveModuleExport(moduleName, functionName)) {
       return exportAddress;
     }
   }
   return nullptr;
+}
+
+void* ResolveNtdllExport(const char* functionName) {
+  return ResolveModuleExport("ntdll.dll", functionName);
 }
 
 bool IsCurrentProcessHandle(HANDLE processHandle) {
@@ -206,6 +219,35 @@ VOID WINAPI HookedExitProcess(UINT uExitCode) {
   ExitProcess(uExitCode);
 }
 
+VOID NTAPI HookedRtlExitUserProcess(NTSTATUS ExitStatus) {
+  CapturePreTerminationDumpIfNeeded("RtlExitUserProcess", static_cast<DWORD>(ExitStatus), true, nullptr, nullptr);
+
+  const auto original = g_OriginalRtlExitUserProcess.load(std::memory_order_acquire);
+  if (original) {
+    original(ExitStatus);
+    return;
+  }
+
+  ExitProcess(static_cast<UINT>(ExitStatus));
+}
+
+NTSTATUS NTAPI HookedNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus) {
+  const bool targetIsCurrentProcess = ProcessHandle == nullptr || IsCurrentProcessHandle(ProcessHandle);
+  CapturePreTerminationDumpIfNeeded("NtTerminateProcess", static_cast<DWORD>(ExitStatus), targetIsCurrentProcess,
+                                    nullptr, nullptr);
+
+  const auto original = g_OriginalNtTerminateProcess.load(std::memory_order_acquire);
+  if (original) {
+    return original(ProcessHandle, ExitStatus);
+  }
+
+  const auto fallback = reinterpret_cast<NtTerminateProcess_t>(ResolveNtdllExport("NtTerminateProcess"));
+  if (fallback && fallback != &HookedNtTerminateProcess) {
+    return fallback(ProcessHandle, ExitStatus);
+  }
+  return static_cast<NTSTATUS>(0xC0000001L);
+}
+
 void TryInstallFatalTerminationDumpHooks() {
   std::call_once(g_FatalTerminationDumpHookOnce, []() {
     g_OriginalRaiseFailFastException.store(
@@ -215,6 +257,10 @@ void TryInstallFatalTerminationDumpHooks() {
                                      std::memory_order_release);
     g_OriginalExitProcess.store(reinterpret_cast<ExitProcess_t>(ResolveKernelExport("ExitProcess")),
                                 std::memory_order_release);
+    g_OriginalRtlExitUserProcess.store(
+        reinterpret_cast<RtlExitUserProcess_t>(ResolveNtdllExport("RtlExitUserProcess")), std::memory_order_release);
+    g_OriginalNtTerminateProcess.store(reinterpret_cast<NtTerminateProcess_t>(ResolveNtdllExport("NtTerminateProcess")),
+                                       std::memory_order_release);
 
     bool patchedAny = false;
     auto patchRaise = [&patchedAny](const char* sourceModule) {
@@ -252,24 +298,54 @@ void TryInstallFatalTerminationDumpHooks() {
       }
     };
 
+    auto patchRtlExit = [&patchedAny](const char* sourceModule) {
+      void* patchedOriginal = nullptr;
+      if (IATHook::PatchIATAllModules(sourceModule, "RtlExitUserProcess",
+                                      reinterpret_cast<void*>(&HookedRtlExitUserProcess), &patchedOriginal)) {
+        patchedAny = true;
+        if (patchedOriginal && !g_OriginalRtlExitUserProcess.load(std::memory_order_acquire)) {
+          g_OriginalRtlExitUserProcess.store(reinterpret_cast<RtlExitUserProcess_t>(patchedOriginal),
+                                             std::memory_order_release);
+        }
+      }
+    };
+
+    auto patchNtTerminate = [&patchedAny](const char* sourceModule) {
+      void* patchedOriginal = nullptr;
+      if (IATHook::PatchIATAllModules(sourceModule, "NtTerminateProcess",
+                                      reinterpret_cast<void*>(&HookedNtTerminateProcess), &patchedOriginal)) {
+        patchedAny = true;
+        if (patchedOriginal && !g_OriginalNtTerminateProcess.load(std::memory_order_acquire)) {
+          g_OriginalNtTerminateProcess.store(reinterpret_cast<NtTerminateProcess_t>(patchedOriginal),
+                                             std::memory_order_release);
+        }
+      }
+    };
+
     patchRaise("kernel32.dll");
     patchRaise("KERNELBASE.dll");
     patchTerminate("kernel32.dll");
     patchTerminate("KERNELBASE.dll");
     patchExit("kernel32.dll");
     patchExit("KERNELBASE.dll");
+    patchRtlExit("ntdll.dll");
+    patchNtTerminate("ntdll.dll");
 
     IATHook::RegisterDynamicHook("RaiseFailFastException", reinterpret_cast<void*>(&HookedRaiseFailFastException),
                                  nullptr);
     IATHook::RegisterDynamicHook("TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess), nullptr);
     IATHook::RegisterDynamicHook("ExitProcess", reinterpret_cast<void*>(&HookedExitProcess), nullptr);
+    IATHook::RegisterDynamicHook("RtlExitUserProcess", reinterpret_cast<void*>(&HookedRtlExitUserProcess), nullptr);
+    IATHook::RegisterDynamicHook("NtTerminateProcess", reinterpret_cast<void*>(&HookedNtTerminateProcess), nullptr);
 
     HookLogImportant(
         "FatalExitDump: Installed pre-termination dump hooks (patched=%d raiseOriginal=%p terminateOriginal=%p "
-        "exitOriginal=%p)",
+        "exitOriginal=%p rtlExitOriginal=%p ntTerminateOriginal=%p)",
         patchedAny ? 1 : 0, reinterpret_cast<void*>(g_OriginalRaiseFailFastException.load(std::memory_order_acquire)),
         reinterpret_cast<void*>(g_OriginalTerminateProcess.load(std::memory_order_acquire)),
-        reinterpret_cast<void*>(g_OriginalExitProcess.load(std::memory_order_acquire)));
+        reinterpret_cast<void*>(g_OriginalExitProcess.load(std::memory_order_acquire)),
+        reinterpret_cast<void*>(g_OriginalRtlExitUserProcess.load(std::memory_order_acquire)),
+        reinterpret_cast<void*>(g_OriginalNtTerminateProcess.load(std::memory_order_acquire)));
   });
 }
 

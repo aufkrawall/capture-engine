@@ -531,6 +531,11 @@ extern HRESULT WINAPI DetourSerializeVersionedRootSignature(const D3D12_VERSIONE
 
 namespace IATHook {
 
+static bool ShouldLogRepeatedIATScan(std::atomic<int>& counter) {
+    const int count = counter.fetch_add(1, std::memory_order_relaxed) + 1;
+    return count <= 3 || count == 10 || (count % 300) == 0;
+}
+
 bool InitializeDXGIHooks() {
     WrapperLog("IAT: Initializing DXGI hooks...");
     bool success = true;
@@ -709,7 +714,11 @@ bool InitializeD3D11Hooks() {
 }
 
 bool InitializeD3D10Hooks() {
-    WrapperLog("IAT: Initializing D3D10 hooks...");
+    static std::atomic<int> s_d3d10ScanLogCount{0};
+    const bool logScan = ShouldLogRepeatedIATScan(s_d3d10ScanLogCount);
+    if (logScan) {
+        WrapperLog("IAT: Initializing D3D10 hooks...");
+    }
 
     HMODULE hD3D10 = GetModuleHandleA("d3d10.dll");
 
@@ -740,11 +749,18 @@ bool InitializeD3D10Hooks() {
         WrapperLog("IAT: D3D10 hooks initialized");
         return true;
     }
+    if (logScan) {
+        WrapperLog("IAT: d3d10.dll not loaded");
+    }
     return false;
 }
 
 bool InitializeD3D9Hooks() {
-    WrapperLog("IAT: Initializing D3D9 hooks...");
+    static std::atomic<int> s_d3d9ScanLogCount{0};
+    const bool logScan = ShouldLogRepeatedIATScan(s_d3d9ScanLogCount);
+    if (logScan) {
+        WrapperLog("IAT: Initializing D3D9 hooks...");
+    }
 
     HMODULE hD3D9 = GetModuleHandleA("d3d9.dll");
 
@@ -777,16 +793,24 @@ bool InitializeD3D9Hooks() {
         return true;
     }
 
-    WrapperLog("IAT: d3d9.dll not loaded");
+    if (logScan) {
+        WrapperLog("IAT: d3d9.dll not loaded");
+    }
     return false;
 }
 
 bool InitializeDDrawHooks() {
-    WrapperLog("IAT: Initializing DirectDraw hooks...");
+    static std::atomic<int> s_ddrawScanLogCount{0};
+    const bool logScan = ShouldLogRepeatedIATScan(s_ddrawScanLogCount);
+    if (logScan) {
+        WrapperLog("IAT: Initializing DirectDraw hooks...");
+    }
 
     HMODULE hDDraw = GetModuleHandleA("ddraw.dll");
     if (!hDDraw) {
-        WrapperLog("IAT: ddraw.dll not loaded");
+        if (logScan) {
+            WrapperLog("IAT: ddraw.dll not loaded");
+        }
         return false;
     }
 

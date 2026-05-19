@@ -616,8 +616,14 @@ inline bool ShouldTreatNativeFSRDisabledConfigureAsStartupArming(bool recognized
     // initial disabled ffxConfigure packet while the real enable path is still
     // arming. Treat that packet as setup, not as an explicit user OFF signal,
     // until the current FFX takeover has produced direct enabled API proof.
+    // Official AMD FFX runtimes can fail fast if CE marks the takeover fully
+    // active before the runtime accepts the enabled configure. In that staged
+    // window `authoritativeFSRActive` is intentionally still false, so the
+    // arming latch is the authority for treating the first disabled packet as
+    // setup instead of user-requested OFF.
+    (void)authoritativeFSRActive;
     return recognizedFrameGenerationConfigure && !frameGenerationEnabled && startupArmingPending &&
-           runtimeOwnsSwapchain && authoritativeFSRActive && !hasDirectFFXApiConfirmation;
+           runtimeOwnsSwapchain && !hasDirectFFXApiConfirmation;
 }
 
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
@@ -1796,6 +1802,18 @@ inline bool ShouldForceEndStreamlineOwnershipForSwapchainTakeover(bool runtimeOw
     (void)streamlineStartupHandoffPending;
     (void)runtimeOwnershipJustActivated;
     return callerFromFFXFGModule;
+}
+
+inline bool ShouldDeferOfficialFFXTakeoverSideEffectsUntilEnabledConfigure(bool runtimeOwnsSwapchain,
+                                                                           bool callerFromFFXFGModule,
+                                                                           bool officialAMDFFXRuntimeCreator,
+                                                                           bool hasDirectFFXApiConfirmation) {
+    // GTA's official AMD runtime creates its runtime-owned swapchain before the
+    // enabled ffxConfigure packet. Treat the swapchain as native-FSR-owned for
+    // routing/overlay suppression, but defer the heavier Streamline/PostSL
+    // teardown until direct API proof arrives.
+    return runtimeOwnsSwapchain && callerFromFFXFGModule && officialAMDFFXRuntimeCreator &&
+           !hasDirectFFXApiConfirmation;
 }
 
 inline bool ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(

@@ -1190,6 +1190,10 @@ static std::atomic<int> g_StaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak{0};
 static std::atomic<bool> g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun{false};
 static std::atomic<bool> g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown{false};
 static std::atomic<bool> g_NativeFSRStartupConfigureArmingPending{false};
+static std::atomic<bool> g_DeferredOfficialFFXTakeoverSideEffectsPending{false};
+static std::mutex g_DeferredOfficialFFXTakeoverMutex;
+static ID3D12CommandQueue* g_DeferredOfficialFFXTakeoverQueue = nullptr;
+static char g_DeferredOfficialFFXTakeoverModulePath[MAX_PATH] = {};
 
 static void ResetAuthoritativeFSRRealFrameOnlyStreak() {
     g_AuthoritativeFSRRealFrameOnlyStreak.store(0, std::memory_order_release);
@@ -1201,6 +1205,69 @@ static void ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak() {
 
 static void ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown() {
     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.store(false, std::memory_order_release);
+}
+
+static void StoreDeferredOfficialFFXTakeoverSideEffects(ID3D12CommandQueue* queue, const char* modulePath,
+                                                        const char* reason) {
+    {
+        std::lock_guard<std::mutex> lock(g_DeferredOfficialFFXTakeoverMutex);
+        if (g_DeferredOfficialFFXTakeoverQueue) {
+            g_DeferredOfficialFFXTakeoverQueue->Release();
+            g_DeferredOfficialFFXTakeoverQueue = nullptr;
+        }
+        if (queue) {
+            queue->AddRef();
+            g_DeferredOfficialFFXTakeoverQueue = queue;
+        }
+        if (modulePath && modulePath[0]) {
+            strncpy_s(g_DeferredOfficialFFXTakeoverModulePath, sizeof(g_DeferredOfficialFFXTakeoverModulePath),
+                      modulePath, _TRUNCATE);
+        } else {
+            g_DeferredOfficialFFXTakeoverModulePath[0] = '\0';
+        }
+    }
+    g_DeferredOfficialFFXTakeoverSideEffectsPending.store(true, std::memory_order_release);
+    HookLogImportant(
+        "DX12: Official FFX takeover side-effects staged until enabled ffxConfigure "
+        "(queue=%p module=%s reason=%s)",
+        queue, modulePath && modulePath[0] ? modulePath : "unknown", reason && reason[0] ? reason : "unknown");
+}
+
+static ID3D12CommandQueue* ConsumeDeferredOfficialFFXTakeoverSideEffects(char* modulePathOut,
+                                                                         size_t modulePathOutCount) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+    if (!g_DeferredOfficialFFXTakeoverSideEffectsPending.exchange(false, std::memory_order_acq_rel)) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(g_DeferredOfficialFFXTakeoverMutex);
+    ID3D12CommandQueue* queue = g_DeferredOfficialFFXTakeoverQueue;
+    g_DeferredOfficialFFXTakeoverQueue = nullptr;
+    if (modulePathOut && modulePathOutCount > 0) {
+        strncpy_s(modulePathOut, modulePathOutCount, g_DeferredOfficialFFXTakeoverModulePath, _TRUNCATE);
+    }
+    g_DeferredOfficialFFXTakeoverModulePath[0] = '\0';
+    return queue;
+}
+
+static void ClearDeferredOfficialFFXTakeoverSideEffects(const char* reason) {
+    ID3D12CommandQueue* queue = nullptr;
+    bool hadPending = g_DeferredOfficialFFXTakeoverSideEffectsPending.exchange(false, std::memory_order_acq_rel);
+    {
+        std::lock_guard<std::mutex> lock(g_DeferredOfficialFFXTakeoverMutex);
+        queue = g_DeferredOfficialFFXTakeoverQueue;
+        g_DeferredOfficialFFXTakeoverQueue = nullptr;
+        g_DeferredOfficialFFXTakeoverModulePath[0] = '\0';
+    }
+    if (queue) {
+        queue->Release();
+    }
+    if (hadPending) {
+        HookLogImportant("DX12: Cleared staged official FFX takeover side-effects (%s)",
+                         reason && reason[0] ? reason : "unknown");
+    }
 }
 
 static void SetNativeFSRStartupConfigureArmingPending(bool pending, const char* reason) {
@@ -1217,6 +1284,7 @@ bool DX12_IsNativeFSRStartupConfigureArmingPending() {
 
 void DX12_ClearNativeFSRStartupConfigureArming(const char* reason) {
     SetNativeFSRStartupConfigureArmingPending(false, reason);
+    ClearDeferredOfficialFFXTakeoverSideEffects(reason);
 }
 
 // Primary game queue — set once from the first ECL call (always the game's queue,
@@ -1554,6 +1622,7 @@ bool HookHasSafePostFSRBootstrapPath() {
 bool HookHasRuntimeOwnedNativeFGPresentPath() {
     return DXGIShared::DoesFGRuntimeOwnSwapchain() &&
            (g_FGCompat.IsFSRFGApiActive() ||
+            g_NativeFSRStartupConfigureArmingPending.load(std::memory_order_acquire) ||
             g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
 }
 
@@ -2014,14 +2083,16 @@ struct CreateSwapchainQueueCaptureEvidence {
     const void* callerAddress = nullptr;
     bool callerFromThirdPartyOverlay = false;
     bool authoritativeFFXRuntimeCreator = false;
+    bool officialAMDFFXRuntimeCreator = false;
     bool authoritativeStreamlineRuntimeCreator = false;
     char callerModulePath[MAX_PATH] = {};
+    char ffxModulePath[MAX_PATH] = {};
 };
 
 static CreateSwapchainQueueCaptureEvidence BuildCreateSwapchainQueueCaptureEvidence(
     const void* callerAddress, bool callerFromThirdPartyOverlay, bool callerFromFFXFGModule,
     bool ffxFrameGenerationInStack, bool callerFromStreamlineFGModule, bool streamlineFrameGenerationInStack,
-    const char* callerModulePath) {
+    const char* callerModulePath, const char* ffxModulePath) {
     CreateSwapchainQueueCaptureEvidence evidence = {};
     evidence.callerAddress = callerAddress;
     evidence.callerFromThirdPartyOverlay = callerFromThirdPartyOverlay;
@@ -2031,6 +2102,13 @@ static CreateSwapchainQueueCaptureEvidence BuildCreateSwapchainQueueCaptureEvide
     evidence.authoritativeStreamlineRuntimeCreator = callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
     if (callerModulePath && *callerModulePath) {
         strncpy_s(evidence.callerModulePath, sizeof(evidence.callerModulePath), callerModulePath, _TRUNCATE);
+    }
+    const char* authoritativeFFXPath =
+        (ffxModulePath && *ffxModulePath) ? ffxModulePath
+                                          : (callerFromFFXFGModule && callerModulePath ? callerModulePath : nullptr);
+    if (authoritativeFFXPath && *authoritativeFFXPath) {
+        strncpy_s(evidence.ffxModulePath, sizeof(evidence.ffxModulePath), authoritativeFFXPath, _TRUNCATE);
+        evidence.officialAMDFFXRuntimeCreator = ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName(authoritativeFFXPath);
     }
     return evidence;
 }
@@ -2082,6 +2160,46 @@ static bool ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
     return rawCallerFromThirdPartyOverlay && !authoritativeFGRuntimeSwapchainCreator;
 }
 
+static void ApplyAuthoritativeFFXTakeoverSideEffects(ID3D12CommandQueue* capturedQueue, const char* callerModulePath,
+                                                     const char* reason) {
+    const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);
+    g_FGCompat.SetStreamlineFGSignal(false);
+    g_FGCompat.SetDLSSFGActive(false);
+    g_PostSLOverlayActive.store(false, std::memory_order_release);
+    SetPostSLCallbackInstalled(false, "DX12: FFX swapchain takeover");
+    ResetPostSLLifecycleForTransition("DX12: FFX swapchain takeover", true, true);
+    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    g_PostSLStallCounter.store(0, std::memory_order_release);
+    g_PostSLStableFrameCount.store(0, std::memory_order_release);
+    g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
+    g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
+    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    ReleaseStreamlineStartupActivationSwapchain("DX12: FFX swapchain takeover");
+    ResetFFXPresentCallbackOverlayBackend("DX12: FFX swapchain takeover");
+    StreamlineHook::OnAuthoritativeFFXTakeover();
+    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+    DXGIShared::ResetStreamlineStartupTransitionState();
+    HookLogImportant("DX12: FFX swapchain takeover — cleared stale Streamline startup handoff/transition state");
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kAuthoritativeFFXTakeover,
+                                "DX12::AuthoritativeFFXTakeover", capturedQueue, nullptr,
+                                ce::fg_runtime::RuntimeMode::kFSRFG, true, true);
+    DXGIShared::DisableSLPresentRouting();
+    {
+        ID3D12CommandQueue* oldWrapper = g_SLWrapperQueue.exchange(nullptr, std::memory_order_acq_rel);
+        if (oldWrapper) {
+            HookLogImportant("DX12: FFX swapchain takeover — released stale SL wrapper queue %p", oldWrapper);
+            oldWrapper->Release();
+        }
+    }
+
+    HookLogImportant(
+        "DX12: FFX swapchain takeover via %s (queue=%p, staleSL=%d reason=%s) — cleared Streamline/PostSL ownership",
+        callerModulePath && callerModulePath[0] ? callerModulePath : "unknown", capturedQueue,
+        staleStreamlineSignal ? 1 : 0, reason && reason[0] ? reason : "unknown");
+}
+
 static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQueueCaptureEvidence& captureEvidence,
                                                         bool runtimeOwnsSwapchain, bool runtimeOwnershipJustActivated,
                                                         ID3D12CommandQueue* capturedQueue) {
@@ -2094,6 +2212,10 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
     if (callerFromFFXFGModule &&
         (!callerModulePath[0] || ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath))) {
         strncpy_s(callerModulePath, sizeof(callerModulePath), "FFX frame-generation runtime", _TRUNCATE);
+    }
+    char ffxModulePath[MAX_PATH] = {};
+    if (captureEvidence.ffxModulePath[0]) {
+        strncpy_s(ffxModulePath, sizeof(ffxModulePath), captureEvidence.ffxModulePath, _TRUNCATE);
     }
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool streamlineStartupHandoffPending = DXGIShared::IsStreamlineStartupHandoffPending();
@@ -2127,7 +2249,6 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
 
     g_FGCompat.SetFSRFGSupportPresent(true);
     g_FGCompat.SetFSRFGMultiplier(2);
-    g_FGCompat.SetFSRFGActive(true);
     ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
     SetNativeFSRStartupConfigureArmingPending(true, "authoritative FFX swapchain takeover");
     ResetAuthoritativeFSRRealFrameOnlyStreak();
@@ -2136,40 +2257,22 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
         HookLogImportant("DX12: FFX swapchain takeover implies FSR FG history — latching post-FSR handoff state");
     }
 
-    const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);
-    g_FGCompat.SetStreamlineFGSignal(false);
-    g_FGCompat.SetDLSSFGActive(false);
-    g_PostSLOverlayActive.store(false, std::memory_order_release);
-    SetPostSLCallbackInstalled(false, "DX12: FFX swapchain takeover");
-    ResetPostSLLifecycleForTransition("DX12: FFX swapchain takeover", true, true);
-    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
-    g_PostSLStallCounter.store(0, std::memory_order_release);
-    g_PostSLStableFrameCount.store(0, std::memory_order_release);
-    g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
-    g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
-    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
-    g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
-    g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
-    ReleaseStreamlineStartupActivationSwapchain("DX12: FFX swapchain takeover");
-    ResetFFXPresentCallbackOverlayBackend("DX12: FFX swapchain takeover");
-    StreamlineHook::OnAuthoritativeFFXTakeover();
-    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
-    DXGIShared::ResetStreamlineStartupTransitionState();
-    HookLogImportant("DX12: FFX swapchain takeover — cleared stale Streamline startup handoff/transition state");
-    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kAuthoritativeFFXTakeover,
-                                "DX12::AuthoritativeFFXTakeover", capturedQueue, nullptr,
-                                ce::fg_runtime::RuntimeMode::kFSRFG, true, true);
-    DXGIShared::DisableSLPresentRouting();
-    {
-        ID3D12CommandQueue* oldWrapper = g_SLWrapperQueue.exchange(nullptr, std::memory_order_acq_rel);
-        if (oldWrapper) {
-            HookLogImportant("DX12: FFX swapchain takeover — released stale SL wrapper queue %p", oldWrapper);
-            oldWrapper->Release();
-        }
+    if (ce::dx12_overlay_policy::ShouldDeferOfficialFFXTakeoverSideEffectsUntilEnabledConfigure(
+            runtimeOwnsSwapchain, callerFromFFXFGModule, captureEvidence.officialAMDFFXRuntimeCreator,
+            g_FGCompat.HasDirectFFXApiConfirmation())) {
+        StoreDeferredOfficialFFXTakeoverSideEffects(capturedQueue,
+                                                    ffxModulePath[0] ? ffxModulePath : callerModulePath,
+                                                    "authoritative official FFX swapchain takeover");
+        HookLogImportant(
+            "DX12: Official FFX takeover is in startup-arming mode; Streamline/PostSL teardown and SL route disable "
+            "are deferred until enabled ffxConfigure (queue=%p runtimeOwned=%d ffxModule=%s)",
+            capturedQueue, runtimeOwnsSwapchain ? 1 : 0, ffxModulePath[0] ? ffxModulePath : "unknown");
+        return;
     }
 
-    HookLogImportant("DX12: FFX swapchain takeover via %s (queue=%p, staleSL=%d) — cleared Streamline/PostSL ownership",
-                     callerModulePath[0] ? callerModulePath : "unknown", capturedQueue, staleStreamlineSignal ? 1 : 0);
+    g_FGCompat.SetFSRFGActive(true);
+    ApplyAuthoritativeFFXTakeoverSideEffects(capturedQueue, callerModulePath,
+                                             "authoritative FFX swapchain takeover");
 }
 
 // LOCK HIERARCHY (MUST be acquired in this order to prevent deadlocks):
@@ -2899,7 +3002,24 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
 
     if (enabled) {
         s_nativeFSROffRuntimeTeardownLogCount.store(0, std::memory_order_release);
+        g_FGCompat.SetFSRFGSupportPresent(true);
+        g_FGCompat.SetFSRFGMultiplier(2);
+        g_FGCompat.SetFSRFGActive(true);
         ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+        char deferredModulePath[MAX_PATH] = {};
+        ID3D12CommandQueue* deferredQueue =
+            ConsumeDeferredOfficialFFXTakeoverSideEffects(deferredModulePath, sizeof(deferredModulePath));
+        if (deferredQueue) {
+            HookLogImportant(
+                "DX12: Finalizing staged official FFX takeover after enabled ffxConfigure "
+                "(queue=%p module=%s)",
+                deferredQueue, deferredModulePath[0] ? deferredModulePath : "unknown");
+            ApplyAuthoritativeFFXTakeoverSideEffects(deferredQueue,
+                                                     deferredModulePath[0] ? deferredModulePath
+                                                                           : "official FFX runtime",
+                                                     "native FSR enabled configure");
+            deferredQueue->Release();
+        }
         SetNativeFSRStartupConfigureArmingPending(false, "native FSR enabled configure");
         ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kNativeFSRConfigureOn,
                                     "DX12_OnNativeFSRFrameGenerationConfigured", nullptr, nullptr,
@@ -2908,6 +3028,7 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
     }
 
     SetNativeFSRStartupConfigureArmingPending(false, "native FSR disabled configure");
+    ClearDeferredOfficialFFXTakeoverSideEffects("native FSR disabled configure");
     const bool runtimeOwnedTeardownStillActive = g_FGRuntimeOwnsSwapchain;
     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.store(runtimeOwnedTeardownStillActive, std::memory_order_release);
     if (runtimeOwnedTeardownStillActive) {
@@ -5441,7 +5562,9 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     const bool callerFromFFXFGModule = callerContext.callerFromFFXFGModule;
     const bool rawCallerFromThirdPartyOverlay = callerContext.callerFromThirdPartyOverlay;
     const char* callerModulePath = callerContext.callerModulePath;
-    const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
+    char ffxStackModulePath[MAX_PATH] = {};
+    const bool ffxFrameGenerationInStack =
+        ce::overlay_compat::HasFFXFrameGenerationModuleInStack(ffxStackModulePath, sizeof(ffxStackModulePath));
     const bool callerFromStreamlineFGModule =
         callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
     const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
@@ -5450,7 +5573,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
     const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
         callerAddress, callerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
-        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
+        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath, ffxStackModulePath);
 
     HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
                      pThis, pDevice, hWnd, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1);
@@ -5619,7 +5742,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     const bool callerFromFFXFGModule = callerContext.callerFromFFXFGModule;
     const bool rawCallerFromThirdPartyOverlay = callerContext.callerFromThirdPartyOverlay;
     const char* callerModulePath = callerContext.callerModulePath;
-    const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
+    char ffxStackModulePath[MAX_PATH] = {};
+    const bool ffxFrameGenerationInStack =
+        ce::overlay_compat::HasFFXFrameGenerationModuleInStack(ffxStackModulePath, sizeof(ffxStackModulePath));
     const bool callerFromStreamlineFGModule =
         callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
     const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
@@ -5628,7 +5753,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         ffxFrameGenerationInStack, callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
     const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
         callerAddress, callerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
-        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
+        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath, ffxStackModulePath);
 
     HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
 
@@ -5793,7 +5918,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
         ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
     const bool callerFromFFXFGModule =
         callerAddress && ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(callerAddress);
-    const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
+    char ffxStackModulePath[MAX_PATH] = {};
+    const bool ffxFrameGenerationInStack =
+        ce::overlay_compat::HasFFXFrameGenerationModuleInStack(ffxStackModulePath, sizeof(ffxStackModulePath));
     const bool callerFromStreamlineFGModule =
         callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
     const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
@@ -5802,7 +5929,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
         callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
     const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
         callerAddress, callerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
-        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
+        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath, ffxStackModulePath);
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC modifiedDesc;
@@ -5915,7 +6042,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
     const bool callerFromFFXFGModule =
         callerAddress && ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(callerAddress);
-    const bool ffxFrameGenerationInStack = ce::overlay_compat::HasFFXFrameGenerationModuleInStack();
+    char ffxStackModulePath[MAX_PATH] = {};
+    const bool ffxFrameGenerationInStack =
+        ce::overlay_compat::HasFFXFrameGenerationModuleInStack(ffxStackModulePath, sizeof(ffxStackModulePath));
     const bool callerFromStreamlineFGModule =
         callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
     const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
@@ -5924,7 +6053,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         ffxFrameGenerationInStack, callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
     const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
         callerAddress, callerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
-        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
+        callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath, ffxStackModulePath);
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
