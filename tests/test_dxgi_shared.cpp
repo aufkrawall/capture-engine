@@ -1292,6 +1292,13 @@ TEST(DXGISharedTest, OfficialFFXStartupSwapchainCreateUsesProtectedPassThroughUn
         ce::dx12_overlay_policy::ShouldProtectOfficialFFXStartupSwapchainCreateFromCESideEffects(true, true, true));
 }
 
+TEST(DXGISharedTest, AuthoritativeRuntimeSwapchainCreatePreservesOriginalDescriptor) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate(false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate(true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate(true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate(false, false));
+}
+
 TEST(DXGISharedTest, ProtectedOfficialFFXStartupCountsAsRuntimeOwnedForDisabledStartupArmingConfigure) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatNativeFSRSwapchainAsRuntimeOwnedForConfigure(true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatNativeFSRSwapchainAsRuntimeOwnedForConfigure(false, true));

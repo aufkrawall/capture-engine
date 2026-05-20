@@ -1824,6 +1824,15 @@ inline bool ShouldProtectOfficialFFXStartupSwapchainCreateFromCESideEffects(bool
     return authoritativeFFXRuntimeCreator && officialAMDFFXRuntimeCreator && !hasDirectFFXApiConfirmation;
 }
 
+inline bool ShouldApplySwapchainDescriptorOverridesForCreate(bool callerFromThirdPartyOverlay,
+                                                             bool authoritativeFrameGenerationRuntimeCreator) {
+    // Runtime FG components treat swapchain creation as part of their own
+    // startup handshake. Preserve their descriptor byte-for-byte; even
+    // "safe" CE additions such as the waitable-object flag can change that
+    // handshake before the runtime has accepted its configure packet.
+    return !callerFromThirdPartyOverlay && !authoritativeFrameGenerationRuntimeCreator;
+}
+
 inline bool ShouldTreatNativeFSRSwapchainAsRuntimeOwnedForConfigure(bool runtimeOwnsSwapchain,
                                                                     bool protectedOfficialFFXStartupPending) {
     // The first disabled startup-arming ffxConfigure can arrive before CE has

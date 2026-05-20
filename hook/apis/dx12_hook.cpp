@@ -2178,6 +2178,35 @@ static bool ShouldUseProtectedOfficialFFXStartupSwapchainCreatePath(
         g_FGCompat.HasDirectFFXApiConfirmation());
 }
 
+static bool ShouldApplySwapchainDescriptorOverridesForCreate(
+    const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
+    return ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate(
+        captureEvidence.callerFromThirdPartyOverlay,
+        captureEvidence.authoritativeFFXRuntimeCreator || captureEvidence.authoritativeStreamlineRuntimeCreator);
+}
+
+static void LogSkippedSwapchainDescriptorOverridesForRuntimeCreate(
+    const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence, UINT bufferCount, UINT flags,
+    DXGI_SWAP_EFFECT swapEffect) {
+    if (!captureEvidence.authoritativeFFXRuntimeCreator && !captureEvidence.authoritativeStreamlineRuntimeCreator) {
+        return;
+    }
+
+    static std::atomic<int> s_runtimeDescriptorPassthroughLogCount{0};
+    const int logCount = s_runtimeDescriptorPassthroughLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 128) == 0) {
+        HookLogImportant(
+            "%s: Preserving swapchain descriptor for authoritative FG runtime create "
+            "(ffx=%d officialFFX=%d streamline=%d caller=%s BufferCount=%u Flags=0x%X SwapEffect=%d count=%d)",
+            context && context[0] ? context : "CreateSwapChain",
+            captureEvidence.authoritativeFFXRuntimeCreator ? 1 : 0,
+            captureEvidence.officialAMDFFXRuntimeCreator ? 1 : 0,
+            captureEvidence.authoritativeStreamlineRuntimeCreator ? 1 : 0,
+            captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "stack", bufferCount, flags,
+            static_cast<int>(swapEffect), logCount + 1);
+    }
+}
+
 static bool HandleProtectedOfficialFFXStartupSwapchainCreate(const CreateSwapchainQueueCaptureEvidence& captureEvidence,
                                                              IDXGISwapChain* swapchain, const char* context) {
     if (!ShouldUseProtectedOfficialFFXStartupSwapchainCreatePath(captureEvidence)) {
@@ -5656,7 +5685,12 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
-    if (pDesc && !callerFromThirdPartyOverlay) {
+    const bool applyDescriptorOverrides = ShouldApplySwapchainDescriptorOverridesForCreate(captureEvidence);
+    if (pDesc && !applyDescriptorOverrides) {
+        LogSkippedSwapchainDescriptorOverridesForRuntimeCreate("DeepHook", captureEvidence, pDesc->BufferCount,
+                                                               pDesc->Flags, pDesc->SwapEffect);
+    }
+    if (pDesc && applyDescriptorOverrides) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
@@ -5679,7 +5713,8 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     HRESULT hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
     HookLogImportant("DeepHook: Trampoline returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
 
-    if (SUCCEEDED(hr) && ppSC && *ppSC && !callerFromThirdPartyOverlay) {
+    const bool protectedOfficialFFXStartupCreate = ShouldUseProtectedOfficialFFXStartupSwapchainCreatePath(captureEvidence);
+    if (SUCCEEDED(hr) && ppSC && *ppSC && !callerFromThirdPartyOverlay && !protectedOfficialFFXStartupCreate) {
         // Only start transition cooldown when a swapchain recreation actually
         // succeeded. Starting it on E_ACCESSDENIED leaves the overlay in a
         // half-transitioned state while Streamline/game keeps the old chain.
@@ -5771,13 +5806,13 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
                 callerModulePath[0] ? callerModulePath : "unknown", *ppSC, hWnd);
             return hr;
         }
-        TrackSwapchainHwnd(*ppSC, hWnd);
-        HookLogImportant("DeepHook: Created & tracked swapchain %p for HWND=%p", *ppSC, hWnd);
-
         IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
         if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, newSC, "DeepHook")) {
             return hr;
         }
+
+        TrackSwapchainHwnd(*ppSC, hWnd);
+        HookLogImportant("DeepHook: Created & tracked swapchain %p for HWND=%p", *ppSC, hWnd);
 
         // SL (or game) just created a new swapchain. Refresh the full Present
         // hook path on it — the new swapchain may expose a different Present
@@ -5839,7 +5874,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
-    if (pDesc && !callerFromThirdPartyOverlay) {
+    const bool applyDescriptorOverrides = ShouldApplySwapchainDescriptorOverridesForCreate(captureEvidence);
+    if (pDesc && !applyDescriptorOverrides) {
+        LogSkippedSwapchainDescriptorOverridesForRuntimeCreate("CreateSwapChainForHwnd INLINE", captureEvidence,
+                                                               pDesc->BufferCount, pDesc->Flags, pDesc->SwapEffect);
+    }
+    if (pDesc && applyDescriptorOverrides) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
@@ -5940,13 +5980,13 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
                 callerModulePath[0] ? callerModulePath : "unknown", *ppSC, hWnd);
             return hr;
         }
-        TrackSwapchainHwnd(*ppSC, hWnd);
-        HookLogImportant("CreateSwapChainForHwnd INLINE: Created swapchain %p for HWND=%p", *ppSC, hWnd);
-
         IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
         if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, newSC, "CreateSwapChainForHwnd INLINE")) {
             return hr;
         }
+
+        TrackSwapchainHwnd(*ppSC, hWnd);
+        HookLogImportant("CreateSwapChainForHwnd INLINE: Created swapchain %p for HWND=%p", *ppSC, hWnd);
 
         // A later runtime-created DX12 swapchain can expose a different Present
         // implementation than the one we patched during startup. Refresh the
@@ -6017,7 +6057,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC modifiedDesc;
     DXGI_SWAP_CHAIN_DESC* pDescToUse = pDesc;
-    if (pDesc && !callerFromThirdPartyOverlay) {
+    const bool applyDescriptorOverrides = ShouldApplySwapchainDescriptorOverridesForCreate(captureEvidence);
+    if (pDesc && !applyDescriptorOverrides) {
+        LogSkippedSwapchainDescriptorOverridesForRuntimeCreate("DetourCreateSwapChainGlobal", captureEvidence,
+                                                               pDesc->BufferCount, pDesc->Flags, pDesc->SwapEffect);
+    }
+    if (pDesc && applyDescriptorOverrides) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
@@ -6145,7 +6190,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
-    if (pDesc && !callerFromThirdPartyOverlay) {
+    const bool applyDescriptorOverrides = ShouldApplySwapchainDescriptorOverridesForCreate(captureEvidence);
+    if (pDesc && !applyDescriptorOverrides) {
+        LogSkippedSwapchainDescriptorOverridesForRuntimeCreate("DetourCreateSwapChainForHwndGlobal", captureEvidence,
+                                                               pDesc->BufferCount, pDesc->Flags, pDesc->SwapEffect);
+    }
+    if (pDesc && applyDescriptorOverrides) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
         if (HasBackbufferCountOverride(gfx.backbufferCount)) {
@@ -6200,8 +6250,6 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
             return hr;
         }
 
-        StartTransitionCooldown();
-
         // Log swapchain details
         if (pDesc) {
             HookLog("DetourCreateSwapChainForHwndGlobal: Creating swapchain %ux%u", pDesc->Width, pDesc->Height);
@@ -6210,6 +6258,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, *ppSC, "CreateSwapChainForHwnd")) {
             return hr;
         }
+
+        StartTransitionCooldown();
 
         RefreshPresentHooksForRealSwapchain(*ppSC, "CreateSwapChainForHwnd");
 

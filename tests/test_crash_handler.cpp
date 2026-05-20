@@ -141,6 +141,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Official FFX takeover side-effects staged until enabled ffxConfigure"), std::string::npos);
     EXPECT_NE(contents.find("Finalizing staged official FFX takeover after enabled ffxConfigure"), std::string::npos);
     EXPECT_NE(contents.find("Protected official FFX startup swapchain pass-through"), std::string::npos);
+    EXPECT_NE(contents.find("Preserving swapchain descriptor for authoritative FG runtime create"), std::string::npos);
     EXPECT_NE(contents.find("Finalizing protected official FFX startup pass-through after enabled ffxConfigure"),
               std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);
@@ -149,6 +150,10 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("RtlExitUserProcess"), std::string::npos);
     EXPECT_NE(contents.find("NtTerminateProcess"), std::string::npos);
+    EXPECT_NE(contents.find("_invoke_watson"), std::string::npos);
+    EXPECT_NE(contents.find("NtRaiseException"), std::string::npos);
+    EXPECT_NE(contents.find("ZwRaiseException"), std::string::npos);
+    EXPECT_NE(contents.find("ZwTerminateProcess"), std::string::npos);
     EXPECT_NE(contents.find("Registered module-filtered dynamic hooks for FFX exports"), std::string::npos);
     EXPECT_NE(contents.find("Using GetProcAddress-only hooks for protected official FFX module"), std::string::npos);
     EXPECT_NE(contents.find("IAT import patching skipped to avoid startup fail-fast"), std::string::npos);
