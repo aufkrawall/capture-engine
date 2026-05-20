@@ -1382,17 +1382,90 @@ static bool IsReadableSwapchainPointer(const void* ptr) {
     return true;
 }
 
+static bool IsExecutableCodePointer(const void* ptr) {
+    if (!ptr) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+    if (mbi.State != MEM_COMMIT) {
+        return false;
+    }
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) {
+        return false;
+    }
+
+    const DWORD executableProtection =
+        PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    return (mbi.Protect & executableProtection) != 0;
+}
+
+static void* ResolveLoadedOrLoadableExport(const char* moduleName, const char* functionName) {
+    HMODULE module = GetModuleHandleA(moduleName);
+    if (!module) {
+        module = LoadLibraryA(moduleName);
+    }
+    return module ? reinterpret_cast<void*>(GetProcAddress(module, functionName)) : nullptr;
+}
+
+static bool IsCrtPurecallFunctionPointer(const void* ptr) {
+    static void* s_ucrtPurecall = ResolveLoadedOrLoadableExport("ucrtbase.dll", "_purecall");
+    static void* s_msvcrtPurecall = ResolveLoadedOrLoadableExport("msvcrt.dll", "_purecall");
+    return ptr && (ptr == s_ucrtPurecall || ptr == s_msvcrtPurecall);
+}
+
 static bool IsUsableStartupActivationSwapchainPointer(IDXGISwapChain* swapchain) {
     if (!IsReadableSwapchainPointer(swapchain) || !IsReadableSwapchainPointer(*(void***)swapchain)) {
         return false;
     }
 
     void** vtable = *(void***)swapchain;
-    if (!vtable || !vtable[8]) {
+    if (!vtable || !vtable[0] || !vtable[1] || !vtable[2] || !vtable[8]) {
+        return false;
+    }
+
+    if (!IsExecutableCodePointer(vtable[0]) || !IsExecutableCodePointer(vtable[1]) ||
+        !IsExecutableCodePointer(vtable[2]) || !IsExecutableCodePointer(vtable[8])) {
+        return false;
+    }
+
+    if (IsCrtPurecallFunctionPointer(vtable[0]) || IsCrtPurecallFunctionPointer(vtable[1]) ||
+        IsCrtPurecallFunctionPointer(vtable[2]) || IsCrtPurecallFunctionPointer(vtable[8])) {
+        static std::atomic<int> s_purecallSwapchainRejectLogCount{0};
+        const int logCount = s_purecallSwapchainRejectLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "DX12: Rejecting startup activation swapchain %p because its vtable resolves to CRT _purecall "
+                "(qi=%p addRef=%p release=%p present=%p log=%d)",
+                swapchain, vtable[0], vtable[1], vtable[2], vtable[8], logCount + 1);
+        }
         return false;
     }
 
     return true;
+}
+
+static void SafeReleaseStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
+    if (!swapchain) {
+        return;
+    }
+
+    if (!IsUsableStartupActivationSwapchainPointer(swapchain)) {
+        static std::atomic<int> s_skipUnsafeSwapchainReleaseLogCount{0};
+        const int logCount = s_skipUnsafeSwapchainReleaseLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "DX12: Skipping unsafe startup activation swapchain Release for stale pointer %p "
+                "(source=%s log=%d)",
+                swapchain, source ? source : "unknown", logCount + 1);
+        }
+        return;
+    }
+
+    swapchain->Release();
 }
 
 static void ReleaseStreamlineStartupActivationSwapchain(const char* source) {
@@ -1406,13 +1479,18 @@ static void ReleaseStreamlineStartupActivationSwapchain(const char* source) {
     if (oldSwapchain) {
         HookLogImportant("DX12: Released retained Streamline startup activation swapchain %p (source=%s)", oldSwapchain,
                          source ? source : "unknown");
-        oldSwapchain->Release();
+        SafeReleaseStartupActivationSwapchain(oldSwapchain, source);
     }
 }
 
 static bool HasRetainedStreamlineStartupActivationSwapchain() {
     std::lock_guard<std::mutex> lock(g_StreamlineStartupActivationSwapchainMutex);
     return g_StreamlineStartupActivationSwapchain != nullptr;
+}
+
+static bool HasUsableRetainedStreamlineStartupActivationSwapchainCandidate() {
+    std::lock_guard<std::mutex> lock(g_StreamlineStartupActivationSwapchainMutex);
+    return IsUsableStartupActivationSwapchainPointer(g_StreamlineStartupActivationSwapchain);
 }
 
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
@@ -1438,8 +1516,16 @@ void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, 
             g_StreamlineStartupActivationSwapchainGeneration.load(std::memory_order_acquire)));
 
     if (oldSwapchain) {
-        oldSwapchain->Release();
+        SafeReleaseStartupActivationSwapchain(oldSwapchain, source);
     }
+}
+
+static bool HasStartupActivationSwapchainCandidateForECLProbe() {
+    if (HasUsableRetainedStreamlineStartupActivationSwapchainCandidate()) {
+        return true;
+    }
+
+    return IsUsableStartupActivationSwapchainPointer(g_LastSwapChain);
 }
 
 static IDXGISwapChain* AcquireRetainedStreamlineStartupActivationSwapchain() {
@@ -1515,6 +1601,20 @@ static IDXGISwapChain* AcquireSwapchainForStartupActivation(const char* source) 
 }
 
 bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clearStartupWindow) {
+    if (HookHasRuntimeOwnedNativeFGPresentPath() || g_FGCompat.IsFSRFGApiActive()) {
+        static std::atomic<int> s_nativeFSRStartupActivationSkipLogCount{0};
+        const int logCount = s_nativeFSRStartupActivationSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 200) == 0) {
+            HookLogImportant(
+                "DX12: Skipping retained-swapchain PostSL startup activation callback "
+                "(reason=native-fsr-present-path source=%s nativeFGPath=%d apiFSR=%d retained=%p last=%p log=%d)",
+                source ? source : "unknown", HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
+                g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_StreamlineStartupActivationSwapchain, g_LastSwapChain,
+                logCount + 1);
+        }
+        return false;
+    }
+
     auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
     if (!postSLCallback) {
         return false;
@@ -1558,7 +1658,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
                              : !activationPending             ? "activation-not-pending"
                                                               : "policy";
         logSkippedActivationService(reason, serviceAlreadyInProgress);
-        activationSwapchain->Release();
+        SafeReleaseStartupActivationSwapchain(activationSwapchain, "DX12_TryInvokePostSLStartupActivationCallback");
         return false;
     }
 
@@ -1566,7 +1666,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
     if (!g_PostSLStartupActivationServiceInProgress.compare_exchange_strong(
             expectedInProgress, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
         logSkippedActivationService("in-progress-race", true);
-        activationSwapchain->Release();
+        SafeReleaseStartupActivationSwapchain(activationSwapchain, "DX12_TryInvokePostSLStartupActivationCallback");
         return false;
     }
 
@@ -1583,7 +1683,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
                                                                         : "policy";
         logSkippedActivationService(reason, false);
         g_PostSLStartupActivationServiceInProgress.store(false, std::memory_order_release);
-        activationSwapchain->Release();
+        SafeReleaseStartupActivationSwapchain(activationSwapchain, "DX12_TryInvokePostSLStartupActivationCallback");
         return false;
     }
 
@@ -1607,7 +1707,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
         HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
         g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0, GetCurrentThreadId());
     g_PostSLStartupActivationServiceInProgress.store(false, std::memory_order_release);
-    activationSwapchain->Release();
+    SafeReleaseStartupActivationSwapchain(activationSwapchain, "DX12_TryInvokePostSLStartupActivationCallback");
     return true;
 }
 
@@ -14819,12 +14919,26 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool overlayVisible = GetHookOverlayConfig().showOverlay;
         const bool windowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
         const bool startupTransitionWindowJustExpired = s_startupWindowWasActive && !windowActive;
-        IDXGISwapChain* activationSwapchain =
-            AcquireSwapchainForStartupActivation("DX12::ECL startup activation probe");
-        const bool activationSwapchainAvailable = activationSwapchain != nullptr;
-        if (activationSwapchain) {
-            activationSwapchain->Release();
-            activationSwapchain = nullptr;
+        const bool nativeFSRPresentPathActive = HookHasRuntimeOwnedNativeFGPresentPath();
+        const bool nativeFSRActive = g_FGCompat.IsFSRFGApiActive();
+        const bool shouldProbeStartupActivationSwapchain =
+            ce::dx12_overlay_policy::ShouldProbePostSLStartupActivationSwapchainFromECL(
+                activationPending, callbackInstalled, postSLConfirmedRendering, nativeFSRPresentPathActive,
+                nativeFSRActive);
+        const bool activationSwapchainAvailable =
+            shouldProbeStartupActivationSwapchain && HasStartupActivationSwapchainCandidateForECLProbe();
+        if (!shouldProbeStartupActivationSwapchain && activationPending && callbackInstalled) {
+            static std::atomic<int> s_eclStartupProbeSuppressedLogCount{0};
+            const int logCount = s_eclStartupProbeSuppressedLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 200) == 0) {
+                HookLogImportant(
+                    "DX12: ECL startup activation swapchain probe suppressed "
+                    "(activationPending=%d callbackInstalled=%d confirmed=%d nativeFGPath=%d apiFSR=%d "
+                    "retained=%p last=%p log=%d)",
+                    activationPending ? 1 : 0, callbackInstalled ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                    nativeFSRPresentPathActive ? 1 : 0, nativeFSRActive ? 1 : 0,
+                    g_StreamlineStartupActivationSwapchain, g_LastSwapChain, logCount + 1);
+            }
         }
         const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
         const bool allowExpiryTriggeredStartupActivation =

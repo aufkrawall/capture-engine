@@ -615,6 +615,26 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(bool ff
     return true;
 }
 
+inline bool ShouldProbePostSLStartupActivationSwapchainFromECL(bool activationPending, bool callbackInstalled,
+                                                               bool postSLConfirmedRendering,
+                                                               bool runtimeOwnedNativeFGPresentPath,
+                                                               bool nativeFSRActive) {
+    if (!activationPending || !callbackInstalled || postSLConfirmedRendering) {
+        return false;
+    }
+
+    // The ECL startup probe exists only to unstick Streamline/PostSL startup.
+    // During native FSR ownership or official FFX startup/takeover, retained
+    // Streamline swapchains may already be stale.  Probing them by AddRef/
+    // Release can trip a CRT _purecall before the policy check gets to reject
+    // the activation path.
+    if (runtimeOwnedNativeFGPresentPath || nativeFSRActive) {
+        return false;
+    }
+
+    return true;
+}
+
 inline bool ShouldEndRuntimeOwnedNativeFGTeardownOnOriginalQueueReturn(bool queueMatchesOriginalGameQueue,
                                                                        bool explicitNativeFSROffPending,
                                                                        bool authoritativeFSRActive,

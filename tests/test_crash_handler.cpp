@@ -154,12 +154,15 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("normal overlay fallback is unsafe for progress-resolved official FFX startup"),
               std::string::npos);
+    EXPECT_NE(contents.find("ECL startup activation swapchain probe suppressed"), std::string::npos);
+    EXPECT_NE(contents.find("Rejecting startup activation swapchain"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed inline pre-termination hook"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Capturing pre-termination dump before crash-like process exit"),
               std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: _purecall caller stack before pre-termination dump"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Using minimal-first pre-termination dump attempt"), std::string::npos);
+    EXPECT_NE(contents.find("FatalExitDump: Launching external pre-termination dump helper"), std::string::npos);
     EXPECT_NE(contents.find("RtlExitUserProcess"), std::string::npos);
     EXPECT_NE(contents.find("NtTerminateProcess"), std::string::npos);
     EXPECT_NE(contents.find("_invoke_watson"), std::string::npos);

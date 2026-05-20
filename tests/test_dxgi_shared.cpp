@@ -1065,6 +1065,23 @@ TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresSafeProofBe
         false, true, true, true));
 }
 
+TEST(DXGISharedTest, ECLStartupActivationProbeIsSuppressedDuringNativeFSRPresentPath) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldProbePostSLStartupActivationSwapchainFromECL(
+        true, true, false, false, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldProbePostSLStartupActivationSwapchainFromECL(
+        false, true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldProbePostSLStartupActivationSwapchainFromECL(
+        true, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldProbePostSLStartupActivationSwapchainFromECL(
+        true, true, true, false, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldProbePostSLStartupActivationSwapchainFromECL(
+        true, true, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldProbePostSLStartupActivationSwapchainFromECL(
+        true, true, false, false, true));
+}
+
 TEST(DXGISharedTest, FFXPresentCallbackOverlayBackendResetsOnlyForDeviceOrFormatChange) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldResetFFXPresentCallbackOverlayBackend(true, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldResetFFXPresentCallbackOverlayBackend(true, false, true));

@@ -20,6 +20,7 @@
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
 #include "../common/vulkan_layer_registration.h"
+#include "dump_helper.h"
 #include "injection.h"
 #include "pseudo_overlay.h"
 #include "screenshot.h"
@@ -1434,6 +1435,10 @@ int ControllerMain(HINSTANCE hInstance) {
 
 // Main entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    if (IsDumpHelperCommandLine(lpCmdLine)) {
+        return RunDumpHelperFromCommandLine();
+    }
+
     // Parse process mode from command line
     ProcessMode mode = ParseProcessMode(lpCmdLine);
 

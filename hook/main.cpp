@@ -235,6 +235,111 @@ void LogFatalExitCallerStack(const char* source, DWORD exitCode, void* callerAdd
   }
 }
 
+enum class ExternalPreTerminationDumpResult { kUnavailable, kCaptured, kFailed, kTimedOut };
+
+std::string QuoteCommandLineArgument(const std::string& value) {
+  std::string quoted = "\"";
+  for (char ch : value) {
+    if (ch == '"') {
+      quoted.push_back('\\');
+    }
+    quoted.push_back(ch);
+  }
+  if (!value.empty() && value.back() == '\\') {
+    quoted.push_back('\\');
+  }
+  quoted.push_back('"');
+  return quoted;
+}
+
+std::filesystem::path GetInstalledCaptureEnginePath() {
+  char modulePath[MAX_PATH] = {};
+  if (!GetModuleFileNameA(g_hModule, modulePath, static_cast<DWORD>(sizeof(modulePath)))) {
+    return {};
+  }
+
+  std::filesystem::path baseDir = std::filesystem::path(modulePath).parent_path();
+  return baseDir / "captureengine.exe";
+}
+
+ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(const char* source,
+                                                                                const char* dumpHint) {
+  const std::string dumpDir = GetCrashDumpDirectory();
+  if (dumpDir.empty() || !dumpHint || dumpHint[0] == '\0') {
+    return ExternalPreTerminationDumpResult::kUnavailable;
+  }
+
+  const std::filesystem::path helperPath = GetInstalledCaptureEnginePath();
+  std::error_code ec;
+  if (helperPath.empty() || !std::filesystem::exists(helperPath, ec)) {
+    HookLogImportant(
+        "FatalExitDump: External pre-termination dump helper unavailable "
+        "(source=%s helper=%s dumpDir=%s)",
+        source ? source : "unknown", helperPath.string().c_str(), dumpDir.c_str());
+    return ExternalPreTerminationDumpResult::kUnavailable;
+  }
+
+  std::string commandLine = QuoteCommandLineArgument(helperPath.string());
+  commandLine += " --dump-helper --dump-helper-pid=";
+  commandLine += std::to_string(GetCurrentProcessId());
+  commandLine += " --dump-helper-dir=";
+  commandLine += QuoteCommandLineArgument(dumpDir);
+  commandLine += " --dump-helper-hint=";
+  commandLine += QuoteCommandLineArgument(dumpHint);
+
+  std::vector<char> mutableCommandLine(commandLine.begin(), commandLine.end());
+  mutableCommandLine.push_back('\0');
+
+  STARTUPINFOA si = {};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_HIDE;
+  PROCESS_INFORMATION pi = {};
+
+  HookLogImportant(
+      "FatalExitDump: Launching external pre-termination dump helper "
+      "(source=%s helper=%s hint=%s)",
+      source ? source : "unknown", helperPath.string().c_str(), dumpHint);
+
+  const std::string workingDir = helperPath.parent_path().string();
+  if (!CreateProcessA(helperPath.string().c_str(), mutableCommandLine.data(), nullptr, nullptr, FALSE,
+                      CREATE_NO_WINDOW, nullptr, workingDir.empty() ? nullptr : workingDir.c_str(), &si, &pi)) {
+    HookLogImportant("FatalExitDump: External pre-termination dump helper launch failed "
+                     "(source=%s error=%lu helper=%s)",
+                     source ? source : "unknown", GetLastError(), helperPath.string().c_str());
+    return ExternalPreTerminationDumpResult::kFailed;
+  }
+
+  constexpr DWORD kExternalDumpHelperWaitMs = 8000;
+  const DWORD waitResult = WaitForSingleObject(pi.hProcess, kExternalDumpHelperWaitMs);
+  if (waitResult == WAIT_TIMEOUT) {
+    HookLogImportant(
+        "FatalExitDump: External pre-termination dump helper still running after timeout "
+        "(source=%s timeoutMs=%lu hint=%s) — skipping in-process fallback to avoid dump-path hang",
+        source ? source : "unknown", static_cast<unsigned long>(kExternalDumpHelperWaitMs), dumpHint);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return ExternalPreTerminationDumpResult::kTimedOut;
+  }
+
+  DWORD helperExitCode = 0xFFFFFFFFu;
+  GetExitCodeProcess(pi.hProcess, &helperExitCode);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+
+  if (waitResult == WAIT_OBJECT_0 && helperExitCode == 0) {
+    HookLogImportant("FatalExitDump: External pre-termination dump helper captured dump "
+                     "(source=%s hint=%s)",
+                     source ? source : "unknown", dumpHint);
+    return ExternalPreTerminationDumpResult::kCaptured;
+  }
+
+  HookLogImportant("FatalExitDump: External pre-termination dump helper failed "
+                   "(source=%s wait=%lu exit=%lu hint=%s)",
+                   source ? source : "unknown", waitResult, helperExitCode, dumpHint);
+  return ExternalPreTerminationDumpResult::kFailed;
+}
+
 bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool targetIsCurrentProcess,
                                        PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord,
                                        void* callerAddress = nullptr) {
@@ -294,8 +399,16 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
 
   HookLogImportant("FatalExitDump: Using minimal-first pre-termination dump attempt (source=%s hint=%s)",
                    source ? source : "unknown", dumpHint);
-  const bool wroteDump = WriteSupplementalCrashDump(dumpHint, GetCurrentProcess(), GetCurrentProcessId(),
-                                                    ce::crash_dump_policy::kMinimalDumpType, &exceptionInfo);
+  const ExternalPreTerminationDumpResult externalDumpResult =
+      TryCapturePreTerminationDumpWithExternalHelper(source, dumpHint);
+  bool wroteDump = externalDumpResult == ExternalPreTerminationDumpResult::kCaptured;
+  if (!wroteDump && externalDumpResult != ExternalPreTerminationDumpResult::kTimedOut) {
+    HookLogImportant("FatalExitDump: Falling back to in-process pre-termination dump attempt "
+                     "(source=%s hint=%s externalResult=%d)",
+                     source ? source : "unknown", dumpHint, static_cast<int>(externalDumpResult));
+    wroteDump = WriteSupplementalCrashDump(dumpHint, GetCurrentProcess(), GetCurrentProcessId(),
+                                           ce::crash_dump_policy::kMinimalDumpType, &exceptionInfo);
+  }
   HookLogImportant("FatalExitDump: Pre-termination dump %s (source=%s code=0x%08lX hint=%s)",
                    wroteDump ? "captured" : "failed", source ? source : "unknown",
                    static_cast<unsigned long>(exitCode), dumpHint);
