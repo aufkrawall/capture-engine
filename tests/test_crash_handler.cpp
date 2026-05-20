@@ -152,6 +152,8 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("progress-resolved official FFX runtime-owned Present path assumption"),
               std::string::npos);
+    EXPECT_NE(contents.find("normal overlay fallback is unsafe for progress-resolved official FFX startup"),
+              std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed inline pre-termination hook"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Capturing pre-termination dump before crash-like process exit"),

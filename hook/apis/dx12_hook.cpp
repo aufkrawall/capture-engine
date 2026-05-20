@@ -2353,7 +2353,7 @@ static bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const
     HookLogImportant(
         "DX12: Finalizing protected official FFX startup pass-through after sustained frame progress without direct "
         "ffxConfigure (source=%s elapsed=%llums processFrameSkips=%u eclPassThroughs=%u queue=%p module=%s) — "
-        "enabling native FSR overlay recovery via callback-stall fallback",
+        "normal overlay fallback remains gated until direct ffxConfigure or FFX present-callback proof",
         source && source[0] ? source : "unknown", beginMs ? static_cast<unsigned long long>(nowMs - beginMs) : 0ULL,
         processFrameSkips, eclPassThroughs, deferredQueue,
         deferredModulePath[0] ? deferredModulePath : "official FFX runtime");
@@ -2820,6 +2820,40 @@ static bool IsFFXPresentCallbackStalled() {
     return false;
 }
 
+static bool ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(bool ffxPresentCallbackStalled) {
+    const bool progressResolvedOfficialFFXPresentPath =
+        g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
+    const bool directFFXApiConfirmation = g_FGCompat.HasDirectFFXApiConfirmation();
+    const bool ffxPresentCallbackEverFired =
+        g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0;
+    return ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        ffxPresentCallbackStalled, progressResolvedOfficialFFXPresentPath, directFFXApiConfirmation,
+        ffxPresentCallbackEverFired);
+}
+
+static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
+    static std::atomic<int> s_suppressedStallFallbackLogCount{0};
+    const int logCount = s_suppressedStallFallbackLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount >= 20 && (logCount % 300) != 0) {
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
+    const ULONGLONG assumedSince =
+        g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
+    HookLogImportant(
+        "DX12: FFX present callback appears stalled but normal overlay fallback is unsafe for "
+        "progress-resolved official FFX startup without direct ffxConfigure/callback proof "
+        "(lastCallback=%llu progressAssumedFor=%llums directFFX=%d runtimeOwns=%d runtime=%s apiFSR=%d "
+        "nativeFGPath=%d scQueue=%p origGame=%p cmdQ=%p log=%d)",
+        lastCallback, assumedSince ? (now - assumedSince) : 0,
+        g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
+        ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
+        HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0, g_SwapchainQueue, g_OriginalGameQueue,
+        g_CommandQueue.load(std::memory_order_acquire), logCount + 1);
+}
+
 static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** reason = nullptr) {
     if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
         if (reason) {
@@ -2833,11 +2867,13 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
     const bool runtimeOwnedNativeFGPresentPath = HookHasRuntimeOwnedNativeFGPresentPath();
     const bool ffxStalled = IsFFXPresentCallbackStalled();
+    const bool ffxStallAllowsNormalOverlay =
+        ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(ffxStalled);
     const bool skip = ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, authoritativeFSRActive,
-        runtimeOwnedNativeFGPresentPath, ffxStalled);
+        runtimeOwnedNativeFGPresentPath, ffxStallAllowsNormalOverlay);
     if (!skip) {
-        if (ffxStalled) {
+        if (ffxStallAllowsNormalOverlay) {
             static std::atomic<int> s_stallFallbackLogCount{0};
             if (s_stallFallbackLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                 const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
@@ -2855,6 +2891,10 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
             *reason = nullptr;
         }
         return false;
+    }
+
+    if (ffxStalled && !ffxStallAllowsNormalOverlay) {
+        LogSuppressedFFXPresentCallbackStallNormalOverlayFallback();
     }
 
     if (reason) {
@@ -4680,10 +4720,12 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             const bool explicitNativeFSROffPending =
                 g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
             const bool ffxPresentCallbackStalled = IsFFXPresentCallbackStalled();
+            const bool ffxStallAllowsNormalOverlay =
+                ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(ffxPresentCallbackStalled);
             const bool preserveAuthoritativeFSRBase =
                 ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
                     true, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), runtimeMode,
-                    authoritativeFSRActive, runtimeOwnedNativeFGPresentPath, ffxPresentCallbackStalled);
+                    authoritativeFSRActive, runtimeOwnedNativeFGPresentPath, ffxStallAllowsNormalOverlay);
             const bool endNativeFGTeardownOnOrigGame =
                 ce::dx12_overlay_policy::ShouldEndRuntimeOwnedNativeFGTeardownOnOriginalQueueReturn(
                     pQueue == g_OriginalGameQueue, explicitNativeFSROffPending, authoritativeFSRActive, runtimeMode,
@@ -5614,10 +5656,13 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     if (g_HadFSRFGPhase) {
         ID3D12CommandQueue* staleScQueue = nullptr;
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+        const bool ffxPresentCallbackStalled = IsFFXPresentCallbackStalled();
+        const bool ffxStallAllowsNormalOverlay =
+            ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(ffxPresentCallbackStalled);
         const bool preserveRuntimeOwnedFSRTakeover =
             ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
                 g_FGRuntimeOwnsSwapchain, false, runtimeMode, g_FGCompat.IsFSRFGApiActive(),
-                HookHasRuntimeOwnedNativeFGPresentPath(), IsFFXPresentCallbackStalled());
+                HookHasRuntimeOwnedNativeFGPresentPath(), ffxStallAllowsNormalOverlay);
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
 
@@ -7436,10 +7481,14 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason);
     if (!ShouldUseDedicatedOverlayQueue(&overlayModule)) {
         if (skipSeparateOverlayGpuWork) {
-            HookLogImportant(
-                "InitOverlaySync: Dedicated queue intentionally disabled because %s is active; keeping single-queue "
-                "sync resources idle",
-                skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned FG");
+            static std::atomic<int> s_runtimeOwnedDedicatedQueueSkipLogCount{0};
+            const int logCount = s_runtimeOwnedDedicatedQueueSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "InitOverlaySync: Dedicated queue intentionally disabled because %s is active; keeping "
+                    "single-queue sync resources idle (log=%d)",
+                    skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned FG", logCount + 1);
+            }
             g_State.currentFenceValue = 0;
             g_State.allocIndex = 0;
             g_State.syncInit = false;

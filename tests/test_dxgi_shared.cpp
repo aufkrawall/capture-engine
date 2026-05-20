@@ -1028,6 +1028,8 @@ TEST(DXGISharedTest, RuntimeOwnedNativeFSRSuppressesInjectedOverlayGpuWorkOnlyFo
 TEST(DXGISharedTest, FFXPresentCallbackStallAllowsNormalOverlayRendering) {
     // When the FFX present callback is reported as stalled, the policy must
     // stop suppressing normal overlay work even for active FSR states.
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
@@ -1044,6 +1046,23 @@ TEST(DXGISharedTest, FFXPresentCallbackStallAllowsNormalOverlayRendering) {
     // No runtime ownership also still means no skip.
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, true));
+}
+
+TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresSafeProofBeforeNormalOverlayFallback) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, true, false, false));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true,
+        ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(true, true, false,
+                                                                                              false)));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        false, true, true, true));
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackOverlayBackendResetsOnlyForDeviceOrFormatChange) {

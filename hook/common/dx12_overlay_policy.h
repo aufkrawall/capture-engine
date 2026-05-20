@@ -594,6 +594,27 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     return authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode) || runtimeOwnedNativeFGPresentPath;
 }
 
+inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(bool ffxPresentCallbackStalled,
+                                                                         bool progressResolvedOfficialFFXPresentPath,
+                                                                         bool directFFXApiConfirmation,
+                                                                         bool ffxPresentCallbackEverFired) {
+    if (!ffxPresentCallbackStalled) {
+        return false;
+    }
+
+    // GTA Enhanced's official AMD FFX path can progress far enough to prove
+    // frame generation ownership without ever reaching CE's ffxConfigure or
+    // present-callback bridge.  In that unproven state, falling back to normal
+    // overlay GPU submission on the original game queue has produced immediate
+    // device removal, so require a stronger proof before treating a missing
+    // callback as permission to submit injected overlay work.
+    if (progressResolvedOfficialFFXPresentPath && !directFFXApiConfirmation && !ffxPresentCallbackEverFired) {
+        return false;
+    }
+
+    return true;
+}
+
 inline bool ShouldEndRuntimeOwnedNativeFGTeardownOnOriginalQueueReturn(bool queueMatchesOriginalGameQueue,
                                                                        bool explicitNativeFSROffPending,
                                                                        bool authoritativeFSRActive,
