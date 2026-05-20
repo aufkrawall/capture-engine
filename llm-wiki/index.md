@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-20 (updated: build 0.1.3362 / tests 0.1.3364 - GTA official FFX startup pass-through and inline fatal-exit dump hook)
+Last cross-checked: 2026-05-20 (updated: build 0.1.3377 / tests 0.1.3379 - GTA official FFX progress fallback overlay recovery)
 
 Primary sources:
 - `AGENTS.md`

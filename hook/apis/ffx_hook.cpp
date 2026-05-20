@@ -408,11 +408,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
 
     // Native FSR can keep its context alive while toggling FG on/off via
     // ffxConfigure. Trust that runtime signal over context lifetime.
-    DX12_OnNativeFSRFrameGenerationConfigured(parsed.enabled);
-    g_FGCompat.SetFSRFGActive(parsed.enabled);
     if (parsed.enabled) {
         g_FGCompat.MarkDirectFFXApiConfirmation();
     }
+    DX12_OnNativeFSRFrameGenerationConfigured(parsed.enabled);
+    g_FGCompat.SetFSRFGActive(parsed.enabled);
     ce::fg_session::EmitFGEvent(
         parsed.enabled ? ce::fg_session::FGEventKind::kNativeFSRConfigureOn
                        : ce::fg_session::FGEventKind::kNativeFSRConfigureOff,

@@ -1191,6 +1191,11 @@ static std::atomic<bool> g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGa
 static std::atomic<bool> g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown{false};
 static std::atomic<bool> g_NativeFSRStartupConfigureArmingPending{false};
 static std::atomic<bool> g_ProtectedOfficialFFXStartupSwapchainPending{false};
+static std::atomic<uint32_t> g_ProtectedOfficialFFXStartupProcessFrameSkips{0};
+static std::atomic<uint32_t> g_ProtectedOfficialFFXStartupECLPassThroughs{0};
+static std::atomic<ULONGLONG> g_ProtectedOfficialFFXStartupBeginMs{0};
+static std::atomic<bool> g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress{false};
+static std::atomic<ULONGLONG> g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs{0};
 static std::atomic<bool> g_DeferredOfficialFFXTakeoverSideEffectsPending{false};
 static std::mutex g_DeferredOfficialFFXTakeoverMutex;
 static ID3D12CommandQueue* g_DeferredOfficialFFXTakeoverQueue = nullptr;
@@ -1206,6 +1211,33 @@ static void ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak() {
 
 static void ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown() {
     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.store(false, std::memory_order_release);
+}
+
+static bool HasResolvedOfficialFFXStartupPath() {
+    return g_FGCompat.HasDirectFFXApiConfirmation() ||
+           g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
+}
+
+static void ResetProtectedOfficialFFXStartupProgressCounters() {
+    g_ProtectedOfficialFFXStartupProcessFrameSkips.store(0, std::memory_order_release);
+    g_ProtectedOfficialFFXStartupECLPassThroughs.store(0, std::memory_order_release);
+    g_ProtectedOfficialFFXStartupBeginMs.store(0, std::memory_order_release);
+}
+
+static void ArmProtectedOfficialFFXStartupProgressTracking(const char* reason) {
+    g_ProtectedOfficialFFXStartupProcessFrameSkips.store(0, std::memory_order_release);
+    g_ProtectedOfficialFFXStartupECLPassThroughs.store(0, std::memory_order_release);
+    g_ProtectedOfficialFFXStartupBeginMs.store(GetTickCount64(), std::memory_order_release);
+    HookLogImportant("DX12: Protected official FFX startup progress tracking armed (%s)",
+                     reason && reason[0] ? reason : "unknown");
+}
+
+static void ClearOfficialFFXRuntimeOwnedPresentPathAssumption(const char* reason) {
+    g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.store(0, std::memory_order_release);
+    if (g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.exchange(false, std::memory_order_acq_rel)) {
+        HookLogImportant("DX12: Cleared progress-resolved official FFX runtime-owned Present path assumption (%s)",
+                         reason && reason[0] ? reason : "unknown");
+    }
 }
 
 static void StoreDeferredOfficialFFXTakeoverSideEffects(ID3D12CommandQueue* queue, const char* modulePath,
@@ -1276,6 +1308,7 @@ static void ClearProtectedOfficialFFXStartupSwapchainPending(const char* reason)
         HookLogImportant("DX12: Cleared protected official FFX startup swapchain pass-through (%s)",
                          reason && reason[0] ? reason : "unknown");
     }
+    ResetProtectedOfficialFFXStartupProgressCounters();
 }
 
 static void SetNativeFSRStartupConfigureArmingPending(bool pending, const char* reason) {
@@ -1294,6 +1327,7 @@ void DX12_ClearNativeFSRStartupConfigureArming(const char* reason) {
     SetNativeFSRStartupConfigureArmingPending(false, reason);
     ClearDeferredOfficialFFXTakeoverSideEffects(reason);
     ClearProtectedOfficialFFXStartupSwapchainPending(reason);
+    ClearOfficialFFXRuntimeOwnedPresentPathAssumption(reason);
 }
 
 // Primary game queue — set once from the first ECL call (always the game's queue,
@@ -1630,6 +1664,9 @@ bool HookHasSafePostFSRBootstrapPath() {
 
 bool HookHasRuntimeOwnedNativeFGPresentPath() {
     if (g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire)) {
+        return true;
+    }
+    if (g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire)) {
         return true;
     }
     return DXGIShared::DoesFGRuntimeOwnSwapchain() &&
@@ -2175,13 +2212,13 @@ static bool ShouldUseProtectedOfficialFFXStartupSwapchainCreatePath(
     const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
     return ce::dx12_overlay_policy::ShouldProtectOfficialFFXStartupSwapchainCreateFromCESideEffects(
         captureEvidence.authoritativeFFXRuntimeCreator, captureEvidence.officialAMDFFXRuntimeCreator,
-        g_FGCompat.HasDirectFFXApiConfirmation());
+        HasResolvedOfficialFFXStartupPath());
 }
 
 static bool ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup() {
     return ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(
         g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire),
-        g_FGCompat.HasDirectFFXApiConfirmation());
+        HasResolvedOfficialFFXStartupPath());
 }
 
 static bool ShouldApplySwapchainDescriptorOverridesForCreate(
@@ -2224,6 +2261,7 @@ static bool HandleProtectedOfficialFFXStartupSwapchainCreate(const CreateSwapcha
     ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
     SetNativeFSRStartupConfigureArmingPending(true, "protected official FFX swapchain create");
     g_ProtectedOfficialFFXStartupSwapchainPending.store(true, std::memory_order_release);
+    ArmProtectedOfficialFFXStartupProgressTracking("protected official FFX swapchain create");
     ResetAuthoritativeFSRRealFrameOnlyStreak();
     if (!g_HadFSRFGPhase) {
         g_HadFSRFGPhase = true;
@@ -2281,6 +2319,61 @@ static void ApplyAuthoritativeFFXTakeoverSideEffects(ID3D12CommandQueue* capture
         staleStreamlineSignal ? 1 : 0, reason && reason[0] ? reason : "unknown");
 }
 
+static bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const char* source) {
+    if (!g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire) ||
+        HasResolvedOfficialFFXStartupPath()) {
+        return false;
+    }
+
+    const uint32_t processFrameSkips =
+        g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire);
+    const uint32_t eclPassThroughs = g_ProtectedOfficialFFXStartupECLPassThroughs.load(std::memory_order_acquire);
+    if (!ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+            true, false, processFrameSkips, eclPassThroughs)) {
+        return false;
+    }
+
+    if (!g_ProtectedOfficialFFXStartupSwapchainPending.exchange(false, std::memory_order_acq_rel)) {
+        return false;
+    }
+
+    const ULONGLONG nowMs = GetTickCount64();
+    const ULONGLONG beginMs = g_ProtectedOfficialFFXStartupBeginMs.load(std::memory_order_acquire);
+    char deferredModulePath[MAX_PATH] = {};
+    ID3D12CommandQueue* deferredQueue =
+        ConsumeDeferredOfficialFFXTakeoverSideEffects(deferredModulePath, sizeof(deferredModulePath));
+
+    g_FGCompat.SetFSRFGSupportPresent(true);
+    g_FGCompat.SetFSRFGMultiplier(2);
+    g_FGCompat.SetFSRFGActive(true);
+    ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+    g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.store(true, std::memory_order_release);
+    g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.store(nowMs, std::memory_order_release);
+
+    HookLogImportant(
+        "DX12: Finalizing protected official FFX startup pass-through after sustained frame progress without direct "
+        "ffxConfigure (source=%s elapsed=%llums processFrameSkips=%u eclPassThroughs=%u queue=%p module=%s) — "
+        "enabling native FSR overlay recovery via callback-stall fallback",
+        source && source[0] ? source : "unknown", beginMs ? static_cast<unsigned long long>(nowMs - beginMs) : 0ULL,
+        processFrameSkips, eclPassThroughs, deferredQueue,
+        deferredModulePath[0] ? deferredModulePath : "official FFX runtime");
+
+    ApplyAuthoritativeFFXTakeoverSideEffects(
+        deferredQueue, deferredModulePath[0] ? deferredModulePath : "official FFX runtime",
+        "protected official FFX startup progressed without direct ffxConfigure");
+    if (deferredQueue) {
+        deferredQueue->Release();
+    }
+
+    SetNativeFSRStartupConfigureArmingPending(false, "protected official FFX startup progress fallback");
+    ResetProtectedOfficialFFXStartupProgressCounters();
+    FFXHook::Init();
+    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kNativeFSRConfigureOn,
+                                "DX12_ProtectedOfficialFFXStartupProgressFallback", nullptr, nullptr,
+                                ce::fg_runtime::RuntimeMode::kFSRFG, true, false);
+    return true;
+}
+
 static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQueueCaptureEvidence& captureEvidence,
                                                         bool runtimeOwnsSwapchain, bool runtimeOwnershipJustActivated,
                                                         ID3D12CommandQueue* capturedQueue) {
@@ -2328,6 +2421,7 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
         ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
         SetNativeFSRStartupConfigureArmingPending(true, "protected official FFX queue capture");
         g_ProtectedOfficialFFXStartupSwapchainPending.store(true, std::memory_order_release);
+        ArmProtectedOfficialFFXStartupProgressTracking("protected official FFX queue capture");
         ResetAuthoritativeFSRRealFrameOnlyStreak();
         if (!g_HadFSRFGPhase) {
             g_HadFSRFGPhase = true;
@@ -2716,6 +2810,13 @@ static bool IsFFXPresentCallbackStalled() {
         constexpr ULONGLONG kNeverFiredStallThresholdMs = 3000;
         return (now - g_FGRuntimeOwnsSwapchainSince) > kNeverFiredStallThresholdMs;
     }
+    const ULONGLONG assumedSince =
+        g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
+    if (g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) &&
+        assumedSince != 0) {
+        constexpr ULONGLONG kProgressFallbackNeverFiredStallThresholdMs = 1500;
+        return (now - assumedSince) > kProgressFallbackNeverFiredStallThresholdMs;
+    }
     return false;
 }
 
@@ -2741,10 +2842,13 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
             if (s_stallFallbackLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                 const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
                 const ULONGLONG ownedSince = g_FGRuntimeOwnsSwapchainSince;
+                const ULONGLONG assumedSince =
+                    g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
                 HookLogImportant(
-                    "DX12: FFX present callback appears stalled (lastCallback=%llu ownedFor=%llums) — allowing "
-                    "normal overlay rendering as fallback",
-                    lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0);
+                    "DX12: FFX present callback appears stalled (lastCallback=%llu ownedFor=%llums "
+                    "progressAssumedFor=%llums) — allowing normal overlay rendering as fallback",
+                    lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0,
+                    assumedSince ? (GetTickCount64() - assumedSince) : 0);
             }
         }
         if (reason) {
@@ -3118,6 +3222,9 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
             ConsumeDeferredOfficialFFXTakeoverSideEffects(deferredModulePath, sizeof(deferredModulePath));
         const bool protectedOfficialStartup =
             g_ProtectedOfficialFFXStartupSwapchainPending.exchange(false, std::memory_order_acq_rel);
+        if (protectedOfficialStartup) {
+            ResetProtectedOfficialFFXStartupProgressCounters();
+        }
         if (deferredQueue) {
             HookLogImportant(
                 "DX12: Finalizing staged official FFX takeover after enabled ffxConfigure "
@@ -3144,6 +3251,7 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
     SetNativeFSRStartupConfigureArmingPending(false, "native FSR disabled configure");
     ClearDeferredOfficialFFXTakeoverSideEffects("native FSR disabled configure");
     ClearProtectedOfficialFFXStartupSwapchainPending("native FSR disabled configure");
+    ClearOfficialFFXRuntimeOwnedPresentPathAssumption("native FSR disabled configure");
     const bool runtimeOwnedTeardownStillActive = g_FGRuntimeOwnsSwapchain;
     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.store(runtimeOwnedTeardownStillActive, std::memory_order_release);
     if (runtimeOwnedTeardownStillActive) {
@@ -4614,6 +4722,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
                 HookLogImportant("DX12: Swapchain returned to origGame queue %p — ending authoritative FSR FG state",
                                  pQueue);
                 SetNativeFSRStartupConfigureArmingPending(false, "swapchain returned to origGame");
+                ClearOfficialFFXRuntimeOwnedPresentPathAssumption("swapchain returned to origGame");
                 g_FGCompat.SetFSRFGActive(false);
                 g_FGCompat.SetFSRFGMultiplier(0);
                 ResetAuthoritativeFSRRealFrameOnlyStreak();
@@ -5190,8 +5299,11 @@ void DX12_PrepareForStreamlineEnableTransition() {
 }
 
 bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() {
+    const bool progressResolvedOfficialFFXPresentPath =
+        g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
     return ce::dx12_overlay_policy::ShouldTreatNativeFSRSwapchainAsRuntimeOwnedForConfigure(
-        g_FGRuntimeOwnsSwapchain, g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire));
+        g_FGRuntimeOwnsSwapchain || progressResolvedOfficialFFXPresentPath,
+        g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire));
 }
 
 DWORD DX12_GetGamePresentThreadId() {
@@ -5364,6 +5476,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                         streamlineStartupHandoffPending, HookHasRuntimeOwnedNativeFGPresentPath());
                 if (clearStaleNativeFGPresentOwnership) {
                     ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+                    ClearOfficialFFXRuntimeOwnedPresentPathAssumption(
+                        "Streamline FG comeback cleared stale native-FG Present ownership");
                     HookLogImportant(
                         "DX12: Streamline FG ON after FSR — cleared stale native-FG Present ownership before explicit "
                         "DLSS comeback activation (scQueue=%p origGame=%p)",
@@ -5382,6 +5496,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                     if (g_FGCompat.IsFSRFGApiActive()) {
                         SetNativeFSRStartupConfigureArmingPending(false,
                                                                   "Streamline FG comeback cleared FSR ownership");
+                        ClearOfficialFFXRuntimeOwnedPresentPathAssumption(
+                            "Streamline FG comeback cleared FSR ownership");
                         g_FGCompat.SetFSRFGActive(false);
                         g_FGCompat.SetFSRFGMultiplier(0);
                         ResetAuthoritativeFSRRealFrameOnlyStreak();
@@ -5519,6 +5635,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
                 if (g_FGCompat.IsFSRFGApiActive()) {
                     SetNativeFSRStartupConfigureArmingPending(false, "Streamline FG off cleared FSR ownership");
+                    ClearOfficialFFXRuntimeOwnedPresentPathAssumption("Streamline FG off cleared FSR ownership");
                     g_FGCompat.SetFSRFGActive(false);
                     g_FGCompat.SetFSRFGMultiplier(0);
                     ResetAuthoritativeFSRRealFrameOnlyStreak();
@@ -12526,6 +12643,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                     g_CommandQueue.load(std::memory_order_acquire));
                             } else if (g_FGCompat.IsFSRFGApiActive()) {
                                 SetNativeFSRStartupConfigureArmingPending(false, "runtime mode transition cleared FSR");
+                                ClearOfficialFFXRuntimeOwnedPresentPathAssumption("runtime mode transition cleared FSR");
                                 g_FGCompat.SetFSRFGActive(false);
                                 g_FGCompat.SetFSRFGMultiplier(0);
                             }
@@ -13997,14 +14115,26 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
 
     if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
         static std::atomic<int> s_protectedOfficialFFXProcessFrameSkipLogCount{0};
-        const int logCount = s_protectedOfficialFFXProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (logCount < 20 || (logCount % 300) == 0) {
+        const uint32_t progressCount =
+            g_ProtectedOfficialFFXStartupProcessFrameSkips.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress("ProcessFrame")) {
             HookLogImportant(
-                "DX12: Protected official FFX startup pending - skipping ProcessFrame overlay/capture/FFX retry "
-                "side effects until enabled ffxConfigure (sc=%p count=%d)",
-                pSwapChain, logCount + 1);
+                "DX12: Protected official FFX startup progress fallback completed on ProcessFrame; resuming CE "
+                "overlay/capture side effects (sc=%p processFrameSkips=%u)",
+                pSwapChain, progressCount);
+        } else if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+            const int logCount =
+                s_protectedOfficialFFXProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: Protected official FFX startup pending - skipping ProcessFrame overlay/capture/FFX retry "
+                    "side effects until enabled ffxConfigure or sustained frame progress "
+                    "(sc=%p count=%d progress=%u eclProgress=%u)",
+                    pSwapChain, logCount + 1, progressCount,
+                    g_ProtectedOfficialFFXStartupECLPassThroughs.load(std::memory_order_acquire));
+            }
+            return;
         }
-        return;
     }
 
     // Retry FFX hook initialization periodically for late-loading FSR FG modules.
@@ -14241,6 +14371,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         g_FGCompat.SetFSRFGActive(false);
         g_FGCompat.SetFSRFGMultiplier(0);
         SetNativeFSRStartupConfigureArmingPending(false, "stale authoritative FSR real-frame cleanup");
+        ClearOfficialFFXRuntimeOwnedPresentPathAssumption("stale authoritative FSR real-frame cleanup");
         ResetAuthoritativeFSRRealFrameOnlyStreak();
     }
 
@@ -14588,19 +14719,31 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 
     if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
         static std::atomic<int> s_protectedOfficialFFXECLPassThroughLogCount{0};
-        const int logCount = s_protectedOfficialFFXECLPassThroughLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (logCount < 20 || (logCount % 1024) == 0) {
+        const uint32_t progressCount =
+            g_ProtectedOfficialFFXStartupECLPassThroughs.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress("ExecuteCommandLists")) {
             HookLogImportant(
-                "DX12: Protected official FFX startup pending - passing ExecuteCommandLists through without CE side "
-                "effects (queue=%p lists=%u eclCount=%llu tid=0x%04X count=%d)",
-                pThis, NumCommandLists, (unsigned long long)eclCount, GetCurrentThreadId(), logCount + 1);
-        }
+                "DX12: Protected official FFX startup progress fallback completed on ECL; resuming CE side effects "
+                "(queue=%p lists=%u eclProgress=%u)",
+                pThis, NumCommandLists, progressCount);
+        } else if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+            const int logCount =
+                s_protectedOfficialFFXECLPassThroughLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 1024) == 0) {
+                HookLogImportant(
+                    "DX12: Protected official FFX startup pending - passing ExecuteCommandLists through without CE "
+                    "side effects until enabled ffxConfigure or sustained frame progress "
+                    "(queue=%p lists=%u eclCount=%llu tid=0x%04X count=%d progress=%u processFrameProgress=%u)",
+                    pThis, NumCommandLists, (unsigned long long)eclCount, GetCurrentThreadId(), logCount + 1,
+                    progressCount, g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire));
+            }
 
-        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
-        if (original) {
-            original(pThis, NumCommandLists, ppCommandLists);
+            ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+            if (original) {
+                original(pThis, NumCommandLists, ppCommandLists);
+            }
+            return;
         }
-        return;
     }
 
     NoteStartupBlockingRenderModuleActivityFromECL(pThis, CE_RETURN_ADDRESS());

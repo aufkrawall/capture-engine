@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <cstdint>
+
 #include <dxgi1_6.h>
 
 #include "fg_runtime_state.h"
@@ -1816,22 +1818,45 @@ inline bool ShouldDeferOfficialFFXTakeoverSideEffectsUntilEnabledConfigure(bool 
 
 inline bool ShouldProtectOfficialFFXStartupSwapchainCreateFromCESideEffects(bool authoritativeFFXRuntimeCreator,
                                                                             bool officialAMDFFXRuntimeCreator,
-                                                                            bool hasDirectFFXApiConfirmation) {
+                                                                            bool ffxStartupAlreadyResolved) {
     // The official AMD runtime can fail fast immediately after creating its
     // startup swapchain, before the enabled ffxConfigure packet is visible.
     // During that window CE must not refresh Present hooks, inspect the AMD
     // export table, or otherwise mutate the runtime-owned swapchain path.
-    return authoritativeFFXRuntimeCreator && officialAMDFFXRuntimeCreator && !hasDirectFFXApiConfirmation;
+    return authoritativeFFXRuntimeCreator && officialAMDFFXRuntimeCreator && !ffxStartupAlreadyResolved;
 }
 
 inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool protectedOfficialFFXStartupPending,
-                                                                        bool hasDirectFFXApiConfirmation) {
+                                                                        bool ffxStartupAlreadyResolved) {
     // The protected startup-create path is only useful if the rest of CE also
     // stays out of the runtime's way until the official AMD runtime has reached
-    // its enabled ffxConfigure packet. ECL probes, queue registration, overlay
-    // submissions, and late export inspection can all be too invasive in this
-    // narrow pre-configure window.
-    return protectedOfficialFFXStartupPending && !hasDirectFFXApiConfirmation;
+    // either its enabled ffxConfigure packet or enough real render progress to
+    // prove that this title does not expose the configure call through the CE
+    // hook path. ECL probes, queue registration, overlay submissions, and late
+    // export inspection can all be too invasive in the narrow pre-configure
+    // window.
+    return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved;
+}
+
+inline uint32_t GetProtectedOfficialFFXStartupProcessFrameProgressThreshold() {
+    return 120;
+}
+
+inline uint32_t GetProtectedOfficialFFXStartupECLProgressThreshold() {
+    return 4096;
+}
+
+inline bool ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+    bool protectedOfficialFFXStartupPending, bool ffxStartupAlreadyResolved, uint32_t processFrameSkips,
+    uint32_t eclPassThroughs) {
+    // GTA's official AMD FFX runtime can activate FSR FG without resolving
+    // ffxConfigure through GetProcAddress/IAT-visible paths. Keep the initial
+    // fail-fast guard, but once normal game rendering has progressed for a
+    // meaningful number of frames/ECL submissions, graduate the path so CE can
+    // recover overlay rendering instead of staying permanently quiesced.
+    return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved &&
+           (processFrameSkips >= GetProtectedOfficialFFXStartupProcessFrameProgressThreshold() ||
+            eclPassThroughs >= GetProtectedOfficialFFXStartupECLProgressThreshold());
 }
 
 inline bool ShouldApplySwapchainDescriptorOverridesForCreate(bool callerFromThirdPartyOverlay,

@@ -1302,6 +1302,24 @@ TEST(DXGISharedTest, ProtectedOfficialFFXStartupQuiescesCESideEffectsUntilDirect
         ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(true, true));
 }
 
+TEST(DXGISharedTest, ProtectedOfficialFFXStartupCanResolveAfterSustainedProgressWithoutDirectConfigure) {
+    const uint32_t processFrameThreshold =
+        ce::dx12_overlay_policy::GetProtectedOfficialFFXStartupProcessFrameProgressThreshold();
+    const uint32_t eclThreshold = ce::dx12_overlay_policy::GetProtectedOfficialFFXStartupECLProgressThreshold();
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+        true, false, processFrameThreshold - 1, eclThreshold - 1));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+        true, false, processFrameThreshold, 0));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+        true, false, 0, eclThreshold));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+        false, false, processFrameThreshold, eclThreshold));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+        true, true, processFrameThreshold, eclThreshold));
+}
+
 TEST(DXGISharedTest, AuthoritativeRuntimeSwapchainCreatePreservesOriginalDescriptor) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate(false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate(true, true));

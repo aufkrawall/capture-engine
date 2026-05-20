@@ -148,6 +148,10 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Preserving swapchain descriptor for authoritative FG runtime create"), std::string::npos);
     EXPECT_NE(contents.find("Finalizing protected official FFX startup pass-through after enabled ffxConfigure"),
               std::string::npos);
+    EXPECT_NE(contents.find("Finalizing protected official FFX startup pass-through after sustained frame progress"),
+              std::string::npos);
+    EXPECT_NE(contents.find("progress-resolved official FFX runtime-owned Present path assumption"),
+              std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed inline pre-termination hook"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Capturing pre-termination dump before crash-like process exit"),

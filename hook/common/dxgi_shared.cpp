@@ -1389,9 +1389,14 @@ static void DetectSLPresentHook() {
     // Verify that our trampoline is different (it should have the original
     // function bytes, not a JMP).
     auto* trampolineBytes = (const uint8_t*)oPresentTrampoline;
-    HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X", oPresentTrampoline,
-                     trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3], trampolineBytes[4],
-                     trampolineBytes[5]);
+    static std::atomic<uint32_t> s_trampolineBytesLogCount{0};
+    const uint32_t trampolineLogCount = s_trampolineBytesLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (trampolineLogCount <= 5 || (trampolineLogCount % 500) == 0) {
+        HookLogImportant(
+            "DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X (trampolineLog=%u)",
+            oPresentTrampoline, trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3],
+            trampolineBytes[4], trampolineBytes[5], trampolineLogCount);
+    }
 
     ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
     bool runtimeOwnedNativeFGPresentPath = false;
