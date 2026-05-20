@@ -187,6 +187,56 @@ void ArchiveInstalledCrashArtifactsForDumpDirectory(const std::string& dumpDir) 
     }
 }
 
+void DeleteStaleEmptyInProgressDumpArtifactsForDirectory(const std::string& dumpDir) {
+    if (dumpDir.empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(dumpDir, ec) || ec) {
+        return;
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(dumpDir, ec)) {
+        if (ec) {
+            ec.clear();
+            break;
+        }
+        if (!entry.is_regular_file(ec) || ec) {
+            ec.clear();
+            continue;
+        }
+
+        const std::string fileName = entry.path().filename().string();
+        const auto fileSize = entry.file_size(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (!ce::crash_dump_policy::IsStaleEmptyInProgressDumpArtifact(
+                fileName.c_str(), static_cast<uint64_t>(fileSize))) {
+            continue;
+        }
+
+        std::filesystem::remove(entry.path(), ec);
+        if (!ec) {
+            LogInfo("CrashHandler: Removed stale empty in-progress dump artifact %s", fileName.c_str());
+        } else {
+            ec.clear();
+        }
+    }
+}
+
+bool ClearDeleteOnClose(HANDLE fileHandle) {
+    if (!fileHandle || fileHandle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    FILE_DISPOSITION_INFO disposition = {};
+    disposition.DeleteFile = FALSE;
+    return SetFileInformationByHandle(fileHandle, FileDispositionInfo, &disposition, sizeof(disposition)) != FALSE;
+}
+
 }  // namespace
 
 bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD processId,
@@ -219,8 +269,11 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
     const std::filesystem::path tempDumpPath = std::filesystem::path(dumpDir) / tempDumpFileName;
 
     DeleteFileA(tempDumpPath.string().c_str());
-    HANDLE hFile = CreateFileA(tempDumpPath.string().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    HANDLE hFile =
+        CreateFileA(tempDumpPath.string().c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
+                    FILE_SHARE_READ | FILE_SHARE_DELETE,
+                    nullptr, CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -254,6 +307,11 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
 
     LARGE_INTEGER dumpSize = {};
     const bool hasNonEmptyDump = success && GetFileSizeEx(hFile, &dumpSize) && dumpSize.QuadPart > 0;
+    if (hasNonEmptyDump && !ClearDeleteOnClose(hFile)) {
+        CloseHandle(hFile);
+        DeleteFileA(tempDumpPath.string().c_str());
+        return false;
+    }
     CloseHandle(hFile);
     if (!hasNonEmptyDump) {
         DeleteFileA(tempDumpPath.string().c_str());
@@ -367,6 +425,7 @@ void SetCrashDumpDirectory(const std::string& dir) {
         std::lock_guard<std::mutex> lock(g_DumpDirMutex);
         g_DumpDir = dir;
     }
+    DeleteStaleEmptyInProgressDumpArtifactsForDirectory(dir);
     ArchiveInstalledCrashArtifactsForDumpDirectory(dir);
 }
 
@@ -469,8 +528,9 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     }
 
     DeleteFileA(tempDumpPath);
-    HANDLE hFile = CreateFileA(tempDumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
+    HANDLE hFile = CreateFileA(tempDumpPath, GENERIC_READ | GENERIC_WRITE | DELETE,
+                               FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_DELETE_ON_CLOSE, NULL);
 
     if (hFile == INVALID_HANDLE_VALUE) {
         DWORD createErr = GetLastError();
@@ -567,6 +627,15 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
                 fprintf(f, "MiniDumpWriteDump failed. Error: %lu (0x%08lX)\nDump Path: %s\n", err, err, dumpPath);
                 fclose(f);
             }
+        }
+        if (rv && !ClearDeleteOnClose(hFile)) {
+            err = GetLastError();
+            rv = FALSE;
+            removeTempDump = true;
+            char clearDeleteMsg[160];
+            snprintf(clearDeleteMsg, sizeof(clearDeleteMsg),
+                     "Failed to clear delete-on-close for in-progress dump file (err=%lu)", err);
+            TraceCrash(clearDeleteMsg);
         }
         CloseHandle(hFile);
         if (rv) {

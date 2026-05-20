@@ -242,6 +242,10 @@ inline std::string BuildInProgressDumpFileName(const char* finalDumpFileName) {
     return inProgressName;
 }
 
+inline bool IsStaleEmptyInProgressDumpArtifact(const char* fileName, uint64_t fileSizeBytes) {
+    return fileSizeBytes == 0 && EndsWithAsciiInsensitive(fileName, ".dmp.inprogress");
+}
+
 struct ExternalDumpSignature {
     DWORD processId = 0;
     std::string dumpBaseName;

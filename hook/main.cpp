@@ -173,10 +173,77 @@ bool IsCurrentProcessHandle(HANDLE processHandle) {
   return targetPid != 0 && targetPid == GetCurrentProcessId();
 }
 
+bool ClearDeleteOnClose(HANDLE fileHandle) {
+  if (!fileHandle || fileHandle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  FILE_DISPOSITION_INFO disposition = {};
+  disposition.DeleteFile = FALSE;
+  return SetFileInformationByHandle(fileHandle, FileDispositionInfo, &disposition, sizeof(disposition)) != FALSE;
+}
+
+void DescribeAddressModule(void* address, char* buffer, size_t bufferSize) {
+  if (!buffer || bufferSize == 0) {
+    return;
+  }
+  buffer[0] = '\0';
+  if (!address) {
+    snprintf(buffer, bufferSize, "unknown");
+    return;
+  }
+
+  HMODULE module = nullptr;
+  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCSTR>(address), &module) &&
+      module) {
+    char modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(module, modulePath, sizeof(modulePath))) {
+      snprintf(buffer, bufferSize, "%s+0x%llX", modulePath,
+               static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
+                                               reinterpret_cast<uintptr_t>(module)));
+      return;
+    }
+  }
+
+  snprintf(buffer, bufferSize, "unknown");
+}
+
+void LogFatalExitCallerStack(const char* source, DWORD exitCode, void* callerAddress) {
+  char callerModule[MAX_PATH + 64] = {};
+  DescribeAddressModule(callerAddress, callerModule, sizeof(callerModule));
+
+  if (source && std::strcmp(source, "_purecall") == 0) {
+    HookLogImportant("FatalExitDump: _purecall caller stack before pre-termination dump");
+  }
+
+  void* frames[16] = {};
+  const USHORT frameCount =
+      RtlCaptureStackBackTrace(0, static_cast<DWORD>(sizeof(frames) / sizeof(frames[0])), frames, nullptr);
+  HookLogImportant(
+      "FatalExitDump: %s caller stack before pre-termination dump "
+      "(code=0x%08lX caller=%p module=%s frames=%u)",
+      source ? source : "unknown", static_cast<unsigned long>(exitCode), callerAddress, callerModule,
+      static_cast<unsigned>(frameCount));
+
+  const USHORT framesToLog = std::min<USHORT>(frameCount, 12);
+  for (USHORT i = 0; i < framesToLog; ++i) {
+    char frameModule[MAX_PATH + 64] = {};
+    DescribeAddressModule(frames[i], frameModule, sizeof(frameModule));
+    HookLogImportant("FatalExitDump: %s stack[%u]=%p %s", source ? source : "unknown",
+                     static_cast<unsigned>(i), frames[i], frameModule);
+  }
+}
+
 bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool targetIsCurrentProcess,
-                                       PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord) {
+                                       PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord,
+                                       void* callerAddress = nullptr) {
   const bool alreadyAttempted = g_PreTerminationDumpAttempted.load(std::memory_order_acquire);
   if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted)) {
+    return false;
+  }
+
+  if (t_InFatalTerminationDumpHook) {
     return false;
   }
 
@@ -186,11 +253,12 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
     return false;
   }
 
-  if (t_InFatalTerminationDumpHook) {
-    return false;
-  }
-
   t_InFatalTerminationDumpHook = true;
+
+  if (!callerAddress) {
+    callerAddress = __builtin_return_address(0);
+  }
+  LogFatalExitCallerStack(source, exitCode, callerAddress);
 
   CONTEXT capturedContext = {};
   if (!contextRecord) {
@@ -201,7 +269,7 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   EXCEPTION_RECORD synthesizedRecord = {};
   if (!exceptionRecord) {
     synthesizedRecord.ExceptionCode = exitCode;
-    synthesizedRecord.ExceptionAddress = __builtin_return_address(0);
+    synthesizedRecord.ExceptionAddress = callerAddress;
     exceptionRecord = &synthesizedRecord;
   }
 
@@ -224,8 +292,10 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
       source ? source : "unknown", static_cast<unsigned long>(exitCode), exceptionRecord->ExceptionAddress);
   OutputDebugStringA("[FatalExitDump] Capturing pre-termination crash dump.\n");
 
+  HookLogImportant("FatalExitDump: Using minimal-first pre-termination dump attempt (source=%s hint=%s)",
+                   source ? source : "unknown", dumpHint);
   const bool wroteDump = WriteSupplementalCrashDump(dumpHint, GetCurrentProcess(), GetCurrentProcessId(),
-                                                    ce::crash_dump_policy::kQuickAssertDumpType, &exceptionInfo);
+                                                    ce::crash_dump_policy::kMinimalDumpType, &exceptionInfo);
   HookLogImportant("FatalExitDump: Pre-termination dump %s (source=%s code=0x%08lX hint=%s)",
                    wroteDump ? "captured" : "failed", source ? source : "unknown",
                    static_cast<unsigned long>(exitCode), dumpHint);
@@ -240,24 +310,29 @@ bool ShouldCaptureExplicitFatalRaise(DWORD code) {
 }
 
 bool CaptureExplicitFatalRaiseIfNeeded(const char* source, DWORD code, PEXCEPTION_RECORD exceptionRecord,
-                                       PCONTEXT contextRecord) {
+                                       PCONTEXT contextRecord, void* callerAddress = nullptr) {
   if (!ShouldCaptureExplicitFatalRaise(code)) {
     return false;
+  }
+
+  if (!callerAddress) {
+    callerAddress = __builtin_return_address(0);
   }
 
   EXCEPTION_RECORD synthesizedRecord = {};
   if (!exceptionRecord) {
     synthesizedRecord.ExceptionCode = code;
-    synthesizedRecord.ExceptionAddress = __builtin_return_address(0);
+    synthesizedRecord.ExceptionAddress = callerAddress;
     exceptionRecord = &synthesizedRecord;
   }
 
-  return CapturePreTerminationDumpIfNeeded(source, code, true, exceptionRecord, contextRecord);
+  return CapturePreTerminationDumpIfNeeded(source, code, true, exceptionRecord, contextRecord, callerAddress);
 }
 
 VOID WINAPI HookedRaiseFailFastException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, DWORD Flags) {
   const DWORD code = ExceptionRecord ? ExceptionRecord->ExceptionCode : ce::crash_dump_policy::kFailFastExceptionExitCode;
-  CapturePreTerminationDumpIfNeeded("RaiseFailFastException", code, true, ExceptionRecord, ContextRecord);
+  CapturePreTerminationDumpIfNeeded("RaiseFailFastException", code, true, ExceptionRecord, ContextRecord,
+                                    __builtin_return_address(0));
 
   const auto original = g_OriginalRaiseFailFastException.load(std::memory_order_acquire);
   if (original) {
@@ -278,7 +353,7 @@ VOID WINAPI HookedRaiseException(DWORD ExceptionCode, DWORD ExceptionFlags, DWOR
   for (DWORD i = 0; i < record.NumberParameters && Arguments; ++i) {
     record.ExceptionInformation[i] = Arguments[i];
   }
-  CaptureExplicitFatalRaiseIfNeeded("RaiseException", ExceptionCode, &record, nullptr);
+  CaptureExplicitFatalRaiseIfNeeded("RaiseException", ExceptionCode, &record, nullptr, __builtin_return_address(0));
 
   const auto original = g_OriginalRaiseException.load(std::memory_order_acquire);
   if (original) {
@@ -291,7 +366,7 @@ VOID WINAPI HookedRaiseException(DWORD ExceptionCode, DWORD ExceptionFlags, DWOR
 
 VOID NTAPI HookedRtlRaiseException(PEXCEPTION_RECORD ExceptionRecord) {
   const DWORD code = ExceptionRecord ? ExceptionRecord->ExceptionCode : 0;
-  CaptureExplicitFatalRaiseIfNeeded("RtlRaiseException", code, ExceptionRecord, nullptr);
+  CaptureExplicitFatalRaiseIfNeeded("RtlRaiseException", code, ExceptionRecord, nullptr, __builtin_return_address(0));
 
   const auto original = g_OriginalRtlRaiseException.load(std::memory_order_acquire);
   if (original) {
@@ -307,7 +382,8 @@ VOID NTAPI HookedRtlRaiseException(PEXCEPTION_RECORD ExceptionRecord) {
 }
 
 VOID NTAPI HookedRtlRaiseStatus(NTSTATUS Status) {
-  CaptureExplicitFatalRaiseIfNeeded("RtlRaiseStatus", static_cast<DWORD>(Status), nullptr, nullptr);
+  CaptureExplicitFatalRaiseIfNeeded("RtlRaiseStatus", static_cast<DWORD>(Status), nullptr, nullptr,
+                                    __builtin_return_address(0));
 
   const auto original = g_OriginalRtlRaiseStatus.load(std::memory_order_acquire);
   if (original) {
@@ -324,7 +400,8 @@ VOID NTAPI HookedRtlRaiseStatus(NTSTATUS Status) {
 
 NTSTATUS NTAPI HookedNtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord, BOOLEAN FirstChance) {
   const DWORD code = ExceptionRecord ? ExceptionRecord->ExceptionCode : 0;
-  CaptureExplicitFatalRaiseIfNeeded("NtRaiseException", code, ExceptionRecord, ContextRecord);
+  CaptureExplicitFatalRaiseIfNeeded("NtRaiseException", code, ExceptionRecord, ContextRecord,
+                                    __builtin_return_address(0));
 
   const auto original = g_OriginalNtRaiseException.load(std::memory_order_acquire);
   if (original) {
@@ -340,7 +417,7 @@ NTSTATUS NTAPI HookedNtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEX
 
 BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode) {
   CapturePreTerminationDumpIfNeeded("TerminateProcess", static_cast<DWORD>(uExitCode), IsCurrentProcessHandle(hProcess),
-                                    nullptr, nullptr);
+                                    nullptr, nullptr, __builtin_return_address(0));
 
   const auto original = g_OriginalTerminateProcess.load(std::memory_order_acquire);
   if (original) {
@@ -351,7 +428,8 @@ BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode) {
 }
 
 VOID WINAPI HookedExitProcess(UINT uExitCode) {
-  CapturePreTerminationDumpIfNeeded("ExitProcess", static_cast<DWORD>(uExitCode), true, nullptr, nullptr);
+  CapturePreTerminationDumpIfNeeded("ExitProcess", static_cast<DWORD>(uExitCode), true, nullptr, nullptr,
+                                    __builtin_return_address(0));
 
   const auto original = g_OriginalExitProcess.load(std::memory_order_acquire);
   if (original) {
@@ -363,7 +441,8 @@ VOID WINAPI HookedExitProcess(UINT uExitCode) {
 }
 
 VOID NTAPI HookedRtlExitUserProcess(NTSTATUS ExitStatus) {
-  CapturePreTerminationDumpIfNeeded("RtlExitUserProcess", static_cast<DWORD>(ExitStatus), true, nullptr, nullptr);
+  CapturePreTerminationDumpIfNeeded("RtlExitUserProcess", static_cast<DWORD>(ExitStatus), true, nullptr, nullptr,
+                                    __builtin_return_address(0));
 
   const auto original = g_OriginalRtlExitUserProcess.load(std::memory_order_acquire);
   if (original) {
@@ -377,7 +456,7 @@ VOID NTAPI HookedRtlExitUserProcess(NTSTATUS ExitStatus) {
 NTSTATUS NTAPI HookedNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus) {
   const bool targetIsCurrentProcess = ProcessHandle == nullptr || IsCurrentProcessHandle(ProcessHandle);
   CapturePreTerminationDumpIfNeeded("NtTerminateProcess", static_cast<DWORD>(ExitStatus), targetIsCurrentProcess,
-                                    nullptr, nullptr);
+                                    nullptr, nullptr, __builtin_return_address(0));
 
   const auto original = g_OriginalNtTerminateProcess.load(std::memory_order_acquire);
   if (original) {
@@ -393,7 +472,8 @@ NTSTATUS NTAPI HookedNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatu
 
 void __cdecl HookedInvalidParameterNoInfoNoReturn() {
   CapturePreTerminationDumpIfNeeded("_invalid_parameter_noinfo_noreturn",
-                                    ce::crash_dump_policy::kFailFastExceptionExitCode, true, nullptr, nullptr);
+                                    ce::crash_dump_policy::kFailFastExceptionExitCode, true, nullptr, nullptr,
+                                    __builtin_return_address(0));
 
   const auto original = g_OriginalInvalidParameterNoInfoNoReturn.load(std::memory_order_acquire);
   if (original) {
@@ -412,7 +492,7 @@ void __cdecl HookedInvokeWatson(const wchar_t* expression, const wchar_t* functi
   (void)line;
   (void)reserved;
   CapturePreTerminationDumpIfNeeded("_invoke_watson", ce::crash_dump_policy::kFailFastExceptionExitCode, true, nullptr,
-                                    nullptr);
+                                    nullptr, __builtin_return_address(0));
 
   const auto original = g_OriginalInvokeWatson.load(std::memory_order_acquire);
   if (original) {
@@ -424,7 +504,8 @@ void __cdecl HookedInvokeWatson(const wchar_t* expression, const wchar_t* functi
 }
 
 void __cdecl HookedAbort() {
-  CapturePreTerminationDumpIfNeeded("abort", ce::crash_dump_policy::kFailFastExceptionExitCode, true, nullptr, nullptr);
+  CapturePreTerminationDumpIfNeeded("abort", ce::crash_dump_policy::kFailFastExceptionExitCode, true, nullptr, nullptr,
+                                    __builtin_return_address(0));
 
   const auto original = g_OriginalAbort.load(std::memory_order_acquire);
   if (original) {
@@ -437,7 +518,7 @@ void __cdecl HookedAbort() {
 
 void __cdecl HookedTerminate() {
   CapturePreTerminationDumpIfNeeded("terminate", ce::crash_dump_policy::kFailFastExceptionExitCode, true, nullptr,
-                                    nullptr);
+                                    nullptr, __builtin_return_address(0));
 
   const auto original = g_OriginalTerminate.load(std::memory_order_acquire);
   if (original) {
@@ -450,7 +531,7 @@ void __cdecl HookedTerminate() {
 
 int __cdecl HookedPurecall() {
   CapturePreTerminationDumpIfNeeded("_purecall", ce::crash_dump_policy::kFailFastExceptionExitCode, true, nullptr,
-                                    nullptr);
+                                    nullptr, __builtin_return_address(0));
 
   const auto original = g_OriginalPurecall.load(std::memory_order_acquire);
   if (original) {
@@ -955,8 +1036,9 @@ void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess,
     DeleteFileA(tempMirrorPath.c_str());
 
     HANDLE mirrorFile =
-        CreateFileA(tempMirrorPath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+        CreateFileA(tempMirrorPath.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
     if (mirrorFile == INVALID_HANDLE_VALUE) {
       HookLog("CrashMirror: Failed to create mirror dump %s (err=%lu)", tempMirrorPath.c_str(), GetLastError());
       return;
@@ -971,6 +1053,14 @@ void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess,
 
     LARGE_INTEGER mirrorSize = {};
     const bool mirrorNonEmpty = mirrorResult && GetFileSizeEx(mirrorFile, &mirrorSize) && mirrorSize.QuadPart > 0;
+    if (mirrorNonEmpty && !ClearDeleteOnClose(mirrorFile)) {
+      const DWORD clearError = GetLastError();
+      CloseHandle(mirrorFile);
+      DeleteFileA(tempMirrorPath.c_str());
+      HookLog("CrashMirror: Failed to clear delete-on-close for mirror dump %s (err=%lu)", tempMirrorPath.c_str(),
+              clearError);
+      return;
+    }
     CloseHandle(mirrorFile);
 
     if (!mirrorNonEmpty) {

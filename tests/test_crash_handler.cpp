@@ -141,6 +141,10 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Official FFX takeover side-effects staged until enabled ffxConfigure"), std::string::npos);
     EXPECT_NE(contents.find("Finalizing staged official FFX takeover after enabled ffxConfigure"), std::string::npos);
     EXPECT_NE(contents.find("Protected official FFX startup swapchain pass-through"), std::string::npos);
+    EXPECT_NE(contents.find("Protected official FFX startup pending - passing ExecuteCommandLists through"),
+              std::string::npos);
+    EXPECT_NE(contents.find("Protected official FFX startup pending - skipping ProcessFrame overlay/capture/FFX retry"),
+              std::string::npos);
     EXPECT_NE(contents.find("Preserving swapchain descriptor for authoritative FG runtime create"), std::string::npos);
     EXPECT_NE(contents.find("Finalizing protected official FFX startup pass-through after enabled ffxConfigure"),
               std::string::npos);
@@ -148,6 +152,8 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("FatalExitDump: Installed inline pre-termination hook"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Capturing pre-termination dump before crash-like process exit"),
               std::string::npos);
+    EXPECT_NE(contents.find("FatalExitDump: _purecall caller stack before pre-termination dump"), std::string::npos);
+    EXPECT_NE(contents.find("FatalExitDump: Using minimal-first pre-termination dump attempt"), std::string::npos);
     EXPECT_NE(contents.find("RtlExitUserProcess"), std::string::npos);
     EXPECT_NE(contents.find("NtTerminateProcess"), std::string::npos);
     EXPECT_NE(contents.find("_invoke_watson"), std::string::npos);

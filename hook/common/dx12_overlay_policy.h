@@ -1824,6 +1824,16 @@ inline bool ShouldProtectOfficialFFXStartupSwapchainCreateFromCESideEffects(bool
     return authoritativeFFXRuntimeCreator && officialAMDFFXRuntimeCreator && !hasDirectFFXApiConfirmation;
 }
 
+inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool protectedOfficialFFXStartupPending,
+                                                                        bool hasDirectFFXApiConfirmation) {
+    // The protected startup-create path is only useful if the rest of CE also
+    // stays out of the runtime's way until the official AMD runtime has reached
+    // its enabled ffxConfigure packet. ECL probes, queue registration, overlay
+    // submissions, and late export inspection can all be too invasive in this
+    // narrow pre-configure window.
+    return protectedOfficialFFXStartupPending && !hasDirectFFXApiConfirmation;
+}
+
 inline bool ShouldApplySwapchainDescriptorOverridesForCreate(bool callerFromThirdPartyOverlay,
                                                              bool authoritativeFrameGenerationRuntimeCreator) {
     // Runtime FG components treat swapchain creation as part of their own

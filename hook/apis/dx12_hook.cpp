@@ -2178,6 +2178,12 @@ static bool ShouldUseProtectedOfficialFFXStartupSwapchainCreatePath(
         g_FGCompat.HasDirectFFXApiConfirmation());
 }
 
+static bool ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup() {
+    return ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(
+        g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire),
+        g_FGCompat.HasDirectFFXApiConfirmation());
+}
+
 static bool ShouldApplySwapchainDescriptorOverridesForCreate(
     const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
     return ce::dx12_overlay_policy::ShouldApplySwapchainDescriptorOverridesForCreate(
@@ -2714,6 +2720,13 @@ static bool IsFFXPresentCallbackStalled() {
 }
 
 static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** reason = nullptr) {
+    if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+        if (reason) {
+            *reason = "protected official FFX startup";
+        }
+        return true;
+    }
+
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
@@ -4354,6 +4367,19 @@ static __attribute__((noinline)) void DX12_SetCommandQueueInternal(ID3D12Command
     auto vtblPtr = *reinterpret_cast<void* volatile const*>(pQueue);
     if (!vtblPtr)
         return;
+
+    if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+        static std::atomic<int> s_protectedOfficialFFXSetQueueSkipLogCount{0};
+        const int logCount = s_protectedOfficialFFXSetQueueSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 256) == 0) {
+            HookLogImportant(
+                "DX12: Protected official FFX startup pending - skipping SetCommandQueue side effects "
+                "(queue=%p callerOverlay=%d caller=%s count=%d)",
+                pQueue, callerFromThirdPartyOverlay ? 1 : 0,
+                callerModulePath && callerModulePath[0] ? callerModulePath : "unknown", logCount + 1);
+        }
+        return;
+    }
 
     // ExecuteCommandLists may hit this many times per frame on the same queue.
     // Once we've captured the active DIRECT queue, avoid the repeated GetDesc /
@@ -13969,6 +13995,18 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         g_RenderWatchdog.HeartbeatFromHelperThread();
     }
 
+    if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+        static std::atomic<int> s_protectedOfficialFFXProcessFrameSkipLogCount{0};
+        const int logCount = s_protectedOfficialFFXProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Protected official FFX startup pending - skipping ProcessFrame overlay/capture/FFX retry "
+                "side effects until enabled ffxConfigure (sc=%p count=%d)",
+                pSwapChain, logCount + 1);
+        }
+        return;
+    }
+
     // Retry FFX hook initialization periodically for late-loading FSR FG modules.
     // UE5 games often load amd_fidelityfx_framegeneration_dx12.dll after initial
     // hook setup completes, so we must retry until the module is found.
@@ -14548,6 +14586,23 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         return;
     }
 
+    if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+        static std::atomic<int> s_protectedOfficialFFXECLPassThroughLogCount{0};
+        const int logCount = s_protectedOfficialFFXECLPassThroughLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 1024) == 0) {
+            HookLogImportant(
+                "DX12: Protected official FFX startup pending - passing ExecuteCommandLists through without CE side "
+                "effects (queue=%p lists=%u eclCount=%llu tid=0x%04X count=%d)",
+                pThis, NumCommandLists, (unsigned long long)eclCount, GetCurrentThreadId(), logCount + 1);
+        }
+
+        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+        if (original) {
+            original(pThis, NumCommandLists, ppCommandLists);
+        }
+        return;
+    }
+
     NoteStartupBlockingRenderModuleActivityFromECL(pThis, CE_RETURN_ADDRESS());
 
     // Critical fix for GTA V Enhanced DLSS FG startup freeze:
@@ -14920,6 +14975,18 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     // Never hook our own overlay queue to avoid re-entry in ECL
     if (queue == g_State.overlayQueue)
         return;
+
+    if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+        static std::atomic<int> s_protectedOfficialFFXQueueHookSkipLogCount{0};
+        const int logCount = s_protectedOfficialFFXQueueHookSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 128) == 0) {
+            HookLogImportant(
+                "DX12: Protected official FFX startup pending - skipping ExecuteCommandLists vtable hook refresh "
+                "(queue=%p count=%d)",
+                queue, logCount + 1);
+        }
+        return;
+    }
 
     // Skip vtable hooking on SL wrapper queues during Streamline startup.
     // During pure-DLSS cold start, Streamline creates COM wrapper queues that

@@ -96,6 +96,15 @@ TEST(CrashDumpPolicyTest, InProgressDumpFileNamesAreNotFinalDmpArtifacts) {
     EXPECT_EQ(policy::BuildInProgressDumpFileName(nullptr), "dump.dmp.inprogress");
 }
 
+TEST(CrashDumpPolicyTest, EmptyInProgressDumpArtifactsAreStaleCleanupTargets) {
+    EXPECT_TRUE(policy::IsStaleEmptyInProgressDumpArtifact("crash_external_fatal_exit.dmp.inprogress", 0));
+    EXPECT_TRUE(policy::IsStaleEmptyInProgressDumpArtifact("CRASH.DMP.INPROGRESS", 0));
+
+    EXPECT_FALSE(policy::IsStaleEmptyInProgressDumpArtifact("crash_external_fatal_exit.dmp.inprogress", 1));
+    EXPECT_FALSE(policy::IsStaleEmptyInProgressDumpArtifact("crash_external_fatal_exit.dmp", 0));
+    EXPECT_FALSE(policy::IsStaleEmptyInProgressDumpArtifact(nullptr, 0));
+}
+
 TEST(CrashDumpPolicyTest, ExternalDumpStormUsesStrongSignatureForTermination) {
     policy::ExternalDumpSignature signature;
     signature.processId = 1234;
