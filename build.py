@@ -154,6 +154,13 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 BUILD_DIR = os.path.join(PROJECT_ROOT, BUILD_DIR_NAME)
 MSYS2_DIST_URL = "https://repo.msys2.org/distrib/x86_64/"
 MSYS2_DEFAULT_TARBALL = "msys2-base-x86_64-20260322.tar.xz"
+
+# FG SDK download URLs (for test app DLLs)
+FFX_SDK_URL = "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v2.2.0/FidelityFX-Samples-v2.2.0-prebuilt.zip"
+FFX_SDK_ZIP_NAME = "FidelityFX-Samples-v2.2.0-prebuilt.zip"
+STREAMLINE_SDK_URL = "https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.11.1/streamline-sdk-v2.11.1.zip"
+STREAMLINE_SDK_ZIP_NAME = "streamline-sdk-v2.11.1.zip"
+FG_SDK_CACHE_DIR = os.path.join(BUILD_DIR, "fg_sdk_cache")
 MSYS2_DIR = os.path.join(BUILD_DIR, "msys64")
 OBJ_DIR = os.path.join(BUILD_DIR, "obj")
 BIN_DIR = os.path.join(BUILD_DIR, "bin")
@@ -1292,6 +1299,106 @@ def check_mingw_packages():
         log(f"Found mingw-w64 compiler: {x64_compiler}")
         if not (shutil.which("i686-w64-mingw32-g++") or shutil.which("i686-w64-mingw32-clang++")):
             log("Linux host missing mingw-w64 x86 compiler - x86 targets will be skipped")
+
+
+def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
+    """Download and extract FSR FG and DLSS FG SDK DLLs for test apps.
+
+    Downloads FidelityFX-SDK and Streamline-SDK archives to a cache dir,
+    then extracts only the needed runtime DLLs into the test app directory.
+    Respects --skip-updates to avoid re-downloading.
+    """
+    testapp_dir = TESTAPP_BIN_DIR
+    os.makedirs(testapp_dir, exist_ok=True)
+    os.makedirs(FG_SDK_CACHE_DIR, exist_ok=True)
+
+    # -- Required DLLs by test app --
+    # FSR FG: amd_fidelityfx_framegeneration_dx12.dll, amd_fidelityfx_loader_dx12.dll
+    # DLSS FG: sl.interposer.dll, sl.common.dll, sl.dlss_g.dll
+    fsr_dlls = ["amd_fidelityfx_framegeneration_dx12.dll", "amd_fidelityfx_loader_dx12.dll"]
+    sl_dlls = ["sl.interposer.dll", "sl.common.dll", "sl.dlss_g.dll"]
+    all_dlls = fsr_dlls + sl_dlls
+
+    missing = [d for d in all_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+    if not missing:
+        log("FG SDK DLLs already present - skipping download")
+        return
+    log(f"FG SDK DLLs missing: {len(missing)} - checking archives")
+
+    def _download_and_extract(url: str, zip_name: str, archive_inner_path: str, dlls: List[str]) -> None:
+        """Download a SDK zip, extract specific DLLs to testapp_dir."""
+        zip_path = os.path.join(FG_SDK_CACHE_DIR, zip_name)
+        if not os.path.exists(zip_path):
+            log(f"Downloading {zip_name}...")
+            temp_zip = zip_path + ".tmp"
+            try:
+                if os.path.exists(temp_zip):
+                    os.remove(temp_zip)
+                urllib.request.urlretrieve(url, temp_zip)
+                os.replace(temp_zip, zip_path)
+            finally:
+                if os.path.exists(temp_zip):
+                    os.remove(temp_zip)
+            log(f"Downloaded {zip_name}")
+        else:
+            log(f"Using cached {zip_name}")
+
+        # Extract only needed DLLs from the archive
+        import zipfile
+        missing_from_archive = [d for d in dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+        if not missing_from_archive:
+            return
+
+        log(f"Extracting {len(missing_from_archive)} DLL(s) from {zip_name}...")
+        extracted = set()
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for entry in zf.infolist():
+                fname = os.path.basename(entry.filename)
+                if fname in missing_from_archive and entry.filename.startswith(archive_inner_path) and fname not in extracted:
+                    zf.extract(entry, testapp_dir)
+                    extracted_path = os.path.normpath(os.path.join(testapp_dir, entry.filename))
+                    dest_path = os.path.join(testapp_dir, fname)
+                    if os.path.exists(extracted_path) and extracted_path != dest_path:
+                        safe_replace_or_rename(extracted_path, dest_path)
+                    extracted.add(fname)
+        log(f"Extracted {len(extracted)} DLL(s) from {zip_name}")
+        # Clean up nested subdirs left by partial extraction (only SDK artifact dirs)
+        sdk_parent_dirs = {"bin", "Samples", "Kits"}
+        for root, dirs, files in os.walk(testapp_dir, topdown=False):
+            for d in dirs:
+                if d in sdk_parent_dirs or d.startswith("amd_"):
+                    dir_path = os.path.join(root, d)
+                    try:
+                        if os.path.isdir(dir_path) and not os.listdir(dir_path):
+                            os.rmdir(dir_path)
+                    except OSError:
+                        pass
+
+    # Download and extract FSR DLLs if any missing
+    missing_fsr = [d for d in fsr_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+    if missing_fsr:
+        _download_and_extract(FFX_SDK_URL, FFX_SDK_ZIP_NAME, "Samples/Upscalers/FidelityFX_FSR/dx12/x64/Release/", missing_fsr)
+
+    # Download and extract Streamline DLLs if any missing
+    missing_sl = [d for d in sl_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+    if missing_sl:
+        _download_and_extract(STREAMLINE_SDK_URL, STREAMLINE_SDK_ZIP_NAME, "bin/x64/", missing_sl)
+
+    # Final report
+    still_missing = [d for d in all_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+    if still_missing:
+        log(f"Warning: some FG DLLs could not be extracted: {still_missing}")
+    else:
+        log("All FG SDK DLLs ready for test apps")
+
+
+def safe_replace_or_rename(src: str, dst: str) -> None:
+    """Rename or copy+delete src to dst, handling cross-device moves."""
+    try:
+        os.replace(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+        os.remove(src)
 
 
 def check_python_lsp_tools():
@@ -4986,13 +5093,17 @@ def compile_project(
         else:
             remove_stale_windows_sanitizer_runtime_dlls(BIN_DIR)
 
-    # 6. Compile Test Applications (DX9/10/11/12, Vulkan, OpenGL; x64/x86)
+    # 6. Download/extract FG SDK DLLs for test apps (FSR FG, DLSS FG)
+    if not IS_LINUX:
+        setup_fg_sdk_dlls(skip_updates=skip_updates)
+
+    # 7. Compile Test Applications (DX9/10/11/12, Vulkan, OpenGL; x64/x86)
     x86_env_for_tests = None
     if not IS_LINUX or has_linux_x86_compiler():
         x86_env_for_tests, _ = get_env_x86()
     compile_testapps(env, x86_env_for_tests, clang_exe, cflags)
 
-    # 7. Compile Vulkan Layer (VK_LAYER_CE_overlay)
+    # 8. Compile Vulkan Layer (VK_LAYER_CE_overlay)
     compile_vulkan_layer(env, clang_exe, cflags, "x64")
     record_verification_artifact("vulkan_layer_x64", os.path.join(BIN_DIR, "VK_LAYER_CE_overlay.dll"))
     # x86 layer using mingw32 toolchain (disabled for sanitizer builds)

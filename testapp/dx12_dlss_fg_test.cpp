@@ -1,8 +1,9 @@
 // DX12 Test App with NVIDIA DLSS Frame Generation (via Streamline SDK)
-// Displays a horizontal moving rectangle, enables DLSS FG after ~2 seconds
+// Real-world swapchain config: 3 back buffers, flip discard, frame latency waitable.
+// Calls slInit() + slSetD3DDevice + slDLSSGSetOptions. Enables DLSS FG after ~2s.
 //
-// Requires sl.interposer.dll, sl.common.dll, sl.dlss_g.dll next to the exe.
-// Download from: https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.11.1
+// Requires next to the exe (placed by build.py from Streamline v2.11.1):
+//   sl.interposer.dll  sl.common.dll  sl.dlss_g.dll
 //
 // Build with: python build.py
 
@@ -36,7 +37,7 @@
 using Microsoft::WRL::ComPtr;
 
 // ---------------------------------------------------------------------------
-// Streamline SDK type definitions (reverse-engineered from Streamline headers)
+// Streamline SDK type definitions (matching Streamline SDK v2.11.1 ABI)
 // ---------------------------------------------------------------------------
 using slResult = int;
 
@@ -45,6 +46,8 @@ constexpr uint32_t kSLFeatureDLSSG = 1000;
 constexpr size_t kSLStructVersion1 = 1;
 constexpr size_t kSLStructVersion4 = 4;
 constexpr char kSLBooleanInvalid = 2;
+constexpr int kSLModeOff = 0;
+constexpr int kSLModeOn = 1;
 
 struct slStructType {
     uint32_t data1;
@@ -61,9 +64,10 @@ struct slBaseStructure {
 
 constexpr slStructType kDLSSGOptionsStructType = {
     0xfac5f1cb, 0x2dfd, 0x4f36, {0xa1, 0xe6, 0x3a, 0x9e, 0x86, 0x52, 0x56, 0xc5}};
-
 constexpr slStructType kViewportHandleStructType = {
     0x171b6435, 0x9b3c, 0x4fc8, {0x99, 0x94, 0xfb, 0xe5, 0x25, 0x69, 0xaa, 0xa4}};
+constexpr slStructType kDLSSGStateStructType = {
+    0xcc8ac8e1, 0xa179, 0x44f5, {0x97, 0xfa, 0xe7, 0x41, 0x12, 0xf9, 0xbc, 0x61}};
 
 struct slViewportHandle {
     slBaseStructure base;
@@ -93,10 +97,25 @@ struct slDLSSGOptions {
     char bReserved16;
 };
 
-// Function pointer types
-using PFN_slSetD3DDevice = slResult (*)(void* d3dDevice);
-using PFN_slGetFeatureFunction = slResult (*)(uint32_t feature, const char* functionName, void*& function);
-using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle& viewport, const slDLSSGOptions& options);
+struct slDLSSGState {
+    slBaseStructure base;
+    uint64_t estimatedVRAMUsageInBytes;
+    uint32_t status;
+    uint32_t minWidthOrHeight;
+    uint32_t numFramesActuallyPresented;
+    uint32_t numFramesToGenerateMax;
+    char bReserved4;
+    char bIsVsyncSupportAvailable;
+    void* inputsProcessingCompletionFence;
+    uint64_t lastPresentInputsProcessingCompletionFenceValue;
+};
+
+using PFN_slInit = slResult (*)(const slBaseStructure*);
+using PFN_slShutdown = slResult (*)();
+using PFN_slSetD3DDevice = slResult (*)(void*);
+using PFN_slGetFeatureFunction = slResult (*)(uint32_t, const char*, void*&);
+using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle&, const slDLSSGOptions&);
+using PFN_slDLSSGGetState = slResult (*)(const slViewportHandle&, slDLSSGState&, const slDLSSGOptions*);
 
 // ---------------------------------------------------------------------------
 // Config
@@ -114,7 +133,6 @@ void LoadConfig() {
     size_t pos = configPath.find_last_of("\\/");
     if (pos != std::string::npos)
         configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
-
     g_WindowWidth = GetPrivateProfileIntA("Display", "width", g_WindowWidth, configPath.c_str());
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
     g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
@@ -123,18 +141,19 @@ void LoadConfig() {
 }
 
 const wchar_t* WINDOW_CLASS = L"CaptureTestDLSSFG";
+constexpr int FRAME_COUNT = 3; // 3 back buffers: DLSS FG needs extra surfaces
 
 // DX12 objects
 ComPtr<ID3D12Device> g_Device;
 ComPtr<ID3D12CommandQueue> g_CommandQueue;
 ComPtr<IDXGISwapChain3> g_SwapChain;
 ComPtr<ID3D12DescriptorHeap> g_RtvHeap;
-ComPtr<ID3D12Resource> g_RenderTargets[2];
-ComPtr<ID3D12CommandAllocator> g_CommandAllocators[2];
+ComPtr<ID3D12Resource> g_RenderTargets[FRAME_COUNT];
+ComPtr<ID3D12CommandAllocator> g_CommandAllocators[FRAME_COUNT];
 ComPtr<ID3D12GraphicsCommandList> g_CommandList;
 ComPtr<ID3D12Fence> g_Fence;
 HANDLE g_FenceEvent;
-UINT64 g_FenceValues[2] = {};
+UINT64 g_FenceValues[FRAME_COUNT] = {};
 UINT g_FrameIndex = 0;
 UINT g_RtvDescriptorSize = 0;
 std::mutex g_FrameSyncMutex;
@@ -142,6 +161,7 @@ std::mutex g_FrameSyncMutex;
 // Streamline / DLSS FG state
 static HMODULE g_SlModule = nullptr;
 static PFN_slDLSSGSetOptions g_SlDLSSGSetOptions = nullptr;
+static PFN_slDLSSGGetState g_SlDLSSGGetState = nullptr;
 static slViewportHandle g_SlViewport;
 static bool g_DlssInitialized = false;
 static bool g_DlssEnabled = false;
@@ -153,15 +173,9 @@ bool g_Running = true;
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-        case WM_DESTROY:
-            g_Running = false;
-            PostQuitMessage(0);
-            return 0;
+        case WM_DESTROY: g_Running = false; PostQuitMessage(0); return 0;
         case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE) {
-                g_Running = false;
-                DestroyWindow(hWnd);
-            }
+            if (wParam == VK_ESCAPE) { g_Running = false; DestroyWindow(hWnd); }
             return 0;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -196,32 +210,34 @@ void MoveToNextFrame() {
 // ---------------------------------------------------------------------------
 static bool TryInitDLSSFG() {
     g_SlModule = LoadLibraryW(L"sl.interposer.dll");
-    if (!g_SlModule) {
-        return false;
-    }
+    if (!g_SlModule) return false;
 
+    auto slInit = reinterpret_cast<PFN_slInit>(GetProcAddress(g_SlModule, "slInit"));
+    auto slShutdown = reinterpret_cast<PFN_slShutdown>(GetProcAddress(g_SlModule, "slShutdown"));
     auto slSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(g_SlModule, "slSetD3DDevice"));
     auto slGetFeatureFunction =
         reinterpret_cast<PFN_slGetFeatureFunction>(GetProcAddress(g_SlModule, "slGetFeatureFunction"));
 
-    if (!slSetD3DDevice || !slGetFeatureFunction) {
-        FreeLibrary(g_SlModule);
-        g_SlModule = nullptr;
+    if (!slInit || !slSetD3DDevice || !slGetFeatureFunction) {
+        FreeLibrary(g_SlModule); g_SlModule = nullptr;
         return false;
     }
 
-    // Register our D3D12 device with Streamline
+    // Real Streamline init sequence: slInit -> slSetD3DDevice -> resolve features
+    slInit(nullptr);
     slSetD3DDevice(g_Device.Get());
 
-    // Resolve slDLSSGSetOptions
     void* fnPtr = nullptr;
-    slResult ret = slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", fnPtr);
-    if (ret != kSlResultOk || !fnPtr) {
-        FreeLibrary(g_SlModule);
-        g_SlModule = nullptr;
+    if (slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", fnPtr) == kSlResultOk && fnPtr)
+        g_SlDLSSGSetOptions = reinterpret_cast<PFN_slDLSSGSetOptions>(fnPtr);
+    if (slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGGetState", fnPtr) == kSlResultOk && fnPtr)
+        g_SlDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(fnPtr);
+
+    if (!g_SlDLSSGSetOptions) {
+        slShutdown();
+        FreeLibrary(g_SlModule); g_SlModule = nullptr;
         return false;
     }
-    g_SlDLSSGSetOptions = reinterpret_cast<PFN_slDLSSGSetOptions>(fnPtr);
 
     // Initialize viewport handle
     g_SlViewport.base.next = nullptr;
@@ -233,25 +249,23 @@ static bool TryInitDLSSFG() {
 }
 
 static bool SetDLSSFGMode(bool enable) {
-    if (!g_SlDLSSGSetOptions) {
-        return false;
-    }
+    if (!g_SlDLSSGSetOptions) return false;
 
     slDLSSGOptions options = {};
     options.base.next = nullptr;
     options.base.structType = kDLSSGOptionsStructType;
     options.base.structVersion = kSLStructVersion4;
-    options.mode = enable ? 1 : 0;
+    options.mode = enable ? kSLModeOn : kSLModeOff;
     options.numFramesToGenerate = 1;
     options.flags = 0;
+    options.numBackBuffers = FRAME_COUNT;
     options.colorWidth = static_cast<uint32_t>(g_WindowWidth);
     options.colorHeight = static_cast<uint32_t>(g_WindowHeight);
-    options.numBackBuffers = 2;
-    options.colorBufferFormat = 28;  // DXGI_FORMAT_R8G8B8A8_UNORM
+    options.colorBufferFormat = 28;   // DXGI_FORMAT_R8G8B8A8_UNORM
     options.mvecDepthWidth = static_cast<uint32_t>(g_WindowWidth);
     options.mvecDepthHeight = static_cast<uint32_t>(g_WindowHeight);
-    options.mvecBufferFormat = 70;   // DXGI_FORMAT_R16G16_FLOAT
-    options.depthBufferFormat = 45;  // DXGI_FORMAT_R32_FLOAT
+    options.mvecBufferFormat = 70;    // DXGI_FORMAT_R16G16_FLOAT
+    options.depthBufferFormat = 45;   // DXGI_FORMAT_R32_FLOAT
     options.hudLessBufferFormat = 28;
     options.uiBufferFormat = 28;
     options.onErrorCallback = nullptr;
@@ -263,15 +277,28 @@ static bool SetDLSSFGMode(bool enable) {
     return (ret == kSlResultOk);
 }
 
+static bool PollDLSSFGState() {
+    if (!g_SlDLSSGGetState) return false;
+    slDLSSGState state = {};
+    state.base.next = nullptr;
+    state.base.structType = kDLSSGStateStructType;
+    state.base.structVersion = 3;
+    slResult ret = g_SlDLSSGGetState(g_SlViewport, state, nullptr);
+    if (ret == kSlResultOk && state.numFramesActuallyPresented > 0) {
+        printf("  DLSS FG active: %u generated frames, max multiplier %u\n",
+               state.numFramesActuallyPresented, state.numFramesToGenerateMax);
+        return true;
+    }
+    return false;
+}
+
 static void ShutdownDLSSFG() {
-    if (g_SlDLSSGSetOptions) {
-        SetDLSSFGMode(false);
-    }
+    if (g_SlDLSSGSetOptions) SetDLSSFGMode(false);
+    auto slShutdown = reinterpret_cast<PFN_slShutdown>(GetProcAddress(g_SlModule, "slShutdown"));
+    if (slShutdown) slShutdown();
     g_SlDLSSGSetOptions = nullptr;
-    if (g_SlModule) {
-        FreeLibrary(g_SlModule);
-        g_SlModule = nullptr;
-    }
+    g_SlDLSSGGetState = nullptr;
+    if (g_SlModule) { FreeLibrary(g_SlModule); g_SlModule = nullptr; }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,17 +307,13 @@ static void ShutdownDLSSFG() {
 bool InitDX12(HWND hwnd) {
 #ifdef _DEBUG
     ComPtr<ID3D12Debug> debugController;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
         debugController->EnableDebugLayer();
-    }
 #endif
-
     ComPtr<IDXGIFactory4> factory;
     CreateDXGIFactory1(IID_PPV_ARGS(&factory));
-
     if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_Device)))) {
-        printf("Failed to create D3D12 device\n");
-        return false;
+        printf("Failed to create D3D12 device\n"); return false;
     }
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -298,7 +321,7 @@ bool InitDX12(HWND hwnd) {
     g_Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&g_CommandQueue));
 
     DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-    swapChainDesc.BufferCount = 2;
+    swapChainDesc.BufferCount = FRAME_COUNT;
     swapChainDesc.Width = g_WindowWidth;
     swapChainDesc.Height = g_WindowHeight;
     swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -318,28 +341,25 @@ bool InitDX12(HWND hwnd) {
     swapChain2->SetMaximumFrameLatency(1);
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = 2;
+    rtvHeapDesc.NumDescriptors = FRAME_COUNT;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     g_Device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_RtvHeap));
     g_RtvDescriptorSize = g_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    for (UINT i = 0; i < 2; i++) {
+    for (UINT i = 0; i < FRAME_COUNT; i++) {
         g_SwapChain->GetBuffer(i, IID_PPV_ARGS(&g_RenderTargets[i]));
         g_Device->CreateRenderTargetView(g_RenderTargets[i].Get(), nullptr, rtvHandle);
         rtvHandle.ptr += g_RtvDescriptorSize;
         g_Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_CommandAllocators[i]));
     }
-
     g_Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_CommandAllocators[g_FrameIndex].Get(), nullptr,
                                 IID_PPV_ARGS(&g_CommandList));
     g_CommandList->Close();
-
     g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_Fence));
     g_FenceValues[g_FrameIndex]++;
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-
-    printf("DX12 initialized: %dx%d swapchain\n", g_WindowWidth, g_WindowHeight);
+    printf("DX12 initialized: %dx%d swapchain (%d back buffers)\n", g_WindowWidth, g_WindowHeight, FRAME_COUNT);
     return true;
 }
 
@@ -348,19 +368,20 @@ void Render() {
     float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
     g_BarPosition = (float)std::fmod((double)(elapsed * 0.5f), 1.0);
 
+    UINT frameIndex;
+    {
+        std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
+        frameIndex = g_FrameIndex;
+    }
+
     // Enable DLSS FG after ~2 seconds
     if (g_DlssInitialized && !g_DlssEnabled && elapsed >= 2.0f) {
         printf("  Enabling DLSS FG...\n");
         if (SetDLSSFGMode(true)) {
             g_DlssEnabled = true;
             printf("  DLSS FG enabled\n");
+            PollDLSSFGState();
         }
-    }
-
-    UINT frameIndex;
-    {
-        std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
-        frameIndex = g_FrameIndex;
     }
 
     g_CommandAllocators[frameIndex]->Reset();
@@ -378,12 +399,10 @@ void Render() {
     const float clearColor[] = {0.1f, 0.1f, 0.1f, 1.0f};
     g_CommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
-    // Draw bar
     D3D12_RECT scissor = {(LONG)(g_BarPosition * (g_WindowWidth - 100)), g_WindowHeight / 2 - 50,
                           (LONG)(g_BarPosition * (g_WindowWidth - 100) + 100), g_WindowHeight / 2 + 50};
     const float barColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
     g_CommandList->ClearRenderTargetView(rtvHandle, barColor, 1, &scissor);
-
     for (int pass = 0; pass < g_GpuLoadPasses; pass++) {
         float loadColor[] = {0.1f + (pass % 2) * 0.01f, 0.1f, 0.1f, 1.0f};
         g_CommandList->ClearRenderTargetView(rtvHandle, loadColor, 0, nullptr);
@@ -398,7 +417,6 @@ void Render() {
 
     ID3D12CommandList* ppCommandLists[] = {g_CommandList.Get()};
     g_CommandQueue->ExecuteCommandLists(1, ppCommandLists);
-
     g_SwapChain->Present(g_VSync, 0);
     MoveToNextFrame();
 }
@@ -411,14 +429,8 @@ void Cleanup() {
 
 int main(int argc, char* argv[]) {
     LoadConfig();
-
-    if (argc >= 3) {
-        g_WindowWidth = atoi(argv[1]);
-        g_WindowHeight = atoi(argv[2]);
-    }
-    if (argc >= 4) {
-        g_GpuLoadPasses = atoi(argv[3]);
-    }
+    if (argc >= 3) { g_WindowWidth = atoi(argv[1]); g_WindowHeight = atoi(argv[2]); }
+    if (argc >= 4) g_GpuLoadPasses = atoi(argv[3]);
 
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
@@ -427,6 +439,7 @@ int main(int argc, char* argv[]) {
     printf("=====================\n");
     printf("Resolution: %dx%d\n", g_WindowWidth, g_WindowHeight);
     printf("GPU Load Passes: %d\n", g_GpuLoadPasses);
+    printf("Back Buffers: %d\n", FRAME_COUNT);
     printf("Process ID: %lu\n", GetCurrentProcessId());
     printf("Press ESC to exit\n\n");
 
@@ -440,54 +453,33 @@ int main(int argc, char* argv[]) {
     RegisterClassExW(&wc);
 
     RECT monitorRect = testapp::GetPrimaryMonitorRect();
-    if (g_Fullscreen) {
-        g_WindowWidth = monitorRect.right - monitorRect.left;
-        g_WindowHeight = monitorRect.bottom - monitorRect.top;
-    }
+    if (g_Fullscreen) { g_WindowWidth = monitorRect.right - monitorRect.left; g_WindowHeight = monitorRect.bottom - monitorRect.top; }
     DWORD style = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     RECT rc = testapp::AdjustWindowRectForClientSize(style, 0, g_WindowWidth, g_WindowHeight);
 
     wchar_t title[256];
     swprintf(title, 256, L"DX12 DLSS FG Test - %dx%d", g_WindowWidth, g_WindowHeight);
-
     HWND hwnd = CreateWindowW(WINDOW_CLASS, title, style, g_Fullscreen ? monitorRect.left : 0,
-                              g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top, nullptr,
-                              nullptr, wc.hInstance, nullptr);
+                              g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top,
+                              nullptr, nullptr, wc.hInstance, nullptr);
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
+    if (!InitDX12(hwnd)) { printf("Failed to initialize DX12\n"); return 1; }
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
 
-    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) {
-        return 0;
-    }
-
-    if (!InitDX12(hwnd)) {
-        printf("Failed to initialize DX12\n");
-        return 1;
-    }
-    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) {
-        return 0;
-    }
-
-    // Initialize DLSS FG
     printf("Initializing DLSS FG...\n");
     if (TryInitDLSSFG()) {
         g_DlssInitialized = true;
         printf("  Streamline runtime ready (DLSS FG disabled initially)\n");
     } else {
-        printf("  Streamline runtime not available (place sl.interposer.dll + companion DLLs next to exe)\n");
+        printf("  Streamline runtime not available (build.py should have placed DLLs)\n");
     }
-
     printf("Running... (DLSS FG will enable after ~2 seconds)\n\n");
 
     MSG msg = {};
     while (g_Running) {
-        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-        if (g_Running) {
-            Render();
-        }
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
+        if (g_Running) Render();
     }
-
     Cleanup();
     printf("Exiting\n");
     return 0;
