@@ -5,6 +5,7 @@
 
 #include <d3d12.h>
 #include <dxgi.h>
+#include <ffx_framegeneration.h>
 #include <wrl/client.h>
 
 #include "testapp_common.h"
@@ -214,6 +215,56 @@ inline void RenderAuxiliaryInputs(ID3D12GraphicsCommandList* commandList, Auxili
     Transition(commandList, resources.uiColor.Get(), resources.uiState, kColorReadState);
     Transition(commandList, resources.motionVectors.Get(), resources.motionState, kColorReadState);
     Transition(commandList, resources.depth.Get(), resources.depthState, kDepthReadState);
+}
+
+// FFX present-callback helpers (mirrors capture-engine CopyFFXPresentSourceToOutput).
+inline D3D12_RESOURCE_STATES GetDX12StateFromFfxResourceState(uint32_t state) {
+    D3D12_RESOURCE_STATES dx12State = D3D12_RESOURCE_STATE_COMMON;
+    if (state & FFX_API_RESOURCE_STATE_UNORDERED_ACCESS) {
+        dx12State = static_cast<D3D12_RESOURCE_STATES>(dx12State | D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+    if (state & FFX_API_RESOURCE_STATE_COMPUTE_READ) {
+        dx12State = static_cast<D3D12_RESOURCE_STATES>(dx12State | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
+    if (state & FFX_API_RESOURCE_STATE_PIXEL_READ) {
+        dx12State = static_cast<D3D12_RESOURCE_STATES>(dx12State | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+    if (state & FFX_API_RESOURCE_STATE_COPY_SRC) {
+        dx12State = static_cast<D3D12_RESOURCE_STATES>(dx12State | D3D12_RESOURCE_STATE_COPY_SOURCE);
+    }
+    if (state & FFX_API_RESOURCE_STATE_COPY_DEST) {
+        dx12State = static_cast<D3D12_RESOURCE_STATES>(dx12State | D3D12_RESOURCE_STATE_COPY_DEST);
+    }
+    if (state & FFX_API_RESOURCE_STATE_PRESENT) {
+        dx12State = static_cast<D3D12_RESOURCE_STATES>(dx12State | D3D12_RESOURCE_STATE_PRESENT);
+    }
+    if (state & FFX_API_RESOURCE_STATE_RENDER_TARGET) {
+        dx12State = static_cast<D3D12_RESOURCE_STATES>(dx12State | D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }
+    return dx12State;
+}
+
+inline void CopyFfxPresentSourceToOutput(ID3D12GraphicsCommandList* commandList,
+                                         ffxCallbackDescFrameGenerationPresent* desc) {
+    if (!commandList || !desc || !desc->currentBackBuffer.resource || !desc->outputSwapChainBuffer.resource) {
+        return;
+    }
+    if (desc->currentBackBuffer.resource == desc->outputSwapChainBuffer.resource) {
+        return;
+    }
+
+    auto* source = static_cast<ID3D12Resource*>(desc->currentBackBuffer.resource);
+    auto* output = static_cast<ID3D12Resource*>(desc->outputSwapChainBuffer.resource);
+    D3D12_RESOURCE_STATES sourceState = GetDX12StateFromFfxResourceState(desc->currentBackBuffer.state);
+    D3D12_RESOURCE_STATES outputState = GetDX12StateFromFfxResourceState(desc->outputSwapChainBuffer.state);
+    const D3D12_RESOURCE_STATES savedSourceState = sourceState;
+    const D3D12_RESOURCE_STATES savedOutputState = outputState;
+
+    Transition(commandList, source, sourceState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(commandList, output, outputState, D3D12_RESOURCE_STATE_COPY_DEST);
+    commandList->CopyResource(output, source);
+    Transition(commandList, output, outputState, savedOutputState);
+    Transition(commandList, source, sourceState, savedSourceState);
 }
 
 }  // namespace testapp::dx12fg

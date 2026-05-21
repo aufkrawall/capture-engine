@@ -47,11 +47,11 @@ using Microsoft::WRL::ComPtr;
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-static int g_WindowWidth = 3840;
-static int g_WindowHeight = 2160;
+static int g_WindowWidth = 1920;
+static int g_WindowHeight = 1080;
 static int g_GpuLoadPasses = 40;
 static int g_VSync = 0;
-static int g_Fullscreen = 1;
+static int g_Fullscreen = 0;
 
 void LoadConfig() {
     char path[MAX_PATH];
@@ -68,21 +68,25 @@ void LoadConfig() {
 }
 
 const wchar_t* WINDOW_CLASS = L"CaptureTestFSRFG";
-constexpr int FRAME_COUNT = 3; // 3 back buffers: real-world FG games use 3-4
+constexpr int kRequestedBackBuffers = 3;  // real-world FG games use 3-4
+constexpr int kMaxSwapChainBuffers = 4;
 
 // DX12 objects
 ComPtr<ID3D12Device> g_Device;
 ComPtr<ID3D12CommandQueue> g_CommandQueue;
 ComPtr<IDXGISwapChain3> g_SwapChain;
 ComPtr<ID3D12DescriptorHeap> g_RtvHeap;
-ComPtr<ID3D12Resource> g_RenderTargets[FRAME_COUNT];
-ComPtr<ID3D12CommandAllocator> g_CommandAllocators[FRAME_COUNT];
+ComPtr<ID3D12Resource> g_RenderTargets[kMaxSwapChainBuffers];
+ComPtr<ID3D12CommandAllocator> g_CommandAllocators[kMaxSwapChainBuffers];
 ComPtr<ID3D12GraphicsCommandList> g_CommandList;
 ComPtr<ID3D12Fence> g_Fence;
 testapp::dx12fg::AuxiliaryResources g_FgInputs;
-HANDLE g_FenceEvent;
-UINT64 g_FenceValues[FRAME_COUNT] = {};
+HANDLE g_FenceEvent = nullptr;
+HANDLE g_FrameLatencyWaitHandle = nullptr;
+UINT64 g_FenceValues[kMaxSwapChainBuffers] = {};
 UINT g_FrameIndex = 0;
+UINT g_SwapChainBufferCount = kRequestedBackBuffers;
+UINT g_MaxFrameLatency = kRequestedBackBuffers;
 UINT g_RtvDescriptorSize = 0;
 std::mutex g_FrameSyncMutex;
 
@@ -119,14 +123,42 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
+static void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
+    if (!g_Fence || g_Fence->GetCompletedValue() >= fenceValue) {
+        return;
+    }
+    g_Fence->SetEventOnCompletion(fenceValue, g_FenceEvent);
+    const uint64_t startMs = GetTickCount64();
+    while (g_Fence->GetCompletedValue() < fenceValue) {
+        const DWORD waitResult = WaitForSingleObject(g_FenceEvent, 100);
+        if (waitResult == WAIT_OBJECT_0) {
+            return;
+        }
+        if (GetTickCount64() - startMs >= 500) {
+            static std::atomic<bool> s_LoggedSlowFence{false};
+            if (!s_LoggedSlowFence.exchange(true)) {
+                testapp::Log("[FG-DIAG] WARN slow fence wait (%s): waiting=%llu completed=%llu frameIndex=%u buffers=%u\n",
+                             reason ? reason : "unknown", static_cast<unsigned long long>(fenceValue),
+                             static_cast<unsigned long long>(g_Fence->GetCompletedValue()), g_FrameIndex,
+                             g_SwapChainBufferCount);
+                testapp::LogFlush();
+            }
+        }
+    }
+}
+
+static void WaitForSwapChainFrameLatency() {
+    if (!g_FrameLatencyWaitHandle) {
+        return;
+    }
+    WaitForSingleObject(g_FrameLatencyWaitHandle, INFINITE);
+}
+
 void WaitForGpu() {
     std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
     const UINT64 fenceValue = g_FenceValues[g_FrameIndex];
     g_CommandQueue->Signal(g_Fence.Get(), fenceValue);
-    if (g_Fence->GetCompletedValue() < fenceValue) {
-        g_Fence->SetEventOnCompletion(fenceValue, g_FenceEvent);
-        WaitForSingleObject(g_FenceEvent, INFINITE);
-    }
+    WaitForFenceValue(fenceValue, "WaitForGpu");
     g_FenceValues[g_FrameIndex]++;
 }
 
@@ -135,10 +167,16 @@ void MoveToNextFrame() {
     const UINT64 currentFenceValue = g_FenceValues[g_FrameIndex];
     g_CommandQueue->Signal(g_Fence.Get(), currentFenceValue);
     UINT nextFrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
-    if (g_Fence->GetCompletedValue() < g_FenceValues[nextFrameIndex]) {
-        g_Fence->SetEventOnCompletion(g_FenceValues[nextFrameIndex], g_FenceEvent);
-        WaitForSingleObject(g_FenceEvent, INFINITE);
+    if (nextFrameIndex >= g_SwapChainBufferCount) {
+        static std::atomic<bool> s_LoggedBadIndex{false};
+        if (!s_LoggedBadIndex.exchange(true)) {
+            testapp::Log("[FG-DIAG] WARN back-buffer index %u out of range (buffers=%u); clamping\n", nextFrameIndex,
+                         g_SwapChainBufferCount);
+            testapp::LogFlush();
+        }
+        nextFrameIndex %= g_SwapChainBufferCount;
     }
+    WaitForFenceValue(g_FenceValues[nextFrameIndex], "MoveToNextFrame");
     g_FrameIndex = nextFrameIndex;
     g_FenceValues[g_FrameIndex] = currentFenceValue + 1;
 }
@@ -148,11 +186,15 @@ void MoveToNextFrame() {
 // ---------------------------------------------------------------------------
 static ffxReturnCode_t TestPresentCallback(ffxCallbackDescFrameGenerationPresent* params, void*) {
     uint64_t callbackIndex = ++g_FsrPresentCallbackCount;
-    if (params && (callbackIndex <= 5 || (callbackIndex % 120) == 0)) {
-        testapp::Log("[FG-DIAG] FSR present callback #%llu frameID=%llu generated=%d backbuffer=%p output=%p\n",
-                     static_cast<unsigned long long>(callbackIndex),
-                     static_cast<unsigned long long>(params->frameID), params->isGeneratedFrame ? 1 : 0,
-                     params->currentBackBuffer.resource, params->outputSwapChainBuffer.resource);
+    if (params) {
+        auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(params->commandList);
+        testapp::dx12fg::CopyFfxPresentSourceToOutput(cmdList, params);
+        if (callbackIndex <= 5 || (callbackIndex % 120) == 0) {
+            testapp::Log("[FG-DIAG] FSR present callback #%llu frameID=%llu generated=%d backbuffer=%p output=%p\n",
+                         static_cast<unsigned long long>(callbackIndex),
+                         static_cast<unsigned long long>(params->frameID), params->isGeneratedFrame ? 1 : 0,
+                         params->currentBackBuffer.resource, params->outputSwapChainBuffer.resource);
+        }
     }
     return FFX_API_RETURN_OK;
 }
@@ -195,10 +237,23 @@ static const char* FfxReturnName(ffxReturnCode_t code) {
     }
 }
 
+static void PreloadAmdCompanionDlls() {
+    const wchar_t* companionDlls[] = {L"amd_ags_x64.dll", L"amd_acs_x64.dll"};
+    for (const wchar_t* dllName : companionDlls) {
+        HMODULE companion = LoadLibraryW(dllName);
+        if (companion) {
+            testapp::Log("  Preloaded AMD companion: %S\n", dllName);
+        } else {
+            testapp::Log("  Failed to preload AMD companion %S (err=%lu)\n", dllName, GetLastError());
+        }
+    }
+}
+
 static FsrInitResult LoadFSRRuntime() {
     if (g_FfxModule) return kFsrOk;
 
-    // Prefer the loader DLL (proper SDK v2.2.0 entry point), then per-effect DLL, then legacy
+    PreloadAmdCompanionDlls();
+
     // Prefer the per-effect FG DLL directly (the loader DLL's ffxCreateContext
     // delegates to this, but going direct avoids any loader-side issues).
     const wchar_t* dllNames[] = {
@@ -474,7 +529,7 @@ bool InitDX12(HWND hwnd) {
     g_Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&g_CommandQueue));
 
     DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-    swapChainDesc.BufferCount = FRAME_COUNT;
+    swapChainDesc.BufferCount = kRequestedBackBuffers;
     swapChainDesc.Width = g_WindowWidth;
     swapChainDesc.Height = g_WindowHeight;
     swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -502,23 +557,42 @@ bool InitDX12(HWND hwnd) {
     factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     g_FrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
 
+    DXGI_SWAP_CHAIN_DESC swapChainDescFull = {};
+    if (SUCCEEDED(g_SwapChain->GetDesc(&swapChainDescFull)) && swapChainDescFull.BufferCount > 0) {
+        g_SwapChainBufferCount = swapChainDescFull.BufferCount;
+        if (g_SwapChainBufferCount > kMaxSwapChainBuffers) {
+            testapp::Log("[FG-DIAG] WARN swapchain buffer count %u exceeds max %d; clamping\n", g_SwapChainBufferCount,
+                         kMaxSwapChainBuffers);
+            g_SwapChainBufferCount = kMaxSwapChainBuffers;
+        }
+    }
+
     ComPtr<IDXGISwapChain2> swapChain2;
     if (SUCCEEDED(g_SwapChain.As(&swapChain2)) && swapChain2) {
-        swapChain2->SetMaximumFrameLatency(1);
+        g_MaxFrameLatency = g_SwapChainBufferCount;
+        if (g_MaxFrameLatency > 3) {
+            g_MaxFrameLatency = 3;
+        }
+        if (g_MaxFrameLatency < 1) {
+            g_MaxFrameLatency = 1;
+        }
+        swapChain2->SetMaximumFrameLatency(g_MaxFrameLatency);
+        g_FrameLatencyWaitHandle = swapChain2->GetFrameLatencyWaitableObject();
     }
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = FRAME_COUNT;
+    rtvHeapDesc.NumDescriptors = g_SwapChainBufferCount;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     g_Device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_RtvHeap));
     g_RtvDescriptorSize = g_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    for (UINT i = 0; i < FRAME_COUNT; i++) {
+    for (UINT i = 0; i < g_SwapChainBufferCount; i++) {
         g_SwapChain->GetBuffer(i, IID_PPV_ARGS(&g_RenderTargets[i]));
         g_Device->CreateRenderTargetView(g_RenderTargets[i].Get(), nullptr, rtvHandle);
         rtvHandle.ptr += g_RtvDescriptorSize;
         g_Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_CommandAllocators[i]));
+        g_FenceValues[i] = 0;
     }
     g_Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_CommandAllocators[g_FrameIndex].Get(), nullptr,
                                 IID_PPV_ARGS(&g_CommandList));
@@ -528,8 +602,9 @@ bool InitDX12(HWND hwnd) {
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     testapp::dx12fg::CreateAuxiliaryResources(g_Device.Get(), static_cast<UINT>(g_WindowWidth),
                                               static_cast<UINT>(g_WindowHeight), g_FgInputs);
-    testapp::Log("[FG-DIAG] Swapchain: %dx%d buffers=%d format=DXGI_FORMAT_R8G8B8A8_UNORM swapEffect=FLIP_DISCARD flags=FRAME_LATENCY_WAITABLE vsync=%d fullscreen=%d\n",
-             g_WindowWidth, g_WindowHeight, FRAME_COUNT, g_VSync, g_Fullscreen);
+    testapp::Log("[FG-DIAG] Swapchain: %dx%d buffers=%u requested=%d maxLatency=%u waitable=%d format=DXGI_FORMAT_R8G8B8A8_UNORM vsync=%d fullscreen=%d\n",
+                 g_WindowWidth, g_WindowHeight, g_SwapChainBufferCount, kRequestedBackBuffers, g_MaxFrameLatency,
+                 g_FrameLatencyWaitHandle ? 1 : 0, g_VSync, g_Fullscreen);
     return true;
 }
 
@@ -542,6 +617,9 @@ void Render() {
     {
         std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
         frameIndex = g_FrameIndex;
+        if (frameIndex >= g_SwapChainBufferCount) {
+            frameIndex %= g_SwapChainBufferCount;
+        }
     }
 
     // Enable FSR FG after ~2 seconds (pass real backbuffer as hudlessColor)
@@ -558,6 +636,12 @@ void Render() {
         testapp::LogFlush();
     }
     ++g_FrameIdCounter;
+    if ((g_FrameIdCounter % 60) == 0) {
+        testapp::Log("[FG-DIAG] frame heartbeat frameID=%llu frameIndex=%u fgEnabled=%d\n",
+                     static_cast<unsigned long long>(g_FrameIdCounter), frameIndex, g_FsrEnabled ? 1 : 0);
+    }
+
+    WaitForSwapChainFrameLatency();
 
     g_CommandAllocators[frameIndex]->Reset();
     g_CommandList->Reset(g_CommandAllocators[frameIndex].Get(), nullptr);
@@ -611,6 +695,7 @@ void Cleanup() {
         CloseHandle(g_FenceEvent);
         g_FenceEvent = nullptr;
     }
+    g_FrameLatencyWaitHandle = nullptr;
 }
 
 int main(int argc, char* argv[]) {
@@ -626,7 +711,7 @@ int main(int argc, char* argv[]) {
     testapp::Log("====================\n");
     testapp::Log("Resolution: %dx%d\n", g_WindowWidth, g_WindowHeight);
     testapp::Log("GPU Load Passes: %d\n", g_GpuLoadPasses);
-    testapp::Log("Back Buffers: %d\n", FRAME_COUNT);
+    testapp::Log("Back Buffers (requested): %d\n", kRequestedBackBuffers);
     testapp::Log("Process ID: %lu\n", GetCurrentProcessId());
     testapp::Log("Press ESC to exit\n\n");
     testapp::LogFlush();
