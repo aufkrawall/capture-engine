@@ -860,18 +860,16 @@ void TryInstallFatalTerminationDumpHooks() {
                                              reinterpret_cast<void*>(&HookedRaiseFailFastException))) {
       g_OriginalRaiseFailFastException.store(reinterpret_cast<RaiseFailFastException_t>(trampoline),
                                              std::memory_order_release);
-    }
-    if (void* trampoline = installInlineHook("kernel32.dll", "RaiseFailFastException",
-                                             reinterpret_cast<void*>(&HookedRaiseFailFastException))) {
+    } else if (void* trampoline = installInlineHook("kernel32.dll", "RaiseFailFastException",
+                                                    reinterpret_cast<void*>(&HookedRaiseFailFastException))) {
       g_OriginalRaiseFailFastException.store(reinterpret_cast<RaiseFailFastException_t>(trampoline),
                                              std::memory_order_release);
     }
     if (void* trampoline =
             installInlineHook("KERNELBASE.dll", "RaiseException", reinterpret_cast<void*>(&HookedRaiseException))) {
       g_OriginalRaiseException.store(reinterpret_cast<RaiseException_t>(trampoline), std::memory_order_release);
-    }
-    if (void* trampoline =
-            installInlineHook("kernel32.dll", "RaiseException", reinterpret_cast<void*>(&HookedRaiseException))) {
+    } else if (void* trampoline =
+                   installInlineHook("kernel32.dll", "RaiseException", reinterpret_cast<void*>(&HookedRaiseException))) {
       g_OriginalRaiseException.store(reinterpret_cast<RaiseException_t>(trampoline), std::memory_order_release);
     }
     if (void* trampoline =
@@ -894,17 +892,15 @@ void TryInstallFatalTerminationDumpHooks() {
     if (void* trampoline =
             installInlineHook("KERNELBASE.dll", "TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess))) {
       g_OriginalTerminateProcess.store(reinterpret_cast<TerminateProcess_t>(trampoline), std::memory_order_release);
-    }
-    if (void* trampoline =
-            installInlineHook("kernel32.dll", "TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess))) {
+    } else if (void* trampoline = installInlineHook("kernel32.dll", "TerminateProcess",
+                                                    reinterpret_cast<void*>(&HookedTerminateProcess))) {
       g_OriginalTerminateProcess.store(reinterpret_cast<TerminateProcess_t>(trampoline), std::memory_order_release);
     }
     if (void* trampoline =
             installInlineHook("KERNELBASE.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess))) {
       g_OriginalExitProcess.store(reinterpret_cast<ExitProcess_t>(trampoline), std::memory_order_release);
-    }
-    if (void* trampoline =
-            installInlineHook("kernel32.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess))) {
+    } else if (void* trampoline =
+                   installInlineHook("kernel32.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess))) {
       g_OriginalExitProcess.store(reinterpret_cast<ExitProcess_t>(trampoline), std::memory_order_release);
     }
     if (void* trampoline =

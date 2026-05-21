@@ -3195,25 +3195,74 @@ static bool ShouldBridgeOverlayViaFFXPresentCallback(const ce::ffx_api::Callback
         return false;
     }
 
-    if (!HookHasRuntimeOwnedNativeFGPresentPath()) {
+    const bool runtimeOwnedNativeFGPresentPath = HookHasRuntimeOwnedNativeFGPresentPath();
+    const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
+    const bool directFFXConfirmation = g_FGCompat.HasDirectFFXApiConfirmation();
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    if (!ce::dx12_overlay_policy::ShouldBridgeOverlayViaFFXPresentCallback(
+            runtimeOwnedNativeFGPresentPath, authoritativeFSRActive, directFFXConfirmation, runtimeMode)) {
+        static std::atomic<int> s_ffxPresentBridgeSkippedNoEvidenceLogCount{0};
+        const int logCount = s_ffxPresentBridgeSkippedNoEvidenceLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: FFX present callback bridge skipped overlay because no authoritative native FSR evidence is "
+                "active (runtimeOwnedNativePath=%d apiFSR=%d directFFX=%d runtime=%s frameId=%llu log=%d)",
+                runtimeOwnedNativeFGPresentPath ? 1 : 0, authoritativeFSRActive ? 1 : 0,
+                directFFXConfirmation ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(runtimeMode),
+                static_cast<unsigned long long>(desc->frameID), logCount + 1);
+        }
         return false;
     }
 
     if (!desc->device || !desc->commandList || !desc->outputSwapChainBuffer.resource) {
+        static std::atomic<int> s_ffxPresentBridgeInvalidDescLogCount{0};
+        const int logCount = s_ffxPresentBridgeInvalidDescLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: FFX present callback bridge skipped overlay because callback resources are incomplete "
+                "(device=%p cmdList=%p output=%p frameId=%llu log=%d)",
+                desc->device, desc->commandList, desc->outputSwapChainBuffer.resource,
+                static_cast<unsigned long long>(desc->frameID), logCount + 1);
+        }
         return false;
     }
 
     if (!g_IPC) {
+        static std::atomic<int> s_ffxPresentBridgeNoIPCLogCount{0};
+        const int logCount = s_ffxPresentBridgeNoIPCLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant("DX12: FFX present callback bridge skipped overlay because IPC is not connected "
+                             "(frameId=%llu log=%d)",
+                             static_cast<unsigned long long>(desc->frameID), logCount + 1);
+        }
         return false;
     }
 
     SharedMemoryLayout* shm = g_IPC->GetSharedMem();
     if (!shm) {
+        static std::atomic<int> s_ffxPresentBridgeNoSharedMemLogCount{0};
+        const int logCount = s_ffxPresentBridgeNoSharedMemLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant("DX12: FFX present callback bridge skipped overlay because shared memory is unavailable "
+                             "(frameId=%llu log=%d)",
+                             static_cast<unsigned long long>(desc->frameID), logCount + 1);
+        }
         return false;
     }
 
     const OverlayConfig cfg = GetActiveDX12OverlayConfig(shm);
-    return cfg.showOverlay;
+    if (!cfg.showOverlay) {
+        static std::atomic<int> s_ffxPresentBridgeOverlayHiddenLogCount{0};
+        const int logCount = s_ffxPresentBridgeOverlayHiddenLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLog("DX12: FFX present callback bridge skipped overlay because overlay is hidden "
+                    "(frameId=%llu log=%d)",
+                    static_cast<unsigned long long>(desc->frameID), logCount + 1);
+        }
+        return false;
+    }
+
+    return true;
 }
 
 static D3D12_RESOURCE_STATES GetDX12StateFromFFXResourceState(uint32_t state) {
@@ -3379,6 +3428,9 @@ static bool EnsureOverlayAdapterReadyForFFXPresentCallback(
     {
         std::lock_guard<std::recursive_mutex> qLock(g_CommandQueueMutex);
         callbackQueue = g_SwapchainQueue ? g_SwapchainQueue : g_CommandQueue.load(std::memory_order_acquire);
+        if (!callbackQueue) {
+            callbackQueue = g_OriginalGameQueue;
+        }
     }
     if (!callbackQueue) {
         HookLogImportant(

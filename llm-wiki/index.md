@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-21 (updated: build 0.1.3414 / tests 0.1.3415 - VEH single-shot hook for ffxConfigure present callback bridge on official AMD runtime)
+Last cross-checked: 2026-05-21 (updated: build 0.1.3454 / tests 0.1.3455 - DX12 FG test-app injected overlay validation for DLSS PostSL and FSR FFX present-callback paths)
 
 Primary sources:
 - `AGENTS.md`

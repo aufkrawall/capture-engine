@@ -698,6 +698,18 @@ inline bool ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(bo
     return callbackBackendInitialized && runtimeOwnedNativeFGPresentPath;
 }
 
+inline bool ShouldBridgeOverlayViaFFXPresentCallback(bool runtimeOwnedNativeFGPresentPath,
+                                                     bool authoritativeFSRActive,
+                                                     bool hasDirectFFXApiConfirmation,
+                                                     fg_runtime::RuntimeMode runtimeMode) {
+    // The FFX present callback is the safest overlay injection point whenever
+    // the official FFX runtime explicitly hands us a composition callback. Some
+    // integrations expose that callback without also tripping the separate
+    // runtime-owned-swapchain detector, so direct FFX/FSR evidence is enough.
+    return runtimeOwnedNativeFGPresentPath || authoritativeFSRActive || hasDirectFFXApiConfirmation ||
+           fg_runtime::RuntimeModeUsesFSR(runtimeMode);
+}
+
 inline bool ShouldTreatFormatAsDefinitelyHDR(int dxgiFormat) {
     return dxgiFormat == static_cast<int>(DXGI_FORMAT_R16G16B16A16_FLOAT);
 }
