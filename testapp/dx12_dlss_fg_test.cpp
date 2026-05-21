@@ -159,6 +159,8 @@ std::mutex g_FrameSyncMutex;
 
 // Streamline / DLSS FG state
 static HMODULE g_SlModule = nullptr;
+static PFN_slSetD3DDevice g_SlSetD3DDevice = nullptr;
+static PFN_slGetFeatureFunction g_SlGetFeatureFunction = nullptr;
 static PFN_slDLSSGSetOptions g_SlDLSSGSetOptions = nullptr;
 static PFN_slDLSSGGetState g_SlDLSSGGetState = nullptr;
 static slViewportHandle g_SlViewport;
@@ -207,7 +209,9 @@ void MoveToNextFrame() {
 // ---------------------------------------------------------------------------
 // Streamline / DLSS FG initialization
 // ---------------------------------------------------------------------------
-static bool TryInitDLSSFG() {
+static bool LoadInterposerBeforeDX12() {
+    // Must load interposer BEFORE any D3D/DXGI calls so it can hook the
+    // factory/device creation functions.
     g_SlModule = LoadLibraryW(L"sl.interposer.dll");
     if (!g_SlModule) {
         testapp::Log("[FG-DIAG] sl.interposer.dll not found\n");
@@ -215,27 +219,37 @@ static bool TryInitDLSSFG() {
     }
     testapp::Log("  Loaded sl.interposer.dll\n");
 
-    auto slSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(g_SlModule, "slSetD3DDevice"));
-    auto slGetFeatureFunction =
+    g_SlSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(g_SlModule, "slSetD3DDevice"));
+    g_SlGetFeatureFunction =
         reinterpret_cast<PFN_slGetFeatureFunction>(GetProcAddress(g_SlModule, "slGetFeatureFunction"));
 
-    if (!slSetD3DDevice || !slGetFeatureFunction) {
+    if (!g_SlSetD3DDevice || !g_SlGetFeatureFunction) {
         testapp::Log("[FG-DIAG] sl.interposer.dll missing slSetD3DDevice/slGetFeatureFunction exports\n");
         FreeLibrary(g_SlModule); g_SlModule = nullptr;
         return false;
     }
 
-    // Streamline interposer auto-initializes on load.
-    // Register the D3D12 device so the runtime can prepare feature resources.
-    slResult deviceResult = slSetD3DDevice(g_Device.Get());
+    // Initialize viewport handle
+    g_SlViewport.base.next = nullptr;
+    g_SlViewport.base.structType = kViewportHandleStructType;
+    g_SlViewport.base.structVersion = kSLStructVersion1;
+    g_SlViewport.value = 0;
+
+    return true;
+}
+
+static bool FinishDLSSFG() {
+    // Interposer is already loaded and has hooked DXGI.
+    // Register the D3D12 device (created through hooked DXGI) with Streamline.
+    slResult deviceResult = g_SlSetD3DDevice(g_Device.Get());
     testapp::Log("[FG-DIAG] slSetD3DDevice result=%d\n", deviceResult);
 
     void* fnPtr = nullptr;
-    if (slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", fnPtr) == kSlResultOk && fnPtr) {
+    if (g_SlGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", fnPtr) == kSlResultOk && fnPtr) {
         g_SlDLSSGSetOptions = reinterpret_cast<PFN_slDLSSGSetOptions>(fnPtr);
         testapp::Log("[FG-DIAG] Resolved slDLSSGSetOptions @ %p\n", (void*)g_SlDLSSGSetOptions);
     }
-    if (slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGGetState", fnPtr) == kSlResultOk && fnPtr) {
+    if (g_SlGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGGetState", fnPtr) == kSlResultOk && fnPtr) {
         g_SlDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(fnPtr);
         testapp::Log("[FG-DIAG] Resolved slDLSSGGetState @ %p\n", (void*)g_SlDLSSGGetState);
     }
@@ -246,13 +260,7 @@ static bool TryInitDLSSFG() {
         return false;
     }
 
-    // Initialize viewport handle
-    g_SlViewport.base.next = nullptr;
-    g_SlViewport.base.structType = kViewportHandleStructType;
-    g_SlViewport.base.structVersion = kSLStructVersion1;
-    g_SlViewport.value = 0;
     testapp::Log("[FG-DIAG] Viewport handle initialized (value=%u)\n", g_SlViewport.value);
-
     return true;
 }
 
@@ -484,16 +492,24 @@ int main(int argc, char* argv[]) {
     HWND hwnd = CreateWindowW(WINDOW_CLASS, title, style, g_Fullscreen ? monitorRect.left : 0,
                               g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top,
                               nullptr, nullptr, wc.hInstance, nullptr);
+    // Load Streamline interposer BEFORE DX12 init so it can hook DXGI factory creation.
+    // The interposer must wrap the D3D12 device for slSetD3DDevice to succeed.
+    bool interposerLoaded = LoadInterposerBeforeDX12();
+
     if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
     if (!InitDX12(hwnd)) { testapp::Log("Failed to initialize DX12\n"); return 1; }
     if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
 
-    testapp::Log("Initializing DLSS FG...\n");
-    if (TryInitDLSSFG()) {
-        g_DlssInitialized = true;
-        testapp::Log("[FG-DIAG] Streamline runtime ready (DLSS FG disabled initially)\n");
+    if (interposerLoaded) {
+        testapp::Log("Initializing DLSS FG...\n");
+        if (FinishDLSSFG()) {
+            g_DlssInitialized = true;
+            testapp::Log("[FG-DIAG] Streamline runtime ready (DLSS FG disabled initially)\n");
+        } else {
+            testapp::Log("[FG-DIAG] Streamline runtime not available (build.py should have placed DLLs next to exe)\n");
+        }
     } else {
-        testapp::Log("[FG-DIAG] Streamline runtime not available (build.py should have placed DLLs next to exe)\n");
+        testapp::Log("[FG-DIAG] Streamline interposer not loaded\n");
     }
     testapp::LogFlush();
     testapp::Log("Running... (DLSS FG will enable after ~2 seconds)\n\n");

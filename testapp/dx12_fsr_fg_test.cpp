@@ -66,6 +66,19 @@ constexpr uint32_t FFX_API_EFFECT_MASK = 0x00ff0000u;
 constexpr uint32_t FFX_API_EFFECT_ID_FRAMEGENERATION = 0x00020000u;
 constexpr uint32_t FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN = 0x00030000u;
 
+constexpr ffxStructType_t FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12 = 0x00000002;
+// Create-context descriptor types use MAKE_EFFECT_SUB_ID(effectId, 0x01):
+//   (effectId & 0x00ff0000) | (0x01 & ~0x00ff0000) = effectId | 0x01
+constexpr ffxStructType_t FFX_API_CREATE_DESC_TYPE_FRAMEGENERATION =
+    FFX_API_EFFECT_ID_FRAMEGENERATION | 0x01u;  // 0x00020001
+constexpr ffxStructType_t FFX_API_CREATE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN =
+    FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN | 0x01u;  // 0x00030001
+
+struct ffxCreateBackendDX12Desc {
+    ffxCreateContextDescHeader header;
+    ID3D12Device* device;
+};
+
 using PfnFfxCreateContext = ffxReturnCode_t (*)(ffxContext*, ffxCreateContextDescHeader*, const ffxAllocationCallbacks*);
 using PfnFfxDestroyContext = ffxReturnCode_t (*)(ffxContext, const ffxAllocationCallbacks*);
 using PfnFfxConfigure = ffxReturnCode_t (*)(ffxContext, const ffxConfigureDescHeader*);
@@ -241,9 +254,11 @@ enum FsrInitResult { kFsrOk = 0, kFsrNoDll = 1, kFsrNoExports = 2, kFsrCreateFai
 
 static FsrInitResult TryInitFSR() {
     // Prefer the loader DLL (proper SDK v2.2.0 entry point), then per-effect DLL, then legacy
+    // Prefer the per-effect FG DLL directly (the loader DLL's ffxCreateContext
+    // delegates to this, but going direct avoids any loader-side issues).
     const wchar_t* dllNames[] = {
-        L"amd_fidelityfx_loader_dx12.dll",
         L"amd_fidelityfx_framegeneration_dx12.dll",
+        L"amd_fidelityfx_loader_dx12.dll",
         L"amd_fidelityfx_dx12.dll",
         L"ffx_framegeneration.dll",
     };
@@ -265,17 +280,28 @@ static FsrInitResult TryInitFSR() {
         return kFsrNoExports;
     }
 
-    // Try swapchain-integrated FG first (simpler integration path)
-    ffxApiHeader createDesc = {};
+    // Real-world pNext chain: effect create desc -> DX12 backend descriptor
+    // The DX12 backend provides the D3D12 device to the FFX runtime.
+    // Without a backend descriptor the runtime cannot initialize its GPU pipeline.
+    ffxCreateBackendDX12Desc backendDesc = {};
+    backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
+    backendDesc.header.pNext = nullptr;
+    backendDesc.device = g_Device.Get();
+
+    // First descriptor type must be the create-context sub-type (effectId | 0x01).
+    // The struct might be larger than ffxApiHeader internally; we oversize
+    // and zero-fill to avoid the runtime reading garbage past the header.
+    alignas(16) uint8_t createDescStorage[64] = {};
+    auto* createDesc = reinterpret_cast<ffxApiHeader*>(createDescStorage);
     ffxReturnCode_t ret;
-    createDesc.type = FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN;
-    createDesc.pNext = nullptr;
+    createDesc->type = FFX_API_CREATE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN;
+    createDesc->pNext = &backendDesc.header;
     const char* effectName = "FRAMEGENERATIONSWAPCHAIN";
-    ret = g_FfxCreateContext(&g_FfxCtx, &createDesc, nullptr);
+    ret = g_FfxCreateContext(&g_FfxCtx, createDesc, nullptr);
     if (ret != FFX_API_RETURN_OK || !g_FfxCtx) {
-        createDesc.type = FFX_API_EFFECT_ID_FRAMEGENERATION;
+        createDesc->type = FFX_API_CREATE_DESC_TYPE_FRAMEGENERATION;
         effectName = "FRAMEGENERATION";
-        ret = g_FfxCreateContext(&g_FfxCtx, &createDesc, nullptr);
+        ret = g_FfxCreateContext(&g_FfxCtx, createDesc, nullptr);
     }
     if (ret != FFX_API_RETURN_OK || !g_FfxCtx) {
         testapp::Log("  ffxCreateContext(%s) FAILED code=%u ctx=%p\n", effectName, ret, (void*)g_FfxCtx);

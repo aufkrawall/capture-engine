@@ -1313,17 +1313,47 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     os.makedirs(FG_SDK_CACHE_DIR, exist_ok=True)
 
     # -- Required DLLs by test app --
-    # FSR FG: amd_fidelityfx_framegeneration_dx12.dll, amd_fidelityfx_loader_dx12.dll
-    # DLSS FG: sl.interposer.dll, sl.common.dll, sl.dlss_g.dll
-    fsr_dlls = ["amd_fidelityfx_framegeneration_dx12.dll", "amd_fidelityfx_loader_dx12.dll"]
-    sl_dlls = ["sl.interposer.dll", "sl.common.dll", "sl.dlss_g.dll"]
-    all_dlls = fsr_dlls + sl_dlls
+    # FSR FG: core + companion AMD runtime DLLs
+    fsr_dlls = ["amd_fidelityfx_framegeneration_dx12.dll", "amd_fidelityfx_loader_dx12.dll",
+                 "amd_acs_x64.dll", "amd_ags_x64.dll"]
+    # Streamline interposer loads companion .dlls + NGX DLLs at load time;
+    # we must extract ALL .dll files from the zip's x64 bin dir.
+    sl_known_dlls = ["sl.interposer.dll", "sl.common.dll", "sl.dlss_g.dll",
+                     "sl.dlss.dll", "sl.reflex.dll", "_nvngx.dll", "nvngx_dlssg.dll"]
 
-    missing = [d for d in all_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
-    if not missing:
+    missing_fsr = [d for d in fsr_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+    missing_sl = [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+
+    if not missing_fsr and not missing_sl:
         log("FG SDK DLLs already present - skipping download")
         return
-    log(f"FG SDK DLLs missing: {len(missing)} - checking archives")
+    log(f"FSR FG DLLs missing: {len(missing_fsr)}, Streamline DLLs missing: {len(missing_sl)}")
+
+    def _extract_all_dlls_from_path(zip_path: str, inner_prefix: str, dest_dir: str) -> List[str]:
+        """Extract every .dll under a given prefix path from a zip archive."""
+        import zipfile
+        extracted = set()
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for entry in zf.infolist():
+                fname = os.path.basename(entry.filename)
+                if (fname.endswith(".dll") and entry.filename.startswith(inner_prefix)
+                        and fname not in extracted):
+                    zf.extract(entry, dest_dir)
+                    extracted_path = os.path.normpath(os.path.join(dest_dir, entry.filename))
+                    dest_path = os.path.join(dest_dir, fname)
+                    if os.path.exists(extracted_path) and extracted_path != dest_path:
+                        safe_replace_or_rename(extracted_path, dest_path)
+                    extracted.add(fname)
+        for root, dirs, files in os.walk(dest_dir, topdown=False):
+            for d in dirs:
+                if d in {"bin", "Samples", "Kits"} or d.startswith("amd_"):
+                    dir_path = os.path.join(root, d)
+                    try:
+                        if os.path.isdir(dir_path) and not os.listdir(dir_path):
+                            os.rmdir(dir_path)
+                    except OSError:
+                        pass
+        return list(extracted)
 
     def _download_and_extract(url: str, zip_name: str, archive_inner_path: str, dlls: List[str]) -> None:
         """Download a SDK zip, extract specific DLLs to testapp_dir."""
@@ -1374,18 +1404,30 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
                     except OSError:
                         pass
 
-    # Download and extract FSR DLLs if any missing
-    missing_fsr = [d for d in fsr_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
-    if missing_fsr:
-        _download_and_extract(FFX_SDK_URL, FFX_SDK_ZIP_NAME, "Samples/Upscalers/FidelityFX_FSR/dx12/x64/Release/", missing_fsr)
-
     # Download and extract Streamline DLLs if any missing
-    missing_sl = [d for d in sl_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
     if missing_sl:
-        _download_and_extract(STREAMLINE_SDK_URL, STREAMLINE_SDK_ZIP_NAME, "bin/x64/", missing_sl)
+        zip_path_sl = os.path.join(FG_SDK_CACHE_DIR, STREAMLINE_SDK_ZIP_NAME)
+        if not os.path.exists(zip_path_sl):
+            log(f"Downloading {STREAMLINE_SDK_ZIP_NAME}...")
+            temp_zip = zip_path_sl + ".tmp"
+            try:
+                if os.path.exists(temp_zip):
+                    os.remove(temp_zip)
+                urllib.request.urlretrieve(STREAMLINE_SDK_URL, temp_zip)
+                os.replace(temp_zip, zip_path_sl)
+            finally:
+                if os.path.exists(temp_zip):
+                    os.remove(temp_zip)
+            log(f"Downloaded {STREAMLINE_SDK_ZIP_NAME}")
+        else:
+            log(f"Using cached {STREAMLINE_SDK_ZIP_NAME}")
+        # Streamline: extract ALL .dll files under bin/x64/ (interposer needs companion DLLs + NGX)
+        extracted_sl = _extract_all_dlls_from_path(zip_path_sl, "bin/x64/", testapp_dir)
+        log(f"Extracted {len(extracted_sl)} Streamline DLL(s)")
+        missing_sl = [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
 
     # Final report
-    still_missing = [d for d in all_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+    still_missing = [d for d in fsr_dlls + sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
     if still_missing:
         log(f"Warning: some FG DLLs could not be extracted: {still_missing}")
     else:
