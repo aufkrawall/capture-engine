@@ -110,8 +110,6 @@ struct slDLSSGState {
     uint64_t lastPresentInputsProcessingCompletionFenceValue;
 };
 
-using PFN_slInit = slResult (*)(const slBaseStructure*);
-using PFN_slShutdown = slResult (*)();
 using PFN_slSetD3DDevice = slResult (*)(void*);
 using PFN_slGetFeatureFunction = slResult (*)(uint32_t, const char*, void*&);
 using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle&, const slDLSSGOptions&);
@@ -212,19 +210,17 @@ static bool TryInitDLSSFG() {
     g_SlModule = LoadLibraryW(L"sl.interposer.dll");
     if (!g_SlModule) return false;
 
-    auto slInit = reinterpret_cast<PFN_slInit>(GetProcAddress(g_SlModule, "slInit"));
-    auto slShutdown = reinterpret_cast<PFN_slShutdown>(GetProcAddress(g_SlModule, "slShutdown"));
     auto slSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(g_SlModule, "slSetD3DDevice"));
     auto slGetFeatureFunction =
         reinterpret_cast<PFN_slGetFeatureFunction>(GetProcAddress(g_SlModule, "slGetFeatureFunction"));
 
-    if (!slInit || !slSetD3DDevice || !slGetFeatureFunction) {
+    if (!slSetD3DDevice || !slGetFeatureFunction) {
         FreeLibrary(g_SlModule); g_SlModule = nullptr;
         return false;
     }
 
-    // Real Streamline init sequence: slInit -> slSetD3DDevice -> resolve features
-    slInit(nullptr);
+    // Streamline interposer auto-initializes on load.
+    // Register the D3D12 device so the runtime can prepare feature resources.
     slSetD3DDevice(g_Device.Get());
 
     void* fnPtr = nullptr;
@@ -234,7 +230,6 @@ static bool TryInitDLSSFG() {
         g_SlDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(fnPtr);
 
     if (!g_SlDLSSGSetOptions) {
-        slShutdown();
         FreeLibrary(g_SlModule); g_SlModule = nullptr;
         return false;
     }
@@ -294,8 +289,6 @@ static bool PollDLSSFGState() {
 
 static void ShutdownDLSSFG() {
     if (g_SlDLSSGSetOptions) SetDLSSFGMode(false);
-    auto slShutdown = reinterpret_cast<PFN_slShutdown>(GetProcAddress(g_SlModule, "slShutdown"));
-    if (slShutdown) slShutdown();
     g_SlDLSSGSetOptions = nullptr;
     g_SlDLSSGGetState = nullptr;
     if (g_SlModule) { FreeLibrary(g_SlModule); g_SlModule = nullptr; }

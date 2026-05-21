@@ -239,10 +239,10 @@ static uint32_t NoOpPresentCallback(CallbackDescFrameGenerationPresent*, void*) 
 enum FsrInitResult { kFsrOk = 0, kFsrNoDll = 1, kFsrNoExports = 2, kFsrCreateFailed = 3 };
 
 static FsrInitResult TryInitFSR() {
-    // SDK v2.2.0 per-effect FG DLL; loader DLL; legacy monolithic DLL (pre-2.0)
+    // Prefer the loader DLL (proper SDK v2.2.0 entry point), then per-effect DLL, then legacy
     const wchar_t* dllNames[] = {
-        L"amd_fidelityfx_framegeneration_dx12.dll",
         L"amd_fidelityfx_loader_dx12.dll",
+        L"amd_fidelityfx_framegeneration_dx12.dll",
         L"amd_fidelityfx_dx12.dll",
         L"ffx_framegeneration.dll",
     };
@@ -259,26 +259,29 @@ static FsrInitResult TryInitFSR() {
     g_FfxConfigure = reinterpret_cast<PfnFfxConfigure>(GetProcAddress(g_FfxModule, "ffxConfigure"));
     g_FfxDestroyContext = reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(g_FfxModule, "ffxDestroyContext"));
     if (!g_FfxCreateContext || !g_FfxConfigure || !g_FfxDestroyContext) {
+        printf("  FSR DLL missing ffxCreateContext/ffxConfigure/ffxDestroyContext exports\n");
         FreeLibrary(g_FfxModule); g_FfxModule = nullptr;
         return kFsrNoExports;
     }
 
-    // Try swapchain-integrated FG first (simpler, passes swapchain during create)
+    // Try swapchain-integrated FG first (simpler integration path)
     ffxApiHeader createDesc = {};
     ffxReturnCode_t ret;
     createDesc.type = FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN;
     createDesc.pNext = nullptr;
+    const char* effectName = "FRAMEGENERATIONSWAPCHAIN";
     ret = g_FfxCreateContext(&g_FfxCtx, &createDesc, nullptr);
     if (ret != FFX_API_RETURN_OK || !g_FfxCtx) {
         createDesc.type = FFX_API_EFFECT_ID_FRAMEGENERATION;
+        effectName = "FRAMEGENERATION";
         ret = g_FfxCreateContext(&g_FfxCtx, &createDesc, nullptr);
     }
     if (ret != FFX_API_RETURN_OK || !g_FfxCtx) {
-        printf("  ffxCreateContext failed (code=%u)\n", ret);
+        printf("  ffxCreateContext(%s) failed (code=%u, ctx=%p)\n", effectName, ret, (void*)g_FfxCtx);
         FreeLibrary(g_FfxModule); g_FfxModule = nullptr;
         return kFsrCreateFailed;
     }
-    printf("  FFX context created successfully\n");
+    printf("  ffxCreateContext(%s) OK (ctx=%p)\n", effectName, (void*)g_FfxCtx);
     return kFsrOk;
 }
 
@@ -309,7 +312,8 @@ static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer) {
 
     ffxReturnCode_t ret = g_FfxConfigure(g_FfxCtx, reinterpret_cast<ffxConfigureDescHeader*>(&cfgDesc));
     if (ret != FFX_API_RETURN_OK) {
-        printf("  ffxConfigure (%s) failed (code=%u)\n", enable ? "enable" : "disable", ret);
+        printf("  ffxConfigure (%s, frameID=%llu) failed (code=%u)\n",
+               enable ? "enable" : "disable", (unsigned long long)g_FrameIdCounter, ret);
         return false;
     }
     return true;
