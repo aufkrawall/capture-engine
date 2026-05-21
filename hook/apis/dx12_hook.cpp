@@ -2453,8 +2453,8 @@ static bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const
     HookLogImportant(
         "DX12: Finalizing protected official FFX startup pass-through after sustained frame progress without direct "
         "ffxConfigure (source=%s elapsed=%llums processFrameSkips=%u eclPassThroughs=%u queue=%p module=%s) — "
-        "normal overlay fallback remains gated until direct ffxConfigure, FFX present-callback, or stable same-queue "
-        "proof",
+        "normal overlay GPU draw remains gated until direct ffxConfigure or FFX present-callback proof; stable "
+        "same-queue proof is diagnostic only",
         source && source[0] ? source : "unknown", beginMs ? static_cast<unsigned long long>(nowMs - beginMs) : 0ULL,
         processFrameSkips, eclPassThroughs, deferredQueue,
         deferredModulePath[0] ? deferredModulePath : "official FFX runtime");
@@ -2980,7 +2980,7 @@ static bool ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(bo
 static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
     static std::atomic<int> s_suppressedStallFallbackLogCount{0};
     const int logCount = s_suppressedStallFallbackLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (logCount >= 20 && (logCount % 300) != 0) {
+    if (logCount >= 5 && (logCount % 600) != 0) {
         return;
     }
 
@@ -2992,7 +2992,8 @@ static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
         EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
     HookLogImportant(
         "DX12: FFX present callback appears stalled but normal overlay fallback is unsafe for "
-        "progress-resolved official FFX startup without direct ffxConfigure/callback/stable-queue proof "
+        "progress-resolved official FFX startup without direct ffxConfigure/callback proof; stable same-queue proof "
+        "is diagnostic only and first native-FSR overlay submit can trigger ERR_GFX_STATE "
         "(lastCallback=%llu progressAssumedFor=%llums directFFX=%d runtimeOwns=%d runtime=%s apiFSR=%d "
         "nativeFGPath=%d stableProof=%d stableFor=%llums requiredStable=%llums hasScQ=%d hasOrig=%d sameQueue=%d "
         "hasDevice=%d deviceHr=0x%08X scQueue=%p origGame=%p cmdQ=%p log=%d)",
@@ -3035,13 +3036,18 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
                     g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
                 const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
                     EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
+                const bool directFFXApiConfirmation = g_FGCompat.HasDirectFFXApiConfirmation();
+                const bool ffxPresentCallbackEverFired =
+                    g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0;
                 HookLogImportant(
                     "DX12: FFX present callback appears stalled (lastCallback=%llu ownedFor=%llums "
-                    "progressAssumedFor=%llums stableProof=%d stableFor=%llums sameQueue=%d deviceHr=0x%08X) "
-                    "— allowing normal overlay rendering as fallback",
+                    "progressAssumedFor=%llums directFFX=%d callbackEver=%d stableProof=%d stableFor=%llums "
+                    "sameQueue=%d deviceHr=0x%08X) "
+                    "— allowing normal overlay rendering as fallback after direct FFX/callback proof",
                     lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0,
-                    assumedSince ? (GetTickCount64() - assumedSince) : 0, progressProof.proof ? 1 : 0,
-                    progressProof.stableMs, progressProof.swapchainQueueMatchesOriginalGameQueue ? 1 : 0,
+                    assumedSince ? (GetTickCount64() - assumedSince) : 0, directFFXApiConfirmation ? 1 : 0,
+                    ffxPresentCallbackEverFired ? 1 : 0, progressProof.proof ? 1 : 0, progressProof.stableMs,
+                    progressProof.swapchainQueueMatchesOriginalGameQueue ? 1 : 0,
                     static_cast<unsigned>(progressProof.deviceHr));
             }
         }

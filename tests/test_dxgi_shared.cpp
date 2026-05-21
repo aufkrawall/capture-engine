@@ -1048,7 +1048,7 @@ TEST(DXGISharedTest, FFXPresentCallbackStallAllowsNormalOverlayRendering) {
         false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, true));
 }
 
-TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresSafeProofBeforeNormalOverlayFallback) {
+TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresCallbackBridgeBeforeNormalOverlayFallback) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, true, false, false));
 
@@ -1057,12 +1057,14 @@ TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresSafeProofBe
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(true, true, false,
                                                                                               false)));
 
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+    // Stable same-queue proof means the native-FSR runtime survived startup,
+    // not that CE can submit extra overlay GPU work into that queue.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, true, false, false, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true,
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(true, true, false,
-                                                                                              false, true)));
+                                                                                               false, true)));
 
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, true, true, false));

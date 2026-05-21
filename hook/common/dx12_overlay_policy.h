@@ -603,18 +603,18 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(bool ff
     if (!ffxPresentCallbackStalled) {
         return false;
     }
+    // The caller still logs this proof, but it is not a safety proof for GPU submission.
+    (void)progressResolvedStableOverlayProof;
 
     // GTA Enhanced's official AMD FFX path can progress far enough to prove
     // frame generation ownership without ever reaching CE's ffxConfigure or
     // present-callback bridge.  In that unproven state, falling back to normal
     // overlay GPU submission on the original game queue has produced immediate
-    // device removal, so require a stronger proof before treating a missing
-    // callback as immediate permission to submit injected overlay work.  Once
-    // the same path has presented stably on the original swapchain queue with
-    // a healthy device, the missing callback is a bridge failure rather than a
-    // proof of danger; allow the normal single-queue overlay path to recover.
-    if (progressResolvedOfficialFFXPresentPath && !directFFXApiConfirmation && !ffxPresentCallbackEverFired &&
-        !progressResolvedStableOverlayProof) {
+    // device removal. Stable same-queue progress is useful diagnostic proof
+    // that startup survived, but it does not prove that native FSR will accept
+    // injected CE GPU work. Require a direct FFX API or callback bridge signal
+    // before treating a missing callback as permission to submit overlay work.
+    if (progressResolvedOfficialFFXPresentPath && !directFFXApiConfirmation && !ffxPresentCallbackEverFired) {
         return false;
     }
 
