@@ -2453,7 +2453,8 @@ static bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const
     HookLogImportant(
         "DX12: Finalizing protected official FFX startup pass-through after sustained frame progress without direct "
         "ffxConfigure (source=%s elapsed=%llums processFrameSkips=%u eclPassThroughs=%u queue=%p module=%s) — "
-        "normal overlay fallback remains gated until direct ffxConfigure or FFX present-callback proof",
+        "normal overlay fallback remains gated until direct ffxConfigure, FFX present-callback, or stable same-queue "
+        "proof",
         source && source[0] ? source : "unknown", beginMs ? static_cast<unsigned long long>(nowMs - beginMs) : 0ULL,
         processFrameSkips, eclPassThroughs, deferredQueue,
         deferredModulePath[0] ? deferredModulePath : "official FFX runtime");
@@ -2920,15 +2921,60 @@ static bool IsFFXPresentCallbackStalled() {
     return false;
 }
 
+static constexpr ULONGLONG kProgressResolvedOfficialFFXOverlayFallbackStableMs = 5000;
+
+struct ProgressResolvedOfficialFFXOverlayFallbackProof {
+    bool proof = false;
+    bool progressResolved = false;
+    bool hasSwapchainQueue = false;
+    bool hasOriginalGameQueue = false;
+    bool swapchainQueueMatchesOriginalGameQueue = false;
+    bool hasDevice = false;
+    ULONGLONG stableMs = 0;
+    HRESULT deviceHr = E_POINTER;
+};
+
+static ProgressResolvedOfficialFFXOverlayFallbackProof EvaluateProgressResolvedOfficialFFXOverlayFallbackProof() {
+    ProgressResolvedOfficialFFXOverlayFallbackProof result{};
+    result.progressResolved =
+        g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
+
+    const ULONGLONG assumedSince =
+        g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
+    if (result.progressResolved && assumedSince != 0) {
+        const ULONGLONG now = GetTickCount64();
+        result.stableMs = (now >= assumedSince) ? (now - assumedSince) : 0;
+    }
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        result.hasSwapchainQueue = g_SwapchainQueue != nullptr;
+        result.hasOriginalGameQueue = g_OriginalGameQueue != nullptr;
+        result.swapchainQueueMatchesOriginalGameQueue =
+            result.hasSwapchainQueue && result.hasOriginalGameQueue && g_SwapchainQueue == g_OriginalGameQueue;
+    }
+
+    ID3D12Device* device = g_Device.load(std::memory_order_acquire);
+    result.hasDevice = device != nullptr;
+    result.deviceHr = device ? device->GetDeviceRemovedReason() : E_POINTER;
+
+    result.proof = result.progressResolved &&
+                   result.stableMs >= kProgressResolvedOfficialFFXOverlayFallbackStableMs &&
+                   result.swapchainQueueMatchesOriginalGameQueue && result.hasDevice && SUCCEEDED(result.deviceHr);
+    return result;
+}
+
 static bool ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(bool ffxPresentCallbackStalled) {
     const bool progressResolvedOfficialFFXPresentPath =
         g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
     const bool directFFXApiConfirmation = g_FGCompat.HasDirectFFXApiConfirmation();
     const bool ffxPresentCallbackEverFired =
         g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0;
+    const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
+        EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
     return ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         ffxPresentCallbackStalled, progressResolvedOfficialFFXPresentPath, directFFXApiConfirmation,
-        ffxPresentCallbackEverFired);
+        ffxPresentCallbackEverFired, progressProof.proof);
 }
 
 static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
@@ -2942,15 +2988,22 @@ static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
     const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
     const ULONGLONG assumedSince =
         g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
+    const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
+        EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
     HookLogImportant(
         "DX12: FFX present callback appears stalled but normal overlay fallback is unsafe for "
-        "progress-resolved official FFX startup without direct ffxConfigure/callback proof "
+        "progress-resolved official FFX startup without direct ffxConfigure/callback/stable-queue proof "
         "(lastCallback=%llu progressAssumedFor=%llums directFFX=%d runtimeOwns=%d runtime=%s apiFSR=%d "
-        "nativeFGPath=%d scQueue=%p origGame=%p cmdQ=%p log=%d)",
+        "nativeFGPath=%d stableProof=%d stableFor=%llums requiredStable=%llums hasScQ=%d hasOrig=%d sameQueue=%d "
+        "hasDevice=%d deviceHr=0x%08X scQueue=%p origGame=%p cmdQ=%p log=%d)",
         lastCallback, assumedSince ? (now - assumedSince) : 0,
         g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
         ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
-        HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0, g_SwapchainQueue, g_OriginalGameQueue,
+        HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0, progressProof.proof ? 1 : 0,
+        progressProof.stableMs, kProgressResolvedOfficialFFXOverlayFallbackStableMs,
+        progressProof.hasSwapchainQueue ? 1 : 0, progressProof.hasOriginalGameQueue ? 1 : 0,
+        progressProof.swapchainQueueMatchesOriginalGameQueue ? 1 : 0, progressProof.hasDevice ? 1 : 0,
+        static_cast<unsigned>(progressProof.deviceHr), g_SwapchainQueue, g_OriginalGameQueue,
         g_CommandQueue.load(std::memory_order_acquire), logCount + 1);
 }
 
@@ -2980,11 +3033,16 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
                 const ULONGLONG ownedSince = g_FGRuntimeOwnsSwapchainSince;
                 const ULONGLONG assumedSince =
                     g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
+                const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
+                    EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
                 HookLogImportant(
                     "DX12: FFX present callback appears stalled (lastCallback=%llu ownedFor=%llums "
-                    "progressAssumedFor=%llums) — allowing normal overlay rendering as fallback",
+                    "progressAssumedFor=%llums stableProof=%d stableFor=%llums sameQueue=%d deviceHr=0x%08X) "
+                    "— allowing normal overlay rendering as fallback",
                     lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0,
-                    assumedSince ? (GetTickCount64() - assumedSince) : 0);
+                    assumedSince ? (GetTickCount64() - assumedSince) : 0, progressProof.proof ? 1 : 0,
+                    progressProof.stableMs, progressProof.swapchainQueueMatchesOriginalGameQueue ? 1 : 0,
+                    static_cast<unsigned>(progressProof.deviceHr));
             }
         }
         if (reason) {
@@ -4820,12 +4878,14 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             const bool explicitNativeFSROffPending =
                 g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
             const bool ffxPresentCallbackStalled = IsFFXPresentCallbackStalled();
-            const bool ffxStallAllowsNormalOverlay =
-                ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(ffxPresentCallbackStalled);
+            // Overlay fallback permission is a rendering transport decision, not
+            // an ownership teardown signal.  Keep preserving active native FSR
+            // ownership until an explicit OFF/device/swapchain transition proves
+            // the runtime has really left the FG path.
             const bool preserveAuthoritativeFSRBase =
                 ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
                     true, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), runtimeMode,
-                    authoritativeFSRActive, runtimeOwnedNativeFGPresentPath, ffxStallAllowsNormalOverlay);
+                    authoritativeFSRActive, runtimeOwnedNativeFGPresentPath, false);
             const bool endNativeFGTeardownOnOrigGame =
                 ce::dx12_overlay_policy::ShouldEndRuntimeOwnedNativeFGTeardownOnOriginalQueueReturn(
                     pQueue == g_OriginalGameQueue, explicitNativeFSROffPending, authoritativeFSRActive, runtimeMode,
@@ -5756,13 +5816,13 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     if (g_HadFSRFGPhase) {
         ID3D12CommandQueue* staleScQueue = nullptr;
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
-        const bool ffxPresentCallbackStalled = IsFFXPresentCallbackStalled();
-        const bool ffxStallAllowsNormalOverlay =
-            ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(ffxPresentCallbackStalled);
+        // Overlay fallback permission must not be reused as a proof that native
+        // FSR ownership is stale.  Preserve ownership while FSR/native Present
+        // state is still active and let the explicit native-FSR OFF path clear it.
         const bool preserveRuntimeOwnedFSRTakeover =
             ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
                 g_FGRuntimeOwnsSwapchain, false, runtimeMode, g_FGCompat.IsFSRFGApiActive(),
-                HookHasRuntimeOwnedNativeFGPresentPath(), ffxStallAllowsNormalOverlay);
+                HookHasRuntimeOwnedNativeFGPresentPath(), false);
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
 

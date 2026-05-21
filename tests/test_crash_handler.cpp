@@ -154,6 +154,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("normal overlay fallback is unsafe for progress-resolved official FFX startup"),
               std::string::npos);
+    EXPECT_NE(contents.find("direct ffxConfigure/callback/stable-queue proof"), std::string::npos);
     EXPECT_NE(contents.find("ECL startup activation swapchain probe suppressed"), std::string::npos);
     EXPECT_NE(contents.find("Rejecting startup activation swapchain"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);

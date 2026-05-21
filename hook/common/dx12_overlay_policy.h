@@ -597,7 +597,9 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(bool ffxPresentCallbackStalled,
                                                                          bool progressResolvedOfficialFFXPresentPath,
                                                                          bool directFFXApiConfirmation,
-                                                                         bool ffxPresentCallbackEverFired) {
+                                                                         bool ffxPresentCallbackEverFired,
+                                                                         bool progressResolvedStableOverlayProof =
+                                                                             false) {
     if (!ffxPresentCallbackStalled) {
         return false;
     }
@@ -607,8 +609,12 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(bool ff
     // present-callback bridge.  In that unproven state, falling back to normal
     // overlay GPU submission on the original game queue has produced immediate
     // device removal, so require a stronger proof before treating a missing
-    // callback as permission to submit injected overlay work.
-    if (progressResolvedOfficialFFXPresentPath && !directFFXApiConfirmation && !ffxPresentCallbackEverFired) {
+    // callback as immediate permission to submit injected overlay work.  Once
+    // the same path has presented stably on the original swapchain queue with
+    // a healthy device, the missing callback is a bridge failure rather than a
+    // proof of danger; allow the normal single-queue overlay path to recover.
+    if (progressResolvedOfficialFFXPresentPath && !directFFXApiConfirmation && !ffxPresentCallbackEverFired &&
+        !progressResolvedStableOverlayProof) {
         return false;
     }
 

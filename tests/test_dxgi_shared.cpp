@@ -1058,6 +1058,13 @@ TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresSafeProofBe
                                                                                               false)));
 
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, true, false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true,
+        ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(true, true, false,
+                                                                                              false, true)));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, true, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, true, false, true));
