@@ -1301,6 +1301,24 @@ def check_mingw_packages():
             log("Linux host missing mingw-w64 x86 compiler - x86 targets will be skipped")
 
 
+def _find_nvngx_driverstore_paths() -> List[str]:
+    """Find _nvngx.dll in the NVIDIA DriverStore or System32."""
+    paths: List[str] = []
+    # System32 — installed by running an NGX-enabled game
+    sys32 = r"C:\Windows\System32\_nvngx.dll"
+    if os.path.exists(sys32):
+        paths.append(sys32)
+    # DriverStore — driver staging copy
+    ds_root = r"C:\Windows\System32\DriverStore\FileRepository"
+    if os.path.isdir(ds_root):
+        for entry in os.listdir(ds_root):
+            if entry.startswith("nv_dispi"):
+                candidate = os.path.join(ds_root, entry, "_nvngx.dll")
+                if os.path.exists(candidate):
+                    paths.append(candidate)
+    return paths
+
+
 def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     """Download and extract FSR FG and DLSS FG SDK DLLs for test apps.
 
@@ -1319,12 +1337,17 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     # Streamline interposer loads companion .dlls + NGX DLLs at load time;
     # we must extract ALL .dll files from the zip's x64 bin dir.
     sl_known_dlls = ["sl.interposer.dll", "sl.common.dll", "sl.dlss_g.dll",
-                     "sl.dlss.dll", "sl.reflex.dll", "_nvngx.dll", "nvngx_dlssg.dll"]
+                     "sl.dlss.dll", "sl.reflex.dll", "nvngx_dlssg.dll"]
+
+    # _nvngx.dll comes from the NVIDIA driver (DriverStore), not from Streamline SDK zip.
+    # Search dynamically in case the DriverStore path changes with driver updates.
+    _nvngx_sys_paths = _find_nvngx_driverstore_paths()
 
     missing_fsr = [d for d in fsr_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
     missing_sl = [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+    missing_nvngx = not os.path.exists(os.path.join(testapp_dir, "_nvngx.dll"))
 
-    if not missing_fsr and not missing_sl:
+    if not missing_fsr and not missing_sl and not missing_nvngx:
         log("FG SDK DLLs already present - skipping download")
         return
     log(f"FSR FG DLLs missing: {len(missing_fsr)}, Streamline DLLs missing: {len(missing_sl)}")
@@ -1426,8 +1449,20 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
         log(f"Extracted {len(extracted_sl)} Streamline DLL(s)")
         missing_sl = [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
 
+    # Copy _nvngx.dll from NVIDIA driver DriverStore if not present
+    nvngx_dest = os.path.join(testapp_dir, "_nvngx.dll")
+    if not os.path.exists(nvngx_dest):
+        for src in _nvngx_sys_paths:
+            if os.path.exists(src):
+                safe_replace_or_rename(src, nvngx_dest)
+                log(f"Copied _nvngx.dll from DriverStore")
+                break
+        else:
+            log("_nvngx.dll not found in DriverStore (NVIDIA NGX not activated on this system)")
+
     # Final report
-    still_missing = [d for d in fsr_dlls + sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+    all_expected = fsr_dlls + sl_known_dlls + ["_nvngx.dll"]
+    still_missing = [d for d in all_expected if not os.path.exists(os.path.join(testapp_dir, d))]
     if still_missing:
         log(f"Warning: some FG DLLs could not be extracted: {still_missing}")
     else:
