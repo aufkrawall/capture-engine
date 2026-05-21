@@ -156,6 +156,8 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("stable same-queue proof is diagnostic only"), std::string::npos);
     EXPECT_NE(contents.find("first native-FSR overlay submit can trigger ERR_GFX_STATE"), std::string::npos);
+    EXPECT_NE(contents.find("External overlay fallback active because injected GPU overlay is unsafe on native FSR path"),
+              std::string::npos);
     EXPECT_NE(contents.find("ECL startup activation swapchain probe suppressed"), std::string::npos);
     EXPECT_NE(contents.find("Rejecting startup activation swapchain"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);

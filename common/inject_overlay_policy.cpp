@@ -26,6 +26,7 @@ bool ShouldRescanForConfigChange(const AppConfig& oldBaseConfig, const InjectorC
            oldState.config.overlayWhitelist != newState.config.overlayWhitelist;
 }
 
-bool ShouldSuppressPseudoOverlayForInjectOverlayHandoff(bool injectOverlayPending, bool injectOverlayActive) {
-    return injectOverlayPending || injectOverlayActive;
+bool ShouldSuppressPseudoOverlayForInjectOverlayHandoff(bool injectOverlayPending, bool injectOverlayActive,
+                                                       bool externalFallbackActive) {
+    return injectOverlayPending || (injectOverlayActive && !externalFallbackActive);
 }

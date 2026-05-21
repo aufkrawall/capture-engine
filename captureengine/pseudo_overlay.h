@@ -67,6 +67,7 @@ private:
     bool EnsureSharedMemoryMapping();
     bool IsInjectOverlayActive();
     bool IsInjectOverlayPending();
+    bool IsInjectOverlayExternalFallbackActive();
     bool EnsureOverlayWindows();
     void DestroyOverlayWindows();
     AnchorInfo ResolveAnchorInfo();
@@ -119,6 +120,7 @@ private:
     uint32_t lastCaptureHealthFlags_ = 0;
     bool lastOverlaySuppressed_ = false;
     bool lastFullscreenSuppressed_ = false;
+    bool lastExternalFallbackActive_ = false;
     HWND stickyAnchorWindow_ = NULL;
     HMONITOR stickyAnchorMonitor_ = NULL;
     UINT stickyAnchorDpi_ = 96;

@@ -25,6 +25,8 @@ static const char* InjectOverlayRuntimeFlagName(CaptureRuntimeFlags flag) {
             return "InjectOverlayActive";
         case kCaptureRuntimeFlagInjectOverlayPending:
             return "InjectOverlayPending";
+        case kCaptureRuntimeFlagInjectOverlayExternalFallback:
+            return "InjectOverlayExternalFallback";
         default:
             return "Unknown";
     }

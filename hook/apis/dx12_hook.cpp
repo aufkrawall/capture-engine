@@ -2023,6 +2023,41 @@ static ULONGLONG g_SwapchainQueueCaptureTime = 0;  // GetTickCount64() when scQu
 // for a sustained period.
 static bool g_FGRuntimeOwnsSwapchain = false;
 static ULONGLONG g_FGRuntimeOwnsSwapchainSince = 0;
+static std::atomic<bool> g_InjectOverlayExternalFallbackPublished{false};
+
+static void SetInjectOverlayExternalFallbackActive(bool active, const char* reason) {
+    SharedMemoryLayout* shm = (g_IPC && g_IPC->GetSharedMem()) ? g_IPC->GetSharedMem() : nullptr;
+    bool publish = false;
+    OverlayConfig overlayCfg = {};
+    if (active && shm) {
+        overlayCfg = shm->ReadOverlayConfig();
+        publish = overlayCfg.showOverlay;
+    }
+
+    if (shm) {
+        shm->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayExternalFallback, publish);
+    }
+
+    const bool previous = g_InjectOverlayExternalFallbackPublished.exchange(publish, std::memory_order_acq_rel);
+    if (previous == publish) {
+        return;
+    }
+
+    if (publish) {
+        HookLogImportant(
+            "DX12: External overlay fallback active because injected GPU overlay is unsafe on native FSR path "
+            "(reason=%s overlay=%d captureOverlay=%d runtime=%s scQueue=%p origGame=%p cmdQ=%p)",
+            reason ? reason : "unknown", overlayCfg.showOverlay ? 1 : 0, overlayCfg.captureIncludeOverlay ? 1 : 0,
+            ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_SwapchainQueue, g_OriginalGameQueue,
+            g_CommandQueue.load(std::memory_order_acquire));
+    } else {
+        HookLogImportant(
+            "DX12: External overlay fallback cleared; injected overlay GPU path is eligible again "
+            "(reason=%s runtime=%s scQueue=%p origGame=%p cmdQ=%p)",
+            reason ? reason : "unknown", ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
+            g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
+    }
+}
 
 static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* out) {
     if (!out) {
@@ -3013,6 +3048,7 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
         if (reason) {
             *reason = "protected official FFX startup";
         }
+        SetInjectOverlayExternalFallbackActive(true, "protected official FFX startup");
         return true;
     }
 
@@ -3054,6 +3090,7 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
         if (reason) {
             *reason = nullptr;
         }
+        SetInjectOverlayExternalFallbackActive(false, "separate overlay GPU work allowed");
         return false;
     }
 
@@ -3070,6 +3107,7 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
             *reason = "runtime-owned swapchain";
         }
     }
+    SetInjectOverlayExternalFallbackActive(true, reason && *reason ? *reason : "runtime-owned native FSR path");
     return true;
 }
 
@@ -3453,6 +3491,7 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
     }
 
     SetNativeFSRStartupConfigureArmingPending(false, "native FSR disabled configure");
+    SetInjectOverlayExternalFallbackActive(false, "native FSR disabled configure");
     ClearDeferredOfficialFFXTakeoverSideEffects("native FSR disabled configure");
     ClearProtectedOfficialFFXStartupSwapchainPending("native FSR disabled configure");
     ClearOfficialFFXRuntimeOwnedPresentPathAssumption("native FSR disabled configure");
@@ -3529,6 +3568,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     }
 
     RenderOverlayViaFFXPresentCallback(desc);
+    SetInjectOverlayExternalFallbackActive(false, "native FSR present-callback overlay bridge rendered");
     HookUpdatePreferredOverlayFGPublicationState(g_FGCompat.IsFGActive(), g_FGCompat.GetRuntimeMode(),
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
@@ -5300,6 +5340,20 @@ void DX12Hook::Init() {
     double timeout = g_RenderWatchdog.GetRecommendedTimeout();
     g_RenderWatchdog.SetMonitoredThread(GetCurrentThreadId());
     g_RenderWatchdog.SetPreferredThreadProvider(&DX12_GetGamePresentThreadId);
+    g_RenderWatchdog.SetFreezeCallback([](const std::string& reason) {
+        HookLogImportant(
+            "DX12: Freeze watchdog state snapshot (%s): externalFallback=%d runtime=%s fgOwned=%d apiFSR=%d "
+            "runtimeNativeFG=%d postSL=%d postSLConfirmed=%d ffxCallback=%d scQueue=%p origGame=%p cmdQ=%p "
+            "lastFFXCallback=%llu",
+            reason.c_str(), g_InjectOverlayExternalFallbackPublished.load(std::memory_order_acquire) ? 1 : 0,
+            ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_FGRuntimeOwnsSwapchain ? 1 : 0,
+            g_FGCompat.IsFSRFGApiActive() ? 1 : 0, HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
+            g_PostSLOverlayActive.load(std::memory_order_acquire) ? 1 : 0,
+            g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0,
+            g_FFXPresentOverlayAdapter.IsInitialized() ? 1 : 0, g_SwapchainQueue, g_OriginalGameQueue,
+            g_CommandQueue.load(std::memory_order_acquire),
+            g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire));
+    });
     g_RenderWatchdog.Start(timeout);
     HookLog("DX12: Freeze watchdog started (%.0f second timeout)", timeout);
 
@@ -15698,6 +15752,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device,
 }
 
 void DX12Hook::Shutdown() {
+    SetInjectOverlayExternalFallbackActive(false, "DX12Hook::Shutdown");
     CleanupResources();
     CleanupOverlay();
     CleanupRTVs();
@@ -15748,6 +15803,7 @@ void DX12Hook::Shutdown() {
     g_PostSLDeferredQueueCleanupPending.store(false, std::memory_order_release);
     ClearPostSLQueues("DX12: Shutdown");
     ClearPostSLPinnedSLWrapperQueue("DX12: Shutdown");
+    g_RenderWatchdog.SetFreezeCallback(nullptr);
     SetPostSLLastWorkingQueue(nullptr);
     if (auto* deferredLockedQueue = g_DeferredPostSLLockedQueueRelease.exchange(nullptr, std::memory_order_acq_rel)) {
         deferredLockedQueue->Release();
