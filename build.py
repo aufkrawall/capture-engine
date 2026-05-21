@@ -3704,6 +3704,38 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                 make_cmd_x86(clang_exe_x86, cflags_x86, dx12_src, dx12_ldflags, dx12_exe_x86),
             )
 
+    # FSR FG DX12 Test App
+    fsr_fg_src = os.path.join(testapp_src_dir, "dx12_fsr_fg_test.cpp")
+    fsr_fg_exe = os.path.join(testapp_bin_dir, "dx12_fsr_fg_test.exe")
+    if os.path.exists(fsr_fg_src):
+        fsr_fg_ldflags = list(dx12_ldflags)
+        add_task(
+            "dx12_fsr_fg_test.exe",
+            make_cmd(clang_exe, cflags, fsr_fg_src, fsr_fg_ldflags, fsr_fg_exe),
+        )
+        if have_x86:
+            fsr_fg_exe_x86 = os.path.join(x86_bin_dir, "dx12_fsr_fg_test.exe")
+            add_task(
+                "dx12_fsr_fg_test.exe (x86)",
+                make_cmd_x86(clang_exe_x86, cflags_x86, fsr_fg_src, fsr_fg_ldflags, fsr_fg_exe_x86),
+            )
+
+    # DLSS FG DX12 Test App
+    dlss_fg_src = os.path.join(testapp_src_dir, "dx12_dlss_fg_test.cpp")
+    dlss_fg_exe = os.path.join(testapp_bin_dir, "dx12_dlss_fg_test.exe")
+    if os.path.exists(dlss_fg_src):
+        dlss_fg_ldflags = list(dx12_ldflags)
+        add_task(
+            "dx12_dlss_fg_test.exe",
+            make_cmd(clang_exe, cflags, dlss_fg_src, dlss_fg_ldflags, dlss_fg_exe),
+        )
+        if have_x86:
+            dlss_fg_exe_x86 = os.path.join(x86_bin_dir, "dx12_dlss_fg_test.exe")
+            add_task(
+                "dx12_dlss_fg_test.exe (x86)",
+                make_cmd_x86(clang_exe_x86, cflags_x86, dlss_fg_src, dlss_fg_ldflags, dlss_fg_exe_x86),
+            )
+
     # DX11 Test App
     dx11_src = os.path.join(testapp_src_dir, "dx11_test.cpp")
     dx11_exe = os.path.join(testapp_bin_dir, "dx11_test.exe")
