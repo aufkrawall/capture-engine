@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-09 (updated: build 0.1.2963 ECL-hook-based deferred overlay)
+Last cross-checked: 2026-05-21 (updated: build 0.1.3403 native FSR callback-bridge dynamic-hook filtering)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -22,6 +22,7 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - That late pre-FG runtime-owned handoff re-arm must be keyed off the handoff edge itself, not the steady-state `runtimeOwnsSwapchain` flag. Otherwise CE can re-arm startup compatibility every frame for as long as the runtime-owned swapchain remains present, repeatedly resetting staged startup activation even after the topology has already settled enough to render safely.
 - Third-party overlay swapchains and private queues are not allowed to become authoritative game state just because they call into our hooks.
 - If an immediate caller looks like a third-party overlay but FFX FG stack or module evidence is present, the FFX evidence can override the misleading caller identity.
+- Dynamic `GetProcAddress` caller filtering has a narrow FFX exception: generic D3D/DXGI hooks are still hidden from third-party overlay callers, but `ffxCreateContext`, `ffxDestroyContext`, and `ffxConfigure` stay visible when the target module is an official FFX runtime. GTA/EOS can route native FSR startup through an overlay-looking caller, and hiding those FFX APIs prevents CE from installing the real present-callback bridge before overlay GPU work resumes.
 - If the effective runtime mode is FSR FG, SL routing must stay suppressed even if the SL hook remains physically present on `Present`/`Present1`. Re-enabling SL routing in that state can deadlock the render thread inside the FFX runtime.
 - Current DXGI startup pass-through windows are short and explicit: normally 3 frames, or 16 frames for Steam when bypass is available.
 - The current tests and comments explicitly say the dedicated DX12 overlay queue is FG-only. Startup compatibility stays on the safer single-queue path to avoid cross-queue state conflicts such as GTA `ERR_GFX_STATE` failures.
@@ -33,6 +34,7 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - Treat foreign swapchains and queues as non-authoritative until the real game queue or swapchain is proven.
 - Use narrow startup bypass windows, then converge back to normal routing as soon as the live game path is clear.
 - When FFX stack evidence and third-party overlay identity disagree, do not blindly trust the immediate caller alone.
+- Preserve the FFX API dynamic-hook exception when tightening third-party overlay bypass rules. Losing it can make native FSR appear to work while keeping the injected overlay permanently suppressed or falling back through unsafe recovery paths.
 - Keep fixes generic across Steam, Rockstar, Epic, and similar overlay stacks. The code already leans toward topology and state-driven behavior; preserve that direction.
 
 - **Vtable hook path critical difference from inline hook path**: When external E9 JMP is detected at `dxgi!Present` (inline hook), CE uses vtable hooking instead of inline hooking. In the vtable hook path, `oPresentTrampoline` is NULL (no inline hook trampoline created). `DetectSLPresentHook()` correctly bails early in the vtable path because `oPresent` (saved vtable[8]) is Steam's hook function, not dxgi!Present — checking Steam's function bytes for an E9 JMP would never detect SL's hook. SL routing (`s_slRoutingActive`) stays false in the vtable path by design, and Steam overlay is invoked through `CallOriginalPresent`'s explicit `g_externalOverlayPresentHook` logic.

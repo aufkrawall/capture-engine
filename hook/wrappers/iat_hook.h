@@ -8,6 +8,7 @@
 #pragma once
 
 #include <windows.h>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,43 @@ using DynamicHookModuleFilter = bool (*)(const char* moduleBaseName, HMODULE mod
 inline bool ShouldApplyDynamicHookForModule(DynamicHookModuleFilter moduleFilter, const char* moduleBaseName,
                                             HMODULE module) {
     return !moduleFilter || moduleFilter(moduleBaseName, module);
+}
+
+inline bool IsFFXApiDynamicHookName(const char* functionName) {
+    if (!functionName) {
+        return false;
+    }
+
+    return strcmp(functionName, "ffxCreateContext") == 0 || strcmp(functionName, "ffxDestroyContext") == 0 ||
+           strcmp(functionName, "ffxConfigure") == 0;
+}
+
+inline bool ShouldAllowDynamicHookForThirdPartyOverlayCaller(bool targetIsFFXFrameGenerationModule,
+                                                            const char* functionName) {
+    // GTA Enhanced can route official FFX module lookups through an overlay
+    // shim. The generic overlay-caller guard is still correct for graphics API
+    // hooks, but FFX API hooks must remain visible there so CE can install the
+    // native FSR present-callback bridge instead of falling back to unsafe
+    // normal overlay GPU submission.
+    return targetIsFFXFrameGenerationModule && IsFFXApiDynamicHookName(functionName);
+}
+
+inline bool ShouldBypassDynamicHookForCaller(bool callerIsSystemModule, bool callerIsThirdPartyOverlayModule,
+                                             bool callerIsCaptureHookModule, bool callerIsWrapperModule,
+                                             bool callerIsStreamlineFrameGenerationModule,
+                                             bool callerIsFFXFrameGenerationModule,
+                                             bool targetIsFFXFrameGenerationModule, const char* functionName) {
+    if (callerIsSystemModule || callerIsCaptureHookModule || callerIsWrapperModule ||
+        callerIsStreamlineFrameGenerationModule || callerIsFFXFrameGenerationModule) {
+        return true;
+    }
+
+    if (callerIsThirdPartyOverlayModule &&
+        !ShouldAllowDynamicHookForThirdPartyOverlayCaller(targetIsFFXFrameGenerationModule, functionName)) {
+        return true;
+    }
+
+    return false;
 }
 
 /**

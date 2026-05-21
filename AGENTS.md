@@ -43,6 +43,8 @@ Copyright (c) 2026 aufkrawall
 - The overlay must not be suspended unnecessarily long, also not during FG switching transitions!
 - Ideally, the overlay never gets visibly suspended / does never disappear, not even temporarily!
 - Inject, overlay etc. must work optimally and gracefully also when other overlay injects like Steam, Rockstar Social etc. are active at the same time!
+- The pseudo-overlay is NEVER a proper replacement for the inject overlay, also not when encountering hard to solve issues with FSR FG or DLSS FG!
+- Our inject overlay is or was already working with both FSR FG and DLSS fg in at least some circumstances, and also other similar programs like RTSS work with FSR FG and DLSS FG too. We do not accept that our inject overlay is lacking compatibility with any FG, we definitely can make it work if we try and think hard enough!
 
 ## Build, diagnostics, and tests
 

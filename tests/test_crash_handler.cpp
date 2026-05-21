@@ -173,5 +173,10 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("ZwTerminateProcess"), std::string::npos);
     EXPECT_NE(contents.find("Registered module-filtered dynamic hooks for FFX exports"), std::string::npos);
     EXPECT_NE(contents.find("Using GetProcAddress-only hooks for protected official FFX module"), std::string::npos);
+    EXPECT_NE(contents.find("waiting for ffxConfigure lookup to arm the native FSR present-callback bridge"),
+              std::string::npos);
+    EXPECT_NE(contents.find("GetProcAddress: Intercepted FFX API"), std::string::npos);
+    EXPECT_NE(contents.find("initializing FFX hooks immediately for native FSR callback bridge"), std::string::npos);
+    EXPECT_NE(contents.find("Installed LdrLoadDll hook for module-load observation"), std::string::npos);
     EXPECT_NE(contents.find("IAT import patching skipped to avoid startup fail-fast"), std::string::npos);
 }

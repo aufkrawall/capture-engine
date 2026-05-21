@@ -25,6 +25,7 @@
 #include "common/hook_context.h"
 #include "common/input_manager.h"
 #include "common/ipc_client.h"
+#include "common/overlay_compat.h"
 #include "common/perf_logger.h"
 #include "common/reflex_limiter.h"
 #include "common/system_metrics.h"
@@ -1875,6 +1876,13 @@ static bool NeedsLoaderRedirectionHook() {
          !gfx.dlssRrDllPath.empty() || !gfx.streamlineDllPath.empty();
 }
 
+static bool NeedsLowLevelModuleLoadObservationHook() {
+  // Some launchers and overlays load native FG runtimes through ntdll directly.
+  // Observing LdrLoadDll lets us arm FFX/Streamline hooks before the game can
+  // cache API pointers such as ffxConfigure.
+  return true;
+}
+
 // Hooked RegQueryValueExW - For DLSS Debug Overlay
 LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName,
                                       LPDWORD lpReserved, LPDWORD lpType,
@@ -1929,6 +1937,12 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
     if (_stricmp(baseName, "nvapi64.dll") == 0 || _stricmp(baseName, "nvapi.dll") == 0) {
       HookLog("NotifyHookModuleLoaded: %s detected — initializing Reflex limiter", baseName);
       g_ReflexLimiter.Init();
+    }
+    if (ce::overlay_compat::IsFFXFrameGenerationModulePath(moduleNameOrPath)) {
+      HookLogImportant(
+          "NotifyHookModuleLoaded: %s detected - initializing FFX hooks immediately for native FSR callback bridge",
+          baseName);
+      FFXHook::Init();
     }
     // CRITICAL FIX: Hook d3d11.dll at LoadLibrary time, BEFORE the game calls
     // GetProcAddress. UE3 caches D3D11 context vtable function pointers (Draw
@@ -3030,9 +3044,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     HookLog("advapi32.dll not loaded yet - skipping RegQueryValueExW hook");
   }
 
-  // Only install the low-level loader hook when DLL redirection is actually
-  // configured. Without redirection overrides it adds risk but no value.
-  if (NeedsLoaderRedirectionHook()) {
+  // Install the low-level loader hook for DLL redirection and early module-load
+  // observation. GTA Enhanced can bring up the official FFX runtime through a
+  // path that reaches CE's periodic scan only after ffxConfigure has already
+  // been cached, which prevents the native FSR present-callback bridge from
+  // arming.
+  if (NeedsLoaderRedirectionHook() || NeedsLowLevelModuleLoadObservationHook()) {
     if (!OriginalLdrLoadDll.load(std::memory_order_acquire)) {
       if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
         if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
@@ -3040,7 +3057,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
           if (InlineHook::Install(pLdrLoadDll, (void *)&HookedLdrLoadDll,
                                   &trampoline)) {
             OriginalLdrLoadDll.store((LdrLoadDll_t)trampoline, std::memory_order_release);
-            HookLog("Installed LdrLoadDll hook");
+            HookLogImportant("Installed LdrLoadDll hook for module-load observation and optional DLL redirection");
           } else {
             HookLog("Failed to install LdrLoadDll hook");
           }

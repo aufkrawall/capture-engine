@@ -1027,11 +1027,22 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                 if (GetModuleFileNameA(callerMod, callerPath, sizeof(callerPath))) {
                     for (char* p = callerPath; *p; ++p)
                         *p = (char)tolower((unsigned char)*p);
-                    if (strstr(callerPath, "\\system32\\") || strstr(callerPath, "\\syswow64\\") ||
-                        ce::overlay_compat::IsThirdPartyOverlayModulePath(callerPath) ||
-                        strstr(callerPath, "capture_hook") || strstr(callerPath, "d3d12_wrappers") ||
-                        ce::overlay_compat::IsStreamlineFrameGenerationModulePath(callerPath) ||
-                        ce::overlay_compat::IsFFXFrameGenerationModulePath(callerPath)) {
+                    const bool callerIsSystemModule =
+                        strstr(callerPath, "\\system32\\") || strstr(callerPath, "\\syswow64\\");
+                    const bool callerIsThirdPartyOverlayModule =
+                        ce::overlay_compat::IsThirdPartyOverlayModulePath(callerPath);
+                    const bool callerIsCaptureHookModule = strstr(callerPath, "capture_hook") != nullptr;
+                    const bool callerIsWrapperModule = strstr(callerPath, "d3d12_wrappers") != nullptr;
+                    const bool callerIsStreamlineFrameGenerationModule =
+                        ce::overlay_compat::IsStreamlineFrameGenerationModulePath(callerPath);
+                    const bool callerIsFFXFrameGenerationModule =
+                        ce::overlay_compat::IsFFXFrameGenerationModulePath(callerPath);
+                    const bool targetIsFFXFrameGenerationModule =
+                        ce::overlay_compat::IsFFXFrameGenerationModulePath(moduleName);
+                    if (ShouldBypassDynamicHookForCaller(
+                            callerIsSystemModule, callerIsThirdPartyOverlayModule, callerIsCaptureHookModule,
+                            callerIsWrapperModule, callerIsStreamlineFrameGenerationModule,
+                            callerIsFFXFrameGenerationModule, targetIsFFXFrameGenerationModule, lpProcName)) {
                         return proc;
                     }
                 }
@@ -1051,6 +1062,17 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
         // Return our hook address
         WrapperLog("GetProcAddress: Intercepting %s from %s (orig=%p, hook=%p)", lpProcName,
                    moduleName[0] ? moduleName : "unknown", proc, it->second.hookFunction);
+        if (IsFFXApiDynamicHookName(lpProcName)) {
+            static std::atomic<int> s_ffxDynamicInterceptLogCount{0};
+            const int logCount = s_ffxDynamicInterceptLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "GetProcAddress: Intercepted FFX API %s from %s (orig=%p hook=%p log=%d) - native FSR "
+                    "present-callback bridge can arm before unsafe overlay fallback",
+                    lpProcName, moduleName[0] ? moduleName : "unknown", proc, it->second.hookFunction,
+                    logCount + 1);
+            }
+        }
         // CRITICAL: Log D3D11CreateDevice intercept at high visibility
         if (strcmp(lpProcName, "D3D11CreateDevice") == 0 || strcmp(lpProcName, "D3D11CreateDeviceAndSwapChain") == 0) {
             HookLogImportant("GetProcAddress: Intercepted %s -> Wrapped_%s (game=%s) — "

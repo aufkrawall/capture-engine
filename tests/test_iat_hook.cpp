@@ -30,3 +30,22 @@ TEST(IATHookDynamicFilterTest, FilteredDynamicHookRoutesOnlyMatchingModules) {
     EXPECT_TRUE(IATHook::ShouldApplyDynamicHookForModule(StreamlineReflexModuleFilter, "sl.reflex.dll", nullptr));
     EXPECT_FALSE(IATHook::ShouldApplyDynamicHookForModule(StreamlineReflexModuleFilter, "sl.common.dll", nullptr));
 }
+
+TEST(IATHookDynamicFilterTest, OverlayCallerBypassKeepsNativeFSRApiHooksVisible) {
+    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, false,
+                                                          "D3D12CreateDevice"));
+    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, true,
+                                                          "D3D12CreateDevice"));
+
+    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, true,
+                                                           "ffxConfigure"));
+    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, true,
+                                                           "ffxCreateContext"));
+    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, true,
+                                                           "ffxDestroyContext"));
+
+    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(true, false, false, false, false, false, true,
+                                                          "ffxConfigure"));
+    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, false, false, false, false, true, true,
+                                                          "ffxConfigure"));
+}

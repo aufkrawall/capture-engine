@@ -598,6 +598,9 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     bool ffxPresentCallbackStalled, bool progressResolvedOfficialFFXPresentPath, bool directFFXApiConfirmation,
     bool ffxPresentCallbackEverFired, bool progressResolvedStableOverlayProof = false,
     ULONGLONG stallDurationMs = 0) {
+    (void)progressResolvedStableOverlayProof;
+    (void)stallDurationMs;
+
     if (!ffxPresentCallbackStalled) {
         return false;
     }
@@ -608,20 +611,13 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     // overlay GPU submission on the original game queue has produced immediate
     // device removal. Stable same-queue progress is useful diagnostic proof
     // that startup survived, but it does not prove that native FSR will accept
-    // injected CE GPU work. Require a direct FFX API or callback bridge signal
-    // before treating a missing callback as permission to submit overlay work.
+    // injected CE GPU work. The 2-second max suspension enforcement at the
+    // ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain level (in dx12_hook.cpp)
+    // provides a universal timeout override that handles all FG transitions,
+    // including this progress-resolved path.  Return false here to keep the
+    // progress-resolved gate as defense-in-depth for early frames (before the
+    // 2-second override kicks in).
     if (progressResolvedOfficialFFXPresentPath && !directFFXApiConfirmation && !ffxPresentCallbackEverFired) {
-        // Long-timeout escape hatch: if the progress-resolved path is active but
-        // the FFX present callback has been stalled for >30 seconds and the
-        // queue topology is verified stable (swapchain queue == original game
-        // queue, device healthy), allow the fallback to prevent the overlay from
-        // staying invisible indefinitely.  This covers edge cases where the
-        // progress-resolved assumption was not properly cleared (e.g. during
-        // save game reload without context recreation).
-        constexpr ULONGLONG kLongStallEscalationMs = 30000;
-        if (stallDurationMs >= kLongStallEscalationMs && progressResolvedStableOverlayProof) {
-            return true;
-        }
         return false;
     }
 

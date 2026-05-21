@@ -2972,6 +2972,14 @@ static ProgressResolvedOfficialFFXOverlayFallbackProof EvaluateProgressResolvedO
 // never fired.  Used by the long-timeout escape hatch in the policy function.
 static std::atomic<ULONGLONG> g_FFXPresentCallbackFirstStallEverDetectedMs{0};
 
+// Tracks the timestamp when the overlay was first suppressed (set when
+// ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain first returns true
+// after having returned false).  Reset to 0 when the overlay is allowed
+// to render via the normal non-FG path.  If suppression exceeds 2 seconds,
+// the overlay is force-rendered regardless of FG state to guarantee a
+// maximum 2-second overlay blackout across all FG transitions.
+static std::atomic<ULONGLONG> g_OverlaySuppressedSinceMs{0};
+
 static void ResetFFXPresentCallbackFirstStallDetection() {
     g_FFXPresentCallbackFirstStallEverDetectedMs.store(0, std::memory_order_release);
 }
@@ -3065,6 +3073,10 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
         g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, authoritativeFSRActive,
         runtimeOwnedNativeFGPresentPath, ffxStallAllowsNormalOverlay);
     if (!skip) {
+        // Normal (non-override) path says don't skip — reset the suppression
+        // timer so the next suppression episode gets a fresh 2-second window.
+        g_OverlaySuppressedSinceMs.store(0, std::memory_order_release);
+
         if (ffxStallAllowsNormalOverlay) {
             static std::atomic<int> s_stallFallbackLogCount{0};
             if (s_stallFallbackLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
@@ -3097,6 +3109,49 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
 
     if (ffxStalled && !ffxStallAllowsNormalOverlay) {
         LogSuppressedFFXPresentCallbackStallNormalOverlayFallback();
+    }
+
+    // 2-second max overlay suspension enforcement.  Track how long the overlay
+    // has been continuously suppressed.  If suppression exceeds 2 seconds,
+    // force-render the overlay regardless of FG state to guarantee a maximum
+    // 2-second overlay blackout across all FG transitions (FSR FG boot, save
+    // game reload, DLSS<->FSR switching, etc.).  This is safe because in all
+    // FG-transition scenarios that reach this point, CE submits overlay GPU
+    // work on the game's own queue — the same queue the FG runtime uses.
+    {
+        const ULONGLONG now = GetTickCount64();
+        ULONGLONG suppressedSince = g_OverlaySuppressedSinceMs.load(std::memory_order_acquire);
+        if (suppressedSince == 0) {
+            g_OverlaySuppressedSinceMs.store(now, std::memory_order_release);
+            suppressedSince = now;
+        }
+        constexpr ULONGLONG kMaxOverlaySuppressionMs = 2000;
+        if (now >= suppressedSince && (now - suppressedSince) >= kMaxOverlaySuppressionMs) {
+            // Do NOT reset g_OverlaySuppressedSinceMs here — keep it so all
+            // call sites in the same frame see the same expired timer and
+            // independently force-render.  It will be reset when the normal
+            // (non-override) path returns false on a future frame.
+            if (reason) {
+                *reason = "overlay suppression exceeded 2s max duration";
+            }
+            if (suppressedSince == now) {
+                // First frame of suppression — only just started the timer,
+                // do not force-render yet.
+                return true;
+            }
+            const auto elapsed = now - suppressedSince;
+            HookLogImportant(
+                "DX12: Overlay suppression exceeded 2s (%llums) — forcing normal overlay rendering "
+                "(runtime=%s apiFSR=%d nativeFGPath=%d runtimeOwns=%d ffxStalled=%d ffxStallAllows=%d)",
+                elapsed,
+                ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
+                g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
+                runtimeOwnedNativeFGPresentPath ? 1 : 0,
+                g_FGRuntimeOwnsSwapchain ? 1 : 0,
+                ffxStalled ? 1 : 0,
+                ffxStallAllowsNormalOverlay ? 1 : 0);
+            return false;
+        }
     }
 
     if (reason) {
@@ -15785,6 +15840,7 @@ void DX12Hook::Shutdown() {
     }
     ClearOfficialFFXRuntimeOwnedPresentPathAssumption("DX12: Shutdown");
     ResetFFXPresentCallbackFirstStallDetection();
+    g_OverlaySuppressedSinceMs.store(0, std::memory_order_release);
 
     CleanupResources();
     CleanupOverlay();
