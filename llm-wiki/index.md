@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-20 (updated: build 0.1.3377 / tests 0.1.3379 - GTA official FFX progress fallback overlay recovery)
+Last cross-checked: 2026-05-21 (updated: build 0.1.3410 / tests 0.1.3411 - overlay completion fence for FG overlay safety, 2-second timeout REJECTED)
 
 Primary sources:
 - `AGENTS.md`

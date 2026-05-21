@@ -76,6 +76,7 @@ static bool IsActualFrameGenerationActive();
 // ============================================================================
 // Typedefs for D3D12 functions
 typedef void(STDMETHODCALLTYPE* ExecuteCommandListsPtr)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+typedef HRESULT(STDMETHODCALLTYPE* SignalPtr)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
 typedef void(STDMETHODCALLTYPE* CreateSamplerPtr)(ID3D12Device*, const D3D12_SAMPLER_DESC*,
                                                   D3D12_CPU_DESCRIPTOR_HANDLE);
 typedef HRESULT(STDMETHODCALLTYPE* CreateCommittedResourcePtr)(ID3D12Device*, const D3D12_HEAP_PROPERTIES*,
@@ -109,6 +110,20 @@ static std::atomic<ExecuteCommandListsPtr> g_SLBypassECL{nullptr};
 // COMPUTE queue (which SL doesn't hook for FG).  Used to bypass SL's
 // vtable ECL hook when submitting overlay command lists.
 static std::atomic<ExecuteCommandListsPtr> g_RealD3D12ECL{nullptr};
+
+// Real D3D12 Signal function pointer for the command queue.  Probed alongside
+// g_RealD3D12ECL.  Used to signal an overlay completion fence that ensures
+// all overlay GPU work is finished before the FG runtime processes the
+// swapchain backbuffer.  Bypasses any FG-runtime hooks on the Signal
+// vtable entry.
+static std::atomic<SignalPtr> g_RealD3D12Signal{nullptr};
+
+// Separate fence for tracking overlay GPU completion during FG.  When FSR or
+// DLSS frame generation is active, the main g_State.fence signal is skipped
+// to avoid desyncing the FG pipeline.  This completion fence is signaled via
+// the raw D3D12 Signal pointer and CPU-waited to ensure overlay GPU work
+// completes before the FG runtime reads the swapchain backbuffer.
+static std::atomic<ID3D12Fence*> g_OverlayCompletionFence{nullptr};
 
 // Deferred ECL probe flag: set when ProbeRealD3D12ECL is skipped due to
 // the Streamline startup window being active.  The probe runs after the
@@ -3932,6 +3947,7 @@ static void ProbeRealD3D12ECL(ID3D12Device* device) {
 
     void** probeVtable = *(void***)probeQueue;
     void* probeECL = probeVtable[10];
+    void* probeSignal = probeVtable[14];  // Signal is at vtable[14] on ID3D12CommandQueue
 
     // Check which module owns the COMPUTE queue's ECL
     HMODULE probeModule = nullptr;
@@ -3940,6 +3956,14 @@ static void ProbeRealD3D12ECL(ID3D12Device* device) {
     char probeMod[MAX_PATH] = {};
     if (probeModule)
         GetModuleFileNameA(probeModule, probeMod, MAX_PATH);
+
+    // Check which module owns the COMPUTE queue's Signal
+    HMODULE probeSignalModule = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCSTR)probeSignal, &probeSignalModule);
+    char probeSignalMod[MAX_PATH] = {};
+    if (probeSignalModule)
+        GetModuleFileNameA(probeSignalModule, probeSignalMod, MAX_PATH);
 
     // Compare with the current DIRECT queue's vtable[10] (our hooked version)
     ID3D12CommandQueue* directQueue = g_SwapchainQueue;
@@ -3958,6 +3982,7 @@ static void ProbeRealD3D12ECL(ID3D12Device* device) {
     bool sameVtable = (probeVtable == (directQueue ? *(void***)directQueue : nullptr));
     bool sameECL = (probeECL == directECL);
     bool probeIsD3D12 = (strstr(probeMod, "d3d12") != nullptr || strstr(probeMod, "D3D12") != nullptr);
+    bool probeSignalIsD3D12 = (strstr(probeSignalMod, "d3d12") != nullptr || strstr(probeSignalMod, "D3D12") != nullptr);
 
     HookLogImportant("DX12: ECL probe - COMPUTE ECL=%p (%s), DIRECT ECL=%p (%s), sameVtable=%d sameECL=%d isD3D12=%d",
                      probeECL, probeMod, directECL, directMod, sameVtable ? 1 : 0, sameECL ? 1 : 0,
@@ -3966,6 +3991,12 @@ static void ProbeRealD3D12ECL(ID3D12Device* device) {
     if (probeIsD3D12) {
         g_RealD3D12ECL.store((ExecuteCommandListsPtr)probeECL, std::memory_order_release);
         HookLogImportant("DX12: Real D3D12 ECL found via COMPUTE probe: %p", probeECL);
+    }
+
+    // Probe the real D3D12 Signal from the COMPUTE queue's vtable
+    if (probeSignalIsD3D12 && !g_RealD3D12Signal.load(std::memory_order_acquire)) {
+        g_RealD3D12Signal.store(reinterpret_cast<SignalPtr>(probeSignal), std::memory_order_release);
+        HookLogImportant("DX12: Real D3D12 Signal found via COMPUTE probe: %p (%s)", probeSignal, probeSignalMod);
     }
 
     // Always check saved original — in GTA V both COMPUTE and DIRECT share
@@ -7824,6 +7855,22 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
             HookLog("InitOverlaySync: FAILED to create cross-queue fence event");
             g_State.crossQueueFence->Release();
             g_State.crossQueueFence = nullptr;
+        }
+    }
+
+    // Overlay completion fence: separate from g_State.fence, used to track
+    // overlay GPU work completion during FG modes.  The main g_State.fence
+    // signal is skipped during FG (to avoid FG-pipeline desync), but this
+    // fence is signaled via the raw D3D12 Signal pointer and CPU-waited to
+    // ensure the overlay draws complete before the FG runtime reads the
+    // swapchain backbuffer.  Created once per device session.
+    if (!g_OverlayCompletionFence.load(std::memory_order_acquire)) {
+        ID3D12Fence* fence = nullptr;
+        if (SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) {
+            g_OverlayCompletionFence.store(fence, std::memory_order_release);
+            HookLog("InitOverlaySync: Created overlay completion fence (ptr=%p)", fence);
+        } else {
+            HookLog("InitOverlaySync: FAILED to create overlay completion fence");
         }
     }
 
@@ -14308,14 +14355,45 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             UINT64 next = g_State.currentFenceValue + 1;
                                             bool anyFGForFence = slFGActive || g_FGCompat.IsFGActive();
                                             if (anyFGForFence && !useDedicated) {
-                                                // During ANY FG on the game queue, SKIP the
-                                                // deferred fence signal entirely.  The Signal
-                                                // virtual call goes through the game queue's
-                                                // vtable, which SL/FSR might monitor for frame
-                                                // synchronization.  Extra Signals between
-                                                // Present calls can desync the FG pipeline.
-                                                // Allocator reuse is safe: stale fence values
-                                                // from pre-FG frames are long-completed.
+                                                // During ANY FG on the game queue, signal a separate
+                                                // overlay completion fence via the raw D3D12 Signal
+                                                // pointer (bypassing SL/FSR vtable hooks), then wait
+                                                // on CPU.  This ensures all overlay GPU work
+                                                // (including barriers, font upload, draw commands)
+                                                // is complete before the FG runtime reads the
+                                                // swapchain backbuffer in its Present hook.
+                                                //
+                                                // Without this wait, the overlay could still be
+                                                // executing PRESENT->RT/RT->PRESENT barriers or
+                                                // draw commands on the GPU when the FG runtime
+                                                // processes the backbuffer, causing D3D device
+                                                // removal (ERR_GFX_STATE).
+                                                SignalPtr realSignal = g_RealD3D12Signal.load(std::memory_order_acquire);
+                                                ID3D12Fence* completionFence =
+                                                    g_OverlayCompletionFence.load(std::memory_order_acquire);
+                                                if (realSignal && completionFence) {
+                                                    static std::atomic<UINT64> s_overlayCompletionValue{0};
+                                                    UINT64 compVal = ++s_overlayCompletionValue;
+                                                    HRESULT compSigHr = realSignal(eclQueue, completionFence, compVal);
+                                                    if (SUCCEEDED(compSigHr)) {
+                                                        if (completionFence->GetCompletedValue() < compVal) {
+                                                            HANDLE compEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+                                                            if (compEvent) {
+                                                                completionFence->SetEventOnCompletion(compVal, compEvent);
+                                                                WaitForSingleObject(compEvent, 2000);
+                                                                CloseHandle(compEvent);
+                                                            }
+                                                        }
+                                                    } else {
+                                                        static std::atomic<int> s_compSigFailLog{0};
+                                                        if (s_compSigFailLog.fetch_add(1) < 10) {
+                                                            HookLogImportant(
+                                                                "DX12: Overlay completion fence Signal failed "
+                                                                "hr=0x%08X (queue=%p)",
+                                                                (unsigned)compSigHr, eclQueue);
+                                                        }
+                                                    }
+                                                }
                                             } else if (useDedicated) {
                                                 // Signal immediately on dedicated queue (SL
                                                 // doesn't see it).
@@ -15841,6 +15919,15 @@ void DX12Hook::Shutdown() {
     ClearOfficialFFXRuntimeOwnedPresentPathAssumption("DX12: Shutdown");
     ResetFFXPresentCallbackFirstStallDetection();
     g_OverlaySuppressedSinceMs.store(0, std::memory_order_release);
+
+    // Release overlay completion fence
+    {
+        ID3D12Fence* fence = g_OverlayCompletionFence.exchange(nullptr, std::memory_order_acq_rel);
+        if (fence) {
+            fence->Release();
+            HookLog("DX12: Released overlay completion fence");
+        }
+    }
 
     CleanupResources();
     CleanupOverlay();
