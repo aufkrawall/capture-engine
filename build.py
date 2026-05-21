@@ -155,12 +155,15 @@ BUILD_DIR = os.path.join(PROJECT_ROOT, BUILD_DIR_NAME)
 MSYS2_DIST_URL = "https://repo.msys2.org/distrib/x86_64/"
 MSYS2_DEFAULT_TARBALL = "msys2-base-x86_64-20260322.tar.xz"
 
-# FG SDK download URLs (for test app DLLs)
+# FG SDK download URLs (for test app DLLs and headers)
 FFX_SDK_URL = "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v2.2.0/FidelityFX-Samples-v2.2.0-prebuilt.zip"
 FFX_SDK_ZIP_NAME = "FidelityFX-Samples-v2.2.0-prebuilt.zip"
+FFX_SDK_SOURCE_URL = "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/archive/refs/tags/v2.2.0.zip"
+FFX_SDK_SOURCE_ZIP_NAME = "FidelityFX-SDK-v2.2.0-source.zip"
 STREAMLINE_SDK_URL = "https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.11.1/streamline-sdk-v2.11.1.zip"
 STREAMLINE_SDK_ZIP_NAME = "streamline-sdk-v2.11.1.zip"
 FG_SDK_CACHE_DIR = os.path.join(BUILD_DIR, "fg_sdk_cache")
+FG_SDK_INCLUDE_DIR = os.path.join(BUILD_DIR, "fg_sdk_include")
 MSYS2_DIR = os.path.join(BUILD_DIR, "msys64")
 OBJ_DIR = os.path.join(BUILD_DIR, "obj")
 BIN_DIR = os.path.join(BUILD_DIR, "bin")
@@ -1329,6 +1332,14 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     testapp_dir = TESTAPP_BIN_DIR
     os.makedirs(testapp_dir, exist_ok=True)
     os.makedirs(FG_SDK_CACHE_DIR, exist_ok=True)
+    os.makedirs(FG_SDK_INCLUDE_DIR, exist_ok=True)
+
+    streamline_include_dir = os.path.join(FG_SDK_INCLUDE_DIR, "streamline")
+    fidelityfx_include_dir = os.path.join(FG_SDK_INCLUDE_DIR, "fidelityfx")
+    streamline_header_probe = os.path.join(streamline_include_dir, "include", "sl.h")
+    ffx_header_probe = os.path.join(
+        fidelityfx_include_dir, "Kits", "FidelityFX", "framegeneration", "include", "ffx_framegeneration.h"
+    )
 
     # -- Required DLLs by test app --
     # FSR FG: core + companion AMD runtime DLLs
@@ -1346,11 +1357,33 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     missing_fsr = [d for d in fsr_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
     missing_sl = [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
     missing_nvngx = not os.path.exists(os.path.join(testapp_dir, "_nvngx.dll"))
+    missing_headers = not os.path.exists(streamline_header_probe) or not os.path.exists(ffx_header_probe)
 
-    if not missing_fsr and not missing_sl and not missing_nvngx:
+    if not missing_fsr and not missing_sl and not missing_nvngx and not missing_headers:
         log("FG SDK DLLs already present - skipping download")
         return
-    log(f"FSR FG DLLs missing: {len(missing_fsr)}, Streamline DLLs missing: {len(missing_sl)}")
+    log(
+        f"FSR FG DLLs missing: {len(missing_fsr)}, Streamline DLLs missing: {len(missing_sl)}, "
+        f"headers missing: {1 if missing_headers else 0}"
+    )
+
+    def _ensure_zip(url: str, zip_name: str) -> str:
+        zip_path = os.path.join(FG_SDK_CACHE_DIR, zip_name)
+        if not os.path.exists(zip_path):
+            log(f"Downloading {zip_name}...")
+            temp_zip = zip_path + ".tmp"
+            try:
+                if os.path.exists(temp_zip):
+                    os.remove(temp_zip)
+                urllib.request.urlretrieve(url, temp_zip)
+                os.replace(temp_zip, zip_path)
+            finally:
+                if os.path.exists(temp_zip):
+                    os.remove(temp_zip)
+            log(f"Downloaded {zip_name}")
+        else:
+            log(f"Using cached {zip_name}")
+        return zip_path
 
     def _extract_all_dlls_from_path(zip_path: str, inner_prefix: str, dest_dir: str) -> List[str]:
         """Extract every .dll under a given prefix path from a zip archive."""
@@ -1380,21 +1413,7 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
 
     def _download_and_extract(url: str, zip_name: str, archive_inner_path: str, dlls: List[str]) -> None:
         """Download a SDK zip, extract specific DLLs to testapp_dir."""
-        zip_path = os.path.join(FG_SDK_CACHE_DIR, zip_name)
-        if not os.path.exists(zip_path):
-            log(f"Downloading {zip_name}...")
-            temp_zip = zip_path + ".tmp"
-            try:
-                if os.path.exists(temp_zip):
-                    os.remove(temp_zip)
-                urllib.request.urlretrieve(url, temp_zip)
-                os.replace(temp_zip, zip_path)
-            finally:
-                if os.path.exists(temp_zip):
-                    os.remove(temp_zip)
-            log(f"Downloaded {zip_name}")
-        else:
-            log(f"Using cached {zip_name}")
+        zip_path = _ensure_zip(url, zip_name)
 
         # Extract only needed DLLs from the archive
         import zipfile
@@ -1427,35 +1446,72 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
                     except OSError:
                         pass
 
+    def _extract_streamline_headers(zip_path: str) -> None:
+        import zipfile
+
+        extracted = 0
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for entry in zf.infolist():
+                if entry.is_dir() or not entry.filename.startswith("include/"):
+                    continue
+                if not entry.filename.lower().endswith((".h", ".hpp")):
+                    continue
+                dest_path = os.path.join(streamline_include_dir, entry.filename)
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                with zf.open(entry, "r") as src, open(dest_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                extracted += 1
+        log(f"Extracted {extracted} Streamline header(s)")
+
+    def _extract_fidelityfx_headers(zip_path: str) -> None:
+        import zipfile
+
+        allowed_prefixes = (
+            "Kits/FidelityFX/api/include/",
+            "Kits/FidelityFX/framegeneration/include/",
+        )
+        extracted = 0
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for entry in zf.infolist():
+                if entry.is_dir() or not entry.filename.lower().endswith((".h", ".hpp")):
+                    continue
+                marker_index = entry.filename.find("Kits/FidelityFX/")
+                if marker_index < 0:
+                    continue
+                rel_path = entry.filename[marker_index:]
+                if not rel_path.startswith(allowed_prefixes):
+                    continue
+                dest_path = os.path.join(fidelityfx_include_dir, rel_path)
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                with zf.open(entry, "r") as src, open(dest_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                extracted += 1
+        log(f"Extracted {extracted} FidelityFX header(s)")
+
+    if missing_fsr:
+        _download_and_extract(FFX_SDK_URL, FFX_SDK_ZIP_NAME, "Samples/Upscalers/FidelityFX_FSR/dx12/x64/Release/", fsr_dlls)
+
     # Download and extract Streamline DLLs if any missing
     if missing_sl:
-        zip_path_sl = os.path.join(FG_SDK_CACHE_DIR, STREAMLINE_SDK_ZIP_NAME)
-        if not os.path.exists(zip_path_sl):
-            log(f"Downloading {STREAMLINE_SDK_ZIP_NAME}...")
-            temp_zip = zip_path_sl + ".tmp"
-            try:
-                if os.path.exists(temp_zip):
-                    os.remove(temp_zip)
-                urllib.request.urlretrieve(STREAMLINE_SDK_URL, temp_zip)
-                os.replace(temp_zip, zip_path_sl)
-            finally:
-                if os.path.exists(temp_zip):
-                    os.remove(temp_zip)
-            log(f"Downloaded {STREAMLINE_SDK_ZIP_NAME}")
-        else:
-            log(f"Using cached {STREAMLINE_SDK_ZIP_NAME}")
+        zip_path_sl = _ensure_zip(STREAMLINE_SDK_URL, STREAMLINE_SDK_ZIP_NAME)
         # Streamline: extract ALL .dll files under bin/x64/ (interposer needs companion DLLs + NGX)
         extracted_sl = _extract_all_dlls_from_path(zip_path_sl, "bin/x64/", testapp_dir)
         log(f"Extracted {len(extracted_sl)} Streamline DLL(s)")
         missing_sl = [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+
+    if not os.path.exists(streamline_header_probe):
+        _extract_streamline_headers(_ensure_zip(STREAMLINE_SDK_URL, STREAMLINE_SDK_ZIP_NAME))
+
+    if not os.path.exists(ffx_header_probe):
+        _extract_fidelityfx_headers(_ensure_zip(FFX_SDK_SOURCE_URL, FFX_SDK_SOURCE_ZIP_NAME))
 
     # Copy _nvngx.dll from NVIDIA driver DriverStore if not present
     nvngx_dest = os.path.join(testapp_dir, "_nvngx.dll")
     if not os.path.exists(nvngx_dest):
         for src in _nvngx_sys_paths:
             if os.path.exists(src):
-                safe_replace_or_rename(src, nvngx_dest)
-                log(f"Copied _nvngx.dll from DriverStore")
+                shutil.copy2(src, nvngx_dest)
+                log("Copied _nvngx.dll from DriverStore")
                 break
         else:
             log("_nvngx.dll not found in DriverStore (NVIDIA NGX not activated on this system)")
@@ -1476,6 +1532,17 @@ def safe_replace_or_rename(src: str, dst: str) -> None:
     except OSError:
         shutil.copy2(src, dst)
         os.remove(src)
+
+
+def get_fg_sdk_include_flags() -> List[str]:
+    """Return generated SDK include paths used by the DX12 FG test apps."""
+    streamline_include = os.path.join(FG_SDK_INCLUDE_DIR, "streamline", "include")
+    fidelityfx_root = os.path.join(FG_SDK_INCLUDE_DIR, "fidelityfx", "Kits", "FidelityFX")
+    return [
+        "-I" + streamline_include,
+        "-I" + os.path.join(fidelityfx_root, "api", "include"),
+        "-I" + os.path.join(fidelityfx_root, "framegeneration", "include"),
+    ]
 
 
 def check_python_lsp_tools():
@@ -3835,6 +3902,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         ]
 
     tasks = []
+    fg_sdk_cflags = cflags + get_fg_sdk_include_flags()
 
     ccache_exe = shutil.which("ccache", path=env.get("PATH", ""))
     if env.get("DISABLE_CCACHE"):
@@ -3895,14 +3963,10 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         fsr_fg_ldflags = list(dx12_ldflags)
         add_task(
             "dx12_fsr_fg_test.exe",
-            make_cmd(clang_exe, cflags, fsr_fg_src, fsr_fg_ldflags, fsr_fg_exe),
+            make_cmd(clang_exe, fg_sdk_cflags, fsr_fg_src, fsr_fg_ldflags, fsr_fg_exe),
         )
         if have_x86:
-            fsr_fg_exe_x86 = os.path.join(x86_bin_dir, "dx12_fsr_fg_test.exe")
-            add_task(
-                "dx12_fsr_fg_test.exe (x86)",
-                make_cmd_x86(clang_exe_x86, cflags_x86, fsr_fg_src, fsr_fg_ldflags, fsr_fg_exe_x86),
-            )
+            log("Skipping dx12_fsr_fg_test.exe (x86): FG SDK runtime DLLs are x64-only")
 
     # DLSS FG DX12 Test App
     dlss_fg_src = os.path.join(testapp_src_dir, "dx12_dlss_fg_test.cpp")
@@ -3911,14 +3975,10 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         dlss_fg_ldflags = list(dx12_ldflags)
         add_task(
             "dx12_dlss_fg_test.exe",
-            make_cmd(clang_exe, cflags, dlss_fg_src, dlss_fg_ldflags, dlss_fg_exe),
+            make_cmd(clang_exe, fg_sdk_cflags, dlss_fg_src, dlss_fg_ldflags, dlss_fg_exe),
         )
         if have_x86:
-            dlss_fg_exe_x86 = os.path.join(x86_bin_dir, "dx12_dlss_fg_test.exe")
-            add_task(
-                "dx12_dlss_fg_test.exe (x86)",
-                make_cmd_x86(clang_exe_x86, cflags_x86, dlss_fg_src, dlss_fg_ldflags, dlss_fg_exe_x86),
-            )
+            log("Skipping dx12_dlss_fg_test.exe (x86): FG SDK runtime DLLs are x64-only")
 
     # DX11 Test App
     dx11_src = os.path.join(testapp_src_dir, "dx11_test.cpp")

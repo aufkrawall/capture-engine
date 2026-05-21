@@ -181,11 +181,12 @@ using slResult = int;
 constexpr slResult kSlResultOk = 0;
 constexpr slResult kSlResultErrorInvalidState = 38;
 constexpr uint32_t kSLFeatureDLSSG = 1000;
-constexpr uint32_t kSLFeatureReflex = 0x00000009;  // Streamline Reflex feature ID
+constexpr uint32_t kSLFeatureReflex = 3;  // Streamline Reflex feature ID
 constexpr size_t kSLStructVersion1 = 1;
 constexpr size_t kSLStructVersion2 = 2;
 constexpr size_t kSLStructVersion3 = 3;
 constexpr size_t kSLStructVersion4 = 4;
+constexpr size_t kSLStructVersion5 = 5;
 constexpr char kSLBooleanInvalid = 2;
 
 // Streamline Reflex mode constants
@@ -239,7 +240,7 @@ struct slViewportHandle : slBaseStructure {
 };
 
 struct slDLSSGOptions : slBaseStructure {
-    slDLSSGOptions() : slBaseStructure(kDLSSGOptionsStructType, kSLStructVersion4) {}
+    slDLSSGOptions() : slBaseStructure(kDLSSGOptionsStructType, kSLStructVersion5) {}
 
     uint32_t mode = 0;
     uint32_t numFramesToGenerate = 1;
@@ -259,11 +260,12 @@ struct slDLSSGOptions : slBaseStructure {
     void* onErrorCallback = nullptr;
     char bReserved15 = kSLBooleanInvalid;
     uint32_t queueParallelismMode = 0;
-    char bReserved16 = kSLBooleanInvalid;
+    char enableUserInterfaceRecomposition = 0;
+    float dynamicTargetFrameRate = 0.0f;
 };
 
 struct slDLSSGState : slBaseStructure {
-    slDLSSGState() : slBaseStructure(kDLSSGStateStructType, kSLStructVersion3) {}
+    slDLSSGState() : slBaseStructure(kDLSSGStateStructType, kSLStructVersion4) {}
 
     uint64_t estimatedVRAMUsageInBytes = 0;
     uint32_t status = 0;
@@ -274,6 +276,7 @@ struct slDLSSGState : slBaseStructure {
     char bIsVsyncSupportAvailable = kSLBooleanInvalid;
     void* inputsProcessingCompletionFence = nullptr;
     uint64_t lastPresentInputsProcessingCompletionFenceValue = 0;
+    char bIsDynamicMFGSupported = kSLBooleanInvalid;
 };
 
 struct slReflexOptions : slBaseStructure {
@@ -666,15 +669,18 @@ slDLSSGOptions CloneDLSSGOptions(const slDLSSGOptions& source) {
         copy.queueParallelismMode = source.queueParallelismMode;
     }
     if (source.structVersion >= kSLStructVersion4) {
-        copy.bReserved16 = source.bReserved16;
+        copy.enableUserInterfaceRecomposition = source.enableUserInterfaceRecomposition;
     }
-    if (source.structVersion > kSLStructVersion4) {
+    if (source.structVersion >= kSLStructVersion5) {
+        copy.dynamicTargetFrameRate = source.dynamicTargetFrameRate;
+    }
+    if (source.structVersion > kSLStructVersion5) {
         static std::atomic<bool> s_logged{false};
         if (!s_logged.exchange(true)) {
-            HookLogImportant("SL: DLSSG options structVersion=%zu exceeds CE's max (4) — capping to prevent truncated-field read",
-                        source.structVersion);
+            HookLogImportant("SL: DLSSG options structVersion=%zu exceeds CE's max (5); forwarding v5 prefix only",
+                             source.structVersion);
         }
-        copy.structVersion = kSLStructVersion4;
+        copy.structVersion = kSLStructVersion5;
     }
     return copy;
 }
