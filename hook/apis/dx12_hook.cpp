@@ -2436,6 +2436,15 @@ static void ApplyAuthoritativeFFXTakeoverSideEffects(ID3D12CommandQueue* capture
         "DX12: FFX swapchain takeover via %s (queue=%p, staleSL=%d reason=%s) — cleared Streamline/PostSL ownership",
         callerModulePath && callerModulePath[0] ? callerModulePath : "unknown", capturedQueue,
         staleStreamlineSignal ? 1 : 0, reason && reason[0] ? reason : "unknown");
+
+    // Retroactive ffxConfigure: install the present callback bridge on tracked
+    // FG contexts.  ffxConfigure was called during AMD module init before CE
+    // could intercept it, so we call it ourselves now that FSR FG is active.
+    if (FFXHook::InstallBridgeOnTrackedContexts(nullptr)) {
+        HookLogImportant("DX12: Installed retroactive FFX present-callback bridge after authoritative takeover");
+    } else {
+        HookLogImportant("DX12: No tracked FG contexts for retroactive FFX present-callback bridge");
+    }
 }
 
 static bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const char* source) {

@@ -17,6 +17,12 @@ namespace FFXHook {
 //   - ffx_frameinterpolation_x64.dll
 void Init();
 
+// Install FFX present callback bridge on all tracked FG contexts.
+// Called when FSR FG activates without a direct ffxConfigure interception
+// (e.g. via Streamline authoritative takeover).  Returns true if bridge
+// was installed on at least one context.
+bool InstallBridgeOnTrackedContexts(void* swapChain);
+
 // Check if hooks are already installed
 bool IsInitialized();
 

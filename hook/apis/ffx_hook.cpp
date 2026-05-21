@@ -690,6 +690,49 @@ static bool InstallFfxConfigureSingleShotHook(PfnFfxConfigure target, const char
     return true;
 }
 
+// Retroactive ffxConfigure call: when FSR FG activates through Streamline's
+// authoritative takeover (no direct ffxConfigure intercepted), CE calls
+// g_Original_ffxConfigure on all tracked FG contexts to install the present
+// callback bridge.  This is necessary because ffxConfigure is called during
+// AMD module init, before CE can intercept it.
+static bool InstallBridgeOnTrackedContextsImpl(void* swapChain) {
+    if (!g_Original_ffxConfigure) {
+        return false;
+    }
+
+    bool installed = false;
+    std::lock_guard<std::mutex> lock(g_ContextMapMutex);
+
+    for (auto it = g_ContextTypeMap.begin(); it != g_ContextTypeMap.end(); ++it) {
+        const uint32_t effectId = it->second;
+        if (effectId != FFX_API_EFFECT_ID_FRAMEGENERATION &&
+            effectId != FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN) {
+            continue;
+        }
+
+        void* context = it->first;
+        void* bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
+
+        ce::ffx_api::ConfigureDescFrameGeneration desc = {};
+        desc.header.type = ce::ffx_api::kConfigureDescTypeFrameGeneration;
+        desc.header.pNext = nullptr;
+        desc.swapChain = swapChain;
+        desc.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
+        desc.presentCallbackUserContext = bridgeKey;
+        desc.frameGenerationEnabled = true;
+
+        // Store bridge BEFORE calling configure so the callback is ready
+        DX12_SetFFXPresentCallbackBridge(bridgeKey, g_DefaultPresentCallback, nullptr);
+
+        const auto result = g_Original_ffxConfigure(&context, reinterpret_cast<const ffxConfigureDescHeader*>(&desc));
+        if (result == FFX_API_RETURN_OK) {
+            installed = true;
+            g_ffxConfigureVehInstalled = true;
+        }
+    }
+    return installed;
+}
+
 }  // anonymous namespace
 
 // ============================================================================
@@ -700,6 +743,10 @@ namespace FFXHook {
 
 void* GetPresentCallbackBridgeKey(void* context) {
     return GetOrCreatePresentCallbackBridgeKey(context);
+}
+
+bool InstallBridgeOnTrackedContexts(void* swapChain) {
+    return InstallBridgeOnTrackedContextsImpl(swapChain);
 }
 
 void Init() {
