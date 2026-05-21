@@ -1,6 +1,7 @@
 // DX12 Test App with AMD FSR 3 Frame Generation
 // Real-world swapchain config: 3 back buffers, flip discard, frame latency waitable.
 // Enables FSR FG after ~2 seconds via the FFX API.
+// Writes dx12_fsr_fg_test.log alongside the exe with detailed FG diagnostics.
 //
 // Requires next to the exe (placed by build.py from FidelityFX-SDK v2.2.0):
 //   amd_fidelityfx_framegeneration_dx12.dll
@@ -249,7 +250,7 @@ static FsrInitResult TryInitFSR() {
     for (auto dllName : dllNames) {
         g_FfxModule = LoadLibraryW(dllName);
         if (g_FfxModule) {
-            printf("  Loaded FSR runtime: %S\n", dllName);
+            testapp::Log("  Loaded FSR runtime: %S\n", dllName);
             break;
         }
     }
@@ -259,7 +260,7 @@ static FsrInitResult TryInitFSR() {
     g_FfxConfigure = reinterpret_cast<PfnFfxConfigure>(GetProcAddress(g_FfxModule, "ffxConfigure"));
     g_FfxDestroyContext = reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(g_FfxModule, "ffxDestroyContext"));
     if (!g_FfxCreateContext || !g_FfxConfigure || !g_FfxDestroyContext) {
-        printf("  FSR DLL missing ffxCreateContext/ffxConfigure/ffxDestroyContext exports\n");
+        testapp::Log("  FSR DLL missing ffxCreateContext/ffxConfigure/ffxDestroyContext exports\n");
         FreeLibrary(g_FfxModule); g_FfxModule = nullptr;
         return kFsrNoExports;
     }
@@ -277,11 +278,11 @@ static FsrInitResult TryInitFSR() {
         ret = g_FfxCreateContext(&g_FfxCtx, &createDesc, nullptr);
     }
     if (ret != FFX_API_RETURN_OK || !g_FfxCtx) {
-        printf("  ffxCreateContext(%s) failed (code=%u, ctx=%p)\n", effectName, ret, (void*)g_FfxCtx);
+        testapp::Log("  ffxCreateContext(%s) FAILED code=%u ctx=%p\n", effectName, ret, (void*)g_FfxCtx);
         FreeLibrary(g_FfxModule); g_FfxModule = nullptr;
         return kFsrCreateFailed;
     }
-    printf("  ffxCreateContext(%s) OK (ctx=%p)\n", effectName, (void*)g_FfxCtx);
+    testapp::Log("  ffxCreateContext(%s) OK ctx=%p\n", effectName, (void*)g_FfxCtx);
     return kFsrOk;
 }
 
@@ -312,11 +313,15 @@ static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer) {
 
     ffxReturnCode_t ret = g_FfxConfigure(g_FfxCtx, reinterpret_cast<ffxConfigureDescHeader*>(&cfgDesc));
     if (ret != FFX_API_RETURN_OK) {
-        printf("  ffxConfigure (%s, frameID=%llu) failed (code=%u)\n",
-               enable ? "enable" : "disable", (unsigned long long)g_FrameIdCounter, ret);
-        return false;
+        testapp::Log("[FG-DIAG] ffxConfigure(%s) frameID=%llu FAILED code=%u\n",
+                     enable ? "enable" : "disable", (unsigned long long)g_FrameIdCounter, ret);
+    } else {
+        testapp::Log("[FG-DIAG] ffxConfigure(%s) frameID=%llu enabled=%d OK swapChain=%p\n",
+                     enable ? "enable" : "disable", (unsigned long long)g_FrameIdCounter,
+                     cfgDesc.frameGenerationEnabled, (void*)g_SwapChain.Get());
     }
-    return true;
+    testapp::LogFlush();
+    return (ret == FFX_API_RETURN_OK);
 }
 
 static void ShutdownFSR() {
@@ -384,7 +389,8 @@ bool InitDX12(HWND hwnd) {
     g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_Fence));
     g_FenceValues[g_FrameIndex]++;
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    printf("DX12 initialized: %dx%d swapchain (%d back buffers)\n", g_WindowWidth, g_WindowHeight, FRAME_COUNT);
+    testapp::Log("[FG-DIAG] Swapchain: %dx%d buffers=%d format=DXGI_FORMAT_R8G8B8A8_UNORM swapEffect=FLIP_DISCARD flags=FRAME_LATENCY_WAITABLE vsync=%d fullscreen=%d\n",
+             g_WindowWidth, g_WindowHeight, FRAME_COUNT, g_VSync, g_Fullscreen);
     return true;
 }
 
@@ -401,11 +407,15 @@ void Render() {
 
     // Enable FSR FG after ~2 seconds (pass real backbuffer as hudlessColor)
     if (g_FsrInitialized && !g_FsrEnabled && elapsed >= 2.0f) {
-        printf("  Enabling FSR FG...\n");
+        testapp::Log("[FG-DIAG] Enabling FSR FG after %.2f seconds (frameID=%llu)...\n",
+                     elapsed, (unsigned long long)g_FrameIdCounter);
         if (ConfigureFSR(true, g_RenderTargets[frameIndex].Get())) {
             g_FsrEnabled = true;
-            printf("  FSR FG enabled\n");
+            testapp::Log("[FG-DIAG] FSR FG enabled successfully\n");
+        } else {
+            testapp::Log("[FG-DIAG] FSR FG enable FAILED\n");
         }
+        testapp::LogFlush();
     }
     ++g_FrameIdCounter;
 
@@ -460,13 +470,15 @@ int main(int argc, char* argv[]) {
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
 
-    printf("DX12 FSR FG Test App\n");
-    printf("====================\n");
-    printf("Resolution: %dx%d\n", g_WindowWidth, g_WindowHeight);
-    printf("GPU Load Passes: %d\n", g_GpuLoadPasses);
-    printf("Back Buffers: %d\n", FRAME_COUNT);
-    printf("Process ID: %lu\n", GetCurrentProcessId());
-    printf("Press ESC to exit\n\n");
+    testapp::OpenLogFile();
+    testapp::Log("DX12 FSR FG Test App\n");
+    testapp::Log("====================\n");
+    testapp::Log("Resolution: %dx%d\n", g_WindowWidth, g_WindowHeight);
+    testapp::Log("GPU Load Passes: %d\n", g_GpuLoadPasses);
+    testapp::Log("Back Buffers: %d\n", FRAME_COUNT);
+    testapp::Log("Process ID: %lu\n", GetCurrentProcessId());
+    testapp::Log("Press ESC to exit\n\n");
+    testapp::LogFlush();
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(WNDCLASSEXW);
@@ -488,27 +500,28 @@ int main(int argc, char* argv[]) {
                               g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top,
                               nullptr, nullptr, wc.hInstance, nullptr);
     if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
-    if (!InitDX12(hwnd)) { printf("Failed to initialize DX12\n"); return 1; }
+    if (!InitDX12(hwnd)) { testapp::Log("Failed to initialize DX12\n"); return 1; }
     if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
 
-    printf("Initializing FSR FG...\n");
+    testapp::Log("Initializing FSR FG...\n");
     FsrInitResult fsrResult = TryInitFSR();
     switch (fsrResult) {
         case kFsrOk:
-            printf("  FSR FG runtime ready (FG disabled initially)\n");
+            testapp::Log("[FG-DIAG] FSR FG runtime ready (FG disabled initially)\n");
             g_FsrInitialized = true;
             break;
         case kFsrNoDll:
-            printf("  FSR FG runtime DLL not found (build.py should have placed it)\n");
+            testapp::Log("[FG-DIAG] FSR FG DLL not found (build.py should have placed it next to exe)\n");
             break;
         case kFsrNoExports:
-            printf("  FSR FG DLL missing required exports\n");
+            testapp::Log("[FG-DIAG] FSR FG DLL loaded but missing ffxCreateContext/ffxConfigure/ffxDestroyContext exports\n");
             break;
         case kFsrCreateFailed:
-            printf("  FSR FG context creation failed (unsupported GPU?)\n");
+            testapp::Log("[FG-DIAG] FSR FG ffxCreateContext failed (no AMD GPU or unsupported runtime version?)\n");
             break;
     }
-    printf("Running... (FSR FG will enable after ~2 seconds)\n\n");
+    testapp::LogFlush();
+    testapp::Log("Running... (FSR FG will enable after ~2 seconds)\n\n");
 
     MSG msg = {};
     while (g_Running) {
@@ -516,6 +529,7 @@ int main(int argc, char* argv[]) {
         if (g_Running) Render();
     }
     Cleanup();
-    printf("Exiting\n");
+    testapp::Log("Exiting (total frames rendered: %llu)\n", (unsigned long long)g_FrameIdCounter);
+    testapp::CloseLogFile();
     return 0;
 }

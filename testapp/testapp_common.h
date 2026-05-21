@@ -4,6 +4,8 @@
 #include <avrt.h>
 #include <windows.h>
 
+#include <cstdarg>
+#include <cstdio>
 #include <string>
 
 namespace testapp {
@@ -265,6 +267,45 @@ inline bool PrimeWindowForBenchmark(HWND hwnd, bool fullscreen, int clientWidth,
     }
 
     return IsWindow(hwnd) != FALSE;
+}
+
+// FG test-app logging — writes to both stdout and a .log file next to the exe.
+inline FILE* g_LogFile = nullptr;
+
+inline void OpenLogFile() {
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    wchar_t* ext = wcsrchr(path, L'.');
+    if (ext)
+        wcscpy(ext, L".log");
+    g_LogFile = _wfopen(path, L"w");
+}
+
+inline void CloseLogFile() {
+    if (g_LogFile) {
+        fclose(g_LogFile);
+        g_LogFile = nullptr;
+    }
+}
+
+inline void Log(const char* fmt, ...) {
+    char buf[4096];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    printf("%s", buf);
+    if (g_LogFile) {
+        fprintf(g_LogFile, "%s", buf);
+        fflush(g_LogFile);
+    }
+    fflush(stdout);
+}
+
+inline void LogFlush() {
+    fflush(stdout);
+    if (g_LogFile)
+        fflush(g_LogFile);
 }
 
 }  // namespace testapp

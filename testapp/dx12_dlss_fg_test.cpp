@@ -1,6 +1,7 @@
 // DX12 Test App with NVIDIA DLSS Frame Generation (via Streamline SDK)
 // Real-world swapchain config: 3 back buffers, flip discard, frame latency waitable.
-// Calls slInit() + slSetD3DDevice + slDLSSGSetOptions. Enables DLSS FG after ~2s.
+// Calls slSetD3DDevice + slDLSSGSetOptions + slDLSSGGetState. Enables DLSS FG after ~2s.
+// Writes dx12_dlss_fg_test.log alongside the exe with detailed FG diagnostics.
 //
 // Requires next to the exe (placed by build.py from Streamline v2.11.1):
 //   sl.interposer.dll  sl.common.dll  sl.dlss_g.dll
@@ -208,28 +209,39 @@ void MoveToNextFrame() {
 // ---------------------------------------------------------------------------
 static bool TryInitDLSSFG() {
     g_SlModule = LoadLibraryW(L"sl.interposer.dll");
-    if (!g_SlModule) return false;
+    if (!g_SlModule) {
+        testapp::Log("[FG-DIAG] sl.interposer.dll not found\n");
+        return false;
+    }
+    testapp::Log("  Loaded sl.interposer.dll\n");
 
     auto slSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(g_SlModule, "slSetD3DDevice"));
     auto slGetFeatureFunction =
         reinterpret_cast<PFN_slGetFeatureFunction>(GetProcAddress(g_SlModule, "slGetFeatureFunction"));
 
     if (!slSetD3DDevice || !slGetFeatureFunction) {
+        testapp::Log("[FG-DIAG] sl.interposer.dll missing slSetD3DDevice/slGetFeatureFunction exports\n");
         FreeLibrary(g_SlModule); g_SlModule = nullptr;
         return false;
     }
 
     // Streamline interposer auto-initializes on load.
     // Register the D3D12 device so the runtime can prepare feature resources.
-    slSetD3DDevice(g_Device.Get());
+    slResult deviceResult = slSetD3DDevice(g_Device.Get());
+    testapp::Log("[FG-DIAG] slSetD3DDevice result=%d\n", deviceResult);
 
     void* fnPtr = nullptr;
-    if (slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", fnPtr) == kSlResultOk && fnPtr)
+    if (slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", fnPtr) == kSlResultOk && fnPtr) {
         g_SlDLSSGSetOptions = reinterpret_cast<PFN_slDLSSGSetOptions>(fnPtr);
-    if (slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGGetState", fnPtr) == kSlResultOk && fnPtr)
+        testapp::Log("[FG-DIAG] Resolved slDLSSGSetOptions @ %p\n", (void*)g_SlDLSSGSetOptions);
+    }
+    if (slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGGetState", fnPtr) == kSlResultOk && fnPtr) {
         g_SlDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(fnPtr);
+        testapp::Log("[FG-DIAG] Resolved slDLSSGGetState @ %p\n", (void*)g_SlDLSSGGetState);
+    }
 
     if (!g_SlDLSSGSetOptions) {
+        testapp::Log("[FG-DIAG] slDLSSGSetOptions not available (no DLSS FG support?)\n");
         FreeLibrary(g_SlModule); g_SlModule = nullptr;
         return false;
     }
@@ -239,6 +251,7 @@ static bool TryInitDLSSFG() {
     g_SlViewport.base.structType = kViewportHandleStructType;
     g_SlViewport.base.structVersion = kSLStructVersion1;
     g_SlViewport.value = 0;
+    testapp::Log("[FG-DIAG] Viewport handle initialized (value=%u)\n", g_SlViewport.value);
 
     return true;
 }
@@ -269,21 +282,31 @@ static bool SetDLSSFGMode(bool enable) {
     options.bReserved16 = kSLBooleanInvalid;
 
     slResult ret = g_SlDLSSGSetOptions(g_SlViewport, options);
+    testapp::Log("[FG-DIAG] slDLSSGSetOptions(mode=%d) backBuffers=%d color=%dx%d result=%d\n",
+                 options.mode, options.numBackBuffers, options.colorWidth, options.colorHeight, ret);
+    testapp::LogFlush();
     return (ret == kSlResultOk);
 }
 
 static bool PollDLSSFGState() {
-    if (!g_SlDLSSGGetState) return false;
+    if (!g_SlDLSSGGetState) {
+        testapp::Log("[FG-DIAG] slDLSSGGetState not available\n");
+        return false;
+    }
     slDLSSGState state = {};
     state.base.next = nullptr;
     state.base.structType = kDLSSGStateStructType;
     state.base.structVersion = 3;
     slResult ret = g_SlDLSSGGetState(g_SlViewport, state, nullptr);
+    testapp::Log("[FG-DIAG] slDLSSGGetState ret=%d vramUsage=%llu status=%u genFrames=%u maxGen=%u\n",
+                 ret, (unsigned long long)state.estimatedVRAMUsageInBytes, state.status,
+                 state.numFramesActuallyPresented, state.numFramesToGenerateMax);
     if (ret == kSlResultOk && state.numFramesActuallyPresented > 0) {
-        printf("  DLSS FG active: %u generated frames, max multiplier %u\n",
-               state.numFramesActuallyPresented, state.numFramesToGenerateMax);
+        testapp::Log("[FG-DIAG] DLSS FG active: %u generated frames\n",
+                     state.numFramesActuallyPresented);
         return true;
     }
+    testapp::LogFlush();
     return false;
 }
 
@@ -352,7 +375,8 @@ bool InitDX12(HWND hwnd) {
     g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_Fence));
     g_FenceValues[g_FrameIndex]++;
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    printf("DX12 initialized: %dx%d swapchain (%d back buffers)\n", g_WindowWidth, g_WindowHeight, FRAME_COUNT);
+    testapp::Log("[FG-DIAG] Swapchain: %dx%d buffers=%d format=DXGI_FORMAT_R8G8B8A8_UNORM swapEffect=FLIP_DISCARD flags=FRAME_LATENCY_WAITABLE vsync=%d fullscreen=%d\n",
+                 g_WindowWidth, g_WindowHeight, FRAME_COUNT, g_VSync, g_Fullscreen);
     return true;
 }
 
@@ -369,12 +393,15 @@ void Render() {
 
     // Enable DLSS FG after ~2 seconds
     if (g_DlssInitialized && !g_DlssEnabled && elapsed >= 2.0f) {
-        printf("  Enabling DLSS FG...\n");
+        testapp::Log("[FG-DIAG] Enabling DLSS FG after %.2f seconds...\n", elapsed);
         if (SetDLSSFGMode(true)) {
             g_DlssEnabled = true;
-            printf("  DLSS FG enabled\n");
+            testapp::Log("[FG-DIAG] DLSS FG enabled successfully\n");
             PollDLSSFGState();
+        } else {
+            testapp::Log("[FG-DIAG] DLSS FG enable FAILED\n");
         }
+        testapp::LogFlush();
     }
 
     g_CommandAllocators[frameIndex]->Reset();
@@ -428,13 +455,15 @@ int main(int argc, char* argv[]) {
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
 
-    printf("DX12 DLSS FG Test App\n");
-    printf("=====================\n");
-    printf("Resolution: %dx%d\n", g_WindowWidth, g_WindowHeight);
-    printf("GPU Load Passes: %d\n", g_GpuLoadPasses);
-    printf("Back Buffers: %d\n", FRAME_COUNT);
-    printf("Process ID: %lu\n", GetCurrentProcessId());
-    printf("Press ESC to exit\n\n");
+    testapp::OpenLogFile();
+    testapp::Log("DX12 DLSS FG Test App\n");
+    testapp::Log("=====================\n");
+    testapp::Log("Resolution: %dx%d\n", g_WindowWidth, g_WindowHeight);
+    testapp::Log("GPU Load Passes: %d\n", g_GpuLoadPasses);
+    testapp::Log("Back Buffers: %d\n", FRAME_COUNT);
+    testapp::Log("Process ID: %lu\n", GetCurrentProcessId());
+    testapp::Log("Press ESC to exit\n\n");
+    testapp::LogFlush();
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(WNDCLASSEXW);
@@ -456,17 +485,18 @@ int main(int argc, char* argv[]) {
                               g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top,
                               nullptr, nullptr, wc.hInstance, nullptr);
     if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
-    if (!InitDX12(hwnd)) { printf("Failed to initialize DX12\n"); return 1; }
+    if (!InitDX12(hwnd)) { testapp::Log("Failed to initialize DX12\n"); return 1; }
     if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
 
-    printf("Initializing DLSS FG...\n");
+    testapp::Log("Initializing DLSS FG...\n");
     if (TryInitDLSSFG()) {
         g_DlssInitialized = true;
-        printf("  Streamline runtime ready (DLSS FG disabled initially)\n");
+        testapp::Log("[FG-DIAG] Streamline runtime ready (DLSS FG disabled initially)\n");
     } else {
-        printf("  Streamline runtime not available (build.py should have placed DLLs)\n");
+        testapp::Log("[FG-DIAG] Streamline runtime not available (build.py should have placed DLLs next to exe)\n");
     }
-    printf("Running... (DLSS FG will enable after ~2 seconds)\n\n");
+    testapp::LogFlush();
+    testapp::Log("Running... (DLSS FG will enable after ~2 seconds)\n\n");
 
     MSG msg = {};
     while (g_Running) {
@@ -474,6 +504,7 @@ int main(int argc, char* argv[]) {
         if (g_Running) Render();
     }
     Cleanup();
-    printf("Exiting\n");
+    testapp::Log("Exiting\n");
+    testapp::CloseLogFile();
     return 0;
 }
