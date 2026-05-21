@@ -148,6 +148,11 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
 HMODULE g_HookedModule = nullptr;
 ce::ffx_api::PresentCallback g_DefaultPresentCallback = nullptr;
 
+// Flag: VEH single-shot hook installed for protected official AMD ffxConfigure
+// (defined after Hooked_ffxConfigure below)
+static bool g_ffxConfigureVehInstalled = false;
+static bool InstallFfxConfigureSingleShotHook(PfnFfxConfigure target, const char* moduleName);
+
 void* GetOrCreatePresentCallbackBridgeKey(ffxContext context) {
     if (!context) {
         return nullptr;
@@ -274,7 +279,6 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
 
     // Only decrement if this was actually an FG context
     if (result == FFX_API_RETURN_OK && isFGContext) {
-        int prevCount = g_ActiveFGContextCount.load(std::memory_order_acquire);
         int newCount = g_ActiveFGContextCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
         if (newCount < 0) {
             g_ActiveFGContextCount.store(0, std::memory_order_release);
@@ -569,6 +573,13 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
             inlineHookedAnything |= InstallInlineHookOnce(
                 reinterpret_cast<void*>(configureCtx), reinterpret_cast<void*>(Hooked_ffxConfigure),
                 g_Original_ffxConfigure, g_ffxConfigureInlineHooked, g_ffxConfigureTarget, "ffxConfigure");
+        } else if (!allowIATHooks) {
+            // Protected official AMD module: install VEH single-shot hook to
+            // intercept intra-module ffxConfigure calls that bypass GetProcAddress.
+            // The VEH handler patches the first byte with int3 and catches the
+            // breakpoint, bypassing CFG validation that would fast-fail on a
+            // standard inline hook.
+            InstallFfxConfigureSingleShotHook(configureCtx, moduleName);
         }
         HookLog("FFX Hook: ffxConfigure found at %p, hooking via %s (inline=%d)", configureCtx,
                 allowIATHooks ? "IAT/dynamic" : "dynamic-only", allowInlineHooks ? 1 : 0);
@@ -583,6 +594,99 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
                 inlineHookedAnything ? 1 : 0, iatPatchedAnything ? 1 : 0,
                 (!allowInlineHooks && !allowIATHooks) ? 1 : 0);
     }
+    return true;
+}
+
+// ============================================================================
+// VEH single-shot hook for ffxConfigure on protected official AMD modules.
+// The official AMD runtime (amd_fidelityfx_dx12.dll) fails fast (0xC0000409)
+// when CE installs a standard inline hook on ffxExport.  Instead, we patch
+// the first byte with 0xCC (int3) and catch it in a VEH handler.  This
+// bypasses CFG validation because int3 is a breakpoint, not an indirect call.
+// The handler intercepts one call, restores the byte, and invokes
+// Hooked_ffxConfigure to install the present callback bridge.
+// ============================================================================
+
+static void* g_ffxConfigureVehHandle = nullptr;
+static uint8_t g_ffxConfigureOriginalFirstByte = 0;
+
+static LONG WINAPI FfxConfigureSingleShotVEH(EXCEPTION_POINTERS* ep) {
+    auto* ctx = ep->ContextRecord;
+    auto* rec = ep->ExceptionRecord;
+
+    void* target = g_ffxConfigureTarget.load(std::memory_order_acquire);
+    if (rec->ExceptionCode != STATUS_BREAKPOINT || rec->ExceptionAddress != target || !target) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(reinterpret_cast<LPVOID>(target), 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    *static_cast<uint8_t*>(reinterpret_cast<LPVOID>(target)) = g_ffxConfigureOriginalFirstByte;
+    VirtualProtect(reinterpret_cast<LPVOID>(target), 1, oldProtect, &oldProtect);
+
+    auto contextPtr = reinterpret_cast<ffxContext*>(
+#ifdef _WIN64
+        ctx->Rcx
+#else
+        ctx->Ecx
+#endif
+    );
+    auto* desc = reinterpret_cast<const ffxConfigureDescHeader*>(
+#ifdef _WIN64
+        ctx->Rdx
+#else
+        ctx->Edx
+#endif
+    );
+    ffxReturnCode_t result = FFX_API_RETURN_OK;
+    if (contextPtr && desc) {
+        result = Hooked_ffxConfigure(contextPtr, desc);
+    }
+
+    // Return directly to the caller: pop the return address from the stack
+    // and skip the patched ffxConfigure body entirely (Hooked_ffxConfigure
+    // already called g_Original_ffxConfigure, so re-executing would double-call).
+#ifdef _WIN64
+    ctx->Rax = result;
+    ctx->Rip = *reinterpret_cast<ULONG64*>(ctx->Rsp);
+    ctx->Rsp += 8;
+#else
+    ctx->Eax = result;
+    ctx->Eip = *reinterpret_cast<DWORD*>(ctx->Esp);
+    ctx->Esp += 4;
+#endif
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static bool InstallFfxConfigureSingleShotHook(PfnFfxConfigure target, const char* moduleName) {
+    if (g_ffxConfigureVehHandle) {
+        return true;
+    }
+    g_ffxConfigureTarget.store(reinterpret_cast<void*>(target), std::memory_order_release);
+    g_ffxConfigureOriginalFirstByte = *reinterpret_cast<const uint8_t*>(reinterpret_cast<LPVOID>(target));
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(reinterpret_cast<LPVOID>(target), 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return false;
+    }
+    *static_cast<uint8_t*>(reinterpret_cast<LPVOID>(target)) = 0xCC;
+    VirtualProtect(reinterpret_cast<LPVOID>(target), 1, oldProtect, &oldProtect);
+
+    g_ffxConfigureVehHandle = AddVectoredExceptionHandler(1, FfxConfigureSingleShotVEH);
+    if (!g_ffxConfigureVehHandle) {
+        VirtualProtect(reinterpret_cast<LPVOID>(target), 1, PAGE_EXECUTE_READWRITE, &oldProtect);
+        *static_cast<uint8_t*>(reinterpret_cast<LPVOID>(target)) = g_ffxConfigureOriginalFirstByte;
+        VirtualProtect(reinterpret_cast<LPVOID>(target), 1, oldProtect, &oldProtect);
+        return false;
+    }
+
+    if (!g_Original_ffxConfigure) {
+        g_Original_ffxConfigure = target;
+    }
+    HookLogImportant("FFX Hook: Installed VEH single-shot hook for %s!ffxConfigure at %p", moduleName,
+                     reinterpret_cast<void*>(target));
     return true;
 }
 
@@ -729,6 +833,20 @@ void Shutdown() {
         // For now, we just clear the state - hooks will naturally be cleaned up
         // when the DLL unloads
     }
+
+    // Cleanup VEH single-shot hook
+    if (g_ffxConfigureVehHandle) {
+        RemoveVectoredExceptionHandler(g_ffxConfigureVehHandle);
+        g_ffxConfigureVehHandle = nullptr;
+    }
+    void* vehTarget = g_ffxConfigureTarget.load(std::memory_order_acquire);
+    if (vehTarget && g_ffxConfigureOriginalFirstByte != 0) {
+        DWORD oldProt = 0;
+        VirtualProtect(reinterpret_cast<LPVOID>(vehTarget), 1, PAGE_EXECUTE_READWRITE, &oldProt);
+        *static_cast<uint8_t*>(reinterpret_cast<LPVOID>(vehTarget)) = g_ffxConfigureOriginalFirstByte;
+        VirtualProtect(reinterpret_cast<LPVOID>(vehTarget), 1, oldProt, &oldProt);
+    }
+    g_ffxConfigureVehInstalled = false;
 
     g_Original_ffxCreateContext = nullptr;
     g_Original_ffxDestroyContext = nullptr;

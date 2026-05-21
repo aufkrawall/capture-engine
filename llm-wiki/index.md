@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-21 (updated: build 0.1.3410 / tests 0.1.3411 - overlay completion fence for FG overlay safety, 2-second timeout REJECTED)
+Last cross-checked: 2026-05-21 (updated: build 0.1.3414 / tests 0.1.3415 - VEH single-shot hook for ffxConfigure present callback bridge on official AMD runtime)
 
 Primary sources:
 - `AGENTS.md`
