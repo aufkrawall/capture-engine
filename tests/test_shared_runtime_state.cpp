@@ -10,18 +10,12 @@ TEST(CaptureStateTest, RuntimeFlagsRoundTrip) {
     CaptureState state;
 
     EXPECT_FALSE(state.HasRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive));
-    EXPECT_FALSE(state.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayExternalFallback));
 
     state.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, true);
     EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive));
-    state.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayExternalFallback, true);
-    EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayExternalFallback));
 
     state.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
     EXPECT_FALSE(state.HasRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive));
-    EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayExternalFallback));
-    state.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayExternalFallback, false);
-    EXPECT_FALSE(state.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayExternalFallback));
 }
 
 TEST(CaptureStateTest, CaptureRequestAndRecordingVisibilityAreIndependent) {
@@ -263,6 +257,4 @@ TEST(InjectOverlayPolicyTest, PseudoOverlaySuppressionMatchesPendingAndActiveFla
     EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(true, false));
     EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(false, true));
     EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(true, true));
-    EXPECT_FALSE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(false, true, true));
-    EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(true, true, true));
 }

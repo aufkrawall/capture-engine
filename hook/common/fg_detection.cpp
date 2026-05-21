@@ -190,14 +190,18 @@ void FGCompatibility::SetFSRFGActive(bool active) {
     bool wasActive = fsrFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (active) {
         if (!wasActive) {
-            directFFXApiConfirmed.store(false, std::memory_order_release);
+            if (directFFXApiConfirmed.exchange(false, std::memory_order_acq_rel)) {
+                HookLog("FG: Cleared direct FFX API confirmation — FSR FG context recreated");
+            }
         }
         if (fsrFGMultiplier.load(std::memory_order_acquire) < 2) {
             fsrFGMultiplier.store(2, std::memory_order_release);
         }
     } else {
         fsrFGMultiplier.store(0, std::memory_order_release);
-        directFFXApiConfirmed.store(false, std::memory_order_release);
+        if (directFFXApiConfirmed.exchange(false, std::memory_order_acq_rel)) {
+            HookLog("FG: Cleared direct FFX API confirmation — FSR FG turned OFF");
+        }
         // Authoritative FSR OFF invalidates any stale heuristic.  A heuristic
         // latched during an earlier queue-change window must not survive into
         // the post-FSR teardown / DLSS comeback window or the overlay will be
@@ -232,6 +236,10 @@ void FGCompatibility::SetFSRFGActive(bool active) {
 
 void FGCompatibility::MarkDirectFFXApiConfirmation() {
     if (!fsrFGApiActive.load(std::memory_order_acquire)) {
+        static std::atomic<int> s_skipLogCount{0};
+        if (s_skipLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLog("FG: MarkDirectFFXApiConfirmation skipped — FSR FG API not active");
+        }
         return;
     }
 

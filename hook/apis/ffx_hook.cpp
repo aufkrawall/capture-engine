@@ -289,6 +289,13 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
                 "FFX Hook: FSR Frame Generation DEACTIVATED (all contexts "
                 "destroyed)");
             DX12_ClearNativeFSRStartupConfigureArming("FFX FG context destroy");
+            // CRITICAL: Clear the progress-resolved assumption when the FFX
+            // runtime destroys all FG contexts.  This ensures that if GTA
+            // subsequently recreates FG contexts (e.g. after loading a save
+            // game), the stale progress-resolved latch from the initial boot
+            // does not permanently block the normal overlay fallback when the
+            // FFX present-callback bridge fails to fire for the new session.
+            DX12_ClearOfficialFFXRuntimeOwnedPresentPathAssumption("FFX FG context destroy");
             g_FGCompat.SetFSRFGActive(false);
             ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kFFXContextDestroy,
                                         "FFXHook::Hooked_ffxDestroyContext", context, nullptr,
@@ -409,7 +416,14 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // Native FSR can keep its context alive while toggling FG on/off via
     // ffxConfigure. Trust that runtime signal over context lifetime.
     if (parsed.enabled) {
+        const bool hadConfirmation = g_FGCompat.HasDirectFFXApiConfirmation();
         g_FGCompat.MarkDirectFFXApiConfirmation();
+        if (!hadConfirmation && g_FGCompat.HasDirectFFXApiConfirmation()) {
+            HookLogImportant(
+                "FFX Hook: Direct FFX API confirmation established from ffxConfigure ENABLED "
+                "(context=%p frameID=%llu)",
+                context, static_cast<unsigned long long>(parsed.frameId));
+        }
     }
     DX12_OnNativeFSRFrameGenerationConfigured(parsed.enabled);
     g_FGCompat.SetFSRFGActive(parsed.enabled);
@@ -504,7 +518,8 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     if (!allowInlineHooks && !allowIATHooks && firstSeenModule) {
         HookLogImportant(
             "FFX Hook: Using GetProcAddress-only hooks for protected official FFX module %s; inline export patching "
-            "and IAT import patching skipped to avoid startup fail-fast",
+            "and IAT import patching skipped to avoid startup fail-fast; waiting for ffxConfigure lookup to arm the "
+            "native FSR present-callback bridge",
             moduleName);
     }
 

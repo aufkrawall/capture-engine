@@ -594,17 +594,13 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     return authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode) || runtimeOwnedNativeFGPresentPath;
 }
 
-inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(bool ffxPresentCallbackStalled,
-                                                                         bool progressResolvedOfficialFFXPresentPath,
-                                                                         bool directFFXApiConfirmation,
-                                                                         bool ffxPresentCallbackEverFired,
-                                                                         bool progressResolvedStableOverlayProof =
-                                                                             false) {
+inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+    bool ffxPresentCallbackStalled, bool progressResolvedOfficialFFXPresentPath, bool directFFXApiConfirmation,
+    bool ffxPresentCallbackEverFired, bool progressResolvedStableOverlayProof = false,
+    ULONGLONG stallDurationMs = 0) {
     if (!ffxPresentCallbackStalled) {
         return false;
     }
-    // The caller still logs this proof, but it is not a safety proof for GPU submission.
-    (void)progressResolvedStableOverlayProof;
 
     // GTA Enhanced's official AMD FFX path can progress far enough to prove
     // frame generation ownership without ever reaching CE's ffxConfigure or
@@ -615,6 +611,17 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(bool ff
     // injected CE GPU work. Require a direct FFX API or callback bridge signal
     // before treating a missing callback as permission to submit overlay work.
     if (progressResolvedOfficialFFXPresentPath && !directFFXApiConfirmation && !ffxPresentCallbackEverFired) {
+        // Long-timeout escape hatch: if the progress-resolved path is active but
+        // the FFX present callback has been stalled for >30 seconds and the
+        // queue topology is verified stable (swapchain queue == original game
+        // queue, device healthy), allow the fallback to prevent the overlay from
+        // staying invisible indefinitely.  This covers edge cases where the
+        // progress-resolved assumption was not properly cleared (e.g. during
+        // save game reload without context recreation).
+        constexpr ULONGLONG kLongStallEscalationMs = 30000;
+        if (stallDurationMs >= kLongStallEscalationMs && progressResolvedStableOverlayProof) {
+            return true;
+        }
         return false;
     }
 

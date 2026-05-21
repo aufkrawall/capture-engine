@@ -27,7 +27,6 @@ void EnsureDwmApi() {
 
 #include <algorithm>
 #include <cctype>
-#include <cstdio>
 #include <cstring>
 #include <sstream>
 #include <string>
@@ -35,7 +34,6 @@ void EnsureDwmApi() {
 // ---- Palette (matching OBSIndicator exactly) ----
 static constexpr COLORREF kColWarnText = RGB(255, 20, 20);
 static constexpr COLORREF kColScreenshotText = RGB(20, 255, 20);
-static constexpr COLORREF kColExternalFallbackText = RGB(190, 235, 255);
 
 namespace {
 std::string NormalizeProcessName(std::string value) {
@@ -236,13 +234,12 @@ HWND GetMainWindowForProcess(DWORD pid) {
 }
 
 bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, bool isRecording, bool warnVisible,
-                            ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil, bool ghostActive,
-                            bool externalFallbackActive) {
+                            ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil, bool ghostActive) {
     const ULONGLONG now = GetTickCount64();
     const bool showIndicator = isRecording && config.mode != 2;
     const bool showWarning =
         warnVisible || (config.showEncoderOverloadWarn && now < overloadWarnUntil) || (now < screenshotNotifyUntil);
-    return showIndicator || showWarning || ghostActive || externalFallbackActive;
+    return showIndicator || showWarning || ghostActive;
 }
 }  // namespace
 
@@ -295,34 +292,22 @@ void PseudoOverlay::UpdateScaleForDpi(UINT dpi) {
 
 bool PseudoOverlay::IsForegroundTarget() {
     if (config_.processList.empty()) {
-        static bool s_loggedEmptyProcessList = false;
-        if (!s_loggedEmptyProcessList) {
-            LogDebug("[PseudoOverlay] Foreground target check skipped: process list empty");
-            s_loggedEmptyProcessList = true;
-        }
+        LogDebug("[PseudoOverlay] IsForegroundTarget: processList empty");
         return false;
     }
 
+    LogDebug("[PseudoOverlay] IsForegroundTarget: processList='%s'", config_.processList.c_str());
+
     HWND hFg = GetForegroundWindow();
     if (!hFg) {
-        static ULONGLONG s_lastNoForegroundLog = 0;
-        const ULONGLONG now = GetTickCount64();
-        if (now - s_lastNoForegroundLog > 10000) {
-            LogDebug("[PseudoOverlay] Foreground target check: no foreground window");
-            s_lastNoForegroundLog = now;
-        }
+        LogDebug("[PseudoOverlay] IsForegroundTarget: GetForegroundWindow returned NULL");
         return false;
     }
 
     DWORD pid = 0;
     GetWindowThreadProcessId(hFg, &pid);
     if (pid == 0) {
-        static ULONGLONG s_lastNoPidLog = 0;
-        const ULONGLONG now = GetTickCount64();
-        if (now - s_lastNoPidLog > 10000) {
-            LogDebug("[PseudoOverlay] Foreground target check: foreground pid is zero");
-            s_lastNoPidLog = now;
-        }
+        LogDebug("[PseudoOverlay] IsForegroundTarget: GetWindowThreadProcessId returned pid=0");
         return false;
     }
 
@@ -333,11 +318,12 @@ bool PseudoOverlay::IsForegroundTarget() {
 
     // Re-validate every 2 seconds in case config changed
     if (pid == lastPid && (GetTickCount64() - lastCheckTime < 2000)) {
+        LogDebug("[PseudoOverlay] IsForegroundTarget: cache hit pid=%lu result=%d (%.1fs left)", pid, lastRes,
+                 (2000.0 - (GetTickCount64() - lastCheckTime)) / 1000.0);
         return lastRes;
     }
 
     bool match = false;
-    std::string exeNameForLog = "unknown";
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (hProcess) {
         char exePath[MAX_PATH];
@@ -348,7 +334,8 @@ bool PseudoOverlay::IsForegroundTarget() {
             if (lastSlash != std::string::npos)
                 exeName = exeName.substr(lastSlash + 1);
             exeName = NormalizeProcessName(exeName);
-            exeNameForLog = exeName;
+
+            LogDebug("[PseudoOverlay] IsForegroundTarget: pid=%lu exe='%s'", pid, exeName.c_str());
 
             std::stringstream ss(config_.processList);
             std::string item;
@@ -358,39 +345,27 @@ bool PseudoOverlay::IsForegroundTarget() {
                     continue;
 
                 if (exeName == normalizedItem) {
+                    LogDebug("[PseudoOverlay] IsForegroundTarget: MATCH pid=%lu exe='%s' == '%s'", pid,
+                             exeName.c_str(), normalizedItem.c_str());
                     match = true;
                     break;
                 }
+                LogDebug("[PseudoOverlay] IsForegroundTarget: no match exe='%s' != '%s'", exeName.c_str(),
+                         normalizedItem.c_str());
             }
         } else {
-            exeNameForLog = "query-failed";
-            LogDebug("[PseudoOverlay] Foreground target check: QueryFullProcessImageNameA failed pid=%lu error=%lu",
+            LogDebug("[PseudoOverlay] IsForegroundTarget: QueryFullProcessImageNameA failed pid=%lu error=%lu",
                      pid, GetLastError());
         }
         CloseHandle(hProcess);
     } else {
-        exeNameForLog = "open-failed";
-        LogDebug("[PseudoOverlay] Foreground target check: OpenProcess failed pid=%lu error=%lu", pid, GetLastError());
+        LogDebug("[PseudoOverlay] IsForegroundTarget: OpenProcess failed pid=%lu error=%lu", pid, GetLastError());
     }
 
     lastPid = pid;
     lastRes = match;
     lastCheckTime = GetTickCount64();
-
-    static DWORD s_lastLoggedPid = 0;
-    static bool s_lastLoggedMatch = false;
-    static std::string s_lastLoggedExe;
-    static ULONGLONG s_lastForegroundLogTime = 0;
-    const ULONGLONG now = GetTickCount64();
-    if (pid != s_lastLoggedPid || match != s_lastLoggedMatch || exeNameForLog != s_lastLoggedExe ||
-        now - s_lastForegroundLogTime > 10000) {
-        LogDebug("[PseudoOverlay] Foreground target: pid=%lu exe='%s' match=%d list='%s'", pid, exeNameForLog.c_str(),
-                 match ? 1 : 0, config_.processList.c_str());
-        s_lastLoggedPid = pid;
-        s_lastLoggedMatch = match;
-        s_lastLoggedExe = exeNameForLog;
-        s_lastForegroundLogTime = now;
-    }
+    LogDebug("[PseudoOverlay] IsForegroundTarget: result=%d for pid=%lu", match, pid);
     return match;
 }
 
@@ -472,11 +447,6 @@ bool PseudoOverlay::IsInjectOverlayActive() {
 bool PseudoOverlay::IsInjectOverlayPending() {
     return EnsureSharedMemoryMapping() &&
            pSharedMem_->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending);
-}
-
-bool PseudoOverlay::IsInjectOverlayExternalFallbackActive() {
-    return EnsureSharedMemoryMapping() &&
-           pSharedMem_->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayExternalFallback);
 }
 
 PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
@@ -696,23 +666,14 @@ void PseudoOverlay::UpdateOverlay() {
 
     const bool isRecording = isRecording_.load();
     const bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
-    const bool injectFallbackActive = IsInjectOverlayExternalFallbackActive();
 
     const bool shouldHaveVisibleOverlay =
         ShouldOverlayBeVisible(config_, isRecording, warnVisible_, overloadWarnUntil_.load(),
-                               screenshotNotifyUntil_.load(), ghostActive, injectFallbackActive);
+                               screenshotNotifyUntil_.load(), ghostActive);
 
-    if (injectFallbackActive != lastExternalFallbackActive_) {
-        LogInfo("[PseudoOverlay] Inject overlay external fallback %s (recording=%d ghost=%d)",
-                injectFallbackActive ? "activated" : "cleared", isRecording ? 1 : 0, ghostActive ? 1 : 0);
-        lastExternalFallbackActive_ = injectFallbackActive;
-    }
-
-    LogDebug(
-        "[PseudoOverlay] UpdateOverlay: mode=%d isRecording=%d warnVisible=%d ghost=%d externalFallback=%d "
-        "shouldHaveVisible=%d",
-        config_.mode, isRecording ? 1 : 0, warnVisible_ ? 1 : 0, ghostActive ? 1 : 0,
-        injectFallbackActive ? 1 : 0, shouldHaveVisibleOverlay ? 1 : 0);
+    LogDebug("[PseudoOverlay] UpdateOverlay: mode=%d isRecording=%d warnVisible=%d ghost=%d shouldHaveVisible=%d",
+             config_.mode, isRecording ? 1 : 0, warnVisible_ ? 1 : 0, ghostActive ? 1 : 0,
+             shouldHaveVisibleOverlay ? 1 : 0);
 
     if (!config_.enabled) {
         DestroyOverlayWindows();
@@ -720,7 +681,6 @@ void PseudoOverlay::UpdateOverlay() {
         lastWarnVis_ = false;
         lastOverlaySuppressed_ = false;
         lastFullscreenSuppressed_ = false;
-        lastExternalFallbackActive_ = false;
         return;
     }
 
@@ -728,13 +688,11 @@ void PseudoOverlay::UpdateOverlay() {
     const bool injectPending = IsInjectOverlayPending();
     const bool injectActive = IsInjectOverlayActive();
     const bool suppressOverlay =
-        ShouldSuppressPseudoOverlayForInjectOverlayHandoff(injectPending, injectActive, injectFallbackActive);
+        ShouldSuppressPseudoOverlayForInjectOverlayHandoff(injectPending, injectActive);
     if (suppressOverlay) {
         if (!lastOverlaySuppressed_) {
-            LogInfo(
-                "[PseudoOverlay] Suppressed while inject overlay handoff is active "
-                "(pending=%d active=%d externalFallback=%d)",
-                injectPending ? 1 : 0, injectActive ? 1 : 0, injectFallbackActive ? 1 : 0);
+            LogInfo("[PseudoOverlay] Suppressed while inject overlay handoff is active (pending=%d active=%d)",
+                    injectPending ? 1 : 0, injectActive ? 1 : 0);
         }
         DestroyOverlayWindows();
         lastOv_ = {};
@@ -751,11 +709,8 @@ void PseudoOverlay::UpdateOverlay() {
 
     if (!shouldHaveVisibleOverlay) {
         if (hOv_ || hWarn_) {
-            LogInfo(
-                "[PseudoOverlay] Destroying idle overlay windows "
-                "(isRecording=%d warnVis=%d ghost=%d externalFallback=%d)",
-                isRecording ? 1 : 0, warnVisible_ ? 1 : 0, ghostActive ? 1 : 0,
-                injectFallbackActive ? 1 : 0);
+            LogInfo("[PseudoOverlay] Destroying idle overlay windows (isRecording=%d warnVis=%d ghost=%d)",
+                    isRecording ? 1 : 0, warnVisible_ ? 1 : 0, ghostActive ? 1 : 0);
             DestroyOverlayWindows();
         }
         lastOv_ = {};
@@ -952,7 +907,7 @@ void PseudoOverlay::UpdateOverlay() {
     ULONGLONG now = GetTickCount64();
     bool showScreenshot = now < screenshotNotifyUntil_.load();
     bool showOverload = !showScreenshot && config_.showEncoderOverloadWarn && (now < overloadWarnUntil_.load());
-    bool showW = injectFallbackActive || warnVisible_ || showOverload || showScreenshot;
+    bool showW = warnVisible_ || showOverload || showScreenshot;
     BYTE warnAlpha = 0;
     bool doUpdateWarn = false;
 
@@ -962,48 +917,8 @@ void PseudoOverlay::UpdateOverlay() {
         overloadTargetFps = pSharedMem_->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
     }
     const std::string overloadMsg = FormatEncoderOverloadMessage(overloadWarnSustainFpsX100, overloadTargetFps);
-    std::string fallbackMsg;
-    if (injectFallbackActive) {
-        double currentFps = 0.0;
-        double gameFps = 0.0;
-        bool sharedRecording = isRecording;
-        bool dlssFgActive = false;
-        int dlssMultiplier = 0;
-        if (EnsureSharedMemoryMapping() && pSharedMem_) {
-            currentFps = pSharedMem_->runtimeState.currentFPS.load(std::memory_order_relaxed);
-            gameFps = pSharedMem_->runtimeState.gameFPS.load(std::memory_order_relaxed);
-            sharedRecording = pSharedMem_->runtimeState.isRecording.load(std::memory_order_relaxed);
-            dlssFgActive = pSharedMem_->dlssState.fgActive.load(std::memory_order_relaxed);
-            dlssMultiplier = pSharedMem_->dlssState.mfgMultiplier.load(std::memory_order_relaxed);
-        }
-
-        char buffer[192] = {};
-        if (currentFps > 0.1 || gameFps > 0.1) {
-            std::snprintf(buffer, sizeof(buffer), "CaptureEngine fallback overlay\nFPS %.0f / Game %.0f%s",
-                          currentFps, gameFps, sharedRecording ? "  REC" : "");
-        } else if (dlssFgActive) {
-            std::snprintf(buffer, sizeof(buffer), "CaptureEngine fallback overlay\nDLSS FG x%d%s",
-                          dlssMultiplier > 0 ? dlssMultiplier : 2, sharedRecording ? "  REC" : "");
-        } else {
-            std::snprintf(buffer, sizeof(buffer), "CaptureEngine fallback overlay%s",
-                          sharedRecording ? "\nREC" : "");
-        }
-        fallbackMsg = buffer;
-    }
-
-    const char* msg = nullptr;
-    COLORREF textColor = kColWarnText;
-    if (showScreenshot) {
-        msg = "Screenshot saved!";
-        textColor = kColScreenshotText;
-    } else if (injectFallbackActive) {
-        msg = fallbackMsg.c_str();
-        textColor = kColExternalFallbackText;
-    } else if (showOverload) {
-        msg = overloadMsg.c_str();
-    } else {
-        msg = "NOT RECORDING";
-    }
+    const char* msg = showScreenshot ? "Screenshot saved!" : (showOverload ? overloadMsg.c_str() : "NOT RECORDING");
+    bool isScreenshotMsg = showScreenshot;
 
     if (ghostActive) {
         warnAlpha = showW ? 255 : 0;
@@ -1054,7 +969,7 @@ void PseudoOverlay::UpdateOverlay() {
 
             HFONT oldFont = (HFONT)SelectObject(dc, fontWarn_);
             RECT rText = {0, 0, 0, 0};
-            DrawTextA(dc, msg, -1, &rText, DT_CALCRECT | DT_NOPREFIX);
+            DrawTextA(dc, msg, -1, &rText, DT_CALCRECT);
             warnW = rText.right - rText.left + S(20);
             warnH = rText.bottom - rText.top + S(10);
             SelectObject(dc, oldFont);
@@ -1083,11 +998,11 @@ void PseudoOverlay::UpdateOverlay() {
             DeleteObject(hK);
 
             SelectObject(hdcWarn_, fontWarn_);
-            SetTextColor(hdcWarn_, textColor);
+            SetTextColor(hdcWarn_, isScreenshotMsg ? kColScreenshotText : kColWarnText);
             SetBkMode(hdcWarn_, TRANSPARENT);
 
             RECT rT = {S(10), S(5), warnW, warnH};
-            DrawTextA(hdcWarn_, msg, -1, &rT, DT_LEFT | DT_TOP | DT_NOCLIP | DT_NOPREFIX);
+            DrawTextA(hdcWarn_, msg, -1, &rT, DT_LEFT | DT_TOP | DT_NOCLIP);
 
             ReleaseDC(NULL, hdcScreen);
 
@@ -1283,7 +1198,6 @@ void PseudoOverlay::Shutdown() {
     overloadWarnSustainFpsX100_.store(0, std::memory_order_relaxed);
     lastOverlaySuppressed_ = false;
     lastFullscreenSuppressed_ = false;
-    lastExternalFallbackActive_ = false;
     stickyAnchorWindow_ = NULL;
     stickyAnchorMonitor_ = NULL;
     stickyAnchorDpi_ = 96;

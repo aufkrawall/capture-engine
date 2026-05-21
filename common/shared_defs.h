@@ -279,9 +279,6 @@ enum CaptureRuntimeFlags : uint32_t {
     kCaptureRuntimeFlagVulkanOverlayActive = 1u << 0,
     kCaptureRuntimeFlagInjectOverlayActive = 1u << 1,   // Inject hook is active in a game
     kCaptureRuntimeFlagInjectOverlayPending = 1u << 2,  // Inject overlay handoff/startup is still settling
-    // Inject hook is alive, but its in-process overlay GPU draw is intentionally
-    // suppressed; the controller may render a desktop fallback overlay instead.
-    kCaptureRuntimeFlagInjectOverlayExternalFallback = 1u << 3,
 };
 
 enum class CapturePipelinePhase : uint32_t {
