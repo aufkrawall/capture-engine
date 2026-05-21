@@ -554,13 +554,6 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
         return false;
     }
 
-    // Native/runtime-owned FG swapchains are already routed through the live
-    // swapchain queue. Spinning up a second overlay queue in that window
-    // reintroduces cross-queue synchronization against the runtime-owned path
-    // and has been observed to stall inside native FFX frame-generation work.
-    // That remains true during the explicit native-FSR OFF teardown window too:
-    // the runtime-owned Present path still owns presentation even before the
-    // effective runtime label flips back to FSR_FG on resume.
     return fsrFGActive || runtimeOwnsSwapchain || runtimeOwnedNativeFGPresentPath;
 }
 

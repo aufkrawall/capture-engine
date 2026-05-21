@@ -14282,8 +14282,21 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         }
 
                                         if (!useDedicated && realECL && !isSLWrapperECL) {
-                                            realECL(eclQueue, 1, lists);
-                                            usedRealECL = true;
+                                            const bool fsrFGActiveForECL =
+                                                g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kFSRFG;
+                                            if (fsrFGActiveForECL) {
+                                                // FSR FG active: use origECL (vtable/hook-aware) instead of
+                                                // realECL (raw D3D12 function).  FSR hooks the game queue's
+                                                // ECL vtable entry to track command list submissions.  When
+                                                // we bypass FSR's hook via realECL, FSR detects the raw ECL
+                                                // on its queue as an unexpected submission and removes the
+                                                // D3D12 device (ERR_GFX_STATE).  Using origECL lets FSR's
+                                                // hook see and accept our overlay ECL.
+                                                origECL(eclQueue, 1, lists);
+                                            } else {
+                                                realECL(eclQueue, 1, lists);
+                                                usedRealECL = true;
+                                            }
                                         } else if (origECL) {
                                             origECL(eclQueue, 1, lists);
                                         } else {
