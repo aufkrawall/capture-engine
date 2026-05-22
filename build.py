@@ -3980,6 +3980,18 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         if have_x86:
             log("Skipping dx12_dlss_fg_test.exe (x86): FG SDK runtime DLLs are x64-only")
 
+    # DLSS/FSR FG Switching DX12 Test App
+    fg_switch_src = os.path.join(testapp_src_dir, "dx12_fg_switch_test.cpp")
+    fg_switch_exe = os.path.join(testapp_bin_dir, "dx12_fg_switch_test.exe")
+    if os.path.exists(fg_switch_src):
+        fg_switch_ldflags = list(dx12_ldflags)
+        add_task(
+            "dx12_fg_switch_test.exe",
+            make_cmd(clang_exe, fg_sdk_cflags, fg_switch_src, fg_switch_ldflags, fg_switch_exe),
+        )
+        if have_x86:
+            log("Skipping dx12_fg_switch_test.exe (x86): FG SDK runtime DLLs are x64-only")
+
     # DX11 Test App
     dx11_src = os.path.join(testapp_src_dir, "dx11_test.cpp")
     dx11_exe = os.path.join(testapp_bin_dir, "dx11_test.exe")

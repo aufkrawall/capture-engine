@@ -237,6 +237,8 @@ static const char* FfxReturnName(ffxReturnCode_t code) {
     }
 }
 
+static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer);
+
 static void PreloadAmdCompanionDlls() {
     const wchar_t* companionDlls[] = {L"amd_ags_x64.dll", L"amd_acs_x64.dll"};
     for (const wchar_t* dllName : companionDlls) {
@@ -393,6 +395,10 @@ static FsrInitResult TryInitFSR() {
     testapp::Log("  ffxCreateContext(FRAMEGENERATION) OK ctx=%p display=%ux%u fmt=%u hudlessFmt=%u swapchainCtx=%p\n",
                  (void*)g_FfxCtx, createDesc.displaySize.width, createDesc.displaySize.height,
                  createDesc.backBufferFormat, hudlessDesc.hudlessBackBufferFormat, (void*)g_FfxSwapChainCtx);
+    testapp::Log("[FG-DIAG] Sending startup disabled FSR FG configure to mimic real-game boot/save-load arming\n");
+    if (!ConfigureFSR(false, nullptr)) {
+        testapp::Log("[FG-DIAG] WARN startup disabled FSR FG configure failed; later enable will still be attempted\n");
+    }
     return kFsrOk;
 }
 

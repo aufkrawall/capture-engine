@@ -118,6 +118,8 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Fresh authoritative Streamline handoff invalidated stale PostSL confirmation"),
               std::string::npos);
     EXPECT_NE(contents.find("Retained Streamline startup activation swapchain"), std::string::npos);
+    EXPECT_NE(contents.find("releasing retained Streamline activation swapchain before DXGI CreateSwapChainForHwnd"),
+              std::string::npos);
     EXPECT_NE(contents.find("Skipping retained-swapchain PostSL startup activation callback"), std::string::npos);
     EXPECT_NE(contents.find("startupActivationEntered"), std::string::npos);
     EXPECT_NE(contents.find("activated-but-unconfirmed Streamline startup normal route"), std::string::npos);
@@ -154,6 +156,10 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("normal overlay fallback is unsafe for progress-resolved official FFX startup"),
               std::string::npos);
+    EXPECT_NE(contents.find("without direct ffxConfigure/callback proof"), std::string::npos);
+    EXPECT_NE(contents.find("Protected official FFX startup immediately quiesced Streamline/PostSL"), std::string::npos);
+    EXPECT_NE(contents.find("FFX Hook: Installed re-arming VEH hook"), std::string::npos);
+    EXPECT_NE(contents.find("FFX Hook: VEH ffxConfigure breakpoint handled call"), std::string::npos);
     EXPECT_NE(contents.find("stable same-queue proof is diagnostic only"), std::string::npos);
     EXPECT_NE(contents.find("first native-FSR overlay submit can trigger ERR_GFX_STATE"), std::string::npos);
     EXPECT_NE(contents.find("ECL startup activation swapchain probe suppressed"), std::string::npos);

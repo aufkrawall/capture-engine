@@ -589,8 +589,9 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
 
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     bool ffxPresentCallbackStalled, bool progressResolvedOfficialFFXPresentPath, bool directFFXApiConfirmation,
-    bool ffxPresentCallbackEverFired, bool progressResolvedStableOverlayProof = false,
+    bool currentFFXPresentCallbackProof, bool progressResolvedStableOverlayProof = false,
     ULONGLONG stallDurationMs = 0) {
+    (void)progressResolvedOfficialFFXPresentPath;
     (void)progressResolvedStableOverlayProof;
     (void)stallDurationMs;
 
@@ -599,22 +600,46 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     }
 
     // GTA Enhanced's official AMD FFX path can progress far enough to prove
-    // frame generation ownership without ever reaching CE's ffxConfigure or
-    // present-callback bridge.  In that unproven state, falling back to normal
-    // overlay GPU submission on the original game queue has produced immediate
-    // device removal. Stable same-queue progress is useful diagnostic proof
-    // that startup survived, but it does not prove that native FSR will accept
-    // injected CE GPU work. The 2-second max suspension enforcement at the
-    // ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain level (in dx12_hook.cpp)
-    // provides a universal timeout override that handles all FG transitions,
-    // including this progress-resolved path.  Return false here to keep the
-    // progress-resolved gate as defense-in-depth for early frames (before the
-    // 2-second override kicks in).
-    if (progressResolvedOfficialFFXPresentPath && !directFFXApiConfirmation && !ffxPresentCallbackEverFired) {
+    // frame generation ownership without a fresh ffxConfigure/callback bridge
+    // proof. In that unproven state, falling back to normal overlay GPU
+    // submission on the original game queue has produced immediate device
+    // removal. Stable same-queue progress is useful diagnostic proof that
+    // startup survived, but it does not prove that native FSR will accept
+    // injected CE GPU work.
+    if (!directFFXApiConfirmation && !currentFFXPresentCallbackProof) {
         return false;
     }
 
     return true;
+}
+
+inline bool IsFFXPresentCallbackProofCurrent(ULONGLONG lastCallbackTickMs, ULONGLONG swapchainQueueCaptureTimeMs,
+                                             ULONGLONG progressAssumedSinceMs) {
+    if (lastCallbackTickMs == 0) {
+        return false;
+    }
+    ULONGLONG proofSinceMs = swapchainQueueCaptureTimeMs;
+    if (progressAssumedSinceMs > proofSinceMs) {
+        proofSinceMs = progressAssumedSinceMs;
+    }
+    return proofSinceMs == 0 || lastCallbackTickMs >= proofSinceMs;
+}
+
+inline bool ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
+    bool runtimeOwnedNativeFGPresentPath, bool nativeFSRActive, bool ffxPresentCallbackStalled,
+    bool ffxPresentCallbackStallAllowsNormalOverlay) {
+    // The timeout is a visibility backstop for ordinary transition stalls, but
+    // it must not overrule native/runtime-owned FSR.  When the FFX present
+    // callback is healthy, the overlay is already rendered on the runtime-owned
+    // path; waking the separate normal DX12 overlay path can submit an
+    // additional command list into the FSR-owned queue and remove the device.
+    if (!runtimeOwnedNativeFGPresentPath && !nativeFSRActive) {
+        return true;
+    }
+    if (!ffxPresentCallbackStalled) {
+        return false;
+    }
+    return ffxPresentCallbackStallAllowsNormalOverlay;
 }
 
 inline bool ShouldProbePostSLStartupActivationSwapchainFromECL(bool activationPending, bool callbackInstalled,
@@ -814,6 +839,16 @@ inline bool ShouldClearStaleRuntimeOwnedStreamlineNoFGAfterRealFrameRun(int real
 inline bool ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(bool retainedSwapchainAvailable,
                                                                                  bool staleNoFGCleanupActive) {
     return retainedSwapchainAvailable && staleNoFGCleanupActive;
+}
+
+inline bool ShouldReleaseRetainedStreamlineStartupActivationSwapchainForAuthoritativeFFXCreate(
+    bool authoritativeFFXRuntimeCreator, bool retainedSwapchainAvailable) {
+    // A retained Streamline startup swapchain is an owned CE AddRef used only to
+    // wake PostSL during DLSS startup. Once AMD FFX/FSR is authoritatively
+    // creating a swapchain for the same window, that retained reference becomes
+    // stale and can prevent DXGI from allowing the FSR runtime to take ownership
+    // of the HWND.
+    return authoritativeFFXRuntimeCreator && retainedSwapchainAvailable;
 }
 
 inline bool ShouldShutdownDescFreeBackendViaOverlayAdapter(bool descFreeBackendPresent, bool adapterInitialized,
@@ -1311,17 +1346,29 @@ inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase
     return !hasRealQueueBehindWrapper && !hasSLWrapperQueue;
 }
 
+inline bool ShouldDelayPostSLActivationUntilSafeBootstrapPath(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
+                                                              bool hasRealD3D12ECL, bool hasSLWrapperQueue,
+                                                              bool safePostFSRBootstrapPath) {
+    if (safePostFSRBootstrapPath) {
+        return false;
+    }
+
+    return ShouldDelayPostSLActivationUntilSafeBootstrapPath(hadFSRFGPhase, hasRealQueueBehindWrapper, hasRealD3D12ECL,
+                                                             hasSLWrapperQueue);
+}
+
 inline bool ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(bool hadFSRFGPhase,
                                                                         bool hasRuntimeOwnedSwapchainQueue,
-                                                                        bool commandQueueMatchesSwapchainQueue,
+                                                                        bool streamlineHandoffOrActive,
                                                                         bool hasTrackedSwapchainQueueSubmitPath) {
     // In 2D/menu-only FSR->DLSS handoffs Streamline can create the live
     // runtime-owned swapchain queue before any wrapper ECL traffic appears. If
-    // that same queue is already the live command queue and CE has the queue's
-    // original ECL entrypoint tracked, PostSL can safely submit on that queue
-    // instead of waiting for a wrapper bootstrap that may not occur until 3D
-    // rendering resumes.
-    return hadFSRFGPhase && hasRuntimeOwnedSwapchainQueue && commandQueueMatchesSwapchainQueue &&
+    // CE has a Streamline handoff/active signal and a usable submit path for
+    // the swapchain queue, PostSL can submit there instead of waiting for a
+    // wrapper bootstrap that may not occur until 3D rendering resumes. Do not
+    // require the current command queue to equal the swapchain queue: real games
+    // commonly keep render/present/runtime queues distinct during FG handoffs.
+    return hadFSRFGPhase && hasRuntimeOwnedSwapchainQueue && streamlineHandoffOrActive &&
            hasTrackedSwapchainQueueSubmitPath;
 }
 
@@ -1677,7 +1724,8 @@ inline bool ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(bool postSLConfirm
 
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,
                                                                     bool postSLConfirmedRendering,
-                                                                    bool useTopLevelHandoffWrapperProgress) {
+                                                                    bool useTopLevelHandoffWrapperProgress,
+                                                                    bool safePostFSRBootstrapPath = false) {
     // While the startup transition window is active, DLSS FG is still initializing
     // its internal pipeline (queue setup, mutex tracking, fence state).  Our ECL
     // submission on the SL-owned swapchain queue during this phase can corrupt DLSS
@@ -1691,8 +1739,15 @@ inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startup
     // state.  Wrapper ECL progress only proves queue topology stability, not that
     // SL's internal pipeline has settled.  Defer rendering for ALL families until
     // the startup transition window expires or PostSL has confirmed stable rendering.
+    //
+    // The one exception is the stronger post-FSR bootstrap proof: it requires the
+    // fresh runtime-owned Streamline swapchain queue, an active/handing-off
+    // Streamline signal, and a tracked submit path for that queue. That path is
+    // specifically what real games expose when DLSS FG is enabled from a menu
+    // after an FSR FG phase; waiting for the generic startup window can hide the
+    // overlay for the entire short mode-switch interval.
     (void)useTopLevelHandoffWrapperProgress;
-    return startupTransitionWindowActive && !postSLConfirmedRendering;
+    return startupTransitionWindowActive && !postSLConfirmedRendering && !safePostFSRBootstrapPath;
 }
 
 inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
@@ -1891,6 +1946,19 @@ inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool pro
     // export inspection can all be too invasive in the narrow pre-configure
     // window.
     return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved;
+}
+
+inline bool ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
+    bool protectedOfficialFFXStartupPending, bool ffxStartupAlreadyResolved, bool postSLCallbackInstalled,
+    bool postSLActive, bool postSLConfirmedRendering, bool streamlineFGRunning, bool startupActivationPending) {
+    // Heavy official-FFX takeover side effects wait for ffxConfigure(enable), but
+    // an already-live Streamline/PostSL path must stop immediately. Otherwise a
+    // re-entrant Streamline callback can submit overlay work to the old DLSS path
+    // after the AMD runtime has begun replacing the swapchain.
+    return ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(protectedOfficialFFXStartupPending,
+                                                                       ffxStartupAlreadyResolved) &&
+           (postSLCallbackInstalled || postSLActive || postSLConfirmedRendering || streamlineFGRunning ||
+            startupActivationPending);
 }
 
 inline uint32_t GetProtectedOfficialFFXStartupProcessFrameProgressThreshold() {

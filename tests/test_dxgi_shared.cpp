@@ -1026,10 +1026,18 @@ TEST(DXGISharedTest, RuntimeOwnedNativeFSRSuppressesInjectedOverlayGpuWorkOnlyFo
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackStallAllowsNormalOverlayRendering) {
-    // When the FFX present callback is reported as stalled, the policy must
-    // stop suppressing normal overlay work even for active FSR states.
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+    // When the FFX present callback is reported as stalled, normal overlay
+    // fallback is allowed only after fresh direct FFX/callback proof.  A stale
+    // callback from an earlier runtime-owned swapchain is not enough.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, false));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, false, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
@@ -1072,6 +1080,36 @@ TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresCallbackBri
         true, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         false, true, true, true));
+}
+
+TEST(DXGISharedTest, NativeFSRTimeoutOverrideRequiresSafeCallbackStallFallback) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
+        false, false, false, false));
+
+    // A healthy native FSR present callback means the overlay already has the
+    // correct runtime-owned path.  The normal DX12 overlay path must not wake
+    // up just because the generic 2s suppression timer expired.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
+        true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
+        false, true, false, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
+        true, true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
+        true, true, true, true));
+}
+
+TEST(DXGISharedTest, FFXPresentCallbackProofIsScopedToCurrentRuntimeTakeover) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(0, 100, 0));
+    EXPECT_TRUE(ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(150, 100, 0));
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(90, 100, 0));
+
+    // A callback from an earlier FSR topology must not prove that a later
+    // progress-resolved FSR takeover can accept the normal injected overlay
+    // path.
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(150, 100, 200));
+    EXPECT_TRUE(ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(250, 100, 200));
 }
 
 TEST(DXGISharedTest, ECLStartupActivationProbeIsSuppressedDuringNativeFSRPresentPath) {
@@ -1236,6 +1274,16 @@ TEST(DXGISharedTest, StaleRuntimeOwnedStreamlineNoFGCleanupReleasesRetainedActiv
         ce::dx12_overlay_policy::ShouldReleaseRetainedStartupActivationSwapchainAfterStaleNoFGCleanup(true, false));
 }
 
+TEST(DXGISharedTest, AuthoritativeFFXCreateReleasesRetainedStreamlineStartupActivationSwapchain) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::
+                    ShouldReleaseRetainedStreamlineStartupActivationSwapchainForAuthoritativeFFXCreate(true, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::
+                     ShouldReleaseRetainedStreamlineStartupActivationSwapchainForAuthoritativeFFXCreate(false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::
+                     ShouldReleaseRetainedStreamlineStartupActivationSwapchainForAuthoritativeFFXCreate(true, false));
+}
+
 TEST(DXGISharedTest, DescFreeBackendUsesAdapterShutdownWhenAdapterOwnsCustomBackend) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldShutdownDescFreeBackendViaOverlayAdapter(true, true, true));
 
@@ -1359,6 +1407,26 @@ TEST(DXGISharedTest, ProtectedOfficialFFXStartupQuiescesCESideEffectsUntilDirect
         ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(false, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(true, true));
+}
+
+TEST(DXGISharedTest, ProtectedOfficialFFXStartupQuiescesLiveStreamlinePostSLImmediately) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
+        true, false, true, false, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
+        true, false, false, true, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
+        true, false, false, false, true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
+        true, false, false, false, false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
+        true, false, false, false, false, false, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
+        true, false, false, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
+        false, false, true, true, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
+        true, true, true, true, true, true, true));
 }
 
 TEST(DXGISharedTest, ProtectedOfficialFFXStartupCanResolveAfterSustainedProgressWithoutDirectConfigure) {
@@ -1944,6 +2012,14 @@ TEST(DXGISharedTest, PostSLActivationWaitsForSafeBootstrapPathAfterFSRPhase) {
         ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(false, false, false, false));
 }
 
+TEST(DXGISharedTest, PostSLActivationAcceptsRuntimeOwnedSwapchainBootstrapAfterFSR) {
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(true, false, true, false, true));
+
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(true, false, true, false, false));
+}
+
 TEST(DXGISharedTest, RuntimeOwnedSwapchainQueueCanBootstrapPostFSRStreamlineMenuHandoff) {
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(true, true, true, true));
@@ -1956,6 +2032,14 @@ TEST(DXGISharedTest, RuntimeOwnedSwapchainQueueCanBootstrapPostFSRStreamlineMenu
         ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(true, true, false, true));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(true, true, true, false));
+}
+
+TEST(DXGISharedTest, RuntimeOwnedStreamlineBootstrapDoesNotRequireCommandQueueMatch) {
+    // The third parameter is Streamline handoff/active proof, not "command queue
+    // equals swapchain queue"; multi-queue games can keep render and runtime
+    // swapchain queues distinct during FSR->DLSS handoff.
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(true, true, true, true));
 }
 
 TEST(DXGISharedTest, PostSLScQueueVirtualSubmitIsDisabledAfterFSRPhase) {
@@ -2706,6 +2790,14 @@ TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilCo
     // pipeline is settled. Even the pure-DLSS top-level handoff family must
     // keep deferring real PostSL rendering until the startup window expires.
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, true));
+
+    // The post-FSR safe bootstrap proof is stronger than wrapper progress: it
+    // proves a current runtime-owned Streamline swapchain queue and submit path,
+    // so the overlay can draw during short FSR->DLSS switch intervals.
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, false, true));
 
     // Outside startup window - never defer
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, false, false));
