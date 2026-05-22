@@ -471,6 +471,20 @@ inline bool ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
            !postSLConfirmedButRuntimeStateStabilizing;
 }
 
+inline bool ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+    bool requestedInactive, bool sourceWasSetOptions, bool postSLConfirmedRendering,
+    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedButStartupSettling,
+    bool postSLConfirmedButRuntimeStateStabilizing) {
+    // Once PostSL has actually rendered through the current topology and no
+    // startup/proof window is still settling, an explicit slDLSSGSetOptions(OFF)
+    // is the app's real FG mode switch. Keep the early stale-OFF guard for
+    // unconfirmed or still-stabilizing paths, but do not let it make the public
+    // overlay state say DLSS FG after the app has intentionally disabled it.
+    return requestedInactive && sourceWasSetOptions && postSLConfirmedRendering && !startupActivationPending &&
+           !postSLActiveButUnconfirmed && !postSLConfirmedButStartupSettling &&
+           !postSLConfirmedButRuntimeStateStabilizing;
+}
+
 inline bool ResolveCurrentComebackExplicitSetOptionsActivation(bool previousExplicitSetOptionsActivation,
                                                                bool effectiveSignalActive, bool freshActivationEdge,
                                                                bool explicitSetOptionsEnableSignal) {

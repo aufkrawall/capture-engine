@@ -45,7 +45,7 @@ void DX12_OnSwapchainResizeEnd() {}
 void DX12_SignalFSR4SwapchainRecreated() {}
 void DX12_ServiceDeferredECLProbe() {}
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain*, const char*) {}
-bool DX12_TryInvokePostSLStartupActivationCallback(const char*, bool) { return false; }
+bool DX12_TryInvokePostSLStartupActivationCallback(const char*, bool, bool) { return false; }
 
 // DX12_SetCommandQueue is extern "C" in the header
 extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}

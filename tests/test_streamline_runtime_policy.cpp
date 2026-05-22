@@ -116,6 +116,24 @@ TEST(StreamlineRuntimePolicyTest, SuppressedSetOptionsOffDoesNotApplyLocalRuntim
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldApplyViewportRuntimeUpdateFromSetOptions(false, false));
 }
 
+TEST(StreamlineRuntimePolicyTest, ExplicitSetOptionsOffIsAuthoritativeAfterConfirmedPostSLRendering) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        true, true, true, false, false, false, false));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        true, false, true, false, false, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        true, true, false, false, false, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        true, true, true, true, false, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        true, true, true, false, true, false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        true, true, true, false, false, true, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        true, true, true, false, false, false, true));
+}
+
 TEST(StreamlineRuntimePolicyTest, SuccessfulSetOptionsDisableClearsCachedStreamlineViewports) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForSetOptionsDisable(true, false, 0));
 

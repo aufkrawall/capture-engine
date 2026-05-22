@@ -1011,8 +1011,13 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
             postSLActiveButUnconfirmed, postSLStartupActivationEntered, postSLConfirmedRendering,
             postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing ||
                                                    postSLConfirmedButOffChurnAwaitingActiveProof);
+    const bool explicitSetOptionsDisableIsAuthoritative =
+        ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+            !active, sourceWasSetOptions, postSLConfirmedRendering, startupActivationPending,
+            postSLActiveButUnconfirmed, postSLConfirmedButStartupSettling,
+            postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof);
     const bool deferOffSignal =
-        !active && !acceptActivatedUnconfirmedResumeOff &&
+        !active && !explicitSetOptionsDisableIsAuthoritative && !acceptActivatedUnconfirmedResumeOff &&
         ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
             startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
             safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
@@ -1046,6 +1051,8 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
             postSLStartupActivationEntered, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
             postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof);
         ResetStartupProtectedOffChurnActiveProof("accepted activated-unconfirmed startup suspend");
+    } else if (explicitSetOptionsDisableIsAuthoritative) {
+        ResetStartupProtectedOffChurnActiveProof("accepted authoritative SetOptions disable");
     } else if (!active && signalUpdate.deferredOffDuringStartupWindow) {
         MarkStartupProtectedOffChurnObserved(source, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
                                              postSLConfirmedButRuntimeStateStabilizing ||
@@ -2332,13 +2339,18 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             startupProtectedComebackProof, postSLConfirmedRendering, postSLConfirmedButStartupSettling);
         const bool effectivePostSLRuntimeStateStabilizing =
             postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof;
+        const bool explicitSetOptionsDisableIsAuthoritative =
+            ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+                requestedDisabled, true, postSLConfirmedRendering, startupActivationPending,
+                postSLActiveButUnconfirmed, postSLConfirmedButStartupSettling,
+                effectivePostSLRuntimeStateStabilizing);
         const bool acceptActivatedUnconfirmedResumeOff =
             ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
                 requestedDisabled, startupWindowActive, startupProtectedComebackProof, startupActivationPending,
                 postSLActiveButUnconfirmed, postSLStartupActivationEntered, postSLConfirmedRendering,
                 postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
         const bool shouldKeepDeferred =
-            !acceptActivatedUnconfirmedResumeOff &&
+            !explicitSetOptionsDisableIsAuthoritative && !acceptActivatedUnconfirmedResumeOff &&
             ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
                 startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
                 safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
@@ -2409,13 +2421,18 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     const bool effectivePostSLRuntimeStateStabilizing =
         postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof;
     const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
+    const bool explicitSetOptionsDisableIsAuthoritative =
+        ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+            requestedDisabled, true, postSLConfirmedRendering, startupActivationPending, postSLActiveButUnconfirmed,
+            postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
     const bool acceptActivatedUnconfirmedResumeOff =
         ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
             requestedDisabled, startupWindowActive, startupProtectedComebackProof, startupActivationPending,
             postSLActiveButUnconfirmed, postSLStartupActivationEntered, postSLConfirmedRendering,
             postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
     const bool suppressOffCall =
-        !pureObserverOnly && requestedDisabled && !acceptActivatedUnconfirmedResumeOff &&
+        !pureObserverOnly && requestedDisabled && !explicitSetOptionsDisableIsAuthoritative &&
+        !acceptActivatedUnconfirmedResumeOff &&
         ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
             startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
             safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
@@ -2473,6 +2490,17 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                 postSLStartupActivationEntered, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
                 effectivePostSLRuntimeStateStabilizing);
             ResetStartupProtectedOffChurnActiveProof("forwarded activated-unconfirmed SetOptions disable");
+        } else if (explicitSetOptionsDisableIsAuthoritative) {
+            HookLogImportant(
+                "Streamline Hook: Accepting explicit slDLSSGSetOptions(OFF) as authoritative after confirmed PostSL "
+                "rendering (viewport=%u startupWindow=%d hadFSR=%d safeBootstrap=%d pending=%d unconfirmed=%d "
+                "settling=%d stabilizing=%d activeProofPending=%d)",
+                viewportKey, startupWindowActive ? 1 : 0, hadFSRFGPhase ? 1 : 0,
+                safePostFSRBootstrapPath ? 1 : 0, startupActivationPending ? 1 : 0,
+                postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
+                effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
+            ResetStartupProtectedOffChurnActiveProof("forwarded authoritative SetOptions disable");
         }
         result = originalSetOptions(viewport, adjustedOptions);
     }

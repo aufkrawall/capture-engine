@@ -402,6 +402,20 @@ TEST(DXGISharedTest, AuthoritativeFFXQueueOverridesStaleStreamlineQueueHookabili
         ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(true, false, false, true));
 }
 
+TEST(DXGISharedTest, AuthoritativeNativeFSRSkipsSeparateOverlayWorkEvenBeforeOwnershipLatch) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        false, false, ce::fg_runtime::RuntimeMode::kOff, true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        false, false, ce::fg_runtime::RuntimeMode::kOff, false, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        false, true, ce::fg_runtime::RuntimeMode::kFSRFG, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, false));
+}
+
 TEST(DXGISharedTest, ExtendingStartupTransitionWindowDoesNotResetConsumedTopLevelBootstrap) {
     DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.streamlineStartupTransitionUntilMs.store(0, std::memory_order_release);
@@ -1013,7 +1027,7 @@ TEST(DXGISharedTest, RuntimeOwnedNativeFSRSuppressesInjectedOverlayGpuWorkOnlyFo
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         false, false, ce::fg_runtime::RuntimeMode::kOff, false, true, false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         true, true, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, false));
@@ -1051,9 +1065,12 @@ TEST(DXGISharedTest, FFXPresentCallbackStallAllowsNormalOverlayRendering) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         true, true, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, true));
 
-    // No runtime ownership also still means no skip.
+    // Runtime-ownership latching is not required once native FSR is authoritative; the
+    // callback-owned path must remain the only overlay path until a safe fallback is proven.
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        false, false, ce::fg_runtime::RuntimeMode::kOff, false, false, true));
 }
 
 TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresCallbackBridgeBeforeNormalOverlayFallback) {
@@ -2722,6 +2739,11 @@ TEST(DXGISharedTest, RetainedStartupActivationServiceAllowsPrearmedPostSLButIsWa
                                                                                              true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(true, true, true, false,
                                                                                              false, true));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(true, true, false, false,
+                                                                                            true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(true, true, false, false,
+                                                                                             true, true, true));
 }
 
 TEST(DXGISharedTest, PostSLOnlyLatchesSuspensionForFullyInactiveSignalDrop) {

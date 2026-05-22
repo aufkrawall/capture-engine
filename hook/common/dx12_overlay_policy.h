@@ -559,32 +559,27 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
 
 inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     bool runtimeOwnsSwapchain, bool streamlineFGRunning, fg_runtime::RuntimeMode runtimeMode,
-    bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath, bool ffxPresentCallbackStalled = false) {
-    if ((!runtimeOwnsSwapchain && !runtimeOwnedNativeFGPresentPath) || streamlineFGRunning) {
+    bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath,
+    bool ffxPresentCallbackFallbackAllowed = false) {
+    if (streamlineFGRunning) {
         return false;
     }
 
-    // If the FFX present callback has stalled (has not fired within the stall
-    // threshold while the runtime owns the swapchain), fall back to normal
-    // overlay rendering rather than keeping the overlay invisible indefinitely.
-    if (ffxPresentCallbackStalled) {
+    const bool nativeFSRPresentOwnership =
+        authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode) || runtimeOwnedNativeFGPresentPath;
+    if (!nativeFSRPresentOwnership) {
         return false;
     }
 
     // Native/runtime-owned FSR is stricter than the generic runtime-owned
-    // non-FSR windows. Once FFX owns the live swapchain queue, any injected
-    // DX12 GPU work we submit on that queue can deadlock inside the native FFX
-    // runtime (observed in amd_fidelityfx_dx12!ffxQuery after takeover).
-    // Suppress the injected overlay GPU path until a non-FSR topology returns.
-    //
-    // Keep the generic runtime-owned non-FSR path alive though. DLSS /
-    // Streamline suspension windows can keep the swapchain runtime-owned
-    // without native FSR ownership, and those windows still need normal
-    // ProcessFrame recovery instead of blanket overlay suppression.
-    // The native/runtime-owned FSR teardown window is also still part of the
-    // callback-owned Present path, even while the temporary effective runtime
-    // label says Off.
-    return authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode) || runtimeOwnedNativeFGPresentPath;
+    // non-FSR windows. Once official/native FSR is authoritative, CE must keep
+    // overlay rendering on the runtime-cooperative present callback path even
+    // if the later swapchain-ownership latch has not fired. GTA Enhanced can
+    // expose exactly that shape: enabled ffxConfigure + live callback renders
+    // with runtimeOwnsSwapchain still false, followed by device removal on the
+    // first separate injected overlay ECL.
+    (void)runtimeOwnsSwapchain;
+    return !ffxPresentCallbackFallbackAllowed;
 }
 
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
@@ -1792,10 +1787,14 @@ inline bool ShouldServicePostSLStartupActivationWhileOffChurnDeferred(bool shoul
 
 inline bool ShouldInvokeRetainedPostSLStartupActivationService(
     bool callbackInstalled, bool activationSwapchainAvailable, bool activationPending,
-    bool postSLStartupActivationEntered, bool postSLConfirmedRendering, bool activationServiceInProgress) {
-    if (!callbackInstalled || !activationSwapchainAvailable || postSLConfirmedRendering ||
-        activationServiceInProgress) {
+    bool postSLStartupActivationEntered, bool postSLConfirmedRendering, bool activationServiceInProgress,
+    bool allowConfirmedWarmupService = false) {
+    if (!callbackInstalled || !activationSwapchainAvailable || activationServiceInProgress) {
         return false;
+    }
+
+    if (postSLConfirmedRendering) {
+        return allowConfirmedWarmupService;
     }
 
     return activationPending && !postSLStartupActivationEntered;

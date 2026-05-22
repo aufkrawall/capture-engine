@@ -80,7 +80,8 @@ static ffxReturnCode_t TestFrameGenerationCallback(ffxDispatchDescFrameGeneratio
     return ret;
 }
 
-static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer) {
+static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer, const char* reason = "switch",
+                         bool forceLog = true) {
     if (!g_FfxConfigure || !g_FfxCtx) {
         return false;
     }
@@ -107,11 +108,16 @@ static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer) {
     cfgDesc.frameID = g_FrameIdCounter;
 
     ffxReturnCode_t ret = g_FfxConfigure(&g_FfxCtx, &cfgDesc.header);
-    testapp::Log("[FG-DIAG] ffxConfigure(%s) frameID=%llu enabled=%d result=%u (%s) swapChain=%p swapchainCtx=%p flags=0x%x hudless=%p\n",
-                 enable ? "enable" : "disable", static_cast<unsigned long long>(g_FrameIdCounter),
-                 cfgDesc.frameGenerationEnabled, ret, FfxReturnName(ret), g_SwapChain.Get(), (void*)g_FfxSwapChainCtx,
-                 cfgDesc.flags, cfgDesc.HUDLessColor.resource);
-    testapp::LogFlush();
+    if (forceLog || ret != FFX_API_RETURN_OK || g_FrameIdCounter - g_LastFsrConfigureLogFrame >= 120) {
+        g_LastFsrConfigureLogFrame = g_FrameIdCounter;
+        testapp::Log("[FG-DIAG] ffxConfigure(%s) reason=%s frameID=%llu enabled=%d result=%u (%s) "
+                     "swapChain=%p swapchainCtx=%p flags=0x%x hudless=%p everyFrame=%d\n",
+                     enable ? "enable" : "disable", reason ? reason : "unknown",
+                     static_cast<unsigned long long>(g_FrameIdCounter), cfgDesc.frameGenerationEnabled, ret,
+                     FfxReturnName(ret), g_SwapChain.Get(), (void*)g_FfxSwapChainCtx, cfgDesc.flags,
+                     cfgDesc.HUDLessColor.resource, g_FsrConfigureEveryFrame ? 1 : 0);
+        testapp::LogFlush();
+    }
     return ret == FFX_API_RETURN_OK;
 }
 
@@ -235,7 +241,7 @@ static bool TryInitFSR() {
                  (void*)g_FfxCtx, createDesc.displaySize.width, createDesc.displaySize.height,
                  (void*)g_FfxSwapChainCtx);
     testapp::Log("[FG-DIAG] Sending startup disabled FSR configure before auto/user enable\n");
-    ConfigureFSR(false, nullptr);
+    ConfigureFSR(false, nullptr, "startup disabled", true);
     return true;
 }
 
@@ -276,7 +282,7 @@ static void DispatchFSRPrepare(float elapsedSeconds) {
 
 static void DestroyFSRContexts() {
     if (g_FfxConfigure && g_FfxCtx) {
-        ConfigureFSR(false, nullptr);
+        ConfigureFSR(false, nullptr, "destroy FSR contexts", true);
         WaitForFSRSwapChainPresents("destroy FSR contexts");
     }
     testapp::Log("[FG-DIAG] FSR callback totals: present=%llu frameGeneration=%llu\n",

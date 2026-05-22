@@ -1619,7 +1619,8 @@ static IDXGISwapChain* AcquireSwapchainForStartupActivation(const char* source) 
     return nullptr;
 }
 
-bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clearStartupWindow) {
+bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clearStartupWindow,
+                                                   bool allowConfirmedWarmupService) {
     if (HookHasRuntimeOwnedNativeFGPresentPath() || g_FGCompat.IsFSRFGApiActive()) {
         static std::atomic<int> s_nativeFSRStartupActivationSkipLogCount{0};
         const int logCount = s_nativeFSRStartupActivationSkipLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -1670,7 +1671,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
     const bool serviceAlreadyInProgress = g_PostSLStartupActivationServiceInProgress.load(std::memory_order_acquire);
     if (!ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
             true, true, activationPending, postSLStartupActivationEntered, postSLConfirmedRendering,
-            serviceAlreadyInProgress)) {
+            serviceAlreadyInProgress, allowConfirmedWarmupService)) {
         const char* reason = serviceAlreadyInProgress         ? "in-progress"
                              : postSLConfirmedRendering       ? "already-confirmed"
                              : postSLStartupActivationEntered ? "startup-activation-entered"
@@ -1695,7 +1696,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
     const bool postSLConfirmedRenderingAfterClaim = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
     if (!ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
             true, true, activationPendingAfterClaim, postSLStartupActivationEnteredAfterClaim,
-            postSLConfirmedRenderingAfterClaim, false)) {
+            postSLConfirmedRenderingAfterClaim, false, allowConfirmedWarmupService)) {
         const char* reason = postSLConfirmedRenderingAfterClaim         ? "already-confirmed"
                              : postSLStartupActivationEnteredAfterClaim ? "startup-activation-entered"
                              : !activationPendingAfterClaim             ? "activation-not-pending"
@@ -1712,10 +1713,14 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
 
     HookLogImportant(
         "DX12: Invoking retained-swapchain PostSL startup activation callback "
-        "(source=%s swapchain=%p clearWindow=%d startupPending=1 activeButUnconfirmed=%d "
-        "startupActivationEntered=0 tid=0x%04X)",
+        "(source=%s swapchain=%p clearWindow=%d startupPending=%d activeButUnconfirmed=%d "
+        "startupActivationEntered=%d confirmed=%d warmupService=%d tid=0x%04X)",
         source ? source : "unknown", activationSwapchain, clearStartupWindow ? 1 : 0,
-        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, GetCurrentThreadId());
+        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1 : 0,
+        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0,
+        HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
+        g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0,
+        allowConfirmedWarmupService ? 1 : 0, GetCurrentThreadId());
     postSLCallback(activationSwapchain);
     HookLogImportant(
         "DX12: Retained-swapchain PostSL startup activation callback returned "
@@ -1728,6 +1733,11 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
     g_PostSLStartupActivationServiceInProgress.store(false, std::memory_order_release);
     SafeReleaseStartupActivationSwapchain(activationSwapchain, "DX12_TryInvokePostSLStartupActivationCallback");
     return true;
+}
+
+static bool DX12_TryInvokePostSLStartupActivationCallbackFromSharedService(const char* source,
+                                                                           bool clearStartupWindow) {
+    return DX12_TryInvokePostSLStartupActivationCallback(source, clearStartupWindow, false);
 }
 
 // Track the game's Present thread ID. Captured from the first non-FG Present call.
@@ -3653,11 +3663,45 @@ void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallb
     }
 
     std::lock_guard<std::mutex> lock(g_FFXPresentCallbackBridgeMutex);
+    auto it = g_FFXPresentCallbackBridges.find(bridgeKey);
+    if (originalCallback == &DX12_RenderOverlayViaFFXPresentCallback) {
+        static std::atomic<int> s_selfBridgeLogCount{0};
+        const int logCount = s_selfBridgeLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Ignoring recursive FFX present-callback bridge original for key=%p "
+                "(existing=%d originalUserCtx=%p log=%d)",
+                bridgeKey, it != g_FFXPresentCallbackBridges.end() ? 1 : 0, originalUserContext, logCount + 1);
+        }
+        if (it == g_FFXPresentCallbackBridges.end()) {
+            g_FFXPresentCallbackBridges[bridgeKey] = {
+                .originalCallback = nullptr,
+                .originalUserContext = nullptr,
+                .installed = true,
+            };
+        }
+        return;
+    }
+
     g_FFXPresentCallbackBridges[bridgeKey] = {
         .originalCallback = originalCallback,
         .originalUserContext = originalUserContext,
         .installed = true,
     };
+}
+
+bool DX12_HasFFXPresentCallbackBridge(void* bridgeKey) {
+    if (!bridgeKey) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_FFXPresentCallbackBridgeMutex);
+    const auto it = g_FFXPresentCallbackBridges.find(bridgeKey);
+    return it != g_FFXPresentCallbackBridges.end() && it->second.installed;
+}
+
+bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback) {
+    return callback == &DX12_RenderOverlayViaFFXPresentCallback;
 }
 
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey) {
@@ -3746,6 +3790,26 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* desc, void* userCtx) {
     g_LastFFXPresentCallbackTickMs.store(GetTickCount64(), std::memory_order_release);
 
+    static thread_local int s_ffxPresentCallbackDepth = 0;
+    if (s_ffxPresentCallbackDepth > 0) {
+        static std::atomic<int> s_recursiveCallbackLogCount{0};
+        const int logCount = s_recursiveCallbackLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Suppressing recursive FFX present-callback bridge entry "
+                "(depth=%d frameId=%llu userCtx=%p log=%d)",
+                s_ffxPresentCallbackDepth,
+                desc ? static_cast<unsigned long long>(desc->frameID) : 0ULL, userCtx, logCount + 1);
+        }
+        return 0;
+    }
+
+    struct CallbackDepthGuard {
+        int& depth;
+        explicit CallbackDepthGuard(int& d) : depth(d) { ++depth; }
+        ~CallbackDepthGuard() { --depth; }
+    } depthGuard(s_ffxPresentCallbackDepth);
+
     ce::ffx_api::PresentCallback originalCallback = nullptr;
     void* originalUserContext = nullptr;
     {
@@ -3759,7 +3823,19 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 
     uint32_t result = 0;
     if (originalCallback) {
-        result = originalCallback(desc, originalUserContext);
+        if (originalCallback == &DX12_RenderOverlayViaFFXPresentCallback) {
+            static std::atomic<int> s_selfOriginalCallbackLogCount{0};
+            const int logCount = s_selfOriginalCallbackLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: FFX present-callback bridge original was CE bridge; skipping recursive original "
+                    "(frameId=%llu userCtx=%p originalUserCtx=%p log=%d)",
+                    desc ? static_cast<unsigned long long>(desc->frameID) : 0ULL, userCtx, originalUserContext,
+                    logCount + 1);
+            }
+        } else {
+            result = originalCallback(desc, originalUserContext);
+        }
     }
 
     if (!desc) {
@@ -5586,7 +5662,7 @@ void DX12Hook::Init() {
     s_InitDone = true;
 
     ce::fg_session::RegisterDX12LegacyStateProvider(&FillFGSessionLegacyStateView);
-    DXGIShared::g_PostSLStartupActivationService.store(&DX12_TryInvokePostSLStartupActivationCallback,
+    DXGIShared::g_PostSLStartupActivationService.store(&DX12_TryInvokePostSLStartupActivationCallbackFromSharedService,
                                                        std::memory_order_release);
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPresentObserved, "DX12Hook::Init");
 
@@ -13521,6 +13597,20 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             // FG pipeline still warming up — don't fall back to pre-SL.
                             // Just skip rendering until PostSL stabilizes.
                             skipOverlayDraw = true;
+                            if (stableFrames > 0 && stallCount > kPostSLStallThreshold &&
+                                (stallCount == kPostSLStallThreshold + 1 || (stallCount % 30) == 0)) {
+                                const bool serviced = DX12_TryInvokePostSLStartupActivationCallback(
+                                    "DX12::PostSL warmup stall service", false, true);
+                                static int s_warmupServiceLog = 0;
+                                if (serviced || s_warmupServiceLog < 10 || (s_warmupServiceLog % 100) == 0) {
+                                    HookLogImportant(
+                                        "DX12: PostSL warmup stall service %s "
+                                        "(stableFrames=%d stallCount=%d threshold=%d serviceLog=%d)",
+                                        serviced ? "rendered via retained callback" : "could not run",
+                                        stableFrames, stallCount, kPostSLWarmupThreshold, s_warmupServiceLog + 1);
+                                }
+                                ++s_warmupServiceLog;
+                            }
                             static int s_warmupSuppressLog = 0;
                             if (s_warmupSuppressLog++ < 5 || (s_warmupSuppressLog % 200) == 0) {
                                 HookLogImportant(

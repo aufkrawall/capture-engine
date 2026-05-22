@@ -122,7 +122,9 @@ static PfnFfxDestroyContext g_FfxDestroyContext = nullptr;
 static bool g_FsrInitialized = false;
 static bool g_FsrEnabled = false;
 static bool g_FsrRuntimeLoaded = false;
+static bool g_FsrConfigureEveryFrame = true;
 static uint64_t g_FrameIdCounter = 0;
+static uint64_t g_LastFsrConfigureLogFrame = 0;
 static uint64_t g_LastFsrPrepareLogFrame = 0;
 static constexpr uint64_t kNoFsrUiRegisterLogFrame = static_cast<uint64_t>(-1);
 static uint64_t g_LastFsrUiRegisterLogFrame = kNoFsrUiRegisterLogFrame;
@@ -257,7 +259,7 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
 
     bool ok = true;
     if (g_FsrEnabled) {
-        const bool disabled = ConfigureFSR(false, nullptr);
+        const bool disabled = ConfigureFSR(false, nullptr, "leave FSR mode", true);
         g_FsrEnabled = false;
         ok = ok && disabled;
         ok = ok && WaitForFSRSwapChainPresents("leave FSR mode");
@@ -285,7 +287,10 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             ok = ok && g_FsrInitialized;
         }
         UINT activeFrameIndex = g_FrameIndex < g_SwapChainBufferCount ? g_FrameIndex : frameIndex;
-        if (ok && ConfigureFSR(true, activeFrameIndex < g_SwapChainBufferCount ? g_RenderTargets[activeFrameIndex].Get() : nullptr)) {
+        if (ok && ConfigureFSR(true,
+                               activeFrameIndex < g_SwapChainBufferCount ? g_RenderTargets[activeFrameIndex].Get()
+                                                                          : nullptr,
+                               "enter FSR mode", true)) {
             g_FsrEnabled = true;
             RegisterFSRUiResource();
         } else if (ok) {
@@ -394,9 +399,16 @@ static void Render() {
     SetPCLMarker(frameToken, sl::PCLMarker::eSimulationEnd, "SimulationEnd");
     ++g_FrameIdCounter;
     if ((g_FrameIdCounter % 60) == 0) {
-        testapp::Log("[FG-DIAG] heartbeat frameID=%llu frameIndex=%u mode=%s fsr=%d dlss=%d manual=%d autoStage=%d\n",
+        testapp::Log("[FG-DIAG] heartbeat frameID=%llu frameIndex=%u mode=%s fsr=%d dlss=%d manual=%d autoStage=%d "
+                     "fsrConfigureEveryFrame=%d\n",
                      static_cast<unsigned long long>(g_FrameIdCounter), frameIndex, ModeName(g_CurrentMode),
-                     g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, g_ManualMode ? 1 : 0, g_AutoStage);
+                     g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, g_ManualMode ? 1 : 0, g_AutoStage,
+                     g_FsrConfigureEveryFrame ? 1 : 0);
+    }
+
+    if (g_FsrEnabled && g_FsrConfigureEveryFrame) {
+        ConfigureFSR(true, frameIndex < g_SwapChainBufferCount ? g_RenderTargets[frameIndex].Get() : nullptr,
+                     "per-frame active refresh", false);
     }
 
     WaitForSwapChainFrameLatency();
@@ -521,6 +533,7 @@ int main(int argc, char* argv[]) {
     testapp::Log("Process ID: %lu\n", GetCurrentProcessId());
     testapp::Log("Auto: OFF -> FSR at 3s -> DLSS at 6s -> FSR at 9s\n");
     testapp::Log("Keys: 1=OFF 2=DLSS FG 3=FSR FG ESC=exit\n\n");
+    testapp::Log("Stress: FSR active mode re-sends ffxConfigure every frame to mimic engines that refresh FG descriptors\n\n");
     testapp::LogFlush();
 
     testapp::Log("Loading Streamline before DXGI/D3D12...\n");

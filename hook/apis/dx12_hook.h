@@ -86,10 +86,13 @@ void DX12_OnStreamlineFGStateChanged(bool active);
 bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 void DX12_PrepareForStreamlineEnableTransition();
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source);
-bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clearStartupWindow);
+bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clearStartupWindow,
+                                                   bool allowConfirmedWarmupService = false);
 DWORD DX12_GetGamePresentThreadId();
 void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallback originalCallback,
                                       void* originalUserContext);
+bool DX12_HasFFXPresentCallbackBridge(void* bridgeKey);
+bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback);
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
 void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);
 void DX12_ServiceDeferredECLProbe();
