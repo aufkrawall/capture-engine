@@ -174,16 +174,6 @@ bool IsCurrentProcessHandle(HANDLE processHandle) {
   return targetPid != 0 && targetPid == GetCurrentProcessId();
 }
 
-bool ClearDeleteOnClose(HANDLE fileHandle) {
-  if (!fileHandle || fileHandle == INVALID_HANDLE_VALUE) {
-    return false;
-  }
-
-  FILE_DISPOSITION_INFO disposition = {};
-  disposition.DeleteFile = FALSE;
-  return SetFileInformationByHandle(fileHandle, FileDispositionInfo, &disposition, sizeof(disposition)) != FALSE;
-}
-
 void DescribeAddressModule(void* address, char* buffer, size_t bufferSize) {
   if (!buffer || bufferSize == 0) {
     return;
@@ -1146,9 +1136,9 @@ void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess,
     DeleteFileA(tempMirrorPath.c_str());
 
     HANDLE mirrorFile =
-        CreateFileA(tempMirrorPath.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
-                    FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        CreateFileA(tempMirrorPath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (mirrorFile == INVALID_HANDLE_VALUE) {
       HookLog("CrashMirror: Failed to create mirror dump %s (err=%lu)", tempMirrorPath.c_str(), GetLastError());
       return;
@@ -1163,14 +1153,6 @@ void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess,
 
     LARGE_INTEGER mirrorSize = {};
     const bool mirrorNonEmpty = mirrorResult && GetFileSizeEx(mirrorFile, &mirrorSize) && mirrorSize.QuadPart > 0;
-    if (mirrorNonEmpty && !ClearDeleteOnClose(mirrorFile)) {
-      const DWORD clearError = GetLastError();
-      CloseHandle(mirrorFile);
-      DeleteFileA(tempMirrorPath.c_str());
-      HookLog("CrashMirror: Failed to clear delete-on-close for mirror dump %s (err=%lu)", tempMirrorPath.c_str(),
-              clearError);
-      return;
-    }
     CloseHandle(mirrorFile);
 
     if (!mirrorNonEmpty) {
@@ -1182,9 +1164,15 @@ void MirrorExternalDumpArtifactIfNeeded(const char* sourcePath, HANDLE hProcess,
 
     if (!MoveFileExA(tempMirrorPath.c_str(), mirrorPath.c_str(), MOVEFILE_WRITE_THROUGH)) {
       const DWORD moveError = GetLastError();
-      DeleteFileA(tempMirrorPath.c_str());
-      HookLog("CrashMirror: Failed to promote mirror dump %s -> %s (err=%lu)", tempMirrorPath.c_str(),
-              mirrorPath.c_str(), moveError);
+      if (CopyFileA(tempMirrorPath.c_str(), mirrorPath.c_str(), FALSE)) {
+        DeleteFileA(tempMirrorPath.c_str());
+        HookLogImportant("CrashMirror: Mirrored external dump %s -> %s via CopyFile fallback", sourcePath,
+                         mirrorPath.c_str());
+      } else {
+        const DWORD copyError = GetLastError();
+        HookLog("CrashMirror: Failed to promote mirror dump %s -> %s (moveErr=%lu copyErr=%lu); preserving temp",
+                tempMirrorPath.c_str(), mirrorPath.c_str(), moveError, copyError);
+      }
       return;
     }
 

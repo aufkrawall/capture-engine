@@ -81,6 +81,7 @@ std::unordered_set<void*> g_PresentCallbackBridgeKeys;
 PfnFfxCreateContext g_Original_ffxCreateContext = nullptr;
 PfnFfxDestroyContext g_Original_ffxDestroyContext = nullptr;
 PfnFfxConfigure g_Original_ffxConfigure = nullptr;
+thread_local PfnFfxConfigure t_FfxConfigureOriginalOverride = nullptr;
 
 std::atomic<bool> g_ffxCreateContextInlineHooked{false};
 std::atomic<bool> g_ffxDestroyContextInlineHooked{false};
@@ -88,6 +89,55 @@ std::atomic<bool> g_ffxConfigureInlineHooked{false};
 std::atomic<void*> g_ffxCreateContextTarget{nullptr};
 std::atomic<void*> g_ffxDestroyContextTarget{nullptr};
 std::atomic<void*> g_ffxConfigureTarget{nullptr};
+std::recursive_mutex g_FfxConfigureBreakpointMutex;
+static void* g_ffxConfigureVehHandle = nullptr;
+static uint8_t g_ffxConfigureOriginalFirstByte = 0;
+static std::atomic<bool> g_ffxConfigureVehArmed{false};
+static std::atomic<int> g_FfxConfigureOriginalForwardDepth{0};
+static std::atomic<bool> g_FfxConfigureDeferredRearm{false};
+static std::atomic<void*> g_FfxConfigureDeferredRearmTarget{nullptr};
+
+static bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* moduleName, const char* reason);
+static ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigure, ffxContext* context,
+                                                       const ffxConfigureDescHeader* desc);
+
+bool IsCommittedReadableCodeAddress(void* address) {
+    if (!address) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (!VirtualQuery(address, &mbi, sizeof(mbi))) {
+        return false;
+    }
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+    return true;
+}
+
+template <typename T>
+void RefreshDirectOriginalForModuleReload(T& original, T resolved, std::atomic<bool>& inlineHooked,
+                                          std::atomic<void*>& targetSlot, const char* hookName,
+                                          const char* moduleName) {
+    (void)targetSlot;
+    if (!resolved) {
+        return;
+    }
+
+    if (inlineHooked.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    if (original && original != resolved) {
+        HookLogImportant(
+            "FFX Hook: Refreshing %s original after FFX module reload/rescan (old=%p new=%p module=%s)",
+            hookName, reinterpret_cast<void*>(original), reinterpret_cast<void*>(resolved),
+            moduleName && moduleName[0] ? moduleName : "unknown");
+    }
+
+    original = resolved;
+}
 
 template <typename T>
 bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
@@ -159,9 +209,10 @@ void* GetOrCreatePresentCallbackBridgeKey(ffxContext context) {
         return nullptr;
     }
 
-    const uintptr_t raw = reinterpret_cast<uintptr_t>(context);
-    const uintptr_t tagged = raw | static_cast<uintptr_t>(1);
-    void* key = reinterpret_cast<void*>(tagged);
+    // This value is passed to the official FSR runtime as an opaque callback
+    // user context. Keep it aligned and real; some runtime paths are stricter
+    // than the SDK smoke tests and can reject or touch tagged pointers.
+    void* key = reinterpret_cast<void*>(context);
     std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
     g_PresentCallbackBridgeKeys.insert(key);
     return key;
@@ -172,9 +223,7 @@ void* GetPresentCallbackBridgeKey(ffxContext context) {
         return nullptr;
     }
 
-    const uintptr_t raw = reinterpret_cast<uintptr_t>(context);
-    const uintptr_t tagged = raw | static_cast<uintptr_t>(1);
-    return reinterpret_cast<void*>(tagged);
+    return reinterpret_cast<void*>(context);
 }
 
 bool HasTrackedPresentCallbackBridgeKey(void* key) {
@@ -269,11 +318,9 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
 
     {
         std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
-        g_PresentCallbackBridgeKeys.erase(
-            reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(context) | static_cast<uintptr_t>(1)));
+        g_PresentCallbackBridgeKeys.erase(reinterpret_cast<void*>(context));
     }
-    DX12_ClearFFXPresentCallbackBridge(
-        reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(context) | static_cast<uintptr_t>(1)));
+    DX12_ClearFFXPresentCallbackBridge(reinterpret_cast<void*>(context));
 
     // Call original
     ffxReturnCode_t result = g_Original_ffxDestroyContext(context, memCb);
@@ -314,7 +361,9 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
 }
 
 ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescHeader* desc) {
-    if (!g_Original_ffxConfigure) {
+    PfnFfxConfigure originalConfigure =
+        t_FfxConfigureOriginalOverride ? t_FfxConfigureOriginalOverride : g_Original_ffxConfigure;
+    if (!originalConfigure) {
         HookLog("FFX Hook: ffxConfigure called but original not set!");
         return 1;  // Error
     }
@@ -323,7 +372,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // accessing DX12 swapchain state (HDR, callback bridges) while SL's
     // critical initialization is still in progress.  Just forward the call.
     if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
-        return g_Original_ffxConfigure(context, desc);
+        return CallFfxConfigureOriginalGuarded(originalConfigure, context, desc);
     }
 
     ce::ffx_api::ConfigureDescFrameGeneration localConfig = {};
@@ -375,7 +424,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         }
     }
 
-    const ffxReturnCode_t result = g_Original_ffxConfigure(context, descToCall);
+    const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded(originalConfigure, context, descToCall);
     if (result != FFX_API_RETURN_OK || !desc) {
         return result;
     }
@@ -523,6 +572,9 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
         return false;
     }
 
+    const bool allowInlineHooks = ce::ffx_api::ShouldInlineHookFFXExportsForModule(moduleName);
+    const bool allowIATHooks = ce::ffx_api::ShouldPatchFFXImportsForModule(moduleName);
+
     const auto resolvedDefaultPresentCallback =
         reinterpret_cast<ce::ffx_api::PresentCallback>(GetProcAddress(hModule, "ffxFrameInterpolationUiComposition"));
     if (resolvedDefaultPresentCallback && resolvedDefaultPresentCallback != g_DefaultPresentCallback) {
@@ -533,24 +585,20 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
         }
     }
 
-    // Preserve the existing trampoline-backed originals across rescan attempts.
-    // Repeated Init() calls are expected now that later native-FSR DLL loads can
-    // arrive after an earlier module instance was already hooked.
-    if (!g_Original_ffxCreateContext) {
-        g_Original_ffxCreateContext = createCtx;
-    }
-    if (!g_Original_ffxDestroyContext) {
-        g_Original_ffxDestroyContext = destroyCtx;
-    }
-    if (!g_Original_ffxConfigure) {
-        g_Original_ffxConfigure = configureCtx;
-    }
+    // Direct-export originals must follow protected/dynamic FFX module reloads.
+    // GTA can unload amd_fidelityfx_dx12.dll and map it again at a new base when
+    // a save enables native FSR; keeping the old ffxConfigure pointer turns the
+    // next VEH hook call into a DEP fault on the unmapped image.
+    RefreshDirectOriginalForModuleReload(g_Original_ffxCreateContext, createCtx, g_ffxCreateContextInlineHooked,
+                                         g_ffxCreateContextTarget, "ffxCreateContext", moduleName);
+    RefreshDirectOriginalForModuleReload(g_Original_ffxDestroyContext, destroyCtx, g_ffxDestroyContextInlineHooked,
+                                         g_ffxDestroyContextTarget, "ffxDestroyContext", moduleName);
+    RefreshDirectOriginalForModuleReload(g_Original_ffxConfigure, configureCtx, g_ffxConfigureInlineHooked,
+                                         g_ffxConfigureTarget, "ffxConfigure", moduleName);
     g_HookedModule = hModule;
 
     RegisterDynamicHooksOnce();
 
-    const bool allowInlineHooks = ce::ffx_api::ShouldInlineHookFFXExportsForModule(moduleName);
-    const bool allowIATHooks = ce::ffx_api::ShouldPatchFFXImportsForModule(moduleName);
     if (!allowInlineHooks && !allowIATHooks && firstSeenModule) {
         HookLogImportant(
             "FFX Hook: Using GetProcAddress-only hooks for protected official FFX module %s; inline export patching "
@@ -640,13 +688,78 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
 // returns so later save-load enable packets are still visible.
 // ============================================================================
 
-static void* g_ffxConfigureVehHandle = nullptr;
-static uint8_t g_ffxConfigureOriginalFirstByte = 0;
-static std::atomic<bool> g_ffxConfigureVehArmed{false};
+static void RestoreFfxConfigureBreakpointIfCurrent(void* target, const char* reason) {
+    std::lock_guard<std::recursive_mutex> lock(g_FfxConfigureBreakpointMutex);
+    if (!target || !g_ffxConfigureVehArmed.load(std::memory_order_acquire) ||
+        g_ffxConfigureTarget.load(std::memory_order_acquire) != target) {
+        return;
+    }
+
+    if (!IsCommittedReadableCodeAddress(target)) {
+        g_ffxConfigureVehArmed.store(false, std::memory_order_release);
+        HookLogImportant("FFX Hook: Dropping stale VEH breakpoint state for unloaded ffxConfigure target %p (%s)",
+                         target, reason && reason[0] ? reason : "target changed");
+        return;
+    }
+
+    auto* targetByte = static_cast<uint8_t*>(target);
+    if (*targetByte != 0xCC) {
+        g_ffxConfigureVehArmed.store(false, std::memory_order_release);
+        return;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        HookLogImportant("FFX Hook: Failed to restore stale VEH breakpoint at %p before retargeting (err=%lu)",
+                         target, GetLastError());
+        return;
+    }
+    *targetByte = g_ffxConfigureOriginalFirstByte;
+    FlushInstructionCache(GetCurrentProcess(), targetByte, 1);
+    VirtualProtect(target, 1, oldProtect, &oldProtect);
+    g_ffxConfigureVehArmed.store(false, std::memory_order_release);
+    HookLogImportant("FFX Hook: Restored stale VEH breakpoint at %p before retargeting (%s)", target,
+                     reason && reason[0] ? reason : "target changed");
+}
 
 static bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* moduleName, const char* reason) {
+    std::lock_guard<std::recursive_mutex> lock(g_FfxConfigureBreakpointMutex);
     if (!target) {
         return false;
+    }
+
+    if (g_FfxConfigureOriginalForwardDepth.load(std::memory_order_acquire) > 0) {
+        g_FfxConfigureDeferredRearmTarget.store(reinterpret_cast<void*>(target), std::memory_order_release);
+        g_FfxConfigureDeferredRearm.store(true, std::memory_order_release);
+        if (!g_ffxConfigureInlineHooked.load(std::memory_order_acquire) && g_Original_ffxConfigure != target) {
+            HookLogImportant(
+                "FFX Hook: Updating protected ffxConfigure original while deferring VEH arm "
+                "(old=%p new=%p module=%s reason=%s)",
+                reinterpret_cast<void*>(g_Original_ffxConfigure), reinterpret_cast<void*>(target),
+                moduleName ? moduleName : "FFX", reason ? reason : "unknown");
+            g_Original_ffxConfigure = target;
+        }
+        static std::atomic<int> s_deferredArmLogCount{0};
+        const int logCount = s_deferredArmLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 20 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "FFX Hook: Deferring ffxConfigure VEH breakpoint arm while original forwarding is active "
+                "(target=%p module=%s reason=%s depth=%d log=%d)",
+                reinterpret_cast<void*>(target), moduleName ? moduleName : "FFX", reason ? reason : "unknown",
+                g_FfxConfigureOriginalForwardDepth.load(std::memory_order_acquire), logCount);
+        }
+        return true;
+    }
+
+    if (!IsCommittedReadableCodeAddress(reinterpret_cast<void*>(target))) {
+        HookLogImportant("FFX Hook: Refusing to arm VEH breakpoint for unreadable ffxConfigure target %p (%s)",
+                         reinterpret_cast<void*>(target), moduleName ? moduleName : "FFX");
+        return false;
+    }
+
+    void* previousTarget = g_ffxConfigureTarget.load(std::memory_order_acquire);
+    if (previousTarget && previousTarget != reinterpret_cast<void*>(target)) {
+        RestoreFfxConfigureBreakpointIfCurrent(previousTarget, "ffxConfigure target changed");
     }
 
     auto* targetByte = reinterpret_cast<uint8_t*>(reinterpret_cast<LPVOID>(target));
@@ -673,7 +786,9 @@ static bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* module
 
     g_ffxConfigureTarget.store(reinterpret_cast<void*>(target), std::memory_order_release);
     g_ffxConfigureVehArmed.store(true, std::memory_order_release);
-    if (!g_Original_ffxConfigure) {
+    if (!g_ffxConfigureInlineHooked.load(std::memory_order_acquire) && g_Original_ffxConfigure != target) {
+        HookLogImportant("FFX Hook: Updating protected ffxConfigure original for VEH target (old=%p new=%p)",
+                         reinterpret_cast<void*>(g_Original_ffxConfigure), reinterpret_cast<void*>(target));
         g_Original_ffxConfigure = target;
     }
 
@@ -697,6 +812,68 @@ static bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* module
         }
     }
     return true;
+}
+
+static ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigure, ffxContext* context,
+                                                       const ffxConfigureDescHeader* desc) {
+    if (!originalConfigure) {
+        return 1;
+    }
+
+    g_FfxConfigureOriginalForwardDepth.fetch_add(1, std::memory_order_acq_rel);
+    bool pausedBreakpoint = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_FfxConfigureBreakpointMutex);
+        void* target = reinterpret_cast<void*>(originalConfigure);
+        if (!g_ffxConfigureInlineHooked.load(std::memory_order_acquire) &&
+            g_ffxConfigureVehArmed.load(std::memory_order_acquire) &&
+            g_ffxConfigureTarget.load(std::memory_order_acquire) == target &&
+            IsCommittedReadableCodeAddress(target)) {
+            auto* targetByte = static_cast<uint8_t*>(target);
+            if (*targetByte == 0xCC) {
+                DWORD oldProtect = 0;
+                if (VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                    *targetByte = g_ffxConfigureOriginalFirstByte;
+                    FlushInstructionCache(GetCurrentProcess(), targetByte, 1);
+                    VirtualProtect(target, 1, oldProtect, &oldProtect);
+                    g_ffxConfigureVehArmed.store(false, std::memory_order_release);
+                    pausedBreakpoint = true;
+
+                    static std::atomic<int> s_forwardPauseLogCount{0};
+                    const int logCount = s_forwardPauseLogCount.fetch_add(1, std::memory_order_relaxed);
+                    if (logCount < 20 || (logCount % 300) == 0) {
+                        HookLogImportant(
+                            "FFX Hook: Temporarily paused protected ffxConfigure VEH breakpoint for guarded "
+                            "original forwarding (target=%p log=%d)",
+                            target, logCount + 1);
+                    }
+                } else {
+                    HookLogImportant(
+                        "FFX Hook: Failed to pause protected ffxConfigure VEH breakpoint before forwarding "
+                        "(target=%p err=%lu)",
+                        target, GetLastError());
+                }
+            }
+        }
+    }
+
+    const ffxReturnCode_t result = originalConfigure(context, desc);
+
+    if (pausedBreakpoint) {
+        g_FfxConfigureDeferredRearmTarget.store(reinterpret_cast<void*>(originalConfigure), std::memory_order_release);
+        g_FfxConfigureDeferredRearm.store(true, std::memory_order_release);
+    }
+
+    const int remainingDepth = g_FfxConfigureOriginalForwardDepth.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (remainingDepth == 0 && g_FfxConfigureDeferredRearm.exchange(false, std::memory_order_acq_rel)) {
+        void* deferredTarget = g_FfxConfigureDeferredRearmTarget.exchange(nullptr, std::memory_order_acq_rel);
+        if (!deferredTarget) {
+            deferredTarget = reinterpret_cast<void*>(originalConfigure);
+        }
+        ArmFfxConfigureBreakpoint(reinterpret_cast<PfnFfxConfigure>(deferredTarget),
+                                  "protected official FFX runtime", "forward-call rearm");
+    }
+    return result;
 }
 
 static LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
@@ -734,7 +911,10 @@ static LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
     );
     ffxReturnCode_t result = FFX_API_RETURN_OK;
     if (contextPtr && desc) {
+        PfnFfxConfigure previousOverride = t_FfxConfigureOriginalOverride;
+        t_FfxConfigureOriginalOverride = reinterpret_cast<PfnFfxConfigure>(target);
         result = Hooked_ffxConfigure(contextPtr, desc);
+        t_FfxConfigureOriginalOverride = previousOverride;
     }
 
     static std::atomic<int> s_vehHitLogCount{0};
@@ -797,41 +977,11 @@ static bool InstallFfxConfigureBreakpointHook(PfnFfxConfigure target, const char
 // callback bridge.  This is necessary because ffxConfigure is called during
 // AMD module init, before CE can intercept it.
 static bool InstallBridgeOnTrackedContextsImpl(void* swapChain) {
-    if (!g_Original_ffxConfigure) {
-        return false;
-    }
-
-    bool installed = false;
-    std::lock_guard<std::mutex> lock(g_ContextMapMutex);
-
-    for (auto it = g_ContextTypeMap.begin(); it != g_ContextTypeMap.end(); ++it) {
-        const uint32_t effectId = it->second;
-        if (effectId != FFX_API_EFFECT_ID_FRAMEGENERATION &&
-            effectId != FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN) {
-            continue;
-        }
-
-        void* context = it->first;
-        void* bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
-
-        ce::ffx_api::ConfigureDescFrameGeneration desc = {};
-        desc.header.type = ce::ffx_api::kConfigureDescTypeFrameGeneration;
-        desc.header.pNext = nullptr;
-        desc.swapChain = swapChain;
-        desc.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
-        desc.presentCallbackUserContext = bridgeKey;
-        desc.frameGenerationEnabled = true;
-
-        // Store bridge BEFORE calling configure so the callback is ready
-        DX12_SetFFXPresentCallbackBridge(bridgeKey, g_DefaultPresentCallback, nullptr);
-
-        const auto result = g_Original_ffxConfigure(&context, reinterpret_cast<const ffxConfigureDescHeader*>(&desc));
-        if (result == FFX_API_RETURN_OK) {
-            installed = true;
-            g_ffxConfigureVehInstalled = true;
-        }
-    }
-    return installed;
+    (void)swapChain;
+    HookLogImportant(
+        "FFX Hook: Skipping retroactive present-callback bridge install because synthetic partial ffxConfigure "
+        "packets are unsafe for the official FSR runtime; waiting for a real enabled ffxConfigure instead");
+    return false;
 }
 
 }  // anonymous namespace
@@ -987,15 +1137,8 @@ void Shutdown() {
         RemoveVectoredExceptionHandler(g_ffxConfigureVehHandle);
         g_ffxConfigureVehHandle = nullptr;
     }
-    void* vehTarget = g_ffxConfigureTarget.load(std::memory_order_acquire);
-    if (vehTarget && g_ffxConfigureOriginalFirstByte != 0 &&
-        g_ffxConfigureVehArmed.load(std::memory_order_acquire)) {
-        DWORD oldProt = 0;
-        VirtualProtect(reinterpret_cast<LPVOID>(vehTarget), 1, PAGE_EXECUTE_READWRITE, &oldProt);
-        *static_cast<uint8_t*>(reinterpret_cast<LPVOID>(vehTarget)) = g_ffxConfigureOriginalFirstByte;
-        FlushInstructionCache(GetCurrentProcess(), vehTarget, 1);
-        VirtualProtect(reinterpret_cast<LPVOID>(vehTarget), 1, oldProt, &oldProt);
-    }
+    RestoreFfxConfigureBreakpointIfCurrent(g_ffxConfigureTarget.load(std::memory_order_acquire),
+                                           "FFX hook shutdown");
     g_ffxConfigureVehInstalled = false;
     g_ffxConfigureVehArmed.store(false, std::memory_order_release);
     g_ffxConfigureTarget.store(nullptr, std::memory_order_release);

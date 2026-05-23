@@ -35,6 +35,8 @@ typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE
                                         PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
 static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
 
+void TraceCrash(const char* msg);
+
 namespace {
 
 LONG DispatchCrashExecutionFaultHandler(EXCEPTION_POINTERS* pExceptionPointers) {
@@ -227,14 +229,42 @@ void DeleteStaleEmptyInProgressDumpArtifactsForDirectory(const std::string& dump
     }
 }
 
-bool ClearDeleteOnClose(HANDLE fileHandle) {
-    if (!fileHandle || fileHandle == INVALID_HANDLE_VALUE) {
+bool PromoteInProgressDumpFile(const char* tempDumpPath, const char* dumpPath, const char* traceContext,
+                               bool* preservedTempDump) {
+    if (preservedTempDump) {
+        *preservedTempDump = false;
+    }
+    if (!tempDumpPath || !dumpPath) {
         return false;
     }
 
-    FILE_DISPOSITION_INFO disposition = {};
-    disposition.DeleteFile = FALSE;
-    return SetFileInformationByHandle(fileHandle, FileDispositionInfo, &disposition, sizeof(disposition)) != FALSE;
+    if (MoveFileExA(tempDumpPath, dumpPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return true;
+    }
+
+    const DWORD moveErr = GetLastError();
+    char msg[512];
+    snprintf(msg, sizeof(msg), "%s: MoveFileEx failed while promoting in-progress dump (err=%lu)",
+             traceContext && traceContext[0] ? traceContext : "CrashHandler", moveErr);
+    TraceCrash(msg);
+
+    if (CopyFileA(tempDumpPath, dumpPath, FALSE)) {
+        DeleteFileA(tempDumpPath);
+        snprintf(msg, sizeof(msg), "%s: Promoted in-progress dump via CopyFile fallback",
+                 traceContext && traceContext[0] ? traceContext : "CrashHandler");
+        TraceCrash(msg);
+        return true;
+    }
+
+    const DWORD copyErr = GetLastError();
+    snprintf(msg, sizeof(msg),
+             "%s: CopyFile fallback failed while promoting in-progress dump (moveErr=%lu copyErr=%lu); preserving %s",
+             traceContext && traceContext[0] ? traceContext : "CrashHandler", moveErr, copyErr, tempDumpPath);
+    TraceCrash(msg);
+    if (preservedTempDump) {
+        *preservedTempDump = true;
+    }
+    return false;
 }
 
 }  // namespace
@@ -270,10 +300,10 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
 
     DeleteFileA(tempDumpPath.string().c_str());
     HANDLE hFile =
-        CreateFileA(tempDumpPath.string().c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
-                    FILE_SHARE_READ | FILE_SHARE_DELETE,
+        CreateFileA(tempDumpPath.string().c_str(), GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ,
                     nullptr, CREATE_ALWAYS,
-                    FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -307,23 +337,16 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
 
     LARGE_INTEGER dumpSize = {};
     const bool hasNonEmptyDump = success && GetFileSizeEx(hFile, &dumpSize) && dumpSize.QuadPart > 0;
-    if (hasNonEmptyDump && !ClearDeleteOnClose(hFile)) {
-        CloseHandle(hFile);
-        DeleteFileA(tempDumpPath.string().c_str());
-        return false;
-    }
     CloseHandle(hFile);
     if (!hasNonEmptyDump) {
         DeleteFileA(tempDumpPath.string().c_str());
         return false;
     }
 
-    if (!MoveFileExA(tempDumpPath.string().c_str(), dumpPath.string().c_str(), MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileA(tempDumpPath.string().c_str());
-        return false;
-    }
-
-    return true;
+    bool preservedTempDump = false;
+    return PromoteInProgressDumpFile(tempDumpPath.string().c_str(), dumpPath.string().c_str(),
+                                     "SupplementalCrashDump", &preservedTempDump) ||
+           preservedTempDump;
 }
 
 static int IncrementExceptionCount(std::atomic<int>& counter) {
@@ -528,9 +551,9 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     }
 
     DeleteFileA(tempDumpPath);
-    HANDLE hFile = CreateFileA(tempDumpPath, GENERIC_READ | GENERIC_WRITE | DELETE,
-                               FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    HANDLE hFile = CreateFileA(tempDumpPath, GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ, NULL, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
 
     if (hFile == INVALID_HANDLE_VALUE) {
         DWORD createErr = GetLastError();
@@ -628,18 +651,10 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
                 fclose(f);
             }
         }
-        if (rv && !ClearDeleteOnClose(hFile)) {
-            err = GetLastError();
-            rv = FALSE;
-            removeTempDump = true;
-            char clearDeleteMsg[160];
-            snprintf(clearDeleteMsg, sizeof(clearDeleteMsg),
-                     "Failed to clear delete-on-close for in-progress dump file (err=%lu)", err);
-            TraceCrash(clearDeleteMsg);
-        }
         CloseHandle(hFile);
         if (rv) {
-            if (MoveFileExA(tempDumpPath, dumpPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            bool preservedTempDump = false;
+            if (PromoteInProgressDumpFile(tempDumpPath, dumpPath, "DumpWorker", &preservedTempDump)) {
                 TraceCrash("MiniDumpWriteDump Success");
                 g_DumpSuccessfullyWritten.store(true, std::memory_order_release);
                 char msg[256];
@@ -648,11 +663,15 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
             } else {
                 err = GetLastError();
                 rv = FALSE;
-                char renameErrMsg[160];
-                snprintf(renameErrMsg, sizeof(renameErrMsg), "Failed to promote in-progress dump file (err=%lu)",
-                         err);
-                TraceCrash(renameErrMsg);
-                DeleteFileA(tempDumpPath);
+                if (preservedTempDump) {
+                    TraceCrash("MiniDumpWriteDump preserved non-empty in-progress dump after promotion failure");
+                    g_DumpSuccessfullyWritten.store(true, std::memory_order_release);
+                } else {
+                    char renameErrMsg[160];
+                    snprintf(renameErrMsg, sizeof(renameErrMsg), "Failed to promote in-progress dump file (err=%lu)",
+                             err);
+                    TraceCrash(renameErrMsg);
+                }
             }
         } else if (removeTempDump) {
             DeleteFileA(tempDumpPath);

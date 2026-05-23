@@ -14,6 +14,7 @@ static void PreloadAmdCompanionDlls() {
 
 static bool LoadFSRRuntime() {
     if (g_FfxModule) {
+        g_FsrRuntimeLoaded = true;
         return true;
     }
 
@@ -27,7 +28,9 @@ static bool LoadFSRRuntime() {
     for (auto dllName : dllNames) {
         g_FfxModule = LoadLibraryW(dllName);
         if (g_FfxModule) {
-            testapp::Log("  Loaded FSR runtime: %S\n", dllName);
+            ++g_FsrRuntimeLoadGeneration;
+            testapp::Log("  Loaded FSR runtime: %S base=%p generation=%llu\n", dllName, g_FfxModule,
+                         static_cast<unsigned long long>(g_FsrRuntimeLoadGeneration));
             break;
         }
     }
@@ -44,9 +47,70 @@ static bool LoadFSRRuntime() {
         testapp::Log("[FG-DIAG] FSR DLL missing ffxCreateContext/ffxConfigure/ffxDispatch/ffxDestroyContext exports\n");
         FreeLibrary(g_FfxModule);
         g_FfxModule = nullptr;
+        g_FsrRuntimeLoaded = false;
         return false;
     }
+    g_FsrRuntimeLoaded = true;
+    testapp::Log("[FG-DIAG] FSR exports: create=%p configure=%p dispatch=%p destroy=%p generation=%llu\n",
+                 reinterpret_cast<void*>(g_FfxCreateContext), reinterpret_cast<void*>(g_FfxConfigure),
+                 reinterpret_cast<void*>(g_FfxDispatch), reinterpret_cast<void*>(g_FfxDestroyContext),
+                 static_cast<unsigned long long>(g_FsrRuntimeLoadGeneration));
     return true;
+}
+
+static void UnloadFSRRuntime(const char* reason) {
+    if (!g_FfxModule) {
+        g_FsrRuntimeLoaded = false;
+        g_FfxCreateContext = nullptr;
+        g_FfxConfigure = nullptr;
+        g_FfxDispatch = nullptr;
+        g_FfxDestroyContext = nullptr;
+        return;
+    }
+
+    testapp::Log("[FG-DIAG] Unloading FSR runtime generation=%llu base=%p reason=%s\n",
+                 static_cast<unsigned long long>(g_FsrRuntimeLoadGeneration), g_FfxModule,
+                 reason ? reason : "unknown");
+    FreeLibrary(g_FfxModule);
+    g_FfxModule = nullptr;
+    g_FfxCreateContext = nullptr;
+    g_FfxConfigure = nullptr;
+    g_FfxDispatch = nullptr;
+    g_FfxDestroyContext = nullptr;
+    g_FsrRuntimeLoaded = false;
+    g_FsrInitialized = false;
+    testapp::LogFlush();
+}
+
+static bool EnsureFSRRuntimeLoaded(const char* reason) {
+    if (g_FsrRuntimeLoaded && g_FfxModule && g_FfxCreateContext && g_FfxConfigure && g_FfxDispatch &&
+        g_FfxDestroyContext) {
+        return true;
+    }
+
+    testapp::Log("[FG-DIAG] Loading FSR runtime on demand reason=%s\n", reason ? reason : "unknown");
+    const bool loaded = LoadFSRRuntime();
+    g_FsrRuntimeLoaded = loaded;
+    if (!loaded) {
+        testapp::Log("[FG-DIAG] FSR runtime on-demand load failed reason=%s\n", reason ? reason : "unknown");
+        testapp::LogFlush();
+    }
+    return loaded;
+}
+
+static void MaybeUnloadFSRRuntimeAfterSwitch(const char* reason) {
+    if (!g_FsrReloadRuntimeOnSwitch) {
+        return;
+    }
+
+    if (g_FfxCtx || g_FfxSwapChainCtx || g_FsrEnabled) {
+        testapp::Log("[FG-DIAG] WARN skipping FSR runtime unload because contexts are still live reason=%s "
+                     "fgCtx=%p swapchainCtx=%p enabled=%d\n",
+                     reason ? reason : "unknown", (void*)g_FfxCtx, (void*)g_FfxSwapChainCtx,
+                     g_FsrEnabled ? 1 : 0);
+        return;
+    }
+    UnloadFSRRuntime(reason);
 }
 
 static ffxReturnCode_t TestPresentCallback(ffxCallbackDescFrameGenerationPresent* params, void*) {

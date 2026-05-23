@@ -74,6 +74,7 @@ static int g_WindowHeight = 1080;
 static int g_GpuLoadPasses = 40;
 static int g_VSync = 0;
 static int g_Fullscreen = 0;
+static bool g_FsrReloadRuntimeOnSwitch = true;
 
 static void LoadConfig() {
     char path[MAX_PATH];
@@ -88,6 +89,9 @@ static void LoadConfig() {
     g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
     g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
+    g_FsrReloadRuntimeOnSwitch =
+        GetPrivateProfileIntA("Stress", "fsr_reload_runtime_on_switch", g_FsrReloadRuntimeOnSwitch ? 1 : 0,
+                              configPath.c_str()) != 0;
 }
 
 constexpr int kRequestedBackBuffers = 3;
@@ -123,6 +127,7 @@ static bool g_FsrInitialized = false;
 static bool g_FsrEnabled = false;
 static bool g_FsrRuntimeLoaded = false;
 static bool g_FsrConfigureEveryFrame = true;
+static uint64_t g_FsrRuntimeLoadGeneration = 0;
 static uint64_t g_FrameIdCounter = 0;
 static uint64_t g_LastFsrConfigureLogFrame = 0;
 static uint64_t g_LastFsrPrepareLogFrame = 0;
@@ -273,7 +278,7 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
     }
 
     if (target == FGMode::FSR) {
-        if (!g_FsrRuntimeLoaded || !g_FfxCreateContext) {
+        if (!EnsureFSRRuntimeLoaded("enter FSR mode") || !g_FfxCreateContext) {
             testapp::Log("[FG-DIAG] Cannot switch to FSR FG: FSR runtime is not loaded\n");
             ok = false;
         }
@@ -302,6 +307,7 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             DestroyFSRContexts();
             g_FsrInitialized = false;
             ok = RecreateSwapChain(false, "enter DLSS mode") && ok;
+            MaybeUnloadFSRRuntimeAfterSwitch("enter DLSS mode");
         }
         if (!g_DlssInitialized) {
             testapp::Log("[FG-DIAG] Cannot switch to DLSS FG: Streamline DLSS-G was not initialized\n");
@@ -321,10 +327,12 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             DestroyFSRContexts();
             g_FsrInitialized = false;
             ok = RecreateSwapChain(false, "enter OFF mode after FSR") && ok;
+            MaybeUnloadFSRRuntimeAfterSwitch("enter OFF mode after FSR");
         } else if (ok && (g_FfxCtx || g_FfxSwapChainCtx)) {
             DestroyFSRContexts();
             g_FsrInitialized = false;
             ok = RecreateSwapChain(false, "enter OFF mode") && ok;
+            MaybeUnloadFSRRuntimeAfterSwitch("enter OFF mode");
         }
     }
 
@@ -501,10 +509,7 @@ static void Cleanup() {
     g_Fence.Reset();
     g_Device.Reset();
     ShutdownStreamline();
-    if (g_FfxModule) {
-        FreeLibrary(g_FfxModule);
-        g_FfxModule = nullptr;
-    }
+    UnloadFSRRuntime("cleanup");
     if (g_FenceEvent) {
         CloseHandle(g_FenceEvent);
         g_FenceEvent = nullptr;
@@ -533,7 +538,9 @@ int main(int argc, char* argv[]) {
     testapp::Log("Process ID: %lu\n", GetCurrentProcessId());
     testapp::Log("Auto: OFF -> FSR at 3s -> DLSS at 6s -> FSR at 9s\n");
     testapp::Log("Keys: 1=OFF 2=DLSS FG 3=FSR FG ESC=exit\n\n");
-    testapp::Log("Stress: FSR active mode re-sends ffxConfigure every frame to mimic engines that refresh FG descriptors\n\n");
+    testapp::Log("Stress: FSR active mode re-sends ffxConfigure every frame to mimic engines that refresh FG descriptors\n");
+    testapp::Log("Stress: FSR runtime unload/reload on mode switches = %d\n\n",
+                 g_FsrReloadRuntimeOnSwitch ? 1 : 0);
     testapp::LogFlush();
 
     testapp::Log("Loading Streamline before DXGI/D3D12...\n");
@@ -543,9 +550,10 @@ int main(int argc, char* argv[]) {
     }
     testapp::Log("Loading FSR runtime before DXGI/D3D12...\n");
     bool fsrRuntimeLoaded = LoadFSRRuntime();
-    g_FsrRuntimeLoaded = fsrRuntimeLoaded;
     if (!fsrRuntimeLoaded) {
         testapp::Log("[FG-DIAG] FSR runtime unavailable; FSR mode will be disabled\n");
+    } else if (g_FsrReloadRuntimeOnSwitch) {
+        UnloadFSRRuntime("startup stress before first FSR enable");
     }
     testapp::LogFlush();
 

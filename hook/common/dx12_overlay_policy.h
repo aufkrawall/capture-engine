@@ -689,6 +689,17 @@ inline bool ShouldTreatNativeFSRDisabledConfigureAsStartupArming(bool recognized
            runtimeOwnsSwapchain && !hasDirectFFXApiConfirmation;
 }
 
+inline bool ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(bool runtimeOwnsSwapchain,
+                                                                               bool runtimeOwnedNativeFGPresentPath) {
+    // A disabled configure can be a transient FSR suspension packet while the
+    // official runtime still owns presentation through its present callback.
+    // Preserve the native-FG Present ownership latch whenever either the queue
+    // detector or the stronger callback/progress proof says that path is still
+    // in charge; later queue return/context teardown/stall policy decides when
+    // normal injected overlay work is safe again.
+    return runtimeOwnsSwapchain || runtimeOwnedNativeFGPresentPath;
+}
+
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
                                                               bool frameGenerationEnabled) {
     // Disabled configure traffic can repeat rapidly during native-FSR teardown.

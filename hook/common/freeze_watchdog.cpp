@@ -704,6 +704,18 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
     } else {
         if (success && hasNonEmptyDump) {
             err = GetLastError();
+            if (CopyFileA(tempDumpPath.c_str(), dumpPath.c_str(), FALSE)) {
+                DeleteFileA(tempDumpPath.c_str());
+                snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] SUCCESS: Dump copied after move failure: %s\n",
+                         dumpPath.c_str());
+                OutputDebugStringA(logMsg);
+                HookLogImportant("FreezeWatchdog: Dump created at %s via CopyFile fallback", dumpPath.c_str());
+                return;
+            }
+            HookLogImportant(
+                "FreezeWatchdog: Failed to promote non-empty dump to %s (moveErr=%lu copyErr=%lu); preserving %s",
+                dumpPath.c_str(), err, GetLastError(), tempDumpPath.c_str());
+            return;
         }
         DeleteFileA(tempDumpPath.c_str());
         snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] FAILED to write dump, error=%lu\n", err);

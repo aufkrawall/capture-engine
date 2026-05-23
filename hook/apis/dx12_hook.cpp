@@ -1798,9 +1798,11 @@ bool HookHasRuntimeOwnedNativeFGPresentPath() {
     if (g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire)) {
         return true;
     }
+    if (g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire)) {
+        return true;
+    }
     return DXGIShared::DoesFGRuntimeOwnSwapchain() &&
-           (g_FGCompat.IsFSRFGApiActive() || g_NativeFSRStartupConfigureArmingPending.load(std::memory_order_acquire) ||
-            g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
+           (g_FGCompat.IsFSRFGApiActive() || g_NativeFSRStartupConfigureArmingPending.load(std::memory_order_acquire));
 }
 
 static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);
@@ -2511,13 +2513,11 @@ static void ApplyAuthoritativeFFXTakeoverSideEffects(ID3D12CommandQueue* capture
         callerModulePath && callerModulePath[0] ? callerModulePath : "unknown", capturedQueue,
         staleStreamlineSignal ? 1 : 0, reason && reason[0] ? reason : "unknown");
 
-    // Retroactive ffxConfigure: install the present callback bridge on tracked
-    // FG contexts.  ffxConfigure was called during AMD module init before CE
-    // could intercept it, so we call it ourselves now that FSR FG is active.
-    if (FFXHook::InstallBridgeOnTrackedContexts(nullptr)) {
-        HookLogImportant("DX12: Installed retroactive FFX present-callback bridge after authoritative takeover");
-    } else {
-        HookLogImportant("DX12: No tracked FG contexts for retroactive FFX present-callback bridge");
+    if (!g_FGCompat.HasDirectFFXApiConfirmation()) {
+        HookLogImportant(
+            "DX12: Authoritative FFX takeover has no direct ffxConfigure confirmation yet; keeping FFX hooks armed "
+            "and waiting for a real runtime configure instead of issuing a synthetic partial ffxConfigure");
+        FFXHook::Init();
     }
 }
 
@@ -2835,6 +2835,10 @@ static void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLay
 }
 
 static std::atomic<bool> g_InSwapchainResizeCleanup{false};
+static std::atomic<bool> g_PreserveOverlayAdapterAcrossResize{false};
+static std::atomic<ID3D12Device*> g_OverlayAdapterBackendDevice{nullptr};
+static std::atomic<ID3D12CommandQueue*> g_OverlayAdapterBackendQueue{nullptr};
+static std::atomic<int> g_OverlayAdapterBackendFormat{static_cast<int>(DXGI_FORMAT_UNKNOWN)};
 
 // Frame counter for post-ImGui-init delay (skip first frame to let GPU
 // stabilize)
@@ -3767,11 +3771,13 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
         return;
     }
 
+    const bool runtimeOwnedTeardownStillActive =
+        ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
+            g_FGRuntimeOwnsSwapchain, HookHasRuntimeOwnedNativeFGPresentPath());
     SetNativeFSRStartupConfigureArmingPending(false, "native FSR disabled configure");
     ClearDeferredOfficialFFXTakeoverSideEffects("native FSR disabled configure");
     ClearProtectedOfficialFFXStartupSwapchainPending("native FSR disabled configure");
     ClearOfficialFFXRuntimeOwnedPresentPathAssumption("native FSR disabled configure");
-    const bool runtimeOwnedTeardownStillActive = g_FGRuntimeOwnsSwapchain;
     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.store(runtimeOwnedTeardownStillActive, std::memory_order_release);
     if (runtimeOwnedTeardownStillActive) {
         const int logCount = s_nativeFSROffRuntimeTeardownLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -7365,6 +7371,10 @@ void ShutdownImGui() {
 
     if (g_OverlayAdapter.IsInitialized()) {
         g_OverlayAdapter.Shutdown();
+        g_OverlayAdapterBackendDevice.store(nullptr, std::memory_order_release);
+        g_OverlayAdapterBackendQueue.store(nullptr, std::memory_order_release);
+        g_OverlayAdapterBackendFormat.store(static_cast<int>(DXGI_FORMAT_UNKNOWN), std::memory_order_release);
+        g_PreserveOverlayAdapterAcrossResize.store(false, std::memory_order_release);
     }
 
     if (g_State.srvDescHeap) {
@@ -7376,14 +7386,6 @@ void ShutdownImGui() {
 
 bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd) {
     std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
-
-    // OverlayAdapter re-init check
-    if (g_OverlayAdapter.IsInitialized()) {
-        HookLog(
-            "InitImGui: OverlayAdapter already initialized, shutting down for "
-            "re-init");
-        g_OverlayAdapter.Shutdown();
-    }
 
     if (g_State.overlayInit) {
         HookLog("InitImGui: Already initialized, returning early");
@@ -7500,6 +7502,31 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         queueForBackend, g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire), g_SwapchainQueue,
         (void*)g_CommandQueue.load(), g_PostSLLastWorkingQueue,
         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0, g_FGTransitionCooldown);
+
+    const bool preserveAcrossResize = g_PreserveOverlayAdapterAcrossResize.exchange(false, std::memory_order_acq_rel);
+    const bool canReuseWarmResizeBackend =
+        preserveAcrossResize && g_OverlayAdapter.IsInitialized() &&
+        g_OverlayAdapterBackendDevice.load(std::memory_order_acquire) == device &&
+        g_OverlayAdapterBackendQueue.load(std::memory_order_acquire) == queueForBackend &&
+        g_OverlayAdapterBackendFormat.load(std::memory_order_acquire) == static_cast<int>(format);
+    if (g_OverlayAdapter.IsInitialized() && !canReuseWarmResizeBackend) {
+        HookLogImportant(
+            "InitImGui: OverlayAdapter already initialized, shutting down for re-init "
+            "(preserveResize=%d device old=%p new=%p queue old=%p new=%p fmt old=%d new=%d)",
+            preserveAcrossResize ? 1 : 0, g_OverlayAdapterBackendDevice.load(std::memory_order_acquire), device,
+            g_OverlayAdapterBackendQueue.load(std::memory_order_acquire), queueForBackend,
+            g_OverlayAdapterBackendFormat.load(std::memory_order_acquire), static_cast<int>(format));
+        g_OverlayAdapter.Shutdown();
+        g_OverlayAdapterBackendDevice.store(nullptr, std::memory_order_release);
+        g_OverlayAdapterBackendQueue.store(nullptr, std::memory_order_release);
+        g_OverlayAdapterBackendFormat.store(static_cast<int>(DXGI_FORMAT_UNKNOWN), std::memory_order_release);
+    } else if (canReuseWarmResizeBackend) {
+        HookLogImportant(
+            "InitImGui: Reusing warm DX12 overlay backend across swapchain resize "
+            "(device=%p queue=%p fmt=%d)",
+            device, queueForBackend, static_cast<int>(format));
+    }
+
     g_OverlayAdapter.SetHwnd(hwnd);
     if (!g_OverlayAdapter.InitDX12(device, queueForBackend, format)) {
         HookLog("[Overlay] DX12: OverlayAdapter::InitDX12 FAILED (device=%p, queue=%p, fmt=%d)", device,
@@ -7509,6 +7536,9 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
 
     // OverlayAdapter handles its own initialization
     HookLog("[Overlay] DX12: OverlayAdapter::InitDX12 succeeded (hwnd=%p)", hwnd);
+    g_OverlayAdapterBackendDevice.store(device, std::memory_order_release);
+    g_OverlayAdapterBackendQueue.store(queueForBackend, std::memory_order_release);
+    g_OverlayAdapterBackendFormat.store(static_cast<int>(format), std::memory_order_release);
 
     InputManager::Get().HookWindow(hwnd);
 
@@ -8404,6 +8434,17 @@ void DX12_OnSwapchainResizeBegin() {
     CleanupOverlay();  // waits on fence, releases sync resources
     CleanupRTVs();
     g_State.overlayInit = false;
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_PreserveOverlayAdapterAcrossResize.store(true, std::memory_order_release);
+        HookLogImportant(
+            "DX12: Preserving warm overlay backend across swapchain resize; only backbuffer/sync resources were "
+            "released (device=%p queue=%p fmt=%d)",
+            g_OverlayAdapterBackendDevice.load(std::memory_order_acquire),
+            g_OverlayAdapterBackendQueue.load(std::memory_order_acquire),
+            g_OverlayAdapterBackendFormat.load(std::memory_order_acquire));
+    } else {
+        g_PreserveOverlayAdapterAcrossResize.store(false, std::memory_order_release);
+    }
 
     // g_LastSwapChain is stored as a raw (non-AddRef'd) pointer to avoid
     // interfering with FSR FG's reference count management.  Do NOT Release it.
@@ -12128,6 +12169,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0);
             }
             g_OverlayAdapter.Shutdown();
+            g_OverlayAdapterBackendDevice.store(nullptr, std::memory_order_release);
+            g_OverlayAdapterBackendQueue.store(nullptr, std::memory_order_release);
+            g_OverlayAdapterBackendFormat.store(static_cast<int>(DXGI_FORMAT_UNKNOWN), std::memory_order_release);
+            g_PreserveOverlayAdapterAcrossResize.store(false, std::memory_order_release);
             CleanupOverlay(preserveNativeFSRPresentCallbackBackend);
             CleanupRTVs();
             HookLog("DX12: ProcessFrame - cleanup complete, proceeding with init");

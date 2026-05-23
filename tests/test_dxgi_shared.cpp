@@ -1364,6 +1364,16 @@ TEST(DXGISharedTest, ExplicitNativeFSROffEndsRuntimeOwnedTeardownWhenQueueReturn
         true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
 }
 
+TEST(DXGISharedTest, DisabledNativeFSRConfigurePreservesCallbackOwnedPresentPath) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
+        true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
+        false, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
+        false, false));
+}
+
 TEST(DXGISharedTest, FFXPresentCallbackBridgeInstallsOnlyForEnabledFrameGenerationConfigure) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true));
 
