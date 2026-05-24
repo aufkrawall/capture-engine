@@ -832,6 +832,19 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPrefersValidatedLastWorkingQueue
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
 }
 
+TEST(DXGISharedTest, ExplicitNativeFSROffRecoveryUsesOriginalQueueDespiteStaleSwapchainQueue) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, true, true, false, false, false, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+
+    // Without an original game queue, keep the existing conservative
+    // runtime-owned routing because there is no proven normal Present queue.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, true, false, false, false, false, true),
+              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+}
+
 TEST(DXGISharedTest, ReusesValidatedLastWorkingQueueForResumedDLSSDuringPostFSRInactiveRecovery) {
     EXPECT_TRUE(ce::dx12_overlay_policy::
                     ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
@@ -1088,11 +1101,12 @@ TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresCallbackBri
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(true, true, false,
                                                                                               false)));
 
-    // Stable same-queue proof means the native-FSR runtime survived startup,
-    // not that CE can submit extra overlay GPU work into that queue.
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+    // Protected official FFX runtimes may never expose ffxConfigure to CE.
+    // Stable same-queue proof is the generic fallback that keeps the overlay
+    // visible without patching the runtime code page.
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, true, false, false, true));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true,
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(true, true, false,
                                                                                                false, true)));
@@ -1123,25 +1137,49 @@ TEST(DXGISharedTest, NativeFSRTimeoutOverrideRequiresSafeCallbackStallFallback) 
         true, true, true, true));
 }
 
-TEST(DXGISharedTest, ExplicitNativeFSROffBlocksStalledCallbackNormalOverlayFallback) {
+TEST(DXGISharedTest, ExplicitNativeFSROffAllowsProvenStalledCallbackNormalOverlayFallback) {
     // GTA menu/suspend paths explicitly configure native FSR FG off while the
     // FFX context and callback bridge remain alive. The missing callback is
-    // expected in that state, so even fresh callback proof must not wake the
-    // separate DX12 overlay command-list path.
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
-        true, false, true, false, false, 0, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
-        true, false, false, true, false, 0, true));
+    // expected in that state; direct callback/API proof lets CE keep drawing on
+    // the normal game Present path while FG is suspended.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(false, true));
 
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, false, true, false, false, 0, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, false, false, true, false, 0, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, true, false, false, true, 0, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+        true, false, false, false, false, 0, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         false, false, ce::fg_runtime::RuntimeMode::kOff, false, true,
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
             true, false, false, true, false, 0, true)));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
         true, false, true,
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
             true, false, false, true, false, 0, true)));
+}
+
+TEST(DXGISharedTest, D3D12FactoryWrapperBypassesFrameGenerationRuntimeSwapchains) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
+        false, true, true, true, true, ce::fg_runtime::RuntimeMode::kFSRFG));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
+        true, false, false, false, false, ce::fg_runtime::RuntimeMode::kOff));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
+        true, true, false, false, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
+        true, false, true, false, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
+        true, false, false, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
+        true, false, false, false, true, ce::fg_runtime::RuntimeMode::kFSRFG));
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackProofIsScopedToCurrentRuntimeTakeover) {

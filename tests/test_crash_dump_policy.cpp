@@ -150,7 +150,7 @@ TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesOnlyCurrentProcessCrashLikeE
 }
 
 TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesActiveFrameGenerationRuntimeExits) {
-    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 0, false, true));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 0, false, true));
     EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 1, false, true));
 
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(false, 0, false, true));

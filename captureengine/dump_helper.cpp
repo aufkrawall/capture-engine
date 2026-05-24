@@ -124,7 +124,7 @@ int RunDumpHelperFromCommandLine() {
     }
 
     const bool wroteDump = WriteSupplementalCrashDump(dumpHint.c_str(), targetProcess, targetPid,
-                                                      ce::crash_dump_policy::kMinimalDumpType);
+                                                      ce::crash_dump_policy::kRichCrashDumpType);
     CloseHandle(targetProcess);
 
     OutputDebugStringA(wroteDump ? "[DumpHelper] External pre-termination dump captured\n"

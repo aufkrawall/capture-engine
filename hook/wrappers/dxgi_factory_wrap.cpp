@@ -6,11 +6,85 @@
 #include <d3d12.h>
 #include <objbase.h>
 #include "../apis/dx12_hook.h"
+#include "../common/dx12_overlay_policy.h"
+#include "../common/fg_detection.h"
+#include "../common/overlay_compat.h"
 #include "dxgi_adapter_wrap.h"
 #include "dxgi_swapchain_wrap.h"
 #include "hook_common.h"
 
 static bool g_DisableSwapchainWrapper = false;
+
+namespace {
+
+bool CaptureAndHookD3D12QueueFromFactoryDevice(IUnknown* pDevice, const char* callName) {
+    if (!pDevice) {
+        return false;
+    }
+
+    ID3D12CommandQueue* pQueue = nullptr;
+    if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue))) || !pQueue) {
+        return false;
+    }
+
+    DX12_HookQueueVTable(pQueue);
+    DX12_SetCommandQueue(pQueue);
+    WrapperLog("%s: Detected D3D12 command queue %p", callName ? callName : "CreateSwapChain", pQueue);
+    pQueue->Release();
+    return true;
+}
+
+bool ShouldBypassSwapchainWrapperForFrameGenerationRuntime(bool d3d12CommandQueueSwapchain, const char* callName) {
+    char ffxStackModule[MAX_PATH] = {};
+    char streamlineStackModule[MAX_PATH] = {};
+    const bool ffxStack =
+        ce::overlay_compat::HasFFXFrameGenerationModuleInStack(ffxStackModule, sizeof(ffxStackModule));
+    const bool streamlineStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack(
+        streamlineStackModule, sizeof(streamlineStackModule));
+    const bool streamlineSupport = g_FGCompat.HasStreamlineSupport();
+    const bool fsrSupport = g_FGCompat.HasFSRFGSupport();
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const bool bypass = ce::dx12_overlay_policy::ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
+        d3d12CommandQueueSwapchain, ffxStack, streamlineStack, streamlineSupport, fsrSupport, runtimeMode);
+    if (bypass) {
+        WrapperLog(
+            "%s: Returning real D3D12 swapchain without CWrapDXGISwapChain for FG runtime compatibility "
+            "(runtime=%s streamlineSupport=%d fsrSupport=%d streamlineStack=%d %s ffxStack=%d %s)",
+            callName ? callName : "CreateSwapChain", ce::fg_runtime::GetRuntimeModeName(runtimeMode),
+            streamlineSupport ? 1 : 0, fsrSupport ? 1 : 0, streamlineStack ? 1 : 0,
+            streamlineStackModule[0] ? streamlineStackModule : "-", ffxStack ? 1 : 0,
+            ffxStackModule[0] ? ffxStackModule : "-");
+    }
+    return bypass;
+}
+
+template <typename TSwapChain>
+void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12CommandQueueSwapchain,
+                            const char* callName, TSwapChain** ppSwapChain) {
+    if (!pReal || !ppSwapChain) {
+        return;
+    }
+
+    if (g_DisableSwapchainWrapper ||
+        ShouldBypassSwapchainWrapperForFrameGenerationRuntime(d3d12CommandQueueSwapchain, callName)) {
+        *ppSwapChain = pReal;
+        return;
+    }
+
+    void* pExistingWrapper = nullptr;
+    if (SUCCEEDED(pReal->QueryInterface(IID_CWrapDXGISwapChain, &pExistingWrapper))) {
+        ((IUnknown*)pExistingWrapper)->Release();
+        WrapperLog("%s: Swapchain already wrapped by vtable hook, skipping double-wrap",
+                   callName ? callName : "CreateSwapChain");
+        *ppSwapChain = pReal;
+        return;
+    }
+
+    *ppSwapChain = (TSwapChain*)new CWrapDXGISwapChain(pReal, pDevice);
+    pReal->Release();
+}
+
+}  // namespace
 
 // Function to disable swapchain wrapper (for FSR FG compatibility)
 void SetSwapchainWrapperDisabled(bool disabled) {
@@ -188,16 +262,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
                                                              IDXGISwapChain** ppSwapChain) {
     WrapperLog("CreateSwapChain: CALLED (device=%p, hwnd=%p)", pDevice, pDesc ? pDesc->OutputWindow : nullptr);
 
-    // DX12: The "device" passed to CreateSwapChain is actually the command queue
-    // Hook it for frame detection
-    if (pDevice) {
-        ID3D12CommandQueue* pQueue = nullptr;
-        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
-            DX12_HookQueueVTable(pQueue);
-            pQueue->Release();
-            WrapperLog("CreateSwapChain: Detected D3D12 command queue");
-        }
-    }
+    // DX12: The "device" passed to CreateSwapChain is actually the command queue.
+    const bool d3d12CommandQueueSwapchain = CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChain");
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC modifiedDesc;
@@ -226,21 +292,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
     IDXGISwapChain* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, &pReal);
     if (SUCCEEDED(hr) && pReal) {
-        if (g_DisableSwapchainWrapper) {
-            *ppSwapChain = pReal;
-        } else {
-            void* pExistingWrapper = nullptr;
-            if (SUCCEEDED(pReal->QueryInterface(IID_CWrapDXGISwapChain, &pExistingWrapper))) {
-                ((IUnknown*)pExistingWrapper)->Release();
-                WrapperLog(
-                    "CreateSwapChain: Swapchain already wrapped by vtable hook, "
-                    "skipping double-wrap");
-                *ppSwapChain = pReal;
-            } else {
-                *ppSwapChain = (IDXGISwapChain*)new CWrapDXGISwapChain(pReal, pDevice);
-                pReal->Release();
-            }
-        }
+        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChain", ppSwapChain);
     } else
         *ppSwapChain = nullptr;
     return hr;
@@ -288,14 +340,9 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
                                           IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
     WrapperLog("CreateSwapChainForHwnd: CALLED (device=%p, hwnd=%p)", pDevice, hWnd);
 
-    // DX12: The "device" passed to CreateSwapChain is actually the command queue
-    if (pDevice) {
-        ID3D12CommandQueue* pQueue = nullptr;
-        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
-            DX12_HookQueueVTable(pQueue);
-            pQueue->Release();
-        }
-    }
+    // DX12: The "device" passed to CreateSwapChain is actually the command queue.
+    const bool d3d12CommandQueueSwapchain =
+        CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChainForHwnd");
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
@@ -325,21 +372,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
     HRESULT hr =
         m_pReal->CreateSwapChainForHwnd(DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, &pReal);
     if (SUCCEEDED(hr) && pReal) {
-        if (g_DisableSwapchainWrapper) {
-            *ppSwapChain = pReal;
-        } else {
-            void* pExistingWrapper = nullptr;
-            if (SUCCEEDED(pReal->QueryInterface(IID_CWrapDXGISwapChain, &pExistingWrapper))) {
-                ((IUnknown*)pExistingWrapper)->Release();
-                WrapperLog(
-                    "CreateSwapChainForHwnd: Swapchain already wrapped by vtable "
-                    "hook, skipping double-wrap");
-                *ppSwapChain = pReal;
-            } else {
-                *ppSwapChain = (IDXGISwapChain1*)new CWrapDXGISwapChain(pReal, pDevice);
-                pReal->Release();
-            }
-        }
+        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForHwnd", ppSwapChain);
     } else
         *ppSwapChain = nullptr;
     return hr;
@@ -349,14 +382,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
                                                                           const DXGI_SWAP_CHAIN_DESC1* pDesc,
                                                                           IDXGIOutput* pRestrictToOutput,
                                                                           IDXGISwapChain1** ppSwapChain) {
-    // DX12: The "device" passed to CreateSwapChain is actually the command queue
-    if (pDevice) {
-        ID3D12CommandQueue* pQueue = nullptr;
-        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
-            DX12_HookQueueVTable(pQueue);
-            pQueue->Release();
-        }
-    }
+    // DX12: The "device" passed to CreateSwapChain is actually the command queue.
+    const bool d3d12CommandQueueSwapchain =
+        CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChainForCoreWindow");
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
@@ -385,21 +413,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
     IDXGISwapChain1* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChainForCoreWindow(DeWrap(pDevice), pWindow, pDesc, pRestrictToOutput, &pReal);
     if (SUCCEEDED(hr) && pReal) {
-        if (g_DisableSwapchainWrapper) {
-            *ppSwapChain = pReal;
-        } else {
-            void* pExistingWrapper = nullptr;
-            if (SUCCEEDED(pReal->QueryInterface(IID_CWrapDXGISwapChain, &pExistingWrapper))) {
-                ((IUnknown*)pExistingWrapper)->Release();
-                WrapperLog(
-                    "CreateSwapChainForCoreWindow: Swapchain already wrapped by "
-                    "vtable hook, skipping double-wrap");
-                *ppSwapChain = pReal;
-            } else {
-                *ppSwapChain = (IDXGISwapChain1*)new CWrapDXGISwapChain(pReal, pDevice);
-                pReal->Release();
-            }
-        }
+        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForCoreWindow",
+                               ppSwapChain);
     } else
         *ppSwapChain = nullptr;
     return hr;
@@ -433,14 +448,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
                                                                            const DXGI_SWAP_CHAIN_DESC1* pDesc,
                                                                            IDXGIOutput* pRestrictToOutput,
                                                                            IDXGISwapChain1** ppSwapChain) {
-    // DX12: The "device" passed to CreateSwapChain is actually the command queue
-    if (pDevice) {
-        ID3D12CommandQueue* pQueue = nullptr;
-        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
-            DX12_HookQueueVTable(pQueue);
-            pQueue->Release();
-        }
-    }
+    // DX12: The "device" passed to CreateSwapChain is actually the command queue.
+    const bool d3d12CommandQueueSwapchain =
+        CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChainForComposition");
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
@@ -469,21 +479,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
     IDXGISwapChain1* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChainForComposition(DeWrap(pDevice), pDesc, pRestrictToOutput, &pReal);
     if (SUCCEEDED(hr) && pReal) {
-        if (g_DisableSwapchainWrapper) {
-            *ppSwapChain = pReal;
-        } else {
-            void* pExistingWrapper = nullptr;
-            if (SUCCEEDED(pReal->QueryInterface(IID_CWrapDXGISwapChain, &pExistingWrapper))) {
-                ((IUnknown*)pExistingWrapper)->Release();
-                WrapperLog(
-                    "CreateSwapChainForComposition: Swapchain already wrapped by "
-                    "vtable hook, skipping double-wrap");
-                *ppSwapChain = pReal;
-            } else {
-                *ppSwapChain = (IDXGISwapChain1*)new CWrapDXGISwapChain(pReal, pDevice);
-                pReal->Release();
-            }
-        }
+        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForComposition",
+                               ppSwapChain);
     } else
         *ppSwapChain = nullptr;
     return hr;

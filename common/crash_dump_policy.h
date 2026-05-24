@@ -306,7 +306,13 @@ inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD e
     if (!targetIsCurrentProcess || alreadyAttempted || exitCode == kExternalDumpStormTerminationExitCode) {
         return false;
     }
-    return IsCrashLikeProcessExitCode(exitCode) || frameGenerationRuntimeActiveOrRecent;
+    if (IsCrashLikeProcessExitCode(exitCode)) {
+        return true;
+    }
+
+    // Active/recent FG is useful context for abnormal process termination, but
+    // clean game exits should not create confusing crash artifacts.
+    return frameGenerationRuntimeActiveOrRecent && exitCode != 0;
 }
 
 inline bool ShouldSkipBreakpointExceptionDump(bool forceDump, bool debuggerPresent) {

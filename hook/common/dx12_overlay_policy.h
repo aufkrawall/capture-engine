@@ -210,6 +210,18 @@ inline bool ShouldTreatSwapchainQueueAsAuthoritativeFFXRuntime(bool authoritativ
     return authoritativeFFXRuntimeCreator && hasOriginalGameQueue && !queueMatchesOriginalGameQueue;
 }
 
+inline bool ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
+    bool d3d12CommandQueueSwapchain, bool ffxFrameGenerationInStack, bool streamlineFrameGenerationInStack,
+    bool streamlineSupportPresent, bool fsrSupportPresent, fg_runtime::RuntimeMode runtimeMode) {
+    if (!d3d12CommandQueueSwapchain) {
+        return false;
+    }
+
+    return ffxFrameGenerationInStack || streamlineFrameGenerationInStack || streamlineSupportPresent ||
+           fsrSupportPresent || fg_runtime::RuntimeModeUsesStreamline(runtimeMode) ||
+           fg_runtime::RuntimeModeUsesFSR(runtimeMode);
+}
+
 inline bool ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
     bool authoritativeStreamlineRuntimeQueue, bool queueMatchesCurrentSwapchainQueue) {
     return authoritativeStreamlineRuntimeQueue && !queueMatchesCurrentSwapchainQueue;
@@ -296,7 +308,8 @@ enum class PostFSRInactiveRecoveryQueueSource {
 inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
     bool runtimeOwnsSwapchain, bool streamlineFGActive, bool fsrFGActive, bool hadFSRFGPhase, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue,
-    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown, bool commandQueueMatchesPrimaryGameQueue) {
+    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown, bool commandQueueMatchesPrimaryGameQueue,
+    bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
                                  : SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
@@ -304,6 +317,16 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
 
     if (streamlineFGActive && hasOriginalGameQueue) {
         return SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
+    }
+
+    if (explicitNativeFSROffPendingRuntimeOwnedTeardown && !fsrFGActive && hadFSRFGPhase && hasOriginalGameQueue) {
+        // A disabled native-FSR configure means the FFX runtime has suspended
+        // generation and the live Present path can already be back on the game
+        // queue while the FSR-owned swapchain queue latch is still draining.
+        // Rendering the recovered normal overlay on that stale FSR queue has
+        // been observed to DEVICE_REMOVED; route to the original Present queue
+        // until a later clean swapchain/queue transition clears the teardown.
+        return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue;
     }
 
     if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {
@@ -582,37 +605,39 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     return !ffxPresentCallbackFallbackAllowed;
 }
 
+inline bool ShouldEvaluateFFXPresentCallbackFallback(bool ffxPresentCallbackStalled,
+                                                     bool explicitNativeFSROffPendingRuntimeOwnedTeardown) {
+    return ffxPresentCallbackStalled || explicitNativeFSROffPendingRuntimeOwnedTeardown;
+}
+
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
-    bool ffxPresentCallbackStalled, bool progressResolvedOfficialFFXPresentPath, bool directFFXApiConfirmation,
+    bool evaluateFFXPresentCallbackFallback, bool progressResolvedOfficialFFXPresentPath, bool directFFXApiConfirmation,
     bool currentFFXPresentCallbackProof, bool progressResolvedStableOverlayProof = false,
     ULONGLONG stallDurationMs = 0, bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false) {
-    (void)progressResolvedOfficialFFXPresentPath;
-    (void)progressResolvedStableOverlayProof;
     (void)stallDurationMs;
 
-    if (!ffxPresentCallbackStalled) {
+    if (!evaluateFFXPresentCallbackFallback) {
         return false;
     }
 
     // When a game explicitly disables native FSR FG while keeping the FFX
-    // context/callback bridge alive (GTA menu/suspend path), a quiet callback is
-    // expected runtime-owned teardown traffic, not evidence that CE may fall
-    // back to its separate DX12 overlay command-list path.  The runtime must
-    // later resume the callback or destroy/hand back the context before normal
-    // overlay GPU work is considered safe again.
+    // context/callback bridge alive (GTA menu/suspend path), the callback may
+    // legitimately go quiet before it reaches the generic stall threshold.
+    // That is the moment where the normal game Present path should be safe
+    // again, but only if this exact runtime handoff has direct callback/API
+    // proof or a stable same-queue progress proof.
     if (explicitNativeFSROffPendingRuntimeOwnedTeardown) {
-        return false;
+        return directFFXApiConfirmation || currentFFXPresentCallbackProof || progressResolvedStableOverlayProof;
     }
 
     // GTA Enhanced's official AMD FFX path can progress far enough to prove
     // frame generation ownership without a fresh ffxConfigure/callback bridge
-    // proof. In that unproven state, falling back to normal overlay GPU
-    // submission on the original game queue has produced immediate device
-    // removal. Stable same-queue progress is useful diagnostic proof that
-    // startup survived, but it does not prove that native FSR will accept
-    // injected CE GPU work.
+    // proof. Once the swapchain has proven stable on the original game queue
+    // with a healthy device, fall back to the normal overlay path instead of
+    // leaving the overlay invisible forever in protected official runtimes that
+    // cannot expose ffxConfigure without code-page patching.
     if (!directFFXApiConfirmation && !currentFFXPresentCallbackProof) {
-        return false;
+        return progressResolvedOfficialFFXPresentPath && progressResolvedStableOverlayProof;
     }
 
     return true;

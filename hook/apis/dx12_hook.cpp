@@ -2562,8 +2562,8 @@ static bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const
     HookLogImportant(
         "DX12: Finalizing protected official FFX startup pass-through after sustained frame progress without direct "
         "ffxConfigure (source=%s elapsed=%llums processFrameSkips=%u eclPassThroughs=%u queue=%p module=%s) — "
-        "normal overlay GPU draw remains gated until direct ffxConfigure or FFX present-callback proof; stable "
-        "same-queue proof is diagnostic only",
+        "normal overlay GPU draw remains guarded until direct ffxConfigure, current FFX present-callback proof, "
+        "or a later stable same-queue progress proof says fallback is safe",
         source && source[0] ? source : "unknown", beginMs ? static_cast<unsigned long long>(nowMs - beginMs) : 0ULL,
         processFrameSkips, eclPassThroughs, deferredQueue,
         deferredModulePath[0] ? deferredModulePath : "official FFX runtime");
@@ -3118,6 +3118,11 @@ static void UpdateFFXPresentCallbackFirstStallDetection(bool ffxPresentCallbackS
 }
 
 static bool ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(bool ffxPresentCallbackStalled) {
+    const bool explicitNativeFSROffPending =
+        g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
+    const bool evaluateFFXCallbackFallback =
+        ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(ffxPresentCallbackStalled,
+                                                                          explicitNativeFSROffPending);
     UpdateFFXPresentCallbackFirstStallDetection(ffxPresentCallbackStalled);
     const bool progressResolvedOfficialFFXPresentPath =
         g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
@@ -3131,10 +3136,8 @@ static bool ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(bo
     const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
         EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
     const ULONGLONG stallDurationMs = GetFFXPresentCallbackStallDurationMs();
-    const bool explicitNativeFSROffPending =
-        g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
     return ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
-        ffxPresentCallbackStalled, progressResolvedOfficialFFXPresentPath, directFFXApiConfirmation,
+        evaluateFFXCallbackFallback, progressResolvedOfficialFFXPresentPath, directFFXApiConfirmation,
         currentFFXPresentCallbackProof, progressProof.proof, stallDurationMs, explicitNativeFSROffPending);
 }
 
@@ -3153,8 +3156,7 @@ static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
         EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
     HookLogImportant(
         "DX12: FFX present callback appears stalled but normal overlay fallback is unsafe for "
-        "progress-resolved official FFX startup without direct ffxConfigure/callback proof; stable same-queue proof "
-        "is diagnostic only and first native-FSR overlay submit can trigger ERR_GFX_STATE "
+        "this native FSR handoff until direct ffxConfigure/callback proof or stable same-queue progress proof exists "
         "(lastCallback=%llu progressAssumedFor=%llums directFFX=%d explicitNativeOff=%d runtimeOwns=%d "
         "runtime=%s apiFSR=%d nativeFGPath=%d stableProof=%d stableFor=%llums requiredStable=%llums "
         "hasScQ=%d hasOrig=%d sameQueue=%d "
@@ -3212,15 +3214,18 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
                 const bool currentFFXPresentCallbackProof =
                     ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(lastCallback, g_SwapchainQueueCaptureTime,
                                                                               assumedSince);
+                const bool explicitNativeFSROffPending =
+                    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
                 HookLogImportant(
-                    "DX12: FFX present callback appears stalled (lastCallback=%llu ownedFor=%llums "
+                    "DX12: Native FSR fallback proof allows normal overlay rendering "
+                    "(lastCallback=%llu ownedFor=%llums ffxStalled=%d "
                     "progressAssumedFor=%llums proofSince=%llu directFFX=%d explicitNativeOff=%d "
                     "currentCallbackProof=%d stableProof=%d stableFor=%llums sameQueue=%d deviceHr=0x%08X) "
-                    "— allowing normal overlay rendering as fallback after direct FFX/callback proof",
-                    lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0,
+                    "— using the game Present path while native FSR presentation is suspended or its callback is quiet",
+                    lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0, ffxStalled ? 1 : 0,
                     assumedSince ? (GetTickCount64() - assumedSince) : 0,
                     static_cast<unsigned long long>(currentFFXProofSince), directFFXApiConfirmation ? 1 : 0,
-                    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
+                    explicitNativeFSROffPending ? 1 : 0,
                     currentFFXPresentCallbackProof ? 1 : 0, progressProof.proof ? 1 : 0, progressProof.stableMs,
                     progressProof.swapchainQueueMatchesOriginalGameQueue ? 1 : 0,
                     static_cast<unsigned>(progressProof.deviceHr));
@@ -7438,7 +7443,8 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
             g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
             lastWorkingQueueStillActiveDuringRecentTeardown,
-            currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue);
+            currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
+            g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
 
         if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
             // After FSR→DLSS: use scQueue (swapchain creation queue)
@@ -7481,13 +7487,16 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
                 ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource(g_OriginalGameQueue != nullptr);
             if (queueSource == ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue) {
                 queueForBackend = g_OriginalGameQueue;
+                const bool explicitNativeFSROffPending =
+                    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
                 static std::atomic<int> s_postFSRBackendOrigRouteLogCount{0};
                 int logCount = s_postFSRBackendOrigRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
                         "DX12: InitImGui — post-FSR inactive recovery using original present queue %p "
-                        "(cmdQ=%p primaryQ=%p)",
-                        queueForBackend, currentCommandQueue, currentPrimaryQueue);
+                        "(cmdQ=%p primaryQ=%p explicitNativeOff=%d)",
+                        queueForBackend, currentCommandQueue, currentPrimaryQueue,
+                        explicitNativeFSROffPending ? 1 : 0);
                 }
             } else {
                 queueForBackend = currentCommandQueue ? currentCommandQueue : currentPrimaryQueue;
@@ -11487,7 +11496,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
             g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
             lastWorkingQueueStillActiveDuringRecentTeardown,
-            currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue);
+            currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
+            g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
 
         if (routingDecision ==
             ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {
@@ -11543,22 +11553,25 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
-            // After FSR->DLSS->off with scQueue intentionally unset, prefer the
-            // known original Present queue over the most recent ECL queue.
-            // Talos uses separate render/present DIRECT queues; falling back to
+            // After FSR->DLSS->off, or an explicit native-FSR OFF/suspend while
+            // the stale FSR swapchain queue latch is still draining, prefer the
+            // known original Present queue over the most recent ECL queue. Talos
+            // uses separate render/present DIRECT queues; falling back to
             // g_CommandQueue/primary picked the render queue and immediately hit
             // DEVICE_REMOVED on the first recovered non-FG offscreen composite.
             const auto queueSource =
                 ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource(g_OriginalGameQueue != nullptr);
             if (queueSource == ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue) {
                 gameQueue = g_OriginalGameQueue;
+                const bool explicitNativeFSROffPending =
+                    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
                 static std::atomic<int> s_postFSRInactiveOrigRouteLogCount{0};
                 int logCount = s_postFSRInactiveOrigRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
                         "DX12: ProcessFrame — post-FSR inactive recovery using original present queue %p "
-                        "(cmdQ=%p primaryQ=%p)",
-                        gameQueue, currentCommandQueue, currentPrimaryQueue);
+                        "(cmdQ=%p primaryQ=%p explicitNativeOff=%d)",
+                        gameQueue, currentCommandQueue, currentPrimaryQueue, explicitNativeFSROffPending ? 1 : 0);
                 }
             } else {
                 gameQueue = currentCommandQueue ? currentCommandQueue : currentPrimaryQueue;

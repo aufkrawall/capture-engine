@@ -154,13 +154,13 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("progress-resolved official FFX runtime-owned Present path assumption"),
               std::string::npos);
-    EXPECT_NE(contents.find("normal overlay fallback is unsafe for progress-resolved official FFX startup"),
+    EXPECT_NE(contents.find("normal overlay fallback is unsafe for this native FSR handoff"),
               std::string::npos);
-    EXPECT_NE(contents.find("without direct ffxConfigure/callback proof"), std::string::npos);
+    EXPECT_NE(contents.find("direct ffxConfigure/callback proof or stable same-queue progress proof"),
+              std::string::npos);
     EXPECT_NE(contents.find("Protected official FFX startup immediately quiesced Streamline/PostSL"), std::string::npos);
     EXPECT_NE(contents.find("FFX Hook: Protected official FFX ffxConfigure export left unpatched"), std::string::npos);
-    EXPECT_NE(contents.find("stable same-queue proof is diagnostic only"), std::string::npos);
-    EXPECT_NE(contents.find("first native-FSR overlay submit can trigger ERR_GFX_STATE"), std::string::npos);
+    EXPECT_NE(contents.find("Native FSR fallback proof allows normal overlay rendering"), std::string::npos);
     EXPECT_NE(contents.find("ECL startup activation swapchain probe suppressed"), std::string::npos);
     EXPECT_NE(contents.find("Rejecting startup activation swapchain"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Installed pre-termination dump hooks"), std::string::npos);
