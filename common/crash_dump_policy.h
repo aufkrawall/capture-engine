@@ -305,4 +305,11 @@ inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD e
     return targetIsCurrentProcess && !alreadyAttempted && IsCrashLikeProcessExitCode(exitCode);
 }
 
+inline bool ShouldSkipBreakpointExceptionDump(bool forceDump, bool debuggerPresent) {
+    // Without a debugger, an unhandled STATUS_BREAKPOINT can terminate the
+    // process without reaching ExitProcess/NtTerminateProcess hooks. Capture it
+    // immediately; only debugger-owned breakpoints stay benign.
+    return !forceDump && debuggerPresent;
+}
+
 }  // namespace ce::crash_dump_policy

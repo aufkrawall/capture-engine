@@ -158,8 +158,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("without direct ffxConfigure/callback proof"), std::string::npos);
     EXPECT_NE(contents.find("Protected official FFX startup immediately quiesced Streamline/PostSL"), std::string::npos);
-    EXPECT_NE(contents.find("FFX Hook: Installed re-arming VEH hook"), std::string::npos);
-    EXPECT_NE(contents.find("FFX Hook: VEH ffxConfigure breakpoint handled call"), std::string::npos);
+    EXPECT_NE(contents.find("FFX Hook: Protected official FFX ffxConfigure export left unpatched"), std::string::npos);
     EXPECT_NE(contents.find("stable same-queue proof is diagnostic only"), std::string::npos);
     EXPECT_NE(contents.find("first native-FSR overlay submit can trigger ERR_GFX_STATE"), std::string::npos);
     EXPECT_NE(contents.find("ECL startup activation swapchain probe suppressed"), std::string::npos);
@@ -179,7 +178,8 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("ZwTerminateProcess"), std::string::npos);
     EXPECT_NE(contents.find("Registered module-filtered dynamic hooks for FFX exports"), std::string::npos);
     EXPECT_NE(contents.find("Using GetProcAddress-only hooks for protected official FFX module"), std::string::npos);
-    EXPECT_NE(contents.find("waiting for ffxConfigure lookup to arm the native FSR present-callback bridge"),
+    EXPECT_NE(contents.find("code bytes left unmodified"), std::string::npos);
+    EXPECT_NE(contents.find("waiting for a real ffxConfigure call to arm the native FSR present-callback bridge"),
               std::string::npos);
     EXPECT_NE(contents.find("GetProcAddress: Intercepted FFX API"), std::string::npos);
     EXPECT_NE(contents.find("initializing FFX hooks immediately for native FSR callback bridge"), std::string::npos);

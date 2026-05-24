@@ -118,8 +118,12 @@ TEST(FFXApiParsingTest, OfficialAMDFFXRuntimeModulesUseNonInlineExportHooks) {
     EXPECT_FALSE(ce::ffx_api::ShouldPatchFFXImportsForModule("amd_fidelityfx_dx12.dll"));
     EXPECT_FALSE(ce::ffx_api::ShouldPatchFFXImportsForModule(
         "C:\\Games\\GTAV\\amd_fidelityfx_framegeneration_dx12.dll"));
+    EXPECT_FALSE(ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint("amd_fidelityfx_dx12.dll"));
+    EXPECT_FALSE(ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint(
+        "C:\\Games\\Talos\\amd_fidelityfx_framegeneration_dx12.dll"));
     EXPECT_FALSE(ce::ffx_api::ShouldInlineHookFFXExportsForModule(nullptr));
     EXPECT_FALSE(ce::ffx_api::ShouldPatchFFXImportsForModule(nullptr));
+    EXPECT_FALSE(ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint(nullptr));
 }
 
 TEST(FFXApiParsingTest, ProxyAndLegacyFFXModulesCanStillUseInlineExportHooks) {

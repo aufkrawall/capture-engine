@@ -213,4 +213,13 @@ inline bool ShouldPatchFFXImportsForModule(const char* moduleNameOrPath) {
     return !IsOfficialAMDFFXRuntimeModuleName(moduleNameOrPath);
 }
 
+inline bool ShouldArmProtectedOfficialFFXConfigureBreakpoint(const char* moduleNameOrPath) {
+    (void)moduleNameOrPath;
+    // Official AMD FFX runtimes used by games such as Talos and GTA can treat
+    // even a one-byte int3 patch as tampering during startup. Keep their code
+    // pages pristine and route only through GetProcAddress/IAT-visible API
+    // pointers. Proxy and legacy modules still use normal inline hooks above.
+    return false;
+}
+
 }  // namespace ce::ffx_api

@@ -27,7 +27,6 @@ static std::atomic<int> g_VEHCallCount{0};
 static std::atomic<int> g_RPCDisconnectedExceptionCount{0};
 static std::atomic<int> g_RPCServerUnavailableExceptionCount{0};
 static std::atomic<int> g_ENoInterfaceExceptionCount{0};
-static std::atomic<int> g_BreakpointExceptionCount{0};
 static std::mutex g_SymbolArchiveMutex;
 typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
                                         PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
@@ -782,12 +781,15 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         }
     }
 
-    // Breakpoints: only skip if we haven't seen too many breakpoint exceptions.
-    // Count actual breakpoint occurrences rather than total VEH entries.
-    if (!forceDump && code == 0x80000003) {
-        if (IncrementExceptionCount(g_BreakpointExceptionCount) <= 5) {
+    // Breakpoints that escape to the process can terminate with 0x80000003
+    // without calling ExitProcess/NtTerminateProcess. Do not skip them when no
+    // debugger owns the breakpoint; this is the only in-process chance to get a
+    // dump for Talos-style startup failures.
+    if (code == EXCEPTION_BREAKPOINT) {
+        if (ce::crash_dump_policy::ShouldSkipBreakpointExceptionDump(forceDump, IsDebuggerPresent())) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
+        TraceCrash("Breakpoint exception is dump-worthy because no debugger is attached");
     }
 
     // Generic C++ exceptions are commonly used for recoverable library error

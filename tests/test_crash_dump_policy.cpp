@@ -148,3 +148,9 @@ TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesOnlyCurrentProcessCrashLikeE
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 0, false));
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 1, false));
 }
+
+TEST(CrashDumpPolicyTest, BreakpointExceptionsDumpWhenNoDebuggerOwnsThem) {
+    EXPECT_FALSE(policy::ShouldSkipBreakpointExceptionDump(false, false));
+    EXPECT_TRUE(policy::ShouldSkipBreakpointExceptionDump(false, true));
+    EXPECT_FALSE(policy::ShouldSkipBreakpointExceptionDump(true, true));
+}

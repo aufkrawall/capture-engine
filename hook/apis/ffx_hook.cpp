@@ -607,8 +607,8 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     if (!allowInlineHooks && !allowIATHooks && firstSeenModule) {
         HookLogImportant(
             "FFX Hook: Using GetProcAddress-only hooks for protected official FFX module %s; inline export patching "
-            "and IAT import patching skipped to avoid startup fail-fast; waiting for ffxConfigure lookup to arm the "
-            "native FSR present-callback bridge",
+            "and IAT import patching skipped to avoid startup fail-fast; code bytes left unmodified; waiting for "
+            "a real ffxConfigure call to arm the native FSR present-callback bridge",
             moduleName);
     }
 
@@ -658,13 +658,22 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
             inlineHookedAnything |= InstallInlineHookOnce(
                 reinterpret_cast<void*>(configureCtx), reinterpret_cast<void*>(Hooked_ffxConfigure),
                 g_Original_ffxConfigure, g_ffxConfigureInlineHooked, g_ffxConfigureTarget, "ffxConfigure");
-        } else if (!allowIATHooks) {
+        } else if (!allowIATHooks && ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint(moduleName)) {
             // Protected official AMD module: install a re-arming VEH hook to
             // intercept intra-module ffxConfigure calls that bypass GetProcAddress.
             // The VEH handler patches the first byte with int3 and catches the
             // breakpoint, bypassing CFG validation that would fast-fail on a
             // standard inline hook.
             InstallFfxConfigureBreakpointHook(configureCtx, moduleName);
+        } else if (!allowIATHooks) {
+            static std::atomic<int> s_protectedConfigureUnpatchedLogCount{0};
+            const int logCount = s_protectedConfigureUnpatchedLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (logCount <= 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "FFX Hook: Protected official FFX ffxConfigure export left unpatched "
+                    "(module=%s target=%p log=%d); relying on GetProcAddress-visible API routing",
+                    moduleName ? moduleName : "FFX", reinterpret_cast<void*>(configureCtx), logCount);
+            }
         }
         HookLog("FFX Hook: ffxConfigure found at %p, hooking via %s (inline=%d)", configureCtx,
                 allowIATHooks ? "IAT/dynamic" : "dynamic-only", allowInlineHooks ? 1 : 0);
