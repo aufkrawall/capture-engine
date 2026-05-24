@@ -263,8 +263,8 @@ inline bool IsStrongExternalDumpSignature(const ExternalDumpSignature& signature
 
 inline std::string BuildExternalDumpSignatureKey(const ExternalDumpSignature& signature) {
     char buffer[256] = {};
-    snprintf(buffer, sizeof(buffer), "pid=%lu;file=%s;code=%08lx;addr=%p;tid=%lu;strong=%d",
-             signature.processId, signature.dumpBaseName.c_str(), signature.exceptionCode,
+    snprintf(buffer, sizeof(buffer), "pid=%lu;file=%s;code=%08lx;addr=%p;tid=%lu;strong=%d", signature.processId,
+             signature.dumpBaseName.c_str(), signature.exceptionCode,
              reinterpret_cast<void*>(signature.exceptionAddress), signature.exceptionThreadId,
              IsStrongExternalDumpSignature(signature) ? 1 : 0);
     return buffer;
@@ -301,8 +301,12 @@ inline bool IsCrashLikeProcessExitCode(DWORD exitCode) {
     return (exitCode & 0xC0000000UL) == 0xC0000000UL;
 }
 
-inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD exitCode, bool alreadyAttempted) {
-    return targetIsCurrentProcess && !alreadyAttempted && IsCrashLikeProcessExitCode(exitCode);
+inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD exitCode, bool alreadyAttempted,
+                                            bool frameGenerationRuntimeActiveOrRecent = false) {
+    if (!targetIsCurrentProcess || alreadyAttempted || exitCode == kExternalDumpStormTerminationExitCode) {
+        return false;
+    }
+    return IsCrashLikeProcessExitCode(exitCode) || frameGenerationRuntimeActiveOrRecent;
 }
 
 inline bool ShouldSkipBreakpointExceptionDump(bool forceDump, bool debuggerPresent) {

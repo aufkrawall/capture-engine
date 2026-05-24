@@ -54,18 +54,25 @@ enum class SwapChainOwner {
 
 static const char* ModeName(FGMode mode) {
     switch (mode) {
-        case FGMode::Off: return "OFF";
-        case FGMode::DLSS: return "DLSS FG";
-        case FGMode::FSR: return "FSR FG";
-        default: return "UNKNOWN";
+        case FGMode::Off:
+            return "OFF";
+        case FGMode::DLSS:
+            return "DLSS FG";
+        case FGMode::FSR:
+            return "FSR FG";
+        default:
+            return "UNKNOWN";
     }
 }
 
 static const char* SwapChainOwnerName(SwapChainOwner owner) {
     switch (owner) {
-        case SwapChainOwner::Native: return "native";
-        case SwapChainOwner::FSR: return "fsr-wrapper";
-        default: return "unknown";
+        case SwapChainOwner::Native:
+            return "native";
+        case SwapChainOwner::FSR:
+            return "fsr-wrapper";
+        default:
+            return "unknown";
     }
 }
 
@@ -79,6 +86,8 @@ static bool g_FsrKeepRuntimeLoadedInitialOff = true;
 static bool g_FsrStartupDisabledContextStress = true;
 static bool g_FsrSuspendResumeStress = true;
 static int g_FsrSuspendResumeIntervalSeconds = 3;
+static bool g_DxgiVideoMemoryQueryStress = true;
+static int g_DxgiVideoMemoryQueryCountPerFrame = 96;
 
 static void LoadConfig() {
     char path[MAX_PATH];
@@ -93,23 +102,30 @@ static void LoadConfig() {
     g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
     g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
-    g_FsrReloadRuntimeOnSwitch =
-        GetPrivateProfileIntA("Stress", "fsr_reload_runtime_on_switch", g_FsrReloadRuntimeOnSwitch ? 1 : 0,
-                              configPath.c_str()) != 0;
+    g_FsrReloadRuntimeOnSwitch = GetPrivateProfileIntA("Stress", "fsr_reload_runtime_on_switch",
+                                                       g_FsrReloadRuntimeOnSwitch ? 1 : 0, configPath.c_str()) != 0;
     g_FsrKeepRuntimeLoadedInitialOff =
-        GetPrivateProfileIntA("Stress", "fsr_keep_runtime_loaded_initial_off",
-                              g_FsrKeepRuntimeLoadedInitialOff ? 1 : 0, configPath.c_str()) != 0;
-    g_FsrStartupDisabledContextStress =
-        GetPrivateProfileIntA("Stress", "fsr_startup_disabled_context",
-                              g_FsrStartupDisabledContextStress ? 1 : 0, configPath.c_str()) != 0;
-    g_FsrSuspendResumeStress =
-        GetPrivateProfileIntA("Stress", "fsr_suspend_resume", g_FsrSuspendResumeStress ? 1 : 0,
+        GetPrivateProfileIntA("Stress", "fsr_keep_runtime_loaded_initial_off", g_FsrKeepRuntimeLoadedInitialOff ? 1 : 0,
                               configPath.c_str()) != 0;
-    g_FsrSuspendResumeIntervalSeconds =
-        GetPrivateProfileIntA("Stress", "fsr_suspend_resume_interval_seconds",
-                              g_FsrSuspendResumeIntervalSeconds, configPath.c_str());
+    g_FsrStartupDisabledContextStress =
+        GetPrivateProfileIntA("Stress", "fsr_startup_disabled_context", g_FsrStartupDisabledContextStress ? 1 : 0,
+                              configPath.c_str()) != 0;
+    g_FsrSuspendResumeStress = GetPrivateProfileIntA("Stress", "fsr_suspend_resume", g_FsrSuspendResumeStress ? 1 : 0,
+                                                     configPath.c_str()) != 0;
+    g_FsrSuspendResumeIntervalSeconds = GetPrivateProfileIntA("Stress", "fsr_suspend_resume_interval_seconds",
+                                                              g_FsrSuspendResumeIntervalSeconds, configPath.c_str());
     if (g_FsrSuspendResumeIntervalSeconds < 1) {
         g_FsrSuspendResumeIntervalSeconds = 1;
+    }
+    g_DxgiVideoMemoryQueryStress = GetPrivateProfileIntA("Stress", "dxgi_video_memory_query_stress",
+                                                         g_DxgiVideoMemoryQueryStress ? 1 : 0, configPath.c_str()) != 0;
+    g_DxgiVideoMemoryQueryCountPerFrame = GetPrivateProfileIntA(
+        "Stress", "dxgi_video_memory_query_count_per_frame", g_DxgiVideoMemoryQueryCountPerFrame, configPath.c_str());
+    if (g_DxgiVideoMemoryQueryCountPerFrame < 0) {
+        g_DxgiVideoMemoryQueryCountPerFrame = 0;
+    }
+    if (g_DxgiVideoMemoryQueryCountPerFrame > 512) {
+        g_DxgiVideoMemoryQueryCountPerFrame = 512;
     }
 }
 
@@ -119,6 +135,7 @@ static const wchar_t* kWindowClass = L"CaptureTestDX12FGSwitch";
 
 ComPtr<ID3D12Device> g_Device;
 ComPtr<ID3D12CommandQueue> g_CommandQueue;
+ComPtr<IDXGIAdapter3> g_DxgiVideoMemoryQueryAdapter;
 ComPtr<IDXGISwapChain3> g_SwapChain;
 ComPtr<ID3D12DescriptorHeap> g_RtvHeap;
 ComPtr<ID3D12Resource> g_RenderTargets[kMaxSwapChainBuffers];
@@ -192,37 +209,60 @@ static uint64_t g_LastModeSwitchFrameId = 0;
 static auto g_StartTime = std::chrono::high_resolution_clock::now();
 static auto g_LastFsrSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
 static uint64_t g_LastFsrSuspendResumeToggleFrameId = 0;
+static uint64_t g_LastDxgiVideoMemoryQueryStressLogFrame = 0;
 static bool g_Running = true;
 
 static const char* SlResultName(sl::Result result) {
     switch (result) {
-        case sl::Result::eOk: return "eOk";
-        case sl::Result::eErrorDriverOutOfDate: return "eErrorDriverOutOfDate";
-        case sl::Result::eErrorOSOutOfDate: return "eErrorOSOutOfDate";
-        case sl::Result::eErrorOSDisabledHWS: return "eErrorOSDisabledHWS";
-        case sl::Result::eErrorDeviceNotCreated: return "eErrorDeviceNotCreated";
-        case sl::Result::eErrorNoSupportedAdapterFound: return "eErrorNoSupportedAdapterFound";
-        case sl::Result::eErrorNotInitialized: return "eErrorNotInitialized";
-        case sl::Result::eErrorFeatureNotSupported: return "eErrorFeatureNotSupported";
-        case sl::Result::eErrorFeatureMissing: return "eErrorFeatureMissing";
-        case sl::Result::eErrorFeatureFailedToLoad: return "eErrorFeatureFailedToLoad";
-        case sl::Result::eErrorInvalidParameter: return "eErrorInvalidParameter";
-        case sl::Result::eErrorInvalidState: return "eErrorInvalidState";
-        default: return "unknown";
+        case sl::Result::eOk:
+            return "eOk";
+        case sl::Result::eErrorDriverOutOfDate:
+            return "eErrorDriverOutOfDate";
+        case sl::Result::eErrorOSOutOfDate:
+            return "eErrorOSOutOfDate";
+        case sl::Result::eErrorOSDisabledHWS:
+            return "eErrorOSDisabledHWS";
+        case sl::Result::eErrorDeviceNotCreated:
+            return "eErrorDeviceNotCreated";
+        case sl::Result::eErrorNoSupportedAdapterFound:
+            return "eErrorNoSupportedAdapterFound";
+        case sl::Result::eErrorNotInitialized:
+            return "eErrorNotInitialized";
+        case sl::Result::eErrorFeatureNotSupported:
+            return "eErrorFeatureNotSupported";
+        case sl::Result::eErrorFeatureMissing:
+            return "eErrorFeatureMissing";
+        case sl::Result::eErrorFeatureFailedToLoad:
+            return "eErrorFeatureFailedToLoad";
+        case sl::Result::eErrorInvalidParameter:
+            return "eErrorInvalidParameter";
+        case sl::Result::eErrorInvalidState:
+            return "eErrorInvalidState";
+        default:
+            return "unknown";
     }
 }
 
 static const char* FfxReturnName(ffxReturnCode_t code) {
     switch (code) {
-        case FFX_API_RETURN_OK: return "OK";
-        case FFX_API_RETURN_ERROR: return "ERROR";
-        case FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE: return "UNKNOWN_DESCTYPE";
-        case FFX_API_RETURN_ERROR_RUNTIME_ERROR: return "RUNTIME_ERROR";
-        case FFX_API_RETURN_NO_PROVIDER: return "NO_PROVIDER";
-        case FFX_API_RETURN_ERROR_MEMORY: return "MEMORY";
-        case FFX_API_RETURN_ERROR_PARAMETER: return "PARAMETER";
-        case FFX_API_RETURN_PROVIDER_NO_SUPPORT_NEW_DESCTYPE: return "PROVIDER_NO_SUPPORT_NEW_DESCTYPE";
-        default: return "unknown";
+        case FFX_API_RETURN_OK:
+            return "OK";
+        case FFX_API_RETURN_ERROR:
+            return "ERROR";
+        case FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE:
+            return "UNKNOWN_DESCTYPE";
+        case FFX_API_RETURN_ERROR_RUNTIME_ERROR:
+            return "RUNTIME_ERROR";
+        case FFX_API_RETURN_NO_PROVIDER:
+            return "NO_PROVIDER";
+        case FFX_API_RETURN_ERROR_MEMORY:
+            return "MEMORY";
+        case FFX_API_RETURN_ERROR_PARAMETER:
+            return "PARAMETER";
+        case FFX_API_RETURN_PROVIDER_NO_SUPPORT_NEW_DESCTYPE:
+            return "PROVIDER_NO_SUPPORT_NEW_DESCTYPE";
+        default:
+            return "unknown";
     }
 }
 
@@ -259,14 +299,105 @@ static void ResetFSRSuspensionStressState(const char* reason) {
     g_LastFsrSuspendResumeToggleFrameId = g_FrameIdCounter;
 }
 
+static bool SameAdapterLuid(const LUID& a, const LUID& b) {
+    return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
+}
+
+static void InitDxgiVideoMemoryQueryStressAdapter(const char* reason) {
+    g_DxgiVideoMemoryQueryAdapter.Reset();
+    if (!g_DxgiVideoMemoryQueryStress || !g_Device) {
+        return;
+    }
+
+    ComPtr<IDXGIFactory4> factory;
+    HRESULT factoryHr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (FAILED(factoryHr) || !factory) {
+        testapp::Log("[FG-DIAG] DXGI video-memory stress adapter lookup failed: factory hr=0x%08lx\n",
+                     static_cast<unsigned long>(factoryHr));
+        return;
+    }
+
+    const LUID deviceLuid = g_Device->GetAdapterLuid();
+    ComPtr<IDXGIAdapter1> fallbackAdapter;
+    for (UINT adapterIndex = 0;; ++adapterIndex) {
+        ComPtr<IDXGIAdapter1> adapter;
+        HRESULT enumHr = factory->EnumAdapters1(adapterIndex, &adapter);
+        if (enumHr == DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
+        if (FAILED(enumHr) || !adapter) {
+            continue;
+        }
+
+        DXGI_ADAPTER_DESC1 desc = {};
+        if (FAILED(adapter->GetDesc1(&desc))) {
+            continue;
+        }
+        if (!fallbackAdapter && (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0) {
+            fallbackAdapter = adapter;
+        }
+        if (SameAdapterLuid(desc.AdapterLuid, deviceLuid)) {
+            if (SUCCEEDED(adapter.As(&g_DxgiVideoMemoryQueryAdapter)) && g_DxgiVideoMemoryQueryAdapter) {
+                testapp::Log("[FG-DIAG] DXGI video-memory stress adapter matched device LUID for %s index=%u\n",
+                             reason ? reason : "dx12 init", adapterIndex);
+                return;
+            }
+        }
+    }
+
+    if (fallbackAdapter && SUCCEEDED(fallbackAdapter.As(&g_DxgiVideoMemoryQueryAdapter)) &&
+        g_DxgiVideoMemoryQueryAdapter) {
+        testapp::Log("[FG-DIAG] DXGI video-memory stress adapter using first hardware fallback for %s\n",
+                     reason ? reason : "dx12 init");
+    } else {
+        testapp::Log("[FG-DIAG] DXGI video-memory stress adapter unavailable for %s\n", reason ? reason : "dx12 init");
+    }
+}
+
+static void RunDxgiVideoMemoryQueryStress() {
+    if (!g_DxgiVideoMemoryQueryStress || g_DxgiVideoMemoryQueryCountPerFrame <= 0 || g_CurrentMode != FGMode::FSR ||
+        !g_DxgiVideoMemoryQueryAdapter) {
+        return;
+    }
+
+    HRESULT lastHr = S_OK;
+    DXGI_QUERY_VIDEO_MEMORY_INFO lastInfo = {};
+    DXGI_MEMORY_SEGMENT_GROUP lastSegment = DXGI_MEMORY_SEGMENT_GROUP_LOCAL;
+    for (int i = 0; i < g_DxgiVideoMemoryQueryCountPerFrame; ++i) {
+        lastSegment = (i & 1) ? DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL : DXGI_MEMORY_SEGMENT_GROUP_LOCAL;
+        DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+        lastHr = g_DxgiVideoMemoryQueryAdapter->QueryVideoMemoryInfo(0, lastSegment, &info);
+        if (FAILED(lastHr)) {
+            lastInfo = {};
+            break;
+        }
+        lastInfo = info;
+    }
+
+    const bool shouldLog =
+        FAILED(lastHr) || g_FrameIdCounter <= 5 || g_FrameIdCounter - g_LastDxgiVideoMemoryQueryStressLogFrame >= 120;
+    if (shouldLog) {
+        g_LastDxgiVideoMemoryQueryStressLogFrame = g_FrameIdCounter;
+        testapp::Log(
+            "[FG-DIAG] DXGI video-memory stress frameID=%llu queries=%d segment=%d hr=0x%08lx "
+            "budgetMB=%llu usageMB=%llu fsrSuspended=%d\n",
+            static_cast<unsigned long long>(g_FrameIdCounter), g_DxgiVideoMemoryQueryCountPerFrame,
+            static_cast<int>(lastSegment), static_cast<unsigned long>(lastHr),
+            static_cast<unsigned long long>(lastInfo.Budget / (1024 * 1024)),
+            static_cast<unsigned long long>(lastInfo.CurrentUsage / (1024 * 1024)), g_FsrSuspended ? 1 : 0);
+        if (FAILED(lastHr)) {
+            testapp::LogFlush();
+        }
+    }
+}
+
 static void MaybeToggleFSRSuspensionStress(UINT frameIndex) {
     if (!g_FsrSuspendResumeStress || g_ManualMode || g_CurrentMode != FGMode::FSR || !g_FsrEnabled || !g_FfxCtx) {
         return;
     }
 
     const auto now = std::chrono::high_resolution_clock::now();
-    const float elapsedSinceToggle =
-        std::chrono::duration<float>(now - g_LastFsrSuspendResumeToggleTime).count();
+    const float elapsedSinceToggle = std::chrono::duration<float>(now - g_LastFsrSuspendResumeToggleTime).count();
     if (elapsedSinceToggle < static_cast<float>(g_FsrSuspendResumeIntervalSeconds)) {
         return;
     }
@@ -319,9 +450,9 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
         return true;
     }
 
-    testapp::Log("[FG-DIAG] Switching FG mode: %s -> %s (%s frameID=%llu frameIndex=%u)\n",
-                 ModeName(g_CurrentMode), ModeName(target), reason ? reason : "unknown",
-                 static_cast<unsigned long long>(g_FrameIdCounter), frameIndex);
+    testapp::Log("[FG-DIAG] Switching FG mode: %s -> %s (%s frameID=%llu frameIndex=%u)\n", ModeName(g_CurrentMode),
+                 ModeName(target), reason ? reason : "unknown", static_cast<unsigned long long>(g_FrameIdCounter),
+                 frameIndex);
     WaitForGpu();
 
     bool ok = true;
@@ -355,10 +486,10 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             ok = ok && g_FsrInitialized;
         }
         UINT activeFrameIndex = g_FrameIndex < g_SwapChainBufferCount ? g_FrameIndex : frameIndex;
-        if (ok && ConfigureFSR(true,
-                               activeFrameIndex < g_SwapChainBufferCount ? g_RenderTargets[activeFrameIndex].Get()
-                                                                           : nullptr,
-                               "enter FSR mode", true)) {
+        if (ok &&
+            ConfigureFSR(true,
+                         activeFrameIndex < g_SwapChainBufferCount ? g_RenderTargets[activeFrameIndex].Get() : nullptr,
+                         "enter FSR mode", true)) {
             g_FsrEnabled = true;
             ResetFSRSuspensionStressState("enter FSR mode");
             RegisterFSRUiResource();
@@ -385,9 +516,10 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
         }
     } else {
         if (ok && g_SwapChainOwner == SwapChainOwner::FSR && g_FfxCtx && g_FfxSwapChainCtx) {
-            testapp::Log("[FG-DIAG] OFF mode destroys the FSR swapchain/context and recreates a native swapchain "
-                         "(oldSwapChain=%p swapchainCtx=%p fgCtx=%p)\n",
-                         g_SwapChain.Get(), (void*)g_FfxSwapChainCtx, (void*)g_FfxCtx);
+            testapp::Log(
+                "[FG-DIAG] OFF mode destroys the FSR swapchain/context and recreates a native swapchain "
+                "(oldSwapChain=%p swapchainCtx=%p fgCtx=%p)\n",
+                g_SwapChain.Get(), (void*)g_FfxSwapChainCtx, (void*)g_FfxCtx);
             DestroyFSRContexts();
             g_FsrInitialized = false;
             ok = RecreateSwapChain(false, "enter OFF mode after FSR") && ok;
@@ -413,8 +545,8 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
     g_CurrentMode = target;
     g_ModeSwitchPending = false;
     g_LastModeSwitchFrameId = g_FrameIdCounter;
-    testapp::Log("[FG-DIAG] Mode now %s (ok=%d fsr=%d fsrSuspended=%d dlss=%d)\n", ModeName(g_CurrentMode),
-                 ok ? 1 : 0, g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0);
+    testapp::Log("[FG-DIAG] Mode now %s (ok=%d fsr=%d fsrSuspended=%d dlss=%d)\n", ModeName(g_CurrentMode), ok ? 1 : 0,
+                 g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0);
     UpdateWindowTitle();
     testapp::LogFlush();
     return ok;
@@ -473,18 +605,20 @@ static void Render() {
     MaybeToggleFSRSuspensionStress(frameIndex);
 
     if ((g_FrameIdCounter % 60) == 0) {
-        testapp::Log("[FG-DIAG] heartbeat frameID=%llu frameIndex=%u mode=%s fsr=%d dlss=%d manual=%d autoStage=%d "
-                     "fsrConfigureEveryFrame=%d fsrSuspended=%d lastSuspendToggleFrame=%llu\n",
-                     static_cast<unsigned long long>(g_FrameIdCounter), frameIndex, ModeName(g_CurrentMode),
-                     g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, g_ManualMode ? 1 : 0, g_AutoStage,
-                     g_FsrConfigureEveryFrame ? 1 : 0, g_FsrSuspended ? 1 : 0,
-                     static_cast<unsigned long long>(g_LastFsrSuspendResumeToggleFrameId));
+        testapp::Log(
+            "[FG-DIAG] heartbeat frameID=%llu frameIndex=%u mode=%s fsr=%d dlss=%d manual=%d autoStage=%d "
+            "fsrConfigureEveryFrame=%d fsrSuspended=%d lastSuspendToggleFrame=%llu\n",
+            static_cast<unsigned long long>(g_FrameIdCounter), frameIndex, ModeName(g_CurrentMode),
+            g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, g_ManualMode ? 1 : 0, g_AutoStage,
+            g_FsrConfigureEveryFrame ? 1 : 0, g_FsrSuspended ? 1 : 0,
+            static_cast<unsigned long long>(g_LastFsrSuspendResumeToggleFrameId));
     }
 
     if (g_FsrEnabled && g_FsrConfigureEveryFrame) {
         ConfigureFSR(!g_FsrSuspended, frameIndex < g_SwapChainBufferCount ? g_RenderTargets[frameIndex].Get() : nullptr,
                      g_FsrSuspended ? "per-frame suspended refresh" : "per-frame active refresh", false);
     }
+    RunDxgiVideoMemoryQueryStress();
 
     WaitForSwapChainFrameLatency();
     g_CommandAllocators[frameIndex]->Reset();
@@ -510,8 +644,7 @@ static void Render() {
     }
     g_CommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
     D3D12_RECT scissor = {static_cast<LONG>(g_BarPosition * (g_WindowWidth - 100)), g_WindowHeight / 2 - 50,
-                          static_cast<LONG>(g_BarPosition * (g_WindowWidth - 100) + 100),
-                          g_WindowHeight / 2 + 50};
+                          static_cast<LONG>(g_BarPosition * (g_WindowWidth - 100) + 100), g_WindowHeight / 2 + 50};
     const float barColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
     g_CommandList->ClearRenderTargetView(rtvHandle, barColor, 1, &scissor);
     for (int pass = 0; pass < g_GpuLoadPasses; pass++) {
@@ -554,10 +687,11 @@ static void Render() {
 
 static void Cleanup() {
     if (g_Device) {
-        testapp::Log("[FG-DIAG] Cleanup leaves %s without recreating a native swapchain "
-                     "(fsrEnabled=%d dlssEnabled=%d fsrCtx=%p fsrSwapchainCtx=%p)\n",
-                     ModeName(g_CurrentMode), g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, (void*)g_FfxCtx,
-                     (void*)g_FfxSwapChainCtx);
+        testapp::Log(
+            "[FG-DIAG] Cleanup leaves %s without recreating a native swapchain "
+            "(fsrEnabled=%d dlssEnabled=%d fsrCtx=%p fsrSwapchainCtx=%p)\n",
+            ModeName(g_CurrentMode), g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, (void*)g_FfxCtx,
+            (void*)g_FfxSwapChainCtx);
         if (g_DlssEnabled) {
             SetDLSSFGMode(false);
             g_DlssEnabled = false;
@@ -575,6 +709,7 @@ static void Cleanup() {
     g_CommandList.Reset();
     g_RtvHeap.Reset();
     g_SwapChain.Reset();
+    g_DxgiVideoMemoryQueryAdapter.Reset();
     g_CommandQueue.Reset();
     g_Fence.Reset();
     g_Device.Reset();
@@ -609,11 +744,12 @@ int main(int argc, char* argv[]) {
     testapp::Log("Auto: OFF -> FSR at 3s, suspend/resume FSR every %ds, DLSS at 12s, FSR at 15s\n",
                  g_FsrSuspendResumeIntervalSeconds);
     testapp::Log("Keys: 1=OFF 2=DLSS FG 3=FSR FG ESC=exit\n\n");
-    testapp::Log("Stress: FSR active mode re-sends ffxConfigure every frame to mimic engines that refresh FG descriptors\n");
-    testapp::Log("Stress: FSR runtime unload/reload on mode switches = %d\n",
-                 g_FsrReloadRuntimeOnSwitch ? 1 : 0);
-    testapp::Log("Stress: Keep FSR runtime loaded during initial OFF = %d\n",
-                 g_FsrKeepRuntimeLoadedInitialOff ? 1 : 0);
+    testapp::Log(
+        "Stress: FSR active mode re-sends ffxConfigure every frame to mimic engines that refresh FG descriptors\n");
+    testapp::Log("Stress: DXGI video-memory query bursts during FSR mode = %d (%d queries/frame)\n",
+                 g_DxgiVideoMemoryQueryStress ? 1 : 0, g_DxgiVideoMemoryQueryCountPerFrame);
+    testapp::Log("Stress: FSR runtime unload/reload on mode switches = %d\n", g_FsrReloadRuntimeOnSwitch ? 1 : 0);
+    testapp::Log("Stress: Keep FSR runtime loaded during initial OFF = %d\n", g_FsrKeepRuntimeLoadedInitialOff ? 1 : 0);
     testapp::Log("Stress: Create disabled FSR context during initial OFF = %d\n",
                  g_FsrStartupDisabledContextStress ? 1 : 0);
     testapp::Log("Stress: FSR suspend/resume while keeping context/swapchain alive = %d\n\n",
@@ -632,8 +768,9 @@ int main(int argc, char* argv[]) {
     } else if (g_FsrReloadRuntimeOnSwitch && !g_FsrKeepRuntimeLoadedInitialOff) {
         UnloadFSRRuntime("startup stress before first FSR enable");
     } else if (g_FsrReloadRuntimeOnSwitch) {
-        testapp::Log("[FG-DIAG] Keeping FSR runtime loaded during initial OFF to mimic games that preload FFX "
-                     "beside Streamline before FG is enabled\n");
+        testapp::Log(
+            "[FG-DIAG] Keeping FSR runtime loaded during initial OFF to mimic games that preload FFX "
+            "beside Streamline before FG is enabled\n");
     }
     testapp::LogFlush();
 
@@ -654,8 +791,8 @@ int main(int argc, char* argv[]) {
     DWORD style = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     RECT rc = testapp::AdjustWindowRectForClientSize(style, 0, g_WindowWidth, g_WindowHeight);
     g_Hwnd = CreateWindowW(kWindowClass, L"DX12 FG Switch Test", style, g_Fullscreen ? monitorRect.left : 0,
-                           g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top, nullptr,
-                           nullptr, wc.hInstance, nullptr);
+                           g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr,
+                           wc.hInstance, nullptr);
     if (!testapp::PrimeWindowForBenchmark(g_Hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) {
         testapp::CloseLogFile();
         return 0;
@@ -675,10 +812,11 @@ int main(int argc, char* argv[]) {
     testapp::Log("[FG-DIAG] FSR runtime state=%d (context will be created when FSR mode is selected)\n",
                  g_FsrRuntimeLoaded ? 1 : 0);
     if (g_FsrStartupDisabledContextStress && g_FsrRuntimeLoaded && g_FfxCreateContext && !g_FfxCtx) {
-        testapp::Log("[FG-DIAG] Creating startup disabled FSR context on native swapchain while app mode remains OFF\n");
+        testapp::Log(
+            "[FG-DIAG] Creating startup disabled FSR context on native swapchain while app mode remains OFF\n");
         g_FsrInitialized = TryInitFSR();
-        testapp::Log("[FG-DIAG] Startup disabled FSR context state=%d ctx=%p owner=%s\n",
-                     g_FsrInitialized ? 1 : 0, (void*)g_FfxCtx, SwapChainOwnerName(g_SwapChainOwner));
+        testapp::Log("[FG-DIAG] Startup disabled FSR context state=%d ctx=%p owner=%s\n", g_FsrInitialized ? 1 : 0,
+                     (void*)g_FfxCtx, SwapChainOwnerName(g_SwapChainOwner));
     }
     g_DlssInitialized = streamlineLoaded && TryInitDLSSFG();
     testapp::Log("[FG-DIAG] DLSS init state=%d\n", g_DlssInitialized ? 1 : 0);

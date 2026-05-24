@@ -37,8 +37,8 @@ static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char
     }
     if (!usingFfxSwapChain) {
         ComPtr<IDXGISwapChain1> swapChain1;
-        HRESULT hr = factory->CreateSwapChainForHwnd(g_CommandQueue.Get(), hwnd, &swapChainDesc, nullptr, nullptr,
-                                                     &swapChain1);
+        HRESULT hr =
+            factory->CreateSwapChainForHwnd(g_CommandQueue.Get(), hwnd, &swapChainDesc, nullptr, nullptr, &swapChain1);
         if (FAILED(hr) || !swapChain1 || FAILED(swapChain1.As(&g_SwapChain))) {
             testapp::Log("[FG-DIAG] Native CreateSwapChainForHwnd(%s) failed hr=0x%08lx\n",
                          reason ? reason : "swapchain", static_cast<unsigned long>(hr));
@@ -109,10 +109,12 @@ static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char
         }
     }
 
-    testapp::Log("[FG-DIAG] Swapchain ready: reason=%s owner=%s %dx%d buffers=%u requested=%d maxLatency=%u waitable=%d format=RGBA8 vsync=%d fullscreen=%d\n",
-                 reason ? reason : "swapchain", SwapChainOwnerName(g_SwapChainOwner), g_WindowWidth, g_WindowHeight,
-                 g_SwapChainBufferCount, kRequestedBackBuffers, g_MaxFrameLatency, g_FrameLatencyWaitHandle ? 1 : 0,
-                 g_VSync, g_Fullscreen);
+    testapp::Log(
+        "[FG-DIAG] Swapchain ready: reason=%s owner=%s %dx%d buffers=%u requested=%d maxLatency=%u waitable=%d "
+        "format=RGBA8 vsync=%d fullscreen=%d\n",
+        reason ? reason : "swapchain", SwapChainOwnerName(g_SwapChainOwner), g_WindowWidth, g_WindowHeight,
+        g_SwapChainBufferCount, kRequestedBackBuffers, g_MaxFrameLatency, g_FrameLatencyWaitHandle ? 1 : 0, g_VSync,
+        g_Fullscreen);
     testapp::LogFlush();
     return true;
 }
@@ -137,16 +139,16 @@ static bool InitDX12(HWND hwnd) {
     PFun_D3D12CreateDevice createDevice = g_SlD3D12CreateDevice ? g_SlD3D12CreateDevice : D3D12CreateDevice;
     HRESULT deviceHr = createDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_Device));
     testapp::Log("[FG-DIAG] %s D3D12CreateDevice hr=0x%08lx device=%p\n",
-                 g_SlD3D12CreateDevice ? "Streamline" : "Native", static_cast<unsigned long>(deviceHr),
-                 g_Device.Get());
+                 g_SlD3D12CreateDevice ? "Streamline" : "Native", static_cast<unsigned long>(deviceHr), g_Device.Get());
     if (FAILED(deviceHr) || !g_Device) {
         return false;
     }
+    InitDxgiVideoMemoryQueryStressAdapter("initial device");
     if (g_SlSetD3DDevice && g_SlInitialized) {
         sl::Result deviceResult = g_SlSetD3DDevice(g_Device.Get());
         g_SlDeviceSet = deviceResult == sl::Result::eOk;
-        testapp::Log("[FG-DIAG] slSetD3DDevice(before swapchain) result=%d (%s)\n",
-                     static_cast<int>(deviceResult), SlResultName(deviceResult));
+        testapp::Log("[FG-DIAG] slSetD3DDevice(before swapchain) result=%d (%s)\n", static_cast<int>(deviceResult),
+                     SlResultName(deviceResult));
     }
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};

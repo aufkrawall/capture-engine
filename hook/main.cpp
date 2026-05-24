@@ -174,6 +174,13 @@ bool IsCurrentProcessHandle(HANDLE processHandle) {
   return targetPid != 0 && targetPid == GetCurrentProcessId();
 }
 
+bool IsFrameGenerationRuntimeActiveForTerminationDump() {
+  const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+  return g_FGCompat.IsFGActive() || g_FGCompat.IsDLSSFGApiActive() || g_FGCompat.IsFSRFGApiActive() ||
+         g_FGCompat.IsStreamlineFGSignaled() || DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+         ce::fg_runtime::IsRuntimeFGActive(runtimeMode) || DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
+}
+
 void DescribeAddressModule(void* address, char* buffer, size_t bufferSize) {
   if (!buffer || bufferSize == 0) {
     return;
@@ -335,7 +342,9 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
                                        PEXCEPTION_RECORD exceptionRecord, PCONTEXT contextRecord,
                                        void* callerAddress = nullptr) {
   const bool alreadyAttempted = g_PreTerminationDumpAttempted.load(std::memory_order_acquire);
-  if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted)) {
+  const bool frameGenerationRuntimeActiveOrRecent = IsFrameGenerationRuntimeActiveForTerminationDump();
+  if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted,
+                                                              frameGenerationRuntimeActiveOrRecent)) {
     return false;
   }
 
@@ -383,9 +392,11 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
            static_cast<unsigned long>(exitCode));
 
   HookLogImportant(
-      "FatalExitDump: Capturing pre-termination dump before crash-like process exit "
-      "(source=%s code=0x%08lX exceptionAddr=%p)",
-      source ? source : "unknown", static_cast<unsigned long>(exitCode), exceptionRecord->ExceptionAddress);
+      "FatalExitDump: Capturing pre-termination dump before crash-like process exit or active FG runtime exit "
+      "(source=%s code=0x%08lX exceptionAddr=%p crashLike=%d fgRuntimeActiveOrRecent=%d)",
+      source ? source : "unknown", static_cast<unsigned long>(exitCode), exceptionRecord->ExceptionAddress,
+      ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode) ? 1 : 0,
+      frameGenerationRuntimeActiveOrRecent ? 1 : 0);
   OutputDebugStringA("[FatalExitDump] Capturing pre-termination crash dump.\n");
 
   HookLogImportant("FatalExitDump: Using minimal-first pre-termination dump attempt (source=%s hint=%s)",

@@ -133,7 +133,7 @@ TEST(CrashDumpPolicyTest, WeakExternalDumpSignatureCanDedupButCannotTerminate) {
     EXPECT_FALSE(policy::IsStrongExternalDumpSignature(signature));
     EXPECT_TRUE(policy::ShouldSuppressDuplicateExternalDumpArtifacts(5, true));
     EXPECT_FALSE(policy::ShouldTerminateAfterExternalDumpStorm(policy::IsStrongExternalDumpSignature(signature), 5, 10,
-                                                              20, true, false));
+                                                               20, true, false));
 }
 
 TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesOnlyCurrentProcessCrashLikeExitCodesOnce) {
@@ -147,6 +147,16 @@ TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesOnlyCurrentProcessCrashLikeE
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, policy::kExternalDumpStormTerminationExitCode, false));
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 0, false));
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 1, false));
+}
+
+TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesActiveFrameGenerationRuntimeExits) {
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 0, false, true));
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 1, false, true));
+
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(false, 0, false, true));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 0, true, true));
+    EXPECT_FALSE(
+        policy::ShouldCapturePreTerminationDump(true, policy::kExternalDumpStormTerminationExitCode, false, true));
 }
 
 TEST(CrashDumpPolicyTest, BreakpointExceptionsDumpWhenNoDebuggerOwnsThem) {

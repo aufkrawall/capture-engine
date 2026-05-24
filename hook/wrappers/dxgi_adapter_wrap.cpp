@@ -5,7 +5,67 @@
 #include "dxgi_adapter_wrap.h"
 #include "dxgi_factory_wrap.h"
 #include "dxgi_output_wrap.h"
+#include "dxgi_video_memory_log_policy.h"
 #include "hook_common.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdint>
+
+namespace {
+
+struct VideoMemoryQueryLogState {
+    std::atomic<uint64_t> callCount{0};
+    std::atomic<uint64_t> lastLogMs{0};
+    std::atomic<uint64_t> lastLoggedBudget{0};
+    std::atomic<uint64_t> lastLoggedUsage{0};
+    std::atomic<uint64_t> lastLoggedAvailableForReservation{0};
+};
+
+VideoMemoryQueryLogState& GetVideoMemoryQueryLogState(UINT nodeIndex, DXGI_MEMORY_SEGMENT_GROUP memorySegmentGroup) {
+    static std::array<std::array<VideoMemoryQueryLogState, 2>, 4> states;
+    const UINT nodeSlot = std::min<UINT>(nodeIndex, static_cast<UINT>(states.size() - 1));
+    const size_t segmentSlot = memorySegmentGroup == DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL ? 1 : 0;
+    return states[nodeSlot][segmentSlot];
+}
+
+bool ShouldLogVideoMemoryQueryResult(UINT nodeIndex, DXGI_MEMORY_SEGMENT_GROUP memorySegmentGroup, HRESULT hr,
+                                     const DXGI_QUERY_VIDEO_MEMORY_INFO* videoMemoryInfo, uint64_t* callCountOut) {
+    auto& state = GetVideoMemoryQueryLogState(nodeIndex, memorySegmentGroup);
+    const uint64_t callCount = state.callCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (callCountOut) {
+        *callCountOut = callCount;
+    }
+
+    const bool failed = FAILED(hr) || !videoMemoryInfo;
+    bool valueChanged = false;
+    if (!failed) {
+        valueChanged = ce::dxgi_video_memory_log_policy::HasMeaningfulVideoMemoryDelta(
+            state.lastLoggedBudget.load(std::memory_order_relaxed),
+            state.lastLoggedUsage.load(std::memory_order_relaxed),
+            state.lastLoggedAvailableForReservation.load(std::memory_order_relaxed), videoMemoryInfo->Budget,
+            videoMemoryInfo->CurrentUsage, videoMemoryInfo->AvailableForReservation);
+    }
+
+    const uint64_t nowMs = GetTickCount64();
+    const uint64_t lastLogMs = state.lastLogMs.load(std::memory_order_relaxed);
+    if (!ce::dxgi_video_memory_log_policy::ShouldLogVideoMemoryQuery(callCount, nowMs, lastLogMs, valueChanged,
+                                                                     failed)) {
+        return false;
+    }
+
+    state.lastLogMs.store(nowMs, std::memory_order_relaxed);
+    if (!failed) {
+        state.lastLoggedBudget.store(videoMemoryInfo->Budget, std::memory_order_relaxed);
+        state.lastLoggedUsage.store(videoMemoryInfo->CurrentUsage, std::memory_order_relaxed);
+        state.lastLoggedAvailableForReservation.store(videoMemoryInfo->AvailableForReservation,
+                                                      std::memory_order_relaxed);
+    }
+    return true;
+}
+
+}  // namespace
 
 // ============================================================================
 // Constructor / Destructor
@@ -206,8 +266,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc(DXGI_ADAPTER_DESC* pDesc) {
         // instead of the Description pointer → wcslen(NULL) crash (BioShock Infinite).
         WrapperLog("DXGI Adapter: GetDesc - VRAM: %llu MB, Shared: %llu MB, Name: %S",
                    (unsigned long long)(pDesc->DedicatedVideoMemory / (1024 * 1024)),
-                   (unsigned long long)(pDesc->SharedSystemMemory / (1024 * 1024)),
-                   pDesc->Description);
+                   (unsigned long long)(pDesc->SharedSystemMemory / (1024 * 1024)), pDesc->Description);
     } else {
         WrapperLog("DXGI Adapter: GetDesc FAILED hr=0x%08X", hr);
     }
@@ -279,14 +338,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::QueryVideoMemoryInfo(UINT NodeIndex,
         return DXGI_ERROR_UNSUPPORTED;
     // FIX: Pass through to real adapter without VRAM override
     HRESULT hr = m_pReal3->QueryVideoMemoryInfo(NodeIndex, MemorySegmentGroup, pVideoMemoryInfo);
-    if (SUCCEEDED(hr) && pVideoMemoryInfo) {
+    uint64_t queryCount = 0;
+    if (SUCCEEDED(hr) && pVideoMemoryInfo &&
+        ShouldLogVideoMemoryQueryResult(NodeIndex, MemorySegmentGroup, hr, pVideoMemoryInfo, &queryCount)) {
         WrapperLog(
-            "DXGI Adapter: QueryVideoMemoryInfo(Node=%u, Segment=%d) - "
+            "DXGI Adapter: QueryVideoMemoryInfo(Node=%u, Segment=%d, sample=%llu) - "
             "Budget: %llu MB, CurrentUsage: %llu MB, Available: %llu MB",
-            NodeIndex, (int)MemorySegmentGroup, pVideoMemoryInfo->Budget / (1024 * 1024),
-            pVideoMemoryInfo->CurrentUsage / (1024 * 1024), pVideoMemoryInfo->AvailableForReservation / (1024 * 1024));
-    } else {
-        WrapperLog("DXGI Adapter: QueryVideoMemoryInfo FAILED hr=0x%08X", hr);
+            NodeIndex, (int)MemorySegmentGroup, static_cast<unsigned long long>(queryCount),
+            pVideoMemoryInfo->Budget / (1024 * 1024), pVideoMemoryInfo->CurrentUsage / (1024 * 1024),
+            pVideoMemoryInfo->AvailableForReservation / (1024 * 1024));
+    } else if (FAILED(hr) && ShouldLogVideoMemoryQueryResult(NodeIndex, MemorySegmentGroup, hr, nullptr, &queryCount)) {
+        WrapperLog("DXGI Adapter: QueryVideoMemoryInfo FAILED hr=0x%08X (Node=%u, Segment=%d, sample=%llu)", hr,
+                   NodeIndex, (int)MemorySegmentGroup, static_cast<unsigned long long>(queryCount));
     }
     return hr;
 }
