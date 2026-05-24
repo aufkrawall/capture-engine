@@ -310,7 +310,7 @@ static bool TryInitFSR() {
 }
 
 static void DispatchFSRPrepare(float elapsedSeconds) {
-    if (!g_FsrEnabled || !g_FfxDispatch || !g_FfxCtx || !g_FgInputs.valid) {
+    if (!g_FsrEnabled || g_FsrSuspended || !g_FfxDispatch || !g_FfxCtx || !g_FgInputs.valid) {
         return;
     }
 
@@ -361,5 +361,6 @@ static void DestroyFSRContexts() {
         g_FfxSwapChainCtx = nullptr;
     }
     g_FsrEnabled = false;
+    g_FsrSuspended = false;
     g_FsrInitialized = false;
 }

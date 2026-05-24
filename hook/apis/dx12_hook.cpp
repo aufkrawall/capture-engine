@@ -1228,6 +1228,13 @@ static void ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown() {
     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.store(false, std::memory_order_release);
 }
 
+void DX12_ClearNativeFSRRuntimeOwnedTeardown(const char* reason) {
+    if (g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.exchange(false, std::memory_order_acq_rel)) {
+        HookLogImportant("DX12: Cleared explicit native FSR runtime-owned teardown latch (%s)",
+                         reason && reason[0] ? reason : "unspecified");
+    }
+}
+
 static bool HasResolvedOfficialFFXStartupPath() {
     return g_FGCompat.HasDirectFFXApiConfirmation() ||
            g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
@@ -3124,9 +3131,11 @@ static bool ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(bo
     const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
         EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
     const ULONGLONG stallDurationMs = GetFFXPresentCallbackStallDurationMs();
+    const bool explicitNativeFSROffPending =
+        g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
     return ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         ffxPresentCallbackStalled, progressResolvedOfficialFFXPresentPath, directFFXApiConfirmation,
-        currentFFXPresentCallbackProof, progressProof.proof, stallDurationMs);
+        currentFFXPresentCallbackProof, progressProof.proof, stallDurationMs, explicitNativeFSROffPending);
 }
 
 static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
@@ -3146,11 +3155,14 @@ static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
         "DX12: FFX present callback appears stalled but normal overlay fallback is unsafe for "
         "progress-resolved official FFX startup without direct ffxConfigure/callback proof; stable same-queue proof "
         "is diagnostic only and first native-FSR overlay submit can trigger ERR_GFX_STATE "
-        "(lastCallback=%llu progressAssumedFor=%llums directFFX=%d runtimeOwns=%d runtime=%s apiFSR=%d "
-        "nativeFGPath=%d stableProof=%d stableFor=%llums requiredStable=%llums hasScQ=%d hasOrig=%d sameQueue=%d "
+        "(lastCallback=%llu progressAssumedFor=%llums directFFX=%d explicitNativeOff=%d runtimeOwns=%d "
+        "runtime=%s apiFSR=%d nativeFGPath=%d stableProof=%d stableFor=%llums requiredStable=%llums "
+        "hasScQ=%d hasOrig=%d sameQueue=%d "
         "hasDevice=%d deviceHr=0x%08X scQueue=%p origGame=%p cmdQ=%p log=%d)",
         lastCallback, assumedSince ? (now - assumedSince) : 0,
-        g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
+        g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
+        g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
+        g_FGRuntimeOwnsSwapchain ? 1 : 0,
         ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
         HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0, progressProof.proof ? 1 : 0,
         progressProof.stableMs, kProgressResolvedOfficialFFXOverlayFallbackStableMs,
@@ -3202,12 +3214,13 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
                                                                               assumedSince);
                 HookLogImportant(
                     "DX12: FFX present callback appears stalled (lastCallback=%llu ownedFor=%llums "
-                    "progressAssumedFor=%llums proofSince=%llu directFFX=%d currentCallbackProof=%d stableProof=%d "
-                    "stableFor=%llums sameQueue=%d deviceHr=0x%08X) "
+                    "progressAssumedFor=%llums proofSince=%llu directFFX=%d explicitNativeOff=%d "
+                    "currentCallbackProof=%d stableProof=%d stableFor=%llums sameQueue=%d deviceHr=0x%08X) "
                     "— allowing normal overlay rendering as fallback after direct FFX/callback proof",
                     lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0,
                     assumedSince ? (GetTickCount64() - assumedSince) : 0,
                     static_cast<unsigned long long>(currentFFXProofSince), directFFXApiConfirmation ? 1 : 0,
+                    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
                     currentFFXPresentCallbackProof ? 1 : 0, progressProof.proof ? 1 : 0, progressProof.stableMs,
                     progressProof.swapchainQueueMatchesOriginalGameQueue ? 1 : 0,
                     static_cast<unsigned>(progressProof.deviceHr));
@@ -3252,11 +3265,13 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
                         "DX12: Overlay suppression exceeded 2s but native FSR owns presentation; keeping normal "
                         "overlay GPU work suppressed because the FFX present-callback path is %s "
                         "(elapsed=%llums runtime=%s apiFSR=%d nativeFGPath=%d nativeFSR=%d runtimeOwns=%d "
-                        "callbackEver=%d lastCallbackAge=%llums ffxStalled=%d ffxStallAllows=%d log=%d)",
+                        "explicitNativeOff=%d callbackEver=%d lastCallbackAge=%llums ffxStalled=%d "
+                        "ffxStallAllows=%d log=%d)",
                         ffxPresentCallbackEverFired && !ffxStalled ? "active" : "not safe for fallback",
                         now - suppressedSince, ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
                         g_FGCompat.IsFSRFGApiActive() ? 1 : 0, runtimeOwnedNativeFGPresentPath ? 1 : 0,
                         nativeFSRActive ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
+                        g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
                         ffxPresentCallbackEverFired ? 1 : 0,
                         ffxPresentCallbackEverFired && now >= lastCallback ? (now - lastCallback) : 0,
                         ffxStalled ? 1 : 0, ffxStallAllowsNormalOverlay ? 1 : 0, logCount + 1);
@@ -3731,7 +3746,7 @@ static void ResetFFXPresentCallbackOverlayBackend(const char* reason) {
     }
 }
 
-void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
+void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresentCallbackBridge) {
     static std::atomic<int> s_nativeFSROffRuntimeTeardownLogCount{0};
 
     if (enabled) {
@@ -3773,7 +3788,7 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
 
     const bool runtimeOwnedTeardownStillActive =
         ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
-            g_FGRuntimeOwnsSwapchain, HookHasRuntimeOwnedNativeFGPresentPath());
+            g_FGRuntimeOwnsSwapchain, HookHasRuntimeOwnedNativeFGPresentPath(), retainedPresentCallbackBridge);
     SetNativeFSRStartupConfigureArmingPending(false, "native FSR disabled configure");
     ClearDeferredOfficialFFXTakeoverSideEffects("native FSR disabled configure");
     ClearProtectedOfficialFFXStartupSwapchainPending("native FSR disabled configure");
@@ -3784,8 +3799,9 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled) {
         if (logCount < 20 || (logCount % 300) == 0) {
             HookLogImportant(
                 "DX12: Native FSR explicitly configured FG OFF while runtime-owned swapchain teardown is still active "
-                "(scQueue=%p origGame=%p cmdQ=%p log=%d)",
-                g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire), logCount + 1);
+                "(scQueue=%p origGame=%p cmdQ=%p retainedBridge=%d log=%d)",
+                g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
+                retainedPresentCallbackBridge ? 1 : 0, logCount + 1);
         }
     }
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kNativeFSRConfigureOff,
@@ -12124,7 +12140,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 HookLogImportant(
                     "DX12: Deferring overlay init because %s — decision matrix: "
                     "runtime=%s apiFSR=%d directFFX=%d progressResolved=%d nativeFGPath=%d "
-                    "ffxStalled=%d ffxStallAllows=%d runtimeOwns=%d "
+                    "explicitNativeOff=%d ffxStalled=%d ffxStallAllows=%d runtimeOwns=%d "
                     "callbackEver=%d callbackLast=%llu sameQueue=%d stableProof=%d "
                     "cooldown=%d overlayInit=%d syncInit=%d "
                     "scQueue=%p origGame=%p cmdQ=%p",
@@ -12134,6 +12150,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
                     g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
                     HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
+                    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
                     ffxStalled ? 1 : 0, ffxStallAllows ? 1 : 0,
                     g_FGRuntimeOwnsSwapchain ? 1 : 0,
                     g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0 ? 1 : 0,
@@ -12364,7 +12381,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 HookLogImportant(
                     "DX12: Keeping staged sync init deferred because %s — decision matrix: "
                     "runtime=%s apiFSR=%d directFFX=%d progressResolved=%d nativeFGPath=%d "
-                    "ffxStalled=%d ffxStallAllows=%d runtimeOwns=%d "
+                    "explicitNativeOff=%d ffxStalled=%d ffxStallAllows=%d runtimeOwns=%d "
                     "callbackEver=%d sameQueue=%d stableProof=%d "
                     "scQueue=%p origGame=%p cmdQ=%p",
                     skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned swapchain",
@@ -12373,6 +12390,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
                     g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
                     HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
+                    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
                     ffxStalled ? 1 : 0, ffxStallAllows ? 1 : 0,
                     g_FGRuntimeOwnsSwapchain ? 1 : 0,
                     g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0 ? 1 : 0,

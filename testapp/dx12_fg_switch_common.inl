@@ -25,19 +25,20 @@ static void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
 
 static void WaitForSwapChainFrameLatency() {
     if (g_FrameLatencyWaitHandle) {
-        static bool s_loggedDisabledFsrWaitBypass = false;
-        const bool disabledParkedFsrSwapchain = g_SwapChainOwner == SwapChainOwner::FSR && !g_FsrEnabled;
-        if (disabledParkedFsrSwapchain) {
-            if (!s_loggedDisabledFsrWaitBypass) {
-                s_loggedDisabledFsrWaitBypass = true;
-                testapp::Log("[FG-DIAG] Skipping frame-latency wait while disabled FSR swapchain is parked "
-                             "(waitable=%p mode=%s)\n",
-                             g_FrameLatencyWaitHandle, ModeName(g_CurrentMode));
+        static bool s_loggedFsrNonBlockingWait = false;
+        if (g_SwapChainOwner == SwapChainOwner::FSR) {
+            const DWORD probe = WaitForSingleObject(g_FrameLatencyWaitHandle, 0);
+            if (!s_loggedFsrNonBlockingWait) {
+                s_loggedFsrNonBlockingWait = true;
+                testapp::Log("[FG-DIAG] FSR proxy swapchain uses non-blocking frame-latency probe "
+                             "(waitable=%p firstProbe=%lu mode=%s enabled=%d suspended=%d)\n",
+                             g_FrameLatencyWaitHandle, static_cast<unsigned long>(probe), ModeName(g_CurrentMode),
+                             g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0);
                 testapp::LogFlush();
             }
             return;
         }
-        s_loggedDisabledFsrWaitBypass = false;
+        s_loggedFsrNonBlockingWait = false;
         WaitForSingleObject(g_FrameLatencyWaitHandle, INFINITE);
     }
 }

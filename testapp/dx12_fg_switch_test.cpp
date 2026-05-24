@@ -1,5 +1,5 @@
 // Combined DX12 frame-generation switching test app.
-// Starts with FG off, auto-switches Off -> FSR -> DLSS -> FSR, and supports:
+// Starts with FG off, auto-switches through FSR suspend/resume and DLSS/FSR, and supports:
 //   1 = all FG off, 2 = DLSS FG, 3 = FSR FG.
 // Writes dx12_fg_switch_test.log beside the exe.
 
@@ -75,6 +75,8 @@ static int g_GpuLoadPasses = 40;
 static int g_VSync = 0;
 static int g_Fullscreen = 0;
 static bool g_FsrReloadRuntimeOnSwitch = true;
+static bool g_FsrSuspendResumeStress = true;
+static int g_FsrSuspendResumeIntervalSeconds = 3;
 
 static void LoadConfig() {
     char path[MAX_PATH];
@@ -92,6 +94,15 @@ static void LoadConfig() {
     g_FsrReloadRuntimeOnSwitch =
         GetPrivateProfileIntA("Stress", "fsr_reload_runtime_on_switch", g_FsrReloadRuntimeOnSwitch ? 1 : 0,
                               configPath.c_str()) != 0;
+    g_FsrSuspendResumeStress =
+        GetPrivateProfileIntA("Stress", "fsr_suspend_resume", g_FsrSuspendResumeStress ? 1 : 0,
+                              configPath.c_str()) != 0;
+    g_FsrSuspendResumeIntervalSeconds =
+        GetPrivateProfileIntA("Stress", "fsr_suspend_resume_interval_seconds",
+                              g_FsrSuspendResumeIntervalSeconds, configPath.c_str());
+    if (g_FsrSuspendResumeIntervalSeconds < 1) {
+        g_FsrSuspendResumeIntervalSeconds = 1;
+    }
 }
 
 constexpr int kRequestedBackBuffers = 3;
@@ -125,6 +136,7 @@ static PfnFfxDispatch g_FfxDispatch = nullptr;
 static PfnFfxDestroyContext g_FfxDestroyContext = nullptr;
 static bool g_FsrInitialized = false;
 static bool g_FsrEnabled = false;
+static bool g_FsrSuspended = false;
 static bool g_FsrRuntimeLoaded = false;
 static bool g_FsrConfigureEveryFrame = true;
 static uint64_t g_FsrRuntimeLoadGeneration = 0;
@@ -170,6 +182,8 @@ static int g_AutoStage = 0;
 static float g_BarPosition = 0.0f;
 static uint64_t g_LastModeSwitchFrameId = 0;
 static auto g_StartTime = std::chrono::high_resolution_clock::now();
+static auto g_LastFsrSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
+static uint64_t g_LastFsrSuspendResumeToggleFrameId = 0;
 static bool g_Running = true;
 
 static const char* SlResultName(sl::Result result) {
@@ -204,13 +218,16 @@ static const char* FfxReturnName(ffxReturnCode_t code) {
     }
 }
 
+static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer, const char* reason, bool forceLog);
+static void RegisterFSRUiResource();
+
 static void UpdateWindowTitle() {
     if (!g_Hwnd) {
         return;
     }
     wchar_t title[256];
-    swprintf(title, 256, L"DX12 FG Switch Test - %dx%d - %hs", g_WindowWidth, g_WindowHeight,
-             ModeName(g_CurrentMode));
+    swprintf(title, 256, L"DX12 FG Switch Test - %dx%d - %hs%hs", g_WindowWidth, g_WindowHeight,
+             ModeName(g_CurrentMode), g_FsrSuspended ? " (suspended)" : "");
     SetWindowTextW(g_Hwnd, title);
 }
 
@@ -223,6 +240,43 @@ static void RequestMode(FGMode mode, const char* reason, bool manual) {
     testapp::Log("[FG-DIAG] Mode request: %s -> %s (%s manual=%d)\n", ModeName(g_CurrentMode), ModeName(mode),
                  reason ? reason : "unknown", manual ? 1 : 0);
     testapp::LogFlush();
+}
+
+static void ResetFSRSuspensionStressState(const char* reason) {
+    if (g_FsrSuspended) {
+        testapp::Log("[FG-DIAG] FSR suspension stress reset to resumed (%s)\n", reason ? reason : "unknown");
+    }
+    g_FsrSuspended = false;
+    g_LastFsrSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
+    g_LastFsrSuspendResumeToggleFrameId = g_FrameIdCounter;
+}
+
+static void MaybeToggleFSRSuspensionStress(UINT frameIndex) {
+    if (!g_FsrSuspendResumeStress || g_ManualMode || g_CurrentMode != FGMode::FSR || !g_FsrEnabled || !g_FfxCtx) {
+        return;
+    }
+
+    const auto now = std::chrono::high_resolution_clock::now();
+    const float elapsedSinceToggle =
+        std::chrono::duration<float>(now - g_LastFsrSuspendResumeToggleTime).count();
+    if (elapsedSinceToggle < static_cast<float>(g_FsrSuspendResumeIntervalSeconds)) {
+        return;
+    }
+
+    g_FsrSuspended = !g_FsrSuspended;
+    g_LastFsrSuspendResumeToggleTime = now;
+    g_LastFsrSuspendResumeToggleFrameId = g_FrameIdCounter;
+
+    const bool enable = !g_FsrSuspended;
+    testapp::Log("[FG-DIAG] FSR suspension stress: %s frameID=%llu frameIndex=%u interval=%ds\n",
+                 enable ? "resume FG" : "suspend FG", static_cast<unsigned long long>(g_FrameIdCounter), frameIndex,
+                 g_FsrSuspendResumeIntervalSeconds);
+    if (ConfigureFSR(enable, frameIndex < g_SwapChainBufferCount ? g_RenderTargets[frameIndex].Get() : nullptr,
+                     enable ? "stress resume FSR FG" : "stress suspend FSR FG", true) &&
+        enable) {
+        RegisterFSRUiResource();
+    }
+    UpdateWindowTitle();
 }
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -266,6 +320,7 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
     if (g_FsrEnabled) {
         const bool disabled = ConfigureFSR(false, nullptr, "leave FSR mode", true);
         g_FsrEnabled = false;
+        ResetFSRSuspensionStressState("leave FSR mode");
         ok = ok && disabled;
         ok = ok && WaitForFSRSwapChainPresents("leave FSR mode");
         WaitForGpu();
@@ -294,9 +349,10 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
         UINT activeFrameIndex = g_FrameIndex < g_SwapChainBufferCount ? g_FrameIndex : frameIndex;
         if (ok && ConfigureFSR(true,
                                activeFrameIndex < g_SwapChainBufferCount ? g_RenderTargets[activeFrameIndex].Get()
-                                                                          : nullptr,
+                                                                           : nullptr,
                                "enter FSR mode", true)) {
             g_FsrEnabled = true;
+            ResetFSRSuspensionStressState("enter FSR mode");
             RegisterFSRUiResource();
         } else if (ok) {
             testapp::Log("[FG-DIAG] FSR FG enable failed during switch\n");
@@ -349,8 +405,8 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
     g_CurrentMode = target;
     g_ModeSwitchPending = false;
     g_LastModeSwitchFrameId = g_FrameIdCounter;
-    testapp::Log("[FG-DIAG] Mode now %s (ok=%d fsr=%d dlss=%d)\n", ModeName(g_CurrentMode), ok ? 1 : 0,
-                 g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0);
+    testapp::Log("[FG-DIAG] Mode now %s (ok=%d fsr=%d fsrSuspended=%d dlss=%d)\n", ModeName(g_CurrentMode),
+                 ok ? 1 : 0, g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0);
     UpdateWindowTitle();
     testapp::LogFlush();
     return ok;
@@ -363,12 +419,12 @@ static void RunAutoSequence(float elapsedSeconds) {
     if (g_AutoStage == 0 && elapsedSeconds >= 3.0f) {
         g_AutoStage = 1;
         RequestMode(FGMode::FSR, "auto t=3s", false);
-    } else if (g_AutoStage == 1 && elapsedSeconds >= 6.0f) {
+    } else if (g_AutoStage == 1 && elapsedSeconds >= 12.0f) {
         g_AutoStage = 2;
-        RequestMode(FGMode::DLSS, "auto t=6s", false);
-    } else if (g_AutoStage == 2 && elapsedSeconds >= 9.0f) {
+        RequestMode(FGMode::DLSS, "auto t=12s after FSR suspend/resume", false);
+    } else if (g_AutoStage == 2 && elapsedSeconds >= 15.0f) {
         g_AutoStage = 3;
-        RequestMode(FGMode::FSR, "auto t=9s", false);
+        RequestMode(FGMode::FSR, "auto t=15s", false);
     }
 }
 
@@ -406,17 +462,20 @@ static void Render() {
     SetPCLMarker(frameToken, sl::PCLMarker::eSimulationStart, "SimulationStart");
     SetPCLMarker(frameToken, sl::PCLMarker::eSimulationEnd, "SimulationEnd");
     ++g_FrameIdCounter;
+    MaybeToggleFSRSuspensionStress(frameIndex);
+
     if ((g_FrameIdCounter % 60) == 0) {
         testapp::Log("[FG-DIAG] heartbeat frameID=%llu frameIndex=%u mode=%s fsr=%d dlss=%d manual=%d autoStage=%d "
-                     "fsrConfigureEveryFrame=%d\n",
+                     "fsrConfigureEveryFrame=%d fsrSuspended=%d lastSuspendToggleFrame=%llu\n",
                      static_cast<unsigned long long>(g_FrameIdCounter), frameIndex, ModeName(g_CurrentMode),
                      g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, g_ManualMode ? 1 : 0, g_AutoStage,
-                     g_FsrConfigureEveryFrame ? 1 : 0);
+                     g_FsrConfigureEveryFrame ? 1 : 0, g_FsrSuspended ? 1 : 0,
+                     static_cast<unsigned long long>(g_LastFsrSuspendResumeToggleFrameId));
     }
 
     if (g_FsrEnabled && g_FsrConfigureEveryFrame) {
-        ConfigureFSR(true, frameIndex < g_SwapChainBufferCount ? g_RenderTargets[frameIndex].Get() : nullptr,
-                     "per-frame active refresh", false);
+        ConfigureFSR(!g_FsrSuspended, frameIndex < g_SwapChainBufferCount ? g_RenderTargets[frameIndex].Get() : nullptr,
+                     g_FsrSuspended ? "per-frame suspended refresh" : "per-frame active refresh", false);
     }
 
     WaitForSwapChainFrameLatency();
@@ -436,7 +495,8 @@ static void Render() {
     rtvHandle.ptr += frameIndex * g_RtvDescriptorSize;
     float clearColor[] = {0.08f, 0.08f, 0.08f, 1.0f};
     if (g_CurrentMode == FGMode::FSR) {
-        clearColor[1] = 0.16f;
+        clearColor[1] = g_FsrSuspended ? 0.10f : 0.16f;
+        clearColor[0] = g_FsrSuspended ? 0.16f : clearColor[0];
     } else if (g_CurrentMode == FGMode::DLSS) {
         clearColor[2] = 0.18f;
     }
@@ -452,8 +512,10 @@ static void Render() {
     }
     g_CommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
     g_CommandList->ClearRenderTargetView(rtvHandle, barColor, 1, &scissor);
-    DispatchFSRPrepare(elapsed);
-    if (g_FsrEnabled) {
+    if (!g_FsrSuspended) {
+        DispatchFSRPrepare(elapsed);
+    }
+    if (g_FsrEnabled && !g_FsrSuspended) {
         RegisterFSRUiResource();
     }
 
@@ -536,11 +598,14 @@ int main(int argc, char* argv[]) {
     testapp::Log("GPU Load Passes: %d\n", g_GpuLoadPasses);
     testapp::Log("Back Buffers (requested): %d\n", kRequestedBackBuffers);
     testapp::Log("Process ID: %lu\n", GetCurrentProcessId());
-    testapp::Log("Auto: OFF -> FSR at 3s -> DLSS at 6s -> FSR at 9s\n");
+    testapp::Log("Auto: OFF -> FSR at 3s, suspend/resume FSR every %ds, DLSS at 12s, FSR at 15s\n",
+                 g_FsrSuspendResumeIntervalSeconds);
     testapp::Log("Keys: 1=OFF 2=DLSS FG 3=FSR FG ESC=exit\n\n");
     testapp::Log("Stress: FSR active mode re-sends ffxConfigure every frame to mimic engines that refresh FG descriptors\n");
-    testapp::Log("Stress: FSR runtime unload/reload on mode switches = %d\n\n",
+    testapp::Log("Stress: FSR runtime unload/reload on mode switches = %d\n",
                  g_FsrReloadRuntimeOnSwitch ? 1 : 0);
+    testapp::Log("Stress: FSR suspend/resume while keeping context/swapchain alive = %d\n\n",
+                 g_FsrSuspendResumeStress ? 1 : 0);
     testapp::LogFlush();
 
     testapp::Log("Loading Streamline before DXGI/D3D12...\n");

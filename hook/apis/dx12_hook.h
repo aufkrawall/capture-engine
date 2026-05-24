@@ -96,7 +96,8 @@ bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callba
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
 void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);
 void DX12_ServiceDeferredECLProbe();
-void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled);
+void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresentCallbackBridge = false);
+void DX12_ClearNativeFSRRuntimeOwnedTeardown(const char* reason);
 bool DX12_IsNativeFSRStartupConfigureArmingPending();
 void DX12_ClearNativeFSRStartupConfigureArming(const char* reason);
 void DX12_ClearOfficialFFXRuntimeOwnedPresentPathAssumption(const char* reason);

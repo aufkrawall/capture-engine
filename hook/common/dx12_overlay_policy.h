@@ -585,12 +585,22 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     bool ffxPresentCallbackStalled, bool progressResolvedOfficialFFXPresentPath, bool directFFXApiConfirmation,
     bool currentFFXPresentCallbackProof, bool progressResolvedStableOverlayProof = false,
-    ULONGLONG stallDurationMs = 0) {
+    ULONGLONG stallDurationMs = 0, bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false) {
     (void)progressResolvedOfficialFFXPresentPath;
     (void)progressResolvedStableOverlayProof;
     (void)stallDurationMs;
 
     if (!ffxPresentCallbackStalled) {
+        return false;
+    }
+
+    // When a game explicitly disables native FSR FG while keeping the FFX
+    // context/callback bridge alive (GTA menu/suspend path), a quiet callback is
+    // expected runtime-owned teardown traffic, not evidence that CE may fall
+    // back to its separate DX12 overlay command-list path.  The runtime must
+    // later resume the callback or destroy/hand back the context before normal
+    // overlay GPU work is considered safe again.
+    if (explicitNativeFSROffPendingRuntimeOwnedTeardown) {
         return false;
     }
 
@@ -690,14 +700,16 @@ inline bool ShouldTreatNativeFSRDisabledConfigureAsStartupArming(bool recognized
 }
 
 inline bool ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(bool runtimeOwnsSwapchain,
-                                                                               bool runtimeOwnedNativeFGPresentPath) {
+                                                                               bool runtimeOwnedNativeFGPresentPath,
+                                                                               bool retainedPresentCallbackBridge) {
     // A disabled configure can be a transient FSR suspension packet while the
     // official runtime still owns presentation through its present callback.
     // Preserve the native-FG Present ownership latch whenever either the queue
-    // detector or the stronger callback/progress proof says that path is still
-    // in charge; later queue return/context teardown/stall policy decides when
-    // normal injected overlay work is safe again.
-    return runtimeOwnsSwapchain || runtimeOwnedNativeFGPresentPath;
+    // detector, the stronger callback/progress proof, or an already-installed
+    // callback bridge says that path is still in charge; later queue return,
+    // context teardown, or explicit bridge teardown decides when normal injected
+    // overlay work is safe again.
+    return runtimeOwnsSwapchain || runtimeOwnedNativeFGPresentPath || retainedPresentCallbackBridge;
 }
 
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
@@ -906,7 +918,8 @@ inline bool ShouldSuppressHeuristicFSRAfterExplicitNativeFSROff(bool explicitNat
     // teardown window, queue-change/ECL heuristics must not immediately relatch
     // FSR_FG or the overlay status flips back to stale FSR even though the
     // runtime already disabled frame generation explicitly.
-    return explicitNativeFSROffPending && runtimeOwnsSwapchain;
+    (void)runtimeOwnsSwapchain;
+    return explicitNativeFSROffPending;
 }
 
 inline bool ShouldUsePrimaryQueueForFrameClassificationDuringPostFSRNonFGRecovery(
