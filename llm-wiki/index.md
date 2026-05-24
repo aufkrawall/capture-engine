@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-22 (updated: build 0.1.3482 / tests 0.1.3483 - mixed DX12 FSR/DLSS FG switch test app and protected FFX startup quiesce)
+Last cross-checked: 2026-05-24 (updated: build 0.1.3529 / tests 0.1.3530 - DX12 FG swapchain teardown hardening, minimal-first dumps, and hardened switch-app stress)
 
 Primary sources:
 - `AGENTS.md`

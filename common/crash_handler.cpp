@@ -566,8 +566,6 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
         mdei.ExceptionPointers = params->pExceptionPointers;
         mdei.ClientPointers = FALSE;
 
-        const MINIDUMP_TYPE primaryType = ce::crash_dump_policy::kRichCrashDumpType;
-
         struct DumpAttempt {
             MINIDUMP_TYPE type;
             bool withExceptionInfo;
@@ -575,14 +573,15 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
         };
 
         const DumpAttempt attempts[] = {
-            {primaryType, true, "rich-primary"},
-            {ce::crash_dump_policy::kCompatibilityCrashDumpType, true, "compat-primary"},
-            {ce::crash_dump_policy::kMinimalDumpType, true, "fallback-normal"},
-            {ce::crash_dump_policy::kMinimalDumpType, false, "fallback-no-exception"},
+            {ce::crash_dump_policy::kMinimalDumpType, true, "minimal-primary"},
+            {ce::crash_dump_policy::kMinimalDumpType, false, "minimal-no-exception"},
+            {ce::crash_dump_policy::kCompatibilityCrashDumpType, true, "compat-after-minimal"},
+            {ce::crash_dump_policy::kRichCrashDumpType, true, "rich-after-minimal"},
         };
         const size_t attemptCount = sizeof(attempts) / sizeof(attempts[0]);
 
         TraceCrash("Calling MiniDumpWriteDump from worker thread...");
+        TraceCrash("CrashHandler: using minimal-first crash dump attempts");
 
         BOOL rv = FALSE;
         DWORD err = ERROR_SUCCESS;

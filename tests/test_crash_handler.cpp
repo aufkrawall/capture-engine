@@ -177,6 +177,8 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("NtRaiseException"), std::string::npos);
     EXPECT_NE(contents.find("ZwRaiseException"), std::string::npos);
     EXPECT_NE(contents.find("ZwTerminateProcess"), std::string::npos);
+    EXPECT_NE(contents.find("CrashHandler: using minimal-first crash dump attempts"), std::string::npos);
+    EXPECT_NE(contents.find("minimal-primary"), std::string::npos);
     EXPECT_NE(contents.find("Registered module-filtered dynamic hooks for FFX exports"), std::string::npos);
     EXPECT_NE(contents.find("Using GetProcAddress-only hooks for protected official FFX module"), std::string::npos);
     EXPECT_NE(contents.find("code bytes left unmodified"), std::string::npos);

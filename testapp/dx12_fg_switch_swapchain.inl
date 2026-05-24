@@ -1,5 +1,143 @@
 // Included by dx12_fg_switch_test.cpp; shares that file's static DX12/FG state.
 
+static const wchar_t* kBootstrapNativeSwapchainWindowClass = L"CaptureTestDX12FGSwitchBootstrap";
+
+static LRESULT CALLBACK BootstrapNativeSwapchainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_CLOSE) {
+        DestroyWindow(hWnd);
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+static HWND CreateBootstrapNativeSwapchainWindow(int index) {
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = BootstrapNativeSwapchainWndProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.lpszClassName = kBootstrapNativeSwapchainWindowClass;
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        testapp::Log("[FG-DIAG] Bootstrap native helper RegisterClassEx failed gle=%lu\n", GetLastError());
+        return nullptr;
+    }
+
+    RECT monitorRect = testapp::GetPrimaryMonitorRect();
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kBootstrapNativeSwapchainWindowClass,
+                                L"DX12 FG Switch Bootstrap", WS_POPUP, monitorRect.left + 24 + index * 12,
+                                monitorRect.top + 24 + index * 12, 64, 64, nullptr, nullptr, instance, nullptr);
+    if (!hwnd) {
+        testapp::Log("[FG-DIAG] Bootstrap native helper CreateWindowEx failed gle=%lu\n", GetLastError());
+        return nullptr;
+    }
+    return hwnd;
+}
+
+static void DestroyBootstrapNativeSwapchainWindow(HWND hwnd) {
+    if (!hwnd) {
+        return;
+    }
+    DestroyWindow(hwnd);
+    MSG msg = {};
+    for (int i = 0; i < 16 && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE); ++i) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+static void RunBootstrapNativeSwapchainStress() {
+    if (g_BootstrapNativeSwapchainStressCount <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < g_BootstrapNativeSwapchainStressCount; ++i) {
+        testapp::Log("[FG-DIAG] Bootstrap native swapchain wrapper stress %d/%d begin\n", i + 1,
+                     g_BootstrapNativeSwapchainStressCount);
+
+        ComPtr<ID3D12Device> device;
+        HRESULT deviceHr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+        testapp::Log("[FG-DIAG] Bootstrap native D3D12CreateDevice hr=0x%08lx device=%p\n",
+                     static_cast<unsigned long>(deviceHr), device.Get());
+        if (FAILED(deviceHr) || !device) {
+            continue;
+        }
+
+        D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        ComPtr<ID3D12CommandQueue> queue;
+        HRESULT queueHr = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
+        testapp::Log("[FG-DIAG] Bootstrap native CreateCommandQueue hr=0x%08lx queue=%p\n",
+                     static_cast<unsigned long>(queueHr), queue.Get());
+        if (FAILED(queueHr) || !queue) {
+            continue;
+        }
+
+        ComPtr<IDXGIFactory4> factory;
+        HRESULT factoryHr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+        testapp::Log("[FG-DIAG] Bootstrap native CreateDXGIFactory1 hr=0x%08lx factory=%p\n",
+                     static_cast<unsigned long>(factoryHr), factory.Get());
+        if (FAILED(factoryHr) || !factory) {
+            continue;
+        }
+
+        HWND probeHwnd = CreateBootstrapNativeSwapchainWindow(i);
+        if (!probeHwnd) {
+            testapp::Log("[FG-DIAG] Bootstrap native helper window unavailable; skipping probe %d/%d\n", i + 1,
+                         g_BootstrapNativeSwapchainStressCount);
+            continue;
+        }
+
+        DXGI_SWAP_CHAIN_DESC1 desc = {};
+        desc.BufferCount = kRequestedBackBuffers;
+        desc.Width = g_WindowWidth;
+        desc.Height = g_WindowHeight;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        desc.SampleDesc.Count = 1;
+        desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+
+        ComPtr<IDXGISwapChain1> swapChain1;
+        HRESULT swapHr = factory->CreateSwapChainForHwnd(queue.Get(), probeHwnd, &desc, nullptr, nullptr, &swapChain1);
+        testapp::Log("[FG-DIAG] Bootstrap native CreateSwapChainForHwnd hr=0x%08lx swapChain=%p\n",
+                     static_cast<unsigned long>(swapHr), swapChain1.Get());
+        if (FAILED(swapHr) || !swapChain1) {
+            DestroyBootstrapNativeSwapchainWindow(probeHwnd);
+            continue;
+        }
+
+        factory->MakeWindowAssociation(probeHwnd, DXGI_MWA_NO_ALT_ENTER);
+        ComPtr<IDXGISwapChain2> swapChain2;
+        if (SUCCEEDED(swapChain1.As(&swapChain2)) && swapChain2) {
+            HRESULT latencyHr = swapChain2->SetMaximumFrameLatency(kRequestedBackBuffers);
+            HANDLE waitable = swapChain2->GetFrameLatencyWaitableObject();
+            testapp::Log("[FG-DIAG] Bootstrap native SetMaximumFrameLatency hr=0x%08lx waitable=%d\n",
+                         static_cast<unsigned long>(latencyHr), waitable ? 1 : 0);
+        }
+
+        ComPtr<IDXGISwapChain3> swapChain3;
+        HRESULT qiHr = swapChain1.As(&swapChain3);
+        testapp::Log("[FG-DIAG] Bootstrap native QI IDXGISwapChain3 hr=0x%08lx sc3=%p\n",
+                     static_cast<unsigned long>(qiHr), swapChain3.Get());
+
+        HRESULT presentHr = swapChain1->Present(g_VSync, 0);
+        testapp::Log("[FG-DIAG] Bootstrap native Present hr=0x%08lx\n", static_cast<unsigned long>(presentHr));
+
+        swapChain3.Reset();
+        swapChain2.Reset();
+        swapChain1.Reset();
+        factory.Reset();
+        queue.Reset();
+        device.Reset();
+        DestroyBootstrapNativeSwapchainWindow(probeHwnd);
+        testapp::Log("[FG-DIAG] Bootstrap native swapchain wrapper stress %d/%d released all local refs\n", i + 1,
+                     g_BootstrapNativeSwapchainStressCount);
+        testapp::LogFlush();
+    }
+}
+
 static void ReleaseSwapChainResources() {
     g_FrameLatencyWaitHandle = nullptr;
     for (auto& renderTarget : g_RenderTargets) {

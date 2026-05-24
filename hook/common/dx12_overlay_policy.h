@@ -978,6 +978,25 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
     return !hasCommandQueue || !commandQueueMatchesSwapchainQueue;
 }
 
+inline bool ShouldUnregisterSwapchainDestructionCallbackDuringWrapperDestructor(bool wrapperReleasing,
+                                                                                bool realSwapchainAvailable,
+                                                                                bool hasDestructionCookie) {
+    // Once wrapper Release() has reached zero external refs, the destructor is
+    // already on the real swapchain teardown path. Optional DXGI mutation such
+    // as notifier unregister can trip DXGI internal debug breakpoints in games
+    // that combine Streamline/FFX/third-party overlays during startup. Release
+    // our COM refs, but do not poke optional side channels in that edge.
+    return !wrapperReleasing && realSwapchainAvailable && hasDestructionCookie;
+}
+
+inline bool ShouldClearSwapchainWrapperPrivateDataDuringWrapperDestructor(bool wrapperReleasing,
+                                                                          bool realSwapchainAvailable) {
+    // Clearing private data is only a hygiene step. During final wrapper
+    // release the real swapchain's private-data table may already be inside
+    // DXGI teardown, so avoid a crash-prone SetPrivateData call there.
+    return !wrapperReleasing && realSwapchainAvailable;
+}
+
 inline bool ShouldStartDX12FocusLossOverlayCooldown(bool previousGameForeground, bool currentGameForeground) {
     (void)previousGameForeground;
     (void)currentGameForeground;

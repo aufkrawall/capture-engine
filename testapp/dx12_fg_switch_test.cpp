@@ -88,46 +88,11 @@ static bool g_FsrSuspendResumeStress = true;
 static int g_FsrSuspendResumeIntervalSeconds = 3;
 static bool g_DxgiVideoMemoryQueryStress = true;
 static int g_DxgiVideoMemoryQueryCountPerFrame = 96;
+static int g_BootstrapNativeSwapchainStressCount = 1;
+static int g_StartupNativeSwapchainRecreateCount = 1;
+static int g_AutoExitSeconds = 0;
 
-static void LoadConfig() {
-    char path[MAX_PATH];
-    GetModuleFileNameA(NULL, path, MAX_PATH);
-    std::string configPath = path;
-    size_t pos = configPath.find_last_of("\\/");
-    if (pos != std::string::npos) {
-        configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
-    }
-    g_WindowWidth = GetPrivateProfileIntA("Display", "width", g_WindowWidth, configPath.c_str());
-    g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
-    g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
-    g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
-    g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
-    g_FsrReloadRuntimeOnSwitch = GetPrivateProfileIntA("Stress", "fsr_reload_runtime_on_switch",
-                                                       g_FsrReloadRuntimeOnSwitch ? 1 : 0, configPath.c_str()) != 0;
-    g_FsrKeepRuntimeLoadedInitialOff =
-        GetPrivateProfileIntA("Stress", "fsr_keep_runtime_loaded_initial_off", g_FsrKeepRuntimeLoadedInitialOff ? 1 : 0,
-                              configPath.c_str()) != 0;
-    g_FsrStartupDisabledContextStress =
-        GetPrivateProfileIntA("Stress", "fsr_startup_disabled_context", g_FsrStartupDisabledContextStress ? 1 : 0,
-                              configPath.c_str()) != 0;
-    g_FsrSuspendResumeStress = GetPrivateProfileIntA("Stress", "fsr_suspend_resume", g_FsrSuspendResumeStress ? 1 : 0,
-                                                     configPath.c_str()) != 0;
-    g_FsrSuspendResumeIntervalSeconds = GetPrivateProfileIntA("Stress", "fsr_suspend_resume_interval_seconds",
-                                                              g_FsrSuspendResumeIntervalSeconds, configPath.c_str());
-    if (g_FsrSuspendResumeIntervalSeconds < 1) {
-        g_FsrSuspendResumeIntervalSeconds = 1;
-    }
-    g_DxgiVideoMemoryQueryStress = GetPrivateProfileIntA("Stress", "dxgi_video_memory_query_stress",
-                                                         g_DxgiVideoMemoryQueryStress ? 1 : 0, configPath.c_str()) != 0;
-    g_DxgiVideoMemoryQueryCountPerFrame = GetPrivateProfileIntA(
-        "Stress", "dxgi_video_memory_query_count_per_frame", g_DxgiVideoMemoryQueryCountPerFrame, configPath.c_str());
-    if (g_DxgiVideoMemoryQueryCountPerFrame < 0) {
-        g_DxgiVideoMemoryQueryCountPerFrame = 0;
-    }
-    if (g_DxgiVideoMemoryQueryCountPerFrame > 512) {
-        g_DxgiVideoMemoryQueryCountPerFrame = 512;
-    }
-}
+#include "dx12_fg_switch_config.inl"
 
 constexpr int kRequestedBackBuffers = 3;
 constexpr int kMaxSwapChainBuffers = 4;
@@ -573,6 +538,16 @@ static void Render() {
     float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
     g_BarPosition = static_cast<float>(std::fmod(static_cast<double>(elapsed * 0.5f), 1.0));
 
+    if (g_AutoExitSeconds > 0 && elapsed >= static_cast<float>(g_AutoExitSeconds)) {
+        testapp::Log("[FG-DIAG] Auto exit after %d seconds at frameID=%llu mode=%s fsr=%d suspended=%d dlss=%d\n",
+                     g_AutoExitSeconds, static_cast<unsigned long long>(g_FrameIdCounter), ModeName(g_CurrentMode),
+                     g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0);
+        testapp::LogFlush();
+        g_Running = false;
+        DestroyWindow(g_Hwnd);
+        return;
+    }
+
     UINT frameIndex;
     {
         std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
@@ -724,13 +699,7 @@ static void Cleanup() {
 
 int main(int argc, char* argv[]) {
     LoadConfig();
-    if (argc >= 3) {
-        g_WindowWidth = atoi(argv[1]);
-        g_WindowHeight = atoi(argv[2]);
-    }
-    if (argc >= 4) {
-        g_GpuLoadPasses = atoi(argv[3]);
-    }
+    ParseCommandLine(argc, argv);
 
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
@@ -754,6 +723,11 @@ int main(int argc, char* argv[]) {
                  g_FsrStartupDisabledContextStress ? 1 : 0);
     testapp::Log("Stress: FSR suspend/resume while keeping context/swapchain alive = %d\n\n",
                  g_FsrSuspendResumeStress ? 1 : 0);
+    testapp::Log("Stress: Shutdown isolated native swapchain wrapper probes = %d\n",
+                 g_BootstrapNativeSwapchainStressCount);
+    testapp::Log("Stress: Startup native swapchain recreates after FG runtimes load = %d\n",
+                 g_StartupNativeSwapchainRecreateCount);
+    testapp::Log("Stress: Auto exit seconds = %d\n\n", g_AutoExitSeconds);
     testapp::LogFlush();
 
     testapp::Log("Loading Streamline before DXGI/D3D12...\n");
@@ -808,6 +782,17 @@ int main(int argc, char* argv[]) {
         testapp::CloseLogFile();
         return 0;
     }
+    for (int i = 0; i < g_StartupNativeSwapchainRecreateCount; ++i) {
+        testapp::Log("[FG-DIAG] Startup native swapchain recreate stress %d/%d while mode remains OFF\n", i + 1,
+                     g_StartupNativeSwapchainRecreateCount);
+        if (!RecreateSwapChain(false, "startup native recreate stress")) {
+            testapp::Log("[FG-DIAG] Startup native swapchain recreate stress failed\n");
+            Cleanup();
+            testapp::CloseLogFile();
+            return 1;
+        }
+        WaitForGpu();
+    }
 
     testapp::Log("[FG-DIAG] FSR runtime state=%d (context will be created when FSR mode is selected)\n",
                  g_FsrRuntimeLoaded ? 1 : 0);
@@ -837,6 +822,7 @@ int main(int argc, char* argv[]) {
         }
     }
     Cleanup();
+    RunBootstrapNativeSwapchainStress();
     testapp::Log("Exiting (total frames rendered: %llu)\n", static_cast<unsigned long long>(g_FrameIdCounter));
     testapp::CloseLogFile();
     return 0;
