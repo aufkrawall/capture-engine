@@ -99,6 +99,22 @@ inline InlineDetourProbeResult ProbeExpectedInlineDetourInstalled(const void* ta
     return result;
 }
 
+inline bool IsEntryBreakpointHit(const void* exceptionAddress, uintptr_t instructionPointer, const void* target) {
+    if (!target) {
+        return false;
+    }
+
+    const uintptr_t targetAddress = reinterpret_cast<uintptr_t>(target);
+    const uintptr_t exceptionAddressValue = reinterpret_cast<uintptr_t>(exceptionAddress);
+
+    // Windows reports int3 breakpoints with the exception address at the
+    // patched byte, while the context instruction pointer is commonly already
+    // advanced past that one-byte instruction. Accept both forms so a protected
+    // runtime cannot escape the bridge as an unhandled STATUS_BREAKPOINT.
+    return exceptionAddressValue == targetAddress || exceptionAddressValue == targetAddress + 1 ||
+           instructionPointer == targetAddress || instructionPointer == targetAddress + 1;
+}
+
 }  // namespace detail
 
 }  // namespace FFXHook

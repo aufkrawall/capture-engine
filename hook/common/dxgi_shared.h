@@ -311,6 +311,14 @@ inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(bool external
     return true;
 }
 
+inline bool ShouldInvokeGuardedSteamPresentDuringForcedBypass(bool streamlineLoaded, bool streamlineFGRunning) {
+    // When Streamline is merely loaded but FG has not actually started, Talos'
+    // Steam hook chain can accept direct calls without advancing Present. Repeating
+    // that partial third-party hook path is unsafe; the DXGI bypass trampoline is
+    // the stable transport until FG owns the Present chain.
+    return !streamlineLoaded || streamlineFGRunning;
+}
+
 inline bool ShouldFallbackGuardedExternalSteamOverlayPresentForResult(bool bypassAvailable, HRESULT steamPresentHr,
                                                                       bool backbufferIndexMeasured,
                                                                       bool backbufferAdvanced) {

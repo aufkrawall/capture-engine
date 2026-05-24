@@ -85,6 +85,12 @@ TEST(DXGISharedTest, SteamDX12BypassStaysEnabledUntilStreamlineFGActuallyRuns) {
                                                                 ce::fg_runtime::RuntimeMode::kOff, true, false));
 }
 
+TEST(DXGISharedTest, GuardedSteamForcedBypassWaitsForActualStreamlineFG) {
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(true, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(true, true));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(false, false));
+}
+
 TEST(DXGISharedTest, SteamDX12BypassAlsoCoversNvPresentStartupWindow) {
     EXPECT_TRUE(DXGIShared::ShouldForceSteamDX12BypassForState(true, true, true, false, false, false,
                                                                ce::fg_runtime::RuntimeMode::kOff, false, true));
@@ -1613,6 +1619,17 @@ TEST(DXGISharedTest, InactiveRuntimeOwnedSwapchainInitWaitsForCommandQueueToSett
                                                                                               true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
                                                                                               true, true));
+}
+
+TEST(DXGISharedTest, DX12FocusCooldownOnlyStartsWhenGameLosesForeground) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(false, false));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepDX12FocusLossOverlayCooldown(true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldKeepDX12FocusLossOverlayCooldown(true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldKeepDX12FocusLossOverlayCooldown(false, false));
 }
 
 TEST(DXGISharedTest, FreshStreamlineActivationClearsStaleTeardownGraceOnlyWhenGraceExists) {

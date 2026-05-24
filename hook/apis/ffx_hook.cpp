@@ -16,6 +16,7 @@
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
 #include "dx12_hook.h"
+#include "ffx_hook.h"
 
 extern void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresentCallbackBridge);
 extern void DX12_ClearNativeFSRRuntimeOwnedTeardown(const char* reason);
@@ -881,11 +882,22 @@ static ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalC
 }
 
 static LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
+    if (!ep) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
     auto* ctx = ep->ContextRecord;
     auto* rec = ep->ExceptionRecord;
 
     void* target = g_ffxConfigureTarget.load(std::memory_order_acquire);
-    if (rec->ExceptionCode != STATUS_BREAKPOINT || rec->ExceptionAddress != target || !target ||
+    const uintptr_t instructionPointer =
+#ifdef _WIN64
+        ctx ? static_cast<uintptr_t>(ctx->Rip) : 0;
+#else
+        ctx ? static_cast<uintptr_t>(ctx->Eip) : 0;
+#endif
+    if (!ctx || !rec || rec->ExceptionCode != STATUS_BREAKPOINT || !target ||
+        !FFXHook::detail::IsEntryBreakpointHit(rec->ExceptionAddress, instructionPointer, target) ||
         !g_ffxConfigureVehArmed.load(std::memory_order_acquire)) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -913,13 +925,10 @@ static LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
         ctx->Edx
 #endif
     );
-    ffxReturnCode_t result = FFX_API_RETURN_OK;
-    if (contextPtr && desc) {
-        PfnFfxConfigure previousOverride = t_FfxConfigureOriginalOverride;
-        t_FfxConfigureOriginalOverride = reinterpret_cast<PfnFfxConfigure>(target);
-        result = Hooked_ffxConfigure(contextPtr, desc);
-        t_FfxConfigureOriginalOverride = previousOverride;
-    }
+    PfnFfxConfigure previousOverride = t_FfxConfigureOriginalOverride;
+    t_FfxConfigureOriginalOverride = reinterpret_cast<PfnFfxConfigure>(target);
+    ffxReturnCode_t result = Hooked_ffxConfigure(contextPtr, desc);
+    t_FfxConfigureOriginalOverride = previousOverride;
 
     static std::atomic<int> s_vehHitLogCount{0};
     const int hitCount = s_vehHitLogCount.fetch_add(1, std::memory_order_relaxed) + 1;

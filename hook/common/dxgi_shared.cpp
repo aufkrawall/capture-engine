@@ -3944,14 +3944,27 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     const char* forcedBypassOverlay = nullptr;
     if (ShouldForceSteamDX12Bypass(pSwapChain, presentBypass != nullptr, slLoaded, &forcedBypassOverlay)) {
-        // When Streamline is on the stack, the guarded Steam overlay invoke path
-        // is safe because the Streamline plugin-lookup guard prevents Steam's
-        // re-entrant slGetPluginFunction queries from returning NULL.
-        if (slLoaded) {
+        // With Streamline loaded but FG not yet running, some Steam hook chains
+        // can accept our direct guarded call without advancing the real Present.
+        // Use the DXGI bypass until FG owns the chain; once FG is running the
+        // guarded path keeps Steam's overlay in the generated-frame path.
+        const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
+        if (slLoaded &&
+            DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(slLoaded, streamlineFGRunning)) {
             HRESULT guardedSteamHr = S_OK;
             if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
                                                              "Steam DX12 forced bypass", &guardedSteamHr)) {
                 return guardedSteamHr;
+            }
+        } else if (slLoaded) {
+            static std::atomic<int> s_streamlineLoadedSteamBypassOnlyLogCount{0};
+            const int bypassOnlyCount =
+                s_streamlineLoadedSteamBypassOnlyLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (bypassOnlyCount <= 10 || (bypassOnlyCount % 500) == 0) {
+                HookLogImportant(
+                    "CallOriginalPresent: Streamline loaded but FG is not running; using DXGI bypass without "
+                    "direct Steam hook invoke #%d (overlay=%s bypass=%p)",
+                    bypassOnlyCount, forcedBypassOverlay ? forcedBypassOverlay : "Steam", (void*)presentBypass);
             }
         } else {
             // Non-Streamline case (e.g. Strange Brigade DX12 with only Steam overlay):

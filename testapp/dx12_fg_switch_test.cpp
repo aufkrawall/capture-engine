@@ -75,6 +75,8 @@ static int g_GpuLoadPasses = 40;
 static int g_VSync = 0;
 static int g_Fullscreen = 0;
 static bool g_FsrReloadRuntimeOnSwitch = true;
+static bool g_FsrKeepRuntimeLoadedInitialOff = true;
+static bool g_FsrStartupDisabledContextStress = true;
 static bool g_FsrSuspendResumeStress = true;
 static int g_FsrSuspendResumeIntervalSeconds = 3;
 
@@ -94,6 +96,12 @@ static void LoadConfig() {
     g_FsrReloadRuntimeOnSwitch =
         GetPrivateProfileIntA("Stress", "fsr_reload_runtime_on_switch", g_FsrReloadRuntimeOnSwitch ? 1 : 0,
                               configPath.c_str()) != 0;
+    g_FsrKeepRuntimeLoadedInitialOff =
+        GetPrivateProfileIntA("Stress", "fsr_keep_runtime_loaded_initial_off",
+                              g_FsrKeepRuntimeLoadedInitialOff ? 1 : 0, configPath.c_str()) != 0;
+    g_FsrStartupDisabledContextStress =
+        GetPrivateProfileIntA("Stress", "fsr_startup_disabled_context",
+                              g_FsrStartupDisabledContextStress ? 1 : 0, configPath.c_str()) != 0;
     g_FsrSuspendResumeStress =
         GetPrivateProfileIntA("Stress", "fsr_suspend_resume", g_FsrSuspendResumeStress ? 1 : 0,
                               configPath.c_str()) != 0;
@@ -604,6 +612,10 @@ int main(int argc, char* argv[]) {
     testapp::Log("Stress: FSR active mode re-sends ffxConfigure every frame to mimic engines that refresh FG descriptors\n");
     testapp::Log("Stress: FSR runtime unload/reload on mode switches = %d\n",
                  g_FsrReloadRuntimeOnSwitch ? 1 : 0);
+    testapp::Log("Stress: Keep FSR runtime loaded during initial OFF = %d\n",
+                 g_FsrKeepRuntimeLoadedInitialOff ? 1 : 0);
+    testapp::Log("Stress: Create disabled FSR context during initial OFF = %d\n",
+                 g_FsrStartupDisabledContextStress ? 1 : 0);
     testapp::Log("Stress: FSR suspend/resume while keeping context/swapchain alive = %d\n\n",
                  g_FsrSuspendResumeStress ? 1 : 0);
     testapp::LogFlush();
@@ -617,8 +629,11 @@ int main(int argc, char* argv[]) {
     bool fsrRuntimeLoaded = LoadFSRRuntime();
     if (!fsrRuntimeLoaded) {
         testapp::Log("[FG-DIAG] FSR runtime unavailable; FSR mode will be disabled\n");
-    } else if (g_FsrReloadRuntimeOnSwitch) {
+    } else if (g_FsrReloadRuntimeOnSwitch && !g_FsrKeepRuntimeLoadedInitialOff) {
         UnloadFSRRuntime("startup stress before first FSR enable");
+    } else if (g_FsrReloadRuntimeOnSwitch) {
+        testapp::Log("[FG-DIAG] Keeping FSR runtime loaded during initial OFF to mimic games that preload FFX "
+                     "beside Streamline before FG is enabled\n");
     }
     testapp::LogFlush();
 
@@ -659,6 +674,12 @@ int main(int argc, char* argv[]) {
 
     testapp::Log("[FG-DIAG] FSR runtime state=%d (context will be created when FSR mode is selected)\n",
                  g_FsrRuntimeLoaded ? 1 : 0);
+    if (g_FsrStartupDisabledContextStress && g_FsrRuntimeLoaded && g_FfxCreateContext && !g_FfxCtx) {
+        testapp::Log("[FG-DIAG] Creating startup disabled FSR context on native swapchain while app mode remains OFF\n");
+        g_FsrInitialized = TryInitFSR();
+        testapp::Log("[FG-DIAG] Startup disabled FSR context state=%d ctx=%p owner=%s\n",
+                     g_FsrInitialized ? 1 : 0, (void*)g_FfxCtx, SwapChainOwnerName(g_SwapChainOwner));
+    }
     g_DlssInitialized = streamlineLoaded && TryInitDLSSFG();
     testapp::Log("[FG-DIAG] DLSS init state=%d\n", g_DlssInitialized ? 1 : 0);
     if (g_DlssInitialized) {

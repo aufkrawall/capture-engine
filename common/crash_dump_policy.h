@@ -23,6 +23,7 @@ inline constexpr ULONGLONG kExternalDumpStormWindowMs = 30'000;
 inline constexpr uint32_t kExternalDumpStormTerminateHitThreshold = 3;
 inline constexpr DWORD kExternalDumpStormTerminationExitCode = 0xE000D00D;
 inline constexpr DWORD kFailFastExceptionExitCode = 0xC0000409;
+inline constexpr DWORD kBreakpointExceptionExitCode = EXCEPTION_BREAKPOINT;
 
 inline constexpr MINIDUMP_TYPE kRichCrashDumpType = static_cast<MINIDUMP_TYPE>(
     MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
@@ -289,8 +290,9 @@ inline bool IsCrashLikeProcessExitCode(DWORD exitCode) {
     if (exitCode == kExternalDumpStormTerminationExitCode) {
         return false;
     }
-    if (exitCode == kFailFastExceptionExitCode || exitCode == EXCEPTION_ACCESS_VIOLATION ||
-        exitCode == EXCEPTION_ILLEGAL_INSTRUCTION || exitCode == EXCEPTION_STACK_OVERFLOW) {
+    if (exitCode == kFailFastExceptionExitCode || exitCode == kBreakpointExceptionExitCode ||
+        exitCode == EXCEPTION_ACCESS_VIOLATION || exitCode == EXCEPTION_ILLEGAL_INSTRUCTION ||
+        exitCode == EXCEPTION_STACK_OVERFLOW) {
         return true;
     }
 

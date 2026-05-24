@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "../hook/apis/ffx_hook.h"
 #include "../hook/common/streamline_runtime_policy.h"
 #include "../hook/wrappers/iat_hook.h"
 
@@ -48,4 +49,19 @@ TEST(IATHookDynamicFilterTest, OverlayCallerBypassKeepsNativeFSRApiHooksVisible)
                                                           "ffxConfigure"));
     EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, false, false, false, false, true, true,
                                                           "ffxConfigure"));
+}
+
+TEST(FFXHookPolicyTest, EntryBreakpointHitAcceptsExceptionAddressOrAdvancedInstructionPointer) {
+    const uintptr_t target = 0x100000;
+
+    EXPECT_TRUE(FFXHook::detail::IsEntryBreakpointHit(reinterpret_cast<const void*>(target), target + 1,
+                                                      reinterpret_cast<const void*>(target)));
+    EXPECT_TRUE(FFXHook::detail::IsEntryBreakpointHit(reinterpret_cast<const void*>(target + 1), target + 1,
+                                                      reinterpret_cast<const void*>(target)));
+    EXPECT_TRUE(FFXHook::detail::IsEntryBreakpointHit(reinterpret_cast<const void*>(0x200000), target + 1,
+                                                      reinterpret_cast<const void*>(target)));
+
+    EXPECT_FALSE(FFXHook::detail::IsEntryBreakpointHit(reinterpret_cast<const void*>(0x200000), 0x200001,
+                                                       reinterpret_cast<const void*>(target)));
+    EXPECT_FALSE(FFXHook::detail::IsEntryBreakpointHit(reinterpret_cast<const void*>(target), target + 1, nullptr));
 }
