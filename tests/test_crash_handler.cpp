@@ -170,6 +170,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("FatalExitDump: _purecall caller stack before pre-termination dump"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Using minimal-first pre-termination dump attempt"), std::string::npos);
     EXPECT_NE(contents.find("FatalExitDump: Launching external pre-termination dump helper"), std::string::npos);
+    EXPECT_NE(contents.find("CrashHandler: safe pre-dump diagnostics complete"), std::string::npos);
     EXPECT_NE(contents.find("RtlExitUserProcess"), std::string::npos);
     EXPECT_NE(contents.find("NtTerminateProcess"), std::string::npos);
     EXPECT_NE(contents.find("_invoke_watson"), std::string::npos);

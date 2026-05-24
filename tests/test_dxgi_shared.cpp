@@ -1621,13 +1621,13 @@ TEST(DXGISharedTest, InactiveRuntimeOwnedSwapchainInitWaitsForCommandQueueToSett
                                                                                               true, true));
 }
 
-TEST(DXGISharedTest, DX12FocusCooldownOnlyStartsWhenGameLosesForeground) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(true, false));
+TEST(DXGISharedTest, DX12FocusLossDoesNotStartRenderBlankingCooldown) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(false, false));
 
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepDX12FocusLossOverlayCooldown(true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldKeepDX12FocusLossOverlayCooldown(true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldKeepDX12FocusLossOverlayCooldown(true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldKeepDX12FocusLossOverlayCooldown(false, false));
 }

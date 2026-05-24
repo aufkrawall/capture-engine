@@ -11200,56 +11200,29 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         }
     }
 
-    // Focus-loss cooldown: during the foreground-loss DXGI transition the
-    // compositor reconfigures the flip chain.  Our resource barriers can
-    // conflict with that, causing TDR (DEVICE_HUNG).  Do not apply the same
-    // pause on foreground regain: that makes the game present fresh frames
-    // without the overlay and creates a visible Alt+Tab blink.
-    bool inFocusCooldown = false;
+    // Focus tracking: ordinary foreground changes must keep the overlay visible.
+    // Invalid swapchain states below still take the heavy suspension path, but
+    // Alt+Tab/focus loss alone should not create a blank overlay interval.
     if (frameDesc.OutputWindow) {
-        static bool s_gameWasForeground = true;
-        static int64_t s_focusCooldownEnd = 0;
-        static constexpr int64_t kFocusCooldownMs = 500;
+        static bool s_focusStateInitialized = false;
+        static bool s_gameWasForeground = false;
 
         HWND fg = GetForegroundWindow();
         bool gameIsForeground = (fg == frameDesc.OutputWindow);
-        if (gameIsForeground != s_gameWasForeground) {
-            const bool previousGameForeground = s_gameWasForeground;
+        if (!s_focusStateInitialized) {
+            s_focusStateInitialized = true;
             s_gameWasForeground = gameIsForeground;
-            if (ce::dx12_overlay_policy::ShouldStartDX12FocusLossOverlayCooldown(previousGameForeground,
-                                                                                 gameIsForeground)) {
-                LARGE_INTEGER freq, now;
-                QueryPerformanceFrequency(&freq);
-                QueryPerformanceCounter(&now);
-                s_focusCooldownEnd = now.QuadPart + freq.QuadPart * kFocusCooldownMs / 1000;
-                HookLog("DX12: Focus-loss cooldown started (gameForeground=0)");
-            } else {
-                if (s_focusCooldownEnd != 0) {
-                    HookLog("DX12: Focus-loss cooldown cleared on foreground regain");
-                } else {
-                    HookLog("DX12: Foreground regained without overlay cooldown");
-                }
-                s_focusCooldownEnd = 0;
-            }
-        }
-        if (s_focusCooldownEnd > 0) {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            if (now.QuadPart < s_focusCooldownEnd &&
-                ce::dx12_overlay_policy::ShouldKeepDX12FocusLossOverlayCooldown(true, gameIsForeground)) {
-                inFocusCooldown = true;
-            } else {
-                s_focusCooldownEnd = 0;
-            }
+        } else if (gameIsForeground != s_gameWasForeground) {
+            s_gameWasForeground = gameIsForeground;
+            HookLog("DX12: Foreground changed (gameForeground=%d, hwnd=%p, fg=%p); overlay rendering remains active",
+                    gameIsForeground ? 1 : 0, frameDesc.OutputWindow, fg);
         }
     }
 
     // Heavy suspension: zero-size, iconic, or transition cooldown requires
     // full resource teardown because the swapchain is in an invalid state.
     const bool suspendOverlayHeavy = zeroSizedSwapchain || iconicWindow || inTransitionCooldown;
-    // Light suspension: focus cooldown just skips rendering — resources stay
-    // alive to avoid expensive reinit cycles that stress the GPU driver.
-    const bool suspendOverlayRender = suspendOverlayHeavy || inFocusCooldown;
+    const bool suspendOverlayRender = suspendOverlayHeavy;
 
     static bool s_swapchainSuspended = false;
     if (suspendOverlayHeavy) {

@@ -979,15 +979,19 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
 }
 
 inline bool ShouldStartDX12FocusLossOverlayCooldown(bool previousGameForeground, bool currentGameForeground) {
-    // The risky DXGI/compositor edge is the game losing foreground ownership.
-    // Starting the same cooldown when focus returns makes the game present fresh
-    // frames without our overlay, which creates a visible disappear/reappear
-    // blink on ordinary Alt+Tab.
-    return previousGameForeground && !currentGameForeground;
+    (void)previousGameForeground;
+    (void)currentGameForeground;
+    // Focus ownership changes must not blank the injected DX12 overlay. The
+    // renderer has per-frame allocator/fence guards now, so ordinary Alt+Tab
+    // should keep drawing like third-party overlays instead of hiding for a
+    // timed cooldown.
+    return false;
 }
 
 inline bool ShouldKeepDX12FocusLossOverlayCooldown(bool cooldownTimerActive, bool currentGameForeground) {
-    return cooldownTimerActive && !currentGameForeground;
+    (void)cooldownTimerActive;
+    (void)currentGameForeground;
+    return false;
 }
 
 inline bool ShouldClearRecentStreamlineTeardownGraceOnFreshActivation(bool active, bool hadRecentHeuristicGrace,

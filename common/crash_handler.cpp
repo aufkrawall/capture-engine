@@ -8,8 +8,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <vector>
-#include <winver.h>
 #include "crash_dump_policy.h"
 #include "logging.h"
 
@@ -1045,34 +1043,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         }
     }
 
-    // Log module version for the crash module
-    {
-        HMODULE hVerMod = NULL;
-        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               (LPCSTR)pExceptionPointers->ExceptionRecord->ExceptionAddress, &hVerMod) &&
-            hVerMod) {
-            char verPath[MAX_PATH] = {};
-            if (GetModuleFileNameA(hVerMod, verPath, MAX_PATH)) {
-                DWORD verHandle = 0;
-                DWORD verSize = GetFileVersionInfoSizeA(verPath, &verHandle);
-                if (verSize > 0) {
-                    std::vector<char> verData(static_cast<size_t>(verSize));
-                    if (GetFileVersionInfoA(verPath, verHandle, verSize, verData.data())) {
-                        VS_FIXEDFILEINFO* fileInfo = nullptr;
-                        UINT len = 0;
-                        if (VerQueryValueA(verData.data(), "\\", (LPVOID*)&fileInfo, &len) && fileInfo) {
-                            char verBuf[128];
-                            snprintf(verBuf, sizeof(verBuf), "Module version: %u.%u.%u.%u",
-                                     HIWORD(fileInfo->dwFileVersionMS), LOWORD(fileInfo->dwFileVersionMS),
-                                     HIWORD(fileInfo->dwFileVersionLS), LOWORD(fileInfo->dwFileVersionLS));
-                            TraceCrash(verBuf);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    TraceCrash("CrashHandler: safe pre-dump diagnostics complete");
     OutputDebugStringA("[CrashHandler] CRASH DETECTED! Spawning worker for minidump...\n");
 
     if (!g_pMiniDumpWriteDump) {
@@ -1092,7 +1063,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         TraceCrash("Worker thread spawned, waiting (5s timeout)...");
         DWORD waitResult = WaitForSingleObject(hThread, 5000);
         if (waitResult == WAIT_TIMEOUT) {
-            TraceCrash("Worker thread timed out after 15s - continuing without dump");
+            TraceCrash("Worker thread timed out after 5s - continuing without dump");
         } else {
             TraceCrash("Worker thread finished.");
         }
