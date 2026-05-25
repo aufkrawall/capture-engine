@@ -248,12 +248,25 @@ inline bool ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
            fg_runtime::RuntimeModeUsesFSR(runtimeMode);
 }
 
-inline bool ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(bool callerFromStreamlineModule,
+inline bool ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(bool callerFromFrameGenerationRuntimeModule,
                                                                     bool streamlineSupportPresent,
                                                                     bool fsrSupportPresent,
                                                                     fg_runtime::RuntimeMode runtimeMode) {
-    return callerFromStreamlineModule || streamlineSupportPresent || fsrSupportPresent ||
+    return callerFromFrameGenerationRuntimeModule || streamlineSupportPresent || fsrSupportPresent ||
            fg_runtime::RuntimeModeUsesStreamline(runtimeMode) || fg_runtime::RuntimeModeUsesFSR(runtimeMode);
+}
+
+inline bool ShouldUseLiveDXGIFactoryExportForFrameGenerationRuntime(bool bypassFactoryWrapper,
+                                                                    bool callerFromFrameGenerationRuntimeModule,
+                                                                    bool liveExportAvailable,
+                                                                    bool liveExportFromCaptureHookModule) {
+    // FG runtime callers (especially Streamline during startup/DllMain) must get
+    // the pristine DXGI export to avoid third-party overlay re-entrancy. App
+    // thread handoffs are different: bypass CE's factory wrapper, but call the
+    // live export chain so Streamline/other overlays can install their own
+    // factory and swapchain interposers before the first runtime-owned Present.
+    return bypassFactoryWrapper && !callerFromFrameGenerationRuntimeModule && liveExportAvailable &&
+           !liveExportFromCaptureHookModule;
 }
 
 inline bool ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
@@ -320,6 +333,33 @@ inline bool ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(bool hasOrig
     // Present, and SDK state instead of mutating their ECL vtables.
     (void)authoritativeStreamlineRuntimeQueue;
     return false;
+}
+
+inline bool ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(bool vtableFromStreamlineModule,
+                                                                            bool executeFromStreamlineModule,
+                                                                            bool vtableFromFFXModule,
+                                                                            bool executeFromFFXModule) {
+    // Streamline and native FSR expose proxy/runtime-owned command queues whose
+    // vtables live inside the SDK runtime DLLs. Patching those vtables can race
+    // the runtime's own ECL hooks during swapchain/FG handoff. CE can still track
+    // state through Present and SDK hooks, so these queues stay pristine.
+    return vtableFromStreamlineModule || executeFromStreamlineModule || vtableFromFFXModule || executeFromFFXModule;
+}
+
+inline bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+    bool hasOriginalGameQueue, bool queueMatchesOriginalGameQueue, bool streamlineRuntimeAvailable,
+    bool hadFSRFGPhase, bool fsrFGApiActive, fg_runtime::RuntimeMode runtimeMode) {
+    if (!hasOriginalGameQueue || queueMatchesOriginalGameQueue || !streamlineRuntimeAvailable) {
+        return false;
+    }
+
+    // After native FSR has owned presentation, Streamline can create a fresh
+    // runtime swapchain and immediately install its own Present hook on that
+    // swapchain. Re-applying CE's vtable hook in that narrow window steals the
+    // first Present away from Streamline and can crash inside the driver. Keep
+    // CE's inline hook available for the re-entrant PostSL path, but let
+    // Streamline establish the outer Present chain first.
+    return hadFSRFGPhase || fsrFGApiActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode);
 }
 
 enum class SwapchainOverlayRoutingDecision {

@@ -30,6 +30,24 @@ inline bool IsFFXApiDynamicHookName(const char* functionName) {
            strcmp(functionName, "ffxConfigure") == 0;
 }
 
+inline bool IsDXGIFactoryDynamicHookName(const char* functionName) {
+    if (!functionName) {
+        return false;
+    }
+
+    return strcmp(functionName, "CreateDXGIFactory") == 0 || strcmp(functionName, "CreateDXGIFactory1") == 0 ||
+           strcmp(functionName, "CreateDXGIFactory2") == 0;
+}
+
+inline bool ShouldAllowStreamlineProxyExportToBypassDynamicHook(bool targetIsStreamlineFrameGenerationModule,
+                                                                const char* functionName) {
+    // Streamline exposes DXGI factory proxy exports. Games that explicitly fetch
+    // those from sl.interposer.dll must receive the Streamline proxy, not CE's
+    // generic DXGI wrapper; otherwise DLSS-G can enable on a swapchain that never
+    // went through Streamline's factory/swapchain interposer.
+    return targetIsStreamlineFrameGenerationModule && IsDXGIFactoryDynamicHookName(functionName);
+}
+
 inline bool ShouldAllowDynamicHookForThirdPartyOverlayCaller(bool targetIsFFXFrameGenerationModule,
                                                             const char* functionName) {
     // GTA Enhanced can route official FFX module lookups through an overlay
@@ -44,7 +62,12 @@ inline bool ShouldBypassDynamicHookForCaller(bool callerIsSystemModule, bool cal
                                              bool callerIsCaptureHookModule, bool callerIsWrapperModule,
                                              bool callerIsStreamlineFrameGenerationModule,
                                              bool callerIsFFXFrameGenerationModule,
+                                             bool targetIsStreamlineFrameGenerationModule,
                                              bool targetIsFFXFrameGenerationModule, const char* functionName) {
+    if (ShouldAllowStreamlineProxyExportToBypassDynamicHook(targetIsStreamlineFrameGenerationModule, functionName)) {
+        return true;
+    }
+
     if (callerIsSystemModule || callerIsCaptureHookModule || callerIsWrapperModule ||
         callerIsStreamlineFrameGenerationModule || callerIsFFXFrameGenerationModule) {
         return true;

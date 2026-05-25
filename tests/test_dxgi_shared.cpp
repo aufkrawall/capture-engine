@@ -4,6 +4,7 @@
 #include "../hook/common/dxgi_factory_policy.h"
 #include "../hook/common/dxgi_shared.h"
 #include "../hook/wrappers/inline_hook_policy.h"
+#include "../hook/wrappers/iat_hook.h"
 #include "../captureengine/injection_policy.h"
 
 TEST(DXGISharedTest, ExternalHookBypassResumeExtendsPastPatchedFillBytes) {
@@ -360,6 +361,37 @@ TEST(DXGISharedTest, RuntimeOwnedSwapchainQueuesStayUnhookedUnlessTheyAreOrigina
         ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(true, false, false, false));
 }
 
+TEST(DXGISharedTest, FrameGenerationRuntimeModuleQueuesStayUnpatched) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(
+        true, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(
+        false, true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(
+        false, false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(
+        false, false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(
+        false, false, false, false));
+}
+
+TEST(DXGISharedTest, PostFSRStreamlineRuntimeHandoffDefersPresentVTableRefresh) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+        true, false, true, true, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+        true, false, true, false, true, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+        true, false, true, false, false, ce::fg_runtime::RuntimeMode::kFSRFG));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+        false, false, true, true, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+        true, true, true, true, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+        true, false, false, true, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+        true, false, true, false, false, ce::fg_runtime::RuntimeMode::kDLSSFG));
+}
+
 TEST(DXGISharedTest, StreamlineRuntimeQueueAuthorityIsSeparateFromFreshHandoffState) {
     const bool authoritativeRuntimeQueue =
         ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(true, true, false);
@@ -395,6 +427,15 @@ TEST(DXGISharedTest, FreshStreamlineHandoffInvalidatesPostSLProofFromPreviousQue
         ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(true, true, true));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldClearPostSLQueueProofForFreshAuthoritativeStreamlineHandoff(true, false, false));
+}
+
+TEST(DXGISharedTest, StreamlinePresentRoutingRequiresResolvedStreamlineJumpTarget) {
+    EXPECT_TRUE(DXGIShared::ShouldActivateStreamlinePresentRoutingForHookTarget(true, true, true, false));
+
+    EXPECT_FALSE(DXGIShared::ShouldActivateStreamlinePresentRoutingForHookTarget(false, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldActivateStreamlinePresentRoutingForHookTarget(true, false, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldActivateStreamlinePresentRoutingForHookTarget(true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldActivateStreamlinePresentRoutingForHookTarget(true, true, true, true));
 }
 
 TEST(DXGISharedTest, VTableRepairDefersDuringFreshStreamlineStartupEvenWithOlderConfirmation) {
@@ -545,12 +586,14 @@ TEST(DXGISharedTest, PostFSRStartupNormalRouteUsesBypassUntilPostSLSettles) {
 
 TEST(DXGISharedTest, RuntimeOwnedPureDLSSStartupNormalRouteAllowsActivationWithoutThirdPartyRisk) {
     EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, false, true, true,
-                                                                                      true, true, true, false));
+                                                                                      true, true, true, false, false));
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(true, true, false,
                                                                                                   false, false, false));
 
     EXPECT_TRUE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, false, true, true,
-                                                                                     true, true, true, true));
+                                                                                     true, true, true, false, true));
+    EXPECT_TRUE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, false, true, true,
+                                                                                     true, true, true, true, false));
     EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(true, true, false,
                                                                                                  false, true, false));
     EXPECT_TRUE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(true, true, true, true,
@@ -559,13 +602,13 @@ TEST(DXGISharedTest, RuntimeOwnedPureDLSSStartupNormalRouteAllowsActivationWitho
     EXPECT_FALSE(DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(true, true, true,
                                                                                                   false, true, false));
     EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, true, false, true, true,
-                                                                                      true, true, true, true));
+                                                                                      true, true, true, true, true));
     EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, true, true, true,
-                                                                                      true, true, true, true));
+                                                                                      true, true, true, true, true));
     EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, false, false, true,
-                                                                                      true, true, true, true));
+                                                                                      true, true, true, true, true));
     EXPECT_FALSE(DXGIShared::ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(true, false, false, true, true,
-                                                                                      true, false, true, true));
+                                                                                      true, false, true, true, true));
 }
 
 TEST(DXGISharedTest, SteamDX12HookRiskExtendsToProtectedPostFSRStartupNormalRoute) {
@@ -1281,6 +1324,31 @@ TEST(DXGISharedTest, DXGIFactoryWrapperBypassesFrameGenerationRuntimeFactories) 
         false, false, true, ce::fg_runtime::RuntimeMode::kFSRFG));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(
         false, false, false, ce::fg_runtime::RuntimeMode::kDLSSFG));
+}
+
+TEST(DXGISharedTest, DXGIFactoryLiveExportIsLimitedToAppThreadFrameGenerationHandoffs) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUseLiveDXGIFactoryExportForFrameGenerationRuntime(
+        true, false, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseLiveDXGIFactoryExportForFrameGenerationRuntime(
+        false, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseLiveDXGIFactoryExportForFrameGenerationRuntime(
+        true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseLiveDXGIFactoryExportForFrameGenerationRuntime(
+        true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldUseLiveDXGIFactoryExportForFrameGenerationRuntime(
+        true, false, true, true));
+}
+
+TEST(DXGISharedTest, DynamicHookLeavesStreamlineDXGIFactoryProxyExportsVisible) {
+    EXPECT_TRUE(IATHook::ShouldAllowStreamlineProxyExportToBypassDynamicHook(true, "CreateDXGIFactory1"));
+    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, false, false, false, false, false, true, false,
+                                                          "CreateDXGIFactory1"));
+
+    EXPECT_FALSE(IATHook::ShouldAllowStreamlineProxyExportToBypassDynamicHook(true, "slGetFeatureFunction"));
+    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, false, false, false, false, false, true, false,
+                                                           "slGetFeatureFunction"));
+    EXPECT_FALSE(IATHook::ShouldAllowStreamlineProxyExportToBypassDynamicHook(false, "CreateDXGIFactory1"));
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackProofIsScopedToCurrentRuntimeTakeover) {
@@ -2858,6 +2926,56 @@ TEST(DXGISharedTest, StreamlineStartupHandoffNormalRouteBypassesOnlyForTransport
         DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(true, false, true, false));
     EXPECT_FALSE(
         DXGIShared::ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(true, true, false, false));
+}
+
+TEST(DXGISharedTest, PostFSRStartupHandoffBypassesWhenRecoveredRuntimeQueueIsOnlySafeProof) {
+    EXPECT_TRUE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
+        true, true, true, true, false));
+    EXPECT_TRUE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
+        true, true, true, false, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
+        false, true, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
+        true, false, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
+        true, true, false, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
+        true, true, true, false, false));
+}
+
+TEST(DXGISharedTest, AppThreadPostFSRStreamlineStartupHandoffUsesOverlaylessSLRoute) {
+    EXPECT_TRUE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, true, true, false, true, true, true, true, false, false));
+
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        true, true, false, false, true, true, true, false, true, true, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, false, false, false, true, true, true, false, true, true, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, true, false, true, true, true, false, true, true, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, true, true, true, true, false, true, true, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, false, true, true, false, true, true, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, false, true, false, true, true, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, true, false, false, true, true, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, true, true, true, true, true, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, true, true, false, false, true, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, true, true, false, true, false, true, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, true, true, false, true, true, false, true, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, true, true, false, true, true, true, false, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, true, true, false, true, true, true, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+        false, true, false, false, true, true, true, false, true, true, true, true, false, true));
 }
 
 TEST(DXGISharedTest, SyntheticStartupStateStaysHalfArmedUntilConfirmedRender) {

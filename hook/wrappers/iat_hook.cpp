@@ -1037,12 +1037,27 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                         ce::overlay_compat::IsStreamlineFrameGenerationModulePath(callerPath);
                     const bool callerIsFFXFrameGenerationModule =
                         ce::overlay_compat::IsFFXFrameGenerationModulePath(callerPath);
+                    const bool targetIsStreamlineFrameGenerationModule =
+                        ce::overlay_compat::IsStreamlineFrameGenerationModulePath(moduleName);
                     const bool targetIsFFXFrameGenerationModule =
                         ce::overlay_compat::IsFFXFrameGenerationModulePath(moduleName);
                     if (ShouldBypassDynamicHookForCaller(
                             callerIsSystemModule, callerIsThirdPartyOverlayModule, callerIsCaptureHookModule,
                             callerIsWrapperModule, callerIsStreamlineFrameGenerationModule,
-                            callerIsFFXFrameGenerationModule, targetIsFFXFrameGenerationModule, lpProcName)) {
+                            callerIsFFXFrameGenerationModule, targetIsStreamlineFrameGenerationModule,
+                            targetIsFFXFrameGenerationModule, lpProcName)) {
+                        if (ShouldAllowStreamlineProxyExportToBypassDynamicHook(targetIsStreamlineFrameGenerationModule,
+                                                                                lpProcName)) {
+                            static std::atomic<int> s_streamlineProxyBypassLogCount{0};
+                            const int bypassLogCount =
+                                s_streamlineProxyBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+                            if (bypassLogCount < 10 || (bypassLogCount % 100) == 0) {
+                                HookLogImportant(
+                                    "GetProcAddress: Leaving Streamline proxy export %s from %s unmodified "
+                                    "(orig=%p) so DLSS-G owns its factory/swapchain interposer",
+                                    lpProcName, moduleName[0] ? moduleName : "unknown", proc);
+                            }
+                        }
                         return proc;
                     }
                 }

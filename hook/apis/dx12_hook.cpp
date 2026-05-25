@@ -48,6 +48,7 @@ bool SaveDX12TextureAsBMP(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D1
 bool SaveDX12TextureAsHDR(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, bool isPQ,
                           const char* outputPath);
 static bool IsActualFrameGenerationActive();
+static bool IsStreamlineLoaded();
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
@@ -2359,6 +2360,40 @@ static bool ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup() {
     return ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(
         g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire),
         HasResolvedOfficialFFXStartupPath());
+}
+
+static bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+    IUnknown* pDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, ID3D12CommandQueue** queueOut) {
+    if (queueOut) {
+        *queueOut = nullptr;
+    }
+    if (!pDevice) {
+        return false;
+    }
+
+    ID3D12CommandQueue* pQueue = nullptr;
+    if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue))) || !pQueue) {
+        return false;
+    }
+
+    ID3D12CommandQueue* originalGameQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        originalGameQueue = g_OriginalGameQueue;
+    }
+    const bool streamlineRuntimeAvailable =
+        IsStreamlineLoaded() || g_FGCompat.HasStreamlineSupport() ||
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+        captureEvidence.authoritativeStreamlineRuntimeCreator;
+    const bool deferRefresh = ce::dx12_overlay_policy::ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
+        originalGameQueue != nullptr, pQueue == originalGameQueue, streamlineRuntimeAvailable, g_HadFSRFGPhase,
+        g_FGCompat.IsFSRFGApiActive(), g_FGCompat.GetRuntimeMode());
+    if (deferRefresh && queueOut) {
+        *queueOut = pQueue;
+    } else {
+        pQueue->Release();
+    }
+    return deferRefresh;
 }
 
 static bool ShouldApplySwapchainDescriptorOverridesForCreate(
@@ -6801,6 +6836,27 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
 
     PrepareForAuthoritativeFFXSwapchainCreate(captureEvidence, "CreateSwapChainForHwnd INLINE");
 
+    ID3D12CommandQueue* deferredStreamlineHandoffQueue = nullptr;
+    const bool deferPresentHookRefreshForStreamlineHandoff =
+        ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(pDevice, captureEvidence,
+                                                                        &deferredStreamlineHandoffQueue);
+    auto deferredStreamlineHandoffQueueRelease = ce::make_scope_guard([&]() {
+        if (deferredStreamlineHandoffQueue) {
+            deferredStreamlineHandoffQueue->Release();
+            deferredStreamlineHandoffQueue = nullptr;
+        }
+    });
+    if (deferPresentHookRefreshForStreamlineHandoff) {
+        DXGIShared::ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(
+            "post-FSR Streamline runtime swapchain create");
+        HookLogImportant(
+            "CreateSwapChainForHwnd INLINE: Released CE Present vtable ownership before post-FSR Streamline runtime "
+            "handoff (queue=%p origGame=%p runtime=%s fsrApi=%d hadFSR=%d streamlineLoaded=%d)",
+            deferredStreamlineHandoffQueue, g_OriginalGameQueue,
+            ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
+            g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, IsStreamlineLoaded() ? 1 : 0);
+    }
+
     HRESULT hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
     HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
 
@@ -6897,8 +6953,17 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         // A later runtime-created DX12 swapchain can expose a different Present
         // implementation than the one we patched during startup. Refresh the
         // full per-swapchain Present hook path here so top-level Present traffic
-        // stays visible after a Streamline handoff.
-        RefreshPresentHooksForRealSwapchain(newSC, "CreateSwapChainForHwnd INLINE");
+        // stays visible after a Streamline handoff.  For the post-FSR Streamline
+        // handoff, however, Streamline must establish its outer Present chain
+        // first; CE remains available through the inline/re-entrant PostSL path.
+        if (deferPresentHookRefreshForStreamlineHandoff) {
+            HookLogImportant(
+                "CreateSwapChainForHwnd INLINE: Deferring CE Present hook refresh for post-FSR Streamline runtime "
+                "handoff (sc=%p queue=%p)",
+                newSC, deferredStreamlineHandoffQueue);
+        } else {
+            RefreshPresentHooksForRealSwapchain(newSC, "CreateSwapChainForHwnd INLINE");
+        }
 
         CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd INLINE", captureEvidence);
     }
@@ -16189,8 +16254,8 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
         return;
 
     // Safety: freed COM objects have null vtable — skip
-    void** vtblCheck = *reinterpret_cast<void***>(queue);
-    if (!vtblCheck)
+    void** vtbl = *reinterpret_cast<void***>(queue);
+    if (!vtbl)
         return;
 
     // Never hook our own overlay queue to avoid re-entry in ECL
@@ -16205,6 +16270,35 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
                 "DX12: Protected official FFX startup pending - skipping ExecuteCommandLists vtable hook refresh "
                 "(queue=%p count=%d)",
                 queue, logCount + 1);
+        }
+        return;
+    }
+
+    char vtableModulePath[MAX_PATH] = {};
+    char executeModulePath[MAX_PATH] = {};
+    const bool vtableModuleResolved =
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(vtbl, vtableModulePath, sizeof(vtableModulePath));
+    const bool executeModuleResolved =
+        vtbl[10] && ce::overlay_compat::TryGetModulePathFromCodeAddress(vtbl[10], executeModulePath,
+                                                                         sizeof(executeModulePath));
+    const bool vtableFromStreamline =
+        vtableModuleResolved && ce::overlay_compat::IsStreamlineFrameGenerationModulePath(vtableModulePath);
+    const bool executeFromStreamline =
+        executeModuleResolved && ce::overlay_compat::IsStreamlineFrameGenerationModulePath(executeModulePath);
+    const bool vtableFromFFX =
+        vtableModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(vtableModulePath);
+    const bool executeFromFFX = executeModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(executeModulePath);
+    if (ce::dx12_overlay_policy::ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(
+            vtableFromStreamline, executeFromStreamline, vtableFromFFX, executeFromFFX)) {
+        static std::atomic<int> s_fgRuntimeQueueVTableSkipLogCount{0};
+        const int logCount = s_fgRuntimeQueueVTableSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 256) == 0) {
+            HookLogImportant(
+                "DX12: Skipping ExecuteCommandLists vtable hook for FG-runtime queue %p "
+                "(vtbl=%p vtblModule=%s ecl=%p eclModule=%s origGame=%p scQueue=%p count=%d)",
+                queue, vtbl, vtableModulePath[0] ? vtableModulePath : "unknown", vtbl[10],
+                executeModulePath[0] ? executeModulePath : "unknown", g_OriginalGameQueue, g_SwapchainQueue,
+                logCount + 1);
         }
         return;
     }
@@ -16240,7 +16334,7 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     }
     static std::recursive_mutex s_HookMutex;
     std::lock_guard<std::recursive_mutex> lock(s_HookMutex);
-    void** vtbl = *reinterpret_cast<void***>(queue);
+    vtbl = *reinterpret_cast<void***>(queue);
 
     // CRITICAL FIX: Check if we've already hooked this vtable BEFORE checking
     // the current vtable entry.  FG engines (FSR FG, DLSS FG) may overwrite

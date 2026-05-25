@@ -23,6 +23,7 @@ extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 #include "../common/dx12_overlay_policy.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
+#include "../common/overlay_compat.h"
 #include "../common/streamline_runtime_policy.h"
 #include "d3d10_device_wrap.h"
 
@@ -31,7 +32,11 @@ extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 // factories during DllMain for its own plumbing.  Wrapping those and installing
 // Present hooks triggers Steam's overlay on the SL worker thread where Steam is
 // uninitialized, causing a null pointer crash inside OverlayHookD3D3.
-static bool IsCallerFromStreamlineModule(const void* returnAddress) {
+static bool IsCallerFromStreamlineModule(const void* returnAddress, char* callerPathOut = nullptr,
+                                         size_t callerPathOutCount = 0) {
+    if (callerPathOut && callerPathOutCount > 0) {
+        callerPathOut[0] = '\0';
+    }
     HMODULE callerMod = nullptr;
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -40,8 +45,35 @@ static bool IsCallerFromStreamlineModule(const void* returnAddress) {
         return false;
     }
     char callerPath[MAX_PATH] = {};
-    return GetModuleFileNameA(callerMod, callerPath, sizeof(callerPath)) &&
-           ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(callerPath);
+    if (!GetModuleFileNameA(callerMod, callerPath, sizeof(callerPath))) {
+        return false;
+    }
+    if (callerPathOut && callerPathOutCount > 0) {
+        strncpy_s(callerPathOut, callerPathOutCount, callerPath, _TRUNCATE);
+    }
+    return ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(callerPath);
+}
+
+static bool IsCallerFromFFXFrameGenerationModule(const void* returnAddress, char* callerPathOut = nullptr,
+                                                 size_t callerPathOutCount = 0) {
+    if (callerPathOut && callerPathOutCount > 0) {
+        callerPathOut[0] = '\0';
+    }
+    HMODULE callerMod = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<const char*>(returnAddress), &callerMod) ||
+        !callerMod) {
+        return false;
+    }
+    char callerPath[MAX_PATH] = {};
+    if (!GetModuleFileNameA(callerMod, callerPath, sizeof(callerPath))) {
+        return false;
+    }
+    if (callerPathOut && callerPathOutCount > 0) {
+        strncpy_s(callerPathOut, callerPathOutCount, callerPath, _TRUNCATE);
+    }
+    return ce::overlay_compat::IsFFXFrameGenerationModulePath(callerPath);
 }
 
 static bool IsStreamlineRuntimeLoadedForFactoryBypass() {
@@ -49,27 +81,57 @@ static bool IsStreamlineRuntimeLoadedForFactoryBypass() {
            GetModuleHandleA("sl.common.dll") != nullptr;
 }
 
-static bool ShouldReturnUnwrappedDXGIFactoryForFrameGenerationRuntime(const void* returnAddress,
-                                                                      const char* functionName) {
-    const bool callerFromStreamline = IsCallerFromStreamlineModule(returnAddress);
+struct DXGIFactoryRuntimeDecision {
+    bool bypassWrapper = false;
+    bool callerFromStreamline = false;
+    bool callerFromFFX = false;
+    bool streamlinePresent = false;
+    bool fsrPresent = false;
+    ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
+    char callerPath[MAX_PATH] = {};
+};
+
+static DXGIFactoryRuntimeDecision EvaluateDXGIFactoryRuntimeDecision(const void* returnAddress,
+                                                                     const char* functionName) {
+    DXGIFactoryRuntimeDecision decision = {};
+    char streamlineCallerPath[MAX_PATH] = {};
+    char ffxCallerPath[MAX_PATH] = {};
+    decision.callerFromStreamline =
+        IsCallerFromStreamlineModule(returnAddress, streamlineCallerPath, sizeof(streamlineCallerPath));
+    decision.callerFromFFX =
+        IsCallerFromFFXFrameGenerationModule(returnAddress, ffxCallerPath, sizeof(ffxCallerPath));
+    if (decision.callerFromStreamline) {
+        strncpy_s(decision.callerPath, sizeof(decision.callerPath), streamlineCallerPath, _TRUNCATE);
+    } else if (decision.callerFromFFX) {
+        strncpy_s(decision.callerPath, sizeof(decision.callerPath), ffxCallerPath, _TRUNCATE);
+    } else if (returnAddress) {
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(returnAddress, decision.callerPath,
+                                                            sizeof(decision.callerPath));
+    }
+
+    const bool callerFromFrameGenerationRuntime = decision.callerFromStreamline || decision.callerFromFFX;
     const bool streamlinePresent = g_FGCompat.HasStreamlineSupport() || IsStreamlineRuntimeLoadedForFactoryBypass();
     const bool fsrPresent = g_FGCompat.HasFSRFGSupport();
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
-    const bool bypass = ce::dx12_overlay_policy::ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(
-        callerFromStreamline, streamlinePresent, fsrPresent, runtimeMode);
-    if (bypass) {
+    decision.streamlinePresent = streamlinePresent;
+    decision.fsrPresent = fsrPresent;
+    decision.runtimeMode = runtimeMode;
+    decision.bypassWrapper = ce::dx12_overlay_policy::ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(
+        callerFromFrameGenerationRuntime, streamlinePresent, fsrPresent, runtimeMode);
+    if (decision.bypassWrapper) {
         static std::atomic<int> s_factoryBypassLogCount{0};
         const int logCount = s_factoryBypassLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 256) == 0) {
             WrapperLog(
                 "%s: Returning unwrapped DXGI factory for frame-generation runtime compatibility "
-                "(callerSL=%d streamlinePresent=%d fsrPresent=%d runtime=%s)",
-                functionName ? functionName : "CreateDXGIFactory", callerFromStreamline ? 1 : 0,
-                streamlinePresent ? 1 : 0, fsrPresent ? 1 : 0,
-                ce::fg_runtime::GetRuntimeModeName(runtimeMode));
+                "(callerSL=%d callerFFX=%d streamlinePresent=%d fsrPresent=%d runtime=%s caller=%s)",
+                functionName ? functionName : "CreateDXGIFactory", decision.callerFromStreamline ? 1 : 0,
+                decision.callerFromFFX ? 1 : 0, streamlinePresent ? 1 : 0, fsrPresent ? 1 : 0,
+                ce::fg_runtime::GetRuntimeModeName(runtimeMode),
+                decision.callerPath[0] ? decision.callerPath : "unresolved");
         }
     }
-    return bypass;
+    return decision;
 }
 #include "d3d11_device_wrap.h"
 #include "d3d11_devicecontext_wrap.h"
@@ -249,6 +311,49 @@ static void* GetUnhookedDXGIExport(const char* funcName) {
     return result;
 }
 
+static void* GetLiveDXGIExport(const char* funcName) {
+    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+    return hDXGI ? reinterpret_cast<void*>(GetProcAddress(hDXGI, funcName)) : nullptr;
+}
+
+static bool IsCodeAddressFromCaptureHookModule(const void* codeAddress) {
+    char modulePath[MAX_PATH] = {};
+    return ce::overlay_compat::TryGetModulePathFromCodeAddress(codeAddress, modulePath, sizeof(modulePath)) &&
+           strstr(modulePath, "capture_hook") != nullptr;
+}
+
+template <typename Fn>
+static Fn SelectDXGIFactoryExportForCall(const char* functionName, Fn unhookedFn,
+                                         const DXGIFactoryRuntimeDecision& decision) {
+    void* liveExport = GetLiveDXGIExport(functionName);
+    const bool liveFromCaptureHook = IsCodeAddressFromCaptureHookModule(liveExport);
+    const bool callerFromFrameGenerationRuntime = decision.callerFromStreamline || decision.callerFromFFX;
+    const bool useLiveExport = ce::dx12_overlay_policy::ShouldUseLiveDXGIFactoryExportForFrameGenerationRuntime(
+        decision.bypassWrapper, callerFromFrameGenerationRuntime, liveExport != nullptr, liveFromCaptureHook);
+    Fn selected = useLiveExport ? reinterpret_cast<Fn>(liveExport) : unhookedFn;
+
+    if (decision.bypassWrapper || useLiveExport) {
+        static std::atomic<int> s_factoryExportSourceLogCount{0};
+        const int logCount = s_factoryExportSourceLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 30 || (logCount % 256) == 0) {
+            char liveModulePath[MAX_PATH] = {};
+            char selectedModulePath[MAX_PATH] = {};
+            ce::overlay_compat::TryGetModulePathFromCodeAddress(liveExport, liveModulePath, sizeof(liveModulePath));
+            ce::overlay_compat::TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(selected),
+                                                                selectedModulePath, sizeof(selectedModulePath));
+            WrapperLog(
+                "%s: DXGI factory export source selected=%s selectedFn=%p selectedModule=%s liveFn=%p "
+                "liveModule=%s liveCaptureHook=%d callerRuntime=%d",
+                functionName ? functionName : "CreateDXGIFactory", useLiveExport ? "live" : "unhooked",
+                reinterpret_cast<void*>(selected), selectedModulePath[0] ? selectedModulePath : "unresolved",
+                liveExport, liveModulePath[0] ? liveModulePath : "unresolved", liveFromCaptureHook ? 1 : 0,
+                callerFromFrameGenerationRuntime ? 1 : 0);
+        }
+    }
+
+    return selected;
+}
+
 HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     // Guard against mutual recursion with third-party overlay hooks (e.g., Steam).
     thread_local bool t_inFactory = false;
@@ -267,21 +372,25 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     // overlay code and crashes (0xC0000005 at RIP=0).  GetUnhookedDXGIExport
     // reads the original on-disk RVA and applies it to the loaded dxgi.dll base,
     // giving the real function entry that bypasses Steam's EAT hook entirely.
+    const auto decision =
+        EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory");
     static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory>(GetUnhookedDXGIExport("CreateDXGIFactory"));
-    if (!unhookedFn)
+    auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory", unhookedFn, decision);
+    if (!createFn)
         return E_FAIL;
 
     t_inFactory = true;
     IDXGIFactory* pRealFactory = nullptr;
-    HRESULT hr = unhookedFn(riid, (void**)&pRealFactory);
+    HRESULT hr = createFn(riid, (void**)&pRealFactory);
     t_inFactory = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
-        // Skip wrapping when called from a Streamline module — SL creates
-        // internal DXGI factories during DllMain for its own plumbing.
-        // Wrapping them installs Present hooks that trigger Steam's overlay
-        // on the SL worker thread where Steam is uninitialized → RIP=0.
-        if (IsCallerFromStreamlineModule(CE_WRAPPER_RETURN_ADDRESS())) {
+        // Skip wrapping while a frame-generation runtime is in play. Streamline
+        // and FFX create DXGI factories from both runtime and game frames during
+        // mode handoff; returning a CE factory wrapper there lets us mutate
+        // runtime-owned queues before the SDK has finished its own swapchain
+        // wiring.
+        if (decision.bypassWrapper) {
             *ppFactory = pRealFactory;
             return hr;
         }
@@ -319,17 +428,20 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
         return E_FAIL;
     }
 
+    const auto decision =
+        EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory1");
     static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory1>(GetUnhookedDXGIExport("CreateDXGIFactory1"));
-    if (!unhookedFn)
+    auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory1", unhookedFn, decision);
+    if (!createFn)
         return E_FAIL;
 
     t_inFactory1 = true;
     IDXGIFactory1* pRealFactory = nullptr;
-    HRESULT hr = unhookedFn(riid, (void**)&pRealFactory);
+    HRESULT hr = createFn(riid, (void**)&pRealFactory);
     t_inFactory1 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
-        if (IsCallerFromStreamlineModule(CE_WRAPPER_RETURN_ADDRESS())) {
+        if (decision.bypassWrapper) {
             *ppFactory = pRealFactory;
             return hr;
         }
@@ -369,17 +481,20 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
         return E_FAIL;
     }
 
+    const auto decision =
+        EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory2");
     static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory2>(GetUnhookedDXGIExport("CreateDXGIFactory2"));
-    if (!unhookedFn)
+    auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory2", unhookedFn, decision);
+    if (!createFn)
         return E_FAIL;
 
     t_inFactory2 = true;
     IDXGIFactory2* pRealFactory = nullptr;
-    HRESULT hr = unhookedFn(Flags, riid, (void**)&pRealFactory);
+    HRESULT hr = createFn(Flags, riid, (void**)&pRealFactory);
     t_inFactory2 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
-        if (IsCallerFromStreamlineModule(CE_WRAPPER_RETURN_ADDRESS())) {
+        if (decision.bypassWrapper) {
             *ppFactory = pRealFactory;
             return hr;
         }

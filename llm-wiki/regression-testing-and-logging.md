@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-05-22
+Last cross-checked: 2026-05-25
 
 Primary sources:
 - `AGENTS.md`
@@ -25,6 +25,7 @@ Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
 - `hook/wrappers/dxgi_swapchain_wrap.cpp`
 - `hook/wrappers/wrapper_hooks.cpp`
+- `hook/wrappers/iat_hook.h`
 - `hook/wrappers/d3d11_devicecontext_wrap.cpp`
 - `hook/wrappers/iat_hook.cpp`
 - `hook/wrappers/inline_hook.cpp`
@@ -115,6 +116,9 @@ Primary sources:
   - Loaded-module feature-owner scans now retry transient Toolhelp `ERROR_BAD_LENGTH` failures and log retry recovery. Talos `20260425_173428` showed this error early in the session, so a single failed module snapshot must not permanently suppress later `sl.*.dll` fallback discovery.
 - `hook/common/dxgi_shared.cpp`
   - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths. For GTA-style pure-DLSS startup, `Streamline startup normal-route transport allowed` with `transportRisk=0` / `steamRisk=0` is the healthy shape; `Streamline startup normal-route bypass` should now mean a real stale/third-party Present-hook risk exists.
+  - Logs DXGI factory source selection for FG compatibility. `DXGI factory export source selected=live` should be used for app-thread FG handoffs so upstream interposers such as Streamline still see factory creation; `selected=unhooked ... callerRuntime=1` should be used for direct runtime callers.
+- `hook/wrappers/iat_hook.cpp`
+  - Logs Streamline proxy DXGI factory export pass-through. A healthy DLSS-G switch-app run includes `GetProcAddress: Leaving Streamline proxy export CreateDXGIFactory1 from sl.interposer.dll unmodified`, while Streamline feature APIs remain hookable through their dedicated feature paths.
 - `hook/wrappers/inline_hook.cpp`
   - Bypass/deep-hook diagnostics should prove external patch resume safety. `Extended resume offset past patched fill bytes` means CE skipped over a third-party `E9 ... CC ...` patch span and resumed only at a verified disk-matching instruction boundary.
 - `hook/common/freeze_watchdog.cpp`
@@ -138,6 +142,7 @@ Primary sources:
 - If you touch basic/timer FPS limiter pacing, verify `FpsLimiterTest.GeneralBasicUsesLocalCadenceWithoutLimiterProcessTimeout` and confirm the trace cannot spend one helper-event timeout per frame before local cadence runs.
 - If you touch native-FSR callback rendering, verify both callback-side color/composition contracts explicitly: 10-bit UNORM outputs must not be treated as HDR without probing the real display color space, and callback-side diagnostics should still reveal the resolved HDR decision and whether FFX requested premultiplied-alpha UI composition.
 - If you touch mixed FSR/DLSS switching, run `dx12_fg_switch_test.exe` standalone and injected. The expected app log sequence is OFF -> FSR -> DLSS -> FSR automatically, then successful manual/key-driven transitions in every direction as needed. The injected session must show both `DX12: FFX present callback rendered overlay on runtime-owned FSR path` and `Post-SL overlay SUBMIT`, with no `.dmp`, no `0x887A`, and no lingering test or CaptureEngine processes afterward.
+- If you touch dynamic `GetProcAddress`, DXGI factory wrappers, Streamline proxy exports, or FG runtime queue capture, verify the mixed switch app with injection and check for all of: Streamline proxy `CreateDXGIFactory1` left unmodified, CE Present vtable ownership released before post-FSR Streamline handoff, DLSS `runtime=DLSS_FG active=1` plus PostSL submits, FSR callback overlay renders during active and suspended windows, no dumps, and no device removal. Also check the app log is free of `eDLSSGStatusFailCommonConstantsInvalid` and that `slDLSSGGetState` reports generated frames during the DLSS phase.
 - If you touch protected official FFX startup, verify `DXGISharedTest.ProtectedOfficialFFXStartupQuiescesLiveStreamlinePostSLImmediately` and the hook-DLL binary-string coverage in `CrashHandlerBinaryTest.HookDllContainsLazyExecRegressionStrings`. The immediate quiesce log is the regression breadcrumb for the stale-DLSS-PostSL-while-FFX-takes-over crash family.
 - If you touch native-FSR callback rendering or callback-side HDR setup, verify the weak-swapchain family too: once runtime-owned FSR callback rendering starts, the callback thread must not need to probe DXGI output state through a raw non-AddRef'd swapchain pointer that may already be stale. The callback path should be able to use cached trusted HDR/color-space state captured earlier from a live swapchain (`ProcessFrame` or `ffxConfigure(... swapChain=...)`), and the logs should make that explicit when it happens.
 - If you touch native-FSR callback-backend lifecycle or any normal-overlay cleanup path that can run during FSR suspension windows, verify the temporary suspend/resume family explicitly too: a transient `ffxConfigure(frameGenerationEnabled=0)` while the runtime-owned swapchain still owns Present must not unnecessarily tear down the dedicated callback backend, GTA/Talos traces should clearly show whether CE preserved or re-used that backend, and a quick resume on the same runtime-owned path must not reopen the `amd_fidelityfx_dx12!ffxQuery` deadlock family.

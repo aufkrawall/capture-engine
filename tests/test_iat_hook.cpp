@@ -33,21 +33,21 @@ TEST(IATHookDynamicFilterTest, FilteredDynamicHookRoutesOnlyMatchingModules) {
 }
 
 TEST(IATHookDynamicFilterTest, OverlayCallerBypassKeepsNativeFSRApiHooksVisible) {
-    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, false,
+    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, false, false,
                                                           "D3D12CreateDevice"));
-    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, true,
+    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, false, true,
                                                           "D3D12CreateDevice"));
 
-    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, true,
+    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, false, true,
                                                            "ffxConfigure"));
-    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, true,
+    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, false, true,
                                                            "ffxCreateContext"));
-    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, true,
+    EXPECT_FALSE(IATHook::ShouldBypassDynamicHookForCaller(false, true, false, false, false, false, false, true,
                                                            "ffxDestroyContext"));
 
-    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(true, false, false, false, false, false, true,
+    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(true, false, false, false, false, false, false, true,
                                                           "ffxConfigure"));
-    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, false, false, false, false, true, true,
+    EXPECT_TRUE(IATHook::ShouldBypassDynamicHookForCaller(false, false, false, false, false, true, false, true,
                                                           "ffxConfigure"));
 }
 

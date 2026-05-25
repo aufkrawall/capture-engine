@@ -182,6 +182,7 @@ void RemoveSwapchainVTableHooks();
 bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);
 bool HasPresentInlineHooks();
 bool HasPresentDetourHooks();
+void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason);
 
 // Returns true when DXGI swapchain hooks should be installed despite a
 // third-party overlay being loaded.  Third-party overlays (e.g. Steam) may
@@ -499,30 +500,33 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
             (hadFSRFGPhase && (explicitSetOptionsActivation || safePostFSRBootstrapPath)));
 }
 
-inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(bool isD3D12SwapChain, bool hadFSRFGPhase,
-                                                                            bool startupTopLevelCandidate,
-                                                                            bool staleThirdPartyPresentHookRisk) {
+inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
+    bool isD3D12SwapChain, bool hadFSRFGPhase, bool startupTopLevelCandidate,
+    bool safePostFSRBootstrapPath, bool staleThirdPartyPresentHookRisk) {
     // The first large-gap Streamline startup-handoff Present can still be the
     // only top-level call that re-establishes the live route after an FSR-owned
     // swapchain handoff. That Present should remain logically on the normal SL
-    // route so startup-policy state can advance, but the recovered swapchain's
-    // third-party Present hook chain is still too fragile to trust at that
-    // moment. Keep the route, but transport through the bypass trampoline.
-    return isD3D12SwapChain && hadFSRFGPhase && startupTopLevelCandidate && staleThirdPartyPresentHookRisk;
+    // route so startup-policy state can advance, but the actual transport is
+    // still fragile while the recovered queue topology has only just been
+    // proven. A stale third-party Present hook is one risk; the FSR->DLSS
+    // runtime handoff itself is another even when no external overlay is
+    // present. Keep the route, but transport through the bypass trampoline.
+    return isD3D12SwapChain && hadFSRFGPhase && startupTopLevelCandidate &&
+           (safePostFSRBootstrapPath || staleThirdPartyPresentHookRisk);
 }
 
 inline bool ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
     bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain, bool bypassAvailable,
     bool callerFromStreamlineModule, bool streamlineStartupHandoffInProgress, bool runtimeOwnedSwapchainActive,
-    bool startupNormalRouteCandidate, bool thirdPartyPresentHookRisk) {
+    bool startupNormalRouteCandidate, bool postFSRRuntimeHandoffRisk, bool thirdPartyPresentHookRisk) {
     // Runtime ownership alone is not a transport hazard. GTA's all-off -> DLSS FG
     // Apply path needs real Streamline Present traffic after the EOS-backed
     // runtime-owned handoff, otherwise DLSSG startup never activates. Use bypass
     // transport only when the same startup family also carries a stale/fragile
-    // third-party Present hook risk.
+    // third-party Present hook risk or a proven post-FSR runtime handoff risk.
     return isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain && bypassAvailable &&
            callerFromStreamlineModule && streamlineStartupHandoffInProgress && runtimeOwnedSwapchainActive &&
-           startupNormalRouteCandidate && thirdPartyPresentHookRisk;
+           startupNormalRouteCandidate && (postFSRRuntimeHandoffRisk || thirdPartyPresentHookRisk);
 }
 
 inline bool ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
@@ -530,6 +534,35 @@ inline bool ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
     bool staleThirdPartyPresentHookRisk) {
     return isD3D12SwapChain && startupTopLevelCandidate &&
            (startupNormalRouteTransportRisk || staleThirdPartyPresentHookRisk);
+}
+
+inline bool ShouldActivateStreamlinePresentRoutingForHookTarget(bool entryHookDetected, bool hookTargetResolved,
+                                                                bool hookTargetFromStreamlineModule,
+                                                                bool hookTargetFromCaptureHookModule) {
+    // dxgi!Present can begin with a jump for several reasons: CE's own inline
+    // hook, DXGI's internal thunking, Steam/EOS hook chains, or Streamline. Only
+    // the Streamline target is safe to route through as the SL FG chain.
+    return entryHookDetected && hookTargetResolved && hookTargetFromStreamlineModule &&
+           !hookTargetFromCaptureHookModule;
+}
+
+inline bool ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHandoff(
+    bool observerOnlyMode, bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain,
+    bool originalPresentAvailable, bool streamlineFGRunning, bool streamlinePresentRoutingActive,
+    bool callerFromStreamlineModule, bool streamlineStartupHandoffInProgress, bool runtimeOwnedSwapchainActive,
+    bool hadFSRFGPhase, bool safePostFSRBootstrapPath, bool postSLConfirmedRendering,
+    bool startupTopLevelPresentAlreadyConsumed) {
+    // Some real runtimes surface the first post-FSR Streamline startup handoff as
+    // an app-thread Present on the freshly runtime-owned swapchain before any
+    // Streamline-originated top-level Present reaches us. Treat that first call
+    // as the startup bootstrap transport hazard too; otherwise the normal SL
+    // route can enter the driver after CE has injected overlay work, while a
+    // direct DXGI bypass skips Streamline's mandatory startup handling. Keep the
+    // first handoff overlayless but route it through Streamline.
+    return !observerOnlyMode && isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain &&
+           originalPresentAvailable && streamlineFGRunning && streamlinePresentRoutingActive && !callerFromStreamlineModule &&
+           streamlineStartupHandoffInProgress && runtimeOwnedSwapchainActive && hadFSRFGPhase &&
+           safePostFSRBootstrapPath && !postSLConfirmedRendering && !startupTopLevelPresentAlreadyConsumed;
 }
 
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(

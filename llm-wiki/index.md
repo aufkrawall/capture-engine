@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-25 (updated: build 0.1.3578 / tests 0.1.3579 - DX12 FG switch-app startup pacing diagnostics, opt-in heavy startup stress, tearing-aware DLSS presents, and async runtime preload; injected crash investigation still active)
+Last cross-checked: 2026-05-25 (updated: build 0.1.3592 / tests 0.1.3593 - DX12 FG injected routing fix for Streamline proxy DXGI factory exports, post-FSR Streamline handoff vtable release, runtime factory/queue guards, and switch-app DLSS constants)
 
 Primary sources:
 - `AGENTS.md`

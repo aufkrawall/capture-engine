@@ -205,6 +205,7 @@ static void SubmitStreamlineFrameInputs(sl::FrameToken* token, UINT frameIndex) 
     constants.prevClipToClip = IdentityMatrix();
     constants.jitterOffset = sl::float2(0.0f, 0.0f);
     constants.mvecScale = sl::float2(1.0f, 1.0f);
+    constants.cameraPinholeOffset = sl::float2(0.0f, 0.0f);
     constants.cameraPos = sl::float3(0.0f, 0.0f, -2.0f);
     constants.cameraUp = sl::float3(0.0f, 1.0f, 0.0f);
     constants.cameraRight = sl::float3(1.0f, 0.0f, 0.0f);
@@ -214,6 +215,9 @@ static void SubmitStreamlineFrameInputs(sl::FrameToken* token, UINT frameIndex) 
     constants.cameraFOV = 1.04719755f;
     constants.cameraAspectRatio = static_cast<float>(g_WindowWidth) / static_cast<float>(g_WindowHeight);
     constants.motionVectorsInvalidValue = 65504.0f;
+    constants.depthInverted = sl::eFalse;
+    constants.cameraMotionIncluded = sl::eFalse;
+    constants.motionVectors3D = sl::eFalse;
     constants.reset = g_FrameTokenIndex < 4 ? sl::eTrue : sl::eFalse;
     sl::Result constantsResult = g_SlSetConstants(constants, *token, g_SlViewport);
     if (constantsResult != sl::Result::eOk && g_FrameTokenIndex < 8) {

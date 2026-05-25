@@ -27,6 +27,32 @@ bool CaptureAndHookD3D12QueueFromFactoryDevice(IUnknown* pDevice, const char* ca
         return false;
     }
 
+    void** vtbl = *reinterpret_cast<void***>(pQueue);
+    char vtableModulePath[MAX_PATH] = {};
+    char executeModulePath[MAX_PATH] = {};
+    const bool vtableModuleResolved =
+        vtbl && ce::overlay_compat::TryGetModulePathFromCodeAddress(vtbl, vtableModulePath, sizeof(vtableModulePath));
+    const bool executeModuleResolved =
+        vtbl && vtbl[10] &&
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(vtbl[10], executeModulePath, sizeof(executeModulePath));
+    const bool vtableFromStreamline =
+        vtableModuleResolved && ce::overlay_compat::IsStreamlineFrameGenerationModulePath(vtableModulePath);
+    const bool executeFromStreamline =
+        executeModuleResolved && ce::overlay_compat::IsStreamlineFrameGenerationModulePath(executeModulePath);
+    const bool vtableFromFFX =
+        vtableModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(vtableModulePath);
+    const bool executeFromFFX = executeModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(executeModulePath);
+    if (ce::dx12_overlay_policy::ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(
+            vtableFromStreamline, executeFromStreamline, vtableFromFFX, executeFromFFX)) {
+        WrapperLog(
+            "%s: Detected D3D12 command queue %p but skipped pre-create CE queue side effects for FG runtime "
+            "(vtbl=%p vtblModule=%s ecl=%p eclModule=%s)",
+            callName ? callName : "CreateSwapChain", pQueue, vtbl, vtableModulePath[0] ? vtableModulePath : "unknown",
+            (vtbl && vtbl[10]) ? vtbl[10] : nullptr, executeModulePath[0] ? executeModulePath : "unknown");
+        pQueue->Release();
+        return true;
+    }
+
     DX12_HookQueueVTable(pQueue);
     DX12_SetCommandQueue(pQueue);
     WrapperLog("%s: Detected D3D12 command queue %p", callName ? callName : "CreateSwapChain", pQueue);
