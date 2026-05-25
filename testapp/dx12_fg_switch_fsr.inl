@@ -110,7 +110,7 @@ static void MaybeUnloadFSRRuntimeAfterSwitch(const char* reason) {
                      g_FsrEnabled ? 1 : 0);
         return;
     }
-    UnloadFSRRuntime(reason);
+    UnloadFSRRuntimeSerialized(reason);
 }
 
 static ffxReturnCode_t TestPresentCallback(ffxCallbackDescFrameGenerationPresent* params, void*) {

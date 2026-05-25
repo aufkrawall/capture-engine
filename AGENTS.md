@@ -20,6 +20,7 @@ Copyright (c) 2026 aufkrawall
 - Mistrust code, code annotations and llm-wiki! Each of them might be stale or outdated! Come to your own conclusion and act based on that!
 - When fixing a bug or implementing a feature, generally always add new regression test units, or adjust existing ones!
 - When fixing a bug or implementing a feature, generally always increase or improve debug logging to make bug diagnosis easier!
+- The llm-wiki might not get upated after every change, the git commit history might be more up to date!
 
 ## Engineering rules
 

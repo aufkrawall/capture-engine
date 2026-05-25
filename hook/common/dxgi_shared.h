@@ -250,6 +250,21 @@ inline bool ShouldKeepSLPresentRoutingDisabledForNativeFG(bool effectiveFSRRunti
     return effectiveFSRRuntime || runtimeOwnedNativeFGPresentPath;
 }
 
+inline bool ShouldKeepSLPresentRoutingDisabledForRuntimeState(ce::fg_runtime::RuntimeMode runtimeMode,
+                                                              bool runtimeOwnedNativeFGPresentPath) {
+    // Streamline's Present hook is required for DLSS-G frames, but a
+    // Streamline-owned "no FG" phase should behave like an ordinary DXGI
+    // Present path. Routing the no-FG startup/menu phase through SL's global
+    // Present hook can hand NVIDIA's driver a partially transitioned swapchain
+    // while CE is also in the hook chain.
+    if (runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG) {
+        return true;
+    }
+
+    return ShouldKeepSLPresentRoutingDisabledForNativeFG(ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode),
+                                                         runtimeOwnedNativeFGPresentPath);
+}
+
 // External Present entry hooks can recurse back through our detour. Some paths
 // need a bypass trampoline available at install time so re-entrant Present can
 // still reach the real DXGI implementation.

@@ -25,6 +25,9 @@ static void LoadConfig() {
     g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
     g_FsrReloadRuntimeOnSwitch = GetPrivateProfileIntA("Stress", "fsr_reload_runtime_on_switch",
                                                        g_FsrReloadRuntimeOnSwitch ? 1 : 0, configPath.c_str()) != 0;
+    g_StreamlinePreloadInitialOff =
+        GetPrivateProfileIntA("Stress", "streamline_preload_initial_off", g_StreamlinePreloadInitialOff ? 1 : 0,
+                              configPath.c_str()) != 0;
     g_FsrKeepRuntimeLoadedInitialOff =
         GetPrivateProfileIntA("Stress", "fsr_keep_runtime_loaded_initial_off", g_FsrKeepRuntimeLoadedInitialOff ? 1 : 0,
                               configPath.c_str()) != 0;
@@ -51,6 +54,9 @@ static void LoadConfig() {
         ClampInt(GetPrivateProfileIntA("Stress", "startup_native_swapchain_recreate_count",
                                        g_StartupNativeSwapchainRecreateCount, configPath.c_str()),
                  0, 8);
+    g_AsyncRuntimePreload =
+        GetPrivateProfileIntA("Stress", "async_runtime_preload", g_AsyncRuntimePreload ? 1 : 0,
+                              configPath.c_str()) != 0;
     g_AutoExitSeconds = ClampInt(
         GetPrivateProfileIntA("Stress", "auto_exit_seconds", g_AutoExitSeconds, configPath.c_str()), 0, 3600);
 }
@@ -98,6 +104,46 @@ static void ParseCommandLine(int argc, char* argv[]) {
         }
         if (TryParseIntOption(argv[i], "--fsr-suspend-interval", &value)) {
             g_FsrSuspendResumeIntervalSeconds = ClampInt(value, 1, 60);
+            continue;
+        }
+        if (strcmp(argv[i], "--startup-preload-fg") == 0) {
+            g_StreamlinePreloadInitialOff = true;
+            g_FsrKeepRuntimeLoadedInitialOff = true;
+            g_FsrStartupDisabledContextStress = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--preload-streamline") == 0) {
+            g_StreamlinePreloadInitialOff = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-preload-streamline") == 0) {
+            g_StreamlinePreloadInitialOff = false;
+            continue;
+        }
+        if (strcmp(argv[i], "--preload-fsr") == 0) {
+            g_FsrKeepRuntimeLoadedInitialOff = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-preload-fsr") == 0) {
+            g_FsrKeepRuntimeLoadedInitialOff = false;
+            g_FsrStartupDisabledContextStress = false;
+            continue;
+        }
+        if (strcmp(argv[i], "--startup-disabled-fsr-context") == 0) {
+            g_FsrKeepRuntimeLoadedInitialOff = true;
+            g_FsrStartupDisabledContextStress = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-startup-disabled-fsr-context") == 0) {
+            g_FsrStartupDisabledContextStress = false;
+            continue;
+        }
+        if (strcmp(argv[i], "--async-runtime-preload") == 0) {
+            g_AsyncRuntimePreload = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-async-runtime-preload") == 0) {
+            g_AsyncRuntimePreload = false;
             continue;
         }
 

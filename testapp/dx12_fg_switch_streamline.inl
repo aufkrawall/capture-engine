@@ -258,6 +258,7 @@ static void ShutdownStreamline() {
         SetDLSSFGMode(false);
         g_DlssEnabled = false;
     }
+    g_DlssSuspended = false;
     if (g_SlShutdown && g_SlInitialized) {
         sl::Result shutdownResult = g_SlShutdown();
         testapp::Log("[FG-DIAG] slShutdown result=%d (%s)\n", static_cast<int>(shutdownResult),
@@ -268,4 +269,22 @@ static void ShutdownStreamline() {
         FreeLibrary(g_SlModule);
         g_SlModule = nullptr;
     }
+    g_SlInit = nullptr;
+    g_SlShutdown = nullptr;
+    g_SlSetD3DDevice = nullptr;
+    g_SlGetFeatureFunction = nullptr;
+    g_SlGetNewFrameToken = nullptr;
+    g_SlSetConstants = nullptr;
+    g_SlSetTagForFrame = nullptr;
+    g_SlDLSSGSetOptions = nullptr;
+    g_SlDLSSGGetState = nullptr;
+    g_SlReflexSetOptions = nullptr;
+    g_SlReflexSleep = nullptr;
+    g_SlPCLSetMarker = nullptr;
+    g_SlCreateDXGIFactory1 = nullptr;
+    g_SlD3D12CreateDevice = nullptr;
+    g_SlInitialized = false;
+    g_SlDeviceSet = false;
+    g_DlssInitialized = false;
+    g_FrameTokenIndex = 0;
 }

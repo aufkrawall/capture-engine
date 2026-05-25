@@ -4,6 +4,7 @@
 #include "../hook/common/dxgi_factory_policy.h"
 #include "../hook/common/dxgi_shared.h"
 #include "../hook/wrappers/inline_hook_policy.h"
+#include "../captureengine/injection_policy.h"
 
 TEST(DXGISharedTest, ExternalHookBypassResumeExtendsPastPatchedFillBytes) {
     EXPECT_FALSE(ce::inline_hook_policy::IsVerifiedExternalHookResumeOffset(5, 5, false));
@@ -257,6 +258,17 @@ TEST(DXGISharedTest, SLPresentRoutingStaysDisabledAcrossNativeFGTeardownAndActiv
     EXPECT_FALSE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForNativeFG(false, false));
 }
 
+TEST(DXGISharedTest, SLPresentRoutingStaysDisabledForStreamlineNoFGAndNativeFSR) {
+    using ce::fg_runtime::RuntimeMode;
+
+    EXPECT_TRUE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForRuntimeState(RuntimeMode::kStreamlineNoFG, false));
+    EXPECT_TRUE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForRuntimeState(RuntimeMode::kFSRFG, false));
+    EXPECT_TRUE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForRuntimeState(RuntimeMode::kDLSSFG, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForRuntimeState(RuntimeMode::kDLSSFG, false));
+    EXPECT_FALSE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForRuntimeState(RuntimeMode::kOff, false));
+}
+
 TEST(DXGISharedTest, SteamDX12HookRiskExtendsToProtectedPostFSRStartupHandoff) {
     EXPECT_TRUE(DXGIShared::ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(true, true, true, false,
                                                                                                 false, true, true));
@@ -336,12 +348,12 @@ TEST(DXGISharedTest, GlobalCreateSwapchainForHwndSkipsDuplicateSideEffectsAfterI
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipGlobalCreateSwapchainForHwndSideEffectsAfterInlineForward(false));
 }
 
-TEST(DXGISharedTest, AuthoritativeStreamlineRuntimeQueuesStayHookableWhileGenericRuntimeQueuesDoNot) {
+TEST(DXGISharedTest, RuntimeOwnedSwapchainQueuesStayUnhookedUnlessTheyAreOriginalGameQueue) {
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(false, false, false, false));
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(true, true, false, false));
-    EXPECT_TRUE(
+    EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(true, false, true, false));
 
     EXPECT_FALSE(
@@ -352,7 +364,7 @@ TEST(DXGISharedTest, StreamlineRuntimeQueueAuthorityIsSeparateFromFreshHandoffSt
     const bool authoritativeRuntimeQueue =
         ce::dx12_overlay_policy::ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(true, true, false);
     EXPECT_TRUE(authoritativeRuntimeQueue);
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(
         true, false, authoritativeRuntimeQueue, false));
 
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
@@ -698,6 +710,24 @@ TEST(DXGISharedTest, ThirdPartyOverlaySwapchainsNeverDrivePresentProcessing) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(false));
 }
 
+TEST(DXGISharedTest, InvisibleWindowSwapchainsNeverDriveDX12OverlayProcessing) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(false, false));
+
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldSkipDX12CreateSwapchainSideEffectsForInvisibleWindowSwapchain(true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldSkipDX12CreateSwapchainSideEffectsForInvisibleWindowSwapchain(true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldSkipDX12CreateSwapchainSideEffectsForInvisibleWindowSwapchain(false, false));
+}
+
+TEST(DXGISharedTest, CEOverlaySubmitsNeverDriveQueueTracking) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSuppressQueueTrackingForCEOverlaySubmission(true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressQueueTrackingForCEOverlaySubmission(false));
+}
+
 TEST(DXGISharedTest, StartupBlockingOverlaySwapchainBypassClearsOnceLivePresentLeavesOverlayStack) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(true, true, true));
 
@@ -902,6 +932,21 @@ TEST(DXGISharedTest, TransitionCooldownOverrideReplacesStaleLongCooldownForSettl
     EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(90, 15, false), 90);
 }
 
+TEST(DXGISharedTest, InactiveStreamlineRuntimeStateDoesNotStartFGCooldown) {
+    using ce::fg_runtime::RuntimeMode;
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kOff, RuntimeMode::kStreamlineNoFG, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kStreamlineNoFG, RuntimeMode::kOff, false, false, false, false));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kStreamlineNoFG, RuntimeMode::kDLSSFG, false, true, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kFSRFG, RuntimeMode::kStreamlineNoFG, true, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kFSRFG, RuntimeMode::kDLSSFG, true, true, false, true));
+}
+
 TEST(DXGISharedTest, SettledPrimaryPostFSROffUsesShorterCooldown) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(true, true, true));
 
@@ -1058,6 +1103,34 @@ TEST(DXGISharedTest, RuntimeOwnedNativeFSRSuppressesInjectedOverlayGpuWorkOnlyFo
         true, false, ce::fg_runtime::RuntimeMode::kOff, false, false, false));
 }
 
+TEST(DXGISharedTest, FreshRuntimeOwnedStreamlineNoFGKeepsVisibleOverlayWorkLive) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 1, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 1, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 8, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 8, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 9, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(
+        true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 9, 8));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(
+        false, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 1, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(
+        false, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 1, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(
+        true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 1, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(
+        true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, 1, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, 1, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, 1, 8));
+}
+
 TEST(DXGISharedTest, FFXPresentCallbackStallAllowsNormalOverlayRendering) {
     // When the FFX present callback is reported as stalled, normal overlay
     // fallback is allowed only after fresh direct FFX/callback proof.  A stale
@@ -1137,33 +1210,47 @@ TEST(DXGISharedTest, NativeFSRTimeoutOverrideRequiresSafeCallbackStallFallback) 
         true, true, true, true));
 }
 
-TEST(DXGISharedTest, ExplicitNativeFSROffAllowsProvenStalledCallbackNormalOverlayFallback) {
+TEST(DXGISharedTest, ExplicitNativeFSROffKeepsSeparateOverlaySuppressedDuringRetainedRuntimePath) {
     // GTA menu/suspend paths explicitly configure native FSR FG off while the
-    // FFX context and callback bridge remain alive. The missing callback is
-    // expected in that state; direct callback/API proof lets CE keep drawing on
-    // the normal game Present path while FG is suspended.
+    // FFX context and callback bridge remain alive. That state should keep the
+    // already-retained callback path authoritative instead of using callback
+    // proof as permission to wake normal DX12 overlay GPU work.
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(true, false));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(false, true));
 
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, false, true, false, false, 0, true));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, false, false, true, false, 0, true));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, true, false, false, true, 0, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, false, false, false, false, 0, true));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         false, false, ce::fg_runtime::RuntimeMode::kOff, false, true,
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
             true, false, false, true, false, 0, true)));
 
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
         true, false, true,
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
             true, false, false, true, false, 0, true)));
+}
+
+TEST(DXGISharedTest, DisabledNativeFSRConfigureRetainsExistingCallbackBridgeOnlyAfterEnabledConfigure) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(true, false, true,
+                                                                                                  false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(false, false, true,
+                                                                                                   false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(true, true, true,
+                                                                                                  false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(true, false, false,
+                                                                                                   false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(true, false, true,
+                                                                                                  true));
 }
 
 TEST(DXGISharedTest, D3D12FactoryWrapperBypassesFrameGenerationRuntimeSwapchains) {
@@ -1180,6 +1267,20 @@ TEST(DXGISharedTest, D3D12FactoryWrapperBypassesFrameGenerationRuntimeSwapchains
         true, false, false, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
         true, false, false, false, true, ce::fg_runtime::RuntimeMode::kFSRFG));
+}
+
+TEST(DXGISharedTest, DXGIFactoryWrapperBypassesFrameGenerationRuntimeFactories) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(
+        false, false, false, ce::fg_runtime::RuntimeMode::kOff));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(
+        true, false, false, ce::fg_runtime::RuntimeMode::kOff));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(
+        false, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(
+        false, false, true, ce::fg_runtime::RuntimeMode::kFSRFG));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(
+        false, false, false, ce::fg_runtime::RuntimeMode::kDLSSFG));
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackProofIsScopedToCurrentRuntimeTakeover) {
@@ -1243,6 +1344,19 @@ TEST(DXGISharedTest, FFXPresentCallbackOverlayBridgeTrustsDirectFFXEvidenceWitho
         false, false, false, ce::fg_runtime::RuntimeMode::kOff));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBridgeOverlayViaFFXPresentCallback(
         false, false, false, ce::fg_runtime::RuntimeMode::kDLSSFG));
+}
+
+TEST(DXGISharedTest, FFXPresentCallbackMirrorsOverlayToCurrentBackbufferOnlyForNonGeneratedFrames) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldMirrorFFXPresentCallbackOverlayToCurrentBackBuffer(
+        false, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldMirrorFFXPresentCallbackOverlayToCurrentBackBuffer(
+        true, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldMirrorFFXPresentCallbackOverlayToCurrentBackBuffer(
+        false, false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldMirrorFFXPresentCallbackOverlayToCurrentBackBuffer(
+        false, true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldMirrorFFXPresentCallbackOverlayToCurrentBackBuffer(
+        false, true, true, false));
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackFallbackCopyOnlyRunsWithoutRuntimeCompositionCallback) {
@@ -1432,14 +1546,18 @@ TEST(DXGISharedTest, ExplicitNativeFSROffEndsRuntimeOwnedTeardownWhenQueueReturn
 
 TEST(DXGISharedTest, DisabledNativeFSRConfigurePreservesCallbackOwnedPresentPath) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
-        true, false, false));
+        true, false, false, true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
-        false, true, false));
+        false, true, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
-        false, false, true));
+        false, false, true, false));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
-        false, false, false));
+        true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
+        false, false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
+        false, false, false, false));
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackBridgeInstallsOnlyForEnabledFrameGenerationConfigure) {
@@ -1466,6 +1584,20 @@ TEST(DXGISharedTest, NativeFSRDisabledConfigureStartupArmingRequiresFreshRuntime
                                                                                                true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatNativeFSRDisabledConfigureAsStartupArming(true, false, true, true,
                                                                                                true, true));
+}
+
+TEST(DXGISharedTest, RuntimeOwnedSwapchainNeedsNativeFSRProofBeforeNativePresentPath) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainAsNativeFSRPresentPath(true, true, false));
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainAsNativeFSRPresentPath(true, false, true));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainAsNativeFSRPresentPath(true, false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainAsNativeFSRPresentPath(false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainAsNativeFSRPresentPath(false, false, true));
 }
 
 TEST(DXGISharedTest, OfficialFFXTakeoverDefersHeavySideEffectsUntilEnabledConfigure) {
@@ -1657,6 +1789,14 @@ TEST(DXGISharedTest, InactiveRuntimeOwnedSwapchainInitWaitsForCommandQueueToSett
                                                                                               true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
                                                                                               true, true));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
+        false, false, true, true, true, false));
+}
+
+TEST(DXGISharedTest, D3D12InjectionProbeDoesNotAddFixedStartupDelay) {
+    EXPECT_TRUE(ce::injection_policy::ShouldInjectAfterGraphicsProbe(false));
+    EXPECT_TRUE(ce::injection_policy::ShouldInjectAfterGraphicsProbe(true));
 }
 
 TEST(DXGISharedTest, ReleasingSwapchainWrapperSkipsOptionalDXGIDestructorMutation) {

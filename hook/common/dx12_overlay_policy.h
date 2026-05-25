@@ -156,6 +156,32 @@ inline bool ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(bool swapch
     return swapchainKnownThirdPartyOverlay;
 }
 
+inline bool ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(bool hasOutputWindow, bool outputWindowVisible) {
+    // Games and overlay/runtime stacks can create helper swapchains on hidden
+    // tool windows. Rendering CE's DX12 overlay into those auxiliary Presents
+    // can perturb the real swapchain's runtime state, while a hidden window can
+    // never display the overlay to the user.
+    return hasOutputWindow && !outputWindowVisible;
+}
+
+inline bool ShouldSkipDX12CreateSwapchainSideEffectsForInvisibleWindowSwapchain(bool hasOutputWindow,
+                                                                                bool outputWindowVisible) {
+    // Hidden helper swapchains must not refresh the global Present hook target,
+    // start transition cooldowns, or replace the authoritative swapchain queue.
+    // The matching Present path also skips them, but create-time side effects
+    // are enough to poison the next visible game Present if we do not filter
+    // them here too.
+    return hasOutputWindow && !outputWindowVisible;
+}
+
+inline bool ShouldSuppressQueueTrackingForCEOverlaySubmission(bool insideCEOverlaySubmission) {
+    // CE overlay command lists are bookkeeping side effects, not proof of which
+    // queue the game or FG runtime is using. Some runtimes unwrap or forward our
+    // submit to an internal queue that re-enters the ECL hook, so accepting it as
+    // authoritative can poison the next Present path.
+    return insideCEOverlaySubmission;
+}
+
 inline bool ShouldKeepStartupBlockingOverlaySwapchainBypass(bool swapchainKnownThirdPartyOverlay,
                                                             bool swapchainTaggedByStartupBlockingOverlay,
                                                             bool presentCallerFromTaggedStartupBlockingOverlay) {
@@ -222,6 +248,14 @@ inline bool ShouldBypassDXGISwapchainWrapperForFrameGenerationRuntime(
            fg_runtime::RuntimeModeUsesFSR(runtimeMode);
 }
 
+inline bool ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(bool callerFromStreamlineModule,
+                                                                    bool streamlineSupportPresent,
+                                                                    bool fsrSupportPresent,
+                                                                    fg_runtime::RuntimeMode runtimeMode) {
+    return callerFromStreamlineModule || streamlineSupportPresent || fsrSupportPresent ||
+           fg_runtime::RuntimeModeUsesStreamline(runtimeMode) || fg_runtime::RuntimeModeUsesFSR(runtimeMode);
+}
+
 inline bool ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
     bool authoritativeStreamlineRuntimeQueue, bool queueMatchesCurrentSwapchainQueue) {
     return authoritativeStreamlineRuntimeQueue && !queueMatchesCurrentSwapchainQueue;
@@ -280,12 +314,12 @@ inline bool ShouldHookSwapchainQueueVTableForFrameGenerationRuntime(bool hasOrig
         return false;
     }
 
-    // Native FSR runtime queues stay unhooked to preserve the timing-sensitive
-    // path that previously froze inside ffxQuery. Authoritative Streamline
-    // runtime handoffs are different: later DLSS activation can migrate the
-    // live swapchain onto a new queue/device, and without ECL visibility on that
-    // queue CE can get stranded on wrapper-only state.
-    return authoritativeStreamlineRuntimeQueue;
+    // Runtime-owned queues stay unhooked. Native FSR is timing-sensitive, and
+    // Streamline can expose wrapped/proxy queues whose vtables are not safe to
+    // patch during startup handoff. CE must observe these queues via swapchain,
+    // Present, and SDK state instead of mutating their ECL vtables.
+    (void)authoritativeStreamlineRuntimeQueue;
+    return false;
 }
 
 enum class SwapchainOverlayRoutingDecision {
@@ -392,6 +426,29 @@ inline int ResolveTransitionCooldownFrames(int existingCooldownFrames, int reque
     }
 
     return existingCooldownFrames > requestedCooldownFrames ? existingCooldownFrames : requestedCooldownFrames;
+}
+
+inline bool ShouldStartFrameGenerationTransitionCooldown(fg_runtime::RuntimeMode previousRuntimeMode,
+                                                         fg_runtime::RuntimeMode nextRuntimeMode,
+                                                         bool previousEffectiveFGActive,
+                                                         bool nextEffectiveFGActive,
+                                                         bool previousStreamlineFGSignal,
+                                                         bool nextStreamlineFGSignal) {
+    if (previousStreamlineFGSignal != nextStreamlineFGSignal) {
+        return true;
+    }
+
+    if (previousEffectiveFGActive != nextEffectiveFGActive) {
+        return true;
+    }
+
+    const bool previousActualGenerated = fg_runtime::IsActualGeneratedFrameMode(previousRuntimeMode);
+    const bool nextActualGenerated = fg_runtime::IsActualGeneratedFrameMode(nextRuntimeMode);
+    if (previousActualGenerated || nextActualGenerated) {
+        return previousRuntimeMode != nextRuntimeMode;
+    }
+
+    return false;
 }
 
 // Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown
@@ -605,9 +662,37 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     return !ffxPresentCallbackFallbackAllowed;
 }
 
+inline bool ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(bool runtimeOwnsSwapchain,
+                                                                             bool streamlineFGRunning,
+                                                                             fg_runtime::RuntimeMode runtimeMode,
+                                                                             uint32_t observedPresentCount,
+                                                                             uint32_t requiredSettlePresents) {
+    (void)runtimeOwnsSwapchain;
+    (void)streamlineFGRunning;
+    (void)runtimeMode;
+    (void)observedPresentCount;
+    (void)requiredSettlePresents;
+    // A visible Streamline-owned no-FG swapchain is still ordinary game
+    // presentation and should get the overlay immediately. Hidden helper
+    // swapchains are filtered at the top-level DXGI Present detour before any
+    // CE state mutation, so no additional visible-swapchain settle blackout is
+    // needed here.
+    return false;
+}
+
+inline bool ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(bool runtimeOwnsSwapchain,
+                                                                       bool streamlineFGRunning,
+                                                                       fg_runtime::RuntimeMode runtimeMode,
+                                                                       uint32_t observedPresentCount,
+                                                                       uint32_t requiredSettlePresents) {
+    return ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(
+        runtimeOwnsSwapchain, streamlineFGRunning, runtimeMode, observedPresentCount, requiredSettlePresents);
+}
+
 inline bool ShouldEvaluateFFXPresentCallbackFallback(bool ffxPresentCallbackStalled,
-                                                     bool explicitNativeFSROffPendingRuntimeOwnedTeardown) {
-    return ffxPresentCallbackStalled || explicitNativeFSROffPendingRuntimeOwnedTeardown;
+                                                      bool explicitNativeFSROffPendingRuntimeOwnedTeardown) {
+    (void)explicitNativeFSROffPendingRuntimeOwnedTeardown;
+    return ffxPresentCallbackStalled;
 }
 
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
@@ -621,13 +706,13 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     }
 
     // When a game explicitly disables native FSR FG while keeping the FFX
-    // context/callback bridge alive (GTA menu/suspend path), the callback may
-    // legitimately go quiet before it reaches the generic stall threshold.
-    // That is the moment where the normal game Present path should be safe
-    // again, but only if this exact runtime handoff has direct callback/API
-    // proof or a stable same-queue progress proof.
+    // context/callback bridge alive (GTA menu/suspend path), the runtime-owned
+    // presentation path can still reject unexpected normal DX12 overlay
+    // submissions. Keep drawing through the retained FFX callback until
+    // ownership actually unwinds instead of using callback proof as permission
+    // to wake the separate normal overlay path.
     if (explicitNativeFSROffPendingRuntimeOwnedTeardown) {
-        return directFFXApiConfirmation || currentFFXPresentCallbackProof || progressResolvedStableOverlayProof;
+        return false;
     }
 
     // GTA Enhanced's official AMD FFX path can progress far enough to prove
@@ -644,7 +729,7 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
 }
 
 inline bool IsFFXPresentCallbackProofCurrent(ULONGLONG lastCallbackTickMs, ULONGLONG swapchainQueueCaptureTimeMs,
-                                             ULONGLONG progressAssumedSinceMs) {
+                                              ULONGLONG progressAssumedSinceMs) {
     if (lastCallbackTickMs == 0) {
         return false;
     }
@@ -653,6 +738,19 @@ inline bool IsFFXPresentCallbackProofCurrent(ULONGLONG lastCallbackTickMs, ULONG
         proofSinceMs = progressAssumedSinceMs;
     }
     return proofSinceMs == 0 || lastCallbackTickMs >= proofSinceMs;
+}
+
+inline bool ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(bool recognizedFrameGenerationConfigure,
+                                                                     bool frameGenerationEnabled,
+                                                                     bool hasExistingBridge,
+                                                                     bool disabledStartupArmingConfigure) {
+    // Disabled startup-arming packets before the first enabled configure must
+    // stay unmodified. Once an enabled configure already installed the bridge,
+    // though, later OFF/suspend configures should keep that same bridge alive
+    // so menu/loading suspensions still render overlay through FFX's safe
+    // callback point instead of falling back to normal DX12 overlay submits.
+    return recognizedFrameGenerationConfigure && !frameGenerationEnabled && hasExistingBridge &&
+           !disabledStartupArmingConfigure;
 }
 
 inline bool ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
@@ -726,15 +824,18 @@ inline bool ShouldTreatNativeFSRDisabledConfigureAsStartupArming(bool recognized
 
 inline bool ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(bool runtimeOwnsSwapchain,
                                                                                bool runtimeOwnedNativeFGPresentPath,
-                                                                               bool retainedPresentCallbackBridge) {
+                                                                               bool retainedPresentCallbackBridge,
+                                                                               bool hasDirectFFXApiConfirmation) {
     // A disabled configure can be a transient FSR suspension packet while the
     // official runtime still owns presentation through its present callback.
-    // Preserve the native-FG Present ownership latch whenever either the queue
-    // detector, the stronger callback/progress proof, or an already-installed
-    // callback bridge says that path is still in charge; later queue return,
-    // context teardown, or explicit bridge teardown decides when normal injected
-    // overlay work is safe again.
-    return runtimeOwnsSwapchain || runtimeOwnedNativeFGPresentPath || retainedPresentCallbackBridge;
+    // Preserve the native-FG Present ownership latch whenever the stronger
+    // callback/progress proof, an already-installed callback bridge, or prior
+    // direct enabled FFX API confirmation says that path is still in charge.
+    // A cold disabled setup packet on a Streamline/no-FG runtime-owned
+    // swapchain is not enough proof by itself; treating it as FSR teardown
+    // hides the normal overlay path before FSR ever enabled.
+    return runtimeOwnedNativeFGPresentPath || retainedPresentCallbackBridge ||
+           (runtimeOwnsSwapchain && hasDirectFFXApiConfirmation);
 }
 
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
@@ -776,6 +877,18 @@ inline bool ShouldBridgeOverlayViaFFXPresentCallback(bool runtimeOwnedNativeFGPr
     // runtime-owned-swapchain detector, so direct FFX/FSR evidence is enough.
     return runtimeOwnedNativeFGPresentPath || authoritativeFSRActive || hasDirectFFXApiConfirmation ||
            fg_runtime::RuntimeModeUsesFSR(runtimeMode);
+}
+
+inline bool ShouldMirrorFFXPresentCallbackOverlayToCurrentBackBuffer(bool generatedFrame,
+                                                                     bool currentBackBufferAvailable,
+                                                                     bool outputBackBufferAvailable,
+                                                                     bool currentDiffersFromOutput) {
+    // During native-FSR suspension/menu frames some integrations keep invoking
+    // the FFX present callback, but present the current game backbuffer instead
+    // of the callback output buffer. Mirroring only for non-generated frames
+    // keeps active generated-frame composition on the runtime output path while
+    // preserving overlay visibility during suspend/resume.
+    return !generatedFrame && currentBackBufferAvailable && outputBackBufferAvailable && currentDiffersFromOutput;
 }
 
 inline bool ShouldTreatFormatAsDefinitelyHDR(int dxgiFormat) {
@@ -2080,6 +2193,17 @@ inline bool ShouldTreatNativeFSRSwapchainAsRuntimeOwnedForConfigure(bool runtime
     // safely claimed the official AMD runtime swapchain queue. Keep that packet
     // in the startup-arming path instead of treating it as a real OFF.
     return runtimeOwnsSwapchain || protectedOfficialFFXStartupPending;
+}
+
+inline bool ShouldTreatRuntimeOwnedSwapchainAsNativeFSRPresentPath(bool runtimeOwnsSwapchain,
+                                                                   bool directFFXApiConfirmation,
+                                                                   bool nativeFSRStartupArmingPending) {
+    // FSR context creation alone is not proof that native FSR owns presentation:
+    // some games create a frame-generation context while still configured OFF.
+    // Treat a runtime-owned swapchain as native-FSR presentation only after a
+    // direct enabled configure, or while an explicit native-FSR startup arming
+    // path is pending.
+    return runtimeOwnsSwapchain && (directFFXApiConfirmation || nativeFSRStartupArmingPending);
 }
 
 inline bool ShouldClearStaleNativeFGPresentOwnershipOnExplicitStreamlineComeback(

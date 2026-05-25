@@ -20,6 +20,7 @@ struct IDXGISwapChain;
 extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 #include "../apis/ddraw_hook.h"
 #include "../apis/dx12_hook.h"  // Access to g_DX12Hook implementation
+#include "../common/dx12_overlay_policy.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
 #include "../common/streamline_runtime_policy.h"
@@ -41,6 +42,34 @@ static bool IsCallerFromStreamlineModule(const void* returnAddress) {
     char callerPath[MAX_PATH] = {};
     return GetModuleFileNameA(callerMod, callerPath, sizeof(callerPath)) &&
            ce::streamline_runtime_policy::IsStreamlineModuleNameForFeatureHooking(callerPath);
+}
+
+static bool IsStreamlineRuntimeLoadedForFactoryBypass() {
+    return GetModuleHandleA("sl.interposer.dll") != nullptr || GetModuleHandleA("sl.dlss_g.dll") != nullptr ||
+           GetModuleHandleA("sl.common.dll") != nullptr;
+}
+
+static bool ShouldReturnUnwrappedDXGIFactoryForFrameGenerationRuntime(const void* returnAddress,
+                                                                      const char* functionName) {
+    const bool callerFromStreamline = IsCallerFromStreamlineModule(returnAddress);
+    const bool streamlinePresent = g_FGCompat.HasStreamlineSupport() || IsStreamlineRuntimeLoadedForFactoryBypass();
+    const bool fsrPresent = g_FGCompat.HasFSRFGSupport();
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const bool bypass = ce::dx12_overlay_policy::ShouldBypassDXGIFactoryWrapperForFrameGenerationRuntime(
+        callerFromStreamline, streamlinePresent, fsrPresent, runtimeMode);
+    if (bypass) {
+        static std::atomic<int> s_factoryBypassLogCount{0};
+        const int logCount = s_factoryBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 256) == 0) {
+            WrapperLog(
+                "%s: Returning unwrapped DXGI factory for frame-generation runtime compatibility "
+                "(callerSL=%d streamlinePresent=%d fsrPresent=%d runtime=%s)",
+                functionName ? functionName : "CreateDXGIFactory", callerFromStreamline ? 1 : 0,
+                streamlinePresent ? 1 : 0, fsrPresent ? 1 : 0,
+                ce::fg_runtime::GetRuntimeModeName(runtimeMode));
+        }
+    }
+    return bypass;
 }
 #include "d3d11_device_wrap.h"
 #include "d3d11_devicecontext_wrap.h"

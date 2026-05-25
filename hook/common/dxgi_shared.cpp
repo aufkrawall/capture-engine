@@ -336,6 +336,35 @@ static void ReleaseResize() {
     }
 }
 
+static bool ShouldBypassDX12InvisibleWindowPresent(IDXGISwapChain* pSwapChain, const char* presentName) {
+    if (!pSwapChain) {
+        return false;
+    }
+
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    if (FAILED(pSwapChain->GetDesc(&desc))) {
+        return false;
+    }
+
+    const bool hasOutputWindow = desc.OutputWindow != nullptr;
+    const bool outputWindowVisible = hasOutputWindow && IsWindowVisible(desc.OutputWindow) != FALSE;
+    if (!ce::dx12_overlay_policy::ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(
+            hasOutputWindow, outputWindowVisible)) {
+        return false;
+    }
+
+    static std::atomic<int> s_invisibleWindowPresentBypassLogCount{0};
+    const int logCount = s_invisibleWindowPresentBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 256) == 0) {
+        HookLogImportant(
+            "%s: Bypassing CE DX12 Present processing for invisible-window helper swapchain "
+            "(sc=%p hwnd=%p size=%ux%u count=%d)",
+            presentName ? presentName : "DetourPresent", pSwapChain, desc.OutputWindow, desc.BufferDesc.Width,
+            desc.BufferDesc.Height, logCount + 1);
+    }
+    return true;
+}
+
 // Original function pointers
 typedef HRESULT(STDMETHODCALLTYPE* PFN_Present)(IDXGISwapChain*, UINT, UINT);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_Present1)(IDXGISwapChain*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
@@ -1329,8 +1358,8 @@ static bool ShouldKeepSLPresentRoutingDisabledNow(ce::fg_runtime::RuntimeMode* r
     if (runtimeOwnedNativeFGPresentPathOut) {
         *runtimeOwnedNativeFGPresentPathOut = runtimeOwnedNativeFGPresentPath;
     }
-    return DXGIShared::ShouldKeepSLPresentRoutingDisabledForNativeFG(ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode),
-                                                                     runtimeOwnedNativeFGPresentPath);
+    return DXGIShared::ShouldKeepSLPresentRoutingDisabledForRuntimeState(runtimeMode,
+                                                                         runtimeOwnedNativeFGPresentPath);
 }
 
 // Detect if SL has hooked the Present function with an E9 JMP or FF 25
@@ -1413,7 +1442,8 @@ static void DetectSLPresentHook() {
         if (suppressedNum <= 5 || (suppressedNum % 500) == 0) {
             HookLogImportant(
                 "DetectSLPresentHook: SL %s JMP detected at oPresent=%p but SL routing NOT re-enabled "
-                "(native FG path still owns Present routing, suppressed #%d, runtime=%s runtimeOwnedNativeFG=%d)",
+                "(native FG path owns Present routing, suppressed #%d, runtime=%s "
+                "runtimeOwnedNativeFG=%d)",
                 isE9 ? "E9" : "FF25", oPresent, suppressedNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode),
                 runtimeOwnedNativeFGPresentPath ? 1 : 0);
         }
@@ -1574,6 +1604,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     const APIType api = DetectAPIType(pSwapChain);
+    if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent")) {
+        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    }
+
     // Capture the caller here, not in a helper. We need the code that called
     // into DetourPresent, not the helper's own return address inside this DLL.
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
@@ -1990,7 +2024,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             s_wrappedPassCount++;
             HookLogImportant("DetourPresent: WRAPPED swapchain early return #%d", s_wrappedPassCount);
         }
-        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        HRESULT wrappedHr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        if (api == APIType::D3D12) {
+            InvokeDX12FlushDeferredSignal();
+        }
+        if (SUCCEEDED(wrappedHr)) {
+            g_SharedFpsLimiter.ApplyPostPresent();
+        }
+        return wrappedHr;
     }
 
     if (inWrapperPresent) {
@@ -1999,7 +2040,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             s_inWrapperPassCount++;
             HookLogImportant("DetourPresent: IsInWrapperPresent early return #%d", s_inWrapperPassCount);
         }
-        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        HRESULT wrapperHr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        if (api == APIType::D3D12) {
+            InvokeDX12FlushDeferredSignal();
+        }
+        if (SUCCEEDED(wrapperHr)) {
+            g_SharedFpsLimiter.ApplyPostPresent();
+        }
+        return wrapperHr;
     }
 
     // Re-entrant Present call. When SL is loaded, calling oPresent enters SL's
@@ -2356,7 +2404,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             int latchNum = ++s_fsrlatchCount;
             if (latchNum <= 5) {
                 HookLogImportant(
-                    "DetourPresent: SL routing was active while native FG still owned Present routing — "
+                    "DetourPresent: SL routing was active while native FG owned Present routing — "
                     "force-disabling SL routing (latch #%d, runtime=%s runtimeOwnedNativeFG=%d). Present will go "
                     "through trampoline directly.",
                     latchNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), runtimeOwnedNativeFGPresentPath ? 1 : 0);
@@ -2425,6 +2473,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     const APIType api = DetectAPIType(pSwapChain);
+    if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent1")) {
+        return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    }
+
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
     char detourCallerModulePath[MAX_PATH] = {};
     const bool callerFromThirdPartyOverlay =
@@ -2949,7 +3001,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             int latchNum = ++s_present1FsrlatchCount;
             if (latchNum <= 5) {
                 HookLogImportant(
-                    "DetourPresent1: SL routing was active while native FG still owned Present routing — "
+                    "DetourPresent1: SL routing was active while native FG owned Present routing — "
                     "force-disabling SL routing (latch #%d, runtime=%s runtimeOwnedNativeFG=%d). Present1 will go "
                     "through trampoline directly.",
                     latchNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), runtimeOwnedNativeFGPresentPath ? 1 : 0);

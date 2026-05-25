@@ -6,6 +6,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <mutex>
 #include <string>
 
 namespace testapp {
@@ -271,8 +272,10 @@ inline bool PrimeWindowForBenchmark(HWND hwnd, bool fullscreen, int clientWidth,
 
 // FG test-app logging — writes to both stdout and a .log file next to the exe.
 inline FILE* g_LogFile = nullptr;
+inline std::mutex g_LogMutex;
 
 inline void OpenLogFile() {
+    std::lock_guard<std::mutex> lock(g_LogMutex);
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     wchar_t* ext = wcsrchr(path, L'.');
@@ -282,6 +285,7 @@ inline void OpenLogFile() {
 }
 
 inline void CloseLogFile() {
+    std::lock_guard<std::mutex> lock(g_LogMutex);
     if (g_LogFile) {
         fclose(g_LogFile);
         g_LogFile = nullptr;
@@ -294,6 +298,7 @@ inline void Log(const char* fmt, ...) {
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+    std::lock_guard<std::mutex> lock(g_LogMutex);
     printf("%s", buf);
     if (g_LogFile) {
         fprintf(g_LogFile, "%s", buf);
@@ -303,6 +308,7 @@ inline void Log(const char* fmt, ...) {
 }
 
 inline void LogFlush() {
+    std::lock_guard<std::mutex> lock(g_LogMutex);
     fflush(stdout);
     if (g_LogFile)
         fflush(g_LogFile);

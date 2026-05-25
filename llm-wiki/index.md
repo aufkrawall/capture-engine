@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-24 (updated: build 0.1.3529 / tests 0.1.3530 - DX12 FG swapchain teardown hardening, minimal-first dumps, and hardened switch-app stress)
+Last cross-checked: 2026-05-25 (updated: build 0.1.3578 / tests 0.1.3579 - DX12 FG switch-app startup pacing diagnostics, opt-in heavy startup stress, tearing-aware DLSS presents, and async runtime preload; injected crash investigation still active)
 
 Primary sources:
 - `AGENTS.md`

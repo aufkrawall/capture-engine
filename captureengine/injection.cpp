@@ -1,4 +1,5 @@
 #include "injection.h"
+#include "injection_policy.h"
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <algorithm>
@@ -675,7 +676,7 @@ void InjectionManager::LaunchDelayedInjectionThread(const std::shared_ptr<Inject
                             if (GetModuleFileNameExA(hProcess, hMods[j], szModName, sizeof(szModName))) {
                                 if (strstr(szModName, "d3d12.dll")) {
                                     d3d12Loaded = true;
-                                    LogInfo("[%s] %s (PID: %lu) - D3D12.dll detected, waiting for init...",
+                                    LogInfo("[%s] %s (PID: %lu) - D3D12.dll detected, injecting without fixed delay...",
                                             source.c_str(), name.c_str(), (unsigned long)pid);
                                     break;
                                 }
@@ -701,9 +702,7 @@ void InjectionManager::LaunchDelayedInjectionThread(const std::shared_ptr<Inject
                 }
                 CloseHandle(hProcess);
 
-                if (d3d12Loaded && i >= 10) {
-                    ready = true;
-                } else if (!d3d12Loaded) {
+                if (ce::injection_policy::ShouldInjectAfterGraphicsProbe(d3d12Loaded)) {
                     ready = true;
                 }
 

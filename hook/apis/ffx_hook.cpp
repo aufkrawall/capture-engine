@@ -387,6 +387,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     bool installedPresentCallbackBridge = false;
     bool retainedExistingBridgeForDisabledConfigure = false;
     bool retainedAlreadyBridgedPresentCallback = false;
+    bool retainedBridgeForDisabledConfigure = false;
     bool disabledStartupArmingConfigure = false;
     if (recognizedFGConfigure) {
         localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
@@ -395,9 +396,10 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
             DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration(), g_FGCompat.IsFSRFGApiActive(),
             g_FGCompat.HasDirectFFXApiConfirmation());
         DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(localConfig.swapChain);
+        void* bridgeKey = nullptr;
         if (ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(
                 true, localConfig.frameGenerationEnabled != 0)) {
-            void* bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
+            bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
             if (DX12_IsFFXPresentCallbackBridgeCallback(localConfig.presentCallback)) {
                 retainedAlreadyBridgedPresentCallback = true;
                 if (!localConfig.presentCallbackUserContext) {
@@ -420,8 +422,17 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
             descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
             installedPresentCallbackBridge = !retainedAlreadyBridgedPresentCallback;
         } else {
+            bridgeKey = GetPresentCallbackBridgeKey(context);
             retainedExistingBridgeForDisabledConfigure =
-                HasTrackedPresentCallbackBridgeKey(GetPresentCallbackBridgeKey(context));
+                HasTrackedPresentCallbackBridgeKey(bridgeKey) && DX12_HasFFXPresentCallbackBridge(bridgeKey);
+            if (ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(
+                    true, localConfig.frameGenerationEnabled != 0, retainedExistingBridgeForDisabledConfigure,
+                    disabledStartupArmingConfigure)) {
+                localConfig.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
+                localConfig.presentCallbackUserContext = bridgeKey;
+                descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
+                retainedBridgeForDisabledConfigure = true;
+            }
         }
     }
 
@@ -460,6 +471,19 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
                 context, static_cast<unsigned long long>(originalDesc->frameID),
                 originalDesc->frameGenerationEnabled ? 1 : 0, disabledStartupArmingConfigure ? 1 : 0,
                 reinterpret_cast<void*>(originalDesc->presentCallback), originalDesc->presentCallbackUserContext,
+                logCount + 1);
+        }
+    } else if (retainedBridgeForDisabledConfigure) {
+        static std::atomic<int> s_retainedDisabledPresentCallbackBridgeLogCount{0};
+        const int logCount =
+            s_retainedDisabledPresentCallbackBridgeLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
+            HookLogImportant(
+                "FFX Hook: Retained existing DX12 overlay present-callback bridge for disabled native-FSR configure "
+                "(context=%p frameID=%llu originalPresent=%p bridgeUserCtx=%p log=%d)",
+                context, static_cast<unsigned long long>(originalDesc->frameID),
+                reinterpret_cast<void*>(originalDesc->presentCallback), localConfig.presentCallbackUserContext,
                 logCount + 1);
         }
     } else if (disabledStartupArmingConfigure) {
@@ -509,8 +533,9 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
                 context, static_cast<unsigned long long>(parsed.frameId));
         }
     }
-    const bool retainedBridgeForConfigure =
-        !parsed.enabled && (retainedExistingBridgeForDisabledConfigure || retainedAlreadyBridgedPresentCallback);
+    const bool retainedBridgeForConfigure = !parsed.enabled && (retainedExistingBridgeForDisabledConfigure ||
+                                                                retainedAlreadyBridgedPresentCallback ||
+                                                                retainedBridgeForDisabledConfigure);
     DX12_OnNativeFSRFrameGenerationConfigured(parsed.enabled, retainedBridgeForConfigure);
     g_FGCompat.SetFSRFGActive(parsed.enabled);
     ce::fg_session::EmitFGEvent(

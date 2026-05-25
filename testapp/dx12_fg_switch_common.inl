@@ -26,6 +26,7 @@ static void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
 static void WaitForSwapChainFrameLatency() {
     if (g_FrameLatencyWaitHandle) {
         static bool s_loggedFsrNonBlockingWait = false;
+        static bool s_loggedNativeWaitTimeout = false;
         if (g_SwapChainOwner == SwapChainOwner::FSR) {
             const DWORD probe = WaitForSingleObject(g_FrameLatencyWaitHandle, 0);
             if (!s_loggedFsrNonBlockingWait) {
@@ -39,7 +40,15 @@ static void WaitForSwapChainFrameLatency() {
             return;
         }
         s_loggedFsrNonBlockingWait = false;
-        WaitForSingleObject(g_FrameLatencyWaitHandle, INFINITE);
+        const DWORD waitResult = WaitForSingleObject(g_FrameLatencyWaitHandle, 100);
+        if (waitResult == WAIT_TIMEOUT && !s_loggedNativeWaitTimeout) {
+            s_loggedNativeWaitTimeout = true;
+            testapp::Log("[FG-DIAG] WARN native/proxy frame-latency wait timed out once; continuing to avoid a "
+                         "self-induced startup stall (waitable=%p mode=%s enabled=%d suspended=%d owner=%s)\n",
+                         g_FrameLatencyWaitHandle, ModeName(g_CurrentMode), g_FsrEnabled ? 1 : 0,
+                         g_FsrSuspended ? 1 : 0, SwapChainOwnerName(g_SwapChainOwner));
+            testapp::LogFlush();
+        }
     }
 }
 

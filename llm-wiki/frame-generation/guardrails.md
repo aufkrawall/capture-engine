@@ -1,6 +1,6 @@
 # Frame Generation Switching
 
-Last cross-checked: 2026-05-24
+Last cross-checked: 2026-05-25
 
 Primary sources:
 - `AGENTS.md`
@@ -23,7 +23,11 @@ Primary sources:
 - `tests/test_overlay_fg_status_publication.cpp`
 - `testapp/dx12_fg_switch_test.cpp`
 - `testapp/dx12_fg_switch_config.inl`
+- `testapp/dx12_fg_switch_common.inl`
+- `testapp/dx12_fg_switch_fsr.inl`
+- `testapp/dx12_fg_switch_streamline.inl`
 - `testapp/dx12_fg_switch_swapchain.inl`
+- `testapp/testapp_common.h`
 - `installed/captureengine/config.ini`
 - `installed/captureengine/logs/20260521_233919/hook_debug.log`
 - `installed/captureengine/logs/20260413_192027/hook_debug.log`
@@ -41,6 +45,7 @@ Primary sources:
 - `installed/captureengine/logs/20260522_125259/hook_debug.log`
 - `installed/captureengine/logs/20260524_182433/hook_debug.log`
 - `installed/captureengine/logs/20260524_185734/hook_debug.log`
+- `installed/testapp/dx12_fg_switch_test.log`
 
 ## Scope
 This page records current guardrails and tested transition families for no-FG, DLSS FG, and FSR FG switching. The goal is generic support across games, not a pile of title-specific hacks.
@@ -98,6 +103,10 @@ This page records current guardrails and tested transition families for no-FG, D
 - Current-process pre-termination dumps are still narrow, but the policy includes active/recent FG runtime exits as a diagnostic boundary in addition to crash-like NTSTATUS exits. A clean auto-exit from the FG switch app while FG was recently active may therefore produce a `crash_external_fatal_exit_RtlExitUserProcess_00000000_*.dmp`; that is a diagnostic artifact, not by itself evidence of a crash.
 - The DXGI swapchain wrapper destructor must avoid optional DXGI side-channel mutation while the wrapper is being destroyed by its final `Release()`. Talos `installed/captureengine/logs/20260524_182433` stopped immediately after the wrapper's external refs reached zero, before a useful dump was produced. The current policy skips destruction-callback unregister and `IDXGISwapChain::SetPrivateData(WRAPPED_SWAP_CHAIN_GUID, nullptr)` during releasing destruction, while still releasing promoted swapchain interfaces, queue refs, the real swapchain ref, and device refs. Expected diagnostics include `SwapChain: Destroying wrapper`, `Skipping destruction callback unregister during releasing destruction`, and `Skipping private-data clear during releasing destruction`.
 - `dx12_fg_switch_test.exe` now has additional hardening knobs for reproducing real-game FG lifecycle stress: `--duration` / `auto_exit_seconds`, `--startup-recreates` / `startup_native_swapchain_recreate_count`, `--bootstrap-native-swaps` / `bootstrap_native_swapchain_stress_count`, and `--fsr-suspend-interval` / `fsr_suspend_interval_seconds`. Startup recreates exercise native swapchain recreation after FG runtimes have loaded but before FG is enabled. Shutdown isolated native-wrapper probes exercise CE's swapchain-wrapper final-release teardown after SL/FSR cleanup. Keep those probes after FG cleanup; placing isolated native probes before the main Streamline recreate can perturb Streamline's own swapchain creation and produce `E_ACCESSDENIED`, which is test pollution rather than the target overlay fault.
+- `dx12_fg_switch_test.exe` now keeps the heavy startup stress path opt-in by default. Startup native recreate stress, bootstrap native swapchain stress, disabled FSR-context startup probes, and eager initial FG runtime preloads can still be enabled through config/CLI, but a default launch should become visible quickly and only then warm FG runtimes. This avoids masking overlay-injection startup latency with deliberate test-app load stalls while preserving the harder knobs for targeted regressions.
+- The switch app supports asynchronous runtime preload diagnostics. The default path schedules FSR preload after the visible OFF phase and Streamline preload after entering FSR, then joins any outstanding preload threads during cleanup. `testapp/testapp_common.h` logging is thread-safe because preload and render logs can now interleave. Expected diagnostics include `Async FSR runtime preload scheduled`, `Async Streamline preload scheduled`, and matching `finished` lines.
+- DLSS FG in the switch app runs unsynced by default and presents with `DXGI_PRESENT_ALLOW_TEARING` when the swapchain was created with tearing support. Without the flag, a sync-0 DLSS present can fail with `DXGI_ERROR_INVALID_CALL` (`0x887A0001`). FSR/off modes can keep vsync enabled. The swapchain log should include `tearing=1` / flags with `DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING`, and DLSS present diagnostics should show `sync=0 flags=0x200`.
+- The switch app now logs frame-pacing spikes with `[FG-DIAG] Frame pacing spike ...` and a final `[FG-DIAG] Frame pacing summary`. A clean standalone run can still show transition spikes while FG runtimes switch; these spikes are diagnostic evidence for future performance work and should not be conflated with process hangs or overlay crashes.
 - Authoritative `SetFSRFGActive(false)` now also **clears** any pre-existing `heuristicFSRFGActive` flag. A heuristic latched during an earlier queue-change detection window must not survive into the post-FSR teardown / DLSS comeback window, or `ClassifyRuntimeMode()` would keep returning `kFSRFG` and the overlay GPU work would be skipped indefinitely.
 - After a post-FSR Streamline teardown where both the swapchain queue (`scQueue`) and the last known-good PostSL queue (`lastWorkingQ`) are null, the overlay deferral policy now falls back to the primary game queue as a valid recovery signal. This prevents the overlay from being locked out for the full 600-frame grace window when the only proven-safe queue is the original game queue.
 - Build `0.1.2771` adds a **DllMain startup guard** for the Present hook chain. The true root cause of the persistent Talos DLSS FG crash (0xC0000005 RIP=0) was **Present hook interference during SL's DllMain**, not earlier theories about CE wrapping DXGI factories. CE installs Present hooks via **vtable patching** on the D3D12 swapchain (because Steam overlay already has an inline E9 JMP on dxgi!Present, CE uses the vtable hook path). The D3D12 swapchain vtable is **shared by ALL swapchain objects from the same D3D12 factory**, so swapchains created by SL during its DllMain have vtable[8] pointing to CE's DetourPresent. When SL's DllMain calls Present, the call goes through CE's DetourPresent → original dxgi!Present → Steam's inline E9 JMP on dxgi!Present → `gameoverlayrenderer64!OverlayHookD3D3` → crash with RAX=0 (Steam's TLS uninitialized on the SL loader thread). The existing `ShouldForceSteamDX12Bypass` was supposed to prevent this but had a bug: `runtimeMode = kDLSSFG` set by DllMain made `!streamlineFGRunning && runtimeMode != kDLSSFG` evaluate to `false && true == false`, so the bypass was NOT applied. Build `0.1.2771` removes the `runtimeMode != kDLSSFG` condition (now always bypass when SL is loaded and FG not running), adds early bypass in `DetourPresent`/`DetourPresent1` for SL module callers during DllMain, and adds a last-resort bypass fallback in `CallOriginalPresent`.
@@ -125,5 +134,6 @@ This page records current guardrails and tested transition families for no-FG, D
 - Re-check this page after changes to pre-termination dump inline hooks. Forwarded KERNELBASE/kernel32 fatal-exit pairs must not both be hooked at the same time with a shared original pointer.
 - Re-check this page after changes to crash dump attempt order, `.dmp.inprogress` promotion, or active/recent-FG pre-termination capture. A zero-byte `.dmp.inprogress` should be treated as a dump-pipeline regression until proven otherwise.
 - Re-check this page after changes to `CWrapDXGISwapChain` lifetime handling, wrapper private data, or destruction callback registration. Optional DXGI mutation during final wrapper release is intentionally avoided because it can destabilize fragile FSR/Streamline/third-party overlay teardown paths.
+- Re-check this page after changes to switch-app runtime preload, tearing, or pacing instrumentation. Standalone `dx12_fg_switch_test.exe 1280 720 20 --duration 18` on 2026-05-25 exited cleanly with no present errors, but still logged transition-time frame-pacing spikes around runtime swaps.
 - Re-check this page after changes to `dx12_overlay_policy.h`, FG transition tests, or overlay metrics publication behavior.
 - The `20260423_044543` Talos session also surfaced a Streamline internal exception (`0x00008000` in `sl_dlss_g`) during rapid ON/OFF toggling. This is distinct from the older breakpoint-corruption and `std::_Throw_Cpp_error` families. The overlay-deferral fix may reduce its likelihood by shortening the teardown deferral window, but a generic CE-side suppression is not yet known. Re-check if future Talos/GTA traces show the same `0x00008000` exception after build `0.1.2552`.

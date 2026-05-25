@@ -2,6 +2,8 @@
 
 static const wchar_t* kBootstrapNativeSwapchainWindowClass = L"CaptureTestDX12FGSwitchBootstrap";
 
+static bool CheckPresentAllowTearingSupport(IDXGIFactory4* factory);
+
 static LRESULT CALLBACK BootstrapNativeSwapchainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_CLOSE) {
         DestroyWindow(hWnd);
@@ -98,6 +100,9 @@ static void RunBootstrapNativeSwapchainStress() {
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         desc.SampleDesc.Count = 1;
         desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        if (CheckPresentAllowTearingSupport(factory.Get())) {
+            desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
 
         ComPtr<IDXGISwapChain1> swapChain1;
         HRESULT swapHr = factory->CreateSwapChainForHwnd(queue.Get(), probeHwnd, &desc, nullptr, nullptr, &swapChain1);
@@ -140,6 +145,8 @@ static void RunBootstrapNativeSwapchainStress() {
 
 static void ReleaseSwapChainResources() {
     g_FrameLatencyWaitHandle = nullptr;
+    g_SwapChainUsesStreamline = false;
+    g_CurrentSwapChainAllowTearing = false;
     for (auto& renderTarget : g_RenderTargets) {
         renderTarget.Reset();
     }
@@ -148,16 +155,34 @@ static void ReleaseSwapChainResources() {
     g_SwapChainBufferCount = kRequestedBackBuffers;
 }
 
+static bool CheckPresentAllowTearingSupport(IDXGIFactory4* factory) {
+    if (!factory) {
+        return false;
+    }
+
+    ComPtr<IDXGIFactory5> factory5;
+    BOOL allowTearing = FALSE;
+    if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory5))) &&
+        SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing,
+                                                sizeof(allowTearing)))) {
+        return allowTearing != FALSE;
+    }
+    return false;
+}
+
 static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char* reason) {
     ComPtr<IDXGIFactory4> factory;
-    PFun_CreateDXGIFactory1 createFactory = g_SlCreateDXGIFactory1 ? g_SlCreateDXGIFactory1 : CreateDXGIFactory1;
+    PFun_CreateDXGIFactory1 createFactory =
+        (!useFfxSwapChain && g_SlCreateDXGIFactory1) ? g_SlCreateDXGIFactory1 : CreateDXGIFactory1;
+    const bool usingStreamlineFactory = createFactory == g_SlCreateDXGIFactory1 && g_SlCreateDXGIFactory1 != nullptr;
     HRESULT factoryHr = createFactory(IID_PPV_ARGS(&factory));
-    testapp::Log("[FG-DIAG] %s CreateDXGIFactory1(%s) hr=0x%08lx factory=%p\n",
-                 g_SlCreateDXGIFactory1 ? "Streamline" : "Native", reason ? reason : "swapchain",
-                 static_cast<unsigned long>(factoryHr), factory.Get());
+    testapp::Log("[FG-DIAG] %s CreateDXGIFactory1(%s) hr=0x%08lx factory=%p useFfx=%d\n",
+                 usingStreamlineFactory ? "Streamline" : "Native", reason ? reason : "swapchain",
+                 static_cast<unsigned long>(factoryHr), factory.Get(), useFfxSwapChain ? 1 : 0);
     if (FAILED(factoryHr) || !factory) {
         return false;
     }
+    g_TearingSupported = CheckPresentAllowTearingSupport(factory.Get());
 
     DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
     swapChainDesc.BufferCount = kRequestedBackBuffers;
@@ -168,6 +193,9 @@ static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    if (g_TearingSupported) {
+        swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    }
 
     bool usingFfxSwapChain = false;
     if (useFfxSwapChain && g_FfxCreateContext) {
@@ -186,6 +214,8 @@ static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char
     }
 
     g_SwapChainOwner = usingFfxSwapChain ? SwapChainOwner::FSR : SwapChainOwner::Native;
+    g_SwapChainUsesStreamline = usingStreamlineFactory;
+    g_CurrentSwapChainAllowTearing = (swapChainDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
     factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     g_FrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
 
@@ -249,10 +279,11 @@ static bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, const char
 
     testapp::Log(
         "[FG-DIAG] Swapchain ready: reason=%s owner=%s %dx%d buffers=%u requested=%d maxLatency=%u waitable=%d "
-        "format=RGBA8 vsync=%d fullscreen=%d\n",
+        "format=RGBA8 vsync=%d fullscreen=%d streamline=%d tearing=%d flags=0x%x\n",
         reason ? reason : "swapchain", SwapChainOwnerName(g_SwapChainOwner), g_WindowWidth, g_WindowHeight,
         g_SwapChainBufferCount, kRequestedBackBuffers, g_MaxFrameLatency, g_FrameLatencyWaitHandle ? 1 : 0, g_VSync,
-        g_Fullscreen);
+        g_Fullscreen, g_SwapChainUsesStreamline ? 1 : 0, g_CurrentSwapChainAllowTearing ? 1 : 0,
+        swapChainDesc.Flags);
     testapp::LogFlush();
     return true;
 }
@@ -273,7 +304,7 @@ static bool RecreateSwapChain(bool useFfxSwapChain, const char* reason) {
     return ok;
 }
 
-static bool InitDX12(HWND hwnd) {
+static bool InitDX12(HWND hwnd, bool useFfxSwapChain = false, const char* reason = "initial native") {
     PFun_D3D12CreateDevice createDevice = g_SlD3D12CreateDevice ? g_SlD3D12CreateDevice : D3D12CreateDevice;
     HRESULT deviceHr = createDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_Device));
     testapp::Log("[FG-DIAG] %s D3D12CreateDevice hr=0x%08lx device=%p\n",
@@ -297,7 +328,7 @@ static bool InitDX12(HWND hwnd) {
         return false;
     }
 
-    if (!CreateSwapChainResources(hwnd, false, "initial native")) {
+    if (!CreateSwapChainResources(hwnd, useFfxSwapChain, reason)) {
         return false;
     }
     g_Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_CommandAllocators[g_FrameIndex].Get(), nullptr,
