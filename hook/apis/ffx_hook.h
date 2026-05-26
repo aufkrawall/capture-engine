@@ -17,6 +17,11 @@ namespace FFXHook {
 //   - ffx_frameinterpolation_x64.dll
 void Init();
 
+// Register FFX exports with the process-wide GetProcAddress router.
+// This is intentionally separate from Init() so startup can arm the router
+// before any game thread has a chance to cache an unwrapped ffxConfigure.
+void RegisterDynamicHooks();
+
 // Install FFX present callback bridge on all tracked FG contexts.
 // Called when FSR FG activates without a direct ffxConfigure interception
 // (e.g. via Streamline authoritative takeover).  Returns true if bridge

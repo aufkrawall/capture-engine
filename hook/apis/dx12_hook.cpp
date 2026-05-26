@@ -2597,51 +2597,32 @@ static bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const
     const uint32_t processFrameSkips =
         g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire);
     const uint32_t eclPassThroughs = g_ProtectedOfficialFFXStartupECLPassThroughs.load(std::memory_order_acquire);
-    if (!ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+    if (processFrameSkips < ce::dx12_overlay_policy::GetProtectedOfficialFFXStartupProcessFrameProgressThreshold() &&
+        eclPassThroughs < ce::dx12_overlay_policy::GetProtectedOfficialFFXStartupECLProgressThreshold()) {
+        return false;
+    }
+
+    if (ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
             true, false, processFrameSkips, eclPassThroughs)) {
+        // The policy currently forbids progress-only finalization. Keep this
+        // branch as a guardrail if that policy is ever revisited.
         return false;
     }
 
-    if (!g_ProtectedOfficialFFXStartupSwapchainPending.exchange(false, std::memory_order_acq_rel)) {
-        return false;
+    static std::atomic<int> s_protectedOfficialFFXProgressOnlyLogCount{0};
+    const int logCount = s_protectedOfficialFFXProgressOnlyLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 10 || (logCount % 600) == 0) {
+        const ULONGLONG nowMs = GetTickCount64();
+        const ULONGLONG beginMs = g_ProtectedOfficialFFXStartupBeginMs.load(std::memory_order_acquire);
+        HookLogImportant(
+            "DX12: Protected official FFX startup has sustained frame progress but remains quiesced until direct "
+            "ffxConfigure/present-callback proof (source=%s elapsed=%llums processFrameSkips=%u eclPassThroughs=%u "
+            "log=%d)",
+            source && source[0] ? source : "unknown",
+            beginMs ? static_cast<unsigned long long>(nowMs - beginMs) : 0ULL, processFrameSkips, eclPassThroughs,
+            logCount + 1);
     }
-
-    const ULONGLONG nowMs = GetTickCount64();
-    const ULONGLONG beginMs = g_ProtectedOfficialFFXStartupBeginMs.load(std::memory_order_acquire);
-    char deferredModulePath[MAX_PATH] = {};
-    ID3D12CommandQueue* deferredQueue =
-        ConsumeDeferredOfficialFFXTakeoverSideEffects(deferredModulePath, sizeof(deferredModulePath));
-
-    g_FGCompat.SetFSRFGSupportPresent(true);
-    g_FGCompat.SetFSRFGMultiplier(2);
-    g_FGCompat.SetFSRFGActive(true);
-    ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
-    g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.store(true, std::memory_order_release);
-    g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.store(nowMs, std::memory_order_release);
-
-    HookLogImportant(
-        "DX12: Finalizing protected official FFX startup pass-through after sustained frame progress without direct "
-        "ffxConfigure (source=%s elapsed=%llums processFrameSkips=%u eclPassThroughs=%u queue=%p module=%s) — "
-        "normal overlay GPU draw remains guarded until direct ffxConfigure, current FFX present-callback proof, "
-        "or a later stable same-queue progress proof says fallback is safe",
-        source && source[0] ? source : "unknown", beginMs ? static_cast<unsigned long long>(nowMs - beginMs) : 0ULL,
-        processFrameSkips, eclPassThroughs, deferredQueue,
-        deferredModulePath[0] ? deferredModulePath : "official FFX runtime");
-
-    ApplyAuthoritativeFFXTakeoverSideEffects(
-        deferredQueue, deferredModulePath[0] ? deferredModulePath : "official FFX runtime",
-        "protected official FFX startup progressed without direct ffxConfigure");
-    if (deferredQueue) {
-        deferredQueue->Release();
-    }
-
-    SetNativeFSRStartupConfigureArmingPending(false, "protected official FFX startup progress fallback");
-    ResetProtectedOfficialFFXStartupProgressCounters();
-    FFXHook::Init();
-    ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kNativeFSRConfigureOn,
-                                "DX12_ProtectedOfficialFFXStartupProgressFallback", nullptr, nullptr,
-                                ce::fg_runtime::RuntimeMode::kFSRFG, true, false);
-    return true;
+    return false;
 }
 
 static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQueueCaptureEvidence& captureEvidence,
@@ -3245,7 +3226,7 @@ static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
         EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
     HookLogImportant(
         "DX12: FFX present callback appears stalled but normal overlay fallback is unsafe for "
-        "this native FSR handoff until direct ffxConfigure/callback proof or stable same-queue progress proof exists "
+        "this native FSR handoff until direct ffxConfigure/present-callback proof exists "
         "(lastCallback=%llu progressAssumedFor=%llums directFFX=%d explicitNativeOff=%d runtimeOwns=%d "
         "runtime=%s apiFSR=%d nativeFGPath=%d stableProof=%d stableFor=%llums requiredStable=%llums "
         "hasScQ=%d hasOrig=%d sameQueue=%d "
@@ -3837,6 +3818,20 @@ static bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFr
             desc->isGeneratedFrame ? 1 : 0, static_cast<unsigned long long>(desc->frameID), outputResource,
             currentResource, renderedCurrent ? 1 : 0, fsrApiActive ? 1 : 0, nativeFSRSuspended ? 1 : 0,
             ce::fg_runtime::GetRuntimeModeName(runtimeMode));
+    }
+    const bool nativeFSRSuspended =
+        g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) &&
+        !g_FGCompat.IsFSRFGApiActive();
+    if (nativeFSRSuspended) {
+        static std::atomic<int> s_ffxPresentSuspendedRenderLogCount{0};
+        const int suspendedLogCount = s_ffxPresentSuspendedRenderLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (suspendedLogCount < 20 || (suspendedLogCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: FFX present callback rendered overlay during native-FSR suspension "
+                "(generated=%d frameId=%llu output=%p current=%p mirroredCurrent=%d log=%d)",
+                desc->isGeneratedFrame ? 1 : 0, static_cast<unsigned long long>(desc->frameID), outputResource,
+                currentResource, renderedCurrent ? 1 : 0, suspendedLogCount + 1);
+        }
     }
 
     return true;
@@ -4875,9 +4870,21 @@ static bool ApplyOverlayStartupCompatMode(HWND gameWindow) {
     const bool allowOverlay = !suppressOverlay;
     static bool s_overlayCompatSuppressed = false;
     static bool s_loggedVisibleWindowSuppression = false;
+    static bool s_loggedKeepVisibleDuringSuppression = false;
     static HWND s_loggedWindowHandle = nullptr;
 
     if (!allowOverlay) {
+        if (ce::overlay_compat::ShouldKeepDX12OverlayVisibleDuringStartupSuppression(g_State.overlayInit &&
+                                                                                     g_State.syncInit)) {
+            if (!s_loggedKeepVisibleDuringSuppression) {
+                HookLogImportant(
+                    "DX12: Continuing DX12 overlay submissions while startup-overlay compatibility window is active "
+                    "(overlay=%s, backend already initialized)",
+                    overlayModule ? overlayModule : "module");
+                s_loggedKeepVisibleDuringSuppression = true;
+            }
+            return true;
+        }
         if (activeWindow.hwnd) {
             if (!s_overlayCompatSuppressed || !s_loggedVisibleWindowSuppression ||
                 s_loggedWindowHandle != activeWindow.hwnd) {
@@ -4908,7 +4915,10 @@ static bool ApplyOverlayStartupCompatMode(HWND gameWindow) {
         HookLogImportant("DX12: Resuming DX12 overlay after startup overlay windows settled");
         s_overlayCompatSuppressed = false;
         s_loggedVisibleWindowSuppression = false;
+        s_loggedKeepVisibleDuringSuppression = false;
         s_loggedWindowHandle = nullptr;
+    } else if (s_loggedKeepVisibleDuringSuppression) {
+        s_loggedKeepVisibleDuringSuppression = false;
     }
 
     return true;
@@ -11465,9 +11475,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         }
     }
 
-    // Heavy suspension: zero-size, iconic, or transition cooldown requires
-    // full resource teardown because the swapchain is in an invalid state.
-    const bool suspendOverlayHeavy = zeroSizedSwapchain || iconicWindow || inTransitionCooldown;
+    // Heavy suspension is reserved for non-drawable swapchain states. A
+    // transition cooldown may still gate specific FG routing paths later, but
+    // it should not blank a valid game backbuffer during focus/swapchain churn.
+    const bool suspendOverlayHeavy =
+        ce::dx12_overlay_policy::ShouldHeavySuspendDX12OverlayForSwapchainState(zeroSizedSwapchain, iconicWindow);
     const bool suspendOverlayRender = suspendOverlayHeavy;
 
     static bool s_swapchainSuspended = false;
@@ -12787,13 +12799,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         const ULONGLONG msSinceSyncInit = now - s_startupOverlaySyncInitMs;
         const bool processNeedsRenderDelay = startupOverlayCompatibilityActive;
         const bool actualFGActive = IsActualFrameGenerationActive();
+        const bool overlayBackendReady = g_State.overlayInit && g_State.syncInit;
         const char* blockingOverlayModule = ce::overlay_compat::GetStartupBlockingOverlayRenderModuleName();
         const ULONGLONG lastBlockingRenderActivityMs =
             s_lastStartupBlockingRenderModuleActivityMs.load(std::memory_order_acquire);
         const bool hasRecentBlockingRenderActivity = ce::overlay_compat::HasRecentDX12StartupBlockingRenderActivity(
             lastBlockingRenderActivityMs, now, kStartupOverlayRenderModuleQuietPeriodMs);
         if (ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(
-                processNeedsRenderDelay, actualFGActive, msSinceSyncInit, kStartupOverlayPostSyncInitSettleMs)) {
+                processNeedsRenderDelay, actualFGActive, msSinceSyncInit, kStartupOverlayPostSyncInitSettleMs,
+                overlayBackendReady)) {
             static std::atomic<int> s_postSyncStageLogCount{0};
             if (s_postSyncStageLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
                 HookLogImportant("DX12: Waiting to render staged overlay after sync init for %s (remaining=%llums)",
@@ -12802,7 +12816,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             delayOverlayRenderAfterSyncInit = true;
         } else if (ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(
                        processNeedsRenderDelay, actualFGActive, blockingOverlayModule, msSinceSyncInit,
-                       kStartupOverlayLoadedRenderModuleMaxBlockMs)) {
+                       kStartupOverlayLoadedRenderModuleMaxBlockMs, overlayBackendReady)) {
             static std::atomic<int> s_loadedStartupOverlayRenderSuppressLogCount{0};
             if (s_loadedStartupOverlayRenderSuppressLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
                 HookLogImportant(
@@ -12814,7 +12828,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             suppressOverlayRenderForLoadedStartupOverlay = true;
         } else if (ce::overlay_compat::ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(
                        processNeedsRenderDelay, actualFGActive, blockingOverlayModule,
-                       hasRecentBlockingRenderActivity)) {
+                       hasRecentBlockingRenderActivity, overlayBackendReady)) {
             static std::atomic<int> s_recentBlockingRendererSuppressLogCount{0};
             const ULONGLONG msSinceLastActivity = now - lastBlockingRenderActivityMs;
             if (s_recentBlockingRendererSuppressLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {

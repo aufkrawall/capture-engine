@@ -1969,6 +1969,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
       // oGetProcAddress returns the real function address, and the system-DLL
       // bypass in DetourGetProcAddress correctly returns the real function
       // to system callers.
+      FFXHook::RegisterDynamicHooks();
       IATHook::InitializeGetProcAddressHook();
     }
   }
@@ -3027,6 +3028,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // GTA and some middleware can terminate with fail-fast style status codes
   // before VEH/UEF crash filters get control. Keep this narrow and passive:
   // one CE-owned dump for current-process fatal exits, then forward.
+  FFXHook::RegisterDynamicHooks();
   IATHook::InitializeGetProcAddressHook();
   TryInstallFatalTerminationDumpHooks();
 

@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-05-25
+Last cross-checked: 2026-05-26
 
 Primary sources:
 - `AGENTS.md`
@@ -12,8 +12,11 @@ Primary sources:
 - `captureengine/inject_main.cpp`
 - `captureengine/pseudo_overlay.cpp`
 - `hook/apis/dx12_hook.cpp`
+- `hook/apis/ffx_hook.cpp`
 - `hook/apis/dx11_hook.cpp`
 - `hook/apis/streamline_hook.cpp`
+- `hook/main.cpp`
+- `hook/common/overlay_compat.h`
 - `hook/common/dxgi_shared.cpp`
 - `hook/common/dx12_overlay_policy.h`
 - `hook/common/freeze_watchdog.cpp`
@@ -89,7 +92,9 @@ Primary sources:
   - Publishes the currently discovered DX12 queue/swapchain device to native driver limiter consumers and logs the source, device, queue, and HookContext update/conflict state. This matters for explicit Reflex limiter mode, Anti-Lag 2, and XeLL paths that lazy-init from `HookContext`.
   - Startup-overlay resume diagnostics now also log whether CE is still waiting for a usable foreground window or intentionally tracking a same-process foreground window instead of the old swapchain HWND, which matters for late no-FG startup handoffs that can otherwise self-latch on `remaining=0ms`.
   - Native-FSR callback traces now also log callback-side HDR classification (`DX12: FFX present callback HDR check ... colorSpace=... isHDR=...`) and the FFX UI-composition contract (`premulAlpha=%d`) so visual FSR callback regressions can be distinguished from queue/routing failures.
-  - Official AMD FFX startup swapchain creation before enabled `ffxConfigure` proof should log `Protected official FFX startup swapchain pass-through` and avoid CE-side Present-hook refresh, queue-ownership mutation, and FFX export inspection during the fragile startup window. If live Streamline/PostSL is active, it should also log `Protected official FFX startup immediately quiesced Streamline/PostSL` immediately, before AMD owns the swapchain. It should then log either `Finalizing protected official FFX startup pass-through after enabled ffxConfigure` or, if no direct configure hook becomes visible after sustained real render progress, `Finalizing protected official FFX startup pass-through after sustained frame progress` plus `progress-resolved official FFX runtime-owned Present path assumption`. The former covers the GTA `20260520_012459` fail-fast family; the latter covers `20260520_153423`, where FSR FG activated but CE stayed quiesced and the overlay never recovered.
+  - Official AMD FFX startup swapchain creation before enabled `ffxConfigure` proof should log `Protected official FFX startup swapchain pass-through` and avoid CE-side Present-hook refresh, queue-ownership mutation, and FFX export inspection during the fragile startup window. If live Streamline/PostSL is active, it should also log `Protected official FFX startup immediately quiesced Streamline/PostSL` immediately, before AMD owns the swapchain. It may finalize after direct enabled configure proof (`Finalizing protected official FFX startup pass-through after enabled ffxConfigure`), but sustained real render progress without direct FFX proof must only log `Protected official FFX startup has sustained frame progress but remains quiesced`; a `Finalizing ... after sustained frame progress` line is now a regression. GTA freeze dump `20260525_195848_gtafreeze` showed that progress-only graduation can wedge AMD FSR threads in `ffxQuery`.
+  - Early native-FSR interception should be visible before the first FSR preload caches function pointers. Useful breadcrumbs are `FFX Hook: Registered module-filtered dynamic hooks for FFX exports`, `FFX Hook: Using IAT/dynamic hooks for protected official FFX module`, and `GetProcAddress: Intercepted FFX API ffxConfigure`.
+  - DX12 overlay no-blanking regressions should be diagnosed from visibility-path logs, not by reintroducing broad overlay suspension. Transition cooldowns should not clear a backend-ready overlay; only zero-sized/iconic swapchains are hard-suspend reasons. Startup-overlay compatibility may log `DX12: Continuing DX12 overlay submissions while startup-overlay compatibility window is active` when Social/EOS/Steam-like modules are still settling but the overlay backend is already initialized.
 - `hook/apis/dx11_hook.cpp` / `hook/wrappers/wrapper_hooks.cpp`
   - D3D11 forced-AF diagnostics should prove both coverage and safety: per-context `DX11: Deferred AF bootstrap ...`, `DX11: Runtime AF hook ensure ...`, `Wrapper: AF draw hook hit`, `Wrapper: AF sampler bind tracked`, `Wrapper: AF allow`, and `Wrapper: AF reconciled` lines show the draw path is active; detailed `AF skip` lines explain conservative skips.
   - `backbuffer_count` should be proven at swapchain creation, not only after a resolution change. D3D11 `CreateDeviceAndSwapChain`, `CreateSwapChain`, and `CreateSwapChainForHwnd` paths log requested/actual buffer counts when an override is configured. DX12 swapchain refresh logs actual buffer count in `hook/apis/dx12_hook.cpp`.

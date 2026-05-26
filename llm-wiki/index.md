@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-25 (updated: build 0.1.3592 / tests 0.1.3593 - DX12 FG injected routing fix for Streamline proxy DXGI factory exports, post-FSR Streamline handoff vtable release, runtime factory/queue guards, and switch-app DLSS constants)
+Last cross-checked: 2026-05-26 (updated: build 0.1.3600 / tests 0.1.3601 - native-FSR early callback routing, protected-official-FFX quiesce, and DX12 overlay no-blanking through drawable transition/startup-overlay windows)
 
 Primary sources:
 - `AGENTS.md`

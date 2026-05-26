@@ -150,16 +150,18 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Preserving swapchain descriptor for authoritative FG runtime create"), std::string::npos);
     EXPECT_NE(contents.find("Finalizing protected official FFX startup pass-through after enabled ffxConfigure"),
               std::string::npos);
-    EXPECT_NE(contents.find("Finalizing protected official FFX startup pass-through after sustained frame progress"),
+    EXPECT_NE(contents.find("Protected official FFX startup has sustained frame progress but remains quiesced"),
               std::string::npos);
     EXPECT_NE(contents.find("progress-resolved official FFX runtime-owned Present path assumption"),
               std::string::npos);
     EXPECT_NE(contents.find("normal overlay fallback is unsafe for this native FSR handoff"),
               std::string::npos);
-    EXPECT_NE(contents.find("direct ffxConfigure/callback proof or stable same-queue progress proof"),
+    EXPECT_NE(contents.find("direct ffxConfigure/present-callback proof"),
               std::string::npos);
     EXPECT_NE(contents.find("Protected official FFX startup immediately quiesced Streamline/PostSL"), std::string::npos);
-    EXPECT_NE(contents.find("FFX Hook: Protected official FFX ffxConfigure export left unpatched"), std::string::npos);
+    EXPECT_NE(contents.find("Continuing DX12 overlay submissions while startup-overlay compatibility window is active"),
+              std::string::npos);
+    EXPECT_NE(contents.find("FFX Hook: Using IAT/dynamic hooks for protected official FFX module"), std::string::npos);
     EXPECT_NE(contents.find("Native FSR fallback proof allows normal overlay rendering"), std::string::npos);
     EXPECT_NE(contents.find("ECL startup activation swapchain probe suppressed"), std::string::npos);
     EXPECT_NE(contents.find("Rejecting startup activation swapchain"), std::string::npos);

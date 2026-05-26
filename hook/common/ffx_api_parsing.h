@@ -210,7 +210,11 @@ inline bool ShouldPatchFFXImportsForModule(const char* moduleNameOrPath) {
     if (!moduleNameOrPath || !*moduleNameOrPath) {
         return false;
     }
-    return !IsOfficialAMDFFXRuntimeModuleName(moduleNameOrPath);
+    // Import-table routing changes caller thunks, not the official AMD runtime
+    // code page. Keep this enabled so games that statically import ffxConfigure
+    // can still expose the safe present-callback bridge without triggering the
+    // fail-fast family caused by inline/VEH export patching.
+    return true;
 }
 
 inline bool ShouldArmProtectedOfficialFFXConfigureBreakpoint(const char* moduleNameOrPath) {

@@ -570,15 +570,17 @@ inline size_t GetStartupCompatibleDX12AllocatorPoolSize(bool processNeedsDelay, 
 }
 
 inline bool ShouldDelayDX12OverlayRenderAfterSyncInit(bool processNeedsDelay, bool actualFGActive,
-                                                      ULONGLONG msSinceSyncInit, ULONGLONG settleDelayMs) {
-    return processNeedsDelay && !actualFGActive && msSinceSyncInit < settleDelayMs;
+                                                      ULONGLONG msSinceSyncInit, ULONGLONG settleDelayMs,
+                                                      bool overlayBackendReady = false) {
+    return processNeedsDelay && !actualFGActive && !overlayBackendReady && msSinceSyncInit < settleDelayMs;
 }
 
 inline bool ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(bool processNeedsDelay, bool actualFGActive,
                                                                    const char* startupBlockingOverlayModule,
                                                                    ULONGLONG msSinceSyncInit,
-                                                                   ULONGLONG maxSuppressionMs) {
-    return processNeedsDelay && !actualFGActive && startupBlockingOverlayModule != nullptr &&
+                                                                   ULONGLONG maxSuppressionMs,
+                                                                   bool overlayBackendReady = false) {
+    return processNeedsDelay && !actualFGActive && !overlayBackendReady && startupBlockingOverlayModule != nullptr &&
            msSinceSyncInit < maxSuppressionMs;
 }
 
@@ -590,9 +592,17 @@ inline bool HasRecentDX12StartupBlockingRenderActivity(ULONGLONG lastActivityMs,
 inline bool ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(bool processNeedsDelay,
                                                                              bool actualFGActive,
                                                                              const char* startupBlockingOverlayModule,
-                                                                             bool hasRecentBlockingRendererActivity) {
-    return processNeedsDelay && !actualFGActive && startupBlockingOverlayModule != nullptr &&
+                                                                             bool hasRecentBlockingRendererActivity,
+                                                                             bool overlayBackendReady = false) {
+    return processNeedsDelay && !actualFGActive && !overlayBackendReady && startupBlockingOverlayModule != nullptr &&
            hasRecentBlockingRendererActivity;
+}
+
+inline bool ShouldKeepDX12OverlayVisibleDuringStartupSuppression(bool overlayBackendReady) {
+    // Once CE has a usable DX12 backend, a third-party startup window is not a
+    // reason to blank the overlay. Keep rendering on the already-valid path;
+    // truly invalid swapchain states are filtered separately.
+    return overlayBackendReady;
 }
 
 inline bool FindAuxiliaryProcessWindow(DWORD processId, HWND primaryWindow,

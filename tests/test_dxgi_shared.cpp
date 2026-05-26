@@ -17,6 +17,12 @@ TEST(DXGISharedTest, ExternalHookBypassResumeExtendsPastPatchedFillBytes) {
     EXPECT_FALSE(ce::inline_hook_policy::ShouldExtendExternalHookResumeOffset(5, 14, false));
 }
 
+TEST(DXGISharedTest, TransitionCooldownDoesNotHeavySuspendDrawableDX12Overlay) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHeavySuspendDX12OverlayForSwapchainState(false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldHeavySuspendDX12OverlayForSwapchainState(true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldHeavySuspendDX12OverlayForSwapchainState(false, true));
+}
+
 TEST(DXGISharedTest, ExternalPresentDetourPathRequiresBypassSupport) {
     EXPECT_TRUE(DXGIShared::CanSafelyInstallExternalPresentDetourPath(false, false));
     EXPECT_TRUE(DXGIShared::CanSafelyInstallExternalPresentDetourPath(false, true));
@@ -1208,7 +1214,7 @@ TEST(DXGISharedTest, FFXPresentCallbackStallAllowsNormalOverlayRendering) {
         false, false, ce::fg_runtime::RuntimeMode::kOff, false, false, true));
 }
 
-TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresCallbackBridgeBeforeNormalOverlayFallback) {
+TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresDirectProofBeforeNormalOverlayFallback) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, true, false, false));
 
@@ -1217,12 +1223,12 @@ TEST(DXGISharedTest, ProgressResolvedOfficialFFXCallbackStallRequiresCallbackBri
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(true, true, false,
                                                                                               false)));
 
-    // Protected official FFX runtimes may never expose ffxConfigure to CE.
-    // Stable same-queue proof is the generic fallback that keeps the overlay
-    // visible without patching the runtime code page.
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
+    // Stable same-queue proof is not enough. The GTA freeze family showed that
+    // the AMD presenter can still be in its private query path even while the
+    // game appears to make normal frame progress.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         true, true, false, false, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         false, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true,
         ce::dx12_overlay_policy::ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(true, true, false,
                                                                                                false, true)));
@@ -1724,16 +1730,16 @@ TEST(DXGISharedTest, ProtectedOfficialFFXStartupQuiescesLiveStreamlinePostSLImme
         true, true, true, true, true, true, true));
 }
 
-TEST(DXGISharedTest, ProtectedOfficialFFXStartupCanResolveAfterSustainedProgressWithoutDirectConfigure) {
+TEST(DXGISharedTest, ProtectedOfficialFFXStartupDoesNotResolveFromProgressWithoutDirectConfigure) {
     const uint32_t processFrameThreshold =
         ce::dx12_overlay_policy::GetProtectedOfficialFFXStartupProcessFrameProgressThreshold();
     const uint32_t eclThreshold = ce::dx12_overlay_policy::GetProtectedOfficialFFXStartupECLProgressThreshold();
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
         true, false, processFrameThreshold - 1, eclThreshold - 1));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
         true, false, processFrameThreshold, 0));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
         true, false, 0, eclThreshold));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(

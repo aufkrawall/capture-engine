@@ -829,6 +829,7 @@ TEST(OverlayCompatTest, StartupCompatibleRenderDelayOnlyAppliesBeforeSettle) {
     EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(true, false, 5000, 5000));
     EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(true, true, 1000, 5000));
     EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(false, false, 1000, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(true, false, 0, 5000, true));
 }
 
 TEST(OverlayCompatTest, StartupBlockingOverlayCanSuppressDX12Render) {
@@ -842,6 +843,8 @@ TEST(OverlayCompatTest, StartupBlockingOverlayCanSuppressDX12Render) {
         ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(true, false, nullptr, 1000, 30000));
     EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(
         false, false, "SocialClubD3D12Renderer.dll", 1000, 30000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(
+        true, false, "SocialClubD3D12Renderer.dll", 1000, 30000, true));
 }
 
 TEST(OverlayCompatTest, RecentBlockingRendererActivityExtendsDX12RenderSuppression) {
@@ -854,6 +857,13 @@ TEST(OverlayCompatTest, RecentBlockingRendererActivityExtendsDX12RenderSuppressi
         true, false, "SocialClubD3D12Renderer.dll", false));
     EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(
         true, true, "SocialClubD3D12Renderer.dll", true));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(
+        true, false, "SocialClubD3D12Renderer.dll", true, true));
+}
+
+TEST(OverlayCompatTest, InitializedOverlayStaysVisibleDuringStartupSuppression) {
+    EXPECT_TRUE(ce::overlay_compat::ShouldKeepDX12OverlayVisibleDuringStartupSuppression(true));
+    EXPECT_FALSE(ce::overlay_compat::ShouldKeepDX12OverlayVisibleDuringStartupSuppression(false));
 }
 
 TEST(OverlayCompatTest, DedicatedQueueSupportsFGAndStartupCompat) {

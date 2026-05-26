@@ -629,7 +629,14 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
 
     RegisterDynamicHooksOnce();
 
-    if (!allowInlineHooks && !allowIATHooks && firstSeenModule) {
+    if (!allowInlineHooks && allowIATHooks && ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName(moduleName) &&
+        firstSeenModule) {
+        HookLogImportant(
+            "FFX Hook: Using IAT/dynamic hooks for protected official FFX module %s; inline export patching and VEH "
+            "breakpoints skipped so AMD runtime code bytes stay pristine; waiting for a real ffxConfigure call to arm "
+            "the native FSR present-callback bridge",
+            moduleName);
+    } else if (!allowInlineHooks && !allowIATHooks && firstSeenModule) {
         HookLogImportant(
             "FFX Hook: Using GetProcAddress-only hooks for protected official FFX module %s; inline export patching "
             "and IAT import patching skipped to avoid startup fail-fast; code bytes left unmodified; waiting for "
@@ -638,8 +645,9 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     }
 
     // Install IAT hooks in loaded non-system/non-overlay modules to intercept calls to FFX functions.
-    // Official AMD runtime DLLs are intentionally not inline- or IAT-patched: GTA Enhanced has been observed to
-    // fail fast during native-FSR startup after runtime FFX ownership is established.
+    // Official AMD runtime DLLs are intentionally not inline-patched. Import-table routing is allowed because it
+    // changes caller thunks instead of the AMD runtime code page and lets statically importing games expose the real
+    // ffxConfigure packet needed for the present-callback bridge.
 
     void* dummy = nullptr;
     bool routedAnything = false;
@@ -714,7 +722,7 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
         if (firstSeenModule || logCount <= 20 || (logCount % 300) == 0) {
             HookLog("FFX Hook: Hooks installed successfully for %s (inline=%d iat=%d dynamic=1 protected=%d log=%d)",
                     moduleName, inlineHookedAnything ? 1 : 0, iatPatchedAnything ? 1 : 0,
-                    (!allowInlineHooks && !allowIATHooks) ? 1 : 0, logCount);
+                    !allowInlineHooks ? 1 : 0, logCount);
         }
     }
     return true;
@@ -1043,6 +1051,10 @@ namespace FFXHook {
 
 void* GetPresentCallbackBridgeKey(void* context) {
     return GetOrCreatePresentCallbackBridgeKey(context);
+}
+
+void RegisterDynamicHooks() {
+    RegisterDynamicHooksOnce();
 }
 
 bool InstallBridgeOnTrackedContexts(void* swapChain) {

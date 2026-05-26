@@ -164,6 +164,14 @@ inline bool ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(bool hasO
     return hasOutputWindow && !outputWindowVisible;
 }
 
+inline bool ShouldHeavySuspendDX12OverlayForSwapchainState(bool zeroSizedSwapchain, bool iconicWindow) {
+    // Only drawable-state loss should blank/release the overlay. Transition
+    // cooldowns are routing hints; treating them as hard suspension made the
+    // overlay disappear during focus and swapchain churn even though the game
+    // still had a valid backbuffer.
+    return zeroSizedSwapchain || iconicWindow;
+}
+
 inline bool ShouldSkipDX12CreateSwapchainSideEffectsForInvisibleWindowSwapchain(bool hasOutputWindow,
                                                                                 bool outputWindowVisible) {
     // Hidden helper swapchains must not refresh the global Present hook target,
@@ -740,6 +748,8 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     bool currentFFXPresentCallbackProof, bool progressResolvedStableOverlayProof = false,
     ULONGLONG stallDurationMs = 0, bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false) {
     (void)stallDurationMs;
+    (void)progressResolvedOfficialFFXPresentPath;
+    (void)progressResolvedStableOverlayProof;
 
     if (!evaluateFFXPresentCallbackFallback) {
         return false;
@@ -755,14 +765,13 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
         return false;
     }
 
-    // GTA Enhanced's official AMD FFX path can progress far enough to prove
-    // frame generation ownership without a fresh ffxConfigure/callback bridge
-    // proof. Once the swapchain has proven stable on the original game queue
-    // with a healthy device, fall back to the normal overlay path instead of
-    // leaving the overlay invisible forever in protected official runtimes that
-    // cannot expose ffxConfigure without code-page patching.
+    // The normal DX12 overlay path is only safe after direct configure proof or
+    // a current FFX callback has proven that the runtime has accepted CE's
+    // callback bridge. Progress-only or same-queue evidence can be misleading:
+    // GTA freeze dumps showed AMD presenter threads blocked in ffxQuery after
+    // CE resumed normal overlay work from that weaker proof.
     if (!directFFXApiConfirmation && !currentFFXPresentCallbackProof) {
-        return progressResolvedOfficialFFXPresentPath && progressResolvedStableOverlayProof;
+        return false;
     }
 
     return true;
@@ -2176,11 +2185,10 @@ inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool pro
                                                                         bool ffxStartupAlreadyResolved) {
     // The protected startup-create path is only useful if the rest of CE also
     // stays out of the runtime's way until the official AMD runtime has reached
-    // either its enabled ffxConfigure packet or enough real render progress to
-    // prove that this title does not expose the configure call through the CE
-    // hook path. ECL probes, queue registration, overlay submissions, and late
-    // export inspection can all be too invasive in the narrow pre-configure
-    // window.
+    // its enabled ffxConfigure packet. ECL probes, queue registration, overlay
+    // submissions, and late export inspection can all be too invasive in the
+    // narrow pre-configure window; sustained render progress is only a
+    // diagnostic signal, not proof that CE may resume GPU side effects.
     return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved;
 }
 
@@ -2208,14 +2216,15 @@ inline uint32_t GetProtectedOfficialFFXStartupECLProgressThreshold() {
 inline bool ShouldFinalizeProtectedOfficialFFXStartupAfterSustainedFrameProgress(
     bool protectedOfficialFFXStartupPending, bool ffxStartupAlreadyResolved, uint32_t processFrameSkips,
     uint32_t eclPassThroughs) {
-    // GTA's official AMD FFX runtime can activate FSR FG without resolving
-    // ffxConfigure through GetProcAddress/IAT-visible paths. Keep the initial
-    // fail-fast guard, but once normal game rendering has progressed for a
-    // meaningful number of frames/ECL submissions, graduate the path so CE can
-    // recover overlay rendering instead of staying permanently quiesced.
-    return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved &&
-           (processFrameSkips >= GetProtectedOfficialFFXStartupProcessFrameProgressThreshold() ||
-            eclPassThroughs >= GetProtectedOfficialFFXStartupECLProgressThreshold());
+    (void)protectedOfficialFFXStartupPending;
+    (void)ffxStartupAlreadyResolved;
+    (void)processFrameSkips;
+    (void)eclPassThroughs;
+    // GTA freeze dumps showed the old progress-only graduation could resume CE
+    // overlay/capture side effects while the official AMD presenter thread was
+    // still inside its private startup/query path. Only a real direct configure
+    // or present-callback proof is authoritative.
+    return false;
 }
 
 inline bool ShouldApplySwapchainDescriptorOverridesForCreate(bool callerFromThirdPartyOverlay,
