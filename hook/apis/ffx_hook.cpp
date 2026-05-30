@@ -629,13 +629,15 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
 
     RegisterDynamicHooksOnce();
 
+    const bool armProtectedConfigureBreakpoint =
+        !allowInlineHooks && ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint(moduleName);
+
     if (!allowInlineHooks && allowIATHooks && ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName(moduleName) &&
         firstSeenModule) {
         HookLogImportant(
-            "FFX Hook: Using IAT/dynamic hooks for protected official FFX module %s; inline export patching and VEH "
-            "breakpoints skipped so AMD runtime code bytes stay pristine; waiting for a real ffxConfigure call to arm "
-            "the native FSR present-callback bridge",
-            moduleName);
+            "FFX Hook: Using IAT/dynamic hooks for protected official FFX module %s; inline export JMP patching "
+            "skipped; guarded ffxConfigure VEH fallback %s for SDK dispatch-table/intra-module calls",
+            moduleName, armProtectedConfigureBreakpoint ? "enabled" : "not eligible");
     } else if (!allowInlineHooks && !allowIATHooks && firstSeenModule) {
         HookLogImportant(
             "FFX Hook: Using GetProcAddress-only hooks for protected official FFX module %s; inline export patching "
@@ -653,6 +655,7 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     bool routedAnything = false;
     bool inlineHookedAnything = false;
     bool iatPatchedAnything = false;
+    bool vehHookedAnything = false;
     if (createCtx) {
         routedAnything = true;
         if (allowInlineHooks) {
@@ -691,13 +694,6 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
             inlineHookedAnything |= InstallInlineHookOnce(
                 reinterpret_cast<void*>(configureCtx), reinterpret_cast<void*>(Hooked_ffxConfigure),
                 g_Original_ffxConfigure, g_ffxConfigureInlineHooked, g_ffxConfigureTarget, "ffxConfigure");
-        } else if (!allowIATHooks && ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint(moduleName)) {
-            // Protected official AMD module: install a re-arming VEH hook to
-            // intercept intra-module ffxConfigure calls that bypass GetProcAddress.
-            // The VEH handler patches the first byte with int3 and catches the
-            // breakpoint, bypassing CFG validation that would fast-fail on a
-            // standard inline hook.
-            InstallFfxConfigureBreakpointHook(configureCtx, moduleName);
         } else if (!allowIATHooks) {
             static std::atomic<int> s_protectedConfigureUnpatchedLogCount{0};
             const int logCount = s_protectedConfigureUnpatchedLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -708,11 +704,32 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
                     moduleName ? moduleName : "FFX", reinterpret_cast<void*>(configureCtx), logCount);
             }
         }
-        HookLog("FFX Hook: ffxConfigure found at %p, hooking via %s (inline=%d)", configureCtx,
-                allowIATHooks ? "IAT/dynamic" : "dynamic-only", allowInlineHooks ? 1 : 0);
+        HookLog("FFX Hook: ffxConfigure found at %p, hooking via %s (inline=%d veh=%d)", configureCtx,
+                allowIATHooks ? (armProtectedConfigureBreakpoint ? "IAT/dynamic+VEH" : "IAT/dynamic")
+                              : (armProtectedConfigureBreakpoint ? "dynamic+VEH" : "dynamic-only"),
+                allowInlineHooks ? 1 : 0, armProtectedConfigureBreakpoint ? 1 : 0);
         if (allowIATHooks) {
             iatPatchedAnything |=
                 IATHook::PatchIATAllModules(moduleName, "ffxConfigure", (void*)Hooked_ffxConfigure, &dummy);
+        }
+        if (armProtectedConfigureBreakpoint) {
+            // Protected official AMD module: install a re-arming VEH hook to
+            // intercept SDK dispatch-table or intra-module ffxConfigure calls
+            // that bypass GetProcAddress and caller import thunks. The handler
+            // restores the byte before forwarding to the real function, then
+            // re-arms after the call returns.
+            vehHookedAnything |= InstallFfxConfigureBreakpointHook(configureCtx, moduleName);
+            if (!vehHookedAnything) {
+                static std::atomic<int> s_protectedConfigureVehFailureLogCount{0};
+                const int logCount =
+                    s_protectedConfigureVehFailureLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (logCount <= 20 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "FFX Hook: Failed to arm guarded ffxConfigure VEH fallback "
+                        "(module=%s target=%p log=%d); relying on IAT/dynamic routing only",
+                        moduleName ? moduleName : "FFX", reinterpret_cast<void*>(configureCtx), logCount);
+                }
+            }
         }
     }
 
@@ -720,8 +737,10 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
         static std::atomic<int> s_hooksInstalledLogCount{0};
         const int logCount = s_hooksInstalledLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (firstSeenModule || logCount <= 20 || (logCount % 300) == 0) {
-            HookLog("FFX Hook: Hooks installed successfully for %s (inline=%d iat=%d dynamic=1 protected=%d log=%d)",
+            HookLog("FFX Hook: Hooks installed successfully for %s (inline=%d iat=%d veh=%d dynamic=1 protected=%d "
+                    "log=%d)",
                     moduleName, inlineHookedAnything ? 1 : 0, iatPatchedAnything ? 1 : 0,
+                    vehHookedAnything ? 1 : 0,
                     !allowInlineHooks ? 1 : 0, logCount);
         }
     }

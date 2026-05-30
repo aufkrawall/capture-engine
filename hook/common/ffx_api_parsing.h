@@ -218,12 +218,18 @@ inline bool ShouldPatchFFXImportsForModule(const char* moduleNameOrPath) {
 }
 
 inline bool ShouldArmProtectedOfficialFFXConfigureBreakpoint(const char* moduleNameOrPath) {
-    (void)moduleNameOrPath;
-    // Official AMD FFX runtimes used by games such as Talos and GTA can treat
-    // even a one-byte int3 patch as tampering during startup. Keep their code
-    // pages pristine and route only through GetProcAddress/IAT-visible API
-    // pointers. Proxy and legacy modules still use normal inline hooks above.
-    return false;
+    const char* fileName = PathFileName(moduleNameOrPath);
+    if (!fileName || !*fileName) {
+        return false;
+    }
+
+    // Some integrations cache ffxConfigure inside SDK dispatch tables or call
+    // it intra-module, bypassing both GetProcAddress and caller IAT routing.
+    // Use the guarded re-arming int3 fallback only for the DX12 official FSR FG
+    // configure export. Standard inline JMP hooks remain disabled above.
+    return ContainsAsciiInsensitive(fileName, "amd_fidelityfx_framegeneration") ||
+           ContainsAsciiInsensitive(fileName, "amd_fidelityfx_dx12") ||
+           ContainsAsciiInsensitive(fileName, "amd_fidelityfx_fg");
 }
 
 }  // namespace ce::ffx_api

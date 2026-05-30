@@ -242,6 +242,26 @@ TEST(DXGISharedTest, GuardedSteamOverlayInvokeWithoutStreamlineStackDoesNotRequi
                                                                                    false, false, false, false));
 }
 
+TEST(DXGISharedTest, GuardedSteamOverlayCallbackStateSuppressesDisabledOrInvalidSteamRenderer) {
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, false, false, false,
+                                                                                           false, false));
+
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, true, false, false,
+                                                                                           false, false));
+
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, true, true, false,
+                                                                                           false, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, true, true, false,
+                                                                                            false, false));
+
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, true, false, true,
+                                                                                            false, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(true, true, false, false,
+                                                                                            true, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(false, true, false, false,
+                                                                                            false, true));
+}
+
 TEST(DXGISharedTest, GuardedSteamOverlayFallbackUsesBypassOnFailureOrMissingBackbufferAdvance) {
     EXPECT_TRUE(DXGIShared::ShouldFallbackGuardedExternalSteamOverlayPresentForResult(true, E_FAIL, false, false));
     EXPECT_FALSE(DXGIShared::ShouldFallbackGuardedExternalSteamOverlayPresentForResult(false, E_FAIL, false, false));

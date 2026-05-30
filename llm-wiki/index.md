@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-30 (updated: build 0.1.3608 / tests 0.1.3609 - x86 DX12 focus-loss overlay-fence pacing)
+Last cross-checked: 2026-05-30 (updated: build 0.1.3610 / tests 0.1.3611 - Steam dummy callback bypass and FFX configure fallback)
 
 Primary sources:
 - `AGENTS.md`

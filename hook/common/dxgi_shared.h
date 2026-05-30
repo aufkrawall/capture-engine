@@ -351,6 +351,34 @@ inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(bool external
     return true;
 }
 
+inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(
+    bool basePolicyAllowsInvoke, bool steamCallbackSlotReadable, bool steamCallbackIsNull,
+    bool steamCallbackIsCEDummy, bool steamCallbackIsInvalidLowAddress, bool steamNullCallbackRecoveryAvailable) {
+    if (!basePolicyAllowsInvoke) {
+        return false;
+    }
+
+    if (!steamCallbackSlotReadable) {
+        // Unknown Steam builds may move the callback slot. Preserve the older
+        // guarded behavior when CE cannot inspect the slot.
+        return true;
+    }
+
+    if (steamCallbackIsCEDummy || steamCallbackIsInvalidLowAddress) {
+        // CE installs the dummy only after proving Steam's callback slot was
+        // absent. Re-entering Steam while the slot still points at that no-op,
+        // or at an invalid sentinel, can drive Steam/Streamline into a partial
+        // overlay path with no real renderer behind it.
+        return false;
+    }
+
+    if (steamCallbackIsNull) {
+        return steamNullCallbackRecoveryAvailable;
+    }
+
+    return true;
+}
+
 inline bool ShouldInvokeGuardedSteamPresentDuringForcedBypass(bool streamlineLoaded, bool streamlineFGRunning) {
     // When Streamline is merely loaded but FG has not actually started, Talos'
     // Steam hook chain can accept direct calls without advancing Present. Repeating

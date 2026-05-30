@@ -1253,17 +1253,46 @@ static bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapCha
         isD3D12SwapChain && DXGIShared::IsStreamlineStartupTransitionWindowActive();
     void* steamCallbackBefore = nullptr;
     const bool steamCallbackReadable = TryReadSteamOverlayNullCallbackSlot(&steamCallbackBefore);
+    const auto steamCallbackAddress = reinterpret_cast<uintptr_t>(steamCallbackBefore);
+    const bool steamCallbackIsNull = steamCallbackReadable && steamCallbackBefore == nullptr;
+    const bool steamCallbackIsCEDummy =
+        steamCallbackReadable && steamCallbackBefore == reinterpret_cast<void*>(SteamDummyRenderingCallback);
+    const bool steamCallbackIsInvalidLowAddress =
+        steamCallbackReadable && steamCallbackBefore != nullptr && steamCallbackAddress < 0x10000;
     ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
         externalPresent != nullptr && externalPresent != DetourPresent && presentBypass != nullptr &&
             isSteamOverlay && isD3D12SwapChain,
         "guarded external Present", reason, reinterpret_cast<void*>(externalPresent),
         reinterpret_cast<void*>(presentBypass), streamlineStackActive, streamlinePluginLookupGuardReady);
     const bool steamNullCallbackRecoveryReady = steamNullCallbackGuard.IsInstalled();
-    if (!DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+    const bool basePolicyAllowsGuardedSteamInvoke =
+        DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
             externalPresent != nullptr && externalPresent != DetourPresent, presentBypass != nullptr,
             isSteamOverlay, isD3D12SwapChain, IsInWrapperPresent(),
             IsWrappedSwapChainObject(pSwapChain), s_externalOverlayPresentInvokeDepth > 0, streamlineStackActive,
-            streamlinePluginLookupGuardReady, steamNullCallbackRecoveryReady)) {
+            streamlinePluginLookupGuardReady, steamNullCallbackRecoveryReady);
+    const bool callbackStateAllowsGuardedSteamInvoke =
+        DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(
+            basePolicyAllowsGuardedSteamInvoke, steamCallbackReadable, steamCallbackIsNull, steamCallbackIsCEDummy,
+            steamCallbackIsInvalidLowAddress, steamNullCallbackRecoveryReady);
+    if (!callbackStateAllowsGuardedSteamInvoke) {
+        if (basePolicyAllowsGuardedSteamInvoke && externalPresent && presentBypass && isSteamOverlay &&
+            isD3D12SwapChain) {
+            static std::atomic<int> s_guardedSteamCallbackStateSkipLogCount{0};
+            const int skipNum =
+                s_guardedSteamCallbackStateSkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (skipNum <= 20 || skipNum == 50 || (skipNum % 500) == 0) {
+                HookLogImportant(
+                    "DXGIShared: Skipping guarded Steam Present hook #%d for %s because Steam callback state is not "
+                    "a real renderer; using bypass trampoline instead (callbackReadable=%d null=%d ceDummy=%d "
+                    "lowAddress=%d callback=%p steamNullGuard=%d streamlineStack=%d pluginGuard=%d tid=0x%04X)",
+                    skipNum, reason ? reason : "Present", steamCallbackReadable ? 1 : 0,
+                    steamCallbackIsNull ? 1 : 0, steamCallbackIsCEDummy ? 1 : 0,
+                    steamCallbackIsInvalidLowAddress ? 1 : 0, steamCallbackBefore,
+                    steamNullCallbackRecoveryReady ? 1 : 0, streamlineStackActive ? 1 : 0,
+                    streamlinePluginLookupGuardReady ? 1 : 0, GetCurrentThreadId());
+            }
+        }
         if (externalPresent && presentBypass && isSteamOverlay && isD3D12SwapChain && streamlineStackActive) {
             static std::atomic<int> s_guardedSteamStreamlineStackSkipLogCount{0};
             const int skipNum =
