@@ -17,7 +17,7 @@ enum class PostSLBackbufferBarrierMode {
 };
 
 inline bool ShouldWaitForOverlayCompletion(bool hasFenceEvent, bool usingDedicatedQueue, bool hasStartupBlockingOverlay,
-                                           fg_runtime::RuntimeMode runtimeMode) {
+                                           fg_runtime::RuntimeMode runtimeMode, bool processHasForeground = true) {
     if (!hasFenceEvent) {
         return false;
     }
@@ -30,11 +30,23 @@ inline bool ShouldWaitForOverlayCompletion(bool hasFenceEvent, bool usingDedicat
         return true;
     }
 
+    if (!processHasForeground) {
+        return true;
+    }
+
     if (!hasStartupBlockingOverlay) {
         return false;
     }
 
     return runtimeMode == fg_runtime::RuntimeMode::kOff || runtimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
+}
+
+inline bool ShouldFlushDeferredOverlaySignalAfterPresent(bool isD3D12Swapchain) {
+    // The DX12 overlay deliberately queues its fence Signal after Present so the
+    // NVIDIA driver does not see Signal wedged between CE's overlay ECL and the
+    // game's Present. Every D3D12 Present path that can submit the overlay must
+    // therefore flush that deferred Signal after the real Present returns.
+    return isD3D12Swapchain;
 }
 
 inline bool ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(bool d3d12DeviceCreated, bool thirdPartyOverlayLoaded) {

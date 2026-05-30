@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-30 (updated: build 0.1.3606 / tests 0.1.3607 - DX10 overlay routing and x86 DX12 focus-loss Present pacing)
+Last cross-checked: 2026-05-30 (updated: build 0.1.3608 / tests 0.1.3609 - x86 DX12 focus-loss overlay-fence pacing)
 
 Primary sources:
 - `AGENTS.md`

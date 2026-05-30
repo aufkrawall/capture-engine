@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-26 (updated: build 0.1.3600 / tests 0.1.3601 native-FSR callback routing and DX12 overlay no-blanking checkpoint)
+Last cross-checked: 2026-05-30 (updated: build 0.1.3608 / tests 0.1.3609 x86 DX12 focus-loss overlay-fence pacing)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -36,6 +36,7 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - The current generic rule is therefore split by concern. The startup-routing decision stays topology-driven (`keepStartupPresentOnNormalRoute`), but the actual Present transport on DX12 post-FSR comebacks uses the bypass trampoline until PostSL has both confirmed a successful render and left the short confirmed-startup-settling window. This keeps third-party overlay coexistence generic: CE does not trust Steam's fresh-swapchain vtable hook state just because the higher-level post-FSR startup family is already safe enough to continue normal-route PostSL progress.
 - Transition cooldowns are routing hints, not hard reasons to blank an already drawable DX12 overlay. `ShouldHeavySuspendDX12OverlayForSwapchainState(...)` only hard-suspends for zero-sized swapchains or iconic windows; ordinary swapchain/focus/FG-transition cooldowns should keep the initialized overlay visible if the backend remains valid. The expected degraded behavior during a fragile transition is a very brief visual stall, not overlay disappearance.
 - Startup-overlay compatibility windows from Social/EOS/Steam-like modules should not blank an already initialized DX12 overlay. `ShouldDelayDX12OverlayRenderAfterSyncInit(...)`, `ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(...)`, and `ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(...)` accept backend-ready state, and `ShouldKeepDX12OverlayVisibleDuringStartupSuppression(...)` documents the invariant: once CE has a live DX12 overlay backend and sync state, compatibility suppression should stop new-risky initialization work but continue overlay submissions.
+- Focus loss is not a reason to blank or rebuild a drawable DX12 overlay. For single-queue D3D12 swapchains, CE waits on its overlay fence in `focus-loss` mode before Present when the process is no longer foreground; this bounds CE's submitted overlay work while keeping the last visible overlay image alive. Wrapper-managed D3D12 `Present` and `Present1` must flush the deferred overlay fence signal after the real Present returns so the next wait observes a real fence signal.
 
 ## Working Guidance For DX12 Games With External Overlays Active
 - Identify startup coexistence problems from module path, queue ownership, swapchain ownership, and call-stack evidence, not from game-specific branches.
@@ -44,6 +45,7 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - When FFX stack evidence and third-party overlay identity disagree, do not blindly trust the immediate caller alone.
 - Preserve the FFX API dynamic-hook exception when tightening third-party overlay bypass rules. Losing it can make native FSR appear to work while keeping the injected overlay permanently suppressed or falling back through unsafe recovery paths.
 - Do not solve coexistence by blanking an already initialized CE overlay. Prefer a route that preserves visibility and only avoids unsafe new initialization or unsafe separate GPU work. Truly non-drawable swapchains such as minimized/iconic or zero-sized surfaces are the narrow hard-stop case.
+- During Alt+Tab/focus changes, prefer overlay-fence pacing over hiding/reinitializing the DX12 overlay. Healthy traces show `focus-loss mode` wait diagnostics rather than overlay suspension.
 - Keep fixes generic across Steam, Rockstar, Epic, and similar overlay stacks. The code already leans toward topology and state-driven behavior; preserve that direction.
 
 - **Vtable hook path critical difference from inline hook path**: When external E9 JMP is detected at `dxgi!Present` (inline hook), CE uses vtable hooking instead of inline hooking. In the vtable hook path, `oPresentTrampoline` is NULL (no inline hook trampoline created). `DetectSLPresentHook()` correctly bails early in the vtable path because `oPresent` (saved vtable[8]) is Steam's hook function, not dxgi!Present — checking Steam's function bytes for an E9 JMP would never detect SL's hook. SL routing (`s_slRoutingActive`) stays false in the vtable path by design, and Steam overlay is invoked through `CallOriginalPresent`'s explicit `g_externalOverlayPresentHook` logic.

@@ -683,6 +683,20 @@ TEST(DXGISharedTest, DX12OverlayWaitPolicySkipsSmoothMotionButKeepsStartupSafety
                                                                         ce::fg_runtime::RuntimeMode::kFSRFG));
 }
 
+TEST(DXGISharedTest, DX12OverlayWaitPolicyPacesSingleQueueFocusLoss) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(
+        true, false, false, ce::fg_runtime::RuntimeMode::kOff, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(
+        true, false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(
+        true, false, false, ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion, false));
+}
+
+TEST(DXGISharedTest, D3D12PresentPathsFlushDeferredOverlaySignalAfterPresent) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldFlushDeferredOverlaySignalAfterPresent(true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFlushDeferredOverlaySignalAfterPresent(false));
+}
+
 TEST(DXGISharedTest, EarlyDX12TempSwapchainHookInstallDefersForStartupOverlayBeforeRealDevice) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(false, true));
 

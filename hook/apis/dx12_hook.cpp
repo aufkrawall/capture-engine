@@ -15652,24 +15652,35 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     if (fenceValueToWait == 0)
         return;
 
-    const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
-    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     // Check ShouldUseDedicatedOverlayQueue() (FG active) instead of just queue
     // existence, since the queue is now kept alive across FG mode switches.
     const bool usingDedicatedQueue = ShouldUseDedicatedOverlayQueue() && (g_State.overlayQueue != nullptr);
-    if (!ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(g_State.fenceEvent != nullptr, usingDedicatedQueue,
-                                                                 overlayModule != nullptr, runtimeMode))
-        return;
-
+    bool processHasForeground = true;
     if (!usingDedicatedQueue) {
         DWORD foregroundPid = 0;
         HWND foregroundWindow = GetForegroundWindow();
-        if (!foregroundWindow)
-            return;
-        GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
-        if (foregroundPid != GetCurrentProcessId())
-            return;
+        processHasForeground = false;
+        if (foregroundWindow) {
+            GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
+            processHasForeground = (foregroundPid == GetCurrentProcessId());
+        }
     }
+
+    const char* overlayModule = nullptr;
+    if (!usingDedicatedQueue && processHasForeground) {
+        overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
+    }
+
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    if (!ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(g_State.fenceEvent != nullptr, usingDedicatedQueue,
+                                                                 overlayModule != nullptr, runtimeMode,
+                                                                 processHasForeground))
+        return;
+
+    const char* waitMode = usingDedicatedQueue ? "dedicated-queue"
+                           : (!processHasForeground)
+                               ? "focus-loss"
+                               : (overlayModule ? overlayModule : "single-queue");
 
     {
         UINT64 completedVal = g_State.fence->GetCompletedValue();
@@ -15677,8 +15688,7 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
             static std::atomic<int> s_fenceAlreadyCompleteLog{0};
             if (s_fenceAlreadyCompleteLog.fetch_add(1, std::memory_order_relaxed) < 50) {
                 HookLog("DX12: Overlay fence already complete (fence=%llu, completed=%llu, mode=%s)",
-                        (unsigned long long)fenceValueToWait, (unsigned long long)completedVal,
-                        usingDedicatedQueue ? "dedicated-queue" : (overlayModule ? overlayModule : "single-queue"));
+                        (unsigned long long)fenceValueToWait, (unsigned long long)completedVal, waitMode);
             }
             return;
         }
@@ -15694,14 +15704,12 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     if (waitHr == WAIT_TIMEOUT) {
         if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
             HookLog("DX12: Overlay completion wait timed out for %s mode (fence=%llu)",
-                    usingDedicatedQueue ? "dedicated-queue" : (overlayModule ? overlayModule : "single-queue"),
-                    (unsigned long long)fenceValueToWait);
+                    waitMode, (unsigned long long)fenceValueToWait);
         }
     } else if (waitHr == WAIT_OBJECT_0) {
         if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
             HookLog("DX12: Overlay completion wait finished for %s mode (fence=%llu)",
-                    usingDedicatedQueue ? "dedicated-queue" : (overlayModule ? overlayModule : "single-queue"),
-                    (unsigned long long)fenceValueToWait);
+                    waitMode, (unsigned long long)fenceValueToWait);
         }
     }
 }

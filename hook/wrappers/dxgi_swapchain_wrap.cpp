@@ -28,6 +28,7 @@ extern void DX12_OnSwapchainResizeBegin();
 extern void DX12_OnSwapchainResizeEnd();
 extern "C" __declspec(dllimport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
 extern "C" __declspec(dllimport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
+extern "C" __declspec(dllimport) void DX12_FlushDeferredSignal();
 
 // Query-based CPU prerender limit for D3D11 (implemented in dx11_hook.cpp)
 extern void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
@@ -174,6 +175,37 @@ static bool ShouldDelegateDX12PresentToDetourHook(const char** overlayModuleOut 
         return false;
     }
     return !g_FGCompat.IsDLSSFGApiActive() && !g_FGCompat.IsFSRFGApiActive();
+}
+
+static bool IsD3D12PresentDeviceLostHRESULT(HRESULT hr) {
+    return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG;
+}
+
+static void FlushDeferredDX12OverlaySignalAfterWrappedPresent(bool isD3D12, const char* presentName, int callCount) {
+    if (!ce::dx12_overlay_policy::ShouldFlushDeferredOverlaySignalAfterPresent(isD3D12)) {
+        return;
+    }
+
+    DX12_FlushDeferredSignal();
+
+    static std::atomic<int> s_flushLogCount{0};
+    const int n = s_flushLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (n < 12 || (n % 1000) == 0) {
+        WrapperLog("%s#%d: flushed deferred DX12 overlay fence signal after wrapped Present", presentName, callCount);
+    }
+}
+
+static void LogD3D12PresentDeviceLostHRESULT(bool isD3D12, const char* presentName, int callCount, HRESULT hr) {
+    if (!isD3D12 || !IsD3D12PresentDeviceLostHRESULT(hr)) {
+        return;
+    }
+
+    DXGIShared::g_SharedState.deviceRemovedFatal.store(true, std::memory_order_release);
+    static std::atomic<int> s_deviceLostLogCount{0};
+    const int n = s_deviceLostLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (n < 20) {
+        WrapperLog("%s#%d: D3D12 Present returned device-lost hr=0x%08X", presentName, callCount, (unsigned)hr);
+    }
 }
 
 // FSR Frame Generation detection helpers
@@ -1117,6 +1149,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     WaitFrameLatency();
     const int64_t presentCallStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
+    FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present", callCount);
+    LogD3D12PresentDeviceLostHRESULT(m_IsD3D12, "Present", callCount, hr);
     if (SUCCEEDED(hr)) {
         g_SharedFpsLimiter.ApplyPostPresent();
     }
@@ -1327,6 +1361,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     if (!pReal1Cached) {
         return DXGI_ERROR_INVALID_CALL;
     }
+    static std::atomic<int> s_present1CallCount{0};
+    int callCount = s_present1CallCount.fetch_add(1, std::memory_order_relaxed);
 
     // NVIDIA Smooth Motion compatibility: skip overlay for invisible windows
     if (g_FGCompat.IsNvPresentLoaded() && m_hWnd && !IsWindowVisible(m_hWnd)) {
@@ -1429,6 +1465,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
 
     WaitFrameLatency();
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present1", callCount);
+    LogD3D12PresentDeviceLostHRESULT(m_IsD3D12, "Present1", callCount, hr);
     if (SUCCEEDED(hr)) {
         g_SharedFpsLimiter.ApplyPostPresent();
     }
