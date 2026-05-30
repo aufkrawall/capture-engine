@@ -67,6 +67,22 @@ TEST(DXGISharedTest, D3D10OnD3D11SwapchainReturnsD3D10) {
     EXPECT_EQ(DXGIShared::APIType::D3D10, DXGIShared::SelectPrimarySwapChainAPIType(false, false, true));
 }
 
+TEST(DXGISharedTest, D3D10UsesSharedD3D10D3D11ProcessFramePath) {
+    EXPECT_TRUE(DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(DXGIShared::APIType::D3D10));
+    EXPECT_TRUE(DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(DXGIShared::APIType::D3D11));
+    EXPECT_FALSE(DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(DXGIShared::APIType::D3D12));
+    EXPECT_FALSE(DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(DXGIShared::APIType::Unknown));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossPreservesPresentPacing) {
+    EXPECT_FALSE(DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(true, false, false, 0));
+    EXPECT_TRUE(DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(false, false, false, 0));
+    EXPECT_FALSE(DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(false, false, true, 0));
+    EXPECT_FALSE(DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(false, true, false, 0));
+    EXPECT_FALSE(DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(false, false, false, 0x00000200U));
+    EXPECT_FALSE(DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(false, false, false, 0x00000004U));
+}
+
 TEST(DXGISharedTest, DXGIFactoryEnumerationLoggingTreatsNotFoundAsBenign) {
     EXPECT_FALSE(ce::dxgi_factory_policy::ShouldLogAdapterEnumerationFailure(S_OK));
     EXPECT_FALSE(ce::dxgi_factory_policy::ShouldLogAdapterEnumerationFailure(DXGI_ERROR_NOT_FOUND));

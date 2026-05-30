@@ -204,6 +204,30 @@ inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable
     return !trackedVtableMatchesCurrent || !presentHookInstalled || !present1HookInstalled;
 }
 
+inline bool ShouldRunSharedD3D10Or11ProcessFrame(APIType api) {
+    return api == APIType::D3D10 || api == APIType::D3D11;
+}
+
+inline bool ShouldApplyUnfocusedFlipModelDoNotWait(bool isD3D12Swapchain, bool isFullscreen, bool isForeground,
+                                                   UINT presentFlags) {
+    if (isForeground || isFullscreen) {
+        return false;
+    }
+
+    // D3D12 engines often keep building GPU work while unfocused. Forcing
+    // DO_NOT_WAIT there can create an unbounded ECL/Present loop and has caused
+    // x86 DX12 device hangs during Alt+Tab. Let DXGI's normal pacing stall
+    // instead; CE keeps overlay resources alive so the overlay can resume on the
+    // first drawable frame.
+    if (isD3D12Swapchain) {
+        return false;
+    }
+
+    constexpr UINT kAllowTearing = 0x00000200U;
+    constexpr UINT kRestart = 0x00000004U;
+    return (presentFlags & (kAllowTearing | kRestart)) == 0;
+}
+
 inline bool ShouldDeferVTableRepairDuringStreamlineStartup(bool streamlineFGRunning,
                                                            bool streamlineStartupHandoffPending,
                                                            bool streamlineStartupTransitionWindowActive,

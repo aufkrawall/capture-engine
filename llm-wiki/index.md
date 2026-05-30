@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-26 (updated: build 0.1.3600 / tests 0.1.3601 - native-FSR early callback routing, protected-official-FFX quiesce, and DX12 overlay no-blanking through drawable transition/startup-overlay windows)
+Last cross-checked: 2026-05-30 (updated: build 0.1.3606 / tests 0.1.3607 - DX10 overlay routing and x86 DX12 focus-loss Present pacing)
 
 Primary sources:
 - `AGENTS.md`

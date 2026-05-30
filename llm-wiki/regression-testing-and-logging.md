@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-05-26
+Last cross-checked: 2026-05-30
 
 Primary sources:
 - `AGENTS.md`
@@ -26,6 +26,8 @@ Primary sources:
 - `hook/common/reflex_limiter.h`
 - `hook/common/reflex_limiter_query_hook.inl`
 - `hook/common/overlay_metrics_publisher.cpp`
+- `hook/common/performance_metrics.cpp`
+- `hook/common/performance_metrics.h`
 - `hook/wrappers/dxgi_swapchain_wrap.cpp`
 - `hook/wrappers/wrapper_hooks.cpp`
 - `hook/wrappers/iat_hook.h`
@@ -96,6 +98,7 @@ Primary sources:
   - Early native-FSR interception should be visible before the first FSR preload caches function pointers. Useful breadcrumbs are `FFX Hook: Registered module-filtered dynamic hooks for FFX exports`, `FFX Hook: Using IAT/dynamic hooks for protected official FFX module`, and `GetProcAddress: Intercepted FFX API ffxConfigure`.
   - DX12 overlay no-blanking regressions should be diagnosed from visibility-path logs, not by reintroducing broad overlay suspension. Transition cooldowns should not clear a backend-ready overlay; only zero-sized/iconic swapchains are hard-suspend reasons. Startup-overlay compatibility may log `DX12: Continuing DX12 overlay submissions while startup-overlay compatibility window is active` when Social/EOS/Steam-like modules are still settling but the overlay backend is already initialized.
 - `hook/apis/dx11_hook.cpp` / `hook/wrappers/wrapper_hooks.cpp`
+  - DX10 overlay diagnostics should prove the route, backend, and target binding: `DetourPresent: Routing D3D10 swapchain through shared DX10/DX11 ProcessFrame path`, `DX10: OverlayAdapter initialized`, and `DX10: Overlay RTV ready ...`. D3D10 device creation plus DXGI Present traffic without these lines means the swapchain is classified but not drawing overlay. The DX10 RTV must be released through `g_mainRenderTargetView10` / resize cleanup so CE does not keep an old backbuffer alive across `ResizeBuffers`.
   - D3D11 forced-AF diagnostics should prove both coverage and safety: per-context `DX11: Deferred AF bootstrap ...`, `DX11: Runtime AF hook ensure ...`, `Wrapper: AF draw hook hit`, `Wrapper: AF sampler bind tracked`, `Wrapper: AF allow`, and `Wrapper: AF reconciled` lines show the draw path is active; detailed `AF skip` lines explain conservative skips.
   - `backbuffer_count` should be proven at swapchain creation, not only after a resolution change. D3D11 `CreateDeviceAndSwapChain`, `CreateSwapChain`, and `CreateSwapChainForHwnd` paths log requested/actual buffer counts when an override is configured. DX12 swapchain refresh logs actual buffer count in `hook/apis/dx12_hook.cpp`.
   - `cpu_prerender_limit` can still be active when `IDXGIDevice1::SetMaximumFrameLatency` fails: for D3D11, `Created manual prerender query ring buffer` plus `Prerender buffered wait lookback=...` proves the query-ring fallback is enforcing the limit.
@@ -122,6 +125,10 @@ Primary sources:
 - `hook/common/dxgi_shared.cpp`
   - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths. For GTA-style pure-DLSS startup, `Streamline startup normal-route transport allowed` with `transportRisk=0` / `steamRisk=0` is the healthy shape; `Streamline startup normal-route bypass` should now mean a real stale/third-party Present-hook risk exists.
   - Logs DXGI factory source selection for FG compatibility. `DXGI factory export source selected=live` should be used for app-thread FG handoffs so upstream interposers such as Streamline still see factory creation; `selected=unhooked ... callerRuntime=1` should be used for direct runtime callers.
+- `hook/wrappers/dxgi_swapchain_wrap.cpp`
+  - DX12 focus-loss sessions must not force `SyncInterval=0` or `DXGI_PRESENT_DO_NOT_WAIT`. Expected logs say `preserving Present pacing (D3D12 focus-loss safety)`. The old `SyncInterval 1->0 + DO_NOT_WAIT` breadcrumb is acceptable only for non-DX12 unfocused flip-model paths where compatible. x86 DX12 Alt+Tab testing should treat `DX12: GPU device removed (0x887A0006)` after a burst of unfocused `DO_NOT_WAIT` logs as the old failure family.
+- `hook/common/performance_metrics.cpp`
+  - Percentile FPS helpers are hot-path overlay code and should avoid per-frame heap allocation/full sort work. If this area changes, keep `PerformanceMetricsTest.LowPercentilesUseWorstFrameTimesWithoutHeapSortDependency` or an equivalent regression around worst-frame percentile behavior.
 - `hook/wrappers/iat_hook.cpp`
   - Logs Streamline proxy DXGI factory export pass-through. A healthy DLSS-G switch-app run includes `GetProcAddress: Leaving Streamline proxy export CreateDXGIFactory1 from sl.interposer.dll unmodified`, while Streamline feature APIs remain hookable through their dedicated feature paths.
 - `hook/wrappers/inline_hook.cpp`
@@ -137,8 +144,8 @@ Primary sources:
   - Emits `FG SNAPSHOT`, `FG INVARIANT`, `FG EVENT`, `FG PLAN`, `FG PLAN DIFF`, `FG TRANSITION`, and `FG LEGACY DECISION` lines, and updates `session_manifest.txt` with planner/session metadata.
 
 ## Practical Regression Checklist
-- After code changes, prefer the one-shot canonical verification command: `python build.py --verify --skip-updates`.
-- After that run finishes, read `build/verification/latest_summary.txt` first and `build/verification/latest_manifest.json` second instead of scraping the full build log unless the summary says a step failed and you need the larger log.
+- After code changes, the required baseline is `python build.py --skip-updates`, followed by relevant focused tests or `python build.py --no-build --run-tests --skip-updates` before committing.
+- For broader one-shot validation when time warrants, `python build.py --verify --skip-updates` is still useful. After that run finishes, read `build/verification/latest_summary.txt` first and `build/verification/latest_manifest.json` second instead of scraping the full build log unless the summary says a step failed and you need the larger log.
 - Do not leave a shell sitting in a passive watch loop waiting for that run to finish. Re-read `build/verification/latest_summary.txt` or `latest_manifest.json` directly when you need status; those files are the explicit completion contract for long-running verification/build work.
 - If you need the full top-level log from the last verification/build run, use `build/verification/latest_build.log`; the nested sanitizer child now writes to its own dedicated log inside the same verification bundle.
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.
@@ -197,6 +204,8 @@ Primary sources:
 - If you touch DXGI Streamline Present-routing detection or re-enable logic, verify the native-FSR/runtime-owned takeover window too: Streamline routing must stay disabled not only while the effective runtime label already says `FSR_FG`, but also during the explicit native-FSR OFF teardown window where FFX still owns presentation on the runtime-owned swapchain. Otherwise CE can silently re-attach Streamline's Present-hook chain in the middle of an FFX-owned handoff and reopen mixed-runtime Present conflicts even though queue-hook policy is already correct.
 - If you touch create-swapchain queue capture or caller classification, verify that duplicate deep/inline/global capture of the same authoritative Streamline queue does not drop its hookable/runtime-owned identity, and also does not falsely re-arm the startup handoff window once the queue is already known.
 - If you touch DXGI Present-hook refresh or repair logic, verify that later runtime-created live swapchains can still re-anchor Present/Present1 interception when the active Present path moves to a different vtable after startup.
+- If you touch DX10/D3D10 classification or overlay setup, verify that D3D10 swapchains enter the shared DX10/DX11 `ProcessFrame` path and that the overlay binds an explicit swapchain backbuffer RTV instead of relying on whatever render target the app left bound.
+- If you touch D3D12 focus-loss or unfocused swapchain throttling, verify the x86 DX12 Alt+Tab/focus-loss family manually. D3D12 must preserve Present pacing; do not reintroduce `DO_NOT_WAIT` there to hide or reinitialize the overlay. Non-DX12 throttle protection should stay covered by `DXGISharedTest.D3D12FocusLossPreservesPresentPacing`.
 - If you change how FG mode transitions are interpreted, verify both routing behavior and visible overlay status behavior.
 - If you change injection or overlay handoff behavior, verify the runtime flags and pseudo-overlay suppression path.
 - Prefer fast focused unit tests while iterating, then run broader coverage before considering the work complete.

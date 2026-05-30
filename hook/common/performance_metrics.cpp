@@ -1,8 +1,44 @@
 #include "performance_metrics.h"
+#include <array>
 #include <cstring>
-
 namespace {
 constexpr int64_t kDuplicateFrameThresholdUs = 100;
+
+float ComputeWorstPercentileFPS(const float* history, int historyIdx, float percentile, int minSamples) {
+    std::array<float, PerformanceMetrics::HISTORY_SIZE> frameTimes{};
+    int count = 0;
+    float totalMs = 0.0f;
+
+    for (int i = 0; i < PerformanceMetrics::HISTORY_SIZE; i++) {
+        int idx = (historyIdx - 1 - i + PerformanceMetrics::HISTORY_SIZE) % PerformanceMetrics::HISTORY_SIZE;
+        float ms = history[idx];
+        if (ms <= 0.0001f)
+            break;
+        frameTimes[count++] = ms;
+        totalMs += ms;
+        if (totalMs >= 5000.0f)
+            break;
+    }
+
+    if (count < minSamples)
+        return 0.0f;
+
+    int percentileIdx = static_cast<int>(count * percentile);
+    if (percentileIdx >= count)
+        percentileIdx = count - 1;
+
+    int worstCount = std::max(1, percentileIdx + 1);
+    auto begin = frameTimes.begin();
+    auto middle = begin + worstCount;
+    auto end = begin + count;
+    std::nth_element(begin, middle, end, std::greater<float>());
+
+    float sum = 0.0f;
+    for (int i = 0; i < worstCount; i++) {
+        sum += frameTimes[i];
+    }
+    return 1000.0f / (sum / worstCount);
+}
 }
 
 PerformanceMetrics::PerformanceMetrics() {
@@ -164,73 +200,13 @@ float PerformanceMetrics::GetAverageFPS() const {
 }
 
 float PerformanceMetrics::Get1PercentLowFPS() const {
-    // Lock-free read — snapshot history
     int histIdx = m_historyIdx.load(std::memory_order_acquire);
-    std::vector<float> frameTimes;
-    frameTimes.reserve(HISTORY_SIZE / 2);
-
-    float totalMs = 0.0f;
-    for (int i = 0; i < HISTORY_SIZE; i++) {
-        int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        float ms = m_history[idx];
-        if (ms <= 0.0001f)
-            break;
-        frameTimes.push_back(ms);
-        totalMs += ms;
-        if (totalMs >= 5000.0f)
-            break;
-    }
-
-    if (frameTimes.size() < 10)
-        return 0.0f;
-
-    std::sort(frameTimes.begin(), frameTimes.end(), std::greater<float>());
-
-    int percentileIdx = (int)(frameTimes.size() * 0.01f);
-    if (percentileIdx >= (int)frameTimes.size())
-        percentileIdx = (int)frameTimes.size() - 1;
-
-    float sum = 0.0f;
-    int count = std::max(1, percentileIdx + 1);
-    for (int i = 0; i < count; i++) {
-        sum += frameTimes[i];
-    }
-    return 1000.0f / (sum / count);
+    return ComputeWorstPercentileFPS(m_history, histIdx, 0.01f, 10);
 }
 
 float PerformanceMetrics::Get01PercentLowFPS() const {
-    // Lock-free read — snapshot history
     int histIdx = m_historyIdx.load(std::memory_order_acquire);
-    std::vector<float> frameTimes;
-    frameTimes.reserve(HISTORY_SIZE / 2);
-
-    float totalMs = 0.0f;
-    for (int i = 0; i < HISTORY_SIZE; i++) {
-        int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-        float ms = m_history[idx];
-        if (ms <= 0.0001f)
-            break;
-        frameTimes.push_back(ms);
-        totalMs += ms;
-        if (totalMs >= 5000.0f)
-            break;
-    }
-
-    if (frameTimes.size() < 100)
-        return 0.0f;
-
-    std::sort(frameTimes.begin(), frameTimes.end(), std::greater<float>());
-
-    int percentileIdx = (int)(frameTimes.size() * 0.001f);
-    if (percentileIdx >= (int)frameTimes.size())
-        percentileIdx = (int)frameTimes.size() - 1;
-
-    float sum = 0.0f;
-    int count = std::max(1, percentileIdx + 1);
-    for (int i = 0; i < count; i++) {
-        sum += frameTimes[i];
-    }
-    return 1000.0f / (sum / count);
+    return ComputeWorstPercentileFPS(m_history, histIdx, 0.001f, 100);
 }
 
 void PerformanceMetrics::GetLastHistory(float* outBuffer, int count) const {

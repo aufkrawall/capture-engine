@@ -110,6 +110,23 @@ TEST_F(PerformanceMetricsTest, HighFpsFramesAreNotDebouncedAway) {
     EXPECT_GT(metrics.GetCurrentFPS(), 1500.0f);
 }
 
+TEST_F(PerformanceMetricsTest, LowPercentilesUseWorstFrameTimesWithoutHeapSortDependency) {
+    int64_t t = 1000000;
+    metrics.Update(t);
+
+    for (int i = 0; i < 199; ++i) {
+        t += 10000;
+        metrics.Update(t);
+    }
+    t += 50000;
+    metrics.Update(t);
+
+    EXPECT_LT(metrics.Get1PercentLowFPS(), 50.0f);
+    EXPECT_GT(metrics.Get1PercentLowFPS(), 0.0f);
+    EXPECT_LT(metrics.Get01PercentLowFPS(), 50.0f);
+    EXPECT_GT(metrics.Get01PercentLowFPS(), 0.0f);
+}
+
 TEST_F(PerformanceMetricsTest, FGMetricsResetClearsActiveStateAndLabel) {
     metrics.SetFGMetrics(120.0f, 60.0f, 2, 1);
 

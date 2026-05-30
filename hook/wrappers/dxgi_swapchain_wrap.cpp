@@ -1080,27 +1080,33 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         SyncInterval = 0;
     }
 
-    // When the window is not in the foreground, the GPU can be throttled by the driver.
-    // FLIP model Present() with SyncInterval>0 blocks waiting for the flip queue to drain;
-    // with a throttled GPU, that never happens. Force SyncInterval=0 and add DO_NOT_WAIT
-    // so DXGI returns WAS_STILL_DRAWING immediately instead of spinning for 10-30 seconds.
-    // DXGI_PRESENT_DO_NOT_WAIT = 0x8 (compatible with FLIP_SEQUENTIAL/FLIP_DISCARD only).
+    // When non-DX12 flip-model apps are not in the foreground, the GPU can be
+    // throttled by the driver. Present() with SyncInterval>0 may block waiting
+    // for the flip queue to drain, so DX11/DX10 can use DO_NOT_WAIT. D3D12 is
+    // different: the app often keeps building command lists while unfocused, and
+    // forcing DO_NOT_WAIT can create an unbounded ECL/Present loop that hangs
+    // the device. Preserve D3D12 Present pacing and let the overlay visually
+    // stall instead of disappearing or destabilizing the queue.
     UINT presentFlags = Flags;
     if (m_hWnd && !m_State.isFullscreen) {
         HWND foreground = GetForegroundWindow();
         if (foreground != m_hWnd) {
             static std::atomic<int> s_focusLossLog{0};
             int n = s_focusLossLog.fetch_add(1, std::memory_order_relaxed);
+            const bool applyDoNotWait = DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(
+                m_IsD3D12, m_State.isFullscreen, false, presentFlags);
             if (n == 0 || n % 300 == 0) {
                 WrapperLog(
-                    "Present#%d: Not foreground (fg=%p vs ours=%p), "
-                    "SyncInterval %u->0 + DO_NOT_WAIT (GPU throttle protection)",
-                    callCount, foreground, m_hWnd, SyncInterval);
+                    "Present#%d: Not foreground (fg=%p vs ours=%p), %s",
+                    callCount, foreground, m_hWnd,
+                    applyDoNotWait
+                        ? "SyncInterval ->0 + DO_NOT_WAIT (non-DX12 GPU throttle protection)"
+                        : "preserving Present pacing (D3D12 focus-loss safety)");
             }
-            SyncInterval = 0;
-            // Only add DO_NOT_WAIT when compatible (cannot combine with ALLOW_TEARING or RESTART)
-            if (!(presentFlags & (0x00000200U | 0x00000004U)))  // ALLOW_TEARING | RESTART
-                presentFlags |= 0x00000008U;                    // DO_NOT_WAIT
+            if (applyDoNotWait) {
+                SyncInterval = 0;
+                presentFlags |= 0x00000008U;  // DO_NOT_WAIT
+            }
         }
     }
 

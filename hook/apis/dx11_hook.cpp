@@ -4371,6 +4371,12 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
     ID3D10Device* device = nullptr;
     if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device))) {
         if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device))) {
+            static std::atomic<int> s_getDeviceFailureLogCount{0};
+            const int logCount = s_getDeviceFailureLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 5) {
+                HookLogImportant("DX10: DrawOverlay failed to get ID3D10Device/Device1 from swapchain %p",
+                                 pSwapChain);
+            }
             return;
         }
     }
@@ -4378,7 +4384,21 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
     // Capture/Hook on the real device seen in Present
     static ID3D10Device* s_HookedDevice = nullptr;
     static bool s_DidRebind = false;
+    static IDXGISwapChain* s_LastDX10OverlaySwapChain = nullptr;
+    static UINT s_LastDX10OverlayBufferIndex = 0xFFFFFFFFu;
+    static HWND s_LastDX10OverlayHwnd = nullptr;
     if (s_HookedDevice != device) {
+        if (g_mainRenderTargetView10) {
+            g_mainRenderTargetView10->Release();
+            g_mainRenderTargetView10 = nullptr;
+        }
+        s_LastDX10OverlaySwapChain = nullptr;
+        s_LastDX10OverlayBufferIndex = 0xFFFFFFFFu;
+        s_LastDX10OverlayHwnd = currentHwnd;
+        if (g_OverlayAdapter.IsInitialized()) {
+            HookLogImportant("DX10: Device changed, reinitializing overlay backend");
+            g_OverlayAdapter.Shutdown();
+        }
         // Install runtime hooks on this device vtable if needed
         InstallRuntimeD3D10Hooks(device);
 
@@ -4399,6 +4419,53 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
 
         s_HookedDevice = device;
         s_DidRebind = false;
+    }
+
+    if (s_LastDX10OverlayHwnd && s_LastDX10OverlayHwnd != currentHwnd && g_OverlayAdapter.IsInitialized()) {
+        HookLogImportant("DX10: HWND changed from %p to %p, reinitializing overlay backend",
+                         s_LastDX10OverlayHwnd, currentHwnd);
+        g_OverlayAdapter.Shutdown();
+    }
+    s_LastDX10OverlayHwnd = currentHwnd;
+
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    if (FAILED(pSwapChain->GetDesc(&desc))) {
+        static std::atomic<int> s_getDescFailureLogCount{0};
+        const int logCount = s_getDescFailureLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 5) {
+            HookLogImportant("DX10: DrawOverlay failed to get swapchain desc for %p", pSwapChain);
+        }
+        device->Release();
+        return;
+    }
+
+    const UINT bufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
+    if (!g_mainRenderTargetView10 || s_LastDX10OverlaySwapChain != pSwapChain ||
+        s_LastDX10OverlayBufferIndex != bufferIndex) {
+        if (g_mainRenderTargetView10) {
+            g_mainRenderTargetView10->Release();
+            g_mainRenderTargetView10 = nullptr;
+        }
+
+        ID3D10Texture2D* backbuffer = nullptr;
+        HRESULT hr = pSwapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer));
+        if (SUCCEEDED(hr) && backbuffer) {
+            hr = device->CreateRenderTargetView(backbuffer, nullptr, &g_mainRenderTargetView10);
+            backbuffer->Release();
+        }
+        if (FAILED(hr) || !g_mainRenderTargetView10) {
+            static std::atomic<int> s_rtvFailureLogCount{0};
+            const int logCount = s_rtvFailureLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10) {
+                HookLogImportant("DX10: Failed to create overlay RTV for swapchain %p buffer=%u hr=0x%08X",
+                                 pSwapChain, bufferIndex, (unsigned)hr);
+            }
+            device->Release();
+            return;
+        }
+        s_LastDX10OverlaySwapChain = pSwapChain;
+        s_LastDX10OverlayBufferIndex = bufferIndex;
+        HookLogImportant("DX10: Overlay RTV ready for swapchain %p buffer=%u", pSwapChain, bufferIndex);
     }
 
     // One-time rebind for this device to ensure late initialization is caught
@@ -4425,7 +4492,19 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
             int width = rect.right - rect.left;
             int height = rect.bottom - rect.top;
             if (width > 0 && height > 0) {
+                ID3D10RenderTargetView* previousRTV = nullptr;
+                ID3D10DepthStencilView* previousDSV = nullptr;
+                device->OMGetRenderTargets(1, &previousRTV, &previousDSV);
+                ID3D10RenderTargetView* overlayRTV = g_mainRenderTargetView10;
+                device->OMSetRenderTargets(1, &overlayRTV, nullptr);
                 g_OverlayAdapter.RenderOverlay(width, height);
+                device->OMSetRenderTargets(1, &previousRTV, previousDSV);
+                if (previousRTV) {
+                    previousRTV->Release();
+                }
+                if (previousDSV) {
+                    previousDSV->Release();
+                }
             }
         }
     }

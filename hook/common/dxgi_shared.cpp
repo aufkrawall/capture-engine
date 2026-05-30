@@ -2361,6 +2361,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 strncpy(perfMetrics.api, "DX12", sizeof(perfMetrics.api) - 1);
             else if (api == APIType::D3D11)
                 strncpy(perfMetrics.api, "DX11", sizeof(perfMetrics.api) - 1);
+            else if (api == APIType::D3D10)
+                strncpy(perfMetrics.api, "DX10", sizeof(perfMetrics.api) - 1);
             else
                 strncpy(perfMetrics.api, "DXGI", sizeof(perfMetrics.api) - 1);
             perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
@@ -2425,7 +2427,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
         if (!steamOnlyTest && api == APIType::D3D12) {
             HandleDX12ProcessFrame(pSwapChain, true);
-        } else if (!steamOnlyTest && api == APIType::D3D11) {
+        } else if (!steamOnlyTest && DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(api)) {
+            if (api == APIType::D3D10) {
+                static std::atomic<int> s_d3d10ProcessFrameLogCount{0};
+                const int logCount = s_d3d10ProcessFrameLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 5) {
+                    HookLogImportant(
+                        "DetourPresent: Routing D3D10 swapchain through shared DX10/DX11 ProcessFrame path #%d",
+                        logCount + 1);
+                }
+            }
             HandleDX11ProcessFrame(pSwapChain, true);
         }
     }
@@ -3115,7 +3126,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     if (api == APIType::D3D12) {
         HandleDX12ProcessFrame(pSwapChain, true);
-    } else if (api == APIType::D3D11) {
+    } else if (DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(api)) {
+        if (api == APIType::D3D10) {
+            static std::atomic<int> s_d3d10ProcessFrameLogCount1{0};
+            const int logCount = s_d3d10ProcessFrameLogCount1.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 5) {
+                HookLogImportant(
+                    "DetourPresent1: Routing D3D10 swapchain through shared DX10/DX11 ProcessFrame path #%d",
+                    logCount + 1);
+            }
+        }
         HandleDX11ProcessFrame(pSwapChain, true);
     }
 
