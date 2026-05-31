@@ -4183,9 +4183,14 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     const bool ffxCallbackHasCurrentBackBuffer = desc->currentBackBuffer.resource != nullptr;
     const bool ffxCallbackOutputDiffersFromCurrent =
         desc->currentBackBuffer.resource != desc->outputSwapChainBuffer.resource;
+    const auto ffxCallbackRuntimeMode = g_FGCompat.GetRuntimeMode();
+    const bool ffxRuntimeOwnsNativeFSRPresentation =
+        g_FGCompat.IsFSRFGApiActive() || ce::fg_runtime::RuntimeModeUsesFSR(ffxCallbackRuntimeMode) ||
+        (g_FGRuntimeOwnsSwapchain &&
+         g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
     const bool shouldFallbackCopy = ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(
         originalCallback != nullptr, ffxCallbackHasCurrentBackBuffer, ffxCallbackOutputDiffersFromCurrent,
-        desc->isGeneratedFrame != 0);
+        desc->isGeneratedFrame != 0, ffxRuntimeOwnsNativeFSRPresentation);
     if (shouldFallbackCopy) {
         static std::atomic<int> s_ffxPresentFallbackCopyLogCount{0};
         if (s_ffxPresentFallbackCopyLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
@@ -4197,14 +4202,16 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(desc->commandList);
         CopyFFXPresentSourceToOutput(cmdList, desc);
     } else if (!originalCallback && ffxCallbackHasCurrentBackBuffer && ffxCallbackOutputDiffersFromCurrent &&
-               desc->isGeneratedFrame) {
-        static std::atomic<int> s_ffxPresentGeneratedFallbackSkipLogCount{0};
-        const int logCount = s_ffxPresentGeneratedFallbackSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+               (desc->isGeneratedFrame || ffxRuntimeOwnsNativeFSRPresentation)) {
+        static std::atomic<int> s_ffxPresentFallbackSkipLogCount{0};
+        const int logCount = s_ffxPresentFallbackSkipLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
             HookLogImportant(
-                "DX12: FFX present callback bridge preserving generated output without fallback-copy "
-                "(frameId=%llu log=%d)",
-                static_cast<unsigned long long>(desc->frameID), logCount + 1);
+                "DX12: FFX present callback bridge preserving runtime output without fallback-copy "
+                "(frameId=%llu generated=%d runtimeOwnedNativeFSR=%d runtime=%s log=%d)",
+                static_cast<unsigned long long>(desc->frameID), desc->isGeneratedFrame ? 1 : 0,
+                ffxRuntimeOwnsNativeFSRPresentation ? 1 : 0,
+                ce::fg_runtime::GetRuntimeModeName(ffxCallbackRuntimeMode), logCount + 1);
         }
     }
 
@@ -13138,9 +13145,13 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         g_State.overlayInit && g_State.syncInit && s_startupOverlayResourcePrimeMs != 0) {
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG msSinceResourcePrime = now - s_startupOverlayResourcePrimeMs;
-        const bool processNeedsRenderDelay = startupOverlayCompatibilityActive;
-        if (processNeedsRenderDelay && !IsActualFrameGenerationActive() &&
-            msSinceResourcePrime < kStartupOverlayPostResourcePrimeSettleMs) {
+        const bool preserveLiveStartupOverlayDuringInactiveSL =
+            ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
+        const bool shouldDelayAfterResourcePrime =
+            ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(
+                startupOverlayCompatibilityActive, IsActualFrameGenerationActive(), msSinceResourcePrime,
+                kStartupOverlayPostResourcePrimeSettleMs, preserveLiveStartupOverlayDuringInactiveSL);
+        if (shouldDelayAfterResourcePrime) {
             static std::atomic<int> s_postResourcePrimeLogCount{0};
             if (s_postResourcePrimeLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
                 HookLogImportant(
@@ -13149,8 +13160,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             }
             delayOverlayRenderAfterResourcePrime = true;
         } else {
-            HookLogImportant("DX12: Startup compat resource-prime settle complete - allowing first overlay draw for %s",
-                             g_ProcessName);
+            if (preserveLiveStartupOverlayDuringInactiveSL) {
+                HookLogImportant(
+                    "DX12: Skipping startup resource-prime settle delay to keep live overlay visible for %s",
+                    g_ProcessName);
+            } else {
+                HookLogImportant(
+                    "DX12: Startup compat resource-prime settle complete - allowing first overlay draw for %s",
+                    g_ProcessName);
+            }
             s_startupOverlayResourcePrimeMs = 0;
         }
     }
@@ -14544,9 +14562,27 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             }
                         }
                         if (SUCCEEDED(listResetHr)) {
-                            const bool shouldPrimeStartupOverlayResources = startupOverlayCompatibilityActive &&
-                                                                            s_startupOverlayResourcePrimeMs == 0 &&
-                                                                            g_OverlayAdapter.HasPendingDX12Resources();
+                            const bool preserveLiveStartupOverlayDuringInactiveSL =
+                                ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
+                            const bool hasPendingStartupOverlayResources =
+                                g_OverlayAdapter.HasPendingDX12Resources();
+                            const bool shouldPrimeStartupOverlayResources =
+                                s_startupOverlayResourcePrimeMs == 0 &&
+                                ce::dx12_overlay_policy::ShouldPrimeStartupOverlayResources(
+                                    startupOverlayCompatibilityActive, hasPendingStartupOverlayResources,
+                                    preserveLiveStartupOverlayDuringInactiveSL);
+                            if (startupOverlayCompatibilityActive && hasPendingStartupOverlayResources &&
+                                preserveLiveStartupOverlayDuringInactiveSL) {
+                                static std::atomic<int> s_skipStartupPrimeForLiveOverlayLogCount{0};
+                                const int skipPrimeLog =
+                                    s_skipStartupPrimeForLiveOverlayLogCount.fetch_add(1, std::memory_order_relaxed);
+                                if (skipPrimeLog < 5 || (skipPrimeLog % 300) == 0) {
+                                    HookLogImportant(
+                                        "DX12: Skipping startup resource priming delay because live overlay is "
+                                        "preserved through runtime-inactive Streamline handoff (log=%d)",
+                                        skipPrimeLog + 1);
+                                }
+                            }
                             if (shouldPrimeStartupOverlayResources) {
                                 // Check device before priming — after FG teardown the
                                 // device may already be removed (async GPU fault).

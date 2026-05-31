@@ -163,6 +163,19 @@ inline bool ShouldDeferStartupOverlayWorkAfterResume(bool startupOverlayCompatib
     return runtimeOwnedSwapchainActiveMs < settleDelayMs;
 }
 
+inline bool ShouldPrimeStartupOverlayResources(bool startupOverlayCompatibilityActive, bool hasPendingDX12Resources,
+                                               bool preserveLiveOverlayDuringHandoff) {
+    return startupOverlayCompatibilityActive && hasPendingDX12Resources && !preserveLiveOverlayDuringHandoff;
+}
+
+inline bool ShouldDelayAfterStartupOverlayResourcePrime(bool startupOverlayCompatibilityActive,
+                                                        bool actualFrameGenerationActive,
+                                                        ULONGLONG msSinceResourcePrime, ULONGLONG settleDelayMs,
+                                                        bool preserveLiveOverlayDuringHandoff) {
+    return startupOverlayCompatibilityActive && !actualFrameGenerationActive &&
+           msSinceResourcePrime < settleDelayMs && !preserveLiveOverlayDuringHandoff;
+}
+
 inline bool ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
     bool startupCompatAlreadySettled, bool overlayBackendReady, bool runtimeOwnsSwapchain, bool streamlineFGRunning,
     fg_runtime::RuntimeMode runtimeMode, bool explicitSetOptionsActivation, bool observedAnyFrameGenerationActivity,
@@ -1035,15 +1048,20 @@ inline bool ResolveRuntimeOwnedCallbackHDRStateFromCachedState(int dxgiFormat, b
 }
 
 inline bool ShouldFallbackCopyFFXPresentSourceToOutput(bool originalPresentCallbackAvailable, bool hasCurrentBackBuffer,
-                                                       bool outputDiffersFromCurrent, bool generatedFrame) {
+                                                       bool outputDiffersFromCurrent, bool generatedFrame,
+                                                       bool runtimeOwnsNativeFSRPresentation) {
     // The bridge only needs to copy the base frame when the runtime has no
     // callback available to compose it into the output surface first. Doing the
     // copy again after a real/default callback already ran, or performing the
     // fallback copy twice, adds unnecessary work on the native-FSR hot path and
     // can overwrite the runtime's own composition. Generated frames already
     // come from the runtime's output surface, so copying the current backbuffer
-    // over them destroys the generated result and can wedge the presenter.
-    return !originalPresentCallbackAvailable && hasCurrentBackBuffer && outputDiffersFromCurrent && !generatedFrame;
+    // over them destroys the generated result and can wedge the presenter. Real
+    // native-FSR callbacks also arrive after the runtime has selected its
+    // presentation surface; copying the game's current buffer over that output
+    // can corrupt FSR's history/composition and shows up as ghosting in games.
+    return !originalPresentCallbackAvailable && hasCurrentBackBuffer && outputDiffersFromCurrent && !generatedFrame &&
+           !runtimeOwnsNativeFSRPresentation;
 }
 
 inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,

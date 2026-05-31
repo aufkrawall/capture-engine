@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-31 (updated: build 0.1.3620 / tests 0.1.3621 - DX12 overlay visibility across native-FSR and runtime-inactive Streamline/Social startup handoffs)
+Last cross-checked: 2026-05-31 (updated: build 0.1.3622 / tests 0.1.3623 - native-FSR callback output preservation and no-blank runtime-inactive Streamline/Social handoffs)
 
 Primary sources:
 - `AGENTS.md`

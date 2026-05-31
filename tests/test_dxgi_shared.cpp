@@ -830,6 +830,24 @@ TEST(DXGISharedTest, SettledStartupOverlayStaysVisibleAcrossRuntimeInactiveStrea
         true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, false));
 }
 
+TEST(DXGISharedTest, LiveStartupOverlayHandoffSkipsResourcePrimingBlank) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPrimeStartupOverlayResources(true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPrimeStartupOverlayResources(true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPrimeStartupOverlayResources(true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPrimeStartupOverlayResources(false, true, false));
+
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(true, false, 50, 100, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(true, false, 50, 100, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(true, true, 50, 100, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(true, false, 100, 100, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(false, false, 50, 100, false));
+}
+
 TEST(DXGISharedTest, ThirdPartyOverlaySwapchainQueueCaptureNeverOverridesUnknownOrDifferentGameQueue) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(true, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(true, true, false));
@@ -1520,12 +1538,13 @@ TEST(DXGISharedTest, FFXPresentCallbackMirrorsOverlayToCurrentBackbufferOnlyDuri
 }
 
 TEST(DXGISharedTest, FFXPresentCallbackFallbackCopyOnlyRunsWithoutRuntimeCompositionCallback) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, true, false, false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(true, true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, false, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(true, true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, false, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, true, false, true));
 }
 
 TEST(DXGISharedTest, HDRDetectionTreatsFP16AsDefinitelyHDR) {
