@@ -145,7 +145,9 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Protected official FFX startup swapchain pass-through"), std::string::npos);
     EXPECT_NE(contents.find("Protected official FFX startup pending - passing ExecuteCommandLists through"),
               std::string::npos);
-    EXPECT_NE(contents.find("Protected official FFX startup pending - skipping ProcessFrame overlay/capture/FFX retry"),
+    EXPECT_NE(contents.find("Protected official FFX startup pending - keeping ProcessFrame overlay-only"),
+              std::string::npos);
+    EXPECT_NE(contents.find("Protected official FFX startup using staged runtime queue for overlay-only rendering"),
               std::string::npos);
     EXPECT_NE(contents.find("Preserving swapchain descriptor for authoritative FG runtime create"), std::string::npos);
     EXPECT_NE(contents.find("Finalizing protected official FFX startup pass-through after enabled ffxConfigure"),

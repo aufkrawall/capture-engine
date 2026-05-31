@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-31 (updated: build 0.1.3614 / tests 0.1.3615 - protected FFX startup queue staging for Talos FG transitions)
+Last cross-checked: 2026-05-31 (updated: build 0.1.3620 / tests 0.1.3621 - DX12 overlay visibility across native-FSR and runtime-inactive Streamline/Social startup handoffs)
 
 Primary sources:
 - `AGENTS.md`

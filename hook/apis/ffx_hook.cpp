@@ -524,6 +524,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // Native FSR can keep its context alive while toggling FG on/off via
     // ffxConfigure. Trust that runtime signal over context lifetime.
     if (parsed.enabled) {
+        // MarkDirectFFXApiConfirmation intentionally requires the current FSR
+        // activation to be live. Latch the API state before notifying DX12 so
+        // the first enabled configure can finalize protected startup without an
+        // extra hook re-arm pass on the runtime thread.
+        g_FGCompat.SetFSRFGActive(true);
         const bool hadConfirmation = g_FGCompat.HasDirectFFXApiConfirmation();
         g_FGCompat.MarkDirectFFXApiConfirmation();
         if (!hadConfirmation && g_FGCompat.HasDirectFFXApiConfirmation()) {

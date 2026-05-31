@@ -92,7 +92,12 @@ inline bool ShouldUseStartupOverlayCompatibilityMode(bool startupBlockingOverlay
 
 inline bool ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
     bool startupBlockingOverlayLoaded, bool actualFrameGenerationActive, bool startupCompatSettled,
-    bool runtimeOwnsSwapchain, bool observedAnyFrameGenerationActivity, bool runtimeOwnershipJustActivated) {
+    bool runtimeOwnsSwapchain, bool observedAnyFrameGenerationActivity, bool runtimeOwnershipJustActivated,
+    bool preserveLiveOverlayDuringHandoff = false) {
+    if (preserveLiveOverlayDuringHandoff) {
+        return false;
+    }
+
     if (!startupBlockingOverlayLoaded || actualFrameGenerationActive) {
         return false;
     }
@@ -112,7 +117,9 @@ inline bool ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
 
 inline bool ShouldAllowStartupOverlayRendering(bool startupOverlayCompatibilityActive, bool hasSwapchainQueue,
                                                bool runtimeOwnsSwapchain, ULONGLONG runtimeOwnedSwapchainActiveMs = 0,
-                                               ULONGLONG runtimeOwnedSwapchainSettleMs = 0) {
+                                               ULONGLONG runtimeOwnedSwapchainSettleMs = 0,
+                                               bool startupCompatAlreadySettled = false,
+                                               bool preserveLiveOverlayDuringHandoff = false) {
     if (!startupOverlayCompatibilityActive) {
         return true;
     }
@@ -129,6 +136,10 @@ inline bool ShouldAllowStartupOverlayRendering(bool startupOverlayCompatibilityA
         return true;
     }
 
+    if (startupCompatAlreadySettled || preserveLiveOverlayDuringHandoff) {
+        return true;
+    }
+
     // Some startup overlay stacks temporarily hand the live swapchain to a
     // runtime-owned queue before actual FG activates. Once that runtime-owned
     // queue has stayed stable long enough, continuing to block all overlay work
@@ -138,12 +149,32 @@ inline bool ShouldAllowStartupOverlayRendering(bool startupOverlayCompatibilityA
 }
 
 inline bool ShouldDeferStartupOverlayWorkAfterResume(bool startupOverlayCompatibilityActive, bool runtimeOwnsSwapchain,
-                                                     ULONGLONG runtimeOwnedSwapchainActiveMs, ULONGLONG settleDelayMs) {
+                                                     ULONGLONG runtimeOwnedSwapchainActiveMs, ULONGLONG settleDelayMs,
+                                                     bool startupCompatAlreadySettled = false,
+                                                     bool preserveLiveOverlayDuringHandoff = false) {
     if (!startupOverlayCompatibilityActive || !runtimeOwnsSwapchain) {
         return false;
     }
 
+    if (startupCompatAlreadySettled || preserveLiveOverlayDuringHandoff) {
+        return false;
+    }
+
     return runtimeOwnedSwapchainActiveMs < settleDelayMs;
+}
+
+inline bool ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
+    bool startupCompatAlreadySettled, bool overlayBackendReady, bool runtimeOwnsSwapchain, bool streamlineFGRunning,
+    fg_runtime::RuntimeMode runtimeMode, bool explicitSetOptionsActivation, bool observedAnyFrameGenerationActivity,
+    bool hasOriginalGameQueue) {
+    // A third-party startup overlay can create a Streamline-adjacent no-FG
+    // swapchain after CE has already rendered stably on the real game swapchain.
+    // That is not yet a DLSS-G activation. Keep the existing single-queue
+    // overlay path alive until an explicit FG signal appears instead of
+    // blanking the overlay for a speculative runtime-owned handoff.
+    return startupCompatAlreadySettled && overlayBackendReady && runtimeOwnsSwapchain && !streamlineFGRunning &&
+           runtimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG && !explicitSetOptionsActivation &&
+           !observedAnyFrameGenerationActivity && hasOriginalGameQueue;
 }
 
 inline bool ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(bool callerFromThirdPartyOverlay,
@@ -943,13 +974,17 @@ inline bool ShouldBridgeOverlayViaFFXPresentCallback(bool runtimeOwnedNativeFGPr
 inline bool ShouldMirrorFFXPresentCallbackOverlayToCurrentBackBuffer(bool generatedFrame,
                                                                      bool currentBackBufferAvailable,
                                                                      bool outputBackBufferAvailable,
-                                                                     bool currentDiffersFromOutput) {
+                                                                     bool currentDiffersFromOutput,
+                                                                     bool nativeFSRSuspended) {
     // During native-FSR suspension/menu frames some integrations keep invoking
     // the FFX present callback, but present the current game backbuffer instead
-    // of the callback output buffer. Mirroring only for non-generated frames
-    // keeps active generated-frame composition on the runtime output path while
-    // preserving overlay visibility during suspend/resume.
-    return !generatedFrame && currentBackBufferAvailable && outputBackBufferAvailable && currentDiffersFromOutput;
+    // of the callback output buffer. Do not mirror active native-FSR frames:
+    // the current backbuffer is an input owned by the runtime, and touching it
+    // from the callback can deadlock real presenter threads during mode
+    // switches. Suspension is the only time the current buffer is treated as a
+    // visible target.
+    return nativeFSRSuspended && !generatedFrame && currentBackBufferAvailable && outputBackBufferAvailable &&
+           currentDiffersFromOutput;
 }
 
 inline bool ShouldTreatFormatAsDefinitelyHDR(int dxgiFormat) {
@@ -1000,13 +1035,15 @@ inline bool ResolveRuntimeOwnedCallbackHDRStateFromCachedState(int dxgiFormat, b
 }
 
 inline bool ShouldFallbackCopyFFXPresentSourceToOutput(bool originalPresentCallbackAvailable, bool hasCurrentBackBuffer,
-                                                       bool outputDiffersFromCurrent) {
+                                                       bool outputDiffersFromCurrent, bool generatedFrame) {
     // The bridge only needs to copy the base frame when the runtime has no
     // callback available to compose it into the output surface first. Doing the
     // copy again after a real/default callback already ran, or performing the
     // fallback copy twice, adds unnecessary work on the native-FSR hot path and
-    // can overwrite the runtime's own composition.
-    return !originalPresentCallbackAvailable && hasCurrentBackBuffer && outputDiffersFromCurrent;
+    // can overwrite the runtime's own composition. Generated frames already
+    // come from the runtime's output surface, so copying the current backbuffer
+    // over them destroys the generated result and can wedge the presenter.
+    return !originalPresentCallbackAvailable && hasCurrentBackBuffer && outputDiffersFromCurrent && !generatedFrame;
 }
 
 inline bool ShouldTrackAuthoritativeFSRRealFrameOnlyRun(bool streamlineFGRunning, bool runtimeOwnsSwapchain,
@@ -2210,6 +2247,16 @@ inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool pro
     // narrow pre-configure window; sustained render progress is only a
     // diagnostic signal, not proof that CE may resume GPU side effects.
     return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved;
+}
+
+inline bool ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(bool protectedOfficialFFXStartupPending,
+                                                                    bool ffxStartupAlreadyResolved,
+                                                                    bool hasStagedDirectQueue) {
+    // A staged DIRECT queue lets CE draw only the overlay on the official FFX
+    // startup swapchain while still suppressing the invasive side effects that
+    // previously upset the runtime before ffxConfigure(enable). Without the
+    // queue, submitting to any fallback queue would be a cross-queue hazard.
+    return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved && hasStagedDirectQueue;
 }
 
 inline bool ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
