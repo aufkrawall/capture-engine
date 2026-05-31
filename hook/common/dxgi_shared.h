@@ -27,6 +27,16 @@ enum class APIType {
     Vulkan  // For WSI-DXGI interop
 };
 
+enum class SteamNullCallbackRecoveryPatchTarget {
+    DummyNoPresent,
+    DXGIBypassPresent,
+};
+
+inline SteamNullCallbackRecoveryPatchTarget SelectSteamNullCallbackRecoveryPatchTarget(bool bypassPresentAvailable) {
+    return bypassPresentAvailable ? SteamNullCallbackRecoveryPatchTarget::DXGIBypassPresent
+                                  : SteamNullCallbackRecoveryPatchTarget::DummyNoPresent;
+}
+
 // Some runtimes expose lower-version compatibility interfaces on higher-version
 // swapchains (for example DX11-on-DXVK can answer ID3D10 queries). Always prefer
 // the highest actual device API so DX11 swapchains do not fall back to DX10 code

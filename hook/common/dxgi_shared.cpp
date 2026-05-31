@@ -421,14 +421,9 @@ static PFN_Present s_originalVtable8Present = nullptr;
 static std::atomic<bool> s_steamDX12InitAttempted{false};
 static bool s_steamInitCrashed = false;
 
-// Steam overlay has a NULL internal rendering callback at RVA ~0x1621d8
-// inside gameoverlayrenderer64.dll, used by OverlayHookD3D3.  CE's vtable
-// hook prevents Steam's natural initialization of this pointer.  We write
-// this no-op function there as a safe placeholder so Steam can complete
-// its first E9 JMP entry without crashing (the first call goes through our
-// VEH handler which patches the NULL pointer and retries).  Steam
-// typically overwrites this with its own real function during that same
-// E9 JMP entry.
+// Fallback only: Steam's NULL Present-shaped callbacks should normally be
+// patched to CE's DXGI bypass trampoline so Steam can keep chaining to a real
+// Present.  This no-op is used only when a bypass trampoline is not available.
 static HRESULT WINAPI SteamDummyRenderingCallback(IDXGISwapChain* /*pSwapChain*/,
                                                     UINT /*SyncInterval*/, UINT /*Flags*/) {
     return S_OK;
@@ -448,17 +443,104 @@ static thread_local SteamNullCallbackRecoveryContext s_steamNullCallbackRecovery
 // Forward declaration (defined at line ~817)
 static bool IsReadableMemory(const void* ptr, size_t size);
 
+static void* SelectSteamNullCallbackRecoveryTarget(const SteamNullCallbackRecoveryContext& recoveryContext) {
+    const bool hasBypass = recoveryContext.bypass != nullptr;
+    return DXGIShared::SelectSteamNullCallbackRecoveryPatchTarget(hasBypass) ==
+                   DXGIShared::SteamNullCallbackRecoveryPatchTarget::DXGIBypassPresent
+               ? recoveryContext.bypass
+               : reinterpret_cast<void*>(SteamDummyRenderingCallback);
+}
+
+static void** ResolveSteamNullCallbackSlotFromFault(uintptr_t returnAddress, uintptr_t steamStart,
+                                                    uintptr_t steamEnd) {
+#ifdef _WIN64
+    if (returnAddress < steamStart + 2 || returnAddress >= steamEnd) {
+        return nullptr;
+    }
+
+    const uintptr_t callAddress = returnAddress - 2;
+    const auto* callBytes = reinterpret_cast<const uint8_t*>(callAddress);
+    if (!IsReadableMemory(callBytes, 2) || callBytes[0] != 0xFF || callBytes[1] != 0xD0) {
+        return nullptr;
+    }
+
+    const uintptr_t scanStart = (callAddress > steamStart + 64) ? callAddress - 64 : steamStart;
+    for (uintptr_t instr = callAddress; instr >= scanStart; --instr) {
+        const auto* bytes = reinterpret_cast<const uint8_t*>(instr);
+        if (!IsReadableMemory(bytes, 7)) {
+            if (instr == scanStart) {
+                break;
+            }
+            continue;
+        }
+
+        if (bytes[0] == 0x48 && bytes[1] == 0x8B && bytes[2] == 0x05) {
+            int32_t disp = 0;
+            memcpy(&disp, bytes + 3, sizeof(disp));
+            auto** slot = reinterpret_cast<void**>(instr + 7 + disp);
+            const uintptr_t slotAddress = reinterpret_cast<uintptr_t>(slot);
+            if (slotAddress >= steamStart && slotAddress + sizeof(void*) <= steamEnd &&
+                IsReadableMemory(slot, sizeof(void*)) && *slot == nullptr) {
+                return slot;
+            }
+        }
+
+        if (instr == scanStart) {
+            break;
+        }
+    }
+#else
+    if (returnAddress < steamStart + 2 || returnAddress >= steamEnd) {
+        return nullptr;
+    }
+
+    const uintptr_t callAddress = returnAddress - 2;
+    const auto* callBytes = reinterpret_cast<const uint8_t*>(callAddress);
+    if (!IsReadableMemory(callBytes, 2) || callBytes[0] != 0xFF || callBytes[1] != 0xD0) {
+        return nullptr;
+    }
+
+    const uintptr_t scanStart = (callAddress > steamStart + 32) ? callAddress - 32 : steamStart;
+    for (uintptr_t instr = callAddress; instr >= scanStart; --instr) {
+        const auto* bytes = reinterpret_cast<const uint8_t*>(instr);
+        uintptr_t slotAddress = 0;
+        if (IsReadableMemory(bytes, 5) && bytes[0] == 0xA1) {
+            uint32_t absolute = 0;
+            memcpy(&absolute, bytes + 1, sizeof(absolute));
+            slotAddress = absolute;
+        } else if (IsReadableMemory(bytes, 6) && bytes[0] == 0x8B && bytes[1] == 0x05) {
+            uint32_t absolute = 0;
+            memcpy(&absolute, bytes + 2, sizeof(absolute));
+            slotAddress = absolute;
+        }
+
+        auto** slot = reinterpret_cast<void**>(slotAddress);
+        if (slotAddress >= steamStart && slotAddress + sizeof(void*) <= steamEnd &&
+            IsReadableMemory(slot, sizeof(void*)) && *slot == nullptr) {
+            return slot;
+        }
+
+        if (instr == scanStart) {
+            break;
+        }
+    }
+#endif
+
+    return nullptr;
+}
+
 // VEH handler: catches Steam's NULL rendering callback crash during the
-// one-time overlay init in AttemptSteamDX12OverlayInit.  Patches the NULL
-// pointer at the known RVA inside gameoverlayrenderer(64).dll to
-// SteamDummyRenderingCallback and retries the `call (e)ax` instruction so
-// Steam completes its initialization.
+// one-time init and guarded Present paths.  It resolves the exact Steam global
+// slot that supplied NULL to `call (e)ax`, patches that slot to CE's DXGI
+// bypass Present when possible, and retries the call so Steam can keep its own
+// overlay chain alive.
 //
 // Architecture notes:
 //   x64: returnAddr from [RSP], RIP, RAX, RSP, call rax = FF D0 (2 bytes)
 //   x86: returnAddr from [ESP], EIP, EAX, ESP, call eax = FF D0 (2 bytes)
 //   Steam module: x64=gameoverlayrenderer64.dll, x86=gameoverlayrenderer.dll
-//   RVA: x64=0x1621d8, x86=TODO (not yet observed, same offset concept)
+//   Legacy fallback RVA: x64=0x1621d8. Newer Steam builds can use nearby slots;
+//   the handler first resolves the slot dynamically from the faulting mov/call.
 static LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
     if (ep->ExceptionRecord->ExceptionCode != STATUS_ACCESS_VIOLATION) {
         return EXCEPTION_CONTINUE_SEARCH;
@@ -508,11 +590,14 @@ static LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Patch the NULL callback at the known RVA.
-    // Safety check: verify the pointer is actually NULL before patching,
-    // in case Steam updates changed the RVA.
     const SteamNullCallbackRecoveryContext recoveryContext = s_steamNullCallbackRecoveryContext;
-    void** nullFnPtr = (void**)(steamStart + kSteamCallbackRva);
+    const void* patchTarget = SelectSteamNullCallbackRecoveryTarget(recoveryContext);
+    void** nullFnPtr = ResolveSteamNullCallbackSlotFromFault(returnAddress, steamStart, steamEnd);
+    const bool dynamicallyResolvedSlot = nullFnPtr != nullptr;
+    if (!nullFnPtr) {
+        nullFnPtr = reinterpret_cast<void**>(steamStart + kSteamCallbackRva);
+    }
+    const uintptr_t resolvedRva = reinterpret_cast<uintptr_t>(nullFnPtr) - steamStart;
     void* callbackBefore = nullptr;
     const bool callbackSlotReadable = IsReadableMemory(nullFnPtr, sizeof(void*));
     if (callbackSlotReadable) {
@@ -522,17 +607,19 @@ static LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
     if (callbackSlotReadable && callbackBefore == nullptr) {
         DWORD oldProtect;
         if (VirtualProtect(nullFnPtr, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-            *nullFnPtr = (void*)SteamDummyRenderingCallback;
+            *nullFnPtr = const_cast<void*>(patchTarget);
             VirtualProtect(nullFnPtr, sizeof(void*), oldProtect, &oldProtect);
             patched = true;
             HookLogImportant(
                 "SteamOverlayInitVehHandler: Patched NULL callback at %p (steam+0x%zX) "
-                "-> SteamDummyRenderingCallback=%p context=%s reason=%s hook=%p bypass=%p streamlineStack=%d "
-                "pluginGuard=%d",
-                nullFnPtr, kSteamCallbackRva, (void*)SteamDummyRenderingCallback,
+                "-> %s=%p context=%s reason=%s hook=%p bypass=%p dynamicSlot=%d streamlineStack=%d pluginGuard=%d",
+                nullFnPtr, resolvedRva,
+                patchTarget == recoveryContext.bypass ? "DXGIBypassPresent" : "SteamDummyRenderingCallback",
+                patchTarget,
                 recoveryContext.context ? recoveryContext.context : "unknown",
                 recoveryContext.reason ? recoveryContext.reason : "Present", recoveryContext.hook,
-                recoveryContext.bypass, recoveryContext.streamlineStackActive ? 1 : 0,
+                recoveryContext.bypass, dynamicallyResolvedSlot ? 1 : 0,
+                recoveryContext.streamlineStackActive ? 1 : 0,
                 recoveryContext.pluginLookupGuardReady ? 1 : 0);
         } else {
             HookLogImportant(
@@ -543,23 +630,22 @@ static LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
     } else {
         HookLogImportant(
             "SteamOverlayInitVehHandler: RVA 0x%zX not patchable (slot=%p readable=%d value=%p) - RVA may have "
-            "changed, skipping patch and falling back to crash skip context=%s reason=%s",
-            kSteamCallbackRva, nullFnPtr, callbackSlotReadable ? 1 : 0, callbackBefore,
+            "changed, skipping patch and falling back to crash skip context=%s reason=%s dynamicSlot=%d",
+            resolvedRva, nullFnPtr, callbackSlotReadable ? 1 : 0, callbackBefore,
             recoveryContext.context ? recoveryContext.context : "unknown",
-            recoveryContext.reason ? recoveryContext.reason : "Present");
+            recoveryContext.reason ? recoveryContext.reason : "Present", dynamicallyResolvedSlot ? 1 : 0);
     }
 
     if (patched) {
         // Retry `call (e)ax` with our patched callback.
 #ifdef _WIN64
         ep->ContextRecord->Rsp += 8;  // undo the call's stack push (8 bytes on x64)
-        ep->ContextRecord->Rax = (DWORD64)SteamDummyRenderingCallback;
+        ep->ContextRecord->Rax = (DWORD64)patchTarget;
         ep->ContextRecord->Rip = returnAddress - kCallOpcodeSize;
-        HookLog("SteamOverlayInitVehHandler: Retrying call rax with RAX=%p",
-                (void*)ep->ContextRecord->Rax);
+        HookLog("SteamOverlayInitVehHandler: Retrying call rax with RAX=%p", (void*)ep->ContextRecord->Rax);
 #else
         ep->ContextRecord->Esp += 4;  // undo the call's stack push (4 bytes on x86)
-        ep->ContextRecord->Eax = (DWORD)SteamDummyRenderingCallback;
+        ep->ContextRecord->Eax = (DWORD)(uintptr_t)patchTarget;
         ep->ContextRecord->Eip = returnAddress - kCallOpcodeSize;
         HookLog("SteamOverlayInitVehHandler: Retrying call eax with EAX=%p",
                 (void*)(DWORD_PTR)ep->ContextRecord->Eax);
@@ -3785,19 +3871,17 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
 
         // === STEAM DX12 OVERLAY PRE-INITIALIZATION ===
         //
-        // Steam's OverlayHookD3D3 lazily initializes internal rendering
-        // callbacks (including a global function pointer at RVA ~0x1621d8 in
-        // gameoverlayrenderer64.dll) during its first E9 JMP entry.  CE's vtable
-        // hook (setting vtable[8] = DetourPresent below) prevents this natural
-        // initialization because Steam's E9 JMP never fires on the game's Present
-        // calls — they go through DetourPresent instead of dxgi!Present.
+        // Steam's OverlayHookD3D3 lazily initializes internal Present-shaped
+        // callback slots during its first E9 JMP entry. CE's vtable hook
+        // (setting vtable[8] = DetourPresent below) prevents this natural
+        // initialization because Steam's E9 JMP never fires on the game's
+        // Present calls — they go through DetourPresent instead of dxgi!Present.
         //
         // Best-effort pre-init: Call Present on the temp swapchain through the
         // REAL dxgi!Present (vtable[8] is still unhooked at this point) BEFORE
         // installing our vtable hook.  This initializes Steam's "next" handler
-        // but does NOT initialize the rendering callback at RVA 0x1621d8 —
-        // Steam only writes that when rendering on a REAL game swapchain (the
-        // 2x2 hidden-window temp swapchain causes Steam to skip full init).
+        // but does NOT initialize every real game-swapchain callback slot
+        // (the 2x2 hidden-window temp swapchain causes Steam to skip full init).
         //
         // The actual fix for the NULL rendering callback is the VEH-protected
         // call in AttemptSteamDX12OverlayInit (see below), which patches the
@@ -4073,10 +4157,9 @@ void RemoveSwapchainVTableHooks() {
 //   - Another thread/process context
 //
 // It temporarily restores vtable[8] to the real dxgi!Present, calls through
-// Steam's E9 JMP, then re-hooks vtable[8] to DetourPresent.  With the
-// pre-init having already set up Steam's internal rendering callbacks (the
-// NULL global function pointer at RVA ~0x1621d8 in gameoverlayrenderer64.dll),
-// this E9 JMP call should succeed without crashing.
+// Steam's E9 JMP, then re-hooks vtable[8] to DetourPresent. If Steam still
+// reaches a lazy NULL callback on the real swapchain, the scoped VEH guard
+// patches the exact faulting slot to CE's DXGI bypass Present and retries.
 //
 // Thread safety: only one thread wins the compare-exchange.  The brief window
 // where vtable[8] is unhooked is microseconds wide and limited to frame 1.
@@ -4084,7 +4167,8 @@ void RemoveSwapchainVTableHooks() {
 // Returns true if this thread performed the init call (result in *resultOut).
 // Returns false if another thread won the init race or if init was skipped.
 static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
-                                         PFN_Present presentOriginal, HRESULT* resultOut) {
+                                         PFN_Present presentOriginal, PFN_Present presentBypass,
+                                         HRESULT* resultOut) {
     if (!pSwapChain || !resultOut || !s_hookedVTable || !presentOriginal || s_steamInitCrashed) {
         return false;
     }
@@ -4122,24 +4206,22 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     // Call through oPresent (E9 JMP at dxgi!Present) WITH VEH protection.
     //
-    // Steam's OverlayHookD3D3 has a NULL internal rendering callback at RVA
-    // ~0x1621d8 in gameoverlayrenderer64.dll that causes a RIP=0 crash on first
+    // Steam's OverlayHookD3D3 can still have lazy NULL callback slots on first
     // entry through the E9 JMP on a REAL game swapchain (the temp swapchain pre-
-    // init in InstallPresentInlineHooks doesn't trigger full initialization because
-    // Steam skips rendering on a 2x2 hidden-window swapchain).
+    // init in InstallPresentInlineHooks doesn't trigger full initialization
+    // because Steam skips rendering on a 2x2 hidden-window swapchain).
     //
     // The SteamOverlayInitVehHandler catches this specific crash (RIP=0, RAX=0,
-    // return address inside gameoverlayrenderer64.dll), patches the NULL pointer
-    // to SteamDummyRenderingCallback, and retries the `call rax` so Steam
-    // completes its initialization.  Steam typically overwrites the dummy with
-    // its own real callback during the same E9 JMP entry.
+    // return address inside gameoverlayrenderer64.dll), patches the exact NULL
+    // slot to CE's bypass Present when possible, and retries the `call rax` so
+    // Steam completes its initialization and real Present chaining survives.
     //
     // If the crash is NOT the expected NULL callback (e.g. a different Steam bug),
     // the handler returns EXCEPTION_CONTINUE_SEARCH and CE's existing VEH crash
     // handler catches it and writes a crash dump.
     ScopedSteamNullCallbackRecoveryGuard steamInitGuard(
         true, "non-SL Steam init", "AttemptSteamDX12OverlayInit", reinterpret_cast<void*>(presentOriginal),
-        nullptr, false, false);
+        reinterpret_cast<void*>(presentBypass), false, false);
     HRESULT initHr = presentOriginal(pSwapChain, SyncInterval, Flags);
 
     // Re-hook vtable[8] with DetourPresent (our vtable hook)
@@ -4154,9 +4236,9 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
             "CE overlay may be disabled for this session.");
     }
 
-    // Check if Steam overwrote the dummy callback with its real rendering function
-    // during the init call.  If so, subsequent frames can route through the E9 JMP
-    // path and Steam overlay will render normally.
+    // Check what Steam's legacy known callback slot contains after the init call.
+    // New Steam builds can use nearby slots too; the VEH log reports the exact
+    // dynamically resolved slot when it differs from this legacy address.
     {
         HMODULE steamMod = GetModuleHandleW(L"gameoverlayrenderer64.dll");
         if (steamMod) {
@@ -4164,20 +4246,20 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
             if (IsReadableMemory(steamCallbackPtr, sizeof(void*))) {
                 void* callbackAfterInit = *steamCallbackPtr;
                 if (callbackAfterInit != nullptr &&
-                    callbackAfterInit != (void*)SteamDummyRenderingCallback) {
+                    callbackAfterInit != (void*)SteamDummyRenderingCallback &&
+                    callbackAfterInit != (void*)presentBypass) {
                     HookLogImportant(
-                        "AttemptSteamDX12OverlayInit: Steam overwrote dummy callback (%p) "
-                        "with its own function (%p) — not expected for DX12 but logged "
-                        "for diagnostics",
-                        (void*)SteamDummyRenderingCallback, callbackAfterInit);
+                        "AttemptSteamDX12OverlayInit: Steam legacy callback slot contains Steam-owned function %p "
+                        "(bypass=%p dummy=%p)",
+                        callbackAfterInit, (void*)presentBypass, (void*)SteamDummyRenderingCallback);
                 } else {
                     HookLogImportant(
-                        "AttemptSteamDX12OverlayInit: Steam callback is still %s (%p) — "
-                        "this is expected, the callback is a Vulkan-only function "
-                        "(symbol: VulkanSteamOverlayProcessCapturedFrame) irrelevant "
-                        "for DX12 overlay rendering",
-                        callbackAfterInit == nullptr ? "NULL" : "our no-op",
-                        callbackAfterInit ? callbackAfterInit : (void*)SteamDummyRenderingCallback);
+                        "AttemptSteamDX12OverlayInit: Steam legacy callback slot is %s (%p) "
+                        "(bypass=%p dummy=%p)",
+                        callbackAfterInit == nullptr ? "NULL"
+                                                     : (callbackAfterInit == (void*)presentBypass ? "CE bypass"
+                                                                                                  : "CE dummy"),
+                        callbackAfterInit, (void*)presentBypass, (void*)SteamDummyRenderingCallback);
                 }
             } else {
                 HookLog("AttemptSteamDX12OverlayInit: Cannot read Steam callback pointer (not readable)");
@@ -4259,22 +4341,19 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         } else {
             // Non-Streamline case (e.g. Strange Brigade DX12 with only Steam overlay):
             //
-            // Steam's OverlayHookD3D3 has a NULL global function pointer at RVA
-            // ~0x1621d8 in gameoverlayrenderer64.dll (internal rendering callback).
-            // The temp swapchain pre-init in InstallPresentInlineHooks does NOT
-            // initialize this callback (Steam only writes it when rendering on
-            // a real game swapchain).
+            // Steam's OverlayHookD3D3 can still have lazy NULL callback slots
+            // after hidden temp-swapchain pre-init; Steam only reaches all of
+            // them when rendering on a real game swapchain.
             //
             // AttemptSteamDX12OverlayInit handles the real fix: it temporarily
             // restores vtable[8] to dxgi!Present and calls Steam's E9 JMP with
             // VEH protection.  The VEH handler (SteamOverlayInitVehHandler)
-            // catches the NULL callback crash, patches RVA 0x1621d8 to a no-op,
-            // and retries the call.  Steam completes its initialization (and
-            // typically overwrites the no-op with its own real callback during
-            // the same E9 JMP entry).
+            // catches a NULL callback crash, patches the exact faulting slot to
+            // CE's DXGI bypass Present when possible, and retries the call so
+            // Steam can keep its "next Present" chain alive.
             //
-            // After init, subsequent frames route through oPresent (E9 JMP)
-            // normally — Steam's overlay is fully initialized.
+            // After init, subsequent frames keep the same guarded E9 JMP route;
+            // if Steam exposes a new lazy NULL slot, that frame repairs it too.
 
             // Phase A: One-time Steam DX12 overlay initialization.
             // If pre-init didn't happen (unusual), AttemptSteamDX12OverlayInit
@@ -4284,7 +4363,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (needInit) {
                     HRESULT initHr = S_OK;
                     if (AttemptSteamDX12OverlayInit(pSwapChain, SyncInterval, Flags,
-                                                    presentOriginal, &initHr)) {
+                                                    presentOriginal, presentBypass, &initHr)) {
                         // This thread performed init successfully
                         return initHr;
                     }
@@ -4300,7 +4379,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 } else {
                     // Init already attempted (by another thread or a prior frame).
                     // Steam's overlay init completed successfully (VEH handled the
-                    // NULL Vulkan callback at RVA 0x1621d8).
+                    // lazy NULL callback slot).
                     //
                     // == STEAM OVERLAY INVOCATION (non-SL path) ==
                     //
@@ -4412,6 +4491,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     // return address, so it chains to the original dxgi!Present
                     // after rendering Steam overlay.
                     if (presentOriginal && presentOriginal != (PFN_Present)DetourPresent) {
+                        ScopedSteamNullCallbackRecoveryGuard steamInvokeGuard(
+                            presentBypass != nullptr, "non-SL Steam Present", "E9 JMP steady Present",
+                            reinterpret_cast<void*>(presentOriginal), reinterpret_cast<void*>(presentBypass),
+                            false, false);
                         StreamlineHook::ExternalOverlayPresentGuard slGuard;
                         steamHr = presentOriginal(pSwapChain, SyncInterval, Flags);
                         steamInvoked = true;

@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-30 (updated: build 0.1.3610 / tests 0.1.3611 - Steam dummy callback bypass and FFX configure fallback)
+Last cross-checked: 2026-05-31 (updated: build 0.1.3612 / tests 0.1.3613 - Steam DX12 null-callback recovery slot hardening)
 
 Primary sources:
 - `AGENTS.md`

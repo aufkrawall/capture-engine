@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-30 (updated: build 0.1.3610 / tests 0.1.3611 Steam dummy callback bypass and FFX configure fallback)
+Last cross-checked: 2026-05-31 (updated: build 0.1.3612 / tests 0.1.3613 Steam DX12 null-callback recovery slot hardening)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -38,7 +38,7 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - Transition cooldowns are routing hints, not hard reasons to blank an already drawable DX12 overlay. `ShouldHeavySuspendDX12OverlayForSwapchainState(...)` only hard-suspends for zero-sized swapchains or iconic windows; ordinary swapchain/focus/FG-transition cooldowns should keep the initialized overlay visible if the backend remains valid. The expected degraded behavior during a fragile transition is a very brief visual stall, not overlay disappearance.
 - Startup-overlay compatibility windows from Social/EOS/Steam-like modules should not blank an already initialized DX12 overlay. `ShouldDelayDX12OverlayRenderAfterSyncInit(...)`, `ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(...)`, and `ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(...)` accept backend-ready state, and `ShouldKeepDX12OverlayVisibleDuringStartupSuppression(...)` documents the invariant: once CE has a live DX12 overlay backend and sync state, compatibility suppression should stop new-risky initialization work but continue overlay submissions.
 - Focus loss is not a reason to blank or rebuild a drawable DX12 overlay. For single-queue D3D12 swapchains, CE waits on its overlay fence in `focus-loss` mode before Present when the process is no longer foreground; this bounds CE's submitted overlay work while keeping the last visible overlay image alive. Wrapper-managed D3D12 `Present` and `Present1` must flush the deferred overlay fence signal after the real Present returns so the next wait observes a real fence signal.
-- Steam's DX12 overlay hook can be loaded even when the user-visible Steam overlay is disabled. The null-callback VEH recovery may patch Steam's renderer slot to `SteamDummyRenderingCallback` once, but that dummy is proof that Steam has not supplied a real renderer callback yet. Guarded direct Steam Present invocation must skip and use the DXGI bypass while the slot is CE's dummy, null without recovery, or an invalid low-address sentinel; it may resume direct invocation when Steam later installs a real callback so the visible Steam overlay can still coexist.
+- Steam's DX12 overlay hook can be loaded even when the user-visible Steam overlay is disabled. Current Steam builds can expose more than one lazy Present-shaped callback slot inside `gameoverlayrenderer64.dll`; `installed/captureengine/logs/20260531_141812_strangebrigadedx12crash` faulted at `steam+0x162200`, while older notes focused on `steam+0x1621d8`. CE's Steam null-call VEH recovery must resolve the exact slot from the faulting `mov rax,[rip+disp]` / `call rax` instruction and patch NULL slots to CE's DXGI bypass Present when a bypass exists. `SteamDummyRenderingCallback` is fallback-only when no bypass exists. Guarded Steam invocation still skips invalid low-address sentinels and CE dummy slots, but a bypass-patched slot is a real next-Present path and should allow Steam overlay rendering.
 
 ## Working Guidance For DX12 Games With External Overlays Active
 - Identify startup coexistence problems from module path, queue ownership, swapchain ownership, and call-stack evidence, not from game-specific branches.
@@ -71,6 +71,16 @@ This page records the current repo knowledge for making our DX12 overlay work we
   - Root cause: callFromStreamlineModule remains true for ALL Present calls when SL interposer wraps the game's Present calls, causing DetourPresent to take early bypass paths that skip Steam overlay without our explicit invoke.
 
 ## Non-SL Steam Overlay Bypass (Strange Brigade DX12 Fix)
+
+### Build 0.1.3612/0.1.3613 — Dynamic Steam null callback slot recovery
+
+- **Inputs**:
+  - Strange Brigade DX12 `installed/captureengine/logs/20260531_141812_strangebrigadedx12crash` crashed on the second Steam E9 path after the one-time init had already patched the older `steam+0x1621d8` slot. cdb disassembly showed `OverlayHookD3D3+0x13e3f` loading a NULL function pointer from `steam+0x162200` and calling it with the `Present(swapchain, sync, flags)` signature.
+  - Talos `installed/captureengine/logs/20260531_141924_talossteamoverlaydoesnotwork` did not crash, but the Steam overlay never appeared. The log showed the first guarded Steam call patching the legacy slot to CE's dummy callback, then every later frame skipped Steam because the slot was "not a real renderer".
+- **Root cause**: Treating the older hardcoded Steam slot as the only relevant callback was stale. Also, patching a Present-shaped Steam slot to a no-op avoids a NULL crash but prevents Steam from chaining to the real Present path, so later policy sees only CE's dummy and bypasses Steam forever.
+- **Fix**: `SteamOverlayInitVehHandler` now resolves the exact faulting Steam global slot from the call-site bytes, patches NULL slots to CE's DXGI bypass Present when available, and retries the call. The non-Streamline steady Steam E9 path is now protected by the same scoped recovery guard, not just the first init call. The no-op dummy remains only as a last fallback when no bypass trampoline exists.
+- **Validation**: `python build.py --skip-updates` passed with build `0.1.3612`; `python build.py --no-build --run-tests --skip-updates` passed 830 tests with metadata `0.1.3613`. Fresh manual Strange Brigade and Talos Steam-overlay validation is still needed.
+- **Source anchors**: `hook/common/dxgi_shared.cpp`, `hook/common/dxgi_shared.h`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260531_141812_strangebrigadedx12crash`, `installed/captureengine/logs/20260531_141924_talossteamoverlaydoesnotwork`.
 
 ### Build 0.1.2904 — Force bypass for non-SL Steam overlay
 - When Steam overlay is loaded without Streamline or NvPresent (e.g. Strange Brigade DX12), `ShouldForceSteamDX12BypassForState` returns `true`. This routes `CallOriginalPresent` through the bypass trampoline instead of calling `oPresent` (dxgi!Present with Steam's E9 JMP), which would re-enter Steam's overlay handler and crash because `vtable[8] = DetourPresent`.

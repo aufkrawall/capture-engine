@@ -262,6 +262,13 @@ TEST(DXGISharedTest, GuardedSteamOverlayCallbackStateSuppressesDisabledOrInvalid
                                                                                             false, true));
 }
 
+TEST(DXGISharedTest, SteamNullCallbackRecoveryPrefersDXGIBypassOverDummy) {
+    EXPECT_EQ(DXGIShared::SelectSteamNullCallbackRecoveryPatchTarget(true),
+              DXGIShared::SteamNullCallbackRecoveryPatchTarget::DXGIBypassPresent);
+    EXPECT_EQ(DXGIShared::SelectSteamNullCallbackRecoveryPatchTarget(false),
+              DXGIShared::SteamNullCallbackRecoveryPatchTarget::DummyNoPresent);
+}
+
 TEST(DXGISharedTest, GuardedSteamOverlayFallbackUsesBypassOnFailureOrMissingBackbufferAdvance) {
     EXPECT_TRUE(DXGIShared::ShouldFallbackGuardedExternalSteamOverlayPresentForResult(true, E_FAIL, false, false));
     EXPECT_FALSE(DXGIShared::ShouldFallbackGuardedExternalSteamOverlayPresentForResult(false, E_FAIL, false, false));
@@ -3314,10 +3321,9 @@ TEST(DXGISharedTest, PostSLSyntheticStartupActivationPendingTracksStartupleHando
 // Steam's overlay hook.  But doing so crashes because Steam cannot resolve a
 // "next" handler (vtable[8] = DetourPresent).
 //
-// Fix (build 0.1.2923): One-time vtable[8] unhook → E9 JMP call (Steam init
-// reads vtable[8] = dxgi!Present) → re-hook.  Subsequent frames route through
-// oPresent (E9 JMP) normally since Steam's internal "next" handler is now
-// initialized and non-NULL.
+// Fix family: temporarily restore vtable[8] around Steam's E9 JMP path and
+// recover Steam's lazy NULL Present-shaped callback slots to CE's DXGI bypass
+// Present, so Steam can keep chaining without calling through NULL.
 //
 // This test documents that the policy alone is not sufficient — the call-site
 // fix in CallOriginalPresent (one-time vtable unhook + init + re-hook) is
@@ -3352,33 +3358,34 @@ TEST(DXGISharedTest, StrangeBrigadeSteamOverlayCrashWithoutStreamline) {
     EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(true, true, true, true, false,
                                                                                     false, false, true, true, false));
 
-    // The fix in CallOriginalPresent uses one-time vtable unhook + Steam init +
-    // re-hook for the non-SL Steam overlay case.  The policy alone still allows
-    // the dangerous path — the call-site fix is what prevents the crash.
+    // The fix in CallOriginalPresent uses one-time vtable unhook + guarded
+    // Steam callback recovery for the non-SL Steam overlay case.  The policy
+    // alone still allows the dangerous path — the call-site fix is what
+    // prevents the crash.
     const bool isNonSLStrangeBrigadeScenario = DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
         true, true, true, true, false, false, false, false, false);
     EXPECT_TRUE(isNonSLStrangeBrigadeScenario);
-    // The crash is prevented by the call-site logic in CallOriginalPresent
-    // (AttemptSteamDX12OverlayInit with one-time vtable unhook), not by the policy.
+    // The crash is prevented by the call-site logic in CallOriginalPresent,
+    // not by the policy alone.
     const bool crashPreventedByCallSiteFix = true;
     EXPECT_TRUE(crashPreventedByCallSiteFix);
 }
 
 // Regression: Strange Brigade DX12 Steam overlay stays visible with CE injection.
 // When Steam overlay is loaded without Streamline (e.g. Strange Brigade DX12),
-// CallOriginalPresent uses one-time vtable[8] unhook + init + re-hook.  On the
-// very first Present call, vtable[8] is temporarily restored to dxgi!Present so
-// Steam's overlay can initialize its internal trampoline by reading the correct
-// value.  Subsequent frames route through oPresent (E9 JMP) normally.
+// CallOriginalPresent uses vtable[8] restore + guarded Steam callback recovery.
+// Steam's lazy NULL callback slots are patched to the DXGI bypass trampoline
+// when possible, so the overlay hook can call a real next Present instead of a
+// CE dummy no-op.
 //
 // Expected hook chain (frame 1, init):
 //   vtable unhook → oPresent (E9 JMP) → Steam's OverlayHookD3D3 →
-//   reads vtable[8]=dxgi!Present ✓ → creates trampoline → renders overlay →
-//   calls trampoline → real dxgi!Present → vtable re-hook to DetourPresent
+//   reads vtable[8]=dxgi!Present ✓ → lazy callback slot recovered to bypass →
+//   renders overlay → bypass Present → vtable re-hook to DetourPresent
 //
 // Expected hook chain (frame 2+, steady state):
-//   vtable[8]=DetourPresent → oPresent (E9 JMP) → Steam's OverlayHookD3D3 →
-//   non-NULL "next" handler → renders overlay → trampoline → real Present
+//   vtable[8]=DetourPresent → temporary restore → oPresent (E9 JMP) →
+//   Steam's OverlayHookD3D3 → recovered "next" handler → bypass Present
 //
 // The old approach (build 0.1.2922, oPresent E9 JMP routing directly) crashed
 // because Steam read vtable[8] = DetourPresent and set its next handler to NULL.
