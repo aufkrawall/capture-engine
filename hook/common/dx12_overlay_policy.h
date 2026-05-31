@@ -2193,6 +2193,14 @@ inline bool ShouldProtectOfficialFFXStartupSwapchainCreateFromCESideEffects(bool
     return authoritativeFFXRuntimeCreator && officialAMDFFXRuntimeCreator && !ffxStartupAlreadyResolved;
 }
 
+inline bool ShouldStageProtectedOfficialFFXStartupQueueForDeferredTakeover(bool protectedOfficialFFXStartupPath,
+                                                                           bool hasDirectQueue) {
+    // Capturing the queue pointer itself is cheap and keeps the post-configure
+    // overlay route from going blind, but applying ownership/Present-hook side
+    // effects must still wait for enabled ffxConfigure.
+    return protectedOfficialFFXStartupPath && hasDirectQueue;
+}
+
 inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool protectedOfficialFFXStartupPending,
                                                                         bool ffxStartupAlreadyResolved) {
     // The protected startup-create path is only useful if the rest of CE also

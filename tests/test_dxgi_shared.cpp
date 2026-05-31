@@ -1757,6 +1757,14 @@ TEST(DXGISharedTest, OfficialFFXStartupSwapchainCreateUsesProtectedPassThroughUn
         ce::dx12_overlay_policy::ShouldProtectOfficialFFXStartupSwapchainCreateFromCESideEffects(true, true, true));
 }
 
+TEST(DXGISharedTest, ProtectedOfficialFFXStartupStagesOnlyDirectQueuesForDeferredTakeover) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStageProtectedOfficialFFXStartupQueueForDeferredTakeover(true, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStageProtectedOfficialFFXStartupQueueForDeferredTakeover(false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStageProtectedOfficialFFXStartupQueueForDeferredTakeover(true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStageProtectedOfficialFFXStartupQueueForDeferredTakeover(false, false));
+}
+
 TEST(DXGISharedTest, ProtectedOfficialFFXStartupQuiescesCESideEffectsUntilDirectConfigure) {
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(true, false));

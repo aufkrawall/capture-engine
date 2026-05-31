@@ -49,6 +49,8 @@ bool SaveDX12TextureAsHDR(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D1
                           const char* outputPath);
 static bool IsActualFrameGenerationActive();
 static bool IsStreamlineLoaded();
+static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue,
+                                   bool authoritativeFFXRuntimeQueue);
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
@@ -178,6 +180,14 @@ static std::atomic<bool> g_PostSLOverlayActive{false};
 static std::atomic<int> g_PostSLCooldownRemaining{0};
 static std::atomic<ULONGLONG> g_LastProcessFrameTickMs{0};
 static std::atomic<ULONGLONG> g_LastFFXPresentCallbackTickMs{0};
+enum class DX12OverlayRenderRoute : uint32_t {
+    kNone = 0,
+    kNormal = 1,
+    kPostSL = 2,
+    kFFXPresentCallback = 3,
+};
+static std::atomic<ULONGLONG> g_LastDX12OverlayRenderTickMs{0};
+static std::atomic<uint32_t> g_LastDX12OverlayRenderRoute{static_cast<uint32_t>(DX12OverlayRenderRoute::kNone)};
 // NOTE: DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending is now in DXGIShared::g_SharedState
 // so streamline_hook.cpp can check it from FlushSuppressedSetOptionsOffIfNeeded().
 static std::atomic<bool> g_PostSLSyntheticStartupTakeoverLogged{false};
@@ -247,6 +257,47 @@ bool HookTryGetPreferredOverlayFGPublicationState(PreferredOverlayFGPublicationS
     state->runtimeMode = g_FGCompat.GetRuntimeMode();
     state->sequence = 0;
     return true;
+}
+
+static const char* DX12OverlayRenderRouteName(uint32_t route) {
+    switch (static_cast<DX12OverlayRenderRoute>(route)) {
+        case DX12OverlayRenderRoute::kNormal:
+            return "normal";
+        case DX12OverlayRenderRoute::kPostSL:
+            return "post-sl";
+        case DX12OverlayRenderRoute::kFFXPresentCallback:
+            return "ffx-present-callback";
+        default:
+            return "none";
+    }
+}
+
+static void NoteDX12OverlayRendered(DX12OverlayRenderRoute route) {
+    g_LastDX12OverlayRenderRoute.store(static_cast<uint32_t>(route), std::memory_order_release);
+    g_LastDX12OverlayRenderTickMs.store(GetTickCount64(), std::memory_order_release);
+}
+
+static void LogDX12OverlayVisibilityGap(const char* context, const char* reason, ULONGLONG warnAfterMs = 250) {
+    const ULONGLONG lastRenderMs = g_LastDX12OverlayRenderTickMs.load(std::memory_order_acquire);
+    if (!lastRenderMs) {
+        return;
+    }
+
+    const ULONGLONG nowMs = GetTickCount64();
+    if (nowMs < lastRenderMs || nowMs - lastRenderMs < warnAfterMs) {
+        return;
+    }
+
+    static std::atomic<int> s_visibilityGapLogCount{0};
+    const int logCount = s_visibilityGapLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 300) == 0) {
+        const uint32_t route = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+        HookLogImportant(
+            "DX12: Overlay visibility gap while %s (%s) — lastRenderAge=%llums lastRoute=%s log=%d",
+            context && context[0] ? context : "transitioning",
+            reason && reason[0] ? reason : "waiting for safe render route",
+            static_cast<unsigned long long>(nowMs - lastRenderMs), DX12OverlayRenderRouteName(route), logCount + 1);
+    }
 }
 
 bool HookIsPostSLOverlayActiveButUnconfirmed() {
@@ -2356,6 +2407,53 @@ static bool ShouldUseProtectedOfficialFFXStartupSwapchainCreatePath(
         HasResolvedOfficialFFXStartupPath());
 }
 
+static void StageProtectedOfficialFFXStartupQueueFromCreateDevice(
+    IUnknown* createDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, const char* context) {
+    ID3D12CommandQueue* queue = nullptr;
+    HRESULT qiHr = E_POINTER;
+    if (createDevice) {
+        qiHr = createDevice->QueryInterface(IID_PPV_ARGS(&queue));
+    }
+
+    bool hasDirectQueue = false;
+    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+    if (SUCCEEDED(qiHr) && queue) {
+        queueDesc = queue->GetDesc();
+        hasDirectQueue = queueDesc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT;
+    }
+
+    const bool shouldStage = ce::dx12_overlay_policy::ShouldStageProtectedOfficialFFXStartupQueueForDeferredTakeover(
+        true, hasDirectQueue);
+    const char* modulePath = captureEvidence.ffxModulePath[0] ? captureEvidence.ffxModulePath
+                                                              : captureEvidence.callerModulePath;
+    if (shouldStage) {
+        StoreDeferredOfficialFFXTakeoverSideEffects(
+            queue, modulePath && modulePath[0] ? modulePath : "official FFX runtime",
+            "protected official FFX swapchain create queue staging");
+        HookLogImportant(
+            "%s: Protected official FFX startup staged runtime queue %p until enabled ffxConfigure "
+            "(module=%s caller=%s)",
+            context && context[0] ? context : "CreateSwapChain", queue,
+            modulePath && modulePath[0] ? modulePath : "unknown",
+            captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "stack");
+    } else {
+        static std::atomic<int> s_stageQueueFailLogCount{0};
+        const int logCount = s_stageQueueFailLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "%s: Protected official FFX startup could not stage runtime queue "
+                "(createDevice=%p queue=%p qiHr=0x%08X queueType=%d module=%s log=%d)",
+                context && context[0] ? context : "CreateSwapChain", createDevice, queue, (unsigned)qiHr,
+                queue ? static_cast<int>(queueDesc.Type) : -1, modulePath && modulePath[0] ? modulePath : "unknown",
+                logCount + 1);
+        }
+    }
+
+    if (queue) {
+        queue->Release();
+    }
+}
+
 static bool ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup() {
     return ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(
         g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire),
@@ -2511,7 +2609,8 @@ static void QuiesceStreamlinePostSLForProtectedOfficialFFXStartup(
 }
 
 static bool HandleProtectedOfficialFFXStartupSwapchainCreate(const CreateSwapchainQueueCaptureEvidence& captureEvidence,
-                                                             IDXGISwapChain* swapchain, const char* context) {
+                                                             IUnknown* createDevice, IDXGISwapChain* swapchain,
+                                                             const char* context) {
     if (!ShouldUseProtectedOfficialFFXStartupSwapchainCreatePath(captureEvidence)) {
         return false;
     }
@@ -2529,6 +2628,7 @@ static bool HandleProtectedOfficialFFXStartupSwapchainCreate(const CreateSwapcha
             "DX12: Protected official FFX swapchain create implies FSR FG history — latching post-FSR handoff state");
     }
 
+    StageProtectedOfficialFFXStartupQueueFromCreateDevice(createDevice, captureEvidence, context);
     QuiesceStreamlinePostSLForProtectedOfficialFFXStartup(swapchain, captureEvidence, context);
 
     HookLogImportant(
@@ -2543,6 +2643,26 @@ static bool HandleProtectedOfficialFFXStartupSwapchainCreate(const CreateSwapcha
 
 static void ApplyAuthoritativeFFXTakeoverSideEffects(ID3D12CommandQueue* capturedQueue, const char* callerModulePath,
                                                      const char* reason) {
+    bool stagedQueueApplied = false;
+    bool stagedQueueActivatedOwnership = false;
+    ID3D12CommandQueue* liveSwapchainQueueAfterApply = nullptr;
+    bool fgRuntimeOwnsAfterApply = false;
+    if (capturedQueue) {
+        stagedQueueActivatedOwnership = DX12_SetSwapchainQueue(capturedQueue, false, true);
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+            liveSwapchainQueueAfterApply = g_SwapchainQueue;
+            fgRuntimeOwnsAfterApply = g_FGRuntimeOwnsSwapchain;
+        }
+        stagedQueueApplied = liveSwapchainQueueAfterApply == capturedQueue;
+        HookLogImportant(
+            "DX12: FFX swapchain takeover applied staged runtime queue "
+            "(captured=%p liveScQueue=%p applied=%d ownershipActivated=%d fgOwned=%d reason=%s)",
+            capturedQueue, liveSwapchainQueueAfterApply, stagedQueueApplied ? 1 : 0,
+            stagedQueueActivatedOwnership ? 1 : 0, fgRuntimeOwnsAfterApply ? 1 : 0,
+            reason && reason[0] ? reason : "unknown");
+    }
+
     const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);
     g_FGCompat.SetStreamlineFGSignal(false);
     g_FGCompat.SetDLSSFGActive(false);
@@ -2576,9 +2696,11 @@ static void ApplyAuthoritativeFFXTakeoverSideEffects(ID3D12CommandQueue* capture
     }
 
     HookLogImportant(
-        "DX12: FFX swapchain takeover via %s (queue=%p, staleSL=%d reason=%s) — cleared Streamline/PostSL ownership",
+        "DX12: FFX swapchain takeover via %s "
+        "(queue=%p stagedQueueApplied=%d liveScQueue=%p staleSL=%d reason=%s) — cleared Streamline/PostSL ownership",
         callerModulePath && callerModulePath[0] ? callerModulePath : "unknown", capturedQueue,
-        staleStreamlineSignal ? 1 : 0, reason && reason[0] ? reason : "unknown");
+        stagedQueueApplied ? 1 : 0, liveSwapchainQueueAfterApply, staleStreamlineSignal ? 1 : 0,
+        reason && reason[0] ? reason : "unknown");
 
     if (!g_FGCompat.HasDirectFFXApiConfirmation()) {
         HookLogImportant(
@@ -4061,7 +4183,9 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         CopyFFXPresentSourceToOutput(cmdList, desc);
     }
 
-    RenderOverlayViaFFXPresentCallback(desc);
+    if (RenderOverlayViaFFXPresentCallback(desc)) {
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
+    }
     HookUpdatePreferredOverlayFGPublicationState(g_FGCompat.IsFGActive(), g_FGCompat.GetRuntimeMode(),
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
@@ -6753,7 +6877,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         if (ShouldBypassInvisibleWindowCreateSwapchainSideEffects(hWnd, newSC, "DeepHook", hr)) {
             return hr;
         }
-        if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, newSC, "DeepHook")) {
+        if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, pDevice, newSC, "DeepHook")) {
             return hr;
         }
 
@@ -6953,7 +7077,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         if (ShouldBypassInvisibleWindowCreateSwapchainSideEffects(hWnd, newSC, "CreateSwapChainForHwnd INLINE", hr)) {
             return hr;
         }
-        if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, newSC, "CreateSwapChainForHwnd INLINE")) {
+        if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, pDevice, newSC,
+                                                             "CreateSwapChainForHwnd INLINE")) {
             return hr;
         }
 
@@ -7085,7 +7210,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
                     pDesc->BufferDesc.Height);
         }
 
-        if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, *ppSwapChain, "CreateSwapChain")) {
+        if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, pDevice, *ppSwapChain,
+                                                             "CreateSwapChain")) {
             return hr;
         }
 
@@ -7242,7 +7368,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
             HookLog("DetourCreateSwapChainForHwndGlobal: Creating swapchain %ux%u", pDesc->Width, pDesc->Height);
         }
 
-        if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, *ppSC, "CreateSwapChainForHwnd")) {
+        if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, pDevice, *ppSC,
+                                                             "CreateSwapChainForHwnd")) {
             return hr;
         }
 
@@ -10939,6 +11066,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     if (rendered) {
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kPostSL);
         SharedMemoryLayout* postSLShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
         OverlayConfig postSLOverlayCfg = GetActiveDX12OverlayConfig(postSLShm);
         bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
@@ -11226,6 +11354,7 @@ static bool SubmitSteamDeferredOverlay(ID3D12CommandQueue* submitQueue, const ch
             }
         }
     }
+    NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);
 
     // Signal fence immediately (not deferred) since we need to wait before Present.
     if (g_State.fence) {
@@ -14933,6 +15062,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 eclQueue->ExecuteCommandLists(1, lists);
                                             }
                                         }
+                                        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);
 
                                         // SL/FSR FG diagnostic: log after ECL submission
                                         if (slFGActive || g_FGCompat.IsFGActive()) {
@@ -15199,11 +15329,13 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DX12: Protected official FFX startup pending - skipping ProcessFrame overlay/capture/FFX retry "
-                    "side effects until enabled ffxConfigure or sustained frame progress "
+                    "side effects until enabled ffxConfigure or present-callback proof "
                     "(sc=%p count=%d progress=%u eclProgress=%u)",
                     pSwapChain, logCount + 1, progressCount,
                     g_ProtectedOfficialFFXStartupECLPassThroughs.load(std::memory_order_acquire));
             }
+            LogDX12OverlayVisibilityGap("protected official FFX startup",
+                                        "waiting for enabled ffxConfigure or present-callback proof", 250);
             return;
         }
     }
@@ -15883,7 +16015,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             if (logCount < 20 || (logCount % 1024) == 0) {
                 HookLogImportant(
                     "DX12: Protected official FFX startup pending - passing ExecuteCommandLists through without CE "
-                    "side effects until enabled ffxConfigure or sustained frame progress "
+                    "side effects until enabled ffxConfigure or present-callback proof "
                     "(queue=%p lists=%u eclCount=%llu tid=0x%04X count=%d progress=%u processFrameProgress=%u)",
                     pThis, NumCommandLists, (unsigned long long)eclCount, GetCurrentThreadId(), logCount + 1,
                     progressCount, g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire));

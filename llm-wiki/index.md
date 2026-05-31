@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-31 (updated: build 0.1.3612 / tests 0.1.3613 - Steam DX12 null-callback recovery slot hardening)
+Last cross-checked: 2026-05-31 (updated: build 0.1.3614 / tests 0.1.3615 - protected FFX startup queue staging for Talos FG transitions)
 
 Primary sources:
 - `AGENTS.md`
