@@ -2023,6 +2023,16 @@ inline bool ShouldDeferGetStateOffDuringConfirmedPostSLWarmup(bool postSLConfirm
     return ShouldDeferStaleOffDuringConfirmedPostSLWarmup(postSLConfirmedRendering, stablePostSLFrameCount);
 }
 
+inline bool ShouldTreatConfirmedPostSLBackendAsWarmupProtected(bool postSLConfirmedRendering,
+                                                               int stablePostSLFrameCount) {
+    // Confirmed PostSL rendering proves the overlay route works, but the first
+    // few dozen callbacks are still the period where GTA / Streamline can churn
+    // swapchain wrappers and stale OFF state. Keep the backend alive through the
+    // same proof threshold used by the stale-OFF and stall-fallback guards.
+    return postSLConfirmedRendering && stablePostSLFrameCount > 0 &&
+           stablePostSLFrameCount <= GetConfirmedPostSLWarmupProofFrameThreshold();
+}
+
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,
                                                                     bool postSLConfirmedRendering,
                                                                     bool useTopLevelHandoffWrapperProgress,
@@ -2192,6 +2202,21 @@ inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunni
 inline bool ShouldPreserveActivePostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering,
                                                        bool postSLActiveButUnconfirmed) {
     return streamlineFGRunning && (postSLConfirmedRendering || postSLActiveButUnconfirmed);
+}
+
+inline bool ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+    bool streamlineFGRunning, bool postSLConfirmedRendering, bool confirmedPostSLBackendWarmupProtected,
+    bool hadFSRFGPhase, bool runtimeOwnsSwapchain, bool hasSwapchainQueue, bool hasOriginalGameQueue,
+    bool swapchainQueueDiffersFromOriginalGameQueue) {
+    // During an FSR -> DLSS handoff, GTA can briefly report a swapchain pointer
+    // change after PostSL has already rendered successfully on Streamline's
+    // runtime-owned queue. Treating that as an ordinary reinit destroys the only
+    // proven-safe path and can trip ERR_GFX_STATE. Preserve only the narrow case
+    // where the active DLSS/PostSL route is confirmed, still in warmup proof, and
+    // clearly backed by an FG-owned queue that differs from the original game queue.
+    return streamlineFGRunning && postSLConfirmedRendering && confirmedPostSLBackendWarmupProtected && hadFSRFGPhase &&
+           runtimeOwnsSwapchain && hasSwapchainQueue && hasOriginalGameQueue &&
+           swapchainQueueDiffersFromOriginalGameQueue;
 }
 
 inline bool ShouldLatchPostSLSuspensionOnStreamlineSignalDrop(bool streamlineFGRunning, bool postSLActive,

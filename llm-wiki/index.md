@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-31 (updated: build 0.1.3624 / tests 0.1.3625 - FFX callback composition and native-FSR Steam overlay routing)
+Last cross-checked: 2026-05-31 (updated: build 0.1.3626 / tests 0.1.3627 - confirmed PostSL backend preservation)
 
 Primary sources:
 - `AGENTS.md`

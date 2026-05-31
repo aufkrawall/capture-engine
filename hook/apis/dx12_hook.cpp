@@ -11814,6 +11814,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
     if (pSwapChain != g_LastSwapChain) {
         bool deferredFreshStreamlineNoFGSwapchainCleanup = false;
+        bool preserveConfirmedPostSLSwapchainChange = false;
         if (g_LastSwapChain) {
             const auto runtimeMode = g_FGCompat.GetRuntimeMode();
             const uint32_t streamlineNoFGPresentCount =
@@ -11826,6 +11827,29 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     kRuntimeOwnedStreamlineNoFGSettlePresents);
             const bool preserveLiveStreamlineNoFGOverlayResources =
                 ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
+            ID3D12CommandQueue* preserveSwapchainQueue = nullptr;
+            ID3D12CommandQueue* preserveOriginalGameQueue = nullptr;
+            ID3D12CommandQueue* preserveCommandQueue = nullptr;
+            {
+                std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                preserveSwapchainQueue = g_SwapchainQueue;
+                preserveOriginalGameQueue = g_OriginalGameQueue;
+                preserveCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+            }
+            const bool postSLConfirmedForSwapchainChange =
+                g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+            const int postSLStableFramesForSwapchainChange =
+                g_PostSLStableFrameCount.load(std::memory_order_acquire);
+            const bool confirmedPostSLBackendWarmupProtected =
+                ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLBackendAsWarmupProtected(
+                    postSLConfirmedForSwapchainChange, postSLStableFramesForSwapchainChange);
+            preserveConfirmedPostSLSwapchainChange =
+                ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+                    streamlineFGRunning, postSLConfirmedForSwapchainChange, confirmedPostSLBackendWarmupProtected,
+                    g_HadFSRFGPhase, g_FGRuntimeOwnsSwapchain, preserveSwapchainQueue != nullptr,
+                    preserveOriginalGameQueue != nullptr,
+                    preserveSwapchainQueue != nullptr && preserveOriginalGameQueue != nullptr &&
+                        preserveSwapchainQueue != preserveOriginalGameQueue);
             if (preserveLiveStreamlineNoFGOverlayResources) {
                 g_State.cachedSwapChain = nullptr;
                 g_State.cachedSC3 = nullptr;
@@ -11838,6 +11862,22 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         "swapchain handoff (oldSC=%p newSC=%p scQueue=%p origGame=%p cmdQ=%p log=%d)",
                         g_LastSwapChain, pSwapChain, g_SwapchainQueue, g_OriginalGameQueue,
                         g_CommandQueue.load(std::memory_order_acquire), logCount + 1);
+                }
+            } else if (preserveConfirmedPostSLSwapchainChange) {
+                g_State.cachedSwapChain = nullptr;
+                g_State.cachedSC3 = nullptr;
+                static std::atomic<int> s_preservedConfirmedPostSLSwapchainCleanupLogCount{0};
+                const int logCount =
+                    s_preservedConfirmedPostSLSwapchainCleanupLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 20 || (logCount % 120) == 0) {
+                    HookLogImportant(
+                        "DX12: Preserving confirmed PostSL backend during active FSR->DLSS swapchain handoff "
+                        "(oldSC=%p newSC=%p stableFrames=%d warmupProtected=%d fgOwned=%d scQueue=%p origGame=%p "
+                        "cmdQ=%p cooldown=%d log=%d)",
+                        g_LastSwapChain, pSwapChain, postSLStableFramesForSwapchainChange,
+                        confirmedPostSLBackendWarmupProtected ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
+                        preserveSwapchainQueue, preserveOriginalGameQueue, preserveCommandQueue, g_FGTransitionCooldown,
+                        logCount + 1);
                 }
             } else if (deferredFreshStreamlineNoFGSwapchainCleanup) {
                 static std::atomic<int> s_deferredFreshSLNoFGSwapchainCleanupLogCount{0};

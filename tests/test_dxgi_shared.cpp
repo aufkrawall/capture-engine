@@ -2842,6 +2842,36 @@ TEST(DXGISharedTest, ConfirmedPostSLStaysActiveDuringRemainingFGCooldown) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLDuringFGCooldown(true, false));
 }
 
+TEST(DXGISharedTest, ConfirmedPostSLBackendWarmupUsesProofThreshold) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLBackendAsWarmupProtected(false, 10));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLBackendAsWarmupProtected(true, 0));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLBackendAsWarmupProtected(true, 1));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLBackendAsWarmupProtected(true, 30));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLBackendAsWarmupProtected(true, 31));
+}
+
+TEST(DXGISharedTest, PostFSRConfirmedPostSLBackendSurvivesActiveSwapchainChange) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, true, true, true, true, true, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        false, true, true, true, true, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, false, true, true, true, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, false, true, true, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, true, false, true, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, true, true, false, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, true, true, true, false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, true, true, true, true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, true, true, true, true, true, false));
+}
+
 TEST(DXGISharedTest, FreshStreamlineStartupHandoffStaysPendingWhileSyntheticStartupIsHalfArmed) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
         true, false, false, false));
