@@ -389,12 +389,15 @@ inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(
     return true;
 }
 
-inline bool ShouldInvokeGuardedSteamPresentDuringForcedBypass(bool streamlineLoaded, bool streamlineFGRunning) {
+inline bool ShouldInvokeGuardedSteamPresentDuringForcedBypass(bool streamlineLoaded, bool streamlineFGRunning,
+                                                              bool nativeFSRPresentationActive = false) {
     // When Streamline is merely loaded but FG has not actually started, Talos'
     // Steam hook chain can accept direct calls without advancing Present. Repeating
     // that partial third-party hook path is unsafe; the DXGI bypass trampoline is
-    // the stable transport until FG owns the Present chain.
-    return !streamlineLoaded || streamlineFGRunning;
+    // the stable transport until an FG runtime owns the Present chain. Native
+    // FSR is not Streamline FG, but it is an FG-owned presentation path; keep
+    // Steam visible there by invoking it through the guarded path first.
+    return !streamlineLoaded || streamlineFGRunning || nativeFSRPresentationActive;
 }
 
 inline bool ShouldFallbackGuardedExternalSteamOverlayPresentForResult(bool bypassAvailable, HRESULT steamPresentHr,

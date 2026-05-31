@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-31 (updated: build 0.1.3622 / tests 0.1.3623 - native-FSR callback output preservation and no-blank runtime-inactive Streamline/Social handoffs)
+Last cross-checked: 2026-05-31 (updated: build 0.1.3624 / tests 0.1.3625 - FFX callback composition and native-FSR Steam overlay routing)
 
 Primary sources:
 - `AGENTS.md`

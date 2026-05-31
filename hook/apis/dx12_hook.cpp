@@ -4188,26 +4188,29 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         g_FGCompat.IsFSRFGApiActive() || ce::fg_runtime::RuntimeModeUsesFSR(ffxCallbackRuntimeMode) ||
         (g_FGRuntimeOwnsSwapchain &&
          g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
-    const bool shouldFallbackCopy = ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(
-        originalCallback != nullptr, ffxCallbackHasCurrentBackBuffer, ffxCallbackOutputDiffersFromCurrent,
-        desc->isGeneratedFrame != 0, ffxRuntimeOwnsNativeFSRPresentation);
-    if (shouldFallbackCopy) {
-        static std::atomic<int> s_ffxPresentFallbackCopyLogCount{0};
-        if (s_ffxPresentFallbackCopyLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+    const bool shouldComposeCurrentToOutput = ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(
+        originalCallback != nullptr, ffxCallbackHasCurrentBackBuffer, ffxCallbackOutputDiffersFromCurrent);
+    if (shouldComposeCurrentToOutput) {
+        static std::atomic<int> s_ffxPresentComposeCopyLogCount{0};
+        const int composeLogCount = s_ffxPresentComposeCopyLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (composeLogCount < 10 || (composeLogCount % 300) == 0) {
             HookLogImportant(
-                "DX12: FFX present callback bridge fallback-copying current backbuffer because no runtime "
-                "composition callback is available (frameId=%llu)",
-                static_cast<unsigned long long>(desc->frameID));
+                "DX12: FFX present callback bridge composing current backbuffer into output because no "
+                "app/default composition callback is available (frameId=%llu generated=%d runtimeOwnedNativeFSR=%d "
+                "runtime=%s log=%d)",
+                static_cast<unsigned long long>(desc->frameID), desc->isGeneratedFrame ? 1 : 0,
+                ffxRuntimeOwnsNativeFSRPresentation ? 1 : 0,
+                ce::fg_runtime::GetRuntimeModeName(ffxCallbackRuntimeMode), composeLogCount + 1);
         }
         auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(desc->commandList);
         CopyFFXPresentSourceToOutput(cmdList, desc);
-    } else if (!originalCallback && ffxCallbackHasCurrentBackBuffer && ffxCallbackOutputDiffersFromCurrent &&
+    } else if (originalCallback && ffxCallbackHasCurrentBackBuffer && ffxCallbackOutputDiffersFromCurrent &&
                (desc->isGeneratedFrame || ffxRuntimeOwnsNativeFSRPresentation)) {
-        static std::atomic<int> s_ffxPresentFallbackSkipLogCount{0};
-        const int logCount = s_ffxPresentFallbackSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<int> s_ffxPresentAppCompositionLogCount{0};
+        const int logCount = s_ffxPresentAppCompositionLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
             HookLogImportant(
-                "DX12: FFX present callback bridge preserving runtime output without fallback-copy "
+                "DX12: FFX present callback bridge preserving app/default-composed runtime output "
                 "(frameId=%llu generated=%d runtimeOwnedNativeFSR=%d runtime=%s log=%d)",
                 static_cast<unsigned long long>(desc->frameID), desc->isGeneratedFrame ? 1 : 0,
                 ffxRuntimeOwnsNativeFSRPresentation ? 1 : 0,

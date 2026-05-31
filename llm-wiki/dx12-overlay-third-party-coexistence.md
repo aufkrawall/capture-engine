@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-05-31 (updated: build 0.1.3622 / tests 0.1.3623 runtime-inactive Streamline/Social startup handoff no-blanking)
+Last cross-checked: 2026-05-31 (updated: build 0.1.3624 / tests 0.1.3625 native-FSR Steam overlay routing)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -11,6 +11,7 @@ Primary sources:
 - `hook/common/dxgi_shared.cpp`
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_fps_limiter.cpp`
+- `installed/captureengine/logs/20260531_230835_talosfsrfg/hook_debug.log`
 
 ## Scope
 This page records the current repo knowledge for making our DX12 overlay work well when other external overlays are active, including Steam, Rockstar Social Club, Epic EOS, and similar third-party overlay layers.
@@ -31,6 +32,7 @@ This page records the current repo knowledge for making our DX12 overlay work we
 - IAT/dynamic FFX routing is not sufficient for every official SDK integration. `installed/captureengine/logs/20260530_234519` showed the switch app entering protected official FFX startup and then staying quiesced while app-side FSR callbacks were firing because CE never saw `ffxConfigure`. Official AMD DX12 modules therefore also arm a guarded re-arming `ffxConfigure` VEH fallback that catches SDK dispatch-table or intra-module calls while standard inline JMP hooks remain disabled. Healthy logs include either `GetProcAddress: Intercepted FFX API ffxConfigure` or `FFX Hook: Armed VEH breakpoint for ...!ffxConfigure`, followed by `Direct FFX API confirmation established from ffxConfigure ENABLED`.
 - Dynamic `GetProcAddress` filtering also has a narrow Streamline proxy exception: `CreateDXGIFactory*` exports from `sl.interposer.dll` must remain the real Streamline proxy exports. Hiding them behind CE wrappers makes the application create a CE/raw DXGI factory, prevents Streamline from owning its swapchain interposer, and can later crash the DLSS-G handoff path. This exception is only for Streamline's proxy DXGI factory exports; CE still hooks Streamline feature APIs such as `slDLSSGSetOptions` / `slDLSSGGetState` through the feature-hook paths.
 - If the effective runtime mode is FSR FG, SL routing must stay suppressed even if the SL hook remains physically present on `Present`/`Present1`. Re-enabling SL routing in that state can deadlock the render thread inside the FFX runtime.
+- The forced-bypass Steam rule is split by FG owner. When Streamline is merely loaded and Streamline FG is not running, bypass-only remains the safe no-FG/startup default. When native FSR owns presentation, that same process state is still an FG-owned presentation path, so CE should try the guarded Steam Present hook first and fall back to the DXGI bypass trampoline if Steam does not safely advance Present. Talos `installed/captureengine/logs/20260531_230835_talosfsrfg` exposed the missing exception: native FSR was active, CE overlay rendered, but Steam disappeared because every frame logged the bypass-only `Streamline loaded but FG is not running` route.
 - Current DXGI startup pass-through windows are short and explicit: normally 3 frames, or 16 frames for Steam when bypass is available.
 - The current tests and comments explicitly say the dedicated DX12 overlay queue is FG-only. Startup compatibility stays on the safer single-queue path to avoid cross-queue state conflicts such as GTA `ERR_GFX_STATE` failures.
 - A post-FSR `FSR_FG -> DLSS_FG` comeback can hit a distinct third-party coexistence seam from the older unsafe-bootstrap failures: CE may already have enough shared-state evidence to keep the startup family on the normal Streamline route and invoke PostSL there, while Steam's DX12 hook for the fresh swapchain still has a stale or null saved original Present pointer. In that state, falling through `oPresent` re-enters `gameoverlayrenderer64` and Steam can crash even after the first recovered PostSL render if the path is still inside the short confirmed-startup-settling window.

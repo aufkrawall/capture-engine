@@ -113,6 +113,7 @@ TEST(DXGISharedTest, GuardedSteamForcedBypassWaitsForActualStreamlineFG) {
     EXPECT_FALSE(DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(true, false));
     EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(true, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(false, false));
+    EXPECT_TRUE(DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(true, false, true));
 }
 
 TEST(DXGISharedTest, SteamDX12BypassAlsoCoversNvPresentStartupWindow) {
@@ -1537,14 +1538,12 @@ TEST(DXGISharedTest, FFXPresentCallbackMirrorsOverlayToCurrentBackbufferOnlyDuri
         false, true, true, true, false));
 }
 
-TEST(DXGISharedTest, FFXPresentCallbackFallbackCopyOnlyRunsWithoutRuntimeCompositionCallback) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, true, false, false));
+TEST(DXGISharedTest, FFXPresentCallbackComposesOutputOnlyWithoutRuntimeCompositionCallback) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(false, true, true));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(true, true, true, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, false, true, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, false, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, true, true, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldFallbackCopyFFXPresentSourceToOutput(false, true, true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(false, true, false));
 }
 
 TEST(DXGISharedTest, HDRDetectionTreatsFP16AsDefinitelyHDR) {
