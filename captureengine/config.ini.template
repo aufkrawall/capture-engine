@@ -331,6 +331,11 @@ always_render=false
 always_render_only_when_game=false
 ; show_encoder_overload_warnings - Show "Encoder overloaded!" warning
 show_encoder_overload_warnings=false
+; foreground_acquire_grace_ms - After the whitelisted game (re)acquires foreground focus,
+;   suppress the visible pseudo-overlay for this many ms. Avoids racing Windows MPO / fullscreen
+;   buffer rebinds on Alt+Tab-in which can otherwise freeze the game window (Windows MPO bug).
+;   Set to 0 to disable. Default 2000.
+foreground_acquire_grace_ms=2000
 ; process_list - Process names for "NOT RECORDING" warning detection.
 ; These are the processes where "NOT RECORDING" warning shows when focused but not recording.
 ; Format: pipe-delimited (single line) or multi-line parenthesized block (see below).

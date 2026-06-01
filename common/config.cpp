@@ -1387,6 +1387,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.pseudoOverlay.alwaysRender = GetBool("pseudo-overlay", "always_render", false);
     config.pseudoOverlay.alwaysRenderOnlyWhenGame = GetBool("pseudo-overlay", "always_render_only_when_game", false);
     config.pseudoOverlay.showEncoderOverloadWarn = GetBool("pseudo-overlay", "show_encoder_overload_warnings", true);
+    config.pseudoOverlay.foregroundAcquireGraceMs =
+        std::clamp(GetInt("pseudo-overlay", "foreground_acquire_grace_ms", 2000), 0, 10000);
     {
         if (!pseudoProcessListSet) {
             std::string procList = GetStr("pseudo-overlay", "process_list", "");

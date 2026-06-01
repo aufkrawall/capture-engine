@@ -5,6 +5,7 @@
 #include <string>
 
 #include "../common/config.h"
+#include "../common/pseudo_overlay_focus_grace.h"
 #include "../common/shared_defs.h"
 
 // Controller-side pseudo-overlay indicator for WGC capture.
@@ -62,6 +63,9 @@ private:
 
     // Foreground process detection
     bool IsForegroundTarget();
+    // Returns the raw foreground PID (0 if none) without consulting the whitelisted
+    // process list. Used to feed the focus-grace policy helper.
+    uint32_t GetForegroundTargetPid();
 
     // Check if inject overlay is active in a hooked game (via shared memory)
     bool EnsureSharedMemoryMapping();
@@ -72,6 +76,15 @@ private:
     AnchorInfo ResolveAnchorInfo();
     void UpdateScaleForDpi(UINT dpi);
     void OnTimerTick();
+    // Evaluate focus-acquire grace for the current tick, update tracking state, and
+    // log transitions. Called once per timer tick.
+    void UpdateForegroundGraceState(bool currentHadTarget, uint32_t currentPid);
+    // Compute the focus-grace suppression decision using the latest tracked state plus
+    // a fresh foreground snapshot. Returns the helper's decision; side-effect: may
+    // update the tracking state via UpdateForegroundGraceState().
+    ce::pseudo_overlay::FocusGraceDecision EvaluateForegroundGrace(bool currentHadTarget,
+                                                                    uint32_t currentPid,
+                                                                    ULONGLONG now);
 
     // GDI rendering helpers
     void InitGDI();
@@ -95,6 +108,18 @@ private:
     bool warnActive_ = false;
     bool warnVisible_ = false;
     ULONGLONG warnCycleStart_ = 0;
+
+    // Foreground-acquire grace state. After a whitelisted PID (re)acquires foreground
+    // focus, the visible overlay is suppressed for `config_.foregroundAcquireGraceMs`
+    // ms to avoid racing Windows MPO / fullscreen buffer rebinds on Alt+Tab-in. The
+    // sticky anchor and warning blink phase are still advanced during grace so the
+    // first post-grace frame is in-position and in-phase.
+    ULONGLONG lastForegroundAcquireTick_ = 0;
+    uint32_t lastForegroundAcquirePid_ = 0;
+    bool hadForegroundTarget_ = false;
+    bool prevIsRecording_ = false;
+    bool prevGraceActive_ = false;
+    bool foregroundGraceEverStarted_ = false;
 
     // Overlay change tracking
     OvState lastOv_;

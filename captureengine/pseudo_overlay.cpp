@@ -369,6 +369,80 @@ bool PseudoOverlay::IsForegroundTarget() {
     return match;
 }
 
+uint32_t PseudoOverlay::GetForegroundTargetPid() {
+    HWND hFg = GetForegroundWindow();
+    if (!hFg) {
+        return 0;
+    }
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hFg, &pid);
+    return static_cast<uint32_t>(pid);
+}
+
+void PseudoOverlay::UpdateForegroundGraceState(bool currentHadTarget, uint32_t currentPid) {
+    // Detection: a foreground-acquire transition is either (a) the first time we ever
+    // see a whitelisted PID, (b) the PID changed while still whitelisted, or (c) we
+    // had no target last tick but have one now. The grace tracking state only
+    // advances on these transitions so the grace timer measures from the latest
+    // acquire edge, not from init.
+    const bool pidChanged =
+        lastForegroundAcquirePid_ != 0 && lastForegroundAcquirePid_ != currentPid;
+    const bool firstDetection = lastForegroundAcquireTick_ == 0;
+    const bool isTransition = firstDetection || pidChanged || (!hadForegroundTarget_ && currentHadTarget);
+
+    if (currentHadTarget && isTransition) {
+        const ULONGLONG now = GetTickCount64();
+        lastForegroundAcquireTick_ = now;
+        lastForegroundAcquirePid_ = currentPid;
+        if (config_.foregroundAcquireGraceMs > 0) {
+            foregroundGraceEverStarted_ = true;
+            LogInfo("[PseudoOverlay] Foreground grace started pid=%lu grace=%ums (was: hadTarget=%d, prevPid=%lu)",
+                    currentPid, config_.foregroundAcquireGraceMs, hadForegroundTarget_ ? 1 : 0,
+                    static_cast<unsigned long>(lastForegroundAcquirePid_));
+        } else {
+            LogDebug("[PseudoOverlay] Foreground grace skipped: grace_ms=0 (pid=%lu)", currentPid);
+        }
+    } else if (!currentHadTarget) {
+        if (hadForegroundTarget_) {
+            LogInfo("[PseudoOverlay] Foreground grace aborted: focus_lost (was pid=%lu)",
+                    static_cast<unsigned long>(lastForegroundAcquirePid_));
+        }
+        // Clear the tracking state so the next acquire is treated as a fresh transition.
+        lastForegroundAcquireTick_ = 0;
+        lastForegroundAcquirePid_ = 0;
+    }
+
+    hadForegroundTarget_ = currentHadTarget;
+}
+
+ce::pseudo_overlay::FocusGraceDecision PseudoOverlay::EvaluateForegroundGrace(bool currentHadTarget,
+                                                                              uint32_t currentPid,
+                                                                              ULONGLONG now) {
+    const bool recordingChanged = prevIsRecording_ != isRecording_.load(std::memory_order_relaxed);
+    prevIsRecording_ = isRecording_.load(std::memory_order_relaxed);
+
+    auto decision = ce::pseudo_overlay::ComputeFocusGraceDecision(
+        now, lastForegroundAcquireTick_, lastForegroundAcquirePid_, currentPid,
+        hadForegroundTarget_, currentHadTarget, prevGraceActive_,
+        static_cast<uint32_t>(config_.foregroundAcquireGraceMs), recordingChanged);
+
+    if (decision.justEndedGrace && foregroundGraceEverStarted_) {
+        ULONGLONG waited = 0;
+        if (lastForegroundAcquireTick_ != 0 && now >= lastForegroundAcquireTick_) {
+            waited = now - lastForegroundAcquireTick_;
+        }
+        LogInfo("[PseudoOverlay] Foreground grace elapsed pid=%lu waited=%lums", currentPid,
+                static_cast<unsigned long>(waited));
+        foregroundGraceEverStarted_ = false;
+    }
+    if (decision.justStartedGrace && config_.foregroundAcquireGraceMs > 0) {
+        // UpdateForegroundGraceState() already logged the start; nothing to do here.
+    }
+
+    prevGraceActive_ = decision.graceActive;
+    return decision;
+}
+
 // ---- Inject overlay detection via shared memory ----
 
 bool PseudoOverlay::EnsureSharedMemoryMapping() {
@@ -544,6 +618,15 @@ void PseudoOverlay::OnTimerTick() {
     const int64_t tickStartUs = Log_GetQpcUs();
     ULONGLONG now = GetTickCount64();
 
+    // Foreground-acquire grace tracking. The decision (suppress or render) is evaluated
+    // inside UpdateOverlay() so every entry path that calls UpdateOverlay() benefits
+    // from the same gate, but the tracking state only advances on the timer tick to
+    // avoid double-counting a transition.
+    const uint32_t rawFgPid = GetForegroundTargetPid();
+    const bool currentHadTarget = IsForegroundTarget();
+    UpdateForegroundGraceState(currentHadTarget, currentHadTarget ? rawFgPid : 0u);
+    (void)now;
+
     if (config_.mode == 1 || config_.mode == 2) {
         bool warnTargetFocused = IsForegroundTarget();
         bool isRecording = isRecording_.load();
@@ -715,6 +798,25 @@ void PseudoOverlay::UpdateOverlay() {
         }
         lastOv_ = {};
         lastWarnVis_ = false;
+        return;
+    }
+
+    // Foreground-acquire grace: while the whitelisted PID is still inside the
+    // post-focus window, refresh the sticky anchor (so the first post-grace frame is
+    // in-position) but skip the four OS-touching calls (EnsureOverlayWindows /
+    // ShowWindow / SetWindowPos / UpdateLayeredWindow) so we do not race Windows MPO
+    // / fullscreen buffer rebinds on Alt+Tab-in. The warning blink phase is already
+    // advanced in OnTimerTick, so the first post-grace frame is also in-phase.
+    const uint32_t rawFgPid = GetForegroundTargetPid();
+    const bool currentHadTarget = IsForegroundTarget();
+    const ULONGLONG nowForGrace = GetTickCount64();
+    const auto graceDecision =
+        EvaluateForegroundGrace(currentHadTarget, currentHadTarget ? rawFgPid : 0u, nowForGrace);
+    if (graceDecision.suppressVisibleOverlay) {
+        // Keep the anchor fresh even though we are not touching the OS yet. The
+        // sticky fields are read by ResolveAnchorInfo() on the next call and by the
+        // diff logic in lastOv_ below.
+        (void)ResolveAnchorInfo();
         return;
     }
 
@@ -1201,6 +1303,12 @@ void PseudoOverlay::Shutdown() {
     stickyAnchorWindow_ = NULL;
     stickyAnchorMonitor_ = NULL;
     stickyAnchorDpi_ = 96;
+    lastForegroundAcquireTick_ = 0;
+    lastForegroundAcquirePid_ = 0;
+    hadForegroundTarget_ = false;
+    prevIsRecording_ = false;
+    prevGraceActive_ = false;
+    foregroundGraceEverStarted_ = false;
     hInstance_ = NULL;
 
     initialized_ = false;
@@ -1213,6 +1321,7 @@ void PseudoOverlay::Shutdown() {
 
 void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
     bool wasEnabled = config_.enabled;
+    const uint32_t prevGraceMs = static_cast<uint32_t>(config_.foregroundAcquireGraceMs);
     config_ = cfg;
     lastWarnMsg_.clear();
     sizeWarn_ = {0, 0};
@@ -1221,6 +1330,19 @@ void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
         // Disable overlay: hide windows
         DestroyOverlayWindows();
         return;
+    }
+
+    // If the grace length changed, drop any in-flight grace so the new value is used
+    // for the next foreground acquire. Otherwise the helper would happily keep
+    // suppressing with the old length.
+    if (prevGraceMs != static_cast<uint32_t>(cfg.foregroundAcquireGraceMs)) {
+        lastForegroundAcquireTick_ = 0;
+        lastForegroundAcquirePid_ = 0;
+        hadForegroundTarget_ = false;
+        prevGraceActive_ = false;
+        foregroundGraceEverStarted_ = false;
+        LogInfo("[PseudoOverlay] Foreground grace reset: grace_ms changed %u -> %u", prevGraceMs,
+                static_cast<uint32_t>(cfg.foregroundAcquireGraceMs));
     }
 
     if (cfg.enabled && initialized_) {
