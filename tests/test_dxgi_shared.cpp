@@ -2281,8 +2281,10 @@ TEST(DXGISharedTest, SyntheticPostSLAdvancesDormantStartupOnlyWhenFramePathStops
 }
 
 TEST(DXGISharedTest, SyntheticPostSLStartupOnlyUsesRepeatedCallbackCountdownAfterFSRPhase) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(false, false));
 }
 
 TEST(DXGISharedTest, SyntheticPostSLStartupCanUseWrapperProgressAfterTopLevelHandoffForPureDLSS) {
@@ -2298,13 +2300,11 @@ TEST(DXGISharedTest, SyntheticPostSLStartupCanUseWrapperProgressAfterTopLevelHan
 }
 
 TEST(DXGISharedTest, PostSLReactivationWarmupIsNotBypassedEvenAfterWrapperBackedTopLevelHandoffForPureDLSS) {
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(false, true, false));
 
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(true, true));
-    EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(false, false, true));
 }
 
 TEST(DXGISharedTest, StreamlineStartupHandoffPresentUsesTopLevelPathAfterLargeGapWithoutPresentOwner) {

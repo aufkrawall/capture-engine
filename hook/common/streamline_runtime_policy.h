@@ -185,6 +185,15 @@ inline bool ShouldHookStreamlineFeatureExportOnLoad(const char* functionName, co
     return false;
 }
 
+inline bool ShouldSubstituteReturnedStreamlineFeatureWrapper(bool fallbackRequested, bool returnedFunctionIsWrapper,
+                                                             bool originalCallableAvailable) {
+    // A game can cache a function pointer returned from slGetFeatureFunction and
+    // keep using it after Streamline tears down or repairs the feature export.
+    // Returning CE's stable wrapper keeps that cached pointer observable while
+    // the wrapper forwards through the current saved original/trampoline.
+    return fallbackRequested && !returnedFunctionIsWrapper && originalCallableAvailable;
+}
+
 inline bool ShouldForwardSavedStreamlineOriginal(bool hasOriginal, bool validationAddressBelongsToLoadedModule) {
     return hasOriginal && validationAddressBelongsToLoadedModule;
 }

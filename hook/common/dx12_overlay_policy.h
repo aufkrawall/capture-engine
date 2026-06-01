@@ -1905,13 +1905,14 @@ inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool p
     return streamlineFGRunning && !processFrameRecentlySeen;
 }
 
-inline bool ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(bool hadFSRFGPhase) {
+inline bool ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(bool hadFSRFGPhase,
+                                                                        bool safePostFSRBootstrapPath) {
     // Post-FSR recovery still benefits from letting Streamline's recovered queue
-    // path stabilize across multiple runtime callbacks. Pure DLSS startup does
-    // not: some runtimes only emit a very short synthetic Present burst before
-    // switching to their live Present path, and counting down by callback can
-    // strand PostSL permanently inactive.
-    return hadFSRFGPhase;
+    // path stabilize across multiple runtime callbacks until the stronger safe
+    // bootstrap proof is available. Once that proof exists, waiting through the
+    // generic countdown only creates a visible overlay gap during FSR->DLSS mode
+    // switches.
+    return hadFSRFGPhase && !safePostFSRBootstrapPath;
 }
 
 inline bool ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(bool hadFSRFGPhase,
@@ -1920,17 +1921,16 @@ inline bool ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
     return !hadFSRFGPhase && startupTopLevelPresentConsumed && wrapperProgressObserved;
 }
 
-inline bool ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(
-    bool hadFSRFGPhase, bool useTopLevelHandoffWrapperProgress) {
+inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTopLevelHandoffWrapperProgress,
+                                                 bool safePostFSRBootstrapPath) {
     // Never bypass warm-up for pure DLSS cold start.  DLSS FG's multi-device
     // initialization is fragile: submitting overlay ECL on the FG queue during
     // the first few callbacks can corrupt DLSS FG's internal mutex/fence state
     // and crash sl_dlss_g.  The warm-up period lets DLSS FG stabilize before
     // our first GPU work lands on its queue.  PostSL still activates and logs
     // progress during warm-up — only the ECL submit is deferred.
-    (void)hadFSRFGPhase;
     (void)useTopLevelHandoffWrapperProgress;
-    return false;
+    return hadFSRFGPhase && safePostFSRBootstrapPath;
 }
 
 inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(

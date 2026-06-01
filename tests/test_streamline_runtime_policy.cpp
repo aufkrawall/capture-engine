@@ -72,6 +72,14 @@ TEST(StreamlineRuntimePolicyTest, FeatureExportsHookOnlyTheirOwningFeatureModule
                                                                                         "sl.common.dll"));
 }
 
+TEST(StreamlineRuntimePolicyTest, ReturnedFeatureWrapperSubstitutionRequiresCallableOriginal) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, false, true));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(false, false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, true, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, false, false));
+}
+
 TEST(StreamlineRuntimePolicyTest, SavedOriginalForwardingRequiresLiveOwnerAddress) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldForwardSavedStreamlineOriginal(true, true));
 

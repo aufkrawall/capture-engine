@@ -1414,16 +1414,17 @@ bool TryInstallFeatureImportFallbackForOwningModule(void* function, const char* 
     return InstallFeatureImportFallbackIfPresent(ownerBaseName, functionName, detour, function, originalSlot, hookName);
 }
 
-void LogReturnedWrapperFallbackOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target, void* wrapper) {
+void LogReturnedWrapperFallbackOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target, void* wrapper,
+                                    bool hookReady) {
     if (loggedFlag.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
 
     HookLogImportant(
-        "Streamline Hook: Using returned-pointer wrapper fallback for %s (target=%p wrapper=%p). "
-        "Inline export patching/direct import fallback is not active for this target yet; callers that obtain the "
-        "function via slGetFeatureFunction will still be intercepted.",
-        hookName ? hookName : "<unknown>", target, wrapper);
+        "Streamline Hook: Using returned-pointer wrapper fallback for %s (target=%p wrapper=%p hookReady=%d). "
+        "Callers that cache slGetFeatureFunction results remain intercepted even if Streamline later reloads, "
+        "repairs, or bypasses the feature export patch.",
+        hookName ? hookName : "<unknown>", target, wrapper, hookReady ? 1 : 0);
 }
 
 void LogProactiveFeatureHookGapOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target) {
@@ -1477,17 +1478,21 @@ bool MaybeHookDLSSGSetOptions(void*& function, bool fallbackToReturnedWrapper) {
         }
     }
 
-    if (fallbackToReturnedWrapper && !g_DLSSGSetOptionsHooked.load(std::memory_order_acquire)) {
-        if (!g_Original_slDLSSGSetOptions) {
+    const bool hookReady = g_DLSSGSetOptionsHooked.load(std::memory_order_acquire);
+    if (fallbackToReturnedWrapper && function != reinterpret_cast<void*>(Hooked_slDLSSGSetOptions)) {
+        if (!GetCallableOriginalDLSSGSetOptions() && !hookReady && !g_Original_slDLSSGSetOptions) {
             g_Original_slDLSSGSetOptions = reinterpret_cast<PFN_slDLSSGSetOptions>(function);
         }
-        LogReturnedWrapperFallbackOnce(g_DLSSGSetOptionsReturnedWrapperFallbackLogged, "slDLSSGSetOptions", function,
-                                       reinterpret_cast<void*>(Hooked_slDLSSGSetOptions));
-        function = reinterpret_cast<void*>(Hooked_slDLSSGSetOptions);
-        return true;
+        if (ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(
+                fallbackToReturnedWrapper, false, GetCallableOriginalDLSSGSetOptions() != nullptr)) {
+            LogReturnedWrapperFallbackOnce(g_DLSSGSetOptionsReturnedWrapperFallbackLogged, "slDLSSGSetOptions",
+                                           function, reinterpret_cast<void*>(Hooked_slDLSSGSetOptions), hookReady);
+            function = reinterpret_cast<void*>(Hooked_slDLSSGSetOptions);
+            return true;
+        }
     }
 
-    return g_DLSSGSetOptionsHooked.load(std::memory_order_acquire);
+    return hookReady;
 }
 
 bool MaybeHookDLSSGGetState(void*& function, bool fallbackToReturnedWrapper) {
@@ -1516,17 +1521,21 @@ bool MaybeHookDLSSGGetState(void*& function, bool fallbackToReturnedWrapper) {
         }
     }
 
-    if (fallbackToReturnedWrapper && !g_DLSSGGetStateHooked.load(std::memory_order_acquire)) {
-        if (!g_Original_slDLSSGGetState) {
+    const bool hookReady = g_DLSSGGetStateHooked.load(std::memory_order_acquire);
+    if (fallbackToReturnedWrapper && function != reinterpret_cast<void*>(Hooked_slDLSSGGetState)) {
+        if (!GetCallableOriginalDLSSGGetState() && !hookReady && !g_Original_slDLSSGGetState) {
             g_Original_slDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(function);
         }
-        LogReturnedWrapperFallbackOnce(g_DLSSGGetStateReturnedWrapperFallbackLogged, "slDLSSGGetState", function,
-                                       reinterpret_cast<void*>(Hooked_slDLSSGGetState));
-        function = reinterpret_cast<void*>(Hooked_slDLSSGGetState);
-        return true;
+        if (ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(
+                fallbackToReturnedWrapper, false, GetCallableOriginalDLSSGGetState() != nullptr)) {
+            LogReturnedWrapperFallbackOnce(g_DLSSGGetStateReturnedWrapperFallbackLogged, "slDLSSGGetState", function,
+                                           reinterpret_cast<void*>(Hooked_slDLSSGGetState), hookReady);
+            function = reinterpret_cast<void*>(Hooked_slDLSSGGetState);
+            return true;
+        }
     }
 
-    return g_DLSSGGetStateHooked.load(std::memory_order_acquire);
+    return hookReady;
 }
 
 bool MaybeHookReflexSleep(void*& function, bool fallbackToReturnedWrapper) {
@@ -1559,7 +1568,8 @@ bool MaybeHookReflexSleep(void*& function, bool fallbackToReturnedWrapper) {
             g_Original_slReflexSleep = reinterpret_cast<PFN_slReflexSleep>(function);
         }
         LogReturnedWrapperFallbackOnce(g_ReflexSleepReturnedWrapperFallbackLogged, "slReflexSleep", function,
-                                       reinterpret_cast<void*>(Hooked_slReflexSleep));
+                                       reinterpret_cast<void*>(Hooked_slReflexSleep),
+                                       g_ReflexSleepHooked.load(std::memory_order_acquire));
         function = reinterpret_cast<void*>(Hooked_slReflexSleep);
         return true;
     }
@@ -1598,7 +1608,8 @@ bool MaybeHookReflexSetOptions(void*& function, bool fallbackToReturnedWrapper) 
             g_Original_slReflexSetOptions = reinterpret_cast<PFN_slReflexSetOptions>(function);
         }
         LogReturnedWrapperFallbackOnce(g_ReflexSetOptionsReturnedWrapperFallbackLogged, "slReflexSetOptions", function,
-                                       reinterpret_cast<void*>(Hooked_slReflexSetOptions));
+                                       reinterpret_cast<void*>(Hooked_slReflexSetOptions),
+                                       g_ReflexSetOptionsHooked.load(std::memory_order_acquire));
         function = reinterpret_cast<void*>(Hooked_slReflexSetOptions);
         return true;
     }
@@ -1637,7 +1648,8 @@ bool MaybeHookReflexSetConstants(void*& function, bool fallbackToReturnedWrapper
             g_Original_slReflexSetConstants = reinterpret_cast<PFN_slReflexSetConstants>(function);
         }
         LogReturnedWrapperFallbackOnce(g_ReflexSetConstantsReturnedWrapperFallbackLogged, "slReflexSetConstants",
-                                       function, reinterpret_cast<void*>(Hooked_slReflexSetConstants));
+                                       function, reinterpret_cast<void*>(Hooked_slReflexSetConstants),
+                                       g_ReflexSetConstantsHooked.load(std::memory_order_acquire));
         function = reinterpret_cast<void*>(Hooked_slReflexSetConstants);
         return true;
     }

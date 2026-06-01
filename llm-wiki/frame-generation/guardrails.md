@@ -1,6 +1,6 @@
 # Frame Generation Switching
 
-Last cross-checked: 2026-05-31 (updated: build 0.1.3626 / tests 0.1.3627 confirmed PostSL backend preservation)
+Last cross-checked: 2026-06-01 (updated: build 0.1.3636 / tests 0.1.3637 FSR-to-DLSS switch-app handoff status/visibility hardening)
 
 Primary sources:
 - `AGENTS.md`
@@ -58,6 +58,7 @@ Primary sources:
 - `installed/captureengine/logs/20260531_182455/hook_debug.log`
 - `installed/captureengine/logs/20260531_230629_gtafsrfgblackwindowcontent/hook_debug.log`
 - `installed/captureengine/logs/20260531_230835_talosfsrfg/hook_debug.log`
+- `installed/captureengine/logs/20260601_150654/hook_debug.log`
 - `installed/testapp/dx12_fg_switch_test.log`
 
 ## Scope
@@ -74,6 +75,8 @@ This page records current guardrails and tested transition families for no-FG, D
 - The tree now has a shared FG session/planner layer in `hook/common/fg_session_state.{h,cpp}` that captures the current mixed DX12/Streamline/FFX FG state, computes a concrete `FGActionPlan`, and emits structured transition/session logs. It is currently used as the common authority for diagnostics and publication, while some low-level queue/route/transport execution still remains in the older DX12/DXGI code paths.
 - `hook/common/dx12_fg_transition_model.cpp` is now a compatibility adapter over that planner-backed session snapshot instead of a separate competing reducer. Existing transition/replay tests still validate the same public transition contract, but the underlying snapshot now comes from the shared FG session layer.
 - The planner currently sees explicit hook events from DX12, Streamline, FFX, and top-level Present observation for at least: authoritative Streamline startup handoff, authoritative FFX takeover, native-FSR configure on/off, PostSL callback install/remove, PostSL activation complete, PostSL first confirmed render, swapchain invalidation, Streamline runtime updates, and top-level Present observation.
+- Intercepted `slGetFeatureFunction` lookups for DLSSG feature functions should return CE's stable wrapper when a callable original/trampoline exists, even when inline patching reports ready. This keeps cached game/app feature pointers observable across Streamline export reload/repair during mixed-FG switches; direct import and inline hooks still cover direct callers.
+- A post-FSR DLSS handoff with safe bootstrap proof is stronger than generic startup evidence. It may bypass the repeated-callback PostSL activation countdown and reactivation warmup so the overlay does not visibly blank during the short FSR->DLSS interval. Pure-DLSS cold startup still keeps the warmup.
 - Current trace-replay tests explicitly cover:
   - Talos-style `off -> DLSS -> off -> FSR`
   - GTA-style `FSR -> DLSS` without a clean `off`

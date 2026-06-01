@@ -9179,12 +9179,22 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
             if (cooldownLeft > 0) {
                 if (ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(
-                        g_HadFSRFGPhase)) {
+                        g_HadFSRFGPhase, safePostFSRBootstrapPathForPostSL)) {
                     g_PostSLCooldownRemaining.store(cooldownLeft - 1, std::memory_order_release);
                     if (cooldownLeft > 1) {
                         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
                         return;
                     }
+                } else if (safePostFSRBootstrapPathForPostSL) {
+                    static int s_safePostFSRActivationLogCount = 0;
+                    if (s_safePostFSRActivationLogCount < 10) {
+                        HookLogImportant(
+                            "DX12: PostSL synthetic startup bypassing repeated-callback cooldown after safe post-FSR "
+                            "bootstrap proof (cooldown=%d progress=%d)",
+                            cooldownLeft, startupWrapperProgressCount);
+                    }
+                    s_safePostFSRActivationLogCount++;
+                    g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 } else if (useTopLevelHandoffWrapperProgress) {
                     static int s_wrapperProgressActivationLogCount = 0;
                     if (s_wrapperProgressActivationLogCount < 10) {
@@ -9366,8 +9376,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     constexpr int kPostSLColdStartWarmup = 15;
     const int warmupThreshold = (s_reactivationEpoch > 1) ? kPostSLReactivationWarmup : kPostSLColdStartWarmup;
     const bool bypassReactivationWarmup =
-        ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmupAfterTopLevelHandoffWrapperProgress(
-            g_HadFSRFGPhase, useTopLevelHandoffWrapperProgress);
+        ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(
+            g_HadFSRFGPhase, useTopLevelHandoffWrapperProgress, safePostFSRBootstrapPathForPostSL);
     if (s_callsSinceReactivation <= warmupThreshold && !bypassReactivationWarmup) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         if (s_callsSinceReactivation <= 5 || s_callsSinceReactivation == warmupThreshold) {
@@ -9381,9 +9391,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         static int s_bypassWarmupLogCount = 0;
         if (s_bypassWarmupLogCount < 10) {
             HookLogImportant(
-                "DX12: PostSL bypassing reactivation warm-up after top-level handoff wrapper progress "
-                "(epoch=%d frame=%d/%d)",
-                s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold);
+                "DX12: PostSL bypassing reactivation warm-up after safe startup proof "
+                "(epoch=%d frame=%d/%d hadFSR=%d wrapperProgress=%d safeBootstrap=%d)",
+                s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold, g_HadFSRFGPhase ? 1 : 0,
+                useTopLevelHandoffWrapperProgress ? 1 : 0, safePostFSRBootstrapPathForPostSL ? 1 : 0);
         }
         s_bypassWarmupLogCount++;
     }
