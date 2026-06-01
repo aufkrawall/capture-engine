@@ -80,6 +80,11 @@ TEST(StreamlineRuntimePolicyTest, ReturnedFeatureWrapperSubstitutionRequiresCall
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldSubstituteReturnedStreamlineFeatureWrapper(true, false, false));
 }
 
+TEST(StreamlineRuntimePolicyTest, StreamlineFeatureLookupIsDeferredDuringModuleLoad) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldDeferStreamlineFeatureLookupDuringModuleLoad(true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDeferStreamlineFeatureLookupDuringModuleLoad(false));
+}
+
 TEST(StreamlineRuntimePolicyTest, SavedOriginalForwardingRequiresLiveOwnerAddress) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldForwardSavedStreamlineOriginal(true, true));
 

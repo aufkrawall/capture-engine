@@ -2921,8 +2921,24 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
 
     g_NoModulesLogged.store(false, std::memory_order_release);
     const bool inspectedModule = InstallHooksForModule(module, moduleNameOrPath);
-    const bool resolvedDLSSG = TryResolveDLSSGFeatureHooks();
-    const bool resolvedReflex = TryResolveReflexFeatureHooks();
+    bool resolvedDLSSG = false;
+    bool resolvedReflex = false;
+    const bool deferFeatureLookup =
+        ce::streamline_runtime_policy::ShouldDeferStreamlineFeatureLookupDuringModuleLoad(true);
+    if (!deferFeatureLookup) {
+        resolvedDLSSG = TryResolveDLSSGFeatureHooks();
+        resolvedReflex = TryResolveReflexFeatureHooks();
+    } else if (inspectedModule) {
+        static std::atomic<int> s_deferredLookupLogCount{0};
+        const int logCount = s_deferredLookupLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 20 || (logCount % 100) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Deferred proactive feature-function lookup during module load for %s (%p) "
+                "(log=%d); direct exports/IAT hooks installed now, feature lookup will retry after slSetD3DDevice or "
+                "app slGetFeatureFunction",
+                GetModuleBaseName(moduleNameOrPath), module, logCount);
+        }
+    }
 
     if (inspectedModule || resolvedDLSSG || resolvedReflex) {
         HookLogImportant(

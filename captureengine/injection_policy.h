@@ -11,4 +11,8 @@ inline bool ShouldInjectAfterGraphicsProbe(bool d3d12Loaded) {
     return true;
 }
 
+inline bool ShouldLaunchPendingInjection(bool whitelisted, bool alreadyInjected, bool recentlyFailed) {
+    return whitelisted && !alreadyInjected && !recentlyFailed;
+}
+
 }  // namespace ce::injection_policy

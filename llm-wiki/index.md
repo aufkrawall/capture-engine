@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-05-31 (updated: build 0.1.3626 / tests 0.1.3627 - confirmed PostSL backend preservation)
+Last cross-checked: 2026-06-01 (updated: build 0.1.3645 / tests 0.1.3646 - Talos official-FFX startup overlay-only no-blank and Streamline module-load reentry hardening)
 
 Primary sources:
 - `AGENTS.md`

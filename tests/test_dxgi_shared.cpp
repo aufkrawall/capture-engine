@@ -1835,6 +1835,18 @@ TEST(DXGISharedTest, ProtectedOfficialFFXStartupAllowsOverlayOnlyWithStagedDirec
         ce::dx12_overlay_policy::ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(true, false, false));
 }
 
+TEST(DXGISharedTest, ProtectedOfficialFFXStartupOverlayOnlyBypassesFGCooldownWithStagedQueue) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(true, true));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(false, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(false, false));
+}
+
 TEST(DXGISharedTest, ProtectedOfficialFFXStartupQuiescesLiveStreamlinePostSLImmediately) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
         true, false, true, false, false, false, false));
@@ -1996,6 +2008,14 @@ TEST(DXGISharedTest, InactiveRuntimeOwnedSwapchainInitWaitsForCommandQueueToSett
 TEST(DXGISharedTest, D3D12InjectionProbeDoesNotAddFixedStartupDelay) {
     EXPECT_TRUE(ce::injection_policy::ShouldInjectAfterGraphicsProbe(false));
     EXPECT_TRUE(ce::injection_policy::ShouldInjectAfterGraphicsProbe(true));
+}
+
+TEST(DXGISharedTest, PendingInjectionLaunchRequiresLiveWhitelistedNonFailedTarget) {
+    EXPECT_TRUE(ce::injection_policy::ShouldLaunchPendingInjection(true, false, false));
+
+    EXPECT_FALSE(ce::injection_policy::ShouldLaunchPendingInjection(false, false, false));
+    EXPECT_FALSE(ce::injection_policy::ShouldLaunchPendingInjection(true, true, false));
+    EXPECT_FALSE(ce::injection_policy::ShouldLaunchPendingInjection(true, false, true));
 }
 
 TEST(DXGISharedTest, ReleasingSwapchainWrapperSkipsOptionalDXGIDestructorMutation) {

@@ -308,8 +308,11 @@ void InjectionManager::Update() {
             if (!IsWhitelisted(name)) {
                 LogInfo("[%s] Skipping deferred injection for %s (PID: %lu) - no longer whitelisted",
                         it->source.c_str(), name.c_str(), (unsigned long)pid);
-            } else if (!IsAlreadyInjected(pid) && !IsRecentlyFailed(pid)) {
+            } else if (ce::injection_policy::ShouldLaunchPendingInjection(true, IsAlreadyInjectedLocked(pid),
+                                                                          IsRecentlyFailedLocked(pid))) {
                 std::shared_ptr<InjectionManager> managerShared = shared_from_this();
+                LogInfo("[%s] Launching deferred injection thread for %s (PID: %lu)", it->source.c_str(),
+                        name.c_str(), (unsigned long)pid);
                 LaunchDelayedInjectionThread(managerShared, pid, name, it->source.c_str());
             }
             it = pendingInjections.erase(it);

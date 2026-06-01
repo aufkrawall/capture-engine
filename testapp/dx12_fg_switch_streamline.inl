@@ -67,8 +67,22 @@ static bool LoadStreamlineAndInit() {
     testapp::Log("[FG-DIAG] slInit result=%d (%s) pluginPath=%S sdk=0x%llx\n", static_cast<int>(initResult),
                  SlResultName(initResult), pluginPath.c_str(), static_cast<unsigned long long>(sl::kSDKVersion));
     if (initResult != sl::Result::eOk) {
+        if (g_SlShutdown) {
+            sl::Result shutdownResult = g_SlShutdown();
+            testapp::Log("[FG-DIAG] slShutdown after failed slInit result=%d (%s)\n",
+                         static_cast<int>(shutdownResult), SlResultName(shutdownResult));
+        }
         FreeLibrary(g_SlModule);
         g_SlModule = nullptr;
+        g_SlInit = nullptr;
+        g_SlShutdown = nullptr;
+        g_SlSetD3DDevice = nullptr;
+        g_SlGetFeatureFunction = nullptr;
+        g_SlGetNewFrameToken = nullptr;
+        g_SlSetConstants = nullptr;
+        g_SlSetTagForFrame = nullptr;
+        g_SlCreateDXGIFactory1 = nullptr;
+        g_SlD3D12CreateDevice = nullptr;
         return false;
     }
     g_SlInitialized = true;

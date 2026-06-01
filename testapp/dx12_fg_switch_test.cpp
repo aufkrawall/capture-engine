@@ -95,6 +95,9 @@ static int g_BootstrapNativeSwapchainStressCount = 0;
 static int g_StartupNativeSwapchainRecreateCount = 0;
 static bool g_AsyncRuntimePreload = true;
 static int g_AutoExitSeconds = 0;
+static int g_AutoFsrStartSeconds = 3;
+static int g_AutoDlssStartSeconds = 12;
+static int g_AutoReturnFsrSeconds = 30;
 
 #include "dx12_fg_switch_config.inl"
 
@@ -716,6 +719,21 @@ static void StartAsyncStreamlinePreload(const char* reason) {
         g_StreamlinePreloadThread.join();
         g_StreamlinePreloadStarted = false;
     }
+    const bool fsrOwnsPresentation =
+        g_FsrEnabled || g_FsrInitialized || g_FfxCtx || g_FfxSwapChainCtx || g_SwapChainOwner == SwapChainOwner::FSR;
+    if (fsrOwnsPresentation) {
+        static std::atomic<uint64_t> s_skipLogCount{0};
+        const uint64_t skipLogCount = s_skipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (skipLogCount <= 12 || (skipLogCount % 60) == 0) {
+            testapp::Log(
+                "[FG-DIAG] Async Streamline preload skipped during active/native FSR ownership reason=%s "
+                "fsrEnabled=%d fsrInitialized=%d fgCtx=%p swapchainCtx=%p owner=%s log=%llu\n",
+                reason ? reason : "unknown", g_FsrEnabled ? 1 : 0, g_FsrInitialized ? 1 : 0, (void*)g_FfxCtx,
+                (void*)g_FfxSwapChainCtx, SwapChainOwnerName(g_SwapChainOwner),
+                static_cast<unsigned long long>(skipLogCount));
+        }
+        return;
+    }
     if (!g_AsyncRuntimePreload || g_SlInitialized || g_SlModule || g_StreamlinePreloadInProgress.load() ||
         g_StreamlinePreloadStarted.exchange(true)) {
         return;
@@ -1029,15 +1047,15 @@ static void RunAutoSequence(float elapsedSeconds) {
     if (g_ManualMode) {
         return;
     }
-    if (g_AutoStage == 0 && elapsedSeconds >= 3.0f) {
+    if (g_AutoStage == 0 && elapsedSeconds >= static_cast<float>(g_AutoFsrStartSeconds)) {
         g_AutoStage = 1;
-        RequestMode(FGMode::FSR, "auto t=3s", false);
-    } else if (g_AutoStage == 1 && elapsedSeconds >= 12.0f) {
+        RequestMode(FGMode::FSR, "auto FSR stage", false);
+    } else if (g_AutoStage == 1 && elapsedSeconds >= static_cast<float>(g_AutoDlssStartSeconds)) {
         g_AutoStage = 2;
-        RequestMode(FGMode::DLSS, "auto t=12s after FSR suspend/resume", false);
-    } else if (g_AutoStage == 2 && elapsedSeconds >= 15.0f) {
+        RequestMode(FGMode::DLSS, "auto DLSS stage after FSR suspend/resume", false);
+    } else if (g_AutoStage == 2 && elapsedSeconds >= static_cast<float>(g_AutoReturnFsrSeconds)) {
         g_AutoStage = 3;
-        RequestMode(FGMode::FSR, "auto t=15s", false);
+        RequestMode(FGMode::FSR, "auto return to FSR stage", false);
     }
 }
 
@@ -1261,8 +1279,9 @@ int main(int argc, char* argv[]) {
     testapp::Log("GPU Load Passes: %d\n", g_GpuLoadPasses);
     testapp::Log("Back Buffers (requested): %d\n", kRequestedBackBuffers);
     testapp::Log("Process ID: %lu\n", GetCurrentProcessId());
-    testapp::Log("Auto: OFF -> FSR at 3s, suspend/resume FSR every %ds, DLSS at 12s, FSR at 15s\n",
-                 g_FsrSuspendResumeIntervalSeconds);
+    testapp::Log("Auto: OFF -> FSR at %ds, suspend/resume FSR every %ds, DLSS at %ds, FSR at %ds\n",
+                 g_AutoFsrStartSeconds, g_FsrSuspendResumeIntervalSeconds, g_AutoDlssStartSeconds,
+                 g_AutoReturnFsrSeconds);
     testapp::Log("Keys: 1=OFF 2=DLSS FG 3=FSR FG ESC=exit\n\n");
     testapp::Log(
         "Stress: FSR active mode re-sends ffxConfigure every frame to mimic engines that refresh FG descriptors\n");
@@ -1296,11 +1315,17 @@ int main(int argc, char* argv[]) {
     testapp::Log("[FG-DIAG] RegisterClassEx main window atom=%u gle=%lu\n", static_cast<unsigned>(classAtom),
                  classError);
 
+    const int configuredWindowWidth = g_WindowWidth;
+    const int configuredWindowHeight = g_WindowHeight;
     RECT monitorRect = testapp::GetPrimaryMonitorRect();
     if (g_Fullscreen) {
         g_WindowWidth = monitorRect.right - monitorRect.left;
         g_WindowHeight = monitorRect.bottom - monitorRect.top;
     }
+    testapp::Log(
+        "[FG-DIAG] Display resolved: configured=%dx%d actual=%dx%d fullscreen=%d monitor=(%ld,%ld)-(%ld,%ld)\n",
+        configuredWindowWidth, configuredWindowHeight, g_WindowWidth, g_WindowHeight, g_Fullscreen, monitorRect.left,
+        monitorRect.top, monitorRect.right, monitorRect.bottom);
     DWORD style = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     RECT rc = testapp::AdjustWindowRectForClientSize(style, 0, g_WindowWidth, g_WindowHeight);
     g_Hwnd = CreateWindowW(kWindowClass, L"DX12 FG Switch Test", style, g_Fullscreen ? monitorRect.left : 0,
@@ -1432,7 +1457,8 @@ int main(int argc, char* argv[]) {
     g_ModeSwitchingArmed = true;
     testapp::Log(
         "[FG-DIAG] Auto sequence clock reset after startup initialization; visible OFF phase now begins "
-        "(next auto FSR at 3s, mode switching armed)\n");
+        "(next auto FSR at %ds, mode switching armed)\n",
+        g_AutoFsrStartSeconds);
     testapp::LogFlush();
 
     MSG msg = {};

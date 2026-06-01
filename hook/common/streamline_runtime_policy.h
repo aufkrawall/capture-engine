@@ -194,6 +194,16 @@ inline bool ShouldSubstituteReturnedStreamlineFeatureWrapper(bool fallbackReques
     return fallbackRequested && !returnedFunctionIsWrapper && originalCallableAvailable;
 }
 
+inline bool ShouldDeferStreamlineFeatureLookupDuringModuleLoad(bool loadedModuleIsStreamline) {
+    // slInit loads plugin DLLs while Streamline's plugin manager is still
+    // mutating internal state. Calling slGetFeatureFunction/slGetPluginFunction
+    // from CE's loader notification can re-enter that manager and destabilize
+    // the runtime. Direct export/IAT hooks are safe here; feature lookup is
+    // retried from normal Streamline API calls such as slSetD3DDevice or the
+    // app's own slGetFeatureFunction calls.
+    return loadedModuleIsStreamline;
+}
+
 inline bool ShouldForwardSavedStreamlineOriginal(bool hasOriginal, bool validationAddressBelongsToLoadedModule) {
     return hasOriginal && validationAddressBelongsToLoadedModule;
 }

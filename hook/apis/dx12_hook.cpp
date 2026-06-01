@@ -12525,6 +12525,24 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         // is mid-initialization.  Creating D3D12 resources (allocators, fences,
         // PSOs) on a potentially wrong queue can corrupt GPU state, causing the
         // FG runtime to crash (observed: sl_dlss_g exception 0x00008000 in Talos).
+        const bool bypassProtectedOfficialFFXStartupReinitCooldown =
+            ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(
+                protectedOfficialFFXStartupOverlayOnly,
+                protectedOfficialFFXStartupQueueRef != nullptr &&
+                    gameQueue == protectedOfficialFFXStartupQueueRef);
+        if (g_FGTransitionCooldown > 0 && bypassProtectedOfficialFFXStartupReinitCooldown) {
+            static std::atomic<int> s_protectedFFXReinitCooldownBypassLogCount{0};
+            const int logCount = s_protectedFFXReinitCooldownBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: Bypassing FG transition reinit cooldown for protected official FFX overlay-only path "
+                    "(oldCooldown=%d queue=%p sc=%p log=%d)",
+                    g_FGTransitionCooldown, gameQueue, pSwapChain, logCount + 1);
+            }
+            g_FGTransitionCooldown = 0;
+            g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+            g_PostSLOverlayActive.store(false, std::memory_order_release);
+        }
         if (g_FGTransitionCooldown > 0) {
             --g_FGTransitionCooldown;
             const bool preserveSyntheticStartupStateDuringReinitCooldown =
@@ -14073,84 +14091,105 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         }
         bool skipOverlayDraw = false;
         if (g_FGTransitionCooldown > 0) {
-            --g_FGTransitionCooldown;
-            const bool preserveActivePostSLDuringCooldown =
-                ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
-                    currentSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire),
-                    HookIsPostSLOverlayActiveButUnconfirmed());
-            if (preserveActivePostSLDuringCooldown) {
-                // Synthetic startup can already have an active PostSL path before
-                // the game-thread cooldown has fully counted down. Do not let the
-                // slower ProcessFrame cooldown re-disable that same path and force
-                // a second reactivation/warm-up epoch before first confirmation.
-                g_PostSLOverlayActive.store(true, std::memory_order_release);
-                g_PostSLCooldownRemaining.store(0, std::memory_order_release);
-
-                static int s_preserveActivePostSLLog = 0;
-                if (s_preserveActivePostSLLog < 10 || g_FGTransitionCooldown == 0) {
+            const bool bypassProtectedOfficialFFXStartupDrawCooldown =
+                ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(
+                    protectedOfficialFFXStartupOverlayOnly,
+                    protectedOfficialFFXStartupQueueRef != nullptr &&
+                        gameQueue == protectedOfficialFFXStartupQueueRef);
+            if (bypassProtectedOfficialFFXStartupDrawCooldown) {
+                static std::atomic<int> s_protectedFFXDrawCooldownBypassLogCount{0};
+                const int logCount =
+                    s_protectedFFXDrawCooldownBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
-                        "DX12: FG cooldown preserving active PostSL path "
-                        "(remaining=%d slSignal=%d confirmed=%d unconfirmed=%d)",
-                        g_FGTransitionCooldown, currentSLFGRunning ? 1 : 0,
-                        g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
-                        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0);
+                        "DX12: Bypassing FG transition draw cooldown for protected official FFX overlay-only path "
+                        "(oldCooldown=%d queue=%p sc=%p log=%d)",
+                        g_FGTransitionCooldown, gameQueue, pSwapChain, logCount + 1);
                 }
-                s_preserveActivePostSLLog++;
-            } else {
-                // During cooldown, suppress BOTH pre-SL and post-SL rendering.
+                g_FGTransitionCooldown = 0;
+                g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
-                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
-            }
-
-            // Periodic device-removed check during cooldown to pinpoint
-            // when the device dies (overlay is NOT rendering during this time).
-            if ((g_FGTransitionCooldown % 10) == 0) {
-                auto* cooldownDev = g_Device.load(std::memory_order_acquire);
-                if (cooldownDev) {
-                    HRESULT cooldownDevHr = cooldownDev->GetDeviceRemovedReason();
-                    if (FAILED(cooldownDevHr)) {
-                        HookLogImportant(
-                            "DX12: DEVICE REMOVED DURING COOLDOWN (cooldown=%d devRemoved=0x%08X tid=0x%04X)",
-                            g_FGTransitionCooldown, (unsigned)cooldownDevHr, GetCurrentThreadId());
-                    }
-                }
-            }
-
-            if (g_FGTransitionCooldown == 0) {
-                auto fgType = g_FGCompat.GetActiveFGType();
-                bool slFG = currentFGActive && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-                HookLogImportant(
-                    "DX12: FG transition cooldown complete — resuming overlay (slFG=%d, fgType=%s, slSignal=%d)",
-                    slFG ? 1 : 0, g_FGCompat.GetFGTypeName(fgType), DXGIShared::g_StreamlineFGRunning.load() ? 1 : 0);
-                // Re-enable post-SL rendering if SL FG is active
-                if (slFG) {
-                    const bool preserveSyntheticStartupState =
-                        ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(
-                            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
-                                std::memory_order_acquire),
-                            HookIsPostSLOverlayActiveButUnconfirmed(),
-                            g_PostSLConfirmedRendering.load(std::memory_order_acquire),
-                            HookIsPostSLOverlayConfirmedButStartupSettling());
-                    const bool keepStartupHandoffPending = ce::dx12_overlay_policy::
-                        ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
-                            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
-                                std::memory_order_acquire),
-                            HookIsPostSLOverlayActiveButUnconfirmed(),
-                            g_PostSLConfirmedRendering.load(std::memory_order_acquire),
-                            HookIsPostSLOverlayConfirmedButStartupSettling());
+            } else {
+                --g_FGTransitionCooldown;
+                const bool preserveActivePostSLDuringCooldown =
+                    ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
+                        currentSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                        HookIsPostSLOverlayActiveButUnconfirmed());
+                if (preserveActivePostSLDuringCooldown) {
+                    // Synthetic startup can already have an active PostSL path before
+                    // the game-thread cooldown has fully counted down. Do not let the
+                    // slower ProcessFrame cooldown re-disable that same path and force
+                    // a second reactivation/warm-up epoch before first confirmation.
                     g_PostSLOverlayActive.store(true, std::memory_order_release);
-                    if (!preserveSyntheticStartupState) {
-                        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(
-                            false, std::memory_order_release);
-                        g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
-                        DXGIShared::ResetStreamlineStartupTransitionState();
+                    g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+
+                    static int s_preserveActivePostSLLog = 0;
+                    if (s_preserveActivePostSLLog < 10 || g_FGTransitionCooldown == 0) {
+                        HookLogImportant(
+                            "DX12: FG cooldown preserving active PostSL path "
+                            "(remaining=%d slSignal=%d confirmed=%d unconfirmed=%d)",
+                            g_FGTransitionCooldown, currentSLFGRunning ? 1 : 0,
+                            g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
+                            HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0);
                     }
-                    g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
-                    DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
-                                                                                    std::memory_order_release);
+                    s_preserveActivePostSLLog++;
+                } else {
+                    // During cooldown, suppress BOTH pre-SL and post-SL rendering.
+                    g_PostSLOverlayActive.store(false, std::memory_order_release);
+                    g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
                 }
+
+                // Periodic device-removed check during cooldown to pinpoint
+                // when the device dies (overlay is NOT rendering during this time).
+                if ((g_FGTransitionCooldown % 10) == 0) {
+                    auto* cooldownDev = g_Device.load(std::memory_order_acquire);
+                    if (cooldownDev) {
+                        HRESULT cooldownDevHr = cooldownDev->GetDeviceRemovedReason();
+                        if (FAILED(cooldownDevHr)) {
+                            HookLogImportant(
+                                "DX12: DEVICE REMOVED DURING COOLDOWN (cooldown=%d devRemoved=0x%08X tid=0x%04X)",
+                                g_FGTransitionCooldown, (unsigned)cooldownDevHr, GetCurrentThreadId());
+                        }
+                    }
+                }
+
+                if (g_FGTransitionCooldown == 0) {
+                    auto fgType = g_FGCompat.GetActiveFGType();
+                    bool slFG = currentFGActive && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+                    HookLogImportant(
+                        "DX12: FG transition cooldown complete — resuming overlay (slFG=%d, fgType=%s, slSignal=%d)",
+                        slFG ? 1 : 0, g_FGCompat.GetFGTypeName(fgType),
+                        DXGIShared::g_StreamlineFGRunning.load() ? 1 : 0);
+                    // Re-enable post-SL rendering if SL FG is active
+                    if (slFG) {
+                        const bool preserveSyntheticStartupState =
+                            ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(
+                                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
+                                    std::memory_order_acquire),
+                                HookIsPostSLOverlayActiveButUnconfirmed(),
+                                g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                                HookIsPostSLOverlayConfirmedButStartupSettling());
+                        const bool keepStartupHandoffPending = ce::dx12_overlay_policy::
+                            ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
+                                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
+                                    std::memory_order_acquire),
+                                HookIsPostSLOverlayActiveButUnconfirmed(),
+                                g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                                HookIsPostSLOverlayConfirmedButStartupSettling());
+                        g_PostSLOverlayActive.store(true, std::memory_order_release);
+                        if (!preserveSyntheticStartupState) {
+                            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(
+                                false, std::memory_order_release);
+                            g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+                            DXGIShared::ResetStreamlineStartupTransitionState();
+                        }
+                        g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
+                        DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
+                                                                                        std::memory_order_release);
+                    }
+                }
+                skipOverlayDraw = true;
             }
-            skipOverlayDraw = true;
         }
 
         // POST-SL overlay rendering during SL FG:

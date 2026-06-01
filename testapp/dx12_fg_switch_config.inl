@@ -59,6 +59,21 @@ static void LoadConfig() {
                               configPath.c_str()) != 0;
     g_AutoExitSeconds = ClampInt(
         GetPrivateProfileIntA("Stress", "auto_exit_seconds", g_AutoExitSeconds, configPath.c_str()), 0, 3600);
+    g_AutoFsrStartSeconds = ClampInt(
+        GetPrivateProfileIntA("Stress", "auto_fsr_start_seconds", g_AutoFsrStartSeconds, configPath.c_str()), 0,
+        3600);
+    g_AutoDlssStartSeconds = ClampInt(
+        GetPrivateProfileIntA("Stress", "auto_dlss_start_seconds", g_AutoDlssStartSeconds, configPath.c_str()), 0,
+        3600);
+    g_AutoReturnFsrSeconds = ClampInt(
+        GetPrivateProfileIntA("Stress", "auto_return_fsr_seconds", g_AutoReturnFsrSeconds, configPath.c_str()), 0,
+        3600);
+}
+
+static void NormalizeAutoSequenceTimings() {
+    g_AutoFsrStartSeconds = ClampInt(g_AutoFsrStartSeconds, 0, 3598);
+    g_AutoDlssStartSeconds = ClampInt(g_AutoDlssStartSeconds, g_AutoFsrStartSeconds + 1, 3599);
+    g_AutoReturnFsrSeconds = ClampInt(g_AutoReturnFsrSeconds, g_AutoDlssStartSeconds + 1, 3600);
 }
 
 static bool TryParseIntOption(const char* arg, const char* prefix, int* valueOut) {
@@ -80,6 +95,30 @@ static void ParseCommandLine(int argc, char* argv[]) {
         }
         if (TryParseIntOption(argv[i], "--duration", &value)) {
             g_AutoExitSeconds = ClampInt(value, 0, 3600);
+            continue;
+        }
+        if (strcmp(argv[i], "--auto-fsr-start") == 0 && i + 1 < argc) {
+            g_AutoFsrStartSeconds = ClampInt(atoi(argv[++i]), 0, 3600);
+            continue;
+        }
+        if (TryParseIntOption(argv[i], "--auto-fsr-start", &value)) {
+            g_AutoFsrStartSeconds = ClampInt(value, 0, 3600);
+            continue;
+        }
+        if (strcmp(argv[i], "--auto-dlss-start") == 0 && i + 1 < argc) {
+            g_AutoDlssStartSeconds = ClampInt(atoi(argv[++i]), 0, 3600);
+            continue;
+        }
+        if (TryParseIntOption(argv[i], "--auto-dlss-start", &value)) {
+            g_AutoDlssStartSeconds = ClampInt(value, 0, 3600);
+            continue;
+        }
+        if (strcmp(argv[i], "--auto-return-fsr") == 0 && i + 1 < argc) {
+            g_AutoReturnFsrSeconds = ClampInt(atoi(argv[++i]), 0, 3600);
+            continue;
+        }
+        if (TryParseIntOption(argv[i], "--auto-return-fsr", &value)) {
+            g_AutoReturnFsrSeconds = ClampInt(value, 0, 3600);
             continue;
         }
         if (strcmp(argv[i], "--startup-recreates") == 0 && i + 1 < argc) {
@@ -161,4 +200,5 @@ static void ParseCommandLine(int argc, char* argv[]) {
                 break;
         }
     }
+    NormalizeAutoSequenceTimings();
 }

@@ -2278,10 +2278,10 @@ inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool pro
                                                                         bool ffxStartupAlreadyResolved) {
     // The protected startup-create path is only useful if the rest of CE also
     // stays out of the runtime's way until the official AMD runtime has reached
-    // its enabled ffxConfigure packet. ECL probes, queue registration, overlay
-    // submissions, and late export inspection can all be too invasive in the
-    // narrow pre-configure window; sustained render progress is only a
-    // diagnostic signal, not proof that CE may resume GPU side effects.
+    // its enabled ffxConfigure packet. ECL probes, queue registration, normal
+    // fallback overlay submissions, and late export inspection can all be too
+    // invasive in the narrow pre-configure window; sustained render progress is
+    // only a diagnostic signal, not proof that CE may resume GPU side effects.
     return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved;
 }
 
@@ -2293,6 +2293,17 @@ inline bool ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(bool protect
     // previously upset the runtime before ffxConfigure(enable). Without the
     // queue, submitting to any fallback queue would be a cross-queue hazard.
     return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved && hasStagedDirectQueue;
+}
+
+inline bool ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(bool protectedOverlayOnlyEligible,
+                                                                               bool hasStagedDirectQueue) {
+    // The generic FG cooldown prevents reinitializing overlay resources on an
+    // uncertain queue during runtime handoffs. Protected official FFX startup is
+    // the narrow exception: the staged runtime Direct queue is the exact queue
+    // that owns the startup swapchain, and the surrounding path still suppresses
+    // capture, export probing, Present repair, and other invasive side effects
+    // until enabled ffxConfigure/present-callback proof arrives.
+    return protectedOverlayOnlyEligible && hasStagedDirectQueue;
 }
 
 inline bool ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
