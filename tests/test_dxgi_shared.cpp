@@ -83,6 +83,144 @@ TEST(DXGISharedTest, D3D12FocusLossPreservesPresentPacing) {
     EXPECT_FALSE(DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(false, false, false, 0x00000004U));
 }
 
+TEST(DXGISharedTest, D3D12FocusLossFrameLatencyWaitableProbeCoversUnfocusedFrames) {
+    EXPECT_TRUE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, false, false, false, true, false, false, true));
+
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, true, false, false, true, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, true, false, false, false, true, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        false, false, false, false, false, true, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, false, false, false, true, false, false, false));
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, false, false, false, false, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, false, false, false, true, true, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, false, false, false, true, false, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, false, true, false, true, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, false, false, true, true, false, false, true));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossFrameLatencyPolicyIsPresentPathAgnostic) {
+    const bool presentPath = DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, false, false, false, true, false, false, true);
+    const bool present1Path = DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+        true, false, false, false, false, true, false, false, true);
+
+    EXPECT_TRUE(presentPath);
+    EXPECT_EQ(presentPath, present1Path);
+}
+
+TEST(DXGISharedTest, D3D12FocusLossPostPresentOverlayFenceWaitsForDeferredSingleQueueWork) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, false, false, true, true, true, true, 42));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, true, false, false, true, false, false, false, false, true, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, true, false, false, false, true, false, false, false, false, true, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        false, false, false, false, false, true, false, false, false, false, true, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, true, false, true, false, false, false, false, true, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, true, true, false, false, false, false, true, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, false, false, false, false, false, true, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, true, false, false, false, true, true, true, true, 42));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossPostPresentOverlayFenceSkipsRuntimeAndSyncInvalidPaths) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, true, false, false, true, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, true, false, true, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, false, true, true, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, false, false, false, true, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, false, false, true, false, true, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, false, false, true, true, false, true, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, false, false, true, true, true, false, 42));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, false, false, true, true, true, true, 0));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossPostPresentOverlayFencePolicyIsPresentPathAgnostic) {
+    const bool presentPath = ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, false, false, true, true, true, true, 42);
+    const bool present1Path = ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        true, false, false, false, false, true, false, false, false, false, true, true, true, true, 42);
+
+    EXPECT_TRUE(presentPath);
+    EXPECT_EQ(presentPath, present1Path);
+}
+
+TEST(DXGISharedTest, D3D12FocusLossImmediateOverlayFenceSyncsSingleQueueWrappedSubmit) {
+    auto shouldSignal = [](bool wrappedD3D12 = true, bool fullscreen = false, bool foreground = false,
+                           bool iconic = false, bool zeroSized = false, bool submitted = true,
+                           bool deviceLost = false, bool fgActive = false, bool runtimeOwned = false,
+                           bool dedicated = false, bool steamDeferred = false, bool hasFence = true,
+                           bool hasEvent = true, bool hasQueue = true, UINT64 fenceValue = 42) {
+        return ce::dx12_overlay_policy::ShouldSignalD3D12FocusLossOverlayFenceImmediately(
+            wrappedD3D12, fullscreen, foreground, iconic, zeroSized, submitted, deviceLost, fgActive, runtimeOwned,
+            dedicated, steamDeferred, hasFence, hasEvent, hasQueue, fenceValue);
+    };
+
+    EXPECT_TRUE(shouldSignal());
+
+    EXPECT_FALSE(shouldSignal(false));
+    EXPECT_FALSE(shouldSignal(true, true));
+    EXPECT_FALSE(shouldSignal(true, false, true));
+    EXPECT_FALSE(shouldSignal(true, false, false, true));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, true));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, false));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, true, true));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, true, false, true));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, true, false, false, true));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, true, false, false, false, true));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, true, false, false, false, false, true));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, true, false, false, false, false, false, false));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, true, false, false, false, false, false, true,
+                              false));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, true, false, false, false, false, false, true, true,
+                              false));
+    EXPECT_FALSE(shouldSignal(true, false, false, false, false, true, false, false, false, false, false, true, true,
+                              true, 0));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossImmediateOverlayFencePolicyIsPresentPathAgnostic) {
+    const bool presentPath = ce::dx12_overlay_policy::ShouldSignalD3D12FocusLossOverlayFenceImmediately(
+        true, false, false, false, false, true, false, false, false, false, false, true, true, true, 42);
+    const bool present1Path = ce::dx12_overlay_policy::ShouldSignalD3D12FocusLossOverlayFenceImmediately(
+        true, false, false, false, false, true, false, false, false, false, false, true, true, true, 42);
+
+    EXPECT_TRUE(presentPath);
+    EXPECT_EQ(presentPath, present1Path);
+}
+
+TEST(DXGISharedTest, IncompleteFocusLossFenceOnlyHoldsBackbufferWork) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(false, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(false, true, true));
+}
+
 TEST(DXGISharedTest, DXGIFactoryEnumerationLoggingTreatsNotFoundAsBenign) {
     EXPECT_FALSE(ce::dxgi_factory_policy::ShouldLogAdapterEnumerationFailure(S_OK));
     EXPECT_FALSE(ce::dxgi_factory_policy::ShouldLogAdapterEnumerationFailure(DXGI_ERROR_NOT_FOUND));

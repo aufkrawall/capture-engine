@@ -11,6 +11,7 @@
 #include <dxgi1_6.h>
 #include <atomic>
 #include <mutex>
+#include "../common/dx12_overlay_policy.h"
 #include "../common/hook_common.h"
 #include "wrapper_base.h"
 
@@ -199,8 +200,15 @@ private:
     void PromoteInterfaces();
     void CleanupOverlayResources();
     void WaitFrameLatency();  // Wait for DWM flip queue room (backbuffer pacing)
+    HANDLE EnsureFrameLatencyWaitable(const char* reason);
+    void WaitD3D12FocusLossOverlayFenceAfterPresent(
+        const char* presentName, int callCount, UINT syncInterval, UINT presentFlags, HRESULT presentHr,
+        const ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo& flushInfo);
+    void ProbeD3D12FocusLossFrameLatencyAfterPresent(const char* presentName, int callCount, UINT syncInterval,
+                                                     UINT presentFlags, HRESULT presentHr);
 
     HANDLE m_hFrameLatencyWaitable = INVALID_HANDLE_VALUE;
+    bool m_FrameLatencyWaitableQueried = false;
     void DrawOverlay();
     bool IsFSRInternalSwapchain();  // FSR FG internal swapchain detection
     IDXGISwapChain* GetRealSafe();  // Thread-safe real swapchain access

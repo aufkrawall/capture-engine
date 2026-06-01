@@ -3060,14 +3060,39 @@ static std::unordered_map<void*, FFXPresentCallbackBridgeState> g_FFXPresentCall
 
 // Deferred Signal: avoid the NVIDIA driver stall caused by Signal between our
 // overlay ECL and Present.  Instead of calling Signal immediately after our ECL,
-// we defer it to the START of the NEXT frame's Present hook (after the previous
-// Present has already been called).  This keeps the ECL→Present path clean.
+// wrapped Present paths flush it immediately after the real Present returns.
+// This keeps the ECL->Present path clean while still giving focus-loss handling
+// an authoritative fence for the overlay work that just touched the backbuffer.
 static std::atomic<UINT64> g_deferredSignalValue{0};
 static std::atomic<int> g_deferredSignalAllocIdx{-1};
 // Track which queue the deferred ECL was submitted on, so the deferred Signal
 // goes to the same queue.  When FG runtimes create swapchains with their own
 // queue, this may differ from g_CommandQueue.
 static std::atomic<ID3D12CommandQueue*> g_deferredSignalQueue{nullptr};
+static std::atomic<UINT64> g_FocusLossPendingOverlayFenceValue{0};
+
+struct DX12WrappedPresentFocusLossContext {
+    bool valid = false;
+    const char* presentName = nullptr;
+    int callCount = 0;
+    UINT syncInterval = 0;
+    UINT presentFlags = 0;
+};
+
+static thread_local DX12WrappedPresentFocusLossContext s_WrappedPresentFocusLossContext = {};
+
+extern "C" __declspec(dllexport) void DX12_SetWrappedPresentFocusLossContext(const char* presentName, int callCount,
+                                                                             UINT syncInterval, UINT presentFlags) {
+    s_WrappedPresentFocusLossContext.valid = true;
+    s_WrappedPresentFocusLossContext.presentName = presentName;
+    s_WrappedPresentFocusLossContext.callCount = callCount;
+    s_WrappedPresentFocusLossContext.syncInterval = syncInterval;
+    s_WrappedPresentFocusLossContext.presentFlags = presentFlags;
+}
+
+extern "C" __declspec(dllexport) void DX12_ClearWrappedPresentFocusLossContext() {
+    s_WrappedPresentFocusLossContext = {};
+}
 
 // Re-entrancy guard: set when the current thread is inside DetourECL.
 // During Alt+Tab, D3D12's internal WaitImpl inside ECL can pump window messages
@@ -11480,6 +11505,119 @@ static bool IsSteamOverlayModulePath(const char* modulePath) {
     return strstr(modulePath, "gameoverlayrenderer") != nullptr;
 }
 
+static bool ResolveCurrentProcessForeground(HWND* foregroundWindowOut = nullptr, DWORD* foregroundPidOut = nullptr) {
+    HWND foregroundWindow = GetForegroundWindow();
+    DWORD foregroundPid = 0;
+    bool processHasForeground = false;
+    if (foregroundWindow) {
+        GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
+        processHasForeground = (foregroundPid == GetCurrentProcessId());
+    }
+    if (foregroundWindowOut) {
+        *foregroundWindowOut = foregroundWindow;
+    }
+    if (foregroundPidOut) {
+        *foregroundPidOut = foregroundPid;
+    }
+    return processHasForeground;
+}
+
+static void ClearFocusLossPendingOverlayFence(const char* reason, UINT64 fenceValue, UINT64 completedValue) {
+    UINT64 expected = g_FocusLossPendingOverlayFenceValue.load(std::memory_order_acquire);
+    while (expected != 0 && expected <= fenceValue) {
+        if (g_FocusLossPendingOverlayFenceValue.compare_exchange_weak(expected, 0, std::memory_order_acq_rel)) {
+            HookLogImportant("DX12: Focus-loss overlay fence hold cleared (%s fence=%llu completed=%llu)",
+                             reason ? reason : "unknown", (unsigned long long)fenceValue,
+                             (unsigned long long)completedValue);
+            return;
+        }
+    }
+}
+
+static bool ShouldHoldOverlayDrawForPendingFocusLossFence() {
+    const UINT64 pendingFenceValue = g_FocusLossPendingOverlayFenceValue.load(std::memory_order_acquire);
+    if (pendingFenceValue == 0) {
+        return false;
+    }
+
+    HWND foregroundWindow = nullptr;
+    DWORD foregroundPid = 0;
+    const bool processHasForeground = ResolveCurrentProcessForeground(&foregroundWindow, &foregroundPid);
+    if (processHasForeground) {
+        ClearFocusLossPendingOverlayFence("process foreground restored", pendingFenceValue, 0);
+        return false;
+    }
+
+    ID3D12Fence* fence = g_State.fence;
+    if (!fence) {
+        ClearFocusLossPendingOverlayFence("overlay fence unavailable", pendingFenceValue, 0);
+        return false;
+    }
+
+    const UINT64 completedValue = fence->GetCompletedValue();
+    const bool pendingFenceComplete = completedValue >= pendingFenceValue;
+    if (pendingFenceComplete) {
+        ClearFocusLossPendingOverlayFence("pending fence completed", pendingFenceValue, completedValue);
+        return false;
+    }
+
+    if (ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(
+            processHasForeground, true, pendingFenceComplete)) {
+        static std::atomic<int> s_focusLossHoldLogCount{0};
+        const int logCount = s_focusLossHoldLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Holding focus-loss overlay/capture backbuffer work until prior overlay fence completes "
+                "(fence=%llu completed=%llu fg=%p/%lu log=%d); backend/resources preserved",
+                (unsigned long long)pendingFenceValue, (unsigned long long)completedValue, foregroundWindow,
+                foregroundPid, logCount + 1);
+        }
+        return true;
+    }
+
+    return false;
+}
+
+static const char* DescribeFocusLossImmediateFenceSkip(bool isWrappedD3D12Present, bool isFullscreen,
+                                                       bool processHasForeground, bool isIconic, bool hasZeroSize,
+                                                       bool overlaySubmitSucceeded, bool deviceLost,
+                                                       bool frameGenerationActive, bool runtimeOwnedPresentation,
+                                                       bool usingDedicatedQueue, bool steamDeferredOverlaySubmit,
+                                                       bool hasFence, bool hasFenceEvent, bool hasQueue,
+                                                       UINT64 fenceValue) {
+    if (!isWrappedD3D12Present)
+        return "not-wrapped-present";
+    if (isFullscreen)
+        return "fullscreen";
+    if (processHasForeground)
+        return "foreground";
+    if (isIconic)
+        return "iconic";
+    if (hasZeroSize)
+        return "zero-sized";
+    if (!overlaySubmitSucceeded)
+        return "overlay-not-submitted";
+    if (deviceLost)
+        return "device-lost";
+    if (frameGenerationActive)
+        return "frame-generation-active";
+    if (runtimeOwnedPresentation)
+        return "runtime-owned-presentation";
+    if (usingDedicatedQueue)
+        return "dedicated-queue";
+    if (steamDeferredOverlaySubmit)
+        return "steam-deferred-submit";
+    if (!hasFence)
+        return "no-fence";
+    if (!hasFenceEvent)
+        return "no-fence-event";
+    if (!hasQueue)
+        return "no-queue";
+    if (fenceValue == 0)
+        return "zero-fence-value";
+    return "policy";
+}
+
 void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // Re-entrancy guard: NVIDIA driver can pump window messages during
     // ExecuteCommandLists (via WaitImpl → DefWindowProc), which can re-enter
@@ -11497,6 +11635,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     if (s_firstFrame) {
         s_firstFrame = false;
         HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
+        HookLogImportant("DX12 focus-loss sync policy=v3 immediate-fence");
     }
 
     // Performance metrics for this frame
@@ -11662,6 +11801,18 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
     const bool zeroSizedSwapchain = (frameDesc.BufferDesc.Width == 0 || frameDesc.BufferDesc.Height == 0);
     const bool iconicWindow = frameDesc.OutputWindow && IsIconic(frameDesc.OutputWindow);
+    HWND foregroundWindow = nullptr;
+    DWORD foregroundPid = 0;
+    const DWORD currentProcessId = GetCurrentProcessId();
+    bool processHasForeground = true;
+    if (frameDesc.OutputWindow) {
+        foregroundWindow = GetForegroundWindow();
+        processHasForeground = false;
+        if (foregroundWindow) {
+            GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
+            processHasForeground = (foregroundPid == currentProcessId);
+        }
+    }
 
     // Transition cooldown: after CreateSwapChainForHwnd, pause overlay D3D12
     // work so we don't interfere with the game's internal state machine (FG
@@ -11687,15 +11838,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         static bool s_focusStateInitialized = false;
         static bool s_gameWasForeground = false;
 
-        HWND fg = GetForegroundWindow();
-        bool gameIsForeground = (fg == frameDesc.OutputWindow);
+        bool gameIsForeground = (foregroundWindow == frameDesc.OutputWindow);
         if (!s_focusStateInitialized) {
             s_focusStateInitialized = true;
             s_gameWasForeground = gameIsForeground;
         } else if (gameIsForeground != s_gameWasForeground) {
             s_gameWasForeground = gameIsForeground;
             HookLog("DX12: Foreground changed (gameForeground=%d, hwnd=%p, fg=%p); overlay rendering remains active",
-                    gameIsForeground ? 1 : 0, frameDesc.OutputWindow, fg);
+                    gameIsForeground ? 1 : 0, frameDesc.OutputWindow, foregroundWindow);
         }
     }
 
@@ -13131,14 +13281,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
 
     UINT currentBackBufferIdx = 0;
     bool hasCurrentBackBufferIdx = false;
+    const bool holdFocusLossBackbufferWork = ShouldHoldOverlayDrawForPendingFocusLossFence();
     SharedMemoryLayout* captureShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     OverlayConfig captureOverlayCfg = GetActiveDX12OverlayConfig(captureShm);
     const bool captureWantsOverlay = captureOverlayCfg.showOverlay && captureOverlayCfg.captureIncludeOverlay;
     const bool captureUsePostSL = processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay &&
                                   ShouldUseConfirmedPostSLForOverlayIncludedWork(captureOverlayCfg);
     const bool captureAfterOverlay =
-        processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay && !captureUsePostSL;
-    const bool captureBeforeOverlay = processCapture && g_IPC && g_IPC->IsRecording() && !captureWantsOverlay;
+        processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay && !captureUsePostSL &&
+        !holdFocusLossBackbufferWork;
+    const bool captureBeforeOverlay =
+        processCapture && g_IPC && g_IPC->IsRecording() && !captureWantsOverlay && !holdFocusLossBackbufferWork;
     bool delayOverlayRenderAfterSyncInit = false;
     bool suppressOverlayRenderForLoadedStartupOverlay = false;
     bool delayOverlayRenderAfterResourcePrime = false;
@@ -14481,6 +14634,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
         }
 
+        if (!skipOverlayDraw && holdFocusLossBackbufferWork) {
+            skipOverlayDraw = true;
+        }
+
         if (!skipOverlayDraw) {
             const char* skipSeparateOverlayGpuReason = nullptr;
             if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)) {
@@ -15411,7 +15568,108 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         if (g_State.fence) {
                                             UINT64 next = g_State.currentFenceValue + 1;
                                             bool anyFGForFence = slFGActive || g_FGCompat.IsFGActive();
-                                            if (anyFGForFence && !useDedicated) {
+                                            const auto presentContext = s_WrappedPresentFocusLossContext;
+                                            const bool runtimeOwnedPresentation =
+                                                g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() ||
+                                                DXGIShared::DoesFGRuntimeOwnSwapchain();
+                                            bool deviceLostForFence = false;
+                                            {
+                                                auto* fenceDev = g_Device.load(std::memory_order_acquire);
+                                                if (fenceDev) {
+                                                    deviceLostForFence = FAILED(fenceDev->GetDeviceRemovedReason());
+                                                }
+                                            }
+                                            const bool steamDeferredOverlaySubmit =
+                                                g_deferOverlaySubmitToSteamECL && !useDedicated;
+                                            const bool focusLossImmediateFence =
+                                                ce::dx12_overlay_policy::ShouldSignalD3D12FocusLossOverlayFenceImmediately(
+                                                    presentContext.valid, !frameDesc.Windowed, processHasForeground,
+                                                    iconicWindow, zeroSizedSwapchain, true, deviceLostForFence,
+                                                    anyFGForFence, runtimeOwnedPresentation, useDedicated,
+                                                    steamDeferredOverlaySubmit, g_State.fence != nullptr,
+                                                    g_State.fenceEvent != nullptr, eclQueue != nullptr, next);
+
+                                            if (!focusLossImmediateFence && presentContext.valid &&
+                                                !processHasForeground) {
+                                                static std::atomic<int> s_focusImmediateSkipLogCount{0};
+                                                const int logCount =
+                                                    s_focusImmediateSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+                                                if (logCount < 40 || (logCount % 300) == 0) {
+                                                    HookLog(
+                                                        "DX12: Focus-loss immediate overlay fence skipped (%s "
+                                                        "present=%s#%d queue=%p fg=%p/%lu game=%p/%lu sync=%u "
+                                                        "flags=0x%08X next=%llu event=%p fgActive=%d runtimeOwned=%d "
+                                                        "dedicated=%d steamDeferred=%d deviceLost=%d realECL=%d "
+                                                        "descFree=%d)",
+                                                        DescribeFocusLossImmediateFenceSkip(
+                                                            presentContext.valid, !frameDesc.Windowed,
+                                                            processHasForeground, iconicWindow, zeroSizedSwapchain, true,
+                                                            deviceLostForFence, anyFGForFence, runtimeOwnedPresentation,
+                                                            useDedicated, steamDeferredOverlaySubmit,
+                                                            g_State.fence != nullptr, g_State.fenceEvent != nullptr,
+                                                            eclQueue != nullptr, next),
+                                                        presentContext.presentName ? presentContext.presentName
+                                                                                   : "Present",
+                                                        presentContext.callCount, eclQueue, foregroundWindow,
+                                                        foregroundPid, frameDesc.OutputWindow, currentProcessId,
+                                                        presentContext.syncInterval, presentContext.presentFlags,
+                                                        (unsigned long long)next, g_State.fenceEvent,
+                                                        anyFGForFence ? 1 : 0,
+                                                        runtimeOwnedPresentation ? 1 : 0, useDedicated ? 1 : 0,
+                                                        steamDeferredOverlaySubmit ? 1 : 0, deviceLostForFence ? 1 : 0,
+                                                        usedRealECL ? 1 : 0, usedDescFree ? 1 : 0);
+                                                }
+                                            }
+
+                                            if (focusLossImmediateFence) {
+                                                HRESULT sigHr = eclQueue->Signal(g_State.fence, next);
+                                                UINT64 completedValue = g_State.fence->GetCompletedValue();
+                                                if (SUCCEEDED(sigHr)) {
+                                                    g_State.currentFenceValue = next;
+                                                    if (idx >= 0 && idx < (int)g_State.fenceValues.size())
+                                                        g_State.fenceValues[idx] = next;
+
+                                                    static std::atomic<int> s_focusImmediateSignalLogCount{0};
+                                                    const int logCount = s_focusImmediateSignalLogCount.fetch_add(
+                                                        1, std::memory_order_relaxed);
+                                                    if (logCount < 80 || (logCount % 300) == 0) {
+                                                        HookLogImportant(
+                                                            "DX12: Focus-loss immediate overlay fence signal "
+                                                            "(present=%s#%d queue=%p fence=%llu completed=%llu "
+                                                            "fg=%p/%lu game=%p/%lu sync=%u flags=0x%08X realECL=%d "
+                                                            "descFree=%d); pre-Present wait will sync same-frame work",
+                                                            presentContext.presentName ? presentContext.presentName
+                                                                                       : "Present",
+                                                            presentContext.callCount, eclQueue,
+                                                            (unsigned long long)next,
+                                                            (unsigned long long)completedValue, foregroundWindow,
+                                                            foregroundPid, frameDesc.OutputWindow, currentProcessId,
+                                                            presentContext.syncInterval, presentContext.presentFlags,
+                                                            usedRealECL ? 1 : 0, usedDescFree ? 1 : 0);
+                                                    }
+                                                } else {
+                                                    static std::atomic<int> s_focusImmediateSignalFailLogCount{0};
+                                                    const int logCount = s_focusImmediateSignalFailLogCount.fetch_add(
+                                                        1, std::memory_order_relaxed);
+                                                    if (logCount < 20 || (logCount % 300) == 0) {
+                                                        HookLogImportant(
+                                                            "DX12: Focus-loss immediate overlay fence Signal failed "
+                                                            "hr=0x%08X (present=%s#%d queue=%p fence=%llu fg=%p/%lu "
+                                                            "game=%p/%lu sync=%u flags=0x%08X); falling back to "
+                                                            "post-Present deferred signal",
+                                                            (unsigned)sigHr,
+                                                            presentContext.presentName ? presentContext.presentName
+                                                                                       : "Present",
+                                                            presentContext.callCount, eclQueue,
+                                                            (unsigned long long)next, foregroundWindow, foregroundPid,
+                                                            frameDesc.OutputWindow, currentProcessId,
+                                                            presentContext.syncInterval, presentContext.presentFlags);
+                                                    }
+                                                    g_deferredSignalQueue.store(eclQueue, std::memory_order_release);
+                                                    g_deferredSignalValue.store(next, std::memory_order_release);
+                                                    g_deferredSignalAllocIdx.store(idx, std::memory_order_release);
+                                                }
+                                            } else if (anyFGForFence && !useDedicated) {
                                                 // During ANY FG on the game queue, signal a separate
                                                 // overlay completion fence via the raw D3D12 Signal
                                                 // pointer (bypassing SL/FSR vtable hooks), then wait
@@ -15467,6 +15725,34 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 g_deferredSignalQueue.store(eclQueue, std::memory_order_release);
                                                 g_deferredSignalValue.store(next, std::memory_order_release);
                                                 g_deferredSignalAllocIdx.store(idx, std::memory_order_release);
+                                            }
+                                        } else if (s_WrappedPresentFocusLossContext.valid && !processHasForeground) {
+                                            static std::atomic<int> s_focusImmediateNoFenceLogCount{0};
+                                            const int logCount =
+                                                s_focusImmediateNoFenceLogCount.fetch_add(1, std::memory_order_relaxed);
+                                            if (logCount < 20 || (logCount % 300) == 0) {
+                                                const auto presentContext = s_WrappedPresentFocusLossContext;
+                                                const bool anyFGForFence = slFGActive || g_FGCompat.IsFGActive();
+                                                const bool runtimeOwnedPresentation =
+                                                    g_FGRuntimeOwnsSwapchain ||
+                                                    HookHasRuntimeOwnedNativeFGPresentPath() ||
+                                                    DXGIShared::DoesFGRuntimeOwnSwapchain();
+                                                HookLog(
+                                                    "DX12: Focus-loss immediate overlay fence skipped (%s "
+                                                    "present=%s#%d queue=%p fg=%p/%lu game=%p/%lu sync=%u "
+                                                    "flags=0x%08X fgActive=%d runtimeOwned=%d); no same-frame fence "
+                                                    "sync is possible",
+                                                    DescribeFocusLossImmediateFenceSkip(
+                                                        presentContext.valid, !frameDesc.Windowed,
+                                                        processHasForeground, iconicWindow, zeroSizedSwapchain, true,
+                                                        false, anyFGForFence, runtimeOwnedPresentation, useDedicated,
+                                                        g_deferOverlaySubmitToSteamECL && !useDedicated, false,
+                                                        g_State.fenceEvent != nullptr, eclQueue != nullptr, 0),
+                                                    presentContext.presentName ? presentContext.presentName : "Present",
+                                                    presentContext.callCount, eclQueue, foregroundWindow, foregroundPid,
+                                                    frameDesc.OutputWindow, currentProcessId,
+                                                    presentContext.syncInterval, presentContext.presentFlags,
+                                                    anyFGForFence ? 1 : 0, runtimeOwnedPresentation ? 1 : 0);
                                             }
                                         }
                                     skip_steam_deferred_fence_signal:
@@ -16022,52 +16308,247 @@ void HandleDX12ResizeEnd() {
 }
 }  // namespace DXGIShared
 
+static const char* DX12WaitResultName(DWORD waitResult) {
+    switch (waitResult) {
+        case WAIT_OBJECT_0:
+            return "signaled";
+        case WAIT_TIMEOUT:
+            return "timeout";
+        case WAIT_ABANDONED:
+            return "abandoned";
+        case WAIT_FAILED:
+            return "failed";
+        default:
+            return "unknown";
+    }
+}
+
 // Flush the deferred fence Signal AFTER Present.  The NVIDIA driver stalls the
 // GPU when a Signal call sits between the overlay ECL and Present.  By deferring
 // the Signal to after Present, the presentation pipeline is uninterrupted.
-extern "C" __declspec(dllexport) void DX12_FlushDeferredSignal() {
+extern "C" __declspec(dllexport) bool DX12_FlushDeferredSignalWithInfo(
+    ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo* outInfo) {
+    if (outInfo) {
+        *outInfo = {};
+    }
+
     UINT64 deferredVal = g_deferredSignalValue.load(std::memory_order_acquire);
-    if (deferredVal == 0 || !g_State.fence)
-        return;
+    if (outInfo) {
+        outInfo->hadDeferredSignal = (deferredVal != 0);
+        outInfo->hasFence = (g_State.fence != nullptr);
+        outInfo->hasFenceEvent = (g_State.fenceEvent != nullptr);
+        outInfo->fence = g_State.fence;
+        outInfo->fenceEvent = g_State.fenceEvent;
+        outInfo->fenceValue = deferredVal;
+        outInfo->completedValue = g_State.fence ? g_State.fence->GetCompletedValue() : 0;
+    }
+    if (deferredVal == 0 || !g_State.fence) {
+        return false;
+    }
 
     // Use the queue that actually submitted the overlay ECL.  When FG runtimes
     // create swapchains with their own queue, this may differ from g_CommandQueue.
     ID3D12CommandQueue* q = g_deferredSignalQueue.load(std::memory_order_acquire);
     if (!q)
         q = g_CommandQueue.load(std::memory_order_acquire);
-    if (!q)
-        return;
+    if (outInfo) {
+        outInfo->queue = q;
+    }
+    if (!q) {
+        return false;
+    }
 
     HRESULT hr = q->Signal(g_State.fence, deferredVal);
+    if (outInfo) {
+        outInfo->signalHr = hr;
+        outInfo->signalSucceeded = SUCCEEDED(hr);
+    }
     if (SUCCEEDED(hr)) {
         int allocIdx = g_deferredSignalAllocIdx.load(std::memory_order_acquire);
         g_State.currentFenceValue = deferredVal;
         if (allocIdx >= 0 && allocIdx < (int)g_State.fenceValues.size())
             g_State.fenceValues[allocIdx] = deferredVal;
+        if (outInfo) {
+            outInfo->completedValue = g_State.fence->GetCompletedValue();
+        }
     }
     g_deferredSignalValue.store(0, std::memory_order_release);
     g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
     g_deferredSignalQueue.store(nullptr, std::memory_order_release);
+    return SUCCEEDED(hr);
+}
+
+extern "C" __declspec(dllexport) void DX12_FlushDeferredSignal() {
+    DX12_FlushDeferredSignalWithInfo(nullptr);
+}
+
+static const char* DescribeFocusLossPostPresentFenceSkip(
+    const ce::dx12_overlay_policy::D3D12FocusLossOverlayFenceWaitContext& ctx,
+    const ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo& info) {
+    if (!ctx.isD3D12Swapchain)
+        return "non-DX12";
+    if (ctx.isFullscreen)
+        return "fullscreen";
+    if (ctx.processHasForeground)
+        return "foreground";
+    if (ctx.isIconic)
+        return "iconic";
+    if (ctx.hasZeroSize)
+        return "zero-sized";
+    if (!ctx.presentSucceeded)
+        return "present-failed";
+    if (ctx.presentDeviceLost)
+        return "present-device-lost";
+    if (ctx.frameGenerationActive)
+        return "frame-generation-active";
+    if (ctx.runtimeOwnedPresentation)
+        return "runtime-owned-presentation";
+    if (ctx.usingDedicatedQueue)
+        return "dedicated-queue";
+    if (!info.hadDeferredSignal)
+        return "no-deferred-overlay-signal";
+    if (!info.signalSucceeded)
+        return "signal-failed";
+    if (!info.hasFence)
+        return "no-fence";
+    if (!info.hasFenceEvent)
+        return "no-fence-event";
+    if (info.fenceValue == 0)
+        return "zero-fence-value";
+    return "policy";
+}
+
+extern "C" __declspec(dllexport) bool DX12_WaitForFocusLossOverlayFenceAfterPresent(
+    const ce::dx12_overlay_policy::D3D12FocusLossOverlayFenceWaitContext* context,
+    const ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo* flushInfo) {
+    if (!context || !flushInfo) {
+        return false;
+    }
+
+    const auto& ctx = *context;
+    const auto& info = *flushInfo;
+    const bool shouldWait = ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+        ctx.isD3D12Swapchain, ctx.isFullscreen, ctx.processHasForeground, ctx.isIconic, ctx.hasZeroSize,
+        ctx.presentSucceeded, ctx.presentDeviceLost, ctx.frameGenerationActive, ctx.runtimeOwnedPresentation,
+        ctx.usingDedicatedQueue, info.hadDeferredSignal, info.signalSucceeded, info.hasFence, info.hasFenceEvent,
+        info.fenceValue);
+
+    if (!shouldWait) {
+        if (!ctx.processHasForeground || info.hadDeferredSignal) {
+            static std::atomic<int> s_focusFenceSkipLog{0};
+            const int logCount = s_focusFenceSkipLog.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 24 || (logCount % 1000) == 0) {
+                HookLog(
+                    "DX12: Post-Present focus-loss overlay fence wait skipped (%s present=%s#%d "
+                    "fg=%p/%lu game=%p/%lu sync=%u flags=0x%08X presentHr=0x%08X "
+                    "deferred=%d signal=%d signalHr=0x%08X fence=%p event=%p value=%llu queue=%p)",
+                    DescribeFocusLossPostPresentFenceSkip(ctx, info), ctx.presentName ? ctx.presentName : "Present",
+                    ctx.callCount, ctx.foregroundWindow, ctx.foregroundPid, ctx.gameWindow, ctx.processId,
+                    ctx.syncInterval, ctx.presentFlags, (unsigned)ctx.presentHr, info.hadDeferredSignal ? 1 : 0,
+                    info.signalSucceeded ? 1 : 0, (unsigned)info.signalHr, info.fence, info.fenceEvent,
+                    (unsigned long long)info.fenceValue, info.queue);
+            }
+        }
+        return false;
+    }
+
+    ID3D12Fence* fence = info.fence;
+    HANDLE fenceEvent = info.fenceEvent;
+    UINT64 completedValue = fence->GetCompletedValue();
+    if (completedValue >= info.fenceValue) {
+        ClearFocusLossPendingOverlayFence("post-Present wait already complete", info.fenceValue, completedValue);
+        static std::atomic<int> s_focusFenceAlreadyLog{0};
+        const int logCount = s_focusFenceAlreadyLog.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 24 || (logCount % 300) == 0) {
+            HookLog(
+                "DX12: Post-Present focus-loss overlay fence already complete "
+                "(present=%s#%d fence=%llu completed=%llu queue=%p fg=%p/%lu sync=%u flags=0x%08X)",
+                ctx.presentName ? ctx.presentName : "Present", ctx.callCount, (unsigned long long)info.fenceValue,
+                (unsigned long long)completedValue, info.queue, ctx.foregroundWindow, ctx.foregroundPid,
+                ctx.syncInterval, ctx.presentFlags);
+        }
+        return true;
+    }
+
+    HRESULT setHr = fence->SetEventOnCompletion(info.fenceValue, fenceEvent);
+    if (FAILED(setHr)) {
+        g_FocusLossPendingOverlayFenceValue.store(info.fenceValue, std::memory_order_release);
+        static std::atomic<int> s_focusFenceSetEventFailLog{0};
+        const int logCount = s_focusFenceSetEventFailLog.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 24 || (logCount % 1000) == 0) {
+            HookLogImportant(
+                "DX12: Post-Present focus-loss overlay fence wait could not arm event "
+                "(hr=0x%08X present=%s#%d fence=%llu completed=%llu event=%p queue=%p); "
+                "holding future unfocused overlay draws until completion",
+                (unsigned)setHr, ctx.presentName ? ctx.presentName : "Present", ctx.callCount,
+                (unsigned long long)info.fenceValue, (unsigned long long)completedValue, fenceEvent, info.queue);
+        }
+        return false;
+    }
+
+    constexpr DWORD kFocusLossOverlayFenceWaitMs = 16;
+    DWORD waitResult = WaitForSingleObject(fenceEvent, kFocusLossOverlayFenceWaitMs);
+    DWORD waitLastError = (waitResult == WAIT_FAILED) ? GetLastError() : 0;
+    completedValue = fence->GetCompletedValue();
+    const bool completed = completedValue >= info.fenceValue || waitResult == WAIT_OBJECT_0;
+    if (completed) {
+        ClearFocusLossPendingOverlayFence("post-Present wait completed", info.fenceValue, completedValue);
+    } else {
+        g_FocusLossPendingOverlayFenceValue.store(info.fenceValue, std::memory_order_release);
+    }
+
+    static std::atomic<int> s_focusFenceWaitLog{0};
+    const int logCount = s_focusFenceWaitLog.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 60 || !completed || (logCount % 300) == 0) {
+        HookLogImportant(
+            "DX12: Post-Present focus-loss overlay fence wait result=%s(0x%08lX) "
+            "(present=%s#%d fence=%llu completed=%llu queue=%p fg=%p/%lu game=%p/%lu "
+            "sync=%u flags=0x%08X presentHr=0x%08X timeoutMs=%lu gle=%lu pendingHold=%d)",
+            DX12WaitResultName(waitResult), waitResult, ctx.presentName ? ctx.presentName : "Present", ctx.callCount,
+            (unsigned long long)info.fenceValue, (unsigned long long)completedValue, info.queue,
+            ctx.foregroundWindow, ctx.foregroundPid, ctx.gameWindow, ctx.processId, ctx.syncInterval, ctx.presentFlags,
+            (unsigned)ctx.presentHr, kFocusLossOverlayFenceWaitMs, waitLastError, completed ? 0 : 1);
+    }
+
+    return completed;
+}
+
+static bool ShouldLogOverlayCompletionWaitDiagnostic(std::atomic<int>& counter) {
+    const int n = counter.fetch_add(1, std::memory_order_relaxed);
+    return n < 24 || (n % 1000) == 0;
 }
 
 // External function for swapchain wrapper to wait for overlay completion before
 // Present
 extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pGameQueue) {
     (void)pGameQueue;
-    if (!g_State.fence)
+    if (!g_State.fence) {
+        static std::atomic<int> s_noFenceLog{0};
+        if (ShouldLogOverlayCompletionWaitDiagnostic(s_noFenceLog)) {
+            HookLog("DX12: Overlay completion wait skipped (no fence; event=%p currentFence=%llu)",
+                    g_State.fenceEvent, (unsigned long long)g_State.currentFenceValue);
+        }
         return;
+    }
 
     UINT64 fenceValueToWait = g_State.currentFenceValue;
-    if (fenceValueToWait == 0)
+    if (fenceValueToWait == 0) {
+        static std::atomic<int> s_noFenceValueLog{0};
+        if (ShouldLogOverlayCompletionWaitDiagnostic(s_noFenceValueLog)) {
+            HookLog("DX12: Overlay completion wait skipped (no signaled fence value; fence=%p event=%p)",
+                    g_State.fence, g_State.fenceEvent);
+        }
         return;
+    }
 
     // Check ShouldUseDedicatedOverlayQueue() (FG active) instead of just queue
     // existence, since the queue is now kept alive across FG mode switches.
     const bool usingDedicatedQueue = ShouldUseDedicatedOverlayQueue() && (g_State.overlayQueue != nullptr);
+    HWND foregroundWindow = nullptr;
+    DWORD foregroundPid = 0;
     bool processHasForeground = true;
     if (!usingDedicatedQueue) {
-        DWORD foregroundPid = 0;
-        HWND foregroundWindow = GetForegroundWindow();
+        foregroundWindow = GetForegroundWindow();
         processHasForeground = false;
         if (foregroundWindow) {
             GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
@@ -16083,17 +16564,31 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     if (!ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(g_State.fenceEvent != nullptr, usingDedicatedQueue,
                                                                  overlayModule != nullptr, runtimeMode,
-                                                                 processHasForeground))
+                                                                 processHasForeground)) {
+        static std::atomic<int> s_policySkipLog{0};
+        if (ShouldLogOverlayCompletionWaitDiagnostic(s_policySkipLog)) {
+            HookLog(
+                "DX12: Overlay completion wait skipped by policy "
+                "(event=%p dedicated=%d overlayModule=%s runtime=%s foreground=%d fg=%p/%lu fence=%llu)",
+                g_State.fenceEvent, usingDedicatedQueue ? 1 : 0, overlayModule ? overlayModule : "none",
+                ce::fg_runtime::GetRuntimeModeName(runtimeMode), processHasForeground ? 1 : 0, foregroundWindow,
+                foregroundPid, (unsigned long long)fenceValueToWait);
+        }
         return;
+    }
 
     const char* waitMode = usingDedicatedQueue ? "dedicated-queue"
                            : (!processHasForeground)
                                ? "focus-loss"
                                : (overlayModule ? overlayModule : "single-queue");
+    const bool focusLossMode = !usingDedicatedQueue && !processHasForeground;
 
     {
         UINT64 completedVal = g_State.fence->GetCompletedValue();
         if (completedVal >= fenceValueToWait) {
+            if (focusLossMode) {
+                ClearFocusLossPendingOverlayFence("pre-Present wait already complete", fenceValueToWait, completedVal);
+            }
             static std::atomic<int> s_fenceAlreadyCompleteLog{0};
             if (s_fenceAlreadyCompleteLog.fetch_add(1, std::memory_order_relaxed) < 50) {
                 HookLog("DX12: Overlay fence already complete (fence=%llu, completed=%llu, mode=%s)",
@@ -16104,21 +16599,46 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     }
 
     HRESULT setHr = g_State.fence->SetEventOnCompletion(fenceValueToWait, g_State.fenceEvent);
-    if (FAILED(setHr))
+    if (FAILED(setHr)) {
+        if (focusLossMode) {
+            g_FocusLossPendingOverlayFenceValue.store(fenceValueToWait, std::memory_order_release);
+        }
+        static std::atomic<int> s_setEventFailureLog{0};
+        if (ShouldLogOverlayCompletionWaitDiagnostic(s_setEventFailureLog)) {
+            HookLog("DX12: Overlay completion wait skipped (SetEventOnCompletion failed hr=0x%08X fence=%llu event=%p "
+                    "mode=%s pendingHold=%d)",
+                    setHr, (unsigned long long)fenceValueToWait, g_State.fenceEvent, waitMode, focusLossMode ? 1 : 0);
+        }
         return;
+    }
 
     static std::atomic<int> s_waitLogCount{0};
     constexpr DWORD kCompatWaitTimeoutMs = 16;
     DWORD waitHr = WaitForSingleObject(g_State.fenceEvent, kCompatWaitTimeoutMs);
     if (waitHr == WAIT_TIMEOUT) {
+        if (focusLossMode) {
+            g_FocusLossPendingOverlayFenceValue.store(fenceValueToWait, std::memory_order_release);
+        }
         if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
-            HookLog("DX12: Overlay completion wait timed out for %s mode (fence=%llu)",
-                    waitMode, (unsigned long long)fenceValueToWait);
+            HookLog("DX12: Overlay completion wait timed out for %s mode (fence=%llu pendingHold=%d)",
+                    waitMode, (unsigned long long)fenceValueToWait, focusLossMode ? 1 : 0);
         }
     } else if (waitHr == WAIT_OBJECT_0) {
+        if (focusLossMode) {
+            UINT64 completedVal = g_State.fence->GetCompletedValue();
+            ClearFocusLossPendingOverlayFence("pre-Present wait completed", fenceValueToWait, completedVal);
+        }
         if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
             HookLog("DX12: Overlay completion wait finished for %s mode (fence=%llu)",
                     waitMode, (unsigned long long)fenceValueToWait);
+        }
+    } else {
+        if (focusLossMode) {
+            g_FocusLossPendingOverlayFenceValue.store(fenceValueToWait, std::memory_order_release);
+        }
+        if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
+            HookLog("DX12: Overlay completion wait returned result=%lu for %s mode (fence=%llu pendingHold=%d)",
+                    waitHr, waitMode, (unsigned long long)fenceValueToWait, focusLossMode ? 1 : 0);
         }
     }
 }

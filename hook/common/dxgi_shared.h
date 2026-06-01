@@ -238,6 +238,14 @@ inline bool ShouldApplyUnfocusedFlipModelDoNotWait(bool isD3D12Swapchain, bool i
     return (presentFlags & (kAllowTearing | kRestart)) == 0;
 }
 
+inline bool ShouldWaitOnD3D12FocusLossFrameLatency(bool isD3D12Swapchain, bool isFullscreen,
+                                                   bool processHasForeground, bool isIconic, bool hasZeroSize,
+                                                   bool presentSucceeded, bool frameGenerationActive,
+                                                   bool runtimeOwnedPresentation, bool hasFrameLatencyWaitable) {
+    return isD3D12Swapchain && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
+           presentSucceeded && !frameGenerationActive && !runtimeOwnedPresentation && hasFrameLatencyWaitable;
+}
+
 inline bool ShouldDeferVTableRepairDuringStreamlineStartup(bool streamlineFGRunning,
                                                            bool streamlineStartupHandoffPending,
                                                            bool streamlineStartupTransitionWindowActive,

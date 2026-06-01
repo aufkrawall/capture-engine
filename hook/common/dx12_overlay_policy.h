@@ -8,6 +8,9 @@
 
 #include "fg_runtime_state.h"
 
+struct ID3D12CommandQueue;
+struct ID3D12Fence;
+
 namespace ce::dx12_overlay_policy {
 
 enum class PostSLBackbufferBarrierMode {
@@ -1258,6 +1261,76 @@ inline bool ShouldKeepDX12FocusLossOverlayCooldown(bool cooldownTimerActive, boo
     (void)cooldownTimerActive;
     (void)currentGameForeground;
     return false;
+}
+
+struct D3D12DeferredOverlaySignalFlushInfo {
+    bool hadDeferredSignal = false;
+    bool hasFence = false;
+    bool hasFenceEvent = false;
+    bool signalSucceeded = false;
+    HRESULT signalHr = S_OK;
+    ID3D12CommandQueue* queue = nullptr;
+    ID3D12Fence* fence = nullptr;
+    HANDLE fenceEvent = nullptr;
+    UINT64 fenceValue = 0;
+    UINT64 completedValue = 0;
+};
+
+struct D3D12FocusLossOverlayFenceWaitContext {
+    const char* presentName = nullptr;
+    int callCount = 0;
+    bool isD3D12Swapchain = false;
+    bool isFullscreen = false;
+    bool processHasForeground = true;
+    bool isIconic = false;
+    bool hasZeroSize = false;
+    bool presentSucceeded = false;
+    bool presentDeviceLost = false;
+    bool frameGenerationActive = false;
+    bool runtimeOwnedPresentation = false;
+    bool usingDedicatedQueue = false;
+    HWND foregroundWindow = nullptr;
+    DWORD foregroundPid = 0;
+    HWND gameWindow = nullptr;
+    DWORD processId = 0;
+    UINT syncInterval = 0;
+    UINT presentFlags = 0;
+    HRESULT presentHr = S_OK;
+};
+
+inline bool ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
+    bool isD3D12Swapchain, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
+    bool presentSucceeded, bool presentDeviceLost, bool frameGenerationActive, bool runtimeOwnedPresentation,
+    bool usingDedicatedQueue, bool hadDeferredOverlaySignal, bool signalSucceeded, bool hasFence, bool hasFenceEvent,
+    UINT64 fenceValue) {
+    return isD3D12Swapchain && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
+           presentSucceeded && !presentDeviceLost && !frameGenerationActive && !runtimeOwnedPresentation &&
+           !usingDedicatedQueue && hadDeferredOverlaySignal && signalSucceeded && hasFence && hasFenceEvent &&
+           fenceValue != 0;
+}
+
+inline bool ShouldSignalD3D12FocusLossOverlayFenceImmediately(
+    bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
+    bool overlaySubmitSucceeded, bool deviceLost, bool frameGenerationActive, bool runtimeOwnedPresentation,
+    bool usingDedicatedQueue, bool steamDeferredOverlaySubmit, bool hasFence, bool hasFenceEvent, bool hasQueue,
+    UINT64 fenceValue) {
+    return isWrappedD3D12Present && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
+           overlaySubmitSucceeded && !deviceLost && !frameGenerationActive && !runtimeOwnedPresentation &&
+           !usingDedicatedQueue && !steamDeferredOverlaySubmit && hasFence && hasFenceEvent && hasQueue &&
+           fenceValue != 0;
+}
+
+inline bool ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(bool processHasForeground,
+                                                               bool hasPendingFocusLossFence,
+                                                               bool pendingFenceComplete) {
+    return !processHasForeground && hasPendingFocusLossFence && !pendingFenceComplete;
+}
+
+inline bool ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(bool processHasForeground,
+                                                                  bool hasPendingFocusLossFence,
+                                                                  bool pendingFenceComplete) {
+    return ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(processHasForeground, hasPendingFocusLossFence,
+                                                              pendingFenceComplete);
 }
 
 inline bool ShouldClearRecentStreamlineTeardownGraceOnFreshActivation(bool active, bool hadRecentHeuristicGrace,

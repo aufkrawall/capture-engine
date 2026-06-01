@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-01 (updated: build 0.1.3645 / tests 0.1.3646 - Talos official-FFX startup overlay-only no-blank and Streamline module-load reentry hardening)
+Last cross-checked: 2026-06-01 (updated: build 0.1.3652 / tests 0.1.3653 - x86 DX12 focus-loss same-frame overlay fence sync)
 
 Primary sources:
 - `AGENTS.md`
