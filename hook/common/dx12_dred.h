@@ -16,27 +16,35 @@
 
 struct ID3D12Device;
 
+// The hook DLL is built with ThinLTO + `-Wl,--gc-sections`. ArmBeforeDeviceCreation
+// has a single call site (Wrapped_D3D12CreateDevice); on x86 the linker GC'd the
+// arming body even with __attribute__((used)) (it was kept on x64 but stripped on
+// x86), which silently disabled DRED. Exporting the DRED entry points makes them
+// unconditional GC roots on PE for BOTH architectures, guaranteeing the arming
+// runs. (Verify with: `llvm-strings capture_hook_x86.dll | grep "DX12 DRED: armed"`.)
+#define CE_DRED_API __declspec(dllexport)
+
 namespace ce::dx12_dred {
 
 // Whether DRED arming is enabled. Controlled by env var CE_DX12_DRED:
 //   unset / "1" / "on" / "true"  -> enabled (default during this diagnosis cycle)
 //   "0" / "off" / "false"        -> disabled
-bool IsEnabled();
+CE_DRED_API bool IsEnabled();
 
 // Arm DRED auto-breadcrumbs + page-fault + breadcrumb-context as FORCED_ON.
 // Must be called before D3D12CreateDevice creates the device. Idempotent and
 // cheap; logs the first successful arm. Returns true if DRED was armed.
-bool ArmBeforeDeviceCreation();
+CE_DRED_API bool ArmBeforeDeviceCreation();
 
 // On device-removed, query the device's DRED output and log the hung command
 // list/queue, the last completed breadcrumb op, breadcrumb context strings, and
 // the page-fault VA + existing/recently-freed allocations. Logs at most once per
 // device-removed epoch (see ResetDumpEpoch). Safe if device is null or DRED was
 // not armed.
-void DumpOnDeviceRemoved(ID3D12Device* device, const char* reason);
+CE_DRED_API void DumpOnDeviceRemoved(ID3D12Device* device, const char* reason);
 
 // Re-arm the once-per-epoch dump guard. Call when a fresh device is adopted so a
 // later device-removal on the new device can dump again.
-void ResetDumpEpoch();
+CE_DRED_API void ResetDumpEpoch();
 
 }  // namespace ce::dx12_dred

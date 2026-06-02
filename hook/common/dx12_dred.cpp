@@ -10,13 +10,12 @@
 
 #include "hook_common.h"
 
-// The hook DLL is built with ThinLTO + --gc-sections. ArmBeforeDeviceCreation is
-// called once from Wrapped_D3D12CreateDevice; without this marker ThinLTO inlines
-// it and then dead-strips the whole arming body (observed: D3D12GetDebugInterface
-// and the arming log strings vanished from the linked DLL), which would silently
-// disable DRED. `used` keeps the symbol; `noinline` keeps the call site a real,
-// side-effecting call so the arming actually runs.
-#define CE_DRED_KEEP __attribute__((used, noinline))
+// Retention belt-and-suspenders. The DRED entry points are `__declspec(dllexport)`
+// (see CE_DRED_API in the header) so the linker keeps them as GC roots on both x86
+// and x64 (plain `used` was honored on x64 LLD but NOT x86, so arming was silently
+// stripped on x86). `noinline` additionally keeps the call site in
+// Wrapped_D3D12CreateDevice a real, side-effecting call so the arming actually runs.
+#define CE_DRED_KEEP __attribute__((noinline))
 
 namespace ce::dx12_dred {
 
