@@ -2000,20 +2000,19 @@ TEST(DXGISharedTest, ProtectedOfficialFFXStartupQuiescesCESideEffectsUntilDirect
         ce::dx12_overlay_policy::ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(true, true));
 }
 
-TEST(DXGISharedTest, ProtectedOfficialFFXStartupAllowsOverlayOnlyWithStagedDirectQueue) {
-    EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(true, false, true));
-
+TEST(DXGISharedTest, ProtectedOfficialFFXStartupDoesNotAllowSeparateOverlayOnlyBeforeProof) {
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(false, false, true));
+        ce::dx12_overlay_policy::ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(true, false, true));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(true, true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(false, false, true));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(true, false, false));
 }
 
-TEST(DXGISharedTest, ProtectedOfficialFFXStartupOverlayOnlyBypassesFGCooldownWithStagedQueue) {
-    EXPECT_TRUE(
+TEST(DXGISharedTest, ProtectedOfficialFFXStartupOverlayOnlyDoesNotBypassFGCooldownWithStagedQueue) {
+    EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(true, true));
 
     EXPECT_FALSE(
@@ -2022,6 +2021,19 @@ TEST(DXGISharedTest, ProtectedOfficialFFXStartupOverlayOnlyBypassesFGCooldownWit
         ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(true, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(false, false));
+}
+
+TEST(DXGISharedTest, ProtectedOfficialFFXStartupPreservesBackendAcrossSwapchainChangeUntilProof) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldPreserveOverlayBackendAcrossProtectedOfficialFFXStartupSwapchainChange(true,
+                                                                                                              false));
+
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldPreserveOverlayBackendAcrossProtectedOfficialFFXStartupSwapchainChange(false,
+                                                                                                              false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldPreserveOverlayBackendAcrossProtectedOfficialFFXStartupSwapchainChange(true,
+                                                                                                              true));
 }
 
 TEST(DXGISharedTest, ProtectedOfficialFFXStartupQuiescesLiveStreamlinePostSLImmediately) {
@@ -2500,8 +2512,27 @@ TEST(DXGISharedTest, PostSLReactivationWarmupIsNotBypassedEvenAfterWrapperBacked
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(false, true, false));
 
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(true, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(false, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(true, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(false, false, true));
+}
+
+TEST(DXGISharedTest, PureStreamlineResumeProofRequiresActiveDLSSAndSamePreviouslyWorkingQueue) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::HasConfirmedPureStreamlinePostSLResumeProof(false, true, true, true, true,
+                                                                                    true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::HasConfirmedPureStreamlinePostSLResumeProof(true, true, true, true, true,
+                                                                                     true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::HasConfirmedPureStreamlinePostSLResumeProof(false, false, true, true, true,
+                                                                                     true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::HasConfirmedPureStreamlinePostSLResumeProof(false, true, false, true, true,
+                                                                                     true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::HasConfirmedPureStreamlinePostSLResumeProof(false, true, true, false, true,
+                                                                                     true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::HasConfirmedPureStreamlinePostSLResumeProof(false, true, true, true, false,
+                                                                                     true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::HasConfirmedPureStreamlinePostSLResumeProof(false, true, true, true, true,
+                                                                                     false));
 }
 
 TEST(DXGISharedTest, StreamlineStartupHandoffPresentUsesTopLevelPathAfterLargeGapWithoutPresentOwner) {
@@ -3392,6 +3423,22 @@ TEST(DXGISharedTest, ReinitCooldownAlsoPreservesHalfArmedSyntheticStartupState) 
         ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(false, false, false, false));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(false, false, true, false));
+}
+
+TEST(DXGISharedTest, ReinitCooldownLetsHalfArmedSyntheticPostSLContinue) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
+        true, true, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
+        true, false, true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
+        true, false, false, true, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
+        false, true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
+        true, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
+        true, false, false, true, false));
 }
 
 TEST(DXGISharedTest, VisibleOverlayCanWakeECLDrivenStartupActivationBeforePostSLCallbackEnters) {

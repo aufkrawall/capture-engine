@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-02 (updated: build 0.1.3665 / tests 0.1.3666 - x86 DX12 focus-loss offscreen-composite sync)
+Last cross-checked: 2026-06-02 (updated: build 0.1.3671 / tests 0.1.3672 - protected official FFX startup GPU-quiet correction)
 
 Primary sources:
 - `AGENTS.md`

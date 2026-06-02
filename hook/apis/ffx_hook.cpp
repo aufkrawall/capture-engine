@@ -487,12 +487,17 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
                 logCount + 1);
         }
     } else if (disabledStartupArmingConfigure) {
-        const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
-        HookLogImportant(
-            "FFX Hook: Native FSR disabled startup-arming configure forwarded without CE present-callback bridge "
-            "(context=%p frameID=%llu retainedBridge=%d originalPresent=%p)",
-            context, static_cast<unsigned long long>(originalDesc->frameID),
-            retainedExistingBridgeForDisabledConfigure ? 1 : 0, reinterpret_cast<void*>(originalDesc->presentCallback));
+        static std::atomic<int> s_disabledStartupArmingNoBridgeLogCount{0};
+        const int logCount = s_disabledStartupArmingNoBridgeLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
+            HookLogImportant(
+                "FFX Hook: Native FSR disabled startup-arming configure forwarded without CE present-callback bridge "
+                "(context=%p frameID=%llu retainedBridge=%d originalPresent=%p log=%d)",
+                context, static_cast<unsigned long long>(originalDesc->frameID),
+                retainedExistingBridgeForDisabledConfigure ? 1 : 0,
+                reinterpret_cast<void*>(originalDesc->presentCallback), logCount + 1);
+        }
     } else if (recognizedFGConfigure) {
         static std::atomic<int> s_disabledConfigureNoBridgeLogCount{0};
         const int logCount = s_disabledConfigureNoBridgeLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -512,12 +517,16 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
             (unsigned long long)desc->type);
 
     if (!parsed.enabled && disabledStartupArmingConfigure) {
-        HookLogImportant(
-            "FFX Hook: Native FSR disabled configure used for startup arming; preserving authoritative FSR state "
-            "until direct enabled configure arrives (context=%p frameID=%llu runtimeOwned=%d directFFX=%d)",
-            context, static_cast<unsigned long long>(parsed.frameId),
-            DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() ? 1 : 0,
-            g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0);
+        static std::atomic<int> s_disabledStartupArmingPreserveLogCount{0};
+        const int logCount = s_disabledStartupArmingPreserveLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "FFX Hook: Native FSR disabled configure used for startup arming; preserving authoritative FSR state "
+                "until direct enabled configure arrives (context=%p frameID=%llu runtimeOwned=%d directFFX=%d log=%d)",
+                context, static_cast<unsigned long long>(parsed.frameId),
+                DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration() ? 1 : 0,
+                g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0, logCount + 1);
+        }
         return result;
     }
 

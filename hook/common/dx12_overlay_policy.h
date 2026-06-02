@@ -2023,16 +2023,36 @@ inline bool ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
     return !hadFSRFGPhase && startupTopLevelPresentConsumed && wrapperProgressObserved;
 }
 
+inline bool HasConfirmedPureStreamlinePostSLResumeProof(bool hadFSRFGPhase, bool streamlineFGRunning,
+                                                        bool startupTopLevelPresentConsumed,
+                                                        bool hasPostSLLastWorkingQueue, bool hasSwapchainQueue,
+                                                        bool swapchainQueueMatchesPostSLLastWorkingQueue) {
+    // This is stronger than generic wrapper-progress proof: DLSS is currently
+    // running, the startup handoff has already been consumed, and the live
+    // Streamline swapchain queue is the same queue that previously submitted
+    // visible PostSL overlay work. That means this is a proven resume, not a
+    // cold DLSS startup.
+    return !hadFSRFGPhase && streamlineFGRunning && startupTopLevelPresentConsumed && hasPostSLLastWorkingQueue &&
+           hasSwapchainQueue && swapchainQueueMatchesPostSLLastWorkingQueue;
+}
+
 inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTopLevelHandoffWrapperProgress,
-                                                 bool safePostFSRBootstrapPath) {
-    // Never bypass warm-up for pure DLSS cold start.  DLSS FG's multi-device
+                                                 bool safePostFSRBootstrapPath,
+                                                 bool confirmedPureStreamlineResumeProof = false) {
+    // Do not bypass warm-up for pure DLSS cold start. DLSS FG's multi-device
     // initialization is fragile: submitting overlay ECL on the FG queue during
-    // the first few callbacks can corrupt DLSS FG's internal mutex/fence state
-    // and crash sl_dlss_g.  The warm-up period lets DLSS FG stabilize before
-    // our first GPU work lands on its queue.  PostSL still activates and logs
-    // progress during warm-up — only the ECL submit is deferred.
+    // the first few callbacks can corrupt DLSS FG's internal mutex/fence state.
+    // The warm-up period lets DLSS FG stabilize before our first GPU work lands
+    // on its queue. PostSL still activates and logs progress during warm-up -
+    // only the ECL submit is deferred.
+    //
+    // A confirmed pure-DLSS resume is different from a cold start: the same
+    // live swapchain queue has already submitted visible PostSL work before the
+    // suspend/resume edge, so forcing another 30-frame warm-up creates a visible
+    // overlay blink without adding real safety.
     (void)useTopLevelHandoffWrapperProgress;
-    return hadFSRFGPhase && safePostFSRBootstrapPath;
+    return (hadFSRFGPhase && safePostFSRBootstrapPath) ||
+           (!hadFSRFGPhase && confirmedPureStreamlineResumeProof);
 }
 
 inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
@@ -2297,6 +2317,21 @@ inline bool ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfAr
                                                                postSLConfirmedButStartupSettling);
 }
 
+inline bool ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
+    bool streamlineFGRunning, bool startupActivationPending, bool postSLActiveButUnconfirmed,
+    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling) {
+    // The FG transition cooldown still protects the unsafe pre-SL/reinit path,
+    // but a half-armed or freshly confirmed PostSL startup route is already on
+    // Streamline's own Present callback timing. Re-applying the generic cooldown
+    // to PostSL itself blanks the overlay during DLSS resume even though the only
+    // remaining work is rebuilding resources on the new authoritative SL
+    // swapchain from inside PostSL.
+    return streamlineFGRunning &&
+           ShouldKeepSyntheticStartupStateUntilConfirmedRender(startupActivationPending, postSLActiveButUnconfirmed,
+                                                               postSLConfirmedRendering,
+                                                               postSLConfirmedButStartupSettling);
+}
+
 inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible, bool startupActivationPending,
                                                          bool postSLStartupActivationEntered,
                                                          bool postSLConfirmedRendering, bool callbackInstalled,
@@ -2448,22 +2483,36 @@ inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool pro
 inline bool ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(bool protectedOfficialFFXStartupPending,
                                                                     bool ffxStartupAlreadyResolved,
                                                                     bool hasStagedDirectQueue) {
-    // A staged DIRECT queue lets CE draw only the overlay on the official FFX
-    // startup swapchain while still suppressing the invasive side effects that
-    // previously upset the runtime before ffxConfigure(enable). Without the
-    // queue, submitting to any fallback queue would be a cross-queue hazard.
-    return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved && hasStagedDirectQueue;
+    (void)protectedOfficialFFXStartupPending;
+    (void)ffxStartupAlreadyResolved;
+    (void)hasStagedDirectQueue;
+    // The staged DIRECT queue is useful deferred takeover state, but it is not
+    // proof that separate CE overlay submissions are safe before AMD reaches an
+    // enabled ffxConfigure / present-callback packet. GTA's DLSS->FSR handoff
+    // showed that even "overlay-only" ECLs in this pre-enable window can leave
+    // the AMD presenter/interpolation threads waiting inside ffxQuery.
+    return false;
 }
 
 inline bool ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(bool protectedOverlayOnlyEligible,
                                                                                bool hasStagedDirectQueue) {
-    // The generic FG cooldown prevents reinitializing overlay resources on an
-    // uncertain queue during runtime handoffs. Protected official FFX startup is
-    // the narrow exception: the staged runtime Direct queue is the exact queue
-    // that owns the startup swapchain, and the surrounding path still suppresses
-    // capture, export probing, Present repair, and other invasive side effects
-    // until enabled ffxConfigure/present-callback proof arrives.
-    return protectedOverlayOnlyEligible && hasStagedDirectQueue;
+    (void)protectedOverlayOnlyEligible;
+    (void)hasStagedDirectQueue;
+    // Pre-enable protected official FFX startup must stay GPU-quiet. Visibility
+    // resumes through the FFX present callback once enabled configure/callback
+    // proof exists, not through a generic cooldown bypass.
+    return false;
+}
+
+inline bool ShouldPreserveOverlayBackendAcrossProtectedOfficialFFXStartupSwapchainChange(
+    bool protectedOfficialFFXStartupPending, bool ffxStartupAlreadyResolved) {
+    // The protected swapchain is not yet a drawable CE target, but tearing down
+    // the old backend and immediately rebuilding against the staged FFX queue is
+    // worse: it creates the exact pre-enable GPU traffic that can wedge AMD FSR.
+    // Preserve backend/resources and let the callback path take over once proof
+    // arrives.
+    return ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(protectedOfficialFFXStartupPending,
+                                                                       ffxStartupAlreadyResolved);
 }
 
 inline bool ShouldQuiesceStreamlinePostSLDuringProtectedOfficialFFXStartup(
