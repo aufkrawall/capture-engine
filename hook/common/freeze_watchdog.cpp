@@ -256,15 +256,21 @@ bool FreezeWatchdog::IsFrozen() const {
     bool inPresentCall = DXGIShared::g_SharedState.presentInFlightDepth.load(std::memory_order_acquire) > 0;
 
     // Alt+Tab/minimized games can legitimately stop presenting for a while.
-    // Suppress background freezes only when no Present is in flight. If a
-    // Present call is already in progress and heartbeats stop, it's likely a
-    // real driver/render hang and should still produce a dump.
+    // Suppress background freezes only when no Present is in flight and no FG
+    // runtime currently owns presentation. If an FSR/DLSS presenter path is in
+    // charge, the hang can sit inside the runtime presenter thread while focus
+    // heuristics stay quiet, so continue monitoring.
+    const bool processForeground = IsProcessInForeground(processId_);
+    const bool forceMonitor = forceMonitor_.load(std::memory_order_relaxed);
+    const bool runtimePresentationMonitor = runtimePresentationMonitor_.load(std::memory_order_relaxed);
+    if (ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(
+            processForeground, forceMonitor, inPresentCall, runtimePresentationMonitor)) {
+        return false;
+    }
+
     // When forceMonitor_ is set (device removed), always check — the GPU
     // driver may be stuck in a kernel call even though the window is unfocused.
-    if (!IsProcessInForeground(processId_) && !forceMonitor_.load(std::memory_order_relaxed)) {
-        if (!inPresentCall) {
-            return false;
-        }
+    if (!processForeground && !forceMonitor) {
         double inFlightTimeout = timeoutSeconds_.load();
         if (inFlightTimeout > 15.0) {
             inFlightTimeout = 15.0;
@@ -502,12 +508,15 @@ void FreezeWatchdog::WatchdogThread() {
             lastLogTime = now;
             char logMsg[256];
             snprintf(logMsg, sizeof(logMsg),
-                     "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs, monitoredTid=%lu, dialogTid=%lu\n",
+                     "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs, monitoredTid=%lu, dialogTid=%lu, "
+                     "runtimePresentation=%d\n",
                      elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
-                     dialogThreadId);
+                     dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0);
             OutputDebugStringA(logMsg);
-            HookLog("FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu", elapsed,
-                    timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId);
+            HookLog("FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu "
+                    "runtimePresentation=%d",
+                    elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
+                    dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0);
         }
 
         if (dialogSeenSince != 0 && !dialogDumpWritten) {

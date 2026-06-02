@@ -40,6 +40,13 @@ static void LoadConfig() {
         GetPrivateProfileIntA("Stress", "fsr_suspend_resume_interval_seconds", g_FsrSuspendResumeIntervalSeconds,
                               configPath.c_str()),
         1, 60);
+    g_FsrPresentCallbackStress =
+        GetPrivateProfileIntA("Stress", "fsr_present_callback_toggle_stress",
+                              g_FsrPresentCallbackStress ? 1 : 0, configPath.c_str()) != 0;
+    g_FsrPresentCallbackToggleIntervalSeconds =
+        ClampInt(GetPrivateProfileIntA("Stress", "fsr_present_callback_toggle_interval_seconds",
+                                       g_FsrPresentCallbackToggleIntervalSeconds, configPath.c_str()),
+                 1, 120);
     g_DxgiVideoMemoryQueryStress = GetPrivateProfileIntA("Stress", "dxgi_video_memory_query_stress",
                                                          g_DxgiVideoMemoryQueryStress ? 1 : 0, configPath.c_str()) != 0;
     g_DxgiVideoMemoryQueryCountPerFrame = ClampInt(
@@ -143,6 +150,22 @@ static void ParseCommandLine(int argc, char* argv[]) {
         }
         if (TryParseIntOption(argv[i], "--fsr-suspend-interval", &value)) {
             g_FsrSuspendResumeIntervalSeconds = ClampInt(value, 1, 60);
+            continue;
+        }
+        if (strcmp(argv[i], "--fsr-present-callback-interval") == 0 && i + 1 < argc) {
+            g_FsrPresentCallbackToggleIntervalSeconds = ClampInt(atoi(argv[++i]), 1, 120);
+            continue;
+        }
+        if (TryParseIntOption(argv[i], "--fsr-present-callback-interval", &value)) {
+            g_FsrPresentCallbackToggleIntervalSeconds = ClampInt(value, 1, 120);
+            continue;
+        }
+        if (strcmp(argv[i], "--fsr-present-callback-stress") == 0) {
+            g_FsrPresentCallbackStress = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-fsr-present-callback-stress") == 0) {
+            g_FsrPresentCallbackStress = false;
             continue;
         }
         if (strcmp(argv[i], "--startup-preload-fg") == 0) {

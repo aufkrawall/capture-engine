@@ -89,6 +89,8 @@ static bool g_FsrKeepRuntimeLoadedInitialOff = false;
 static bool g_FsrStartupDisabledContextStress = false;
 static bool g_FsrSuspendResumeStress = true;
 static int g_FsrSuspendResumeIntervalSeconds = 3;
+static bool g_FsrPresentCallbackStress = true;
+static int g_FsrPresentCallbackToggleIntervalSeconds = 6;
 static bool g_DxgiVideoMemoryQueryStress = true;
 static int g_DxgiVideoMemoryQueryCountPerFrame = 96;
 static int g_BootstrapNativeSwapchainStressCount = 0;
@@ -138,6 +140,7 @@ static bool g_FsrEnabled = false;
 static bool g_FsrSuspended = false;
 static bool g_FsrRuntimeLoaded = false;
 static bool g_FsrConfigureEveryFrame = true;
+static bool g_FsrLastConfigureUsedPresentCallback = true;
 static uint64_t g_FsrRuntimeLoadGeneration = 0;
 static uint64_t g_FrameIdCounter = 0;
 static uint64_t g_LastFsrConfigureLogFrame = 0;
@@ -196,6 +199,7 @@ static float g_BarPosition = 0.0f;
 static uint64_t g_LastModeSwitchFrameId = 0;
 static auto g_StartTime = std::chrono::high_resolution_clock::now();
 static auto g_LastFsrSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
+static auto g_FsrPresentCallbackStressStartTime = std::chrono::high_resolution_clock::now();
 static uint64_t g_LastFsrSuspendResumeToggleFrameId = 0;
 static uint64_t g_LastDxgiVideoMemoryQueryStressLogFrame = 0;
 static bool g_FramePacingInitialized = false;
@@ -312,6 +316,9 @@ static const uint8_t* GlyphRows(char ch) {
 
 static const char* CurrentFGStatusText() {
     if (g_CurrentMode == FGMode::FSR) {
+        if (g_FsrPresentCallbackStress && !g_FsrLastConfigureUsedPresentCallback) {
+            return g_FsrSuspended ? "FG: FSR SUSPENDED INT" : "FG: FSR ACTIVE INT";
+        }
         return g_FsrSuspended ? "FG: FSR SUSPENDED" : "FG: FSR ACTIVE";
     }
     if (g_CurrentMode == FGMode::DLSS) {
@@ -489,6 +496,17 @@ static void ResetFSRSuspensionStressState(const char* reason) {
     g_FsrSuspended = false;
     g_LastFsrSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
     g_LastFsrSuspendResumeToggleFrameId = g_FrameIdCounter;
+}
+
+static void ResetFSRPresentCallbackStressState(const char* reason) {
+    g_FsrPresentCallbackStressStartTime = std::chrono::high_resolution_clock::now();
+    g_FsrLastConfigureUsedPresentCallback = !g_FsrPresentCallbackStress;
+    testapp::Log(
+        "[FG-DIAG] FSR present-callback stress reset (%s): stress=%d interval=%ds initialRoute=%s frameID=%llu\n",
+        reason ? reason : "unknown", g_FsrPresentCallbackStress ? 1 : 0,
+        g_FsrPresentCallbackToggleIntervalSeconds,
+        g_FsrLastConfigureUsedPresentCallback ? "app-callback" : "amd-internal",
+        static_cast<unsigned long long>(g_FrameIdCounter));
 }
 
 static bool SameAdapterLuid(const LUID& a, const LUID& b) {
@@ -963,6 +981,7 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             g_FsrInitialized = TryInitFSR();
             ok = ok && g_FsrInitialized;
         }
+        ResetFSRPresentCallbackStressState("enter FSR mode");
         UINT activeFrameIndex = g_FrameIndex < g_SwapChainBufferCount ? g_FrameIndex : frameIndex;
         if (ok &&
             ConfigureFSR(true,
@@ -1292,8 +1311,10 @@ int main(int argc, char* argv[]) {
     testapp::Log("Stress: Keep FSR runtime loaded during initial OFF = %d\n", g_FsrKeepRuntimeLoadedInitialOff ? 1 : 0);
     testapp::Log("Stress: Create disabled FSR context during initial OFF = %d\n",
                  g_FsrStartupDisabledContextStress ? 1 : 0);
-    testapp::Log("Stress: FSR suspend/resume while keeping context/swapchain alive = %d\n\n",
+    testapp::Log("Stress: FSR suspend/resume while keeping context/swapchain alive = %d\n",
                  g_FsrSuspendResumeStress ? 1 : 0);
+    testapp::Log("Stress: FSR present callback alternates with AMD internal no-callback route = %d (%ds)\n\n",
+                 g_FsrPresentCallbackStress ? 1 : 0, g_FsrPresentCallbackToggleIntervalSeconds);
     testapp::Log("Stress: Isolated native swapchain wrapper probes before/after session = %d\n",
                  g_BootstrapNativeSwapchainStressCount);
     testapp::Log("Stress: Startup native swapchain recreates before FG runtimes load = %d\n",
@@ -1451,6 +1472,7 @@ int main(int argc, char* argv[]) {
     UpdateWindowTitle();
     g_StartTime = std::chrono::high_resolution_clock::now();
     g_LastFsrSuspendResumeToggleTime = g_StartTime;
+    g_FsrPresentCallbackStressStartTime = g_StartTime;
     g_FramePacingInitialized = false;
     g_MaxFrameDeltaMs = 0.0;
     g_FramePacingSpikeCount = 0;

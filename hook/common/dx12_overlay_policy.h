@@ -747,7 +747,7 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
 inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     bool runtimeOwnsSwapchain, bool streamlineFGRunning, fg_runtime::RuntimeMode runtimeMode,
     bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath,
-    bool ffxPresentCallbackFallbackAllowed = false) {
+    bool ffxPresentCallbackFallbackAllowed = false, bool nativeFSRInternalNoCallbackComposition = false) {
     if (streamlineFGRunning) {
         return false;
     }
@@ -755,6 +755,16 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     const bool nativeFSRPresentOwnership =
         authoritativeFSRActive || fg_runtime::RuntimeModeUsesFSR(runtimeMode) || runtimeOwnedNativeFGPresentPath;
     if (!nativeFSRPresentOwnership) {
+        return false;
+    }
+
+    // If the game did not provide an FFX present callback, the AMD swapchain
+    // runtime keeps its own internal blit/UI composition path. Installing CE's
+    // callback in that configuration forces us to own the runtime's scene copy,
+    // which has wedged real AMD presenter threads. Let the internal no-callback
+    // path finish the frame and draw the overlay through the normal DX12 route
+    // on the runtime-owned swapchain queue.
+    if (nativeFSRInternalNoCallbackComposition) {
         return false;
     }
 
@@ -947,7 +957,8 @@ inline bool ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
 }
 
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
-                                                              bool frameGenerationEnabled) {
+                                                              bool frameGenerationEnabled,
+                                                              bool presentCallbackAvailable = true) {
     // Disabled configure traffic can repeat rapidly during native-FSR teardown.
     // Installing a new CE present-callback bridge on those OFF packets keeps CE
     // entangled in the old runtime-owned Present path and adds log churn even
@@ -955,7 +966,7 @@ inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFra
     // Fresh startup-arming disabled packets are also forwarded unmodified. GTA
     // can fail-fast if a disabled setup configure receives a synthetic callback
     // pointer before native FSR has accepted the real enabled configure.
-    return recognizedFrameGenerationConfigure && frameGenerationEnabled;
+    return recognizedFrameGenerationConfigure && frameGenerationEnabled && presentCallbackAvailable;
 }
 
 inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,
@@ -1320,15 +1331,37 @@ inline bool ShouldSignalD3D12FocusLossOverlayFenceImmediately(
            fenceValue != 0;
 }
 
+inline bool ShouldWaitForD3D12FocusLossImmediateOverlayFence(bool immediateFencePolicyAccepted,
+                                                             bool signalSucceeded, bool hasFence,
+                                                             bool hasFenceEvent, bool hasQueue, UINT64 fenceValue) {
+    return immediateFencePolicyAccepted && signalSucceeded && hasFence && hasFenceEvent && hasQueue &&
+           fenceValue != 0;
+}
+
+inline bool ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(bool fenceWaitCompleted,
+                                                                          bool dumpAlreadyRequested) {
+    return !fenceWaitCompleted && !dumpAlreadyRequested;
+}
+
+inline bool ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
+    bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
+    bool frameGenerationActive, bool runtimeOwnedPresentation, bool usingDedicatedQueue,
+    bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue) {
+    return isWrappedD3D12Present && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
+           !frameGenerationActive && !runtimeOwnedPresentation && !usingDedicatedQueue &&
+           !steamDeferredOverlaySubmit && !deviceLost && hasQueue;
+}
+
 inline bool ShouldUseD3D12FocusLossOffscreenOverlayComposite(
     bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
     bool frameGenerationActive, bool runtimeOwnedPresentation, bool usingDedicatedQueue,
     bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue, bool hasFence, bool hasFenceEvent) {
-    // `20260602_030350` showed that the same-frame fence was present but
-    // repeated focus-lost PRESENT->RT->PRESENT backbuffer transitions still
-    // preceded device removal. In this narrow unfocused, non-FG single-queue
-    // family, keep the injected overlay visible by compositing through the
-    // existing offscreen path and touching the swapchain only with copy ops.
+    // The offscreen path is still valid for recovery cases that must avoid
+    // explicit backbuffer barriers, but focus-lost x86 DX12 learned on
+    // `20260602_212827` that even repeated copy-only swapchain backbuffer
+    // touches can lead to DEVICE_HUNG. Callers should first apply
+    // ShouldHoldD3D12FocusLossBackgroundBackbufferWork and skip CE backbuffer
+    // work entirely while the process is backgrounded.
     return isWrappedD3D12Present && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
            !frameGenerationActive && !runtimeOwnedPresentation && !usingDedicatedQueue &&
            !steamDeferredOverlaySubmit && !deviceLost && hasQueue && hasFence && hasFenceEvent;

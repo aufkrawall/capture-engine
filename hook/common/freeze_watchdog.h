@@ -20,6 +20,12 @@ inline bool ShouldCaptureWatchdogDump(bool dumpAlreadyCaptured) {
     return !dumpAlreadyCaptured;
 }
 
+inline bool ShouldSuppressFreezeCheckForBackgroundProcess(bool processForeground, bool forceMonitor,
+                                                          bool presentInFlight,
+                                                          bool runtimePresentationMonitor) {
+    return !processForeground && !forceMonitor && !presentInFlight && !runtimePresentationMonitor;
+}
+
 }  // namespace ce::freeze_watchdog_policy
 
 // Freeze detection watchdog - monitors thread heartbeats and creates dumps on freeze
@@ -85,6 +91,14 @@ public:
         forceMonitor_.store(force, std::memory_order_release);
     }
 
+    // Force freeze monitoring while a frame-generation runtime owns
+    // presentation. These presenter threads can freeze without ordinary game
+    // Present focus heuristics firing, especially around FSR swapchain
+    // replacement or startup.
+    void SetRuntimePresentationMonitor(bool force) {
+        runtimePresentationMonitor_.store(force, std::memory_order_release);
+    }
+
     void SetPreferredThreadProvider(PreferredThreadProvider provider) {
         preferredThreadProvider_.store(provider, std::memory_order_release);
     }
@@ -108,6 +122,7 @@ private:
     std::atomic<double> timeoutSeconds_{5.0};
     std::atomic<DWORD> monitoredThreadId_{0};
     std::atomic<bool> forceMonitor_{false};
+    std::atomic<bool> runtimePresentationMonitor_{false};
     std::atomic<uint64_t> lastDumpRequestMicros_{0};
     std::atomic<bool> dumpCapturedForCurrentRun_{false};
     std::atomic<PreferredThreadProvider> preferredThreadProvider_{nullptr};

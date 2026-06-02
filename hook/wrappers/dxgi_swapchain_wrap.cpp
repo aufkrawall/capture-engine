@@ -233,7 +233,7 @@ FlushDeferredDX12OverlaySignalAfterWrappedPresent(bool isD3D12, const char* pres
         if (n < 40 || (n % 300) == 0) {
             WrapperLog(
                 "%s#%d: no deferred DX12 overlay fence signal after wrapped Present "
-                "(focus-loss; expected when v3 immediate-fence path signaled before Present, fence=%p event=%p "
+                "(focus-loss; expected after same-frame immediate-fence path waited before Present, fence=%p event=%p "
                 "completed=%llu)",
                 presentName, callCount, flushInfo.fence, flushInfo.fenceEvent,
                 (unsigned long long)flushInfo.completedValue);

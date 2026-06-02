@@ -6,6 +6,7 @@
 #include <string>
 
 #include "../common/crash_handler.h"
+#include "../hook/common/freeze_watchdog.h"
 
 namespace {
 
@@ -133,11 +134,13 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("External dump storm threshold reached"), std::string::npos);
     EXPECT_NE(contents.find("Explicit native FSR OFF plus origGame swapchain return ending runtime-owned native-FG"),
               std::string::npos);
-    EXPECT_NE(contents.find("Native FSR configure disabled; not installing DX12 present-callback bridge"),
+    EXPECT_NE(contents.find("Native FSR configure without DX12 present-callback bridge"),
               std::string::npos);
     EXPECT_NE(
         contents.find("Native FSR disabled startup-arming configure forwarded without CE present-callback bridge"),
         std::string::npos);
+    EXPECT_NE(contents.find("Native FSR enabled with no app present callback"), std::string::npos);
+    EXPECT_NE(contents.find("Native FSR contexts destroyed; cleared callback routing"), std::string::npos);
     EXPECT_NE(contents.find("Native FSR disabled configure used for startup arming"), std::string::npos);
     EXPECT_NE(contents.find("Native FSR startup configure arming"), std::string::npos);
     EXPECT_NE(contents.find("Official FFX takeover side-effects staged until enabled ffxConfigure"), std::string::npos);
@@ -194,4 +197,22 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("initializing FFX hooks immediately for native FSR callback bridge"), std::string::npos);
     EXPECT_NE(contents.find("Installed LdrLoadDll hook for module-load observation"), std::string::npos);
     EXPECT_NE(contents.find("IAT import patching skipped to avoid startup fail-fast"), std::string::npos);
+    EXPECT_NE(contents.find("DX12 focus-loss sync policy=v5 offscreen-composite+same-frame-fence-wait"),
+              std::string::npos);
+    EXPECT_NE(contents.find("Focus-loss same-frame overlay fence wait result"), std::string::npos);
+    EXPECT_NE(contents.find("Requesting immediate freeze dump for focus-loss same-frame overlay fence wait"),
+              std::string::npos);
+}
+
+TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentationMonitored) {
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, false,
+                                                                                          false));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, true,
+                                                                                           false));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, true, false,
+                                                                                           false));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, false,
+                                                                                           true));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(true, false, false,
+                                                                                           false));
 }

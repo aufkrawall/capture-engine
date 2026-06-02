@@ -209,6 +209,44 @@ TEST(DXGISharedTest, D3D12FocusLossImmediateOverlayFencePolicyIsPresentPathAgnos
     EXPECT_EQ(presentPath, present1Path);
 }
 
+TEST(DXGISharedTest, D3D12FocusLossImmediateOverlayFenceSignalRequiresSameFrameWait) {
+    auto shouldWait = [](bool policyAccepted = true, bool signalSucceeded = true, bool hasFence = true,
+                         bool hasEvent = true, bool hasQueue = true, UINT64 fenceValue = 42) {
+        return ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossImmediateOverlayFence(
+            policyAccepted, signalSucceeded, hasFence, hasEvent, hasQueue, fenceValue);
+    };
+
+    EXPECT_TRUE(shouldWait());
+
+    EXPECT_FALSE(shouldWait(false));
+    EXPECT_FALSE(shouldWait(true, false));
+    EXPECT_FALSE(shouldWait(true, true, false));
+    EXPECT_FALSE(shouldWait(true, true, true, false));
+    EXPECT_FALSE(shouldWait(true, true, true, true, false));
+    EXPECT_FALSE(shouldWait(true, true, true, true, true, 0));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossImmediateOverlayFenceWaitPolicyIsPresentPathAgnostic) {
+    const bool presentPath =
+        ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossImmediateOverlayFence(true, true, true, true, true, 42);
+    const bool present1Path =
+        ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossImmediateOverlayFence(true, true, true, true, true, 42);
+
+    EXPECT_TRUE(presentPath);
+    EXPECT_EQ(presentPath, present1Path);
+}
+
+TEST(DXGISharedTest, D3D12FocusLossImmediateFenceDumpRequestsOnlyForFirstIncompleteWait) {
+    EXPECT_TRUE(
+        ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(false, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(false, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(true, true));
+}
+
 TEST(DXGISharedTest, D3D12FocusLossOffscreenCompositeAvoidsDirectBackbufferBarrierPath) {
     auto shouldComposite = [](bool wrappedD3D12 = true, bool fullscreen = false, bool foreground = false,
                               bool iconic = false, bool zeroSized = false, bool fgActive = false,
@@ -1721,6 +1759,21 @@ TEST(DXGISharedTest, FFXPresentCallbackComposesOutputOnlyWithoutRuntimeCompositi
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(false, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(false, true, false));
+}
+
+TEST(DXGISharedTest, FFXPresentCallbackBridgeRequiresRealAppCallback) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(false, true, true));
+}
+
+TEST(DXGISharedTest, NativeFSRInternalNoCallbackCompositionUsesNormalOverlayRoute) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, false, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, false, true));
 }
 
 TEST(DXGISharedTest, HDRDetectionTreatsFP16AsDefinitelyHDR) {

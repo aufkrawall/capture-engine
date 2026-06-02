@@ -144,16 +144,34 @@ static ffxReturnCode_t TestFrameGenerationCallback(ffxDispatchDescFrameGeneratio
     return ret;
 }
 
+static bool ShouldUseFSRPresentCallbackForConfigure(bool enable) {
+    if (!g_FsrPresentCallbackStress) {
+        return true;
+    }
+    if (!enable) {
+        return g_FsrLastConfigureUsedPresentCallback;
+    }
+
+    const auto now = std::chrono::high_resolution_clock::now();
+    const float elapsed = std::chrono::duration<float>(now - g_FsrPresentCallbackStressStartTime).count();
+    const int interval = g_FsrPresentCallbackToggleIntervalSeconds > 0 ? g_FsrPresentCallbackToggleIntervalSeconds : 1;
+    const int phase = static_cast<int>(elapsed / static_cast<float>(interval));
+    return (phase % 2) != 0;
+}
+
 static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer, const char* reason = "switch",
                          bool forceLog = true) {
     if (!g_FfxConfigure || !g_FfxCtx) {
         return false;
     }
 
+    const bool usePresentCallback = ShouldUseFSRPresentCallbackForConfigure(enable);
+    const bool presentCallbackModeChanged = usePresentCallback != g_FsrLastConfigureUsedPresentCallback;
     ffxConfigureDescFrameGeneration cfgDesc = {};
     cfgDesc.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
     cfgDesc.swapChain = g_SwapChain.Get();
-    cfgDesc.presentCallback = TestPresentCallback;
+    cfgDesc.presentCallback = usePresentCallback ? TestPresentCallback : nullptr;
+    cfgDesc.presentCallbackUserContext = nullptr;
     cfgDesc.frameGenerationCallback = TestFrameGenerationCallback;
     cfgDesc.frameGenerationCallbackUserContext = &g_FfxCtx;
     cfgDesc.frameGenerationEnabled = enable;
@@ -172,14 +190,21 @@ static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer, const char* re
     cfgDesc.frameID = g_FrameIdCounter;
 
     ffxReturnCode_t ret = g_FfxConfigure(&g_FfxCtx, &cfgDesc.header);
-    if (forceLog || ret != FFX_API_RETURN_OK || g_FrameIdCounter - g_LastFsrConfigureLogFrame >= 120) {
+    if (ret == FFX_API_RETURN_OK) {
+        g_FsrLastConfigureUsedPresentCallback = usePresentCallback;
+    }
+    if (forceLog || ret != FFX_API_RETURN_OK || presentCallbackModeChanged ||
+        g_FrameIdCounter - g_LastFsrConfigureLogFrame >= 120) {
         g_LastFsrConfigureLogFrame = g_FrameIdCounter;
         testapp::Log("[FG-DIAG] ffxConfigure(%s) reason=%s frameID=%llu enabled=%d result=%u (%s) "
-                     "swapChain=%p swapchainCtx=%p flags=0x%x hudless=%p everyFrame=%d\n",
+                     "swapChain=%p swapchainCtx=%p flags=0x%x hudless=%p everyFrame=%d "
+                     "presentCallbackRoute=%s callbackModeChanged=%d\n",
                      enable ? "enable" : "disable", reason ? reason : "unknown",
                      static_cast<unsigned long long>(g_FrameIdCounter), cfgDesc.frameGenerationEnabled, ret,
                      FfxReturnName(ret), g_SwapChain.Get(), (void*)g_FfxSwapChainCtx, cfgDesc.flags,
-                     cfgDesc.HUDLessColor.resource, g_FsrConfigureEveryFrame ? 1 : 0);
+                     cfgDesc.HUDLessColor.resource, g_FsrConfigureEveryFrame ? 1 : 0,
+                     usePresentCallback ? "app-callback" : "amd-internal",
+                     presentCallbackModeChanged ? 1 : 0);
         testapp::LogFlush();
     }
     return ret == FFX_API_RETURN_OK;
