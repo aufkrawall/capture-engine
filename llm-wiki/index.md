@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-02 (updated: build 0.1.3659 / tests 0.1.3660 - pure-DLSS GetState startup and menu suspend no-blank)
+Last cross-checked: 2026-06-02 (updated: build 0.1.3665 / tests 0.1.3666 - x86 DX12 focus-loss offscreen-composite sync)
 
 Primary sources:
 - `AGENTS.md`

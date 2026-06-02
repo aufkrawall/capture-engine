@@ -1320,6 +1320,20 @@ inline bool ShouldSignalD3D12FocusLossOverlayFenceImmediately(
            fenceValue != 0;
 }
 
+inline bool ShouldUseD3D12FocusLossOffscreenOverlayComposite(
+    bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
+    bool frameGenerationActive, bool runtimeOwnedPresentation, bool usingDedicatedQueue,
+    bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue, bool hasFence, bool hasFenceEvent) {
+    // `20260602_030350` showed that the same-frame fence was present but
+    // repeated focus-lost PRESENT->RT->PRESENT backbuffer transitions still
+    // preceded device removal. In this narrow unfocused, non-FG single-queue
+    // family, keep the injected overlay visible by compositing through the
+    // existing offscreen path and touching the swapchain only with copy ops.
+    return isWrappedD3D12Present && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
+           !frameGenerationActive && !runtimeOwnedPresentation && !usingDedicatedQueue &&
+           !steamDeferredOverlaySubmit && !deviceLost && hasQueue && hasFence && hasFenceEvent;
+}
+
 inline bool ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(bool processHasForeground,
                                                                bool hasPendingFocusLossFence,
                                                                bool pendingFenceComplete) {

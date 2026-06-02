@@ -11545,6 +11545,26 @@ static bool IsSteamOverlayModulePath(const char* modulePath) {
     return strstr(modulePath, "gameoverlayrenderer") != nullptr;
 }
 
+static bool IsD3D12ModuleAddress(void* address) {
+    if (!address) {
+        return false;
+    }
+
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(address), &module) ||
+        !module) {
+        return false;
+    }
+
+    char modulePath[MAX_PATH] = {};
+    if (!GetModuleFileNameA(module, modulePath, MAX_PATH)) {
+        return false;
+    }
+
+    return strstr(modulePath, "d3d12") != nullptr || strstr(modulePath, "D3D12") != nullptr;
+}
+
 static bool ResolveCurrentProcessForeground(HWND* foregroundWindowOut = nullptr, DWORD* foregroundPidOut = nullptr) {
     HWND foregroundWindow = GetForegroundWindow();
     DWORD foregroundPid = 0;
@@ -11675,7 +11695,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     if (s_firstFrame) {
         s_firstFrame = false;
         HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
-        HookLogImportant("DX12 focus-loss sync policy=v3 immediate-fence");
+        HookLogImportant("DX12 focus-loss sync policy=v4 offscreen-composite+immediate-fence");
     }
 
     // Performance metrics for this frame
@@ -14426,6 +14446,41 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // SL captures our overlay as part of the scene, FG interpolates it naturally.
         // Overlay appears on all output frames (real + interpolated).
         const bool slFGActive = currentFGActive && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+        bool focusLossDeviceLost = false;
+        {
+            auto* focusLossDev = g_Device.load(std::memory_order_acquire);
+            if (focusLossDev) {
+                focusLossDeviceLost = FAILED(focusLossDev->GetDeviceRemovedReason());
+            }
+        }
+        const bool focusLossUsingDedicatedQueue = g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
+        const bool focusLossRuntimeOwnedPresentation =
+            g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() ||
+            DXGIShared::DoesFGRuntimeOwnSwapchain();
+        const bool focusLossSteamDeferredSubmit = g_deferOverlaySubmitToSteamECL && !focusLossUsingDedicatedQueue;
+        const bool focusLossOffscreenComposite =
+            ce::dx12_overlay_policy::ShouldUseD3D12FocusLossOffscreenOverlayComposite(
+                s_WrappedPresentFocusLossContext.valid, !frameDesc.Windowed, processHasForeground, iconicWindow,
+                zeroSizedSwapchain, currentFGActive || slFGActive, focusLossRuntimeOwnedPresentation,
+                focusLossUsingDedicatedQueue, focusLossSteamDeferredSubmit, focusLossDeviceLost,
+                gameQueue != nullptr, g_State.fence != nullptr, g_State.fenceEvent != nullptr);
+        if (focusLossOffscreenComposite) {
+            static std::atomic<int> s_focusLossOffscreenPolicyLogCount{0};
+            const int logCount = s_focusLossOffscreenPolicyLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 40 || (logCount % 300) == 0) {
+                UINT64 completedValue = g_State.fence ? g_State.fence->GetCompletedValue() : 0;
+                HookLogImportant(
+                    "DX12: Focus-loss overlay using offscreen composite "
+                    "(present=%s#%d queue=%p fence=%p currentFence=%llu completed=%llu fg=%p/%lu game=%p/%lu "
+                    "sync=%u flags=0x%08X); backend/resources preserved",
+                    s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
+                                                                 : "Present",
+                    s_WrappedPresentFocusLossContext.callCount, gameQueue, g_State.fence,
+                    (unsigned long long)g_State.currentFenceValue, (unsigned long long)completedValue,
+                    foregroundWindow, foregroundPid, frameDesc.OutputWindow, currentProcessId,
+                    s_WrappedPresentFocusLossContext.syncInterval, s_WrappedPresentFocusLossContext.presentFlags);
+            }
+        }
         {
             if (slFGActive) {
                 // SL FG active: enable POST-SL overlay rendering.
@@ -15134,6 +15189,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                     // same command list.
                                     // ============================================================
                                     bool usedDescFree = false;
+                                    bool offscreenCompositeRequired = false;
                                     {
                                         auto* dev = g_Device.load();
                                         // Pre-DescFree device health check
@@ -15183,25 +15239,54 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             // Use offscreen compositing to avoid explicit barriers on
                                             // the backbuffer entirely.  Cleared on clean swapchain
                                             // transition.
-                                            bool useOffscreenCopy = g_NeedOffscreenOverlayAfterPostFSRNonFG;
+                                            const bool usePostFSROffscreenCopy =
+                                                g_NeedOffscreenOverlayAfterPostFSRNonFG;
+                                            const bool useFocusLossOffscreenCopy = focusLossOffscreenComposite;
+                                            bool useOffscreenCopy =
+                                                usePostFSROffscreenCopy || useFocusLossOffscreenCopy;
 
-                                            if (useOffscreenCopy && bb) {
-                                                static int s_postFSROffscreenLog = 0;
-                                                if (s_postFSROffscreenLog++ < 10) {
+                                            if (useOffscreenCopy) {
+                                                offscreenCompositeRequired = true;
+                                                if (!bb) {
                                                     HookLogImportant(
-                                                        "DX12: Using offscreen compositing for post-FSR non-FG overlay "
-                                                        "(bb=%p queue=%p bufIdx=%u #%d)",
-                                                        bb, gameQueue, bufferIdx, s_postFSROffscreenLog);
-                                                }
-                                                // Two-copy compositing: avoids ALL explicit barriers on backbuffer.
-                                                // 1. Copy bb→offscreen (bb implicitly promotes COMMON→COPY_SOURCE)
-                                                // 2. Barrier offscreen COPY_DEST→RT
-                                                // 3. Render overlay on top of game frame in offscreen
-                                                // 4. Barrier offscreen RT→COPY_SOURCE
-                                                // 5. Copy offscreen→bb (bb implicitly promotes COMMON→COPY_DEST)
-                                                // After ECL, both resources decay back to COMMON.
-                                                if (EnsureOffscreenRT(dev, g_State.cachedWidth, g_State.cachedHeight,
-                                                                      g_State.format)) {
+                                                        "DX12: Cannot use offscreen compositing for %s overlay because "
+                                                        "backbuffer is null; direct backbuffer fallback suppressed",
+                                                        useFocusLossOffscreenCopy ? "focus-loss" : "post-FSR DLSS");
+                                                } else {
+                                                    if (useFocusLossOffscreenCopy) {
+                                                        static int s_focusLossOffscreenLog = 0;
+                                                        if (s_focusLossOffscreenLog++ < 40 ||
+                                                            (s_focusLossOffscreenLog % 300) == 0) {
+                                                            HookLogImportant(
+                                                                "DX12: Using offscreen compositing for focus-loss "
+                                                                "overlay "
+                                                                "(bb=%p queue=%p bufIdx=%u present=%s#%d #%d)",
+                                                                bb, gameQueue, bufferIdx,
+                                                                s_WrappedPresentFocusLossContext.presentName
+                                                                    ? s_WrappedPresentFocusLossContext.presentName
+                                                                    : "Present",
+                                                                s_WrappedPresentFocusLossContext.callCount,
+                                                                s_focusLossOffscreenLog);
+                                                        }
+                                                    } else {
+                                                        static int s_postFSROffscreenLog = 0;
+                                                        if (s_postFSROffscreenLog++ < 10) {
+                                                            HookLogImportant(
+                                                                "DX12: Using offscreen compositing for post-FSR non-FG "
+                                                                "overlay "
+                                                                "(bb=%p queue=%p bufIdx=%u #%d)",
+                                                                bb, gameQueue, bufferIdx, s_postFSROffscreenLog);
+                                                        }
+                                                    }
+                                                    // Two-copy compositing: avoids ALL explicit barriers on backbuffer.
+                                                    // 1. Copy bb→offscreen (bb implicitly promotes COMMON→COPY_SOURCE)
+                                                    // 2. Barrier offscreen COPY_DEST→RT
+                                                    // 3. Render overlay on top of game frame in offscreen
+                                                    // 4. Barrier offscreen RT→COPY_SOURCE
+                                                    // 5. Copy offscreen→bb (bb implicitly promotes COMMON→COPY_DEST)
+                                                    // After ECL, both resources decay back to COMMON.
+                                                    if (EnsureOffscreenRT(dev, g_State.cachedWidth,
+                                                                          g_State.cachedHeight, g_State.format)) {
                                                     // Step 1: Copy backbuffer → offscreen RT
                                                     // bb: implicit promotion COMMON→COPY_SOURCE (no explicit barrier!)
                                                     // offscreen: explicit COMMON→COPY_DEST
@@ -15300,8 +15385,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     usedDescFree = true;
                                                 } else {
                                                     HookLogImportant(
-                                                        "DX12: Failed to create offscreen RT for post-FSR DLSS "
-                                                        "overlay");
+                                                        "DX12: Failed to create offscreen RT for %s overlay; "
+                                                        "direct backbuffer fallback suppressed",
+                                                        useFocusLossOffscreenCopy ? "focus-loss" : "post-FSR DLSS");
+                                                    }
                                                 }
                                             } else {
                                                 // Normal path: render directly to backbuffer
@@ -15373,37 +15460,56 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                     // Fallback: standard DX12 rendering (uses SetDescriptorHeaps —
                                     // may cause 60% GPU on some NVIDIA configs)
                                     if (!usedDescFree) {
-                                        if (!startupOverlayPresent) {
-                                            D3D12_RESOURCE_BARRIER barrier = {};
-                                            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                            barrier.Transition.pResource = bb;
-                                            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-                                            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                                            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                                            list->ResourceBarrier(1, &barrier);
-                                        }
+                                        if (offscreenCompositeRequired) {
+                                            static std::atomic<int> s_offscreenRequiredNoFallbackLogCount{0};
+                                            const int logCount =
+                                                s_offscreenRequiredNoFallbackLogCount.fetch_add(
+                                                    1, std::memory_order_relaxed);
+                                            if (logCount < 20 || (logCount % 300) == 0) {
+                                                HookLogImportant(
+                                                    "DX12: Skipping direct backbuffer fallback because offscreen "
+                                                    "composite is required for this frame "
+                                                    "(focusLoss=%d postFSR=%d queue=%p bufIdx=%u log=%d)",
+                                                    focusLossOffscreenComposite ? 1 : 0,
+                                                    g_NeedOffscreenOverlayAfterPostFSRNonFG ? 1 : 0, gameQueue,
+                                                    bufferIdx, logCount + 1);
+                                            }
+                                        } else {
+                                            if (!startupOverlayPresent) {
+                                                D3D12_RESOURCE_BARRIER barrier = {};
+                                                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                                                barrier.Transition.pResource = bb;
+                                                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+                                                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                                                barrier.Transition.Subresource =
+                                                    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                                                list->ResourceBarrier(1, &barrier);
+                                            }
 
-                                        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
-                                            g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-                                        UINT rtvSize = g_Device.load()->GetDescriptorHandleIncrementSize(
-                                            D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-                                        rtvHandle.ptr += (SIZE_T)bufferIdx * rtvSize;
-                                        list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+                                            D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
+                                                g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+                                            UINT rtvSize = g_Device.load()->GetDescriptorHandleIncrementSize(
+                                                D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+                                            rtvHandle.ptr += (SIZE_T)bufferIdx * rtvSize;
+                                            list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-                                        bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
-                                        DrawOverlay(list, isRealFrame, bufferIdx);
+                                            bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
+                                            DrawOverlay(list, isRealFrame, bufferIdx);
 
-                                        if (!startupOverlayPresent) {
-                                            D3D12_RESOURCE_BARRIER barrier = {};
-                                            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                            barrier.Transition.pResource = bb;
-                                            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                                            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-                                            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                                            list->ResourceBarrier(1, &barrier);
+                                            if (!startupOverlayPresent) {
+                                                D3D12_RESOURCE_BARRIER barrier = {};
+                                                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                                                barrier.Transition.pResource = bb;
+                                                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                                                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+                                                barrier.Transition.Subresource =
+                                                    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                                                list->ResourceBarrier(1, &barrier);
+                                            }
                                         }
                                     }
 
+                                    const bool overlayDrawRecorded = usedDescFree || !offscreenCompositeRequired;
                                     QueryPerformanceCounter(&perfRecord);
 
                                     HRESULT closeHr = list->Close();
@@ -15520,6 +15626,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         // the FSR-created backbuffers.
                                         ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
                                         bool usedRealECL = false;
+                                        const bool classifyFocusLossSubmitPath =
+                                            s_WrappedPresentFocusLossContext.valid && !processHasForeground;
+                                        bool submitPathIsD3D12Module = false;
                                         bool isSLWrapperECL =
                                             g_HadFSRFGPhase && slFGActive &&
                                             eclQueue == g_CommandQueue.load(std::memory_order_acquire) &&
@@ -15534,14 +15643,20 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 s_eclPathLogCount++;
                                                 const char* path = (!useDedicated && realECL && !isSLWrapperECL)
                                                                        ? "realECL"
-                                                                   : origECL ? "origECL"
-                                                                             : "vtable";
+                                                   : origECL ? "origECL"
+                                                             : "vtable";
+                                                const bool pathIsD3D12Module =
+                                                    (!useDedicated && realECL && !isSLWrapperECL)
+                                                        ? true
+                                                        : (origECL ? IsD3D12ModuleAddress(reinterpret_cast<void*>(
+                                                                         origECL))
+                                                                   : false);
                                                 HookLogImportant(
                                                     "DX12: ECL path=%s (eclQ=%p realECL=%p origECL=%p "
-                                                    "dedicated=%d slWrapper=%d scQ=%p origGame=%p)",
+                                                    "dedicated=%d slWrapper=%d directD3D12=%d scQ=%p origGame=%p)",
                                                     path, eclQueue, (void*)realECL, (void*)origECL,
-                                                    useDedicated ? 1 : 0, isSLWrapperECL ? 1 : 0, g_SwapchainQueue,
-                                                    g_OriginalGameQueue);
+                                                    useDedicated ? 1 : 0, isSLWrapperECL ? 1 : 0,
+                                                    pathIsD3D12Module ? 1 : 0, g_SwapchainQueue, g_OriginalGameQueue);
                                             }
                                         }
 
@@ -15583,17 +15698,33 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     // D3D12 device (ERR_GFX_STATE).  Using origECL lets FSR's
                                                     // hook see and accept our overlay ECL.
                                                     origECL(eclQueue, 1, lists);
+                                                    if (classifyFocusLossSubmitPath) {
+                                                        submitPathIsD3D12Module =
+                                                            IsD3D12ModuleAddress(reinterpret_cast<void*>(origECL));
+                                                    }
                                                 } else {
                                                     realECL(eclQueue, 1, lists);
                                                     usedRealECL = true;
+                                                    submitPathIsD3D12Module = true;
                                                 }
                                             } else if (origECL) {
                                                 origECL(eclQueue, 1, lists);
+                                                if (classifyFocusLossSubmitPath) {
+                                                    submitPathIsD3D12Module =
+                                                        IsD3D12ModuleAddress(reinterpret_cast<void*>(origECL));
+                                                }
                                             } else {
                                                 eclQueue->ExecuteCommandLists(1, lists);
+                                                if (classifyFocusLossSubmitPath && eclQueue) {
+                                                    void** vtable = *reinterpret_cast<void***>(eclQueue);
+                                                    submitPathIsD3D12Module =
+                                                        vtable && IsD3D12ModuleAddress(vtable[10]);
+                                                }
                                             }
                                         }
-                                        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);
+                                        if (overlayDrawRecorded) {
+                                            NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);
+                                        }
 
                                         // SL/FSR FG diagnostic: log after ECL submission
                                         if (slFGActive || g_FGCompat.IsFGActive()) {
@@ -15624,10 +15755,13 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 HRESULT devHrR = diagDevR ? diagDevR->GetDeviceRemovedReason() : E_FAIL;
                                                 HookLogImportant(
                                                     "DX12: Reinit SUBMIT #%d (queue=%p descFree=%d realECL=%d "
-                                                    "extOverlay=%d bb=%p bufIdx=%d devRemoved=0x%08X tid=0x%04X)",
+                                                    "directD3D12=%d offscreen=%d extOverlay=%d bb=%p bufIdx=%d "
+                                                    "devRemoved=0x%08X tid=0x%04X)",
                                                     s_reinitSubmitCount, eclQueue, usedDescFree ? 1 : 0,
-                                                    usedRealECL ? 1 : 0, startupOverlayPresent ? 1 : 0, bb, bufferIdx,
-                                                    (unsigned)devHrR, GetCurrentThreadId());
+                                                    usedRealECL ? 1 : 0, submitPathIsD3D12Module ? 1 : 0,
+                                                    offscreenCompositeRequired ? 1 : 0,
+                                                    startupOverlayPresent ? 1 : 0, bb, bufferIdx, (unsigned)devHrR,
+                                                    GetCurrentThreadId());
                                                 if (FAILED(devHrR)) {
                                                     HookLogImportant("DX12: DEVICE REMOVED after reinit submit #%d!",
                                                                      s_reinitSubmitCount);
@@ -15700,7 +15834,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                         "present=%s#%d queue=%p fg=%p/%lu game=%p/%lu sync=%u "
                                                         "flags=0x%08X next=%llu event=%p fgActive=%d runtimeOwned=%d "
                                                         "dedicated=%d steamDeferred=%d deviceLost=%d realECL=%d "
-                                                        "descFree=%d)",
+                                                        "directD3D12=%d descFree=%d offscreen=%d)",
                                                         DescribeFocusLossImmediateFenceSkip(
                                                             presentContext.valid, !frameDesc.Windowed,
                                                             processHasForeground, iconicWindow, zeroSizedSwapchain, true,
@@ -15717,7 +15851,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                         anyFGForFence ? 1 : 0,
                                                         runtimeOwnedPresentation ? 1 : 0, useDedicated ? 1 : 0,
                                                         steamDeferredOverlaySubmit ? 1 : 0, deviceLostForFence ? 1 : 0,
-                                                        usedRealECL ? 1 : 0, usedDescFree ? 1 : 0);
+                                                        usedRealECL ? 1 : 0, submitPathIsD3D12Module ? 1 : 0,
+                                                        usedDescFree ? 1 : 0, offscreenCompositeRequired ? 1 : 0);
                                                 }
                                             }
 
@@ -15737,7 +15872,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                             "DX12: Focus-loss immediate overlay fence signal "
                                                             "(present=%s#%d queue=%p fence=%llu completed=%llu "
                                                             "fg=%p/%lu game=%p/%lu sync=%u flags=0x%08X realECL=%d "
-                                                            "descFree=%d); pre-Present wait will sync same-frame work",
+                                                            "directD3D12=%d descFree=%d offscreen=%d); pre-Present "
+                                                            "wait will sync same-frame work",
                                                             presentContext.presentName ? presentContext.presentName
                                                                                        : "Present",
                                                             presentContext.callCount, eclQueue,
@@ -15745,7 +15881,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                             (unsigned long long)completedValue, foregroundWindow,
                                                             foregroundPid, frameDesc.OutputWindow, currentProcessId,
                                                             presentContext.syncInterval, presentContext.presentFlags,
-                                                            usedRealECL ? 1 : 0, usedDescFree ? 1 : 0);
+                                                            usedRealECL ? 1 : 0,
+                                                            submitPathIsD3D12Module ? 1 : 0,
+                                                            usedDescFree ? 1 : 0,
+                                                            offscreenCompositeRequired ? 1 : 0);
                                                     }
                                                 } else {
                                                     static std::atomic<int> s_focusImmediateSignalFailLogCount{0};

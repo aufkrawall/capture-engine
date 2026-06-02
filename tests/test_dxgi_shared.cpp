@@ -209,6 +209,45 @@ TEST(DXGISharedTest, D3D12FocusLossImmediateOverlayFencePolicyIsPresentPathAgnos
     EXPECT_EQ(presentPath, present1Path);
 }
 
+TEST(DXGISharedTest, D3D12FocusLossOffscreenCompositeAvoidsDirectBackbufferBarrierPath) {
+    auto shouldComposite = [](bool wrappedD3D12 = true, bool fullscreen = false, bool foreground = false,
+                              bool iconic = false, bool zeroSized = false, bool fgActive = false,
+                              bool runtimeOwned = false, bool dedicated = false, bool steamDeferred = false,
+                              bool deviceLost = false, bool hasQueue = true, bool hasFence = true,
+                              bool hasEvent = true) {
+        return ce::dx12_overlay_policy::ShouldUseD3D12FocusLossOffscreenOverlayComposite(
+            wrappedD3D12, fullscreen, foreground, iconic, zeroSized, fgActive, runtimeOwned, dedicated, steamDeferred,
+            deviceLost, hasQueue, hasFence, hasEvent);
+    };
+
+    EXPECT_TRUE(shouldComposite());
+
+    EXPECT_FALSE(shouldComposite(false));
+    EXPECT_FALSE(shouldComposite(true, true));
+    EXPECT_FALSE(shouldComposite(true, false, true));
+    EXPECT_FALSE(shouldComposite(true, false, false, true));
+    EXPECT_FALSE(shouldComposite(true, false, false, false, true));
+    EXPECT_FALSE(shouldComposite(true, false, false, false, false, true));
+    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, false, false, false, false));
+    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, false, false, false, true, false));
+    EXPECT_FALSE(
+        shouldComposite(true, false, false, false, false, false, false, false, false, false, true, true, false));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossOffscreenCompositePolicyIsPresentPathAgnostic) {
+    const bool presentPath = ce::dx12_overlay_policy::ShouldUseD3D12FocusLossOffscreenOverlayComposite(
+        true, false, false, false, false, false, false, false, false, false, true, true, true);
+    const bool present1Path = ce::dx12_overlay_policy::ShouldUseD3D12FocusLossOffscreenOverlayComposite(
+        true, false, false, false, false, false, false, false, false, false, true, true, true);
+
+    EXPECT_TRUE(presentPath);
+    EXPECT_EQ(presentPath, present1Path);
+}
+
 TEST(DXGISharedTest, IncompleteFocusLossFenceOnlyHoldsBackbufferWork) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(false, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(false, true, false));

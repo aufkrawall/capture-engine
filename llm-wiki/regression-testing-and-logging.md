@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-06-01
+Last cross-checked: 2026-06-02
 
 Primary sources:
 - `AGENTS.md`
@@ -50,6 +50,7 @@ Primary sources:
 - `tests/test_config.cpp`
 - `tests/test_config_override.cpp`
 - `tests/test_shared_runtime_state.cpp`
+- `installed/captureengine/logs/20260602_030350`
 - `installed/captureengine/logs/20260601_212556`
 - `tests/test_streamline_runtime_policy.cpp`
 
@@ -131,7 +132,7 @@ Primary sources:
   - Logs DXGI factory source selection for FG compatibility. `DXGI factory export source selected=live` should be used for app-thread FG handoffs so upstream interposers such as Streamline still see factory creation; `selected=unhooked ... callerRuntime=1` should be used for direct runtime callers.
 - `hook/wrappers/dxgi_swapchain_wrap.cpp`
   - DX12 focus-loss sessions must not force `SyncInterval=0` or `DXGI_PRESENT_DO_NOT_WAIT`. Expected logs say `preserving Present pacing (D3D12 focus-loss safety)`. The old `SyncInterval 1->0 + DO_NOT_WAIT` breadcrumb is acceptable only for non-DX12 unfocused flip-model paths where compatible. x86 DX12 Alt+Tab testing should treat `DX12: GPU device removed (0x887A0006)` after a burst of unfocused `DO_NOT_WAIT` logs as the old failure family.
-  - x86 DX12 focus-loss testing should verify the v3 same-frame fence breadcrumbs: `DX12 focus-loss sync policy=v3 immediate-fence`, `DX12: Focus-loss immediate overlay fence signal`, `DX12: Overlay completion wait ... focus-loss mode`, wrapper `no deferred DX12 overlay fence signal after wrapped Present (focus-loss; expected when v3 immediate-fence path signaled before Present...)`, and frame-latency lines labeled `telemetry`. If Present still runs around 1 ms while the process is unfocused, CE should signal and wait on its own overlay fence in the same frame rather than blanking/reinitializing the overlay, relying on an immediately signaled frame-latency waitable, or allowing unbounded overlay command-list pressure. Device-lost HRESULTs returned directly by wrapped D3D12 Present should be logged as `D3D12 Present returned device-lost hr=...`.
+  - x86 DX12 focus-loss testing should verify the v4 offscreen-composite plus same-frame fence breadcrumbs: `DX12 focus-loss sync policy=v4 offscreen-composite+immediate-fence`, `DX12: Focus-loss overlay using offscreen composite`, `DX12: Using offscreen compositing for focus-loss overlay`, `DX12: Focus-loss immediate overlay fence signal ... directD3D12=1 ... offscreen=1`, `DX12: Overlay completion wait ... focus-loss mode`, and frame-latency lines labeled `telemetry`. If Present still runs around 1 ms while the process is unfocused, CE should keep the inject overlay visible through the copy/render/copy offscreen path and same-frame fence, not blank/reinitialize the overlay, rely on an immediately signaled frame-latency waitable, or fall back to direct focus-lost swapchain RTV/barrier rendering. Device-lost HRESULTs returned directly by wrapped D3D12 Present should be logged as `D3D12 Present returned device-lost hr=...`.
 - `hook/common/performance_metrics.cpp`
   - Percentile FPS helpers are hot-path overlay code and should avoid per-frame heap allocation/full sort work. If this area changes, keep `PerformanceMetricsTest.LowPercentilesUseWorstFrameTimesWithoutHeapSortDependency` or an equivalent regression around worst-frame percentile behavior.
 - `hook/wrappers/iat_hook.cpp`
@@ -210,7 +211,7 @@ Primary sources:
 - If you touch create-swapchain queue capture or caller classification, verify that duplicate deep/inline/global capture of the same authoritative Streamline queue does not drop its hookable/runtime-owned identity, and also does not falsely re-arm the startup handoff window once the queue is already known.
 - If you touch DXGI Present-hook refresh or repair logic, verify that later runtime-created live swapchains can still re-anchor Present/Present1 interception when the active Present path moves to a different vtable after startup.
 - If you touch DX10/D3D10 classification or overlay setup, verify that D3D10 swapchains enter the shared DX10/DX11 `ProcessFrame` path and that the overlay binds an explicit swapchain backbuffer RTV instead of relying on whatever render target the app left bound.
-- If you touch D3D12 focus-loss or unfocused swapchain throttling, verify the x86 DX12 Alt+Tab/focus-loss family manually. D3D12 must preserve Present pacing, signal/wait CE's overlay fence in the same frame for safe wrapped single-queue focus-loss overlay submits, and keep the overlay visible; do not reintroduce `DO_NOT_WAIT` there to hide or reinitialize the overlay. Non-DX12 throttle protection should stay covered by `DXGISharedTest.D3D12FocusLossPreservesPresentPacing`, the waitable telemetry policy by `DXGISharedTest.D3D12FocusLossFrameLatencyWaitableProbeCoversUnfocusedFrames`, the v3 same-frame fence gate by `DXGISharedTest.D3D12FocusLossImmediateOverlayFenceSyncsSingleQueueWrappedSubmit`, and the pending-fence hold by `DXGISharedTest.IncompleteFocusLossFenceOnlyHoldsBackbufferWork`.
+- If you touch D3D12 focus-loss or unfocused swapchain throttling, verify the x86 DX12 Alt+Tab/focus-loss family manually. D3D12 must preserve Present pacing, use the offscreen composite path for safe wrapped single-queue focus-loss overlay draws, signal/wait CE's overlay fence in the same frame, and keep the overlay visible; do not reintroduce `DO_NOT_WAIT`, overlay blanking, or direct focus-lost swapchain RTV fallback there. Non-DX12 throttle protection should stay covered by `DXGISharedTest.D3D12FocusLossPreservesPresentPacing`, the waitable telemetry policy by `DXGISharedTest.D3D12FocusLossFrameLatencyWaitableProbeCoversUnfocusedFrames`, the same-frame fence gate by `DXGISharedTest.D3D12FocusLossImmediateOverlayFenceSyncsSingleQueueWrappedSubmit`, the offscreen focus-loss policy by `DXGISharedTest.D3D12FocusLossOffscreenCompositeAvoidsDirectBackbufferBarrierPath` / `DXGISharedTest.D3D12FocusLossOffscreenCompositePolicyIsPresentPathAgnostic`, and the pending-fence hold by `DXGISharedTest.IncompleteFocusLossFenceOnlyHoldsBackbufferWork`.
 - If you change how FG mode transitions are interpreted, verify both routing behavior and visible overlay status behavior.
 - If you change injection or overlay handoff behavior, verify the runtime flags and pseudo-overlay suppression path.
 - Prefer fast focused unit tests while iterating, then run broader coverage before considering the work complete.
