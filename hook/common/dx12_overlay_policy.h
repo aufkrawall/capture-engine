@@ -1787,6 +1787,21 @@ inline bool ShouldResetPostSLStartupProgressOnReactivation(bool postSLConfirmedR
            runtimeStateStabilizationLogged;
 }
 
+inline bool ShouldKeepPostSLActiveWhenRealECLUnavailable(bool hasRealD3D12ECL,
+                                                         bool hasSelectedQueueOriginalSubmitPath,
+                                                         bool postSLConfirmedRendering,
+                                                         bool postSLActiveButUnconfirmed) {
+    if (hasRealD3D12ECL) {
+        return true;
+    }
+
+    // The broad ProcessFrame guard must not blank a live PostSL route just
+    // because the raw d3d12core ECL probe is deferred behind Streamline startup.
+    // PostSLOverlayRender has the detailed submit-path safety checks; here we
+    // only need to avoid knowingly enabling a route with no submit path at all.
+    return hasSelectedQueueOriginalSubmitPath || postSLConfirmedRendering || postSLActiveButUnconfirmed;
+}
+
 inline bool ShouldUsePostSLSelectedSwapchainQueueSubmitAfterFSR(bool hadFSRFGPhase, bool selectedQueueIsSwapchainQueue,
                                                                 bool queueIsSLWrapper, bool hasSelectedQueueSubmitPath,
                                                                 bool hasWrapperDerivedDirectPath) {
@@ -2109,7 +2124,9 @@ inline bool ShouldTreatConfirmedPostSLBackendAsWarmupProtected(bool postSLConfir
 inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startupTransitionWindowActive,
                                                                     bool postSLConfirmedRendering,
                                                                     bool useTopLevelHandoffWrapperProgress,
-                                                                    bool safePostFSRBootstrapPath = false) {
+                                                                    bool safePostFSRBootstrapPath = false,
+                                                                    bool activeDLSSFGRuntimeSignalObserved = false,
+                                                                    bool postSLWarmupComplete = false) {
     // While the startup transition window is active, DLSS FG is still initializing
     // its internal pipeline (queue setup, mutex tracking, fence state).  Our ECL
     // submission on the SL-owned swapchain queue during this phase can corrupt DLSS
@@ -2130,8 +2147,17 @@ inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startup
     // specifically what real games expose when DLSS FG is enabled from a menu
     // after an FSR FG phase; waiting for the generic startup window can hide the
     // overlay for the entire short mode-switch interval.
+    //
+    // A current DLSS-G runtime-active signal after PostSL has survived its warmup
+    // is also stronger than mere Streamline presence. Talos can report real
+    // DLSS-G state through slDLSSGGetState well before it later returns a cached
+    // slDLSSGSetOptions function pointer, so requiring SetOptions here leaves the
+    // overlay blank for the whole startup timer even though the PostSL route is
+    // already live.
     (void)useTopLevelHandoffWrapperProgress;
-    return startupTransitionWindowActive && !postSLConfirmedRendering && !safePostFSRBootstrapPath;
+    const bool activeRuntimeWarmupProof = activeDLSSFGRuntimeSignalObserved && postSLWarmupComplete;
+    return startupTransitionWindowActive && !postSLConfirmedRendering && !safePostFSRBootstrapPath &&
+           !activeRuntimeWarmupProof;
 }
 
 inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
@@ -2157,6 +2183,19 @@ inline bool ShouldRetainStreamlineStartupActivationSwapchain(bool isD3D12SwapCha
                                                              bool freshAuthoritativeStreamlineHandoff,
                                                              bool runtimeOwnedSwapchainActive) {
     return isD3D12SwapChain && freshAuthoritativeStreamlineHandoff && runtimeOwnedSwapchainActive;
+}
+
+inline bool ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(bool isD3D12SwapChain,
+                                                                            bool postSLCallbackAvailable,
+                                                                            bool startupActivationPending,
+                                                                            bool postSLActiveButUnconfirmed,
+                                                                            bool postSLConfirmedRendering) {
+    // A normal-route PostSL callback is already scoped by the DXGI layer to a
+    // real synthetic Streamline Present, not to mere Streamline DLL presence.
+    // Retain that concrete swapchain while startup is half-armed so ECL-expiry
+    // recovery does not fall back to stale ProcessFrame state.
+    return isD3D12SwapChain && postSLCallbackAvailable && !postSLConfirmedRendering &&
+           (startupActivationPending || postSLActiveButUnconfirmed);
 }
 
 inline bool ShouldPreferRetainedStreamlineStartupActivationSwapchain(bool retainedSwapchainAvailable,
@@ -2191,13 +2230,21 @@ inline bool ShouldInvokeRetainedPostSLStartupActivationService(
 
 inline bool ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
     bool startupTransitionWindowActive, bool postSLConfirmedRendering, bool hadFSRFGPhase,
-    bool startupTopLevelPresentConsumed, bool wrapperProgressObserved, bool startupActivationPending,
-    bool postSLActive) {
+    bool startupTopLevelPresentConsumed, bool wrapperProgressObserved, bool explicitSetOptionsActivation,
+    bool activeDLSSFGRuntimeSignalObserved, bool startupActivationPending, bool postSLActive) {
     if (!startupTransitionWindowActive || postSLConfirmedRendering || hadFSRFGPhase) {
         return false;
     }
 
     if (!startupTopLevelPresentConsumed || !wrapperProgressObserved) {
+        return false;
+    }
+
+    // Explicit DLSSG SetOptions(ON), and active state from the official
+    // slDLSSGGetState API, are both stronger evidence than generic Streamline
+    // involvement. Once the current comeback has either signal, the callback
+    // should advance instead of hiding the overlay until window expiry.
+    if (explicitSetOptionsActivation || activeDLSSFGRuntimeSignalObserved) {
         return false;
     }
 
@@ -2275,6 +2322,32 @@ inline bool ShouldPreserveConfirmedPostSLDuringFGCooldown(bool streamlineFGRunni
 inline bool ShouldPreserveActivePostSLDuringFGCooldown(bool streamlineFGRunning, bool postSLConfirmedRendering,
                                                        bool postSLActiveButUnconfirmed) {
     return streamlineFGRunning && (postSLConfirmedRendering || postSLActiveButUnconfirmed);
+}
+
+inline bool ShouldPreserveActivePostSLWhenPreSLDrawIsSkipped(bool streamlineFGRunning, bool postSLConfirmedRendering,
+                                                             bool postSLActiveButUnconfirmed) {
+    return ShouldPreserveActivePostSLDuringFGCooldown(streamlineFGRunning, postSLConfirmedRendering,
+                                                      postSLActiveButUnconfirmed);
+}
+
+inline bool ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(bool streamlineTurnedOff, bool hadFSRFGPhase,
+                                                                 bool fsrFGApiActive,
+                                                                 bool runtimeOwnedNativeFGPresentPath,
+                                                                 bool hasOverlayBackend, bool hasSyncBackend,
+                                                                 bool hasSwapchainQueue, bool hasOriginalGameQueue,
+                                                                 bool deviceRemoved) {
+    // Pure DLSS-G menu suspend/resume is not a mixed-runtime takeover. Once the
+    // old PostSL work has been drained, waiting through the generic FG handoff
+    // cooldown only blanks the overlay while the game is back on the same
+    // Streamline-owned swapchain path. Keep the stricter cooldown for any FSR
+    // history/native ownership, because those paths still need teardown proof.
+    return streamlineTurnedOff && !hadFSRFGPhase && !fsrFGApiActive && !runtimeOwnedNativeFGPresentPath &&
+           hasOverlayBackend && hasSyncBackend && hasSwapchainQueue && hasOriginalGameQueue && !deviceRemoved;
+}
+
+inline bool ShouldEnterSyntheticPostSLStartupActivation(bool startupActivationPending, bool postSLActiveButUnconfirmed,
+                                                        bool postSLConfirmedRendering) {
+    return startupActivationPending && !postSLActiveButUnconfirmed && !postSLConfirmedRendering;
 }
 
 inline bool ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(

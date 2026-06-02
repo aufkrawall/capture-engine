@@ -639,9 +639,10 @@ inline bool ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHando
 }
 
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-    bool observerOnlyMode, bool hadFSRFGPhase, bool explicitSetOptionsActivation, bool safePostFSRBootstrapPath,
-    bool postSLStartupActivationPending, bool postSLActiveButUnconfirmed, bool postSLStartupActivationEntered,
-    bool postSLConfirmedButStartupSettling, bool streamlineSyntheticReentrant) {
+    bool observerOnlyMode, bool hadFSRFGPhase, bool explicitSetOptionsActivation,
+    bool activeDLSSFGRuntimeSignalObserved, bool safePostFSRBootstrapPath, bool postSLStartupActivationPending,
+    bool postSLActiveButUnconfirmed, bool postSLStartupActivationEntered, bool postSLConfirmedButStartupSettling,
+    bool streamlineSyntheticReentrant) {
     // Once PostSL has already confirmed at least one successful render, GTA's
     // startup family can still need a few more Streamline-originated Presents to
     // advance the stable-frame counter and keep the visible overlay alive. Those
@@ -659,6 +660,16 @@ inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute
     // through the normal Streamline Present family. Blocking the callback here
     // leaves pure-DLSS resume paths active-but-unconfirmed forever.
     if (postSLStartupActivationEntered && postSLActiveButUnconfirmed) {
+        return true;
+    }
+
+    // Pure-DLSS startup is allowed to enter PostSL once the app has either
+    // explicitly requested DLSS-G or the official DLSS-G state API reports an
+    // active runtime signal. Both are stronger than "Streamline is present" and
+    // keep the overlay from waiting for the whole startup timer before PostSL can
+    // even begin its own protected warmup.
+    if (!hadFSRFGPhase && (explicitSetOptionsActivation || activeDLSSFGRuntimeSignalObserved) &&
+        postSLStartupActivationPending) {
         return true;
     }
 

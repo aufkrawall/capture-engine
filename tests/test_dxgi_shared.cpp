@@ -2692,6 +2692,15 @@ TEST(DXGISharedTest, PostSLReactivationRestartsConfirmedStartupProgressPerEpoch)
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldResetPostSLStartupProgressOnReactivation(false, 0, 0, false));
 }
 
+TEST(DXGISharedTest, PostSLStaysActiveWithoutRealECLWhenSubmitPathOrProofExists) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepPostSLActiveWhenRealECLUnavailable(true, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepPostSLActiveWhenRealECLUnavailable(false, true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepPostSLActiveWhenRealECLUnavailable(false, false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldKeepPostSLActiveWhenRealECLUnavailable(false, false, false, true));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldKeepPostSLActiveWhenRealECLUnavailable(false, false, false, false));
+}
+
 TEST(DXGISharedTest, PostSLBootstrapsOverlayStateOnlyWhenDormantReactivationOutrunsProcessFrame) {
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldBootstrapPostSLOverlayState(true, true, false, false, false, false, false));
@@ -3049,6 +3058,20 @@ TEST(DXGISharedTest, ActivePostSLStartupAlsoStaysActiveDuringRemainingFGCooldown
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(false, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(true, false, false));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLWhenPreSLDrawIsSkipped(true, false, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLWhenPreSLDrawIsSkipped(true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLWhenPreSLDrawIsSkipped(false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveActivePostSLWhenPreSLDrawIsSkipped(true, false, false));
+}
+
+TEST(DXGISharedTest, SyntheticPostSLStartupActivationIsOneShotUntilConfirmation) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnterSyntheticPostSLStartupActivation(true, false, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEnterSyntheticPostSLStartupActivation(false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEnterSyntheticPostSLStartupActivation(true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEnterSyntheticPostSLStartupActivation(true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEnterSyntheticPostSLStartupActivation(false, true, true));
 }
 
 TEST(DXGISharedTest, ConfirmedPostSLResumeSeedsStartupBootstrapAsConsumed) {
@@ -3146,35 +3169,41 @@ TEST(DXGISharedTest, ChurnedPostSLReactivationExtendsRuntimeStateStabilizationTo
 
 TEST(DXGISharedTest, ConfirmedStartupSettlingCanStillInvokePostSLWithoutSyntheticBypass) {
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, false, false, false, true, true));
+        false, false, false, false, false, false, false, false, true, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, true, true, false, false, false, true));
+        false, true, true, false, true, true, false, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, true, false, true, false, false, true));
+        false, true, true, false, true, false, true, false, false, true));
     // safePostFSRBootstrapPath is now sufficient; explicitSetOptionsActivation is no longer required
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, false, true, true, false, false, false, true));
+        false, true, false, false, true, true, false, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, false, true, false, true, false, false, true));
+        false, true, false, false, true, false, true, false, false, true));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, true, false, true, true, true, false, true));
+        false, false, true, false, false, true, true, true, false, true));
+    EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+        false, false, true, false, false, true, false, false, false, true));
+    EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+        false, false, false, true, false, true, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, false, false, true, false, false, false, true));
+        false, true, false, false, false, true, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, false, true, false, false, false, true));
+        false, true, true, true, false, true, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, true, true, false, false, true, false, false, true));
+        false, true, true, true, false, false, true, false, false, true));
+    EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
+        false, false, false, false, false, true, false, false, false, true));
 
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        true, false, false, false, false, false, false, true, true));
+        true, false, false, false, false, false, false, false, true, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, false, false, false, false, true));
+        false, false, false, false, false, false, false, false, false, true));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, false, false, false, true, false));
+        false, false, false, false, false, false, false, false, true, false));
     EXPECT_FALSE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, true, true, true, false, false));
+        false, false, false, false, false, true, true, true, false, false));
     EXPECT_TRUE(DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-        false, false, false, false, false, false, false, true, true));
+        false, false, false, false, false, false, false, false, true, true));
 }
 
 TEST(DXGISharedTest, ConfirmedStandaloneStreamlinePresentCanStillInvokePostSLOnNormalRouteAfterStartupSettles) {
@@ -3381,6 +3410,22 @@ TEST(DXGISharedTest, FreshRuntimeOwnedStreamlineHandoffRetainsStartupActivationS
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchain(true, true, false));
 }
 
+TEST(DXGISharedTest, HalfArmedNormalRouteCallbackRetainsStartupActivationSwapchain) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(
+        true, true, true, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(
+        true, true, false, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(
+        false, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(
+        true, false, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(
+        true, true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(
+        true, true, true, true, true));
+}
+
 TEST(DXGISharedTest, RetainedStartupActivationSwapchainPreferredOnlyWhileHalfArmed) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreferRetainedStreamlineStartupActivationSwapchain(true, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreferRetainedStreamlineStartupActivationSwapchain(true, false, true));
@@ -3491,8 +3536,7 @@ TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilCo
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, true, false));
 
     // Wrapper queue progress alone does not prove Streamline's internal startup
-    // pipeline is settled. Even the pure-DLSS top-level handoff family must
-    // keep deferring real PostSL rendering until the startup window expires.
+    // pipeline is settled, so it cannot bypass the startup window by itself.
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, true));
 
     // The post-FSR safe bootstrap proof is stronger than wrapper progress: it
@@ -3502,6 +3546,16 @@ TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilCo
         ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, true, true));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, false, true));
+
+    // A real DLSS-G runtime-active signal after PostSL warmup is also stronger
+    // than generic Streamline presence. The startup window should still hold if
+    // either side of that proof is missing.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(
+        true, false, false, false, true, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(
+        true, false, false, false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(
+        true, false, false, false, false, true));
 
     // Outside startup window - never defer
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(false, false, false));
@@ -3532,24 +3586,52 @@ TEST(DXGISharedTest, PureDLSSStartupWrapperOnlyStallDumpRequiresStrongHalfArmedS
 
 TEST(DXGISharedTest, PureDLSSStartupCallbackStaysDormantUntilStartupWindowExpires) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, false, false, true, true, true, false));
+        true, false, false, true, true, false, false, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, false, false, true, true, false, true));
+        true, false, false, true, true, false, false, false, true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, false, false, true, true, true, true));
+        true, false, false, true, true, false, false, true, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        false, false, false, true, true, true, false));
+        false, false, false, true, true, false, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, true, false, true, true, true, false));
+        true, true, false, true, true, false, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, false, true, true, true, true, false));
+        true, false, true, true, true, false, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, false, false, false, true, true, false));
+        true, false, false, false, true, false, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, false, false, true, false, true, false));
+        true, false, false, true, false, false, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
-        true, false, false, true, true, false, false));
+        true, false, false, true, true, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
+        true, false, false, true, true, true, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWindowExpires(
+        true, false, false, true, true, false, true, true, false));
+}
+
+TEST(DXGISharedTest, PureStreamlineFGOffBypassesReinitCooldownOnlyForNonFSRHealthyBackend) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        true, false, false, false, true, true, true, true, false));
+
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        false, false, false, false, true, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        true, true, false, false, true, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        true, false, true, false, true, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        true, false, false, true, true, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        true, false, false, false, false, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        true, false, false, false, true, false, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        true, false, false, false, true, true, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        true, false, false, false, true, true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
+        true, false, false, false, true, true, true, true, true));
 }
 
 TEST(DXGISharedTest, PostSLSyntheticStartupActivationPendingTracksStartupleHandoffBypassState) {

@@ -1,6 +1,6 @@
 # Frame Generation Switching
 
-Last cross-checked: 2026-06-01 (updated: build 0.1.3645 / tests 0.1.3646 Talos official-FFX startup overlay-only no-blank and Streamline module-load reentry hardening)
+Last cross-checked: 2026-06-02 (updated: build 0.1.3659 / tests 0.1.3660 pure-DLSS GetState startup and menu suspend no-blank)
 
 Primary sources:
 - `AGENTS.md`
@@ -81,6 +81,8 @@ This page records current guardrails and tested transition families for no-FG, D
 - Intercepted `slGetFeatureFunction` lookups for DLSSG feature functions should return CE's stable wrapper when a callable original/trampoline exists, even when inline patching reports ready. This keeps cached game/app feature pointers observable across Streamline export reload/repair during mixed-FG switches; direct import and inline hooks still cover direct callers.
 - Fresh `sl.*.dll` module-load notifications must not proactively call Streamline feature-function lookup. `installed/captureengine/logs/20260601_152148` crashed inside Streamline during `slInit` after CE's load-notification path re-entered plugin/feature lookup while Streamline was still mutating plugin state. Module-load inspection may use direct exports/IAT readiness, but DLSSG/Reflex feature lookup is deferred to normal runtime calls. Healthy logs include `Deferred proactive feature-function lookup during module load`.
 - A post-FSR DLSS handoff with safe bootstrap proof is stronger than generic startup evidence. It may bypass the repeated-callback PostSL activation countdown and reactivation warmup so the overlay does not visibly blank during the short FSR->DLSS interval. Pure-DLSS cold startup still keeps the warmup.
+- Pure-DLSS startup can be proven either by explicit `slDLSSGSetOptions(ON)` or by official active state from `slDLSSGGetState` (`updateActive=1` / CE `g_StreamlineFGRunning=1`). The latter is still stronger than mere Streamline DLL presence and is enough to invoke normal-route PostSL callbacks and bypass the startup callback deferral; logs should show `activeDLSSSignal=1`.
+- Pure `DLSS FG -> off` menu suspend/resume with no FSR history, no FSR API active, no runtime-owned native-FSR present path, a healthy device, and a live overlay/sync/swapchain queue can rebuild immediately after the safe drain. Do not spend the generic 60-frame FG handoff cooldown blanking the overlay in that case. Mixed/post-FSR paths keep the stricter cooldown because their queue/swapchain teardown proof is different.
 - Current trace-replay tests explicitly cover:
   - Talos-style `off -> DLSS -> off -> FSR`
   - GTA-style `FSR -> DLSS` without a clean `off`

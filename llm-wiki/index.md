@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-01 (updated: build 0.1.3652 / tests 0.1.3653 - x86 DX12 focus-loss same-frame overlay fence sync)
+Last cross-checked: 2026-06-02 (updated: build 0.1.3659 / tests 0.1.3660 - pure-DLSS GetState startup and menu suspend no-blank)
 
 Primary sources:
 - `AGENTS.md`

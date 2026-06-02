@@ -1805,6 +1805,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         api == APIType::D3D12 && HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool hadFSRFGPhase = api == APIType::D3D12 && HookHasFSRFGHistory();
     const bool explicitSetOptionsActivation = api == APIType::D3D12 && HookHasExplicitStreamlineSetOptionsActivation();
+    const bool activeDLSSFGRuntimeSignalObserved =
+        api == APIType::D3D12 && g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool safePostFSRBootstrapPath = api == APIType::D3D12 && HookHasSafePostFSRBootstrapPath();
     const bool steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
     if (s_externalOverlayPresentInvokeDepth > 0) {
@@ -1967,21 +1969,22 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (keepStartupPresentOnNormalRoute) {
         const bool shouldInvokePostSLCallbackOnNormalRoute =
             DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-                observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
-                postSLStartupActivationPending, postSLActiveButUnconfirmed, postSLStartupActivationEntered,
-                postSLConfirmedButStartupSettling, streamlineSyntheticReentrant);
+                observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, activeDLSSFGRuntimeSignalObserved,
+                safePostFSRBootstrapPath, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+                postSLStartupActivationEntered, postSLConfirmedButStartupSettling, streamlineSyntheticReentrant);
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent: Keeping decisive synthetic Streamline startup Present on the normal SL route #%d "
                 "(startupPending=%d unconfirmed=%d activationEntered=%d settling=%d callbackOnNormal=%d consumed=%d "
-                "hadFSR=%d windowActive=%d tid=0x%04X)",
+                "hadFSR=%d activeDLSSSignal=%d windowActive=%d tid=0x%04X)",
                 logCount, postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
                 postSLStartupActivationEntered ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                 shouldInvokePostSLCallbackOnNormalRoute ? 1 : 0,
                 g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_relaxed) ? 1 : 0,
-                hadFSRFGPhase ? 1 : 0, streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
+                hadFSRFGPhase ? 1 : 0, activeDLSSFGRuntimeSignalObserved ? 1 : 0,
+                streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
         }
         if (shouldInvokePostSLCallbackOnNormalRoute) {
             auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
@@ -1997,6 +2000,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                         callbackLogCount + 1, postSLStartupActivationPending ? 1 : 0, hadFSRFGPhase ? 1 : 0,
                         presentOwner, presentDepthVal, currentThreadId);
                 }
+                if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(
+                        api == APIType::D3D12, true, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+                        postSLConfirmedRendering)) {
+                    DX12_RetainStreamlineStartupActivationSwapchain(
+                        pSwapChain, "DetourPresent: startup normal-route PostSL callback");
+                }
                 postSLCallback(pSwapChain);
             }
         } else {
@@ -2006,10 +2015,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 HookLogImportant(
                     "DetourPresent: PostSL callback skipped on normal route despite startup present kept "
                     "(startupPending=%d unconfirmed=%d activationEntered=%d hadFSR=%d explicitSetOptions=%d "
-                    "safeBootstrap=%d tid=0x%04X)",
+                    "activeDLSSSignal=%d safeBootstrap=%d tid=0x%04X)",
                     postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
                     postSLStartupActivationEntered ? 1 : 0, hadFSRFGPhase ? 1 : 0,
                     explicitSetOptionsActivation ? 1 : 0,
+                    activeDLSSFGRuntimeSignalObserved ? 1 : 0,
                     safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
             }
         }
@@ -2733,6 +2743,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         api == APIType::D3D12 && HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool hadFSRFGPhase = api == APIType::D3D12 && HookHasFSRFGHistory();
     const bool explicitSetOptionsActivation = api == APIType::D3D12 && HookHasExplicitStreamlineSetOptionsActivation();
+    const bool activeDLSSFGRuntimeSignalObserved =
+        api == APIType::D3D12 && g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool safePostFSRBootstrapPath = api == APIType::D3D12 && HookHasSafePostFSRBootstrapPath();
     const bool steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
     const bool runtimeOwnedSwapchainActive = api == APIType::D3D12 && DoesFGRuntimeOwnSwapchain();
@@ -2863,21 +2875,22 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (keepStartupPresentOnNormalRoute) {
         const bool shouldInvokePostSLCallbackOnNormalRoute =
             DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
-                observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, safePostFSRBootstrapPath,
-                postSLStartupActivationPending, postSLActiveButUnconfirmed, postSLStartupActivationEntered,
-                postSLConfirmedButStartupSettling, streamlineSyntheticReentrant);
+                observerOnlyMode, hadFSRFGPhase, explicitSetOptionsActivation, activeDLSSFGRuntimeSignalObserved,
+                safePostFSRBootstrapPath, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+                postSLStartupActivationEntered, postSLConfirmedButStartupSettling, streamlineSyntheticReentrant);
         static std::atomic<int> s_streamlineSyntheticStartupNormalRouteLogCount1{0};
         int logCount = s_streamlineSyntheticStartupNormalRouteLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (logCount <= 10 || (logCount % 100) == 0) {
             HookLogImportant(
                 "DetourPresent1: Keeping decisive synthetic Streamline startup Present1 on the normal SL route #%d "
                 "(startupPending=%d unconfirmed=%d activationEntered=%d settling=%d callbackOnNormal=%d consumed=%d "
-                "hadFSR=%d windowActive=%d tid=0x%04X)",
+                "hadFSR=%d activeDLSSSignal=%d windowActive=%d tid=0x%04X)",
                 logCount, postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
                 postSLStartupActivationEntered ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                 shouldInvokePostSLCallbackOnNormalRoute ? 1 : 0,
                 g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_relaxed) ? 1 : 0,
-                hadFSRFGPhase ? 1 : 0, streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
+                hadFSRFGPhase ? 1 : 0, activeDLSSFGRuntimeSignalObserved ? 1 : 0,
+                streamlineStartupTransitionWindowActive ? 1 : 0, currentThreadId);
         }
         if (shouldInvokePostSLCallbackOnNormalRoute) {
             auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
@@ -2893,6 +2906,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                         callbackLogCount + 1, postSLStartupActivationPending ? 1 : 0, hadFSRFGPhase ? 1 : 0,
                         presentOwner, presentDepthVal, currentThreadId);
                 }
+                if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(
+                        api == APIType::D3D12, true, postSLStartupActivationPending, postSLActiveButUnconfirmed,
+                        postSLConfirmedRendering)) {
+                    DX12_RetainStreamlineStartupActivationSwapchain(
+                        pSwapChain, "DetourPresent1: startup normal-route PostSL callback");
+                }
                 postSLCallback(pSwapChain);
             }
         } else {
@@ -2902,10 +2921,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 HookLogImportant(
                     "DetourPresent1: PostSL callback skipped on normal route despite startup present kept "
                     "(startupPending=%d unconfirmed=%d activationEntered=%d hadFSR=%d explicitSetOptions=%d "
-                    "safeBootstrap=%d tid=0x%04X)",
+                    "activeDLSSSignal=%d safeBootstrap=%d tid=0x%04X)",
                     postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
                     postSLStartupActivationEntered ? 1 : 0, hadFSRFGPhase ? 1 : 0,
                     explicitSetOptionsActivation ? 1 : 0,
+                    activeDLSSFGRuntimeSignalObserved ? 1 : 0,
                     safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
             }
         }
