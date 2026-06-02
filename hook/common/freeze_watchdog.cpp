@@ -16,6 +16,11 @@
 
 FreezeWatchdog g_RenderWatchdog;
 
+// Defined in dx12_hook.cpp. Emits DRED breadcrumbs + page-fault info if the D3D12
+// device is removed/hung, so a device-hung freeze dump is accompanied by the exact
+// faulting GPU op. No-op for non-DX12 or healthy-device freezes.
+extern void DX12_DumpDredIfDeviceRemoved(const char* reason);
+
 static std::string GetLogsDirectory() {
     char pathBuffer[MAX_PATH] = {};
     if (BuildLogFilePathForModuleAddress((const void*)&GetLogsDirectory, "freeze_watchdog.tmp", pathBuffer,
@@ -622,6 +627,10 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
     OutputDebugStringA(logMsg);
     HookLogImportant("FreezeWatchdog: Writing dump to %s via in-progress path %s", dumpPath.c_str(),
                      tempDumpPath.c_str());
+
+    // If this freeze is a removed/hung D3D12 device, record DRED breadcrumbs +
+    // page-fault info into the hook log alongside the dump.
+    DX12_DumpDredIfDeviceRemoved("freeze watchdog dump");
 
     DeleteFileA(tempDumpPath.c_str());
     HANDLE hFile = CreateFileA(tempDumpPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,

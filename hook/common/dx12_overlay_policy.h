@@ -1343,43 +1343,32 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(bool f
     return !fenceWaitCompleted && !dumpAlreadyRequested;
 }
 
-inline bool ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
-    bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
+// v8 visibility-gated hold (supersedes the v3-v7 focus-based holds and the
+// focus-loss offscreen composite).
+//
+// CE holds its swapchain backbuffer overlay/capture GPU work ONLY when the
+// swapchain is genuinely not presentable: DXGI Present returned OCCLUDED, or the
+// window is minimized (iconic), or the swapchain is zero-sized. In every one of
+// those states the overlay is invisible to the user anyway, and it is the state
+// in which the single-monitor Alt+Tab device-hung historically occurred (DXGI
+// tears down the independent-flip surfaces). A merely-unfocused but STILL-VISIBLE
+// window (e.g. a borderless background window, or a window on another monitor)
+// keeps presenting S_OK and MUST keep rendering the overlay directly to the
+// backbuffer — that is the behavior RTSS provides and what the user expects.
+// Focus is NOT an input here: losing focus never hides the overlay.
+inline bool ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
+    bool isWrappedD3D12Present, bool isFullscreen, bool isOccluded, bool isIconic, bool hasZeroSize,
     bool frameGenerationActive, bool runtimeOwnedPresentation, bool usingDedicatedQueue,
     bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue) {
-    return isWrappedD3D12Present && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
-           !frameGenerationActive && !runtimeOwnedPresentation && !usingDedicatedQueue &&
-           !steamDeferredOverlaySubmit && !deviceLost && hasQueue;
-}
-
-inline bool ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
-    bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
-    bool frameGenerationActive, bool runtimeOwnedPresentation, bool usingDedicatedQueue,
-    bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue, int foregroundPresentProofRemaining) {
-    return isWrappedD3D12Present && !isFullscreen && processHasForeground && !isIconic && !hasZeroSize &&
-           !frameGenerationActive && !runtimeOwnedPresentation && !usingDedicatedQueue &&
-           !steamDeferredOverlaySubmit && !deviceLost && hasQueue && foregroundPresentProofRemaining > 0;
+    const bool notPresentable = isOccluded || isIconic || hasZeroSize;
+    return isWrappedD3D12Present && !isFullscreen && notPresentable && !frameGenerationActive &&
+           !runtimeOwnedPresentation && !usingDedicatedQueue && !steamDeferredOverlaySubmit && !deviceLost && hasQueue;
 }
 
 inline bool ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(bool deviceLost,
                                                                            bool focusTransitionRecentlyActive,
                                                                            bool dumpAlreadyRequested) {
     return deviceLost && focusTransitionRecentlyActive && !dumpAlreadyRequested;
-}
-
-inline bool ShouldUseD3D12FocusLossOffscreenOverlayComposite(
-    bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
-    bool frameGenerationActive, bool runtimeOwnedPresentation, bool usingDedicatedQueue,
-    bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue, bool hasFence, bool hasFenceEvent) {
-    // The offscreen path is still valid for recovery cases that must avoid
-    // explicit backbuffer barriers, but focus-lost x86 DX12 learned on
-    // `20260602_212827` that even repeated copy-only swapchain backbuffer
-    // touches can lead to DEVICE_HUNG. Callers should first apply
-    // ShouldHoldD3D12FocusLossBackgroundBackbufferWork and skip CE backbuffer
-    // work entirely while the process is backgrounded.
-    return isWrappedD3D12Present && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
-           !frameGenerationActive && !runtimeOwnedPresentation && !usingDedicatedQueue &&
-           !steamDeferredOverlaySubmit && !deviceLost && hasQueue && hasFence && hasFenceEvent;
 }
 
 inline bool ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(bool processHasForeground,

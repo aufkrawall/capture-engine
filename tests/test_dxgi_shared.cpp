@@ -247,65 +247,54 @@ TEST(DXGISharedTest, D3D12FocusLossImmediateFenceDumpRequestsOnlyForFirstIncompl
         ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(true, true));
 }
 
-TEST(DXGISharedTest, D3D12FocusLossBackgroundHoldSkipsSwapchainBackbufferWork) {
-    auto shouldHold = [](bool wrappedD3D12 = true, bool fullscreen = false, bool foreground = false,
+TEST(DXGISharedTest, D3D12NonPresentableSwapchainHoldsBackbufferWork) {
+    auto shouldHold = [](bool wrappedD3D12 = true, bool fullscreen = false, bool occluded = true,
                          bool iconic = false, bool zeroSized = false, bool fgActive = false,
                          bool runtimeOwned = false, bool dedicated = false, bool steamDeferred = false,
                          bool deviceLost = false, bool hasQueue = true) {
-        return ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
-            wrappedD3D12, fullscreen, foreground, iconic, zeroSized, fgActive, runtimeOwned, dedicated,
+        return ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
+            wrappedD3D12, fullscreen, occluded, iconic, zeroSized, fgActive, runtimeOwned, dedicated,
             steamDeferred, deviceLost, hasQueue);
     };
 
-    EXPECT_TRUE(shouldHold());
+    // Occluded, iconic, or zero-sized each make the swapchain non-presentable -> hold.
+    EXPECT_TRUE(shouldHold());                                  // occluded
+    EXPECT_TRUE(shouldHold(true, false, false, true, false));   // iconic
+    EXPECT_TRUE(shouldHold(true, false, false, false, true));   // zero-sized
 
-    EXPECT_FALSE(shouldHold(false));
-    EXPECT_FALSE(shouldHold(true, true));
-    EXPECT_FALSE(shouldHold(true, false, true));
-    EXPECT_FALSE(shouldHold(true, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, false, false, false, false, false));
+    // Negating conditions never hold.
+    EXPECT_FALSE(shouldHold(false));                                                       // not wrapped D3D12
+    EXPECT_FALSE(shouldHold(true, true));                                                  // fullscreen
+    EXPECT_FALSE(shouldHold(true, false, false, false, false));                            // presentable/visible
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, true));                       // FG active
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, true));                // runtime-owned
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, true));         // dedicated queue
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, true));  // steam deferred
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, false, true));  // device lost
+    EXPECT_FALSE(
+        shouldHold(true, false, true, false, false, false, false, false, false, false, false));  // no queue
 }
 
-TEST(DXGISharedTest, D3D12FocusLossBackgroundHoldPolicyIsPresentPathAgnostic) {
-    const bool presentPath = ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
-        true, false, false, false, false, false, false, false, false, false, true);
-    const bool present1Path = ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
-        true, false, false, false, false, false, false, false, false, false, true);
+// Regression for the v7 focus-based hide: an unfocused-but-VISIBLE window (Present
+// returns S_OK, not occluded; not minimized; non-zero size) must NOT hold
+// backbuffer work, so the overlay keeps rendering exactly like RTSS. Under the old
+// focus-gated policy this returned true (hold == overlay hidden).
+TEST(DXGISharedTest, D3D12UnfocusedButVisibleSwapchainKeepsOverlayVisible) {
+    const bool hold = ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
+        /*wrappedD3D12=*/true, /*fullscreen=*/false, /*occluded=*/false, /*iconic=*/false,
+        /*zeroSized=*/false, /*fgActive=*/false, /*runtimeOwned=*/false, /*dedicated=*/false,
+        /*steamDeferred=*/false, /*deviceLost=*/false, /*hasQueue=*/true);
+    EXPECT_FALSE(hold);
+}
+
+TEST(DXGISharedTest, D3D12NonPresentableHoldPolicyIsPresentPathAgnostic) {
+    const bool presentPath = ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
+        true, false, true, false, false, false, false, false, false, false, true);
+    const bool present1Path = ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
+        true, false, true, false, false, false, false, false, false, false, true);
 
     EXPECT_TRUE(presentPath);
     EXPECT_EQ(presentPath, present1Path);
-}
-
-TEST(DXGISharedTest, D3D12FocusLossForegroundReacquireHoldSkipsSwapchainBackbufferWorkUntilPresentProof) {
-    auto shouldHold = [](bool wrappedD3D12 = true, bool fullscreen = false, bool foreground = true,
-                         bool iconic = false, bool zeroSized = false, bool fgActive = false,
-                         bool runtimeOwned = false, bool dedicated = false, bool steamDeferred = false,
-                         bool deviceLost = false, bool hasQueue = true, int proofRemaining = 16) {
-        return ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
-            wrappedD3D12, fullscreen, foreground, iconic, zeroSized, fgActive, runtimeOwned, dedicated,
-            steamDeferred, deviceLost, hasQueue, proofRemaining);
-    };
-
-    EXPECT_TRUE(shouldHold());
-
-    EXPECT_FALSE(shouldHold(false));
-    EXPECT_FALSE(shouldHold(true, true));
-    EXPECT_FALSE(shouldHold(true, false, false));
-    EXPECT_FALSE(shouldHold(true, false, true, true));
-    EXPECT_FALSE(shouldHold(true, false, true, false, true));
-    EXPECT_FALSE(shouldHold(true, false, true, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, false, false, false));
-    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, false, false, true, 0));
 }
 
 TEST(DXGISharedTest, D3D12FocusTransitionDeviceRemovalDumpRequestsOnlyOnceForRecentTransition) {
@@ -317,55 +306,6 @@ TEST(DXGISharedTest, D3D12FocusTransitionDeviceRemovalDumpRequestsOnlyOnceForRec
         true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(
         true, true, true));
-}
-
-TEST(DXGISharedTest, D3D12FocusLossForegroundReacquireHoldPolicyIsPresentPathAgnostic) {
-    const bool presentPath = ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
-        true, false, true, false, false, false, false, false, false, false, true, 16);
-    const bool present1Path = ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
-        true, false, true, false, false, false, false, false, false, false, true, 16);
-
-    EXPECT_TRUE(presentPath);
-    EXPECT_EQ(presentPath, present1Path);
-}
-
-TEST(DXGISharedTest, D3D12FocusLossOffscreenCompositeAvoidsDirectBackbufferBarrierPath) {
-    auto shouldComposite = [](bool wrappedD3D12 = true, bool fullscreen = false, bool foreground = false,
-                              bool iconic = false, bool zeroSized = false, bool fgActive = false,
-                              bool runtimeOwned = false, bool dedicated = false, bool steamDeferred = false,
-                              bool deviceLost = false, bool hasQueue = true, bool hasFence = true,
-                              bool hasEvent = true) {
-        return ce::dx12_overlay_policy::ShouldUseD3D12FocusLossOffscreenOverlayComposite(
-            wrappedD3D12, fullscreen, foreground, iconic, zeroSized, fgActive, runtimeOwned, dedicated, steamDeferred,
-            deviceLost, hasQueue, hasFence, hasEvent);
-    };
-
-    EXPECT_TRUE(shouldComposite());
-
-    EXPECT_FALSE(shouldComposite(false));
-    EXPECT_FALSE(shouldComposite(true, true));
-    EXPECT_FALSE(shouldComposite(true, false, true));
-    EXPECT_FALSE(shouldComposite(true, false, false, true));
-    EXPECT_FALSE(shouldComposite(true, false, false, false, true));
-    EXPECT_FALSE(shouldComposite(true, false, false, false, false, true));
-    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, false, false, true));
-    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, false, false, false, false));
-    EXPECT_FALSE(shouldComposite(true, false, false, false, false, false, false, false, false, false, true, false));
-    EXPECT_FALSE(
-        shouldComposite(true, false, false, false, false, false, false, false, false, false, true, true, false));
-}
-
-TEST(DXGISharedTest, D3D12FocusLossOffscreenCompositePolicyIsPresentPathAgnostic) {
-    const bool presentPath = ce::dx12_overlay_policy::ShouldUseD3D12FocusLossOffscreenOverlayComposite(
-        true, false, false, false, false, false, false, false, false, false, true, true, true);
-    const bool present1Path = ce::dx12_overlay_policy::ShouldUseD3D12FocusLossOffscreenOverlayComposite(
-        true, false, false, false, false, false, false, false, false, false, true, true, true);
-
-    EXPECT_TRUE(presentPath);
-    EXPECT_EQ(presentPath, present1Path);
 }
 
 TEST(DXGISharedTest, IncompleteFocusLossFenceOnlyHoldsBackbufferWork) {

@@ -20,6 +20,7 @@ struct IDXGISwapChain;
 extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 #include "../apis/ddraw_hook.h"
 #include "../apis/dx12_hook.h"  // Access to g_DX12Hook implementation
+#include "../common/dx12_dred.h"
 #include "../common/dx12_overlay_policy.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
@@ -561,6 +562,12 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL M
     }
 
     WrapperLog("Wrapper: Call oD3D12CreateDevice at %p", oD3D12CreateDevice);
+
+    // Arm DRED auto-breadcrumbs + page-fault BEFORE the real device is created so
+    // a later DXGI_ERROR_DEVICE_HUNG/REMOVED (e.g. the x86 DX12 focus-loss
+    // freeze) yields the exact hung command list and faulting GPU VA instead of a
+    // bare HRESULT. Gated by env CE_DX12_DRED (default on).
+    ce::dx12_dred::ArmBeforeDeviceCreation();
 
     // Create the real device first
     ID3D12Device* pRealDevice = nullptr;

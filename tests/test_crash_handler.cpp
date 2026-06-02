@@ -197,16 +197,18 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("initializing FFX hooks immediately for native FSR callback bridge"), std::string::npos);
     EXPECT_NE(contents.find("Installed LdrLoadDll hook for module-load observation"), std::string::npos);
     EXPECT_NE(contents.find("IAT import patching skipped to avoid startup fail-fast"), std::string::npos);
-    EXPECT_NE(contents.find("DX12 focus-loss sync policy=v7 background+foreground-reacquire-backbuffer-hold"),
-              std::string::npos);
+    EXPECT_NE(contents.find("DX12 focus-loss sync policy=v8 visibility-gated-backbuffer-hold"), std::string::npos);
     EXPECT_NE(contents.find("Focus-loss same-frame overlay fence wait result"), std::string::npos);
     EXPECT_NE(contents.find("Requesting immediate freeze dump for focus-loss same-frame overlay fence wait"),
               std::string::npos);
-    EXPECT_NE(contents.find("Holding focus-loss overlay/capture backbuffer work while process is backgrounded"),
+    EXPECT_NE(contents.find("Holding overlay/capture backbuffer work while swapchain is NOT presentable"),
               std::string::npos);
-    EXPECT_NE(contents.find("Holding focus-loss overlay/capture backbuffer work during foreground reacquire proof"),
-              std::string::npos);
+    EXPECT_NE(contents.find("Resuming overlay/capture backbuffer work"), std::string::npos);
+    EXPECT_NE(contents.find("Swapchain presentability changed ->"), std::string::npos);
     EXPECT_NE(contents.find("Requesting immediate freeze dump for focus-loss device removal"), std::string::npos);
+    // DRED GPU-fault diagnostics (device-hung breadcrumbs + page-fault).
+    EXPECT_NE(contents.find("DX12 DRED: armed auto-breadcrumbs"), std::string::npos);
+    EXPECT_NE(contents.find("DX12 DRED: ===== device-removed extended data"), std::string::npos);
 }
 
 TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentationMonitored) {

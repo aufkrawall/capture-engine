@@ -64,6 +64,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
 #include "streamline_hook.h"
 
 #include "../common/custom_overlay.h"
+#include "../common/dx12_dred.h"
 #include "../common/dx12_overlay_policy.h"
 #include "../common/ffx_api_parsing.h"
 #include "../common/overlay_shader_bytecode.h"
@@ -1142,6 +1143,17 @@ static void ShutdownDescFreeBackend(const char* reason, bool shutdownMode = fals
 std::atomic<ID3D12Device*> g_Device{nullptr};
 std::atomic<ID3D12CommandQueue*> g_CommandQueue{nullptr};
 std::recursive_mutex g_CommandQueueMutex;
+
+// Called by the freeze watchdog when it captures a freeze dump. If the D3D12
+// device is in a removed/hung state, emit DRED auto-breadcrumbs + page-fault info
+// so a device-hung freeze (e.g. the x86 DX12 focus-loss transition) is recorded
+// with the exact faulting GPU op. No-op when the device is healthy or DRED is off.
+void DX12_DumpDredIfDeviceRemoved(const char* reason) {
+    ID3D12Device* dev = g_Device.load(std::memory_order_acquire);
+    if (dev && FAILED(dev->GetDeviceRemovedReason())) {
+        ce::dx12_dred::DumpOnDeviceRemoved(dev, reason ? reason : "freeze watchdog");
+    }
+}
 
 // CRITICAL FIX: Thread-safe accessors for g_Device and g_CommandQueue
 // These functions acquire the mutex and return a reference-counted pointer
@@ -3078,6 +3090,18 @@ static constexpr int kFocusLossForegroundReacquirePresentProofFrames = 16;
 static constexpr int kFocusLossRecentTransitionDumpWindowFrames = 300;
 static std::atomic<int> g_FocusLossForegroundReacquirePresentProofRemaining{0};
 static std::atomic<int> g_FocusLossRecentTransitionPresentWindow{0};
+
+// Swapchain visibility, tracked from the wrapped Present HRESULT.
+// DXGI_STATUS_OCCLUDED means the window is fully covered/minimized and the
+// present is a no-op; the overlay is not visible to the user in that state. A
+// merely-unfocused window that is STILL VISIBLE (e.g. a borderless background
+// window or a window on another monitor) keeps presenting S_OK, so the overlay
+// must keep rendering. CE holds backbuffer GPU work only when the swapchain is
+// not presentable, never merely because focus moved elsewhere.
+#ifndef DXGI_STATUS_OCCLUDED
+#define DXGI_STATUS_OCCLUDED ((HRESULT)0x087A0001L)
+#endif
+static std::atomic<bool> g_SwapchainPresentOccluded{false};
 
 struct DX12WrappedPresentFocusLossContext {
     bool valid = false;
@@ -8204,6 +8228,8 @@ static bool EnsureOffscreenRT(ID3D12Device* device, UINT width, UINT height, DXG
     device->CreateRenderTargetView(g_State.offscreenRT, nullptr,
                                    g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart());
 
+    g_State.offscreenRT->SetName(L"CE_OverlayOffscreenRT");
+
     g_State.offscreenWidth = width;
     g_State.offscreenHeight = height;
     g_State.offscreenFormat = format;
@@ -8664,6 +8690,7 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
             HookLog("InitOverlaySync: FAILED to create overlay queue, falling back to single-queue");
             // Continue without overlay queue - will fall back to game queue
         } else {
+            g_State.overlayQueue->SetName(L"CE_OverlayQueue");
             HookLogImportant("InitOverlaySync: Dedicated overlay queue created (ptr=%p, gameQueue=%p)",
                              g_State.overlayQueue, gameQueue);
         }
@@ -8761,6 +8788,20 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         // Track which device owns these sync resources so we can detect
         // cross-device submission attempts in PostSLOverlayRender.
         g_State.syncDevice = device;
+
+        // Name CE-owned overlay objects so DRED auto-breadcrumbs / page-fault
+        // output identify the hung list/allocator/fence as ours vs the game's.
+        g_State.fence->SetName(L"CE_OverlayFence");
+        g_State.cmdList->SetName(L"CE_OverlayCmdList");
+        for (size_t i = 0; i < g_State.allocators.size(); i++) {
+            if (g_State.allocators[i]) {
+                wchar_t allocName[48];
+                swprintf(allocName, 48, L"CE_OverlayAlloc[%u]", (unsigned)i);
+                g_State.allocators[i]->SetName(allocName);
+            }
+        }
+        // Fresh sync/device epoch — allow a future device-removal to dump DRED again.
+        ce::dx12_dred::ResetDumpEpoch();
 
         g_State.syncInit = true;
         HookLogImportant("InitOverlaySync: SUCCESS (syncDevice=%p, allocators=%d, fence=%p)", device,
@@ -11844,6 +11885,28 @@ extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(
     const bool presentSucceeded = SUCCEEDED(presentHr);
     const bool presentDeviceLost = IsD3D12FocusLossPresentDeviceLostHRESULT(presentHr);
 
+    // Track swapchain visibility from the Present result. DXGI_STATUS_OCCLUDED (or
+    // a minimized / zero-sized window) means the swapchain is not presentable and
+    // the overlay is not visible to the user; that is the only state in which CE
+    // holds backbuffer GPU work. A merely-unfocused but still-visible window keeps
+    // presenting S_OK and must keep showing the overlay.
+    const bool presentNotPresentable = (presentHr == DXGI_STATUS_OCCLUDED) || isIconic || hasZeroSize;
+    const bool occlusionChanged =
+        g_SwapchainPresentOccluded.exchange(presentNotPresentable, std::memory_order_acq_rel) != presentNotPresentable;
+    if (occlusionChanged) {
+        // A presentable<->not-presentable transition is the risky DXGI iflip<->
+        // composited mode switch where the device historically hung. Widen the
+        // device-removal dump window so a hang at that edge is captured (DRED).
+        g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
+                                                       std::memory_order_release);
+        HookLogImportant(
+            "DX12: Swapchain presentability changed -> %s (present=%s#%d hr=0x%08X foreground=%d fullscreen=%d "
+            "game=%p)",
+            presentNotPresentable ? "NOT-PRESENTABLE (occluded/iconic/zero-size)" : "PRESENTABLE",
+            presentName ? presentName : "Present", callCount, (unsigned)presentHr, processHasForeground ? 1 : 0,
+            isFullscreen ? 1 : 0, gameWindow);
+    }
+
     DX12WrappedPresentFocusLossContext presentContext;
     presentContext.valid = true;
     presentContext.presentName = presentName;
@@ -12008,7 +12071,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         s_firstFrame = false;
         HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
         HookLogImportant(
-            "DX12 focus-loss sync policy=v7 background+foreground-reacquire-backbuffer-hold");
+            "DX12 focus-loss sync policy=v8 visibility-gated-backbuffer-hold (overlay stays visible while unfocused)");
     }
 
     // Performance metrics for this frame
@@ -12078,6 +12141,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             g_RenderWatchdog.SetForceMonitor(true);
             HookLogImportant("DX12: GPU device removed (0x%08X) — stopping overlay",
                              (unsigned)devCheck->GetDeviceRemovedReason());
+            ce::dx12_dred::DumpOnDeviceRemoved(devCheck, "D3D12 device removed before ProcessFrame setup");
             if (s_WrappedPresentFocusLossContext.valid) {
                 HWND foregroundWindow = nullptr;
                 DWORD foregroundPid = 0;
@@ -13710,41 +13774,46 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         g_deferOverlaySubmitToSteamECL && !focusLossBackgroundUsingDedicatedQueue;
     const bool focusLossBackgroundFrameGenerationActive =
         g_FGCompat.IsFGActive() || DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    // v8 visibility-gated backbuffer hold.
+    //
+    // Hold CE backbuffer overlay/capture work ONLY when the swapchain is not
+    // presentable (DXGI Present returned OCCLUDED, or the window is minimized /
+    // zero-sized). In that state the overlay is not visible to the user anyway,
+    // and it is also where the single-monitor Alt+Tab device-hung historically
+    // occurred (DXGI tearing down the iflip surfaces). A merely-unfocused but
+    // still-visible window (borderless background window, or a window on another
+    // monitor) keeps presenting S_OK and MUST keep showing the overlay — that is
+    // the behavior RTSS provides and what the user expects. Focus is no longer a
+    // reason to hide the overlay.
+    const bool swapchainOccluded = g_SwapchainPresentOccluded.load(std::memory_order_acquire);
     const bool focusLossBackgroundBackbufferHold =
-        ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
-            s_WrappedPresentFocusLossContext.valid, !frameDesc.Windowed, processHasForeground, iconicWindow,
+        ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
+            s_WrappedPresentFocusLossContext.valid, !frameDesc.Windowed, swapchainOccluded, iconicWindow,
             zeroSizedSwapchain, focusLossBackgroundFrameGenerationActive, focusLossBackgroundRuntimeOwnedPresentation,
             focusLossBackgroundUsingDedicatedQueue, focusLossBackgroundSteamDeferredSubmit,
             focusLossBackgroundDeviceLost, gameQueue != nullptr);
     if (focusLossBackgroundBackbufferHold) {
-        g_FocusLossForegroundReacquirePresentProofRemaining.store(
-            kFocusLossForegroundReacquirePresentProofFrames, std::memory_order_release);
+        // Keep the device-removal dump window open across the not-presentable
+        // period and the following presentable transition (the risky DXGI
+        // iflip<->composited mode switch).
         g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
                                                        std::memory_order_release);
     }
-    const int focusLossForegroundReacquireProofRemaining =
-        g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire);
-    const bool focusLossForegroundReacquireHold =
-        ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
-            s_WrappedPresentFocusLossContext.valid, !frameDesc.Windowed, processHasForeground, iconicWindow,
-            zeroSizedSwapchain, focusLossBackgroundFrameGenerationActive, focusLossBackgroundRuntimeOwnedPresentation,
-            focusLossBackgroundUsingDedicatedQueue, focusLossBackgroundSteamDeferredSubmit,
-            focusLossBackgroundDeviceLost, gameQueue != nullptr, focusLossForegroundReacquireProofRemaining);
     const bool holdFocusLossBackbufferWork =
-        pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold || focusLossForegroundReacquireHold;
+        pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold;
     {
         static bool s_focusLossBackbufferHoldActive = false;
         static std::atomic<int> s_focusLossBackgroundHoldLogCount{0};
-        static std::atomic<int> s_focusLossForegroundReacquireHoldLogCount{0};
         if (focusLossBackgroundBackbufferHold) {
             const int logCount = s_focusLossBackgroundHoldLogCount.fetch_add(1, std::memory_order_relaxed);
             if (!s_focusLossBackbufferHoldActive || logCount < 40 || (logCount % 300) == 0) {
                 s_focusLossBackbufferHoldActive = true;
                 HookLogImportant(
-                    "DX12: Holding focus-loss overlay/capture backbuffer work while process is backgrounded "
-                    "(present=%s#%d queue=%p fg=%p/%lu game=%p/%lu sync=%u flags=0x%08X "
-                    "fgActive=%d runtimeOwned=%d dedicated=%d steamDeferred=%d deviceLost=%d log=%d); "
-                    "backend/resources preserved, no swapchain backbuffer touch",
+                    "DX12: Holding overlay/capture backbuffer work while swapchain is NOT presentable "
+                    "(occluded=%d iconic=%d zeroSize=%d present=%s#%d queue=%p fg=%p/%lu game=%p/%lu "
+                    "sync=%u flags=0x%08X fgActive=%d runtimeOwned=%d dedicated=%d steamDeferred=%d "
+                    "deviceLost=%d log=%d); backend/resources preserved, no swapchain backbuffer touch",
+                    swapchainOccluded ? 1 : 0, iconicWindow ? 1 : 0, zeroSizedSwapchain ? 1 : 0,
                     s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
                                                                  : "Present",
                     s_WrappedPresentFocusLossContext.callCount, gameQueue, foregroundWindow, foregroundPid,
@@ -13756,33 +13825,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     focusLossBackgroundSteamDeferredSubmit ? 1 : 0,
                     focusLossBackgroundDeviceLost ? 1 : 0, logCount + 1);
             }
-        } else if (focusLossForegroundReacquireHold) {
-            const int logCount =
-                s_focusLossForegroundReacquireHoldLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (!s_focusLossBackbufferHoldActive || logCount < 40 || (logCount % 120) == 0 ||
-                focusLossForegroundReacquireProofRemaining <= 3) {
-                s_focusLossBackbufferHoldActive = true;
-                HookLogImportant(
-                    "DX12: Holding focus-loss overlay/capture backbuffer work during foreground reacquire proof "
-                    "(present=%s#%d queue=%p fg=%p/%lu game=%p/%lu remainingPresents=%d sync=%u flags=0x%08X "
-                    "fgActive=%d runtimeOwned=%d dedicated=%d steamDeferred=%d deviceLost=%d log=%d); "
-                    "backend/resources preserved, waiting for stable foreground Presents before swapchain "
-                    "backbuffer touch",
-                    s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
-                                                                 : "Present",
-                    s_WrappedPresentFocusLossContext.callCount, gameQueue, foregroundWindow, foregroundPid,
-                    frameDesc.OutputWindow, currentProcessId, focusLossForegroundReacquireProofRemaining,
-                    s_WrappedPresentFocusLossContext.syncInterval, s_WrappedPresentFocusLossContext.presentFlags,
-                    focusLossBackgroundFrameGenerationActive ? 1 : 0,
-                    focusLossBackgroundRuntimeOwnedPresentation ? 1 : 0,
-                    focusLossBackgroundUsingDedicatedQueue ? 1 : 0,
-                    focusLossBackgroundSteamDeferredSubmit ? 1 : 0,
-                    focusLossBackgroundDeviceLost ? 1 : 0, logCount + 1);
-            }
         } else if (s_focusLossBackbufferHoldActive) {
             s_focusLossBackbufferHoldActive = false;
             HookLogImportant(
-                "DX12: Resuming focus-loss overlay/capture backbuffer work "
+                "DX12: Resuming overlay/capture backbuffer work — swapchain presentable again "
                 "(present=%s#%d queue=%p fg=%p/%lu game=%p/%lu foreground=%d recentWindow=%d)",
                 s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
                                                              : "Present",
@@ -14892,42 +14938,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // SL captures our overlay as part of the scene, FG interpolates it naturally.
         // Overlay appears on all output frames (real + interpolated).
         const bool slFGActive = currentFGActive && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-        bool focusLossDeviceLost = false;
-        {
-            auto* focusLossDev = g_Device.load(std::memory_order_acquire);
-            if (focusLossDev) {
-                focusLossDeviceLost = FAILED(focusLossDev->GetDeviceRemovedReason());
-            }
-        }
-        const bool focusLossUsingDedicatedQueue = g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
-        const bool focusLossRuntimeOwnedPresentation =
-            g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() ||
-            DXGIShared::DoesFGRuntimeOwnSwapchain();
-        const bool focusLossSteamDeferredSubmit = g_deferOverlaySubmitToSteamECL && !focusLossUsingDedicatedQueue;
-        const bool focusLossOffscreenComposite =
-            !skipOverlayDraw &&
-            ce::dx12_overlay_policy::ShouldUseD3D12FocusLossOffscreenOverlayComposite(
-                s_WrappedPresentFocusLossContext.valid, !frameDesc.Windowed, processHasForeground, iconicWindow,
-                zeroSizedSwapchain, currentFGActive || slFGActive, focusLossRuntimeOwnedPresentation,
-                focusLossUsingDedicatedQueue, focusLossSteamDeferredSubmit, focusLossDeviceLost,
-                gameQueue != nullptr, g_State.fence != nullptr, g_State.fenceEvent != nullptr);
-        if (focusLossOffscreenComposite) {
-            static std::atomic<int> s_focusLossOffscreenPolicyLogCount{0};
-            const int logCount = s_focusLossOffscreenPolicyLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 40 || (logCount % 300) == 0) {
-                UINT64 completedValue = g_State.fence ? g_State.fence->GetCompletedValue() : 0;
-                HookLogImportant(
-                    "DX12: Focus-loss overlay using offscreen composite "
-                    "(present=%s#%d queue=%p fence=%p currentFence=%llu completed=%llu fg=%p/%lu game=%p/%lu "
-                    "sync=%u flags=0x%08X); backend/resources preserved",
-                    s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
-                                                                 : "Present",
-                    s_WrappedPresentFocusLossContext.callCount, gameQueue, g_State.fence,
-                    (unsigned long long)g_State.currentFenceValue, (unsigned long long)completedValue,
-                    foregroundWindow, foregroundPid, frameDesc.OutputWindow, currentProcessId,
-                    s_WrappedPresentFocusLossContext.syncInterval, s_WrappedPresentFocusLossContext.presentFlags);
-            }
-        }
+        // v8: while the window is visible (focused or not) CE renders the overlay
+        // directly to the backbuffer, exactly like RTSS. The focus-loss offscreen
+        // composite route is retired: when the swapchain is not presentable CE now
+        // holds backbuffer work entirely (see the visibility-gated hold above), so
+        // there is no "draw while occluded" case that needs the barrier-free copy.
+        // The post-FSR offscreen path (g_NeedOffscreenOverlayAfterPostFSRNonFG) is
+        // unrelated and stays intact below.
+        const bool focusLossOffscreenComposite = false;
         {
             if (slFGActive) {
                 // SL FG active: enable POST-SL overlay rendering.
@@ -15350,6 +15368,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         g_RenderWatchdog.SetForceMonitor(true);
                         HookLogImportant("DX12: GPU device removed (0x%08X) — cleaning up overlay",
                                          (unsigned)devCheck->GetDeviceRemovedReason());
+                        ce::dx12_dred::DumpOnDeviceRemoved(devCheck, "D3D12 device removed before overlay render");
                         const bool recentFocusTransition =
                             g_FocusLossRecentTransitionPresentWindow.load(std::memory_order_acquire) > 0 ||
                             g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire) > 0;
@@ -15369,6 +15388,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     g_DeviceRemoved.store(false, std::memory_order_release);
                     DXGIShared::g_SharedState.deviceRemovedFatal.store(false, std::memory_order_release);
                     g_RenderWatchdog.SetForceMonitor(false);
+                    ce::dx12_dred::ResetDumpEpoch();
                     HookLogImportant("DX12: Device recovered — overlay will reinitialize");
                 }
             }

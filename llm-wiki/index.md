@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-02 (updated: build 0.1.3682 / tests 0.1.3683 - x86 DX12 focus-loss foreground-reacquire hold)
+Last cross-checked: 2026-06-03 (updated: build 0.1.3690 - x86 DX12 v8 visibility-gated overlay hold + DRED GPU-fault diagnostics)
 
 Primary sources:
 - `AGENTS.md`
