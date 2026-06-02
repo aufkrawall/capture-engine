@@ -37,6 +37,9 @@ extern "C" __declspec(dllimport) bool DX12_WaitForFocusLossOverlayFenceAfterPres
 extern "C" __declspec(dllimport) void DX12_SetWrappedPresentFocusLossContext(const char* presentName, int callCount,
                                                                              UINT syncInterval, UINT presentFlags);
 extern "C" __declspec(dllimport) void DX12_ClearWrappedPresentFocusLossContext();
+extern "C" __declspec(dllimport) void DX12_NoteWrappedD3D12PresentResult(
+    const char* presentName, int callCount, UINT syncInterval, UINT presentFlags, HRESULT presentHr, BOOL isFullscreen,
+    BOOL isIconic, BOOL hasZeroSize, HWND gameWindow);
 
 // Query-based CPU prerender limit for D3D11 (implemented in dx11_hook.cpp)
 extern void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
@@ -233,8 +236,8 @@ FlushDeferredDX12OverlaySignalAfterWrappedPresent(bool isD3D12, const char* pres
         if (n < 40 || (n % 300) == 0) {
             WrapperLog(
                 "%s#%d: no deferred DX12 overlay fence signal after wrapped Present "
-                "(focus-loss; expected after same-frame immediate-fence path waited before Present, fence=%p event=%p "
-                "completed=%llu)",
+                "(focus-loss; expected when background backbuffer work was held or same-frame immediate-fence path "
+                "already waited before Present, fence=%p event=%p completed=%llu)",
                 presentName, callCount, flushInfo.fence, flushInfo.fenceEvent,
                 (unsigned long long)flushInfo.completedValue);
         }
@@ -735,11 +738,10 @@ void CWrapDXGISwapChain::ProbeD3D12FocusLossFrameLatencyAfterPresent(const char*
     const bool runtimeOwnedPresentation =
         DXGIShared::DoesFGRuntimeOwnSwapchain() || DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 
-    const bool shouldTryWaitable =
+    const bool focusLossTelemetryCandidate =
         m_IsD3D12 && !m_State.isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
         presentSucceeded && !frameGenerationActive && !runtimeOwnedPresentation;
-    HANDLE waitable = shouldTryWaitable ? EnsureFrameLatencyWaitable("D3D12 focus-loss frame-latency telemetry")
-                                        : INVALID_HANDLE_VALUE;
+    HANDLE waitable = INVALID_HANDLE_VALUE;
     const bool hasFrameLatencyWaitable = waitable && waitable != INVALID_HANDLE_VALUE;
     const bool shouldWait = DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
         m_IsD3D12, m_State.isFullscreen, processHasForeground, isIconic, hasZeroSize, presentSucceeded,
@@ -753,12 +755,13 @@ void CWrapDXGISwapChain::ProbeD3D12FocusLossFrameLatencyAfterPresent(const char*
                 WrapperLog(
                     "%s#%d: D3D12 focus-loss frame-latency waitable telemetry probe skipped "
                     "(fg=%p/%lu ours=%p/%lu sync=%u flags=0x%08X presentHr=0x%08X fullscreen=%d iconic=%d "
-                    "zeroSize=%d fgActive=%d runtimeOwned=%d waitable=%p available=%d)",
+                    "zeroSize=%d fgActive=%d runtimeOwned=%d waitable=%p available=%d candidate=%d "
+                    "reason=present-passthrough-v7)",
                     presentName, callCount, foregroundWindow, foregroundPid, m_hWnd, GetCurrentProcessId(),
                     syncInterval, presentFlags, (unsigned)presentHr, m_State.isFullscreen ? 1 : 0,
                     isIconic ? 1 : 0, hasZeroSize ? 1 : 0, frameGenerationActive ? 1 : 0,
                     runtimeOwnedPresentation ? 1 : 0, hasFrameLatencyWaitable ? waitable : nullptr,
-                    hasFrameLatencyWaitable ? 1 : 0);
+                    hasFrameLatencyWaitable ? 1 : 0, focusLossTelemetryCandidate ? 1 : 0);
             }
         }
         return;
@@ -1352,6 +1355,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     WaitFrameLatency();
     const int64_t presentCallStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
+    if (m_IsD3D12) {
+        const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
+        const BOOL hasZeroSize = (m_State.width == 0 || m_State.height == 0) ? TRUE : FALSE;
+        DX12_NoteWrappedD3D12PresentResult("Present", callCount, SyncInterval, presentFlags, hr,
+                                           m_State.isFullscreen ? TRUE : FALSE, isIconic, hasZeroSize, m_hWnd);
+    }
     const bool flushProcessHasForeground = m_IsD3D12 ? ResolveCurrentProcessForeground(nullptr, nullptr) : true;
     const bool focusLostForFlush = m_IsD3D12 && !flushProcessHasForeground && !m_State.isFullscreen;
     const auto flushInfo =
@@ -1686,6 +1695,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
 
     WaitFrameLatency();
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    if (m_IsD3D12) {
+        const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
+        const BOOL hasZeroSize = (m_State.width == 0 || m_State.height == 0) ? TRUE : FALSE;
+        DX12_NoteWrappedD3D12PresentResult("Present1", callCount, SyncInterval, PresentFlags, hr,
+                                           m_State.isFullscreen ? TRUE : FALSE, isIconic, hasZeroSize, m_hWnd);
+    }
     const bool flushProcessHasForeground = m_IsD3D12 ? ResolveCurrentProcessForeground(nullptr, nullptr) : true;
     const bool focusLostForFlush = m_IsD3D12 && !flushProcessHasForeground && !m_State.isFullscreen;
     const auto flushInfo =

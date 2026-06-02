@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-02 (updated: build 0.1.3678 / tests 0.1.3679 - GTA native-FSR no-callback routing and freeze-watchdog monitor)
+Last cross-checked: 2026-06-02 (updated: build 0.1.3682 / tests 0.1.3683 - x86 DX12 focus-loss foreground-reacquire hold)
 
 Primary sources:
 - `AGENTS.md`

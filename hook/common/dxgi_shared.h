@@ -242,8 +242,20 @@ inline bool ShouldWaitOnD3D12FocusLossFrameLatency(bool isD3D12Swapchain, bool i
                                                    bool processHasForeground, bool isIconic, bool hasZeroSize,
                                                    bool presentSucceeded, bool frameGenerationActive,
                                                    bool runtimeOwnedPresentation, bool hasFrameLatencyWaitable) {
-    return isD3D12Swapchain && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
-           presentSucceeded && !frameGenerationActive && !runtimeOwnedPresentation && hasFrameLatencyWaitable;
+    (void)isD3D12Swapchain;
+    (void)isFullscreen;
+    (void)processHasForeground;
+    (void)isIconic;
+    (void)hasZeroSize;
+    (void)presentSucceeded;
+    (void)frameGenerationActive;
+    (void)runtimeOwnedPresentation;
+    (void)hasFrameLatencyWaitable;
+    // `20260602_213952` proved the waitable stays immediately signaled during
+    // the failing focus churn, so it is not a correctness gate. Keep the wrapper
+    // on a pure Present path for D3D12 focus loss; focus/reacquire safety is
+    // handled by the DX12 overlay policy.
+    return false;
 }
 
 inline bool ShouldDeferVTableRepairDuringStreamlineStartup(bool streamlineFGRunning,

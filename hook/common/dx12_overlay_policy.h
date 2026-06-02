@@ -1352,6 +1352,21 @@ inline bool ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
            !steamDeferredOverlaySubmit && !deviceLost && hasQueue;
 }
 
+inline bool ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
+    bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
+    bool frameGenerationActive, bool runtimeOwnedPresentation, bool usingDedicatedQueue,
+    bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue, int foregroundPresentProofRemaining) {
+    return isWrappedD3D12Present && !isFullscreen && processHasForeground && !isIconic && !hasZeroSize &&
+           !frameGenerationActive && !runtimeOwnedPresentation && !usingDedicatedQueue &&
+           !steamDeferredOverlaySubmit && !deviceLost && hasQueue && foregroundPresentProofRemaining > 0;
+}
+
+inline bool ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(bool deviceLost,
+                                                                           bool focusTransitionRecentlyActive,
+                                                                           bool dumpAlreadyRequested) {
+    return deviceLost && focusTransitionRecentlyActive && !dumpAlreadyRequested;
+}
+
 inline bool ShouldUseD3D12FocusLossOffscreenOverlayComposite(
     bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
     bool frameGenerationActive, bool runtimeOwnedPresentation, bool usingDedicatedQueue,

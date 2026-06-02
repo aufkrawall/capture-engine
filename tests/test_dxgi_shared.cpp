@@ -83,8 +83,8 @@ TEST(DXGISharedTest, D3D12FocusLossPreservesPresentPacing) {
     EXPECT_FALSE(DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(false, false, false, 0x00000004U));
 }
 
-TEST(DXGISharedTest, D3D12FocusLossFrameLatencyWaitableProbeCoversUnfocusedFrames) {
-    EXPECT_TRUE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
+TEST(DXGISharedTest, D3D12FocusLossFrameLatencyWaitableProbeIsDisabledForPresentPassthrough) {
+    EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
         true, false, false, false, false, true, false, false, true));
 
     EXPECT_FALSE(DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
@@ -107,13 +107,13 @@ TEST(DXGISharedTest, D3D12FocusLossFrameLatencyWaitableProbeCoversUnfocusedFrame
         true, false, false, false, true, true, false, false, true));
 }
 
-TEST(DXGISharedTest, D3D12FocusLossFrameLatencyPolicyIsPresentPathAgnostic) {
+TEST(DXGISharedTest, D3D12FocusLossFrameLatencyDisabledPolicyIsPresentPathAgnostic) {
     const bool presentPath = DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
         true, false, false, false, false, true, false, false, true);
     const bool present1Path = DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
         true, false, false, false, false, true, false, false, true);
 
-    EXPECT_TRUE(presentPath);
+    EXPECT_FALSE(presentPath);
     EXPECT_EQ(presentPath, present1Path);
 }
 
@@ -245,6 +245,88 @@ TEST(DXGISharedTest, D3D12FocusLossImmediateFenceDumpRequestsOnlyForFirstIncompl
         ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(false, true));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(true, true));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossBackgroundHoldSkipsSwapchainBackbufferWork) {
+    auto shouldHold = [](bool wrappedD3D12 = true, bool fullscreen = false, bool foreground = false,
+                         bool iconic = false, bool zeroSized = false, bool fgActive = false,
+                         bool runtimeOwned = false, bool dedicated = false, bool steamDeferred = false,
+                         bool deviceLost = false, bool hasQueue = true) {
+        return ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
+            wrappedD3D12, fullscreen, foreground, iconic, zeroSized, fgActive, runtimeOwned, dedicated,
+            steamDeferred, deviceLost, hasQueue);
+    };
+
+    EXPECT_TRUE(shouldHold());
+
+    EXPECT_FALSE(shouldHold(false));
+    EXPECT_FALSE(shouldHold(true, true));
+    EXPECT_FALSE(shouldHold(true, false, true));
+    EXPECT_FALSE(shouldHold(true, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, false, false, false, false, false, false, false, false, false));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossBackgroundHoldPolicyIsPresentPathAgnostic) {
+    const bool presentPath = ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
+        true, false, false, false, false, false, false, false, false, false, true);
+    const bool present1Path = ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
+        true, false, false, false, false, false, false, false, false, false, true);
+
+    EXPECT_TRUE(presentPath);
+    EXPECT_EQ(presentPath, present1Path);
+}
+
+TEST(DXGISharedTest, D3D12FocusLossForegroundReacquireHoldSkipsSwapchainBackbufferWorkUntilPresentProof) {
+    auto shouldHold = [](bool wrappedD3D12 = true, bool fullscreen = false, bool foreground = true,
+                         bool iconic = false, bool zeroSized = false, bool fgActive = false,
+                         bool runtimeOwned = false, bool dedicated = false, bool steamDeferred = false,
+                         bool deviceLost = false, bool hasQueue = true, int proofRemaining = 16) {
+        return ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
+            wrappedD3D12, fullscreen, foreground, iconic, zeroSized, fgActive, runtimeOwned, dedicated,
+            steamDeferred, deviceLost, hasQueue, proofRemaining);
+    };
+
+    EXPECT_TRUE(shouldHold());
+
+    EXPECT_FALSE(shouldHold(false));
+    EXPECT_FALSE(shouldHold(true, true));
+    EXPECT_FALSE(shouldHold(true, false, false));
+    EXPECT_FALSE(shouldHold(true, false, true, true));
+    EXPECT_FALSE(shouldHold(true, false, true, false, true));
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, false, true));
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, false, false, false));
+    EXPECT_FALSE(shouldHold(true, false, true, false, false, false, false, false, false, false, true, 0));
+}
+
+TEST(DXGISharedTest, D3D12FocusTransitionDeviceRemovalDumpRequestsOnlyOnceForRecentTransition) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(
+        true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(
+        false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(
+        true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(
+        true, true, true));
+}
+
+TEST(DXGISharedTest, D3D12FocusLossForegroundReacquireHoldPolicyIsPresentPathAgnostic) {
+    const bool presentPath = ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
+        true, false, true, false, false, false, false, false, false, false, true, 16);
+    const bool present1Path = ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
+        true, false, true, false, false, false, false, false, false, false, true, 16);
+
+    EXPECT_TRUE(presentPath);
+    EXPECT_EQ(presentPath, present1Path);
 }
 
 TEST(DXGISharedTest, D3D12FocusLossOffscreenCompositeAvoidsDirectBackbufferBarrierPath) {

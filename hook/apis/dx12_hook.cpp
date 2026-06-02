@@ -3073,6 +3073,11 @@ static std::atomic<int> g_deferredSignalAllocIdx{-1};
 static std::atomic<ID3D12CommandQueue*> g_deferredSignalQueue{nullptr};
 static std::atomic<UINT64> g_FocusLossPendingOverlayFenceValue{0};
 static std::atomic<bool> g_FocusLossImmediateFenceDumpRequested{false};
+static std::atomic<bool> g_FocusLossDeviceRemovalDumpRequested{false};
+static constexpr int kFocusLossForegroundReacquirePresentProofFrames = 16;
+static constexpr int kFocusLossRecentTransitionDumpWindowFrames = 300;
+static std::atomic<int> g_FocusLossForegroundReacquirePresentProofRemaining{0};
+static std::atomic<int> g_FocusLossRecentTransitionPresentWindow{0};
 
 struct DX12WrappedPresentFocusLossContext {
     bool valid = false;
@@ -8474,6 +8479,9 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         return;
     }
     g_FocusLossImmediateFenceDumpRequested.store(false, std::memory_order_release);
+    g_FocusLossDeviceRemovalDumpRequested.store(false, std::memory_order_release);
+    g_FocusLossForegroundReacquirePresentProofRemaining.store(0, std::memory_order_release);
+    g_FocusLossRecentTransitionPresentWindow.store(0, std::memory_order_release);
 
     // CRITICAL: Prefer the queue's own device over g_Device.  After swapchain
     // recreation (e.g. FSR→DLSS switch), g_Device may still point to the old
@@ -11790,6 +11798,98 @@ static void RequestImmediateFocusLossFenceDumpOnce(const char* reason, UINT64 fe
                                           GetCurrentThreadId());
 }
 
+static void RequestFocusLossDeviceRemovalDumpOnce(const char* reason, HRESULT deviceRemovedReason,
+                                                  const DX12WrappedPresentFocusLossContext& presentContext,
+                                                  HWND foregroundWindow, DWORD foregroundPid, HWND gameWindow,
+                                                  DWORD processId, ID3D12CommandQueue* queue) {
+    const bool dumpAlreadyRequested = g_FocusLossDeviceRemovalDumpRequested.load(std::memory_order_acquire);
+    const bool recentFocusTransition =
+        g_FocusLossRecentTransitionPresentWindow.load(std::memory_order_acquire) > 0 ||
+        g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire) > 0;
+    const bool foregroundBelongsToProcess = foregroundPid != 0 && foregroundPid == processId;
+    if (!ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(
+            true, recentFocusTransition || !foregroundBelongsToProcess, dumpAlreadyRequested)) {
+        return;
+    }
+
+    bool expected = false;
+    if (!g_FocusLossDeviceRemovalDumpRequested.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+                                                                       std::memory_order_acquire)) {
+        return;
+    }
+
+    HookLogImportant(
+        "DX12: Requesting immediate freeze dump for focus-loss device removal "
+        "(reason=%s devRemoved=0x%08X present=%s#%d queue=%p fg=%p/%lu game=%p/%lu sync=%u flags=0x%08X "
+        "targetTid=%lu)",
+        reason ? reason : "unknown", (unsigned)deviceRemovedReason,
+        presentContext.presentName ? presentContext.presentName : "Present", presentContext.callCount, queue,
+        foregroundWindow, foregroundPid, gameWindow, processId, presentContext.syncInterval,
+        presentContext.presentFlags, GetCurrentThreadId());
+    g_RenderWatchdog.RequestImmediateDump(reason ? reason : "D3D12 focus-loss device removal", GetCurrentThreadId());
+}
+
+static bool IsD3D12FocusLossPresentDeviceLostHRESULT(HRESULT hr) {
+    return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG;
+}
+
+extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(
+    const char* presentName, int callCount, UINT syncInterval, UINT presentFlags, HRESULT presentHr, BOOL isFullscreen,
+    BOOL isIconic, BOOL hasZeroSize, HWND gameWindow) {
+    HWND foregroundWindow = nullptr;
+    DWORD foregroundPid = 0;
+    const bool processHasForeground = ResolveCurrentProcessForeground(&foregroundWindow, &foregroundPid);
+    const DWORD currentProcessId = GetCurrentProcessId();
+    const bool foregroundMatchesGame = processHasForeground;
+    const bool presentSucceeded = SUCCEEDED(presentHr);
+    const bool presentDeviceLost = IsD3D12FocusLossPresentDeviceLostHRESULT(presentHr);
+
+    DX12WrappedPresentFocusLossContext presentContext;
+    presentContext.valid = true;
+    presentContext.presentName = presentName;
+    presentContext.callCount = callCount;
+    presentContext.syncInterval = syncInterval;
+    presentContext.presentFlags = presentFlags;
+
+    if (!foregroundMatchesGame) {
+        g_FocusLossForegroundReacquirePresentProofRemaining.store(
+            kFocusLossForegroundReacquirePresentProofFrames, std::memory_order_release);
+        g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
+                                                       std::memory_order_release);
+    } else if (presentSucceeded && !presentDeviceLost && !isFullscreen && !isIconic && !hasZeroSize) {
+        int remaining = g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire);
+        while (remaining > 0) {
+            if (g_FocusLossForegroundReacquirePresentProofRemaining.compare_exchange_weak(
+                    remaining, remaining - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                static std::atomic<int> s_focusReacquirePresentProofLogCount{0};
+                const int logCount = s_focusReacquirePresentProofLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (remaining <= 3 || logCount < 20) {
+                    HookLogImportant(
+                        "DX12: Focus-loss foreground reacquire Present proof accepted "
+                        "(present=%s#%d remaining=%d fg=%p/%lu game=%p/%lu sync=%u flags=0x%08X hr=0x%08X)",
+                        presentName ? presentName : "Present", callCount, remaining - 1, foregroundWindow,
+                        foregroundPid, gameWindow, currentProcessId, syncInterval, presentFlags, (unsigned)presentHr);
+                }
+                break;
+            }
+        }
+
+        int recent = g_FocusLossRecentTransitionPresentWindow.load(std::memory_order_acquire);
+        while (recent > 0) {
+            if (g_FocusLossRecentTransitionPresentWindow.compare_exchange_weak(
+                    recent, recent - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                break;
+            }
+        }
+    }
+
+    if (presentDeviceLost) {
+        RequestFocusLossDeviceRemovalDumpOnce("D3D12 focus-transition device-lost Present result", presentHr,
+                                              presentContext, foregroundWindow, foregroundPid, gameWindow,
+                                              currentProcessId, g_CommandQueue.load(std::memory_order_acquire));
+    }
+}
+
 static bool WaitForFocusLossImmediateOverlayFenceBeforePresent(
     bool immediateFencePolicyAccepted, bool signalSucceeded, ID3D12Fence* fence, HANDLE fenceEvent,
     ID3D12CommandQueue* queue, UINT64 fenceValue, const DX12WrappedPresentFocusLossContext& presentContext,
@@ -11907,7 +12007,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     if (s_firstFrame) {
         s_firstFrame = false;
         HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
-        HookLogImportant("DX12 focus-loss sync policy=v5 offscreen-composite+same-frame-fence-wait");
+        HookLogImportant(
+            "DX12 focus-loss sync policy=v7 background+foreground-reacquire-backbuffer-hold");
     }
 
     // Performance metrics for this frame
@@ -11977,6 +12078,20 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             g_RenderWatchdog.SetForceMonitor(true);
             HookLogImportant("DX12: GPU device removed (0x%08X) — stopping overlay",
                              (unsigned)devCheck->GetDeviceRemovedReason());
+            if (s_WrappedPresentFocusLossContext.valid) {
+                HWND foregroundWindow = nullptr;
+                DWORD foregroundPid = 0;
+                const bool processHasForeground = ResolveCurrentProcessForeground(&foregroundWindow, &foregroundPid);
+                const bool recentFocusTransition =
+                    g_FocusLossRecentTransitionPresentWindow.load(std::memory_order_acquire) > 0 ||
+                    g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire) > 0;
+                if (!processHasForeground || recentFocusTransition) {
+                    RequestFocusLossDeviceRemovalDumpOnce(
+                        "D3D12 focus-loss device removal before ProcessFrame setup",
+                        devCheck->GetDeviceRemovedReason(), s_WrappedPresentFocusLossContext, foregroundWindow,
+                        foregroundPid, nullptr, GetCurrentProcessId(), nullptr);
+                }
+            }
             g_State.overlayInit = false;
             CleanupRTVs();
             return;
@@ -13579,7 +13694,103 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
 
     UINT currentBackBufferIdx = 0;
     bool hasCurrentBackBufferIdx = false;
-    const bool holdFocusLossBackbufferWork = ShouldHoldOverlayDrawForPendingFocusLossFence();
+    const bool pendingFocusLossBackbufferWorkHold = ShouldHoldOverlayDrawForPendingFocusLossFence();
+    bool focusLossBackgroundDeviceLost = false;
+    {
+        auto* focusLossDev = g_Device.load(std::memory_order_acquire);
+        if (focusLossDev) {
+            focusLossBackgroundDeviceLost = FAILED(focusLossDev->GetDeviceRemovedReason());
+        }
+    }
+    const bool focusLossBackgroundUsingDedicatedQueue = g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
+    const bool focusLossBackgroundRuntimeOwnedPresentation =
+        g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() ||
+        DXGIShared::DoesFGRuntimeOwnSwapchain();
+    const bool focusLossBackgroundSteamDeferredSubmit =
+        g_deferOverlaySubmitToSteamECL && !focusLossBackgroundUsingDedicatedQueue;
+    const bool focusLossBackgroundFrameGenerationActive =
+        g_FGCompat.IsFGActive() || DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool focusLossBackgroundBackbufferHold =
+        ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackgroundBackbufferWork(
+            s_WrappedPresentFocusLossContext.valid, !frameDesc.Windowed, processHasForeground, iconicWindow,
+            zeroSizedSwapchain, focusLossBackgroundFrameGenerationActive, focusLossBackgroundRuntimeOwnedPresentation,
+            focusLossBackgroundUsingDedicatedQueue, focusLossBackgroundSteamDeferredSubmit,
+            focusLossBackgroundDeviceLost, gameQueue != nullptr);
+    if (focusLossBackgroundBackbufferHold) {
+        g_FocusLossForegroundReacquirePresentProofRemaining.store(
+            kFocusLossForegroundReacquirePresentProofFrames, std::memory_order_release);
+        g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
+                                                       std::memory_order_release);
+    }
+    const int focusLossForegroundReacquireProofRemaining =
+        g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire);
+    const bool focusLossForegroundReacquireHold =
+        ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossForegroundReacquireBackbufferWork(
+            s_WrappedPresentFocusLossContext.valid, !frameDesc.Windowed, processHasForeground, iconicWindow,
+            zeroSizedSwapchain, focusLossBackgroundFrameGenerationActive, focusLossBackgroundRuntimeOwnedPresentation,
+            focusLossBackgroundUsingDedicatedQueue, focusLossBackgroundSteamDeferredSubmit,
+            focusLossBackgroundDeviceLost, gameQueue != nullptr, focusLossForegroundReacquireProofRemaining);
+    const bool holdFocusLossBackbufferWork =
+        pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold || focusLossForegroundReacquireHold;
+    {
+        static bool s_focusLossBackbufferHoldActive = false;
+        static std::atomic<int> s_focusLossBackgroundHoldLogCount{0};
+        static std::atomic<int> s_focusLossForegroundReacquireHoldLogCount{0};
+        if (focusLossBackgroundBackbufferHold) {
+            const int logCount = s_focusLossBackgroundHoldLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (!s_focusLossBackbufferHoldActive || logCount < 40 || (logCount % 300) == 0) {
+                s_focusLossBackbufferHoldActive = true;
+                HookLogImportant(
+                    "DX12: Holding focus-loss overlay/capture backbuffer work while process is backgrounded "
+                    "(present=%s#%d queue=%p fg=%p/%lu game=%p/%lu sync=%u flags=0x%08X "
+                    "fgActive=%d runtimeOwned=%d dedicated=%d steamDeferred=%d deviceLost=%d log=%d); "
+                    "backend/resources preserved, no swapchain backbuffer touch",
+                    s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
+                                                                 : "Present",
+                    s_WrappedPresentFocusLossContext.callCount, gameQueue, foregroundWindow, foregroundPid,
+                    frameDesc.OutputWindow, currentProcessId, s_WrappedPresentFocusLossContext.syncInterval,
+                    s_WrappedPresentFocusLossContext.presentFlags,
+                    focusLossBackgroundFrameGenerationActive ? 1 : 0,
+                    focusLossBackgroundRuntimeOwnedPresentation ? 1 : 0,
+                    focusLossBackgroundUsingDedicatedQueue ? 1 : 0,
+                    focusLossBackgroundSteamDeferredSubmit ? 1 : 0,
+                    focusLossBackgroundDeviceLost ? 1 : 0, logCount + 1);
+            }
+        } else if (focusLossForegroundReacquireHold) {
+            const int logCount =
+                s_focusLossForegroundReacquireHoldLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (!s_focusLossBackbufferHoldActive || logCount < 40 || (logCount % 120) == 0 ||
+                focusLossForegroundReacquireProofRemaining <= 3) {
+                s_focusLossBackbufferHoldActive = true;
+                HookLogImportant(
+                    "DX12: Holding focus-loss overlay/capture backbuffer work during foreground reacquire proof "
+                    "(present=%s#%d queue=%p fg=%p/%lu game=%p/%lu remainingPresents=%d sync=%u flags=0x%08X "
+                    "fgActive=%d runtimeOwned=%d dedicated=%d steamDeferred=%d deviceLost=%d log=%d); "
+                    "backend/resources preserved, waiting for stable foreground Presents before swapchain "
+                    "backbuffer touch",
+                    s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
+                                                                 : "Present",
+                    s_WrappedPresentFocusLossContext.callCount, gameQueue, foregroundWindow, foregroundPid,
+                    frameDesc.OutputWindow, currentProcessId, focusLossForegroundReacquireProofRemaining,
+                    s_WrappedPresentFocusLossContext.syncInterval, s_WrappedPresentFocusLossContext.presentFlags,
+                    focusLossBackgroundFrameGenerationActive ? 1 : 0,
+                    focusLossBackgroundRuntimeOwnedPresentation ? 1 : 0,
+                    focusLossBackgroundUsingDedicatedQueue ? 1 : 0,
+                    focusLossBackgroundSteamDeferredSubmit ? 1 : 0,
+                    focusLossBackgroundDeviceLost ? 1 : 0, logCount + 1);
+            }
+        } else if (s_focusLossBackbufferHoldActive) {
+            s_focusLossBackbufferHoldActive = false;
+            HookLogImportant(
+                "DX12: Resuming focus-loss overlay/capture backbuffer work "
+                "(present=%s#%d queue=%p fg=%p/%lu game=%p/%lu foreground=%d recentWindow=%d)",
+                s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
+                                                             : "Present",
+                s_WrappedPresentFocusLossContext.callCount, gameQueue, foregroundWindow, foregroundPid,
+                frameDesc.OutputWindow, currentProcessId, processHasForeground ? 1 : 0,
+                g_FocusLossRecentTransitionPresentWindow.load(std::memory_order_acquire));
+        }
+    }
     SharedMemoryLayout* captureShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     OverlayConfig captureOverlayCfg = GetActiveDX12OverlayConfig(captureShm);
     const bool captureWantsOverlay = captureOverlayCfg.showOverlay && captureOverlayCfg.captureIncludeOverlay;
@@ -14561,6 +14772,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             }
         }
         bool skipOverlayDraw = false;
+        if (holdFocusLossBackbufferWork) {
+            skipOverlayDraw = true;
+        }
         if (g_FGTransitionCooldown > 0) {
             const bool bypassProtectedOfficialFFXStartupDrawCooldown =
                 ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(
@@ -14691,6 +14905,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             DXGIShared::DoesFGRuntimeOwnSwapchain();
         const bool focusLossSteamDeferredSubmit = g_deferOverlaySubmitToSteamECL && !focusLossUsingDedicatedQueue;
         const bool focusLossOffscreenComposite =
+            !skipOverlayDraw &&
             ce::dx12_overlay_policy::ShouldUseD3D12FocusLossOffscreenOverlayComposite(
                 s_WrappedPresentFocusLossContext.valid, !frameDesc.Windowed, processHasForeground, iconicWindow,
                 zeroSizedSwapchain, currentFGActive || slFGActive, focusLossRuntimeOwnedPresentation,
@@ -15021,10 +15236,6 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
         }
 
-        if (!skipOverlayDraw && holdFocusLossBackbufferWork) {
-            skipOverlayDraw = true;
-        }
-
         if (!skipOverlayDraw) {
             const char* skipSeparateOverlayGpuReason = nullptr;
             if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)) {
@@ -15139,6 +15350,16 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         g_RenderWatchdog.SetForceMonitor(true);
                         HookLogImportant("DX12: GPU device removed (0x%08X) — cleaning up overlay",
                                          (unsigned)devCheck->GetDeviceRemovedReason());
+                        const bool recentFocusTransition =
+                            g_FocusLossRecentTransitionPresentWindow.load(std::memory_order_acquire) > 0 ||
+                            g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire) > 0;
+                        if (s_WrappedPresentFocusLossContext.valid &&
+                            (!processHasForeground || recentFocusTransition)) {
+                            RequestFocusLossDeviceRemovalDumpOnce(
+                                "D3D12 focus-loss device removal before overlay render",
+                                devCheck->GetDeviceRemovedReason(), s_WrappedPresentFocusLossContext,
+                                foregroundWindow, foregroundPid, frameDesc.OutputWindow, currentProcessId, gameQueue);
+                        }
                         g_State.overlayInit = false;
                         CleanupRTVs();
                     }
