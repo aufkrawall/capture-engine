@@ -6214,6 +6214,10 @@ void DX12Hook::Init() {
     // site. Without it a device-hung yields no breadcrumbs (GetAutoBreadcrumbsOutput
     // fails because auto-breadcrumbs were never enabled for the game's device).
     ce::dx12_dred::ArmBeforeDeviceCreation();
+    // Optional D3D12 debug layer (env CE_DX12_DEBUG_LAYER) — must be enabled before
+    // the game's device is created. Off by default; used to capture the exact
+    // resource-state/hazard behind the Alt+Tab overlay-draw hang.
+    ce::dx12_dred::ArmDebugLayerBeforeDeviceCreation();
 
     // Note: Crash handler is installed in DllMain (hook/main.cpp)
 
@@ -12125,6 +12129,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             "DX12 focus-loss sync policy=v11r draw-every-frame (overlay never hidden on focus; residency attempt "
             "reverted after INVALID_CALL; Alt+Tab mode-switch freeze UNRESOLVED — pending RTSS-technique capture)");
     }
+
+    // Diagnostic: when the D3D12 debug layer is enabled (CE_DX12_DEBUG_LAYER), flush
+    // its validation messages each frame so the overlay submit's messages (including
+    // any hazard right before an Alt+Tab hang) reach the hook log. No-op when off.
+    ce::dx12_dred::DrainDebugLayerMessages(g_Device.load(std::memory_order_acquire), "ProcessFrame");
 
     // Performance metrics for this frame
     FrameMetrics perfMetrics;

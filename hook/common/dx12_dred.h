@@ -47,4 +47,21 @@ CE_DRED_API void DumpOnDeviceRemoved(ID3D12Device* device, const char* reason);
 // later device-removal on the new device can dump again.
 CE_DRED_API void ResetDumpEpoch();
 
+// D3D12 debug-layer diagnostics (env CE_DX12_DEBUG_LAYER: "1" = debug layer,
+// "2" = debug layer + GPU-based validation; unset/"0" = off, the default).
+// The debug layer changes GPU timing and is ONLY for diagnosing the x86 DX12
+// Alt+Tab overlay-draw hang — it surfaces the exact resource-state/hazard that
+// CE's overlay submission hits during the iflip<->composited mode switch (which
+// DRED can only report as a "pure hang"). Must be armed BEFORE device creation.
+CE_DRED_API int DebugLayerLevel();
+
+// Enable the D3D12 debug layer (and GPU-based validation at level 2) before the
+// game's device is created. Call from the earliest D3D12 hook init. No-op if off.
+CE_DRED_API void ArmDebugLayerBeforeDeviceCreation();
+
+// Drain the device's ID3D12InfoQueue and log every stored debug-layer message via
+// HookLogImportant, then clear it. No-op if the debug layer is off or the device
+// has no info queue. `context` tags the log lines.
+CE_DRED_API void DrainDebugLayerMessages(ID3D12Device* device, const char* context);
+
 }  // namespace ce::dx12_dred

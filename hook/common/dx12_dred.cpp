@@ -3,10 +3,12 @@
 // clang-format off
 #include <windows.h>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 // clang-format on
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "hook_common.h"
 
@@ -187,6 +189,10 @@ CE_DRED_KEEP void DumpOnDeviceRemoved(ID3D12Device* device, const char* reason) 
         return;  // already dumped for this device-removed epoch
     }
 
+    // If the debug layer is on, flush any validation messages accumulated up to the
+    // removal first — they often name the exact misuse behind the hang.
+    DrainDebugLayerMessages(device, "device-removed");
+
     ID3D12DeviceRemovedExtendedData1* dred = nullptr;
     HRESULT hr = device->QueryInterface(__uuidof(ID3D12DeviceRemovedExtendedData1), (void**)&dred);
     if (FAILED(hr) || !dred) {
@@ -259,6 +265,98 @@ CE_DRED_KEEP void DumpOnDeviceRemoved(ID3D12Device* device, const char* reason) 
 
     HookLogImportant("DX12 DRED: ===== end device-removed extended data =====");
     dred->Release();
+}
+
+CE_DRED_KEEP int DebugLayerLevel() {
+    static const int s_level = []() {
+        char buf[16] = {};
+        DWORD n = GetEnvironmentVariableA("CE_DX12_DEBUG_LAYER", buf, sizeof(buf));
+        if (n == 0 || n >= sizeof(buf)) {
+            return 0;
+        }
+        if (buf[0] == '2') {
+            return 2;
+        }
+        if (buf[0] == '1' || _stricmp(buf, "on") == 0 || _stricmp(buf, "true") == 0) {
+            return 1;
+        }
+        return 0;
+    }();
+    return s_level;
+}
+
+CE_DRED_KEEP void ArmDebugLayerBeforeDeviceCreation() {
+    const int level = DebugLayerLevel();
+    if (level < 1) {
+        return;
+    }
+    HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
+    if (!d3d12) {
+        d3d12 = LoadLibraryW(L"d3d12.dll");
+    }
+    if (!d3d12) {
+        return;
+    }
+    using PFN_D3D12GetDebugInterface = HRESULT(WINAPI*)(REFIID, void**);
+    auto pGetDebugInterface =
+        reinterpret_cast<PFN_D3D12GetDebugInterface>(GetProcAddress(d3d12, "D3D12GetDebugInterface"));
+    if (!pGetDebugInterface) {
+        return;
+    }
+    ID3D12Debug* debug = nullptr;
+    HRESULT hr = pGetDebugInterface(__uuidof(ID3D12Debug), (void**)&debug);
+    if (FAILED(hr) || !debug) {
+        static std::atomic<bool> s_failLog{false};
+        if (!s_failLog.exchange(true)) {
+            HookLogImportant("DX12 DBGLAYER: ID3D12Debug unavailable hr=0x%08X (Graphics Tools not installed?)",
+                             (unsigned)hr);
+        }
+        return;
+    }
+    debug->EnableDebugLayer();
+    bool gpuValidation = false;
+    if (level >= 2) {
+        ID3D12Debug1* debug1 = nullptr;
+        if (SUCCEEDED(debug->QueryInterface(__uuidof(ID3D12Debug1), (void**)&debug1)) && debug1) {
+            debug1->SetEnableGPUBasedValidation(TRUE);
+            debug1->Release();
+            gpuValidation = true;
+        }
+    }
+    debug->Release();
+    static std::atomic<bool> s_armedLog{false};
+    if (!s_armedLog.exchange(true)) {
+        HookLogImportant("DX12 DBGLAYER: enabled D3D12 debug layer (level=%d gpuValidation=%d) before device creation",
+                         level, gpuValidation ? 1 : 0);
+    }
+}
+
+CE_DRED_KEEP void DrainDebugLayerMessages(ID3D12Device* device, const char* context) {
+    if (DebugLayerLevel() < 1 || !device) {
+        return;
+    }
+    ID3D12InfoQueue* infoQueue = nullptr;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&infoQueue))) || !infoQueue) {
+        return;
+    }
+    const UINT64 count = infoQueue->GetNumStoredMessages();
+    for (UINT64 i = 0; i < count; ++i) {
+        SIZE_T len = 0;
+        if (FAILED(infoQueue->GetMessage(i, nullptr, &len)) || len == 0) {
+            continue;
+        }
+        std::vector<char> storage(len);
+        D3D12_MESSAGE* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
+        if (SUCCEEDED(infoQueue->GetMessage(i, message, &len)) && message->pDescription) {
+            HookLogImportant("DX12 DBGLAYER [%s] sev=%d cat=%d id=%d: %s", context ? context : "?",
+                             (int)message->Severity, (int)message->Category, (int)message->ID,
+                             message->pDescription);
+        }
+    }
+    if (count > 0) {
+        infoQueue->ClearStoredMessages();
+    }
+    infoQueue->Release();
 }
 
 }  // namespace ce::dx12_dred
