@@ -12122,8 +12122,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         s_firstFrame = false;
         HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
         HookLogImportant(
-            "DX12 focus-loss sync policy=v10 focus-transition-hold (overlay visible in steady focused AND "
-            "unfocused-visible states; backbuffer work held only during the iflip<->composited mode switch)");
+            "DX12 focus-loss sync policy=v11r draw-every-frame (overlay never hidden on focus; residency attempt "
+            "reverted after INVALID_CALL; Alt+Tab mode-switch freeze UNRESOLVED — pending RTSS-technique capture)");
     }
 
     // Performance metrics for this frame
@@ -13851,29 +13851,41 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
                                                        std::memory_order_release);
     }
-    // v10: hold ALL backbuffer overlay/capture work during the brief focus-change
-    // transition window (the iflip<->composited mode switch). DRED proved any
-    // backbuffer touch — direct draw OR offscreen copy — pure-hangs there. Steady
-    // states (focused AND unfocused-but-visible) render directly. The counter is
-    // armed on a foreground-change edge in DX12_NoteWrappedD3D12PresentResult.
+    // v11r: do NOT hold the overlay on focus change — it renders EVERY frame so it
+    // never disappears (the user's firm requirement). v10's transition hold both hid
+    // the overlay (rejected) and still froze (the hold expired mid-thrash under rapid
+    // Alt+Tab). A v11 residency-priority attempt was REVERTED because
+    // ID3D12Device1::SetResidencyPriority triggered DXGI_ERROR_INVALID_CALL device
+    // removal on init (black screen, logs/20260603_155107). The Alt+Tab mode-switch
+    // freeze (CE's overlay DRAW pure-hangs touching the backbuffer mid-switch, while
+    // the bare app's input-less ClearRTV survives) is STILL UNRESOLVED and needs
+    // ground truth on RTSS's technique (D3D12 debug layer / PIX). focusTransitionActive
+    // is telemetry only — it marks the mode-switch window and widens the DRED dump
+    // window; it does NOT gate the overlay.
     const int focusTransitionHoldRemaining = g_FocusTransitionHoldFrames.load(std::memory_order_acquire);
-    const bool focusTransitionHold = ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(
-        frameDesc.Windowed != 0, focusTransitionHoldRemaining, focusLossBackgroundFrameGenerationActive,
-        focusLossBackgroundRuntimeOwnedPresentation, focusLossBackgroundUsingDedicatedQueue,
-        focusLossBackgroundSteamDeferredSubmit, focusLossBackgroundDeviceLost, gameQueue != nullptr);
+    const bool focusTransitionActive =
+        ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(
+            frameDesc.Windowed != 0, focusTransitionHoldRemaining, focusLossBackgroundFrameGenerationActive,
+            focusLossBackgroundRuntimeOwnedPresentation, focusLossBackgroundUsingDedicatedQueue,
+            focusLossBackgroundSteamDeferredSubmit, focusLossBackgroundDeviceLost, gameQueue != nullptr);
+    if (focusTransitionActive) {
+        // Widen the device-removal dump window so any residual hang at the mode
+        // switch is captured with DRED breadcrumbs.
+        g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
+                                                       std::memory_order_release);
+    }
     const bool holdFocusLossBackbufferWork =
-        pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold || focusTransitionHold;
+        pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold;
     {
         static bool s_focusTransitionHoldActive = false;
         static std::atomic<int> s_focusTransitionHoldLogCount{0};
-        if (focusTransitionHold) {
+        if (focusTransitionActive) {
             const int logCount = s_focusTransitionHoldLogCount.fetch_add(1, std::memory_order_relaxed);
             if (!s_focusTransitionHoldActive || logCount < 40 || (logCount % 120) == 0) {
                 s_focusTransitionHoldActive = true;
                 HookLogImportant(
-                    "DX12: Holding overlay/capture backbuffer work during focus-change mode switch "
-                    "(remaining=%d present=%s#%d queue=%p fg=%p/%lu game=%p/%lu foreground=%d); backend/resources "
-                    "preserved, no swapchain backbuffer touch until the iflip<->composited switch settles",
+                    "DX12: Focus-change mode switch active — overlay STILL RENDERING (not held; transition freeze "
+                    "unresolved) (remaining=%d present=%s#%d queue=%p fg=%p/%lu game=%p/%lu foreground=%d)",
                     focusTransitionHoldRemaining,
                     s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
                                                                  : "Present",
@@ -13883,8 +13895,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         } else if (s_focusTransitionHoldActive) {
             s_focusTransitionHoldActive = false;
             HookLogImportant(
-                "DX12: Resuming overlay/capture backbuffer work — focus-change mode switch settled "
-                "(present=%s#%d queue=%p foreground=%d)",
+                "DX12: Focus-change mode switch settled (present=%s#%d queue=%p foreground=%d)",
                 s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
                                                              : "Present",
                 s_WrappedPresentFocusLossContext.callCount, gameQueue, processHasForeground ? 1 : 0);
