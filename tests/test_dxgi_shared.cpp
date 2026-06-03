@@ -287,34 +287,29 @@ TEST(DXGISharedTest, D3D12UnfocusedButVisibleSwapchainKeepsOverlayVisible) {
     EXPECT_FALSE(hold);
 }
 
-TEST(DXGISharedTest, D3D12UnfocusedOverlayUsesOffscreenCompositeNotDirectDraw) {
-    auto useOffscreen = [](bool overlayWanted = true, bool windowed = true, bool foreground = false,
-                           int reacquireProof = 0, bool fgActive = false, bool runtimeOwned = false,
-                           bool dedicated = false, bool steamDeferred = false, bool hasQueue = true,
-                           bool hasFence = true, bool hasEvent = true) {
-        return ce::dx12_overlay_policy::ShouldUseD3D12UnfocusedOffscreenOverlayComposite(
-            overlayWanted, windowed, foreground, reacquireProof, fgActive, runtimeOwned, dedicated, steamDeferred,
-            hasQueue, hasFence, hasEvent);
+TEST(DXGISharedTest, D3D12FocusTransitionHoldGatesOnlyTheModeSwitchWindow) {
+    auto hold = [](bool windowed = true, int transitionRemaining = 30, bool fgActive = false,
+                   bool runtimeOwned = false, bool dedicated = false, bool steamDeferred = false,
+                   bool deviceLost = false, bool hasQueue = true) {
+        return ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(
+            windowed, transitionRemaining, fgActive, runtimeOwned, dedicated, steamDeferred, deviceLost, hasQueue);
     };
 
-    // Unfocused + windowed + drawable -> offscreen composite (keeps overlay visible
-    // without the direct-backbuffer-draw GPU hang DRED found).
-    EXPECT_TRUE(useOffscreen());
-    // Focused steady state -> direct draw (no offscreen), fast path.
-    EXPECT_FALSE(useOffscreen(true, true, true, 0));
-    // Focused BUT within post-refocus transition window -> still offscreen until stable.
-    EXPECT_TRUE(useOffscreen(true, true, true, 5));
+    // During the transition window (counter > 0) on a windowed swapchain -> hold all
+    // backbuffer work (any draw/copy pure-hangs the GPU mid mode-switch; DRED-proven).
+    EXPECT_TRUE(hold());
+    // Outside the transition window (counter == 0) -> render directly (steady focused
+    // OR steady unfocused-but-visible). This is the no-hide guarantee.
+    EXPECT_FALSE(hold(true, 0));
 
-    // Negating conditions never use offscreen.
-    EXPECT_FALSE(useOffscreen(false));                                          // overlay not wanted/held
-    EXPECT_FALSE(useOffscreen(true, false));                                    // exclusive fullscreen
-    EXPECT_FALSE(useOffscreen(true, true, false, 0, true));                     // FG active
-    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, true));             // runtime-owned
-    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, true));      // dedicated queue
-    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, false, true));  // steam deferred
-    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, false, false, false));         // no queue
-    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, false, false, true, false));   // no fence
-    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, false, false, true, true, false));  // no event
+    // Negating conditions never hold (these routes manage their own submission).
+    EXPECT_FALSE(hold(false, 30));                               // exclusive fullscreen
+    EXPECT_FALSE(hold(true, 30, true));                          // FG active
+    EXPECT_FALSE(hold(true, 30, false, true));                  // runtime-owned
+    EXPECT_FALSE(hold(true, 30, false, false, true));          // dedicated queue
+    EXPECT_FALSE(hold(true, 30, false, false, false, true));   // steam deferred
+    EXPECT_FALSE(hold(true, 30, false, false, false, false, true));   // device lost
+    EXPECT_FALSE(hold(true, 30, false, false, false, false, false, false));  // no queue
 }
 
 TEST(DXGISharedTest, D3D12NonPresentableHoldPolicyIsPresentPathAgnostic) {

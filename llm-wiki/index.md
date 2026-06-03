@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-03 (updated: build 0.1.3690 - x86 DX12 v8 visibility-gated overlay hold + DRED GPU-fault diagnostics)
+Last cross-checked: 2026-06-03 (updated: build 0.1.3695+ - x86 DX12 v10 focus-transition-hold; DRED proved any backbuffer touch hangs mid mode-switch)
 
 Primary sources:
 - `AGENTS.md`

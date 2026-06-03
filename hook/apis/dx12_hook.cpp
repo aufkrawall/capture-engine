@@ -3103,6 +3103,21 @@ static std::atomic<int> g_FocusLossRecentTransitionPresentWindow{0};
 #endif
 static std::atomic<bool> g_SwapchainPresentOccluded{false};
 
+// Focus-transition backbuffer-work hold (v10). DRED proved that ANY CE backbuffer
+// touch — direct overlay draw (v8) OR the offscreen path's bb<->offscreen copies
+// (v9) — pure-hangs the GPU (pageFaultVA=0) while the swapchain is mid
+// iflip<->composited mode switch around a focus change (the backbuffer is
+// transiently owned by DWM/the display). The hangs were observed at the refocus
+// edge (composited->iflip). So CE holds ALL backbuffer overlay/capture work for a
+// short window after EACH foreground-change edge (both directions), then resumes.
+// Steady states — focused AND unfocused-but-visible — render directly, exactly
+// like RTSS, so the overlay is only briefly absent during the actual mode switch
+// (when the screen is transitioning anyway), never during steady visible use.
+// Counter is set on the edge by DX12_NoteWrappedD3D12PresentResult and decremented
+// per wrapped Present.
+static constexpr int kFocusTransitionHoldFrames = 60;
+static std::atomic<int> g_FocusTransitionHoldFrames{0};
+
 struct DX12WrappedPresentFocusLossContext {
     bool valid = false;
     const char* presentName = nullptr;
@@ -11918,6 +11933,31 @@ extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(
             isFullscreen ? 1 : 0, gameWindow);
     }
 
+    // v10 focus-transition hold: detect a foreground-change EDGE (gained or lost)
+    // and arm a short backbuffer-work hold so CE does not touch the swapchain
+    // backbuffer while the iflip<->composited mode switch is in flight (DRED proved
+    // both a direct draw and an offscreen copy pure-hang there). The hold covers
+    // BOTH directions; steady states render directly. Decrement once per wrapped
+    // Present so the hold clears after the mode switch settles.
+    {
+        static std::atomic<int> s_lastForegroundState{-1};
+        const int fgState = foregroundMatchesGame ? 1 : 0;
+        const int prevState = s_lastForegroundState.exchange(fgState, std::memory_order_acq_rel);
+        if (prevState != -1 && prevState != fgState) {
+            g_FocusTransitionHoldFrames.store(kFocusTransitionHoldFrames, std::memory_order_release);
+            HookLogImportant(
+                "DX12: Focus-change edge (%s) — holding overlay/capture backbuffer work for up to %d Presents to "
+                "clear the iflip<->composited mode switch (present=%s#%d game=%p)",
+                fgState ? "regained foreground" : "lost foreground", kFocusTransitionHoldFrames,
+                presentName ? presentName : "Present", callCount, gameWindow);
+        } else {
+            int remaining = g_FocusTransitionHoldFrames.load(std::memory_order_acquire);
+            if (remaining > 0) {
+                g_FocusTransitionHoldFrames.store(remaining - 1, std::memory_order_release);
+            }
+        }
+    }
+
     DX12WrappedPresentFocusLossContext presentContext;
     presentContext.valid = true;
     presentContext.presentName = presentName;
@@ -12082,8 +12122,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         s_firstFrame = false;
         HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
         HookLogImportant(
-            "DX12 focus-loss sync policy=v9 unfocused-offscreen-composite (overlay stays visible while unfocused; "
-            "direct draw only while focused)");
+            "DX12 focus-loss sync policy=v10 focus-transition-hold (overlay visible in steady focused AND "
+            "unfocused-visible states; backbuffer work held only during the iflip<->composited mode switch)");
     }
 
     // Performance metrics for this frame
@@ -13811,8 +13851,45 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
                                                        std::memory_order_release);
     }
+    // v10: hold ALL backbuffer overlay/capture work during the brief focus-change
+    // transition window (the iflip<->composited mode switch). DRED proved any
+    // backbuffer touch — direct draw OR offscreen copy — pure-hangs there. Steady
+    // states (focused AND unfocused-but-visible) render directly. The counter is
+    // armed on a foreground-change edge in DX12_NoteWrappedD3D12PresentResult.
+    const int focusTransitionHoldRemaining = g_FocusTransitionHoldFrames.load(std::memory_order_acquire);
+    const bool focusTransitionHold = ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(
+        frameDesc.Windowed != 0, focusTransitionHoldRemaining, focusLossBackgroundFrameGenerationActive,
+        focusLossBackgroundRuntimeOwnedPresentation, focusLossBackgroundUsingDedicatedQueue,
+        focusLossBackgroundSteamDeferredSubmit, focusLossBackgroundDeviceLost, gameQueue != nullptr);
     const bool holdFocusLossBackbufferWork =
-        pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold;
+        pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold || focusTransitionHold;
+    {
+        static bool s_focusTransitionHoldActive = false;
+        static std::atomic<int> s_focusTransitionHoldLogCount{0};
+        if (focusTransitionHold) {
+            const int logCount = s_focusTransitionHoldLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (!s_focusTransitionHoldActive || logCount < 40 || (logCount % 120) == 0) {
+                s_focusTransitionHoldActive = true;
+                HookLogImportant(
+                    "DX12: Holding overlay/capture backbuffer work during focus-change mode switch "
+                    "(remaining=%d present=%s#%d queue=%p fg=%p/%lu game=%p/%lu foreground=%d); backend/resources "
+                    "preserved, no swapchain backbuffer touch until the iflip<->composited switch settles",
+                    focusTransitionHoldRemaining,
+                    s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
+                                                                 : "Present",
+                    s_WrappedPresentFocusLossContext.callCount, gameQueue, foregroundWindow, foregroundPid,
+                    frameDesc.OutputWindow, currentProcessId, processHasForeground ? 1 : 0);
+            }
+        } else if (s_focusTransitionHoldActive) {
+            s_focusTransitionHoldActive = false;
+            HookLogImportant(
+                "DX12: Resuming overlay/capture backbuffer work — focus-change mode switch settled "
+                "(present=%s#%d queue=%p foreground=%d)",
+                s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
+                                                             : "Present",
+                s_WrappedPresentFocusLossContext.callCount, gameQueue, processHasForeground ? 1 : 0);
+        }
+    }
     {
         static bool s_focusLossBackbufferHoldActive = false;
         static std::atomic<int> s_focusLossBackgroundHoldLogCount{0};
@@ -14950,46 +15027,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // SL captures our overlay as part of the scene, FG interpolates it naturally.
         // Overlay appears on all output frames (real + interpolated).
         const bool slFGActive = currentFGActive && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-        // v9: keep the overlay visible while unfocused WITHOUT hanging the GPU.
-        //
-        // DRED proved (logs/20260603_020053) that the device-hung is a PURE GPU
-        // hang (pageFaultVA=0) inside CE's OWN overlay command list — it completed
-        // the PRESENT->RT barrier and one DRAWINDEXEDINSTANCED, then hung on the
-        // next draw. The hang only happens when CE draws DIRECTLY to the live
-        // swapchain backbuffer while the window is unfocused / mid iflip<->composited
-        // mode switch (the backbuffer is transiently owned by DWM/the display).
-        // v7 avoided it by never touching the backbuffer while backgrounded, but
-        // that hid the overlay; v8 drew directly while unfocused-visible and hung.
-        //
-        // Fix: while unfocused (or within the post-refocus transition window) render
-        // the overlay to CE's OFFSCREEN RT (always app-owned, never mid-transition)
-        // and composite it onto the backbuffer with implicit-promotion copies (no
-        // explicit PRESENT->RT barrier, no direct draw on the live backbuffer). The
-        // overlay stays visible the whole time. Steady FOCUSED frames keep the fast
-        // direct path, so there is no steady-state copy cost. FG / runtime-owned /
-        // dedicated-queue / Steam-deferred paths keep their own routing.
-        const int focusReacquireProofRemaining =
-            g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire);
-        const bool focusOffscreenRuntimeOwned = g_FGRuntimeOwnsSwapchain ||
-                                                HookHasRuntimeOwnedNativeFGPresentPath() ||
-                                                DXGIShared::DoesFGRuntimeOwnSwapchain();
-        const bool focusOffscreenDedicatedQueue = g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
-        const bool focusLossOffscreenComposite =
-            ce::dx12_overlay_policy::ShouldUseD3D12UnfocusedOffscreenOverlayComposite(
-                !skipOverlayDraw, frameDesc.Windowed != 0, processHasForeground, focusReacquireProofRemaining,
-                currentFGActive || slFGActive, focusOffscreenRuntimeOwned, focusOffscreenDedicatedQueue,
-                g_deferOverlaySubmitToSteamECL, gameQueue != nullptr, g_State.fence != nullptr,
-                g_State.fenceEvent != nullptr);
-        if (focusLossOffscreenComposite) {
-            static std::atomic<int> s_unfocusedOffscreenLogCount{0};
-            const int logCount = s_unfocusedOffscreenLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 20 || (logCount % 300) == 0) {
-                HookLogImportant(
-                    "DX12: Unfocused overlay via offscreen composite (foreground=%d reacquireProof=%d queue=%p "
-                    "bb-direct-draw avoided to prevent mode-switch GPU hang) #%d",
-                    processHasForeground ? 1 : 0, focusReacquireProofRemaining, gameQueue, logCount + 1);
-            }
-        }
+        // v10: the focus-loss offscreen composite (v9) is retired. DRED proved
+        // (logs/20260603_150241) that even the offscreen path's `bb->offscreen`
+        // CopyTextureRegion pure-hangs (pageFaultVA=0) during the mode switch — i.e.
+        // ANY backbuffer touch (draw OR copy) hangs while the iflip<->composited
+        // transition is in flight. So during the transition CE must not touch the
+        // backbuffer at all; that hold lives in the focus-transition hold computed
+        // up in the hold block (see g_FocusTransitionHoldFrames). Steady states
+        // (focused AND unfocused-but-visible) keep the fast direct draw, which is
+        // what RTSS does and does not hang. The post-FSR offscreen path
+        // (g_NeedOffscreenOverlayAfterPostFSRNonFG) is unrelated and stays intact.
+        const bool focusLossOffscreenComposite = false;
         {
             if (slFGActive) {
                 // SL FG active: enable POST-SL overlay rendering.
