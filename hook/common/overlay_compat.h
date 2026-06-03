@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cctype>
 #include <cstddef>
 #include <cstring>
@@ -380,6 +381,29 @@ inline bool IsThirdPartyOverlayLoaded() {
     return false;
 }
 
+// Generation counter for the third-party-overlay module cache. Bumped whenever a
+// DLL is loaded into the process (via NotifyHookModuleLoaded ->
+// InvalidateThirdPartyOverlayModuleCache). The set of loaded modules only changes
+// on a DLL load, so caching the lookup and re-scanning only on a load event lets
+// GetLoadedThirdPartyOverlayModuleName() run on every Present essentially for free.
+inline std::atomic<uint32_t>& ThirdPartyOverlayModuleCacheGeneration() {
+    static std::atomic<uint32_t> generation{0};
+    return generation;
+}
+
+inline void InvalidateThirdPartyOverlayModuleCache() {
+    ThirdPartyOverlayModuleCacheGeneration().fetch_add(1, std::memory_order_release);
+}
+
+// Returns the name of the first loaded known third-party overlay module, or null.
+//
+// PERF/CORRECTNESS: this is called from DetourPresent on EVERY Present. The naive
+// implementation did 16 GetModuleHandleA() loader-lock walks per Present, which the
+// x86 (WoW64) freeze dumps showed the present thread stuck in — and which contends
+// with DWM's d3d11.dll load during the iflip<->composited Alt+Tab mode switch. The
+// loaded-module set only changes on a DLL load, so we cache the result and re-scan
+// only when the module-load generation changes. Steady-state Presents now cost one
+// atomic load + compare instead of 16 loader-lock walks.
 inline const char* GetLoadedThirdPartyOverlayModuleName() {
     static constexpr const char* kOverlayModules[] = {
         "gameoverlayrenderer64.dll",
@@ -400,13 +424,26 @@ inline const char* GetLoadedThirdPartyOverlayModuleName() {
         "RTSSHooks",
     };
 
-    for (const char* moduleName : kOverlayModules) {
-        if (GetModuleHandleA(moduleName) != nullptr) {
-            return moduleName;
-        }
+    static std::atomic<uint32_t> s_cachedGeneration{0xFFFFFFFFu};
+    static std::atomic<const char*> s_cachedResult{nullptr};
+
+    const uint32_t generation = ThirdPartyOverlayModuleCacheGeneration().load(std::memory_order_acquire);
+    if (s_cachedGeneration.load(std::memory_order_acquire) == generation) {
+        return s_cachedResult.load(std::memory_order_acquire);
     }
 
-    return nullptr;
+    const char* found = nullptr;
+    for (const char* moduleName : kOverlayModules) {
+        if (GetModuleHandleA(moduleName) != nullptr) {
+            found = moduleName;
+            break;
+        }
+    }
+    // Benign if two threads race here: the module state is identical so they compute
+    // the same result; the cache is only an optimization.
+    s_cachedResult.store(found, std::memory_order_release);
+    s_cachedGeneration.store(generation, std::memory_order_release);
+    return found;
 }
 
 inline const char* GetStartupBlockingOverlayModuleName() {

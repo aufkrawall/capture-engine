@@ -1915,6 +1915,10 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   if (!module)
     return;
 
+  // A DLL just loaded — invalidate the cached third-party-overlay module lookup so
+  // the next Present re-scans once (instead of walking the loader every Present).
+  ce::overlay_compat::InvalidateThirdPartyOverlayModuleCache();
+
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);
 
