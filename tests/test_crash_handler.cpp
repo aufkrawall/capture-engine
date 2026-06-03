@@ -197,7 +197,8 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("initializing FFX hooks immediately for native FSR callback bridge"), std::string::npos);
     EXPECT_NE(contents.find("Installed LdrLoadDll hook for module-load observation"), std::string::npos);
     EXPECT_NE(contents.find("IAT import patching skipped to avoid startup fail-fast"), std::string::npos);
-    EXPECT_NE(contents.find("DX12 focus-loss sync policy=v8 visibility-gated-backbuffer-hold"), std::string::npos);
+    EXPECT_NE(contents.find("DX12 focus-loss sync policy=v9 unfocused-offscreen-composite"), std::string::npos);
+    EXPECT_NE(contents.find("Unfocused overlay via offscreen composite"), std::string::npos);
     EXPECT_NE(contents.find("Focus-loss same-frame overlay fence wait result"), std::string::npos);
     EXPECT_NE(contents.find("Requesting immediate freeze dump for focus-loss same-frame overlay fence wait"),
               std::string::npos);

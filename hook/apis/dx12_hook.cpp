@@ -6189,6 +6189,17 @@ void DX12Hook::Init() {
         return;
     }
 
+    // Arm DRED auto-breadcrumbs + page-fault as early as possible. DRED is a
+    // process-global setting that only affects devices created AFTER this call,
+    // so it must run before the game creates its D3D12 device. The dedicated
+    // Wrapped_D3D12CreateDevice arming point only exists when ENABLE_D3D12_WRAPPER
+    // is built (it requires d3d12_wrappers.dll, which is absent in normal builds),
+    // so for the common inject path this DX12Hook::Init() call — which runs on a
+    // worker thread well before the game's device is created — is the real arming
+    // site. Without it a device-hung yields no breadcrumbs (GetAutoBreadcrumbsOutput
+    // fails because auto-breadcrumbs were never enabled for the game's device).
+    ce::dx12_dred::ArmBeforeDeviceCreation();
+
     // Note: Crash handler is installed in DllMain (hook/main.cpp)
 
     // Start freeze detection watchdog with dynamic timeout based on game engine
@@ -12071,7 +12082,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         s_firstFrame = false;
         HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
         HookLogImportant(
-            "DX12 focus-loss sync policy=v8 visibility-gated-backbuffer-hold (overlay stays visible while unfocused)");
+            "DX12 focus-loss sync policy=v9 unfocused-offscreen-composite (overlay stays visible while unfocused; "
+            "direct draw only while focused)");
     }
 
     // Performance metrics for this frame
@@ -14938,14 +14950,46 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // SL captures our overlay as part of the scene, FG interpolates it naturally.
         // Overlay appears on all output frames (real + interpolated).
         const bool slFGActive = currentFGActive && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-        // v8: while the window is visible (focused or not) CE renders the overlay
-        // directly to the backbuffer, exactly like RTSS. The focus-loss offscreen
-        // composite route is retired: when the swapchain is not presentable CE now
-        // holds backbuffer work entirely (see the visibility-gated hold above), so
-        // there is no "draw while occluded" case that needs the barrier-free copy.
-        // The post-FSR offscreen path (g_NeedOffscreenOverlayAfterPostFSRNonFG) is
-        // unrelated and stays intact below.
-        const bool focusLossOffscreenComposite = false;
+        // v9: keep the overlay visible while unfocused WITHOUT hanging the GPU.
+        //
+        // DRED proved (logs/20260603_020053) that the device-hung is a PURE GPU
+        // hang (pageFaultVA=0) inside CE's OWN overlay command list — it completed
+        // the PRESENT->RT barrier and one DRAWINDEXEDINSTANCED, then hung on the
+        // next draw. The hang only happens when CE draws DIRECTLY to the live
+        // swapchain backbuffer while the window is unfocused / mid iflip<->composited
+        // mode switch (the backbuffer is transiently owned by DWM/the display).
+        // v7 avoided it by never touching the backbuffer while backgrounded, but
+        // that hid the overlay; v8 drew directly while unfocused-visible and hung.
+        //
+        // Fix: while unfocused (or within the post-refocus transition window) render
+        // the overlay to CE's OFFSCREEN RT (always app-owned, never mid-transition)
+        // and composite it onto the backbuffer with implicit-promotion copies (no
+        // explicit PRESENT->RT barrier, no direct draw on the live backbuffer). The
+        // overlay stays visible the whole time. Steady FOCUSED frames keep the fast
+        // direct path, so there is no steady-state copy cost. FG / runtime-owned /
+        // dedicated-queue / Steam-deferred paths keep their own routing.
+        const int focusReacquireProofRemaining =
+            g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire);
+        const bool focusOffscreenRuntimeOwned = g_FGRuntimeOwnsSwapchain ||
+                                                HookHasRuntimeOwnedNativeFGPresentPath() ||
+                                                DXGIShared::DoesFGRuntimeOwnSwapchain();
+        const bool focusOffscreenDedicatedQueue = g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
+        const bool focusLossOffscreenComposite =
+            ce::dx12_overlay_policy::ShouldUseD3D12UnfocusedOffscreenOverlayComposite(
+                !skipOverlayDraw, frameDesc.Windowed != 0, processHasForeground, focusReacquireProofRemaining,
+                currentFGActive || slFGActive, focusOffscreenRuntimeOwned, focusOffscreenDedicatedQueue,
+                g_deferOverlaySubmitToSteamECL, gameQueue != nullptr, g_State.fence != nullptr,
+                g_State.fenceEvent != nullptr);
+        if (focusLossOffscreenComposite) {
+            static std::atomic<int> s_unfocusedOffscreenLogCount{0};
+            const int logCount = s_unfocusedOffscreenLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: Unfocused overlay via offscreen composite (foreground=%d reacquireProof=%d queue=%p "
+                    "bb-direct-draw avoided to prevent mode-switch GPU hang) #%d",
+                    processHasForeground ? 1 : 0, focusReacquireProofRemaining, gameQueue, logCount + 1);
+            }
+        }
         {
             if (slFGActive) {
                 // SL FG active: enable POST-SL overlay rendering.

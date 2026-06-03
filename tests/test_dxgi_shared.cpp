@@ -287,6 +287,36 @@ TEST(DXGISharedTest, D3D12UnfocusedButVisibleSwapchainKeepsOverlayVisible) {
     EXPECT_FALSE(hold);
 }
 
+TEST(DXGISharedTest, D3D12UnfocusedOverlayUsesOffscreenCompositeNotDirectDraw) {
+    auto useOffscreen = [](bool overlayWanted = true, bool windowed = true, bool foreground = false,
+                           int reacquireProof = 0, bool fgActive = false, bool runtimeOwned = false,
+                           bool dedicated = false, bool steamDeferred = false, bool hasQueue = true,
+                           bool hasFence = true, bool hasEvent = true) {
+        return ce::dx12_overlay_policy::ShouldUseD3D12UnfocusedOffscreenOverlayComposite(
+            overlayWanted, windowed, foreground, reacquireProof, fgActive, runtimeOwned, dedicated, steamDeferred,
+            hasQueue, hasFence, hasEvent);
+    };
+
+    // Unfocused + windowed + drawable -> offscreen composite (keeps overlay visible
+    // without the direct-backbuffer-draw GPU hang DRED found).
+    EXPECT_TRUE(useOffscreen());
+    // Focused steady state -> direct draw (no offscreen), fast path.
+    EXPECT_FALSE(useOffscreen(true, true, true, 0));
+    // Focused BUT within post-refocus transition window -> still offscreen until stable.
+    EXPECT_TRUE(useOffscreen(true, true, true, 5));
+
+    // Negating conditions never use offscreen.
+    EXPECT_FALSE(useOffscreen(false));                                          // overlay not wanted/held
+    EXPECT_FALSE(useOffscreen(true, false));                                    // exclusive fullscreen
+    EXPECT_FALSE(useOffscreen(true, true, false, 0, true));                     // FG active
+    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, true));             // runtime-owned
+    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, true));      // dedicated queue
+    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, false, true));  // steam deferred
+    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, false, false, false));         // no queue
+    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, false, false, true, false));   // no fence
+    EXPECT_FALSE(useOffscreen(true, true, false, 0, false, false, false, false, true, true, false));  // no event
+}
+
 TEST(DXGISharedTest, D3D12NonPresentableHoldPolicyIsPresentPathAgnostic) {
     const bool presentPath = ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
         true, false, true, false, false, false, false, false, false, false, true);

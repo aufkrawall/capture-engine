@@ -1371,6 +1371,35 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(bool 
     return deviceLost && focusTransitionRecentlyActive && !dumpAlreadyRequested;
 }
 
+// v9 unfocused offscreen composite.
+//
+// DRED (logs/20260603_020053) proved the x86 DX12 Alt+Tab device-hung is a PURE
+// GPU hang (pageFaultVA=0) inside CE's OWN overlay command list: it completed the
+// PRESENT->RT barrier and one DRAWINDEXEDINSTANCED, then hung on the next draw.
+// The direct overlay draw on the LIVE swapchain backbuffer hangs while the window
+// is unfocused / mid iflip<->composited mode switch (the backbuffer is transiently
+// owned by DWM/the display). v7 never touched the backbuffer while backgrounded
+// (no hang, but the overlay was hidden); v8 drew directly while unfocused-visible
+// (overlay visible, but it hung). v9 keeps the overlay visible WITHOUT the hang:
+// while unfocused — or within the post-refocus transition window — render the
+// overlay to CE's offscreen RT (app-owned, never grabbed by the display) and
+// composite it onto the backbuffer with implicit-promotion copies, instead of
+// drawing directly on the live backbuffer. Steady FOCUSED frames keep the fast
+// direct path (no steady-state copy cost). FG / runtime-owned / dedicated-queue /
+// Steam-deferred routes manage their own submission and are excluded.
+inline bool ShouldUseD3D12UnfocusedOffscreenOverlayComposite(bool overlayDrawWanted, bool isWindowed,
+                                                             bool processHasForeground,
+                                                             int focusReacquireProofRemaining,
+                                                             bool frameGenerationActive,
+                                                             bool runtimeOwnedPresentation, bool usingDedicatedQueue,
+                                                             bool steamDeferredOverlaySubmit, bool hasQueue,
+                                                             bool hasFence, bool hasFenceEvent) {
+    const bool unfocusedOrTransitioning = !processHasForeground || focusReacquireProofRemaining > 0;
+    return overlayDrawWanted && isWindowed && unfocusedOrTransitioning && !frameGenerationActive &&
+           !runtimeOwnedPresentation && !usingDedicatedQueue && !steamDeferredOverlaySubmit && hasQueue &&
+           hasFence && hasFenceEvent;
+}
+
 inline bool ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(bool processHasForeground,
                                                                bool hasPendingFocusLossFence,
                                                                bool pendingFenceComplete) {
