@@ -268,17 +268,47 @@ CE_DRED_KEEP void DumpOnDeviceRemoved(ID3D12Device* device, const char* reason) 
 }
 
 CE_DRED_KEEP int DebugLayerLevel() {
-    static const int s_level = []() {
+    static const int s_level = []() -> int {
+        // 1) Environment variable CE_DX12_DEBUG_LAYER (inherited by the target at launch).
         char buf[16] = {};
         DWORD n = GetEnvironmentVariableA("CE_DX12_DEBUG_LAYER", buf, sizeof(buf));
-        if (n == 0 || n >= sizeof(buf)) {
-            return 0;
+        if (n > 0 && n < sizeof(buf)) {
+            if (buf[0] == '2') {
+                return 2;
+            }
+            if (buf[0] == '1' || _stricmp(buf, "on") == 0 || _stricmp(buf, "true") == 0) {
+                return 1;
+            }
         }
-        if (buf[0] == '2') {
-            return 2;
-        }
-        if (buf[0] == '1' || _stricmp(buf, "on") == 0 || _stricmp(buf, "true") == 0) {
-            return 1;
+        // 2) Flag file next to the hook DLL — robust against env-inheritance with the
+        // inject model (the user just creates the file; no launch-context juggling).
+        // File "ce_dx12_debug_layer" in installed\captureengine\: empty/"1" -> level 1,
+        // first char "2" -> level 2.
+        HMODULE self = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(&IsEnabled), &self) &&
+            self) {
+            char path[MAX_PATH] = {};
+            DWORD len = GetModuleFileNameA(self, path, MAX_PATH);
+            if (len > 0 && len < MAX_PATH) {
+                for (DWORD i = len; i > 0; --i) {
+                    if (path[i - 1] == '\\' || path[i - 1] == '/') {
+                        path[i] = '\0';
+                        break;
+                    }
+                }
+                char flagPath[MAX_PATH] = {};
+                _snprintf_s(flagPath, sizeof(flagPath), _TRUNCATE, "%sce_dx12_debug_layer", path);
+                HANDLE h = CreateFileA(flagPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (h != INVALID_HANDLE_VALUE) {
+                    char c = '1';
+                    DWORD rd = 0;
+                    ReadFile(h, &c, 1, &rd, nullptr);
+                    CloseHandle(h);
+                    return (c == '2') ? 2 : 1;
+                }
+            }
         }
         return 0;
     }();
