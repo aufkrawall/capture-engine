@@ -345,6 +345,7 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     if (codec->id == AV_CODEC_ID_OPUS && codecName == "libopus") {
         av_dict_set(&codecOptions, "application", "audio", 0);
         av_dict_set(&codecOptions, "frame_duration", "20", 0);
+        av_dict_set(&codecOptions, "dtx", "0", 0);
     }
 
     int ret = avcodec_open2(codecCtx, codec, &codecOptions);

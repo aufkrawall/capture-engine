@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-04 (audio codec finalization/silence hardening, build 0.1.3737)
+Last cross-checked: 2026-06-04 (audio startup cursor/validator hardening, build 0.1.3742)
 Stale-risk: medium
 
 Primary sources:
@@ -15,12 +15,16 @@ Primary sources:
 - `tests/test_config.cpp`
 - `tests/test_audio_encoder.cpp`
 - `tests/test_audio_resampler.cpp`
+- `tests/test_audio_sync_utils.cpp`
+- `tools/analyze_capture_av.py`
 
 ## Summary
 
 The audio pipeline supports separate system audio, microphone, and process/app audio sources, with each source assigned to one or more output tracks. Track format is resolved per output track before encoder creation: sample rate, channel count, channel mask/layout, codec, bitrate, and bit depth are no longer hard-coded to stereo.
 
 The video timeline remains authoritative for normal recordings. Final audio is padded or trimmed by sample accounting to the encoded video duration, stream duration metadata is written from that final video duration, and per-track final deltas are logged. Enabled tracks are materialized through the encoder even when the contributing source is silent or inactive; do not rely on sparse container gaps to represent silence.
+
+Each exported track owns an independent audio timeline cursor. Per-source counters are diagnostics and source-local stitching aids only; they must not decide the muxed stream timestamp. At the shared A/V anchor, system and microphone sources become timeline-valid immediately and contribute encoded silence until timestamped real packets arrive. App-audio sources remain optional until their first packet, then late packets are placed by QPC/source timestamp and overlap/drop already-encoded silence instead of delaying the whole track. This replaced the old 500 ms forced-bootstrap/backlog-trim behavior that made non-ALAC Track 3 content appear shorter even when container packet durations matched.
 
 ## Config Semantics
 
@@ -48,6 +52,7 @@ The bundled Windows FFmpeg build must include `libopus` plus the concrete PCM en
 - Resampling prefers FFmpeg channel layouts derived from Windows channel masks. Unknown masks are logged and fall back to FFmpeg's default layout for the channel count.
 - Mixing stays float32. Sources already matching the track layout are mixed channel-for-channel. Lower-channel secondary sources are upmixed conservatively into the resolved track layout.
 - Inactive app sources and all-silent tracks still produce full-length encoded silence when configured as an output track. Silence is fed through each codec path in bounded chunks, then packet duration/skip metadata clamps the externally visible end to the video duration.
+- Source startup is timeline-valid, not real-sample-gated. A silent-but-started source is ready at sample 0. A late source joins by timestamp and may log a late cursor advance, but it must not shift the track cursor or cause startup trimming.
 
 ## Diagnostics
 
@@ -59,6 +64,10 @@ Useful logs for this area:
 - `[AudioEncoder] Opus requires 48000 Hz ...`: explicit Opus sample-rate adjustment.
 - `[AudioEncoder] Silence queue ...`: tail or all-track silence is being encoded through the selected codec instead of represented as a container gap.
 - `[AudioEncoder] Clamping final packet duration ...` and `Added packet end-skip side data ...`: AAC/Opus padded final frames are being exposed sample-exactly.
+- `[A/V START] Audio source reset ... timelineValid=...`: confirms non-app sources are valid at the shared anchor and app sources are optional until first packet.
+- `[PullAudio] Track ... bootstrap complete ... forced=0 trimmed=0`: startup settled without the old forced-bootstrap/content-trim path. Any `forced=1` or nonzero `trimmed` is a validation failure.
+- `[AudioLoop] Late source cursor advance ...`: a late packet arrived after the track cursor already encoded silence; this is explicit placement diagnostics, not a reason to move the exported track.
+- `[STOP AUDIO TRACK] Track ... encoded=... expected=... realMixed=... fullSilence=... partialSilence=... sources=[...]`: exported-track cursor summary, including real/silence accounting.
 - `[StopAudio] Source ... diff=+0 (+0.0 ms)`: final sample-count equality to the selected video duration.
 - `[VideoEncoder] Final packet timeline` and `[VideoEncoder] Final metadata durations`: mux-level final duration evidence.
 - `[VideoEncoder] Post-mux duration probe ...`: post-write reopened-file duration check; this is the pass/fail authority for external stream duration.
@@ -74,16 +83,19 @@ Focused regression coverage lives in:
 - `tests/test_audio_resampler.cpp`
   - Channel-mask preservation for stereo and 5.1 resampling paths.
 - `tests/test_audio_sync_utils.cpp`
-  - Packed/interleaved silence buffer sizing includes every channel, and final packet durations clamp to the video sample target.
+  - Packed/interleaved silence buffer sizing includes every channel, final packet durations clamp to the video sample target, timeline-valid startup no longer waits for buffered real audio, app audio stays optional until first packet, source write cursors never trail the encoded track cursor, and late first packets overlap already-encoded silence.
+- `tools/analyze_capture_av.py`
+  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, and log-event gates for forced bootstrap, bootstrap trim, source underrun, and other sync-risk events.
 
 Verified on 2026-06-04:
 
 - Earlier in the same codec/layout hardening pass, a one-time FFmpeg refresh was completed after enabling `libopus` and concrete PCM encoders. Normal validation can now use `--skip-updates` unless the FFmpeg codec set changes again.
-- `python build.py --skip-updates --run-tests --gtest-filter=AudioEncoderTest.*:AudioSyncUtilsTest.*:AudioResamplerTest.*:ConfigTest.AudioDerivedSourcesInheritQualityAndDownmix:ConfigTest.AppAudioCanOverrideInheritedDownmixAndQuality` (72/72 focused tests passed; build 0.1.3735)
-- `python build.py --no-build --run-tests --skip-updates` (894/894 tests passed; build metadata 0.1.3736)
-- `python build.py --skip-updates` (build 0.1.3737)
+- `python build.py --skip-updates --run-tests --gtest-filter=AudioSyncUtilsTest.*:AudioEncoderTest.OpusUsesLibopusAtFortyEightKhzAndScalesMultichannelBitrate:AudioEncoderTest.OpusFlushPadsPackedSilenceWithoutPacketsPastTarget` (59/59 focused tests passed; build 0.1.3740)
+- `python build.py --no-build --run-tests --skip-updates` (898/898 tests passed; build metadata 0.1.3741)
+- `python build.py --skip-updates` (build 0.1.3742)
+- Validator control checks against the supplied pre-fix recordings: ALAC `H:\captures\capture_6077109.mkv` passed strict spread/video-delta/decode/tail/log gates; old PCM `capture_6396843.mkv` failed on forced bootstrap, bootstrap trim, and a one-sample tail-marker spread; old Opus `capture_6344312.mkv` failed on forced bootstrap, bootstrap trim, and nonempty Opus parser stderr. Those old files are evidence that the checker catches the prior failures, not proof that fresh post-fix runtime captures are clean.
 
 ## Open Questions / Stale-Risk
 
-- Fresh runtime validation is still required for WGC recordings across AAC, ALAC, FLAC, Opus, and PCM, then the same media-engine duration/layout validation for injected capture. The post-mux probe log should show every audio stream ending at the selected video duration with zero external delta.
+- Fresh runtime validation is still required for WGC recordings across AAC, ALAC, FLAC, Opus, and PCM, then the same media-engine duration/layout validation for injected capture. Strict validation should include `--full-scan --decode-check --waveform-tail-scan --max-audio-spread-ms 0 --max-video-audio-delta-ms 0 --max-audio-tail-marker-spread-ms 0 --max-log-event audio_forced_bootstrap=0 --max-log-event audio_bootstrap_trim=0 --max-log-event audio_underrun=0`.
 - Synthetic tests cover the codec/config/layout policy, but they do not prove every real device's channel mask maps losslessly. Logs should call out unknown masks so those devices can be handled explicitly.

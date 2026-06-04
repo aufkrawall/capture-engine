@@ -4,8 +4,10 @@ import argparse
 import collections
 import json
 import math
+import os
 import re
 import statistics
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +24,9 @@ LOG_PATTERNS = {
     "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun"),
     "audio_overflow": re.compile(r"\[PullAudio\] WARNING: Ring buffer overflow"),
     "audio_silence_fill": re.compile(r"\[PullAudio\] Track \d+ silent - generating"),
+    "audio_forced_bootstrap": re.compile(r"\[PullAudio\] Track \d+ bootstrap complete .* forced=1"),
+    "audio_bootstrap_trim": re.compile(r"\[PullAudio\] Track \d+ bootstrap complete .* trimmed=[1-9]"),
+    "audio_late_source_cursor": re.compile(r"\[AudioLoop\] Late source cursor advance"),
     "wgc_output_limited": re.compile(r"\[WGC CFR\] (?:Output limited|Encoder cannot sustain target)"),
     "wgc_stop_drain_aborted": re.compile(r"\[EncoderThread\] WGC stop drain aborted"),
 }
@@ -118,7 +123,7 @@ def format_metric(value):
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
-        return f"{value:.3f}"
+        return f"{value:.6f}" if abs(value) < 1.0 else f"{value:.3f}"
     return str(value)
 
 
@@ -142,11 +147,11 @@ def parse_named_int_thresholds(entries, valid_names, option_name):
     return thresholds
 
 
-def make_upper_bound_check(name, actual, limit, unit=""):
+def make_upper_bound_check(name, actual, limit, unit="", tolerance=0.0):
     suffix = f" {unit}" if unit else ""
     return {
         "name": name,
-        "passed": actual <= limit,
+        "passed": actual <= limit + tolerance,
         "actual": f"{format_metric(actual)}{suffix}",
         "expected": f"<= {format_metric(limit)}{suffix}",
     }
@@ -200,14 +205,14 @@ def evaluate_thresholds(args, nominal_fps, video_timing, duplicate_runs, audio_d
     if args.max_audio_spread_ms is not None:
         checks.append(
             make_upper_bound_check("audio_duration_spread", audio_duration_spread * 1000.0, args.max_audio_spread_ms,
-                                   "ms")
+                                   "ms", tolerance=0.0005)
         )
 
     if args.max_video_audio_delta_ms is not None:
         checks.append(
             make_upper_bound_check(
                 "max_video_audio_duration_delta", video_audio_max_delta * 1000.0, args.max_video_audio_delta_ms,
-                "ms"
+                "ms", tolerance=0.0005
             )
         )
 
@@ -277,7 +282,7 @@ def analyze_streams(ffprobe, capture_path):
     return format_info, video_streams, audio_streams
 
 
-def analyze_video_timing(ffprobe, capture_path, read_interval=None):
+def analyze_video_timing(ffprobe, capture_path, read_interval=None, nominal_fps=0.0):
     args = [
         "-select_streams",
         "v:0",
@@ -314,9 +319,13 @@ def analyze_video_timing(ffprobe, capture_path, read_interval=None):
             "delta_stdev": 0.0,
         }
 
-    durations = [parse_float(frame.get("pkt_duration_time")) for frame in typed_frames]
     deltas = [round(pts[i] - pts[i - 1], 6) for i in range(1, len(pts))]
+    durations = [parse_float(frame.get("pkt_duration_time")) for frame in typed_frames]
     last_duration = durations[-1] if durations else 0.0
+    if last_duration <= 0.0 and nominal_fps > 0.0:
+        last_duration = 1.0 / nominal_fps
+    elif last_duration <= 0.0 and deltas:
+        last_duration = deltas[-1]
     frame_end = pts[-1] + last_duration
     return {
         "source": "full-scan",
@@ -490,6 +499,114 @@ def analyze_audio_stream_metadata(audio_ordinal, stream_info, format_duration):
     }
 
 
+def analyze_audio_decode(ffmpeg, capture_path, audio_ordinal):
+    result = subprocess.run(
+        [
+            str(ffmpeg),
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            str(capture_path),
+            "-map",
+            f"0:a:{audio_ordinal}",
+            "-f",
+            "null",
+            os.devnull,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return {
+        "audio_ordinal": audio_ordinal,
+        "returncode": result.returncode,
+        "stderr": result.stderr.strip(),
+    }
+
+
+def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, threshold):
+    sample_rate = parse_int(stream_info.get("sample_rate"))
+    channels = max(1, parse_int(stream_info.get("channels"), 1))
+    if sample_rate <= 0:
+        return {
+            "audio_ordinal": audio_ordinal,
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "samples": 0,
+            "last_marker_sample": None,
+            "last_marker_time": None,
+            "tail_silence_ms": None,
+            "stderr": "invalid sample rate",
+            "returncode": 1,
+        }
+
+    command = [
+        str(ffmpeg),
+        "-nostdin",
+        "-v",
+        "error",
+        "-i",
+        str(capture_path),
+        "-map",
+        f"0:a:{audio_ordinal}",
+        "-acodec",
+        "pcm_f32le",
+        "-f",
+        "f32le",
+        "-",
+    ]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    frame_bytes = channels * 4
+    total_samples = 0
+    last_marker_sample = None
+    pending = b""
+    assert process.stdout is not None
+    while True:
+        chunk = process.stdout.read(1 << 18)
+        if not chunk:
+            break
+        pending += chunk
+        usable = (len(pending) // frame_bytes) * frame_bytes
+        if usable <= 0:
+            continue
+        payload = pending[:usable]
+        pending = pending[usable:]
+        values = struct.unpack("<" + "f" * (usable // 4), payload)
+        frames = usable // frame_bytes
+        for frame in range(frames):
+            base = frame * channels
+            peak = max(abs(values[base + channel]) for channel in range(channels))
+            if peak > threshold:
+                last_marker_sample = total_samples + frame
+        total_samples += frames
+
+    stderr = b""
+    if process.stderr is not None:
+        stderr = process.stderr.read()
+    returncode = process.wait()
+    if total_samples > 0 and last_marker_sample is not None:
+        tail_silence_ms = (total_samples - 1 - last_marker_sample) * 1000.0 / sample_rate
+        last_marker_time = (last_marker_sample + 1) / sample_rate
+    else:
+        tail_silence_ms = None
+        last_marker_time = None
+    return {
+        "audio_ordinal": audio_ordinal,
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "samples": total_samples,
+        "last_marker_sample": last_marker_sample,
+        "last_marker_time": last_marker_time,
+        "tail_silence_ms": tail_silence_ms,
+        "stderr": stderr.decode("utf-8", errors="replace").strip(),
+        "returncode": returncode,
+    }
+
+
 def analyze_log(log_path):
     if not log_path:
         return None
@@ -546,9 +663,10 @@ def print_top_histogram(name, histogram, limit=6):
         print(f"  {key}: {count}")
 
 
-def analyze_window(ffprobe, ffmpeg, capture_path, audio_streams, start_time, duration, framehash, framehash_width):
+def analyze_window(ffprobe, ffmpeg, capture_path, audio_streams, start_time, duration, framehash, framehash_width,
+                   nominal_fps):
     read_interval = build_read_interval(start_time, duration)
-    video_timing = analyze_video_timing(ffprobe, capture_path, read_interval=read_interval)
+    video_timing = analyze_video_timing(ffprobe, capture_path, read_interval=read_interval, nominal_fps=nominal_fps)
     audio_tracks = [
         analyze_audio_stream(ffprobe, capture_path, audio_ordinal, stream_info, read_interval=read_interval)
         for audio_ordinal, stream_info in enumerate(audio_streams)
@@ -694,6 +812,22 @@ def main():
         help="Use ffprobe frame-by-frame scans for exact frame deltas and decoded audio sample totals",
     )
     parser.add_argument(
+        "--decode-check",
+        action="store_true",
+        help="Decode every audio stream with ffmpeg -v error and fail on stderr or nonzero exit",
+    )
+    parser.add_argument(
+        "--waveform-tail-scan",
+        action="store_true",
+        help="Decode every audio stream to float PCM and report the last sample above --tail-threshold",
+    )
+    parser.add_argument(
+        "--tail-threshold",
+        type=float,
+        default=1e-4,
+        help="Absolute sample threshold for --waveform-tail-scan marker detection (default: 1e-4)",
+    )
+    parser.add_argument(
         "--framehash-width",
         type=int,
         default=320,
@@ -714,6 +848,11 @@ def main():
         "--max-video-audio-delta-ms",
         type=float,
         help="Fail if any decoded audio track differs from decoded video duration by more than this many milliseconds",
+    )
+    parser.add_argument(
+        "--max-audio-tail-marker-spread-ms",
+        type=float,
+        help="Fail if last non-silent audio markers differ by more than this many milliseconds",
     )
     parser.add_argument(
         "--max-mean-frame-delta-error-us",
@@ -754,8 +893,9 @@ def main():
     format_info, video_streams, audio_streams = analyze_streams(args.ffprobe, args.capture)
     video_stream = video_streams[0]
     format_duration = parse_float(format_info.get("duration"))
+    nominal_fps = parse_ratio(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate"))
     video_timing = (
-        analyze_video_timing(args.ffprobe, args.capture)
+        analyze_video_timing(args.ffprobe, args.capture, nominal_fps=nominal_fps)
         if args.full_scan
         else analyze_video_stream_metadata(video_stream, format_duration)
     )
@@ -768,14 +908,31 @@ def main():
             audio_tracks.append(analyze_audio_stream(args.ffprobe, args.capture, audio_ordinal, stream_info))
         else:
             audio_tracks.append(analyze_audio_stream_metadata(audio_ordinal, stream_info, format_duration))
+    decode_results = []
+    if args.decode_check:
+        decode_results = [
+            analyze_audio_decode(args.ffmpeg, args.capture, audio_ordinal)
+            for audio_ordinal, _stream_info in enumerate(audio_streams)
+        ]
+    tail_results = []
+    if args.waveform_tail_scan or args.max_audio_tail_marker_spread_ms is not None:
+        tail_results = [
+            analyze_audio_tail_marker(args.ffmpeg, args.capture, audio_ordinal, stream_info, args.tail_threshold)
+            for audio_ordinal, stream_info in enumerate(audio_streams)
+        ]
     log_summary = analyze_log(args.log)
 
-    nominal_fps = parse_ratio(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate"))
     video_duration = video_timing["duration"]
     audio_lengths = [track["decoded_duration"] for track in audio_tracks]
     audio_duration_spread = (max(audio_lengths) - min(audio_lengths)) if audio_lengths else 0.0
     video_audio_max_delta = (
         max(abs(track["decoded_duration"] - video_duration) for track in audio_tracks) if audio_tracks else 0.0
+    )
+    tail_marker_times = [
+        result["last_marker_time"] for result in tail_results if result.get("last_marker_time") is not None
+    ]
+    audio_tail_marker_spread = (
+        max(tail_marker_times) - min(tail_marker_times) if len(tail_marker_times) >= 2 else 0.0
     )
     window_duration = max(0.0, min(args.window_seconds, format_duration if format_duration > 0.0 else args.window_seconds))
     windows = {}
@@ -797,6 +954,7 @@ def main():
                 window_duration,
                 args.framehash,
                 args.framehash_width,
+                nominal_fps,
             )
 
     print(f"capture: {args.capture}")
@@ -884,6 +1042,42 @@ def main():
         print(f"  max_video_audio_duration_delta={video_audio_max_delta:.6f}")
     print()
 
+    if decode_results:
+        print("audio_decode:")
+        for result in decode_results:
+            stderr = result["stderr"].replace("\n", " | ")
+            print(
+                "  a:{ordinal} returncode={returncode} stderr={stderr}".format(
+                    ordinal=result["audio_ordinal"],
+                    returncode=result["returncode"],
+                    stderr=stderr if stderr else "(empty)",
+                )
+            )
+        print()
+
+    if tail_results:
+        print("audio_tail_markers:")
+        for result in tail_results:
+            marker = result["last_marker_sample"]
+            marker_text = "none" if marker is None else str(marker)
+            time_text = "none" if result["last_marker_time"] is None else f"{result['last_marker_time']:.6f}"
+            silence_text = "none" if result["tail_silence_ms"] is None else f"{result['tail_silence_ms']:.3f}ms"
+            print(
+                "  a:{ordinal} samples={samples} last_marker_sample={marker} last_marker_time={time} "
+                "tail_silence={silence} threshold={threshold:g}".format(
+                    ordinal=result["audio_ordinal"],
+                    samples=result["samples"],
+                    marker=marker_text,
+                    time=time_text,
+                    silence=silence_text,
+                    threshold=args.tail_threshold,
+                )
+            )
+            if result["stderr"]:
+                print(f"    stderr={result['stderr'].replace(chr(10), ' | ')}")
+        print(f"  audio_tail_marker_spread={audio_tail_marker_spread:.6f}")
+        print()
+
     if log_summary:
         print("log_summary:")
         for name, count in sorted(log_summary["counts"].items()):
@@ -924,6 +1118,35 @@ def main():
         video_audio_max_delta,
         log_summary,
     )
+    if args.decode_check:
+        for result in decode_results:
+            checks.append(
+                {
+                    "name": f"audio_decode.a:{result['audio_ordinal']}",
+                    "passed": result["returncode"] == 0 and result["stderr"] == "",
+                    "actual": f"returncode={result['returncode']} stderr={'empty' if result['stderr'] == '' else 'nonempty'}",
+                    "expected": "returncode=0 stderr=empty",
+                }
+            )
+    if args.max_audio_tail_marker_spread_ms is not None:
+        marker_missing_mismatch = bool(tail_results) and len(tail_marker_times) not in (0, len(tail_results))
+        checks.append(
+            {
+                "name": "audio_tail_marker_presence",
+                "passed": not marker_missing_mismatch,
+                "actual": f"{len(tail_marker_times)}/{len(tail_results)} tracks have marker",
+                "expected": "all or none",
+            }
+        )
+        checks.append(
+            make_upper_bound_check(
+                "audio_tail_marker_spread",
+                audio_tail_marker_spread * 1000.0,
+                args.max_audio_tail_marker_spread_ms,
+                "ms",
+                tolerance=0.0005,
+            )
+        )
 
     print("summary:")
     if mean_frame_delta_error_us is None and video_timing["frame_count"] > 1 and nominal_fps > 0.0:
@@ -932,6 +1155,8 @@ def main():
     if mean_frame_delta_error_us is not None:
         print(f"  mean_frame_delta_error_us={mean_frame_delta_error_us:.3f}")
     print(f"  exact_audio_length_match={'yes' if math.isclose(audio_duration_spread, 0.0, abs_tol=1e-6) else 'no'}")
+    if tail_results:
+        print(f"  audio_tail_marker_spread_ms={audio_tail_marker_spread * 1000.0:.3f}")
     print(
         "  all_audio_tracks_match_video_length={value}".format(
             value="yes" if math.isclose(video_audio_max_delta, 0.0, abs_tol=1e-3) else "no"

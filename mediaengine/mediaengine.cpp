@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <deque>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <string>
@@ -84,6 +85,7 @@ public:
         int64_t alignedStartMs = -1;                // First source packet offset relative to recording start
         int64_t observedLateStartMs = 0;            // Latest observed startup delay used for startup pull slack
         bool hasAlignedStart = false;               // True after first packet aligned to recording start
+        bool timelineValid = false;                 // True once the source can contribute silence/real audio on timeline
         bool isPrimed = false;                      // True after source has buffered a startup safety cushion
         bool bootstrapComplete = false;             // True after startup backlog is settled and live sync may engage
         bool pendingUnderrunRecoveryFade = false;   // Arm fade-in when real audio resumes after padded silence
@@ -455,6 +457,7 @@ public:
             src.alignedStartMs = -1;
             src.observedLateStartMs = 0;
             src.hasAlignedStart = false;
+            src.timelineValid = src.sourceType != AudioConfig::AppAudio;
             src.isPrimed = false;
             src.bootstrapComplete = false;
             src.pendingUnderrunRecoveryFade = false;
@@ -478,15 +481,22 @@ public:
             src.targetRateDelta = 0;
             src.rateCompActive = false;
             src.targetRateSaturated = false;
-            DLL_Log("[A/V START] Audio source reset to shared anchor: src=%zu track=%d type=%d startMs=%lld",
+            DLL_Log("[A/V START] Audio source reset to shared anchor: src=%zu track=%d type=%d startMs=%lld "
+                    "timelineValid=%d",
                     static_cast<size_t>(&src - audioSources.data()), src.track, static_cast<int>(src.sourceType),
-                    startQpcMs);
+                    startQpcMs, src.timelineValid ? 1 : 0);
         }
         audioSyncPending.store(false);
     }
 
-    // Pull Model: Track encoded samples per source for progressive encoding
+    // Pull Model: source counters are diagnostic/source-local; each exported
+    // track advances from trackTimelineSamples so source order cannot change
+    // the muxed timeline.
     std::vector<int64_t> encodedSamplesPerSource;
+    std::map<int, int64_t> trackTimelineSamples;
+    std::map<int, uint64_t> trackRealMixedSamples;
+    std::map<int, uint64_t> trackFullSilenceSamples;
+    std::map<int, uint64_t> trackPartialSilenceSamples;
 
     std::map<int, bool> trackWasSilent;
     std::map<int, uint64_t> trackSilentSamples;
@@ -934,6 +944,10 @@ public:
             // PULL MODEL: Reset audio encoding state for new recording
             encodedSamplesPerSource.clear();
             encodedSamplesPerSource.resize(audioSources.size(), 0);
+            trackTimelineSamples.clear();
+            trackRealMixedSamples.clear();
+            trackFullSilenceSamples.clear();
+            trackPartialSilenceSamples.clear();
 
             trackWasSilent.clear();
             trackSilentSamples.clear();
@@ -950,6 +964,10 @@ public:
                 auto& src = audioSources[i];
                 if (src.ringBuffer && src.sharedEncoderPtr) {
                     cachedTrackToSources[src.track].push_back(i);
+                    trackTimelineSamples[src.track] = 0;
+                    trackRealMixedSamples[src.track] = 0;
+                    trackFullSilenceSamples[src.track] = 0;
+                    trackPartialSilenceSamples[src.track] = 0;
                 }
             }
 
@@ -1007,6 +1025,7 @@ public:
                 src.alignedStartMs = -1;
                 src.observedLateStartMs = 0;
                 src.hasAlignedStart = false;
+                src.timelineValid = false;
                 src.isPrimed = false;
                 src.bootstrapComplete = false;
                 src.pendingUnderrunRecoveryFade = false;
@@ -1238,17 +1257,21 @@ public:
                     // pull fills any remaining gap without racing (drain is done by now).
                     const int64_t cfrAudioTargetUs =
                         IsCfrRecording() ? videoEnc->GetExpectedFinalDurationUs() : endUs;
-                    const int64_t minEncodedBefore =
-                        encodedSamplesPerSource.empty()
-                            ? 0
-                            : *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
+                    auto minTrackCursorSamples = [this]() -> int64_t {
+                        if (trackTimelineSamples.empty()) {
+                            return 0;
+                        }
+                        int64_t minSamples = std::numeric_limits<int64_t>::max();
+                        for (const auto& kv : trackTimelineSamples) {
+                            minSamples = std::min(minSamples, kv.second);
+                        }
+                        return minSamples == std::numeric_limits<int64_t>::max() ? 0 : minSamples;
+                    };
+                    const int64_t minEncodedBefore = minTrackCursorSamples();
                     PullAndEncodeAudio(cfrAudioTargetUs, true);
-                    const int64_t minEncodedAfter =
-                        encodedSamplesPerSource.empty()
-                            ? 0
-                            : *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
+                    const int64_t minEncodedAfter = minTrackCursorSamples();
                     DLL_Log(
-                        "[StopAudio] forceDrain: targetUs=%lld minEncodedBefore=%lld minEncodedAfter=%lld "
+                        "[StopAudio] forceDrain: targetUs=%lld minTrackBefore=%lld minTrackAfter=%lld "
                         "pulled=%lld samples (%.1f ms)",
                         cfrAudioTargetUs, minEncodedBefore, minEncodedAfter, minEncodedAfter - minEncodedBefore,
                         (double)(minEncodedAfter - minEncodedBefore) / 48.0);
@@ -1295,6 +1318,30 @@ public:
             const int64_t encodedMs = videoEnc->GetEncodedDurationUs() / 1000;
             DLL_Log("[STOP SUMMARY] Video: duration=%lldms wall=%lldms encoded=%lldms pipelineLag=%lldms", finalVideoMs,
                     wallMs, encodedMs, wallMs - encodedMs);
+        }
+        {
+            const int64_t expectedVideoSamples =
+                ce::audio::ComputeDurationUsToSamples(expectedVideoUsForStop, kStopSampleRate);
+            for (const auto& kv : cachedTrackToSources) {
+                const int track = kv.first;
+                const int64_t trackSamples = trackTimelineSamples.count(track) ? trackTimelineSamples[track] : 0;
+                const int64_t diffSamples = trackSamples - expectedVideoSamples;
+                const double diffMs = static_cast<double>(diffSamples) * 1000.0 / kStopSampleRate;
+                std::string sourceList;
+                for (size_t srcIdx : kv.second) {
+                    if (!sourceList.empty()) {
+                        sourceList += ",";
+                    }
+                    sourceList += std::to_string(srcIdx);
+                }
+                DLL_Log(
+                    "[STOP AUDIO TRACK] Track %d: encoded=%lld expected=%lld diff=%+lld (%+.3f ms) realMixed=%llu "
+                    "fullSilence=%llu partialSilence=%llu sources=[%s]",
+                    track, trackSamples, expectedVideoSamples, diffSamples, diffMs,
+                    (unsigned long long)trackRealMixedSamples[track],
+                    (unsigned long long)trackFullSilenceSamples[track],
+                    (unsigned long long)trackPartialSilenceSamples[track], sourceList.c_str());
+            }
         }
         for (size_t i = 0; i < audioSources.size() && i < encodedSamplesPerSource.size(); i++) {
             auto& src = audioSources[i];
@@ -1387,6 +1434,7 @@ public:
             src.alignedStartMs = -1;
             src.observedLateStartMs = 0;
             src.hasAlignedStart = false;
+            src.timelineValid = false;
             src.isPrimed = false;
             src.bootstrapComplete = false;
             src.pendingUnderrunRecoveryFade = false;
@@ -1669,7 +1717,6 @@ public:
         constexpr int SAMPLE_RATE = 48000;
         constexpr int64_t kSteadyAudioPullLatencyMs = ce::audio::kDefaultSteadyAudioPullLatencyMs;
         constexpr int64_t kPrimedSourceCushionSamples = SAMPLE_RATE / 50;  // 20ms
-        constexpr int64_t kBootstrapHoldLimitMs = 500;
         constexpr int64_t kBaseTargetLatencySamples = (kSteadyAudioPullLatencyMs * SAMPLE_RATE) / 1000;
         constexpr int64_t kMaxPipelineLagContributionMs = 10000;
         constexpr int64_t kWgcCoverageLossMaxBufferedLagMs = 300;
@@ -1888,7 +1935,7 @@ public:
                 }
 
                 trackAllPrimed = trackAllPrimed &&
-                                 ce::audio::IsSourceStartupPrimed(src.isPrimed, src.hasAlignedStart, isAppAudioSource);
+                                 ce::audio::IsSourceStartupPrimed(src.isPrimed, src.timelineValid, isAppAudioSource);
                 trackMaxObservedLateStartMs = std::max(trackMaxObservedLateStartMs, src.observedLateStartMs);
             }
 
@@ -1926,14 +1973,14 @@ public:
                         src.ringBuffer->GetAvailable() / CHANNELS, src.startupSyntheticRingSamples);
                 }
                 const bool srcReady =
-                    ce::audio::IsSourceBootstrapReady(src.bootstrapComplete, src.hasAlignedStart, src.isPrimed,
+                    ce::audio::IsSourceBootstrapReady(src.bootstrapComplete, src.timelineValid, src.isPrimed,
                                                       isAppAudioSource, bufferedRealSamples, requiredBootstrapSamples);
                 trackReadyForBootstrap = trackReadyForBootstrap && srcReady;
             }
 
             if (!trackBootstrapComplete[track]) {
-                const bool forcedBootstrap = trackAudioTargetMs >= kBootstrapHoldLimitMs;
-                if (!trackReadyForBootstrap && !forcedBootstrap) {
+                constexpr bool forcedBootstrap = false;
+                if (!trackReadyForBootstrap) {
                     int& waitLogCounter = trackBootstrapWaitLogCounters[track];
                     if (waitLogCounter++ % 120 == 0) {
                         DLL_Log("[PullAudio] Track %d bootstrap pending - target=%lldms samples=%lld", track,
@@ -1949,30 +1996,6 @@ public:
                     const int64_t remainingStartupProtectionSamples = std::max<int64_t>(
                         0, static_cast<int64_t>(src.startupGapProtectionSamples) - encodedSamplesPerSource[srcIdx]);
                     bootstrapProtected += static_cast<uint64_t>(remainingStartupProtectionSamples);
-                    const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
-                    const int64_t bufferedRealSamples = static_cast<int64_t>(ce::audio::ComputeBufferedRealAudioSamples(
-                        bufferedTimelineSamples, src.startupSyntheticPostSamples + src.startupSyntheticRingSamples));
-                    const int64_t allowedRealBacklogSamples =
-                        std::max<int64_t>(targetBufferedSamples, static_cast<int64_t>(kMinBootstrapRealSamples));
-                    const int64_t excessRealBacklogSamples = bufferedRealSamples - allowedRealBacklogSamples;
-                    const int64_t excessTimelineSamples =
-                        static_cast<int64_t>(bufferedTimelineSamples) -
-                        (remainingStartupProtectionSamples + allowedRealBacklogSamples);
-                    const int64_t dropBeforeLive =
-                        std::max<int64_t>(0, std::min(excessRealBacklogSamples, excessTimelineSamples));
-                    if (dropBeforeLive > 0) {
-                        const size_t droppedSamples =
-                            DropOldestBufferedSamples(src, static_cast<size_t>(dropBeforeLive));
-                        bootstrapTrimmed += droppedSamples;
-                        if (droppedSamples > 0) {
-                            // Bootstrap trims can otherwise start playback mid-waveform
-                            // and create an audible click/distortion in the first live audio.
-                            src.pendingUnderrunRecoveryFade = true;
-                            if (remainingStartupProtectionSamples > 0) {
-                                src.pendingStartupJoinFade = true;
-                            }
-                        }
-                    }
                     src.bootstrapComplete = true;
                 }
 
@@ -1987,7 +2010,8 @@ public:
             }
 
             size_t firstSrcIdx = srcIndices[0];
-            int64_t pendingSamples = targetSamples - encodedSamplesPerSource[firstSrcIdx];
+            int64_t& trackCursorSamples = trackTimelineSamples[track];
+            int64_t pendingSamples = targetSamples - trackCursorSamples;
             if (pendingSamples <= 0)
                 continue;
 
@@ -2025,8 +2049,7 @@ public:
                 DLL_Log(
                     "[PullAudio] Large A/V gap (%.2f sec) on track %d - inserting silence (warp #%d). target=%lld, "
                     "encoded=%lld",
-                    (double)samplesToEncode / SAMPLE_RATE, track, warpCount, targetSamples,
-                    encodedSamplesPerSource[firstSrcIdx]);
+                    (double)samplesToEncode / SAMPLE_RATE, track, warpCount, targetSamples, trackCursorSamples);
 
                 for (size_t srcIdx : srcIndices) {
                     if (audioSources[srcIdx].ringBuffer) {
@@ -2047,8 +2070,7 @@ public:
                     DLL_Log(
                         "[PullAudio] Large CFR audio backlog (%.2f sec) on track %d - draining in bounded chunks "
                         "without dropping buffered audio (chunk=%lld samples, target=%lld, encoded=%lld)",
-                        (double)pendingSamples / SAMPLE_RATE, track, samplesToEncode, targetSamples,
-                        encodedSamplesPerSource[firstSrcIdx]);
+                        (double)pendingSamples / SAMPLE_RATE, track, samplesToEncode, targetSamples, trackCursorSamples);
                 }
             }
 
@@ -2061,7 +2083,7 @@ public:
                 auto& src = audioSources[srcIdx];
 
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
-                if (ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.hasAlignedStart)) {
+                if (ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.timelineValid)) {
                     continue;
                 }
                 ++eligibleSources;
@@ -2746,7 +2768,7 @@ public:
                         "transitions=%llu target=%lldms encoded=%lld",
                         track, samplesToEncode, activeSources, eligibleSources,
                         static_cast<unsigned long long>(trackSilenceTransitions[track]), trackAudioTargetMs,
-                        encodedSamplesPerSource[firstSrcIdx]);
+                        trackCursorSamples);
                     trackLastSilenceLogTick[track] = nowTick;
                 } else if (nowTick - lastLogTick >= 1000) {
                     DLL_Log(
@@ -2755,7 +2777,7 @@ public:
                         track, static_cast<unsigned long long>(trackSilentSamples[track]),
                         static_cast<double>(trackSilentSamples[track]) * 1000.0 / SAMPLE_RATE,
                         static_cast<unsigned long long>(trackSilentChunks[track]), activeSources, eligibleSources,
-                        trackAudioTargetMs, encodedSamplesPerSource[firstSrcIdx]);
+                        trackAudioTargetMs, trackCursorSamples);
                     trackLastSilenceLogTick[track] = nowTick;
                 }
                 if (silenceLogCounter++ % 500 == 0) {
@@ -2781,7 +2803,7 @@ public:
                         track, static_cast<unsigned long long>(trackSilentSamples[track]),
                         static_cast<double>(trackSilentSamples[track]) * 1000.0 / SAMPLE_RATE,
                         static_cast<unsigned long long>(trackSilentChunks[track]), activeSources, eligibleSources,
-                        trackAudioTargetMs, encodedSamplesPerSource[firstSrcIdx]);
+                        trackAudioTargetMs, trackCursorSamples);
                     trackSilentSamples[track] = 0;
                     trackSilentChunks[track] = 0;
                 }
@@ -2793,8 +2815,7 @@ public:
                         DLL_Log(
                             "[PullAudio] Track %d partial/intermittent silence: active=%d/%d target=%lldms "
                             "encoded=%lld padTotal=%llu qpcGap=%llu qpcOverlap=%llu",
-                            track, activeSources, eligibleSources, trackAudioTargetMs,
-                            encodedSamplesPerSource[firstSrcIdx],
+                            track, activeSources, eligibleSources, trackAudioTargetMs, trackCursorSamples,
                             static_cast<unsigned long long>(audioSources[firstSrcIdx].underrunPadSamples),
                             static_cast<unsigned long long>(audioSources[firstSrcIdx].packetTimelineGapSamples),
                             static_cast<unsigned long long>(audioSources[firstSrcIdx].packetTimelineOverlapSamples));
@@ -2817,7 +2838,7 @@ public:
 
             // Soft clipping: Clamp values to [-1, 1] to prevent distortion
             {
-                int64_t trackPos = encodedSamplesPerSource[firstSrcIdx];
+                int64_t trackPos = trackCursorSamples;
                 const bool applyStartupTrackFade =
                     !applyTransitionFade && trackPos == 0 &&
                     audioSources[firstSrcIdx].packetBoundaryFadeInSamplesRemaining <= 0 &&
@@ -2866,7 +2887,7 @@ public:
                 // CRITICAL: Use RELATIVE time from sample count, not absolute QPC!
                 // This must match what the encoder expects - time relative to recording
                 // start
-                int64_t audioChunkTimestampMs = (encodedSamplesPerSource[firstSrcIdx] * 1000) / SAMPLE_RATE;
+                int64_t audioChunkTimestampMs = (trackCursorSamples * 1000) / SAMPLE_RATE;
 
                 encoder->EncodeSamples(encodeData.data(), (int)encodeData.size(), CHANNELS, SAMPLE_RATE, 32, 32,
                                        CHANNELS * 4,
@@ -2880,7 +2901,18 @@ public:
                 }
             }
 
-            // Update source counters ONLY when we actually encoded real audio
+            if (activeSources == 0) {
+                trackFullSilenceSamples[track] += static_cast<uint64_t>(samplesToEncode);
+            } else {
+                trackRealMixedSamples[track] += static_cast<uint64_t>(samplesToEncode);
+                if (activeSources < eligibleSources) {
+                    trackPartialSilenceSamples[track] += static_cast<uint64_t>(samplesToEncode);
+                }
+            }
+            trackCursorSamples += samplesToEncode;
+
+            // Keep source counters aligned for source-local diagnostics, but the
+            // exported stream timeline is trackTimelineSamples[track].
             for (size_t srcIdx : srcIndices) {
                 encodedSamplesPerSource[srcIdx] += samplesToEncode;
             }
@@ -2902,7 +2934,7 @@ public:
                         }
                     }
                 }
-                int64_t audioSamples = encodedSamplesPerSource[firstSrcIdx];
+                int64_t audioSamples = trackTimelineSamples[track];
                 int64_t audioMs = (audioSamples * 1000) / SAMPLE_RATE;
                 int64_t avDrift = audioMs - videoMs;
                 int64_t latencyAdjustedAvDrift =
@@ -2941,6 +2973,7 @@ public:
                     uint64_t srcPacketOverlapTrimmed = 0;
                     bool srcPrimed = false;
                     bool srcBootstrapped = false;
+                    bool srcTimelineValid = false;
                     if (srcIdx < audioSources.size()) {
                         auto& src = audioSources[srcIdx];
                         if (src.ringBuffer) {
@@ -2963,6 +2996,7 @@ public:
                         srcPacketOverlapTrimmed = src.packetTimelineOverlapSamples;
                         srcPrimed = src.isPrimed;
                         srcBootstrapped = src.bootstrapComplete;
+                        srcTimelineValid = src.timelineValid;
                     }
 
                     overflowDropped += srcOverflowDropped;
@@ -2979,11 +3013,12 @@ public:
                     char sourceState[448];
                     std::snprintf(
                         sourceState, sizeof(sourceState),
-                        "src%zu(rb=%zu sync=%lld start=%lld primed=%d boot=%d synth=%llu/%llu/%llu ovf=%llu "
+                        "src%zu(rb=%zu sync=%lld start=%lld tl=%d primed=%d boot=%d synth=%llu/%llu/%llu ovf=%llu "
                         "rtrim=%llu lat=%llu t2=%llu cov=%llu boottrim=%llu post=%llu pad=%llu qgap=%llu qov=%llu)",
-                        srcIdx, rbLevel, syncOutput, alignedStartMs, (int)srcPrimed, (int)srcBootstrapped,
-                        (unsigned long long)srcSyntheticRing, (unsigned long long)srcSyntheticInflight,
-                        (unsigned long long)srcSyntheticPost, (unsigned long long)srcOverflowDropped,
+                        srcIdx, rbLevel, syncOutput, alignedStartMs, (int)srcTimelineValid, (int)srcPrimed,
+                        (int)srcBootstrapped, (unsigned long long)srcSyntheticRing,
+                        (unsigned long long)srcSyntheticInflight, (unsigned long long)srcSyntheticPost,
+                        (unsigned long long)srcOverflowDropped,
                         (unsigned long long)srcRetainedTrimmed, (unsigned long long)srcLatencyTrimmed,
                         (unsigned long long)srcTier2Trimmed, (unsigned long long)srcCoverageLossTrimmed,
                         (unsigned long long)srcBootstrapTrimmed, (unsigned long long)srcPostTrimmed,
@@ -3389,6 +3424,7 @@ private:
                         src.alignedStartMs = -1;
                         src.observedLateStartMs = 0;
                         src.hasAlignedStart = false;
+                        src.timelineValid = src.sourceType != AudioConfig::AppAudio;
                         src.isPrimed = false;
                         src.bootstrapComplete = false;
                         src.pendingUnderrunRecoveryFade = false;
@@ -3511,6 +3547,7 @@ private:
                                     src.alignedStartMs = diff;
                                     src.observedLateStartMs = std::max<int64_t>(diff, 0);
                                     src.hasAlignedStart = true;
+                                    src.timelineValid = true;
                                     if (diff < -5) {
                                         DLL_Log("[AudioLoop] First packet leads recording start by %lld ms for src=%d",
                                                 diff, (int)srcIdx);
@@ -3531,6 +3568,27 @@ private:
                                             packetStartDelta100ns, targetFmt.sampleRate));
                                     packetStartSamples = ce::audio::ApplyStartupPacketTimelineRebaseOffset(
                                         packetStartSamples, static_cast<int64_t>(src.startupRebasedGapSamples));
+                                    if (srcIdx < encodedSamplesPerSource.size()) {
+                                        const int64_t encodedCursorSamples =
+                                            ce::audio::ResolveSourceTimelineWriteCursor(src.qpcAlignedWrittenSamples,
+                                                                                       encodedSamplesPerSource[srcIdx]);
+                                        if (encodedCursorSamples > static_cast<int64_t>(src.qpcAlignedWrittenSamples)) {
+                                            const int64_t cursorAdvance =
+                                                encodedCursorSamples - static_cast<int64_t>(src.qpcAlignedWrittenSamples);
+                                            src.qpcAlignedWrittenSamples = static_cast<uint64_t>(encodedCursorSamples);
+                                            if (cursorAdvance >= targetFmt.sampleRate / 200) {
+                                                const uint64_t nowTick = GetTickCount64();
+                                                if (nowTick - src.lastPacketTimelineAdjustWarnTick >= 1000) {
+                                                    DLL_Log(
+                                                        "[AudioLoop] Late source cursor advance src=%d advanced=%lld "
+                                                        "samples encodedCursor=%lld before packet stitching",
+                                                        (int)srcIdx, (long long)cursorAdvance,
+                                                        (long long)encodedCursorSamples);
+                                                    src.lastPacketTimelineAdjustWarnTick = nowTick;
+                                                }
+                                            }
+                                        }
+                                    }
                                     if (firstTimelinePacket) {
                                         // Keep a small preserved startup gap so the first live chunk does not
                                         // begin mid-waveform. A smaller 5ms cap caused large real-audio

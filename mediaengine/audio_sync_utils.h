@@ -493,21 +493,25 @@ inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSour
     return trackBootstrapComplete || allSourcesPrimed;
 }
 
-inline bool IsOptionalUnstartedAppAudioSource(bool isAppAudioSource, bool hasAlignedStart) {
-    return isAppAudioSource && !hasAlignedStart;
+inline bool IsOptionalUnstartedAppAudioSource(bool isAppAudioSource, bool sourceTimelineValid) {
+    return isAppAudioSource && !sourceTimelineValid;
 }
 
-inline bool IsSourceStartupPrimed(bool sourceIsPrimed, bool hasAlignedStart, bool isAppAudioSource) {
-    return sourceIsPrimed || IsOptionalUnstartedAppAudioSource(isAppAudioSource, hasAlignedStart);
+inline bool IsSourceStartupPrimed(bool sourceIsPrimed, bool sourceTimelineValid, bool isAppAudioSource) {
+    return sourceIsPrimed || IsOptionalUnstartedAppAudioSource(isAppAudioSource, sourceTimelineValid);
 }
 
-inline bool IsSourceBootstrapReady(bool sourceBootstrapComplete, bool hasAlignedStart, bool sourceIsPrimed,
+inline bool IsSourceBootstrapReady(bool sourceBootstrapComplete, bool sourceTimelineValid, bool sourceIsPrimed,
                                    bool isAppAudioSource, size_t bufferedRealSamples, size_t requiredRealSamples) {
-    if (sourceBootstrapComplete || IsOptionalUnstartedAppAudioSource(isAppAudioSource, hasAlignedStart)) {
+    (void)sourceIsPrimed;
+    (void)bufferedRealSamples;
+    (void)requiredRealSamples;
+
+    if (sourceBootstrapComplete || IsOptionalUnstartedAppAudioSource(isAppAudioSource, sourceTimelineValid)) {
         return true;
     }
 
-    return hasAlignedStart && sourceIsPrimed && bufferedRealSamples >= requiredRealSamples;
+    return sourceTimelineValid;
 }
 
 inline size_t ComputeRequiredBootstrapRealSamples(int64_t targetTimelineSamples, size_t minimumRealSamples) {
@@ -526,6 +530,11 @@ inline uint64_t ConsumeSyntheticBufferedSamples(uint64_t& syntheticBufferedSampl
     const uint64_t syntheticConsumed = std::min<uint64_t>(syntheticBufferedSamples, consumedSamples);
     syntheticBufferedSamples -= syntheticConsumed;
     return syntheticConsumed;
+}
+
+inline int64_t ResolveSourceTimelineWriteCursor(uint64_t qpcAlignedWrittenSamples, int64_t encodedCursorSamples) {
+    return std::max<int64_t>(static_cast<int64_t>(qpcAlignedWrittenSamples),
+                             std::max<int64_t>(0, encodedCursorSamples));
 }
 
 inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples,

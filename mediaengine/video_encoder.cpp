@@ -27,6 +27,7 @@ extern "C" {
 #include <cstring>
 #include <functional>
 #include <unordered_map>
+#include <vector>
 
 #include <filesystem>
 #include "cursor_renderer.h"
@@ -136,6 +137,24 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     int64_t maxAudioDeltaUs = 0;
     uint32_t videoStreamCount = 0;
     uint32_t audioStreamCount = 0;
+    std::vector<int64_t> firstPacketStartUs(probeCtx->nb_streams, INT64_MAX);
+    av_seek_frame(probeCtx, -1, 0, AVSEEK_FLAG_BACKWARD);
+    AVPacket* pkt = av_packet_alloc();
+    while (pkt && av_read_frame(probeCtx, pkt) >= 0) {
+        if (pkt->stream_index >= 0 && static_cast<unsigned int>(pkt->stream_index) < probeCtx->nb_streams &&
+            pkt->pts != AV_NOPTS_VALUE) {
+            const AVStream* packetStream = probeCtx->streams[pkt->stream_index];
+            if (HasValidStreamTimeBase(packetStream)) {
+                const int64_t packetStartUs = av_rescale_q(pkt->pts, packetStream->time_base, AVRational{1, 1000000});
+                firstPacketStartUs[pkt->stream_index] =
+                    std::min(firstPacketStartUs[pkt->stream_index], packetStartUs);
+            }
+        }
+        av_packet_unref(pkt);
+    }
+    if (pkt) {
+        av_packet_free(&pkt);
+    }
 
     for (unsigned int i = 0; i < probeCtx->nb_streams; ++i) {
         const AVStream* probedStream = probeCtx->streams[i];
@@ -147,7 +166,8 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
         if (durationUs <= 0) {
             continue;
         }
-        const int64_t startUs = GetStreamStartUs(probedStream);
+        const int64_t startUs =
+            firstPacketStartUs[i] != INT64_MAX ? firstPacketStartUs[i] : GetStreamStartUs(probedStream);
         const int64_t endUs = startUs + durationUs;
         if (probedStream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             ++videoStreamCount;

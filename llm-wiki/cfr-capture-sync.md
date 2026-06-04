@@ -1,6 +1,6 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-06-04 (audio codec finalization/silence hardening, build 0.1.3737)
+Last cross-checked: 2026-06-04 (audio startup cursor/validator hardening, build 0.1.3742)
 Stale-risk: medium
 
 Primary sources:
@@ -24,10 +24,13 @@ Packet-level duration equality is necessary but not sufficient for real sync or 
 
 Codec padding is handled below the same invariant. AAC and Opus may require padded codec frames internally, but the effective final sample count, packet duration, skip/trailing metadata, mux duration tags, and post-mux reopened-file probe follow the authoritative encoded video duration. Do not diagnose an AAC/Opus tail by packet frame size alone; inspect those signals together.
 
+Content-level audio sync also depends on startup policy. Each exported audio track has its own timeline cursor, and that cursor advances from sample 0 on the shared video anchor. System and mic sources are timeline-valid immediately and produce real encoded silence until packets arrive. Optional app-audio sources do not block startup; when they first appear, source timestamps decide which already-encoded silent range they overlap or which future range they fill. No source may delay the whole track, force a 500 ms bootstrap, or trigger startup backlog trimming just because its first real packet was late or silent.
+
 ## Invariants
 
 - Explicit CFR (`Video.useVFR=false`) disables the wall-clock audio anchor. Wall-clock chasing is a VFR/non-CFR tool, not a CFR sync tool.
 - Audio is not sped up or trimmed during normal CFR overload recovery. Only emergency near-capacity buffer protection may trim, and it must log as a continuity-risk event.
+- Track startup is not real-sample-gated. A source that is timeline-valid but currently silent contributes zero samples; late packets are placed by source timestamp/QPC and cannot move the track cursor.
 - Final audio may be drained/filled up to the final video CFR timeline, but audio packets must not start beyond the final video duration and final packets are clamped sample-exactly where possible.
 - Enabled audio tracks, including inactive app tracks or tracks whose sources stay silent, should be encoded as real zero samples through the selected codec up to the video timeline. Sparse container gaps are not the compatibility contract.
 - Final mux stream duration metadata is written from the final encoded video duration for every stream. This prevents codec padding or muxer rounding from making an audio track appear longer than video after sample accounting has already matched it.
@@ -43,6 +46,10 @@ Use these signals together:
 
 - `TimerRebase` / duplicate timer-rebase counts: nonzero values indicate live CFR rescheduling pressure. They must not represent discarded timeline debt in CFR captures.
 - `CFR stop drain ... path=inject|WGC`: shows whether stop-time outstanding CFR ticks were closed.
+- `[A/V START] Audio source reset ... timelineValid=...`: non-app sources should become valid at the shared anchor; app audio stays optional until first packet.
+- `[PullAudio] Track ... bootstrap complete ... forced=0 trimmed=0`: any `forced=1` or nonzero `trimmed` indicates the old content-shortening startup path.
+- `[AudioLoop] Late source cursor advance ...`: late source data is being stitched against the already-advanced source/track cursor rather than delaying the exported track.
+- `[STOP AUDIO TRACK] Track ... encoded=... expected=... realMixed=... fullSilence=... partialSilence=...`: per-exported-stream cursor and real/silence accounting.
 - `[StopAudio] Source ... diff=+0 (+0.0 ms)`: sample-count equality to the selected final video timeline.
 - `[VideoEncoder] Final packet timeline`: actual last written packet end per stream and packet-level delta.
 - `[VideoEncoder] Final metadata durations`: container metadata duration after clamping.
@@ -53,7 +60,7 @@ Use these signals together:
 - `[Cadence Health]` inject fields: `InjectCatch=fresh/repeat`, `InjectAgeTrim`, `TickUnique`, `TickDup`, `Shortfall`, and `AgeAvg/AgeMax` distinguish healthy fresh catch-up from repeat clusters.
 - `[Inject CFR SUMMARY]`: `FreshCatchup`, `RepeatCatchup`, `StaleTrim`, duplicate reasons, and source FPS show whether judder came from source/game FPS below target, fence deferral, or encoder pressure.
 
-Important interpretation: a `Final packet timeline` delta near zero proves file-tail alignment, but it does not prove content-level sync if earlier CFR timer debt was discarded, and it does not prove smooth visual cadence. When investigating subjective late-video/audio-lag reports, inspect `TimerRebase`, live `Shortfall`, `CatchUp`, and stop-drain logs. When investigating judder with clean A/V duration, inspect inject selected-frame age, unique-versus-duplicate ticks, fresh/repeat catch-up, and stale trims.
+Important interpretation: a `Final packet timeline` delta near zero proves file-tail alignment, but it does not prove content-level sync if earlier CFR timer debt was discarded, a source-start bootstrap trimmed content, or a track marker ends earlier than its peers. When investigating subjective late-video/audio-lag reports, inspect `TimerRebase`, live `Shortfall`, `CatchUp`, stop-drain logs, per-track bootstrap/trim/underrun logs, and waveform-tail marker spread. When investigating judder with clean A/V duration, inspect inject selected-frame age, unique-versus-duplicate ticks, fresh/repeat catch-up, and stale trims.
 
 ## Validation Notes
 
@@ -64,9 +71,11 @@ Important interpretation: a `Final packet timeline` delta near zero proves file-
 - Build `0.1.3095` passed with `python build.py --skip-updates`.
 - The test-only run displayed build metadata `0.1.3096` and passed 734/734 tests with `python build.py --no-build --run-tests --skip-updates`.
 - Build/test `0.1.3735` fixed remaining AAC/Opus finalization gaps after codec/layout hardening: AAC packet-visible duration could extend past video by one padded tail fragment, Opus packed silence padding under-allocated interleaved buffers, and all-silent tracks could miss the pending recording-start reset. Focused audio/config tests passed 72/72, the full test-only run at metadata `0.1.3736` passed 894/894, and the required plain build passed at `0.1.3737`.
+- Build/test `0.1.3740`-`0.1.3742` fixed the remaining Track 3 startup/content timing family: track startup now uses timeline-valid sources and a per-track cursor rather than waiting for real samples from every source; non-app silence starts at sample 0, optional app audio joins by timestamp, the 500 ms forced-bootstrap path is disabled for normal WGC/inject tracks, and `tools/analyze_capture_av.py` gained strict decode/waveform-tail/log-event validation. Focused audio tests passed 59/59 at build `0.1.3740`, the full test-only run passed 898/898 at metadata `0.1.3741`, and the required plain build passed at `0.1.3742`.
 
 ## Open Questions / Stale-Risk
 
 - Manual validation is still required on a fresh inject CFR capture under GPU/encoder stress, especially `4K120 10-bit AV1 preset=p5`, to confirm no audible lag, pitch shift, crackle, tail mismatch, or repeat-cluster judder remains.
+- Fresh WGC and inject codec-matrix recordings should be checked with `tools/analyze_capture_av.py --full-scan --decode-check --waveform-tail-scan --max-audio-spread-ms 0 --max-video-audio-delta-ms 0 --max-audio-tail-marker-spread-ms 0 --max-log-event audio_forced_bootstrap=0 --max-log-event audio_bootstrap_trim=0 --max-log-event audio_underrun=0`.
 - If future diagnostics show equal packet durations but subjective drift, inspect whether the visual content timeline skipped CFR repeats before changing audio correction policy.
 - If future diagnostics show clean A/V packet duration but visible judder, compare `AgeAvg/AgeMax`, `InjectCatch`, `InjectAgeTrim`, `TickUnique/TickDup`, and source FPS before changing encoder quality or audio policy.

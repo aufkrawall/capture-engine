@@ -286,12 +286,25 @@ TEST(AudioSyncUtilsTest, OptionalUnstartedAppAudioDoesNotBlockStartupPriming) {
     EXPECT_TRUE(ce::audio::IsSourceStartupPrimed(true, true, false));
 }
 
-TEST(AudioSyncUtilsTest, BootstrapReadinessIgnoresOnlyUnstartedAppAudio) {
+TEST(AudioSyncUtilsTest, BootstrapReadinessUsesTimelineValidityNotBufferedRealAudio) {
     EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, false, false, true, 0, 240));
-    EXPECT_FALSE(ce::audio::IsSourceBootstrapReady(false, true, false, true, 240, 240));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, true, false, true, 0, 240));
     EXPECT_FALSE(ce::audio::IsSourceBootstrapReady(false, false, false, false, 0, 240));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, true, false, false, 0, 240));
     EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, true, true, false, 240, 240));
     EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(true, false, false, false, 0, 240));
+}
+
+TEST(AudioSyncUtilsTest, SilentStartedSystemSourceIsTimelineReadyAtSampleZero) {
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, true, false, false, 0, 1200));
+    EXPECT_FALSE(ce::audio::IsSourceStartupPrimed(false, true, false));
+}
+
+TEST(AudioSyncUtilsTest, AppAudioRemainsOptionalUntilTimelineValid) {
+    EXPECT_TRUE(ce::audio::IsOptionalUnstartedAppAudioSource(true, false));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, false, false, true, 0, 1200));
+    EXPECT_FALSE(ce::audio::IsOptionalUnstartedAppAudioSource(true, true));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, true, false, true, 0, 1200));
 }
 
 TEST(AudioSyncUtilsTest, BootstrapRealAudioRequirementKeepsMinimumStartupFloor) {
@@ -313,6 +326,19 @@ TEST(AudioSyncUtilsTest, ConsumingSyntheticSamplesTracksOldestBufferedPortion) {
     EXPECT_EQ(syntheticSamples, 360u);
     EXPECT_EQ(ce::audio::ConsumeSyntheticBufferedSamples(syntheticSamples, 600), 360u);
     EXPECT_EQ(syntheticSamples, 0u);
+}
+
+TEST(AudioSyncUtilsTest, SourceTimelineWriteCursorNeverTrailsEncodedTrackCursor) {
+    EXPECT_EQ(ce::audio::ResolveSourceTimelineWriteCursor(0, 24000), 24000);
+    EXPECT_EQ(ce::audio::ResolveSourceTimelineWriteCursor(32000, 24000), 32000);
+    EXPECT_EQ(ce::audio::ResolveSourceTimelineWriteCursor(32000, -1), 32000);
+}
+
+TEST(AudioSyncUtilsTest, LateFirstPacketOverlapsAlreadyEncodedSilence) {
+    const int64_t writeCursor = ce::audio::ResolveSourceTimelineWriteCursor(0, 24000);
+    const auto adjustment = ce::audio::ComputePacketTimelineAdjustment(18000, writeCursor, 48);
+    EXPECT_EQ(adjustment.gapSamples, 0);
+    EXPECT_EQ(adjustment.overlapSamples, 6000);
 }
 
 TEST(AudioSyncUtilsTest, PacketTimelineAdjustmentIgnoresSmallClockSkew) {
