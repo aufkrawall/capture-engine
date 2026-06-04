@@ -1343,6 +1343,40 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(bool f
     return !fenceWaitCompleted && !dumpAlreadyRequested;
 }
 
+// --- DescFree overlay UPLOAD-ring per-slot GPU-completion guard ---------------
+//
+// The DX12 DescFree overlay backend round-robins through a small pool of
+// persistently-mapped UPLOAD vertex/index buffers.  The CPU must not memcpy new
+// geometry into a ring slot while the GPU is still reading the previous frame's
+// geometry from that same slot.  While the GPU keeps up this never happens, but
+// during the iflip<->composited mode switch triggered by Alt+Tab the GPU stops
+// retiring for hundreds of ms while the CPU keeps drawing the overlay at full
+// rate; within poolSize frames the CPU wraps and overwrites in-flight data,
+// corrupting the draw and wedging the GPU (DXGI_ERROR_DEVICE_HUNG / 2s TDR,
+// observed x86/WoW64 only, captured via DRED + NtGdiDdDDICreateAllocation).
+//
+// DecideOverlayUploadSlotGuardValue() returns the overlay-fence value the GPU
+// must reach before the slot used this frame may be reused, or 0 to disable the
+// guard.  ShouldWaitForOverlayUploadSlot() decides whether the CPU must block
+// before reusing a slot, given that slot's recorded guard and the fence's
+// current completed value.  The fence is the real synchronization; pacing the
+// CPU to the GPU here keeps the overlay visible every frame (never hidden) while
+// preventing the upload-ring data race.
+inline uint64_t DecideOverlayUploadSlotGuardValue(bool fgActive, bool hasOverlayFence, uint64_t currentFenceValue) {
+    // FG paths advance a separate completion fence (not the overlay fence) and
+    // already synchronize per frame, so a guard keyed on the overlay fence would
+    // never be reached there -> disable it.  Without an overlay fence there is
+    // nothing to wait on.
+    if (fgActive || !hasOverlayFence) {
+        return 0;
+    }
+    return currentFenceValue + 1;
+}
+
+inline bool ShouldWaitForOverlayUploadSlot(uint64_t slotGuardFenceValue, uint64_t gpuCompletedFenceValue) {
+    return slotGuardFenceValue != 0 && gpuCompletedFenceValue < slotGuardFenceValue;
+}
+
 // v8 visibility-gated hold (supersedes the v3-v7 focus-based holds and the
 // focus-loss offscreen composite).
 //

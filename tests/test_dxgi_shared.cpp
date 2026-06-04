@@ -345,6 +345,84 @@ TEST(DXGISharedTest, IncompleteFocusLossFenceOnlyHoldsBackbufferWork) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(false, true, true));
 }
 
+TEST(DXGISharedTest, OverlayUploadSlotGuardDisabledForFGAndMissingFence) {
+    namespace pol = ce::dx12_overlay_policy;
+    // Non-FG with a live overlay fence: the slot is guarded by the value this
+    // frame's overlay work will signal (currentFenceValue + 1).
+    EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, true, 0u), 1u);
+    EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, true, 41u), 42u);
+    // FG active uses a separate completion fence, so the overlay-fence-keyed guard
+    // would never be reached -> disabled (0).
+    EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(true, true, 41u), 0u);
+    // No overlay fence -> nothing to wait on.
+    EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, false, 41u), 0u);
+}
+
+TEST(DXGISharedTest, OverlayUploadSlotWaitsOnlyWhenGpuBehindActiveGuard) {
+    namespace pol = ce::dx12_overlay_policy;
+    // Guard 0 (disabled) -> never wait, regardless of completed value.
+    EXPECT_FALSE(pol::ShouldWaitForOverlayUploadSlot(0u, 0u));
+    EXPECT_FALSE(pol::ShouldWaitForOverlayUploadSlot(0u, 100u));
+    // GPU has reached or passed the guard -> no wait.
+    EXPECT_FALSE(pol::ShouldWaitForOverlayUploadSlot(10u, 10u));
+    EXPECT_FALSE(pol::ShouldWaitForOverlayUploadSlot(10u, 11u));
+    // GPU still behind an active guard -> must wait (prevents the upload-ring stomp).
+    EXPECT_TRUE(pol::ShouldWaitForOverlayUploadSlot(10u, 9u));
+    EXPECT_TRUE(pol::ShouldWaitForOverlayUploadSlot(1u, 0u));
+}
+
+// Models the x86 Alt+Tab freeze root cause: during the iflip<->composited mode
+// switch the GPU stops retiring for a stretch while the CPU keeps drawing the
+// overlay every frame.  The DescFree backend round-robins kPoolSize UPLOAD
+// vertex/index buffers; without a per-slot guard the CPU wraps and overwrites a
+// slot the GPU is still reading (the data race that corrupted the draw and hung
+// the device).  With the guard the present thread waits before reuse, so no slot
+// is ever stomped.  The unguarded branch reproduces the pre-fix behavior and must
+// stomp; the guarded branch must not.
+TEST(DXGISharedTest, OverlayUploadRingGuardPreventsModeSwitchStomp) {
+    namespace pol = ce::dx12_overlay_policy;
+    constexpr int kPoolSize = 4;
+
+    auto simulateStomps = [](bool useGuard) {
+        uint64_t slotGuard[kPoolSize] = {0, 0, 0, 0};
+        uint64_t slotSubmit[kPoolSize] = {0, 0, 0, 0};  // fence value of work that last used the slot
+        uint64_t currentFenceValue = 0;
+        uint64_t gpuCompleted = 0;
+        int stomps = 0;
+
+        for (int frame = 0; frame < 40; ++frame) {
+            // The GPU stops retiring mid-run (the mode-switch pause).
+            const bool gpuPaused = (frame >= 6 && frame < 22);
+            const int slot = frame % kPoolSize;
+
+            // Backend honors the per-slot guard: block until the GPU reaches it.
+            if (useGuard && pol::ShouldWaitForOverlayUploadSlot(slotGuard[slot], gpuCompleted)) {
+                gpuCompleted = slotGuard[slot];
+            }
+
+            // Overwrite the slot now.  A stomp = the GPU had not finished the work
+            // that last used this slot.
+            if (slotSubmit[slot] != 0 && gpuCompleted < slotSubmit[slot]) {
+                stomps++;
+            }
+
+            const uint64_t guard =
+                useGuard ? pol::DecideOverlayUploadSlotGuardValue(false, true, currentFenceValue) : 0u;
+            currentFenceValue += 1;  // one overlay submit per frame
+            slotSubmit[slot] = currentFenceValue;
+            slotGuard[slot] = guard;
+
+            if (!gpuPaused && gpuCompleted < currentFenceValue) {
+                gpuCompleted++;
+            }
+        }
+        return stomps;
+    };
+
+    EXPECT_GT(simulateStomps(false), 0);  // pre-fix unguarded ring stomps during the pause
+    EXPECT_EQ(simulateStomps(true), 0);   // per-slot guard prevents every stomp
+}
+
 TEST(DXGISharedTest, DXGIFactoryEnumerationLoggingTreatsNotFoundAsBenign) {
     EXPECT_FALSE(ce::dxgi_factory_policy::ShouldLogAdapterEnumerationFailure(S_OK));
     EXPECT_FALSE(ce::dxgi_factory_policy::ShouldLogAdapterEnumerationFailure(DXGI_ERROR_NOT_FOUND));

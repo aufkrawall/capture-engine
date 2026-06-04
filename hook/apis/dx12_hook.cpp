@@ -741,6 +741,12 @@ public:
         }
         fontGpuAddr_ = 0;
         deviceReady_ = false;
+        // Drop the (non-owning) slot fence binding and guards; a fresh InitDevice
+        // rebinds via the published static, and the GPU work that referenced this
+        // backend's ring is gone.
+        slotFence_ = nullptr;
+        for (int i = 0; i < kPoolSize; ++i)
+            slotFenceValue_[i] = 0;
     }
 
 private:
@@ -908,7 +914,7 @@ private:
             return;
         }
         const UINT64 guardValue = slotFenceValue_[slot];
-        if (guardValue == 0 || slotFence_->GetCompletedValue() >= guardValue) {
+        if (!ce::dx12_overlay_policy::ShouldWaitForOverlayUploadSlot(guardValue, slotFence_->GetCompletedValue())) {
             return;
         }
         HANDLE eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -916,10 +922,32 @@ private:
             return;
         }
         if (SUCCEEDED(slotFence_->SetEventOnCompletion(guardValue, eventHandle))) {
-            WaitForSingleObject(eventHandle, INFINITE);
+            // The fence is the real synchronization that closes the CPU<->GPU
+            // UPLOAD-buffer data race.  The bounded timeout is purely a liveness
+            // safety net: a separate code path (FG transition / overlay reinit)
+            // may legitimately discard the pending Signal for this guard value,
+            // which would otherwise wedge the present thread forever.  It sits
+            // well under the 2s GPU TDR so it can never itself trip a hang.
+            const DWORD waitResult = WaitForSingleObject(eventHandle, kSlotWaitTimeoutMs);
+            if (waitResult != WAIT_OBJECT_0) {
+                static std::atomic<int> s_slotWaitTimeoutLog{0};
+                const int logN = s_slotWaitTimeoutLog.fetch_add(1, std::memory_order_relaxed);
+                if (logN < 40 || (logN % 200) == 0) {
+                    HookLogImportant(
+                        "DescFree: slot %d GPU-completion wait %s (guard=%llu completed=%llu) — overlay upload ring "
+                        "may be reused before GPU retired it; GPU not retiring (mode switch / discarded signal?)",
+                        slot, waitResult == WAIT_TIMEOUT ? "timed out" : "failed", (unsigned long long)guardValue,
+                        (unsigned long long)slotFence_->GetCompletedValue());
+                }
+            }
         }
         CloseHandle(eventHandle);
     }
+
+    // Liveness bound for WaitForSlotGpuComplete (see comment there).  Must stay
+    // below the ~2s GPU TDR; a normal Alt+Tab mode-switch pause resumes the GPU
+    // in well under this, so the wait returns as soon as the slot is free.
+    static constexpr DWORD kSlotWaitTimeoutMs = 1000;
 
     static constexpr int kPoolSize = 4;
     static constexpr size_t kInitVBBytes = 4096 * 20;  // 4096 vertices * 20 bytes
@@ -10967,6 +10995,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
             s_descFreeCmdList = list;
             s_descFreeRtv = g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart();
+            // PostSL/FG overlay: synchronized by the FG completion fence each
+            // frame, so disable the DescFree per-slot guard (g_State.fence does
+            // not track this value here — a non-zero guard would stall reuse).
+            s_descFreeSlotFence = g_State.fence;
+            s_descFreeSlotGuardValue = 0;
             g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
             s_descFreeCmdList = nullptr;
 
@@ -11016,6 +11049,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
             s_descFreeCmdList = list;
             s_descFreeRtv = rtvHandle;
+            // PostSL/FG overlay: synchronized by the FG completion fence (see above).
+            s_descFreeSlotFence = g_State.fence;
+            s_descFreeSlotGuardValue = 0;
             g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
             s_descFreeCmdList = nullptr;
         }
@@ -12182,8 +12218,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         s_firstFrame = false;
         HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
         HookLogImportant(
-            "DX12 focus-loss sync policy=v11r draw-every-frame (overlay never hidden on focus; residency attempt "
-            "reverted after INVALID_CALL; Alt+Tab mode-switch freeze UNRESOLVED — pending RTSS-technique capture)");
+            "DX12 focus-loss sync policy=v12 draw-every-frame + DescFree upload-ring per-slot fence (overlay never "
+            "hidden on focus; Alt+Tab mode-switch DEVICE_HUNG root-caused via DRED + NtGdiDdDDICreateAllocation: CPU "
+            "stomped UPLOAD vb/ib slots the GPU was still reading during the GPU-paused mode switch; fixed by gating "
+            "ring-slot reuse on the overlay fence)");
     }
 
     // Diagnostic: when the D3D12 debug layer is enabled (CE_DX12_DEBUG_LAYER), flush
@@ -13949,8 +13987,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             if (!s_focusTransitionHoldActive || logCount < 40 || (logCount % 120) == 0) {
                 s_focusTransitionHoldActive = true;
                 HookLogImportant(
-                    "DX12: Focus-change mode switch active — overlay STILL RENDERING (not held; transition freeze "
-                    "unresolved) (remaining=%d present=%s#%d queue=%p fg=%p/%lu game=%p/%lu foreground=%d)",
+                    "DX12: Focus-change mode switch active — overlay STILL RENDERING (not held; upload-ring fence "
+                    "paces slot reuse) (remaining=%d present=%s#%d queue=%p fg=%p/%lu game=%p/%lu foreground=%d)",
                     focusTransitionHoldRemaining,
                     s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
                                                                  : "Present",
@@ -15970,6 +16008,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                         g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart();
                                                     s_descFreeCmdList = list;
                                                     s_descFreeRtv = offRtv;
+                                                    // Publish the per-slot UPLOAD-ring guard.  Non-FG path: this
+                                                    // frame's overlay work is signaled on g_State.fence at
+                                                    // currentFenceValue+1, so the backend can pace slot reuse to the
+                                                    // GPU.  FG paths use a separate completion fence (g_State.fence
+                                                    // does not advance to this value) and already synchronize per
+                                                    // frame, so disable the guard there to avoid a stale-value wait.
+                                                    s_descFreeSlotFence = g_State.fence;
+                                                    s_descFreeSlotGuardValue =
+                                                        ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
+                                                            slFGActive || g_FGCompat.IsFGActive(),
+                                                            g_State.fence != nullptr, g_State.currentFenceValue);
 
                                                     g_D3D11On12Adapter.SetIPCClient(g_IPC);
                                                     const auto metricsBinding =
@@ -16060,6 +16109,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
 
                                                 s_descFreeCmdList = list;
                                                 s_descFreeRtv = rtvHandle;
+                                                // Publish the per-slot UPLOAD-ring guard (see offscreen path above).
+                                                s_descFreeSlotFence = g_State.fence;
+                                                s_descFreeSlotGuardValue =
+                                                    ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
+                                                        slFGActive || g_FGCompat.IsFGActive(),
+                                                        g_State.fence != nullptr, g_State.currentFenceValue);
 
                                                 g_D3D11On12Adapter.SetIPCClient(g_IPC);
                                                 const auto metricsBinding =
