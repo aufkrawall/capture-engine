@@ -799,6 +799,106 @@ TEST_F(ConfigTest, ParseAudioNumberedInheritsCodec) {
     }
 }
 
+TEST_F(ConfigTest, AudioDerivedSourcesInheritQualityAndDownmix) {
+    std::string iniContent =
+        "[Audio]\n"
+        "enabled=false\n"
+        "codec=flac\n"
+        "bitrate=384\n"
+        "sample_rate=96000\n"
+        "bit_depth=24\n"
+        "downmix=true\n"
+        "\n"
+        "[Audio.1]\n"
+        "enabled=true\n"
+        "device=Speakers\n"
+        "track=11\n"
+        "\n"
+        "[Microphone]\n"
+        "enabled=true\n"
+        "device=Mic\n"
+        "track=12\n"
+        "\n"
+        "[Microphone.1]\n"
+        "enabled=true\n"
+        "device=Mic 2\n"
+        "track=13\n"
+        "\n"
+        "[AppAudio.1]\n"
+        "enabled=true\n"
+        "process=Game.exe\n"
+        "track=14\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    bool foundAudio = false;
+    bool foundMic = false;
+    bool foundMicNumbered = false;
+    bool foundApp = false;
+    for (const auto& src : config.audioSources) {
+        if (src.tracks.empty()) {
+            continue;
+        }
+        if (src.tracks[0] == 11) foundAudio = true;
+        if (src.tracks[0] == 12) foundMic = true;
+        if (src.tracks[0] == 13) foundMicNumbered = true;
+        if (src.tracks[0] == 14) foundApp = true;
+
+        EXPECT_EQ(src.codec, "flac");
+        EXPECT_EQ(src.bitrate, 384);
+        EXPECT_EQ(src.sampleRate, "96000");
+        EXPECT_EQ(src.bitDepth, "24");
+        EXPECT_TRUE(src.downmix);
+    }
+
+    EXPECT_TRUE(foundAudio);
+    EXPECT_TRUE(foundMic);
+    EXPECT_TRUE(foundMicNumbered);
+    EXPECT_TRUE(foundApp);
+}
+
+TEST_F(ConfigTest, AppAudioCanOverrideInheritedDownmixAndQuality) {
+    std::string iniContent =
+        "[Audio]\n"
+        "enabled=false\n"
+        "codec=alac\n"
+        "bitrate=192\n"
+        "sample_rate=48000\n"
+        "bit_depth=24\n"
+        "downmix=true\n"
+        "\n"
+        "[AppAudio.1]\n"
+        "enabled=true\n"
+        "process=Game.exe\n"
+        "track=3\n"
+        "codec=opus\n"
+        "bitrate=256\n"
+        "sample_rate=44100\n"
+        "bit_depth=16\n"
+        "downmix=false\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    bool foundApp = false;
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType == AudioConfig::AppAudio) {
+            foundApp = true;
+            EXPECT_EQ(src.codec, "opus");
+            EXPECT_EQ(src.bitrate, 256);
+            EXPECT_EQ(src.sampleRate, "44100");
+            EXPECT_EQ(src.bitDepth, "16");
+            EXPECT_FALSE(src.downmix);
+        }
+    }
+    EXPECT_TRUE(foundApp);
+}
+
 
 TEST_F(WhitelistEntryTest, OverlayWhitelistEntries) {
     std::string iniContent =

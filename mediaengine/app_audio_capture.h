@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <future>
 #include <mutex>
@@ -67,6 +68,8 @@ public:
 
     // Drop any queued packets without stopping capture.
     void DiscardPendingPackets();
+
+    void SetRequestedFormat(int sampleRate, int channels, uint32_t channelMask);
 
     /**
      * Check if currently capturing audio.
@@ -137,6 +140,9 @@ private:
     IAudioCaptureClient* pCaptureClient = nullptr;
     WAVEFORMATEX* pwfx = nullptr;
     DWORD activeStreamFlags = 0;
+    int requestedSampleRate = 48000;
+    int requestedChannels = 2;
+    uint32_t requestedChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
 
     // Target process info
     std::atomic<DWORD> targetPID{0};

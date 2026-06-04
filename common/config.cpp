@@ -1331,6 +1331,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     micAudio.bitrate = sysAudio.bitrate;
     micAudio.sampleRate = sysAudio.sampleRate;
     micAudio.bitDepth = sysAudio.bitDepth;
+    micAudio.downmix = sysAudio.downmix;
     micAudio.sourceType = AudioConfig::Microphone;
     if (micAudio.enabled) config.audioSources.push_back(micAudio);
 
@@ -1349,6 +1350,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         cfg.bitrate = sysAudio.bitrate;
         cfg.sampleRate = sysAudio.sampleRate;
         cfg.bitDepth = sysAudio.bitDepth;
+        cfg.downmix = sysAudio.downmix;
         cfg.sourceType = AudioConfig::Microphone;
         if (cfg.enabled) config.audioSources.push_back(cfg);
     }
@@ -1370,7 +1372,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         appAudio.bitrate = GetInt(section, "bitrate", sysAudio.bitrate);
         appAudio.sampleRate = GetStr(section, "sample_rate", sysAudio.sampleRate.c_str());
         appAudio.bitDepth = GetStr(section, "bit_depth", sysAudio.bitDepth.c_str());
-        appAudio.downmix = GetBool(section, "downmix", false);
+        appAudio.downmix = GetBool(section, "downmix", sysAudio.downmix);
         appAudio.sourceType = AudioConfig::AppAudio;
 
         if (appAudio.enabled && (!appAudio.processName.empty() || appAudio.processId != 0)) {

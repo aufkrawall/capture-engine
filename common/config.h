@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -26,6 +27,8 @@ struct AudioConfig {
     std::string sampleRate;  // "default", "44100", "48000", "96000"
     std::string bitDepth;    // "default", "16", "24", "32"
     bool downmix = false;
+    int outputChannels = 0;          // resolved internal track layout; 0 = stereo fallback
+    uint32_t outputChannelMask = 0;  // WAVEFORMATEXTENSIBLE/FFmpeg-compatible channel mask
 };
 
 // GPU Scaling Configuration

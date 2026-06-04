@@ -1,13 +1,132 @@
 #include "audio_encoder.h"
 #include "audio_sync_utils.h"
 #include "mediaengine.h"  // For DLL_Log
+#include <mmreg.h>
 
 extern "C" {
 #include <libavutil/audio_fifo.h>
+#include <libavutil/opt.h>
 }
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
+#include <cstdlib>
+#include <string>
+
+namespace {
+
+std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+int ResolveAudioBitDepth(const AudioConfig& config, int fallback) {
+    if (config.bitDepth.empty() || config.bitDepth == "default") {
+        return fallback;
+    }
+    int depth = std::atoi(config.bitDepth.c_str());
+    if (depth == 16 || depth == 24 || depth == 32) {
+        return depth;
+    }
+    DLL_Log("[AudioEncoder] Unsupported bit_depth=%s, using %d", config.bitDepth.c_str(), fallback);
+    return fallback;
+}
+
+uint32_t DefaultChannelMask(int channels) {
+    switch (channels) {
+        case 1:
+            return SPEAKER_FRONT_CENTER;
+        case 2:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+        case 3:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER;
+        case 4:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+        case 5:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_BACK_LEFT |
+                   SPEAKER_BACK_RIGHT;
+        case 6:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                   SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+        case 7:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                   SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | SPEAKER_BACK_CENTER;
+        case 8:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                   SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
+        default:
+            return 0;
+    }
+}
+
+bool CodecSupportsSampleFormat(const AVCodec* codec, AVSampleFormat fmt) {
+    if (!codec || !codec->sample_fmts) {
+        return true;
+    }
+    for (const AVSampleFormat* p = codec->sample_fmts; *p != AV_SAMPLE_FMT_NONE; ++p) {
+        if (*p == fmt) {
+            return true;
+        }
+    }
+    return false;
+}
+
+struct AudioCodecPolicy {
+    std::string requestedName;
+    std::string encoderName;
+    int bitDepth = 24;
+    bool allowShortFinalFrame = true;
+    bool scaleLossyBitrate = false;
+};
+
+AudioCodecPolicy ResolveCodecPolicy(const AudioConfig& config) {
+    AudioCodecPolicy policy;
+    policy.requestedName = config.codec.empty() ? "aac" : config.codec;
+    policy.encoderName = policy.requestedName;
+    const std::string normalized = ToLowerAscii(policy.requestedName);
+
+    if (normalized == "pcm") {
+        policy.bitDepth = ResolveAudioBitDepth(config, 24);
+        if (policy.bitDepth == 16) {
+            policy.encoderName = "pcm_s16le";
+        } else if (policy.bitDepth == 32) {
+            policy.encoderName = "pcm_f32le";
+        } else {
+            policy.encoderName = "pcm_s24le";
+            policy.bitDepth = 24;
+        }
+    } else if (normalized == "opus") {
+        policy.encoderName = "libopus";
+        policy.bitDepth = 0;
+        policy.allowShortFinalFrame = false;
+        policy.scaleLossyBitrate = true;
+    } else if (normalized == "aac") {
+        policy.bitDepth = 0;
+        policy.allowShortFinalFrame = false;
+        policy.scaleLossyBitrate = true;
+    } else if (normalized == "alac" || normalized == "flac") {
+        policy.bitDepth = ResolveAudioBitDepth(config, 24);
+    }
+
+    return policy;
+}
+
+int ScaleLossyBitrateKbps(int configuredKbps, int channels) {
+    if (configuredKbps <= 0) {
+        return configuredKbps;
+    }
+    if (channels >= 8) {
+        return configuredKbps * 4;
+    }
+    if (channels >= 6) {
+        return configuredKbps * 3;
+    }
+    return configuredKbps;
+}
+
+}  // namespace
 
 AudioEncoder::AudioEncoder()
     : codecCtx(nullptr),
@@ -55,14 +174,24 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
 #pragma warning(disable : 4996)
 #endif
 
-    std::string codecName = config.codec.empty() ? "aac" : config.codec;
+    const AudioCodecPolicy policy = ResolveCodecPolicy(config);
+    std::string codecName = policy.encoderName;
     const AVCodec* codec = avcodec_find_encoder_by_name(codecName.c_str());
     if (!codec) {
-        DLL_Log("[AudioEncoder] Codec not found: %s", codecName.c_str());
+        DLL_Log("[AudioEncoder] Codec not found: requested=%s resolved=%s", policy.requestedName.c_str(),
+                codecName.c_str());
         return false;
     }
 
-    DLL_Log("[AudioEncoder] Using codec: %s (id=%d)", codecName.c_str(), codec->id);
+    outputChannels = std::clamp(config.downmix ? 2 : (config.outputChannels > 0 ? config.outputChannels : 2), 1, 8);
+    outputChannelMask = config.downmix ? DefaultChannelMask(2)
+                                       : (config.outputChannelMask != 0 ? config.outputChannelMask
+                                                                       : DefaultChannelMask(outputChannels));
+    allowShortFinalFrame = policy.allowShortFinalFrame;
+
+    DLL_Log("[AudioEncoder] Using codec: requested=%s resolved=%s (id=%d) channels=%d mask=0x%x downmix=%d",
+            policy.requestedName.c_str(), codecName.c_str(), codec->id, outputChannels, outputChannelMask,
+            config.downmix ? 1 : 0);
 
     // Clean up existing resources so Init() can be safely called for reinit
     if (codecCtx) {
@@ -84,9 +213,21 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         return false;
     }
 
-    // ALAC requires specific sample format; for others (Opus, AAC), prefer Float > S16 > others
+    // Lossless/PCM policies honor bit_depth. Lossy codecs encode from the float mix path.
     if (codec->id == AV_CODEC_ID_ALAC) {
-        codecCtx->sample_fmt = AV_SAMPLE_FMT_S32P;
+        codecCtx->sample_fmt =
+            (policy.bitDepth == 16 && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S16P)) ? AV_SAMPLE_FMT_S16P
+                                                                                             : AV_SAMPLE_FMT_S32P;
+    } else if (codec->id == AV_CODEC_ID_FLAC) {
+        codecCtx->sample_fmt =
+            (policy.bitDepth == 16 && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S16)) ? AV_SAMPLE_FMT_S16
+                                                                                           : AV_SAMPLE_FMT_S32;
+    } else if (codecName == "pcm_s16le" && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S16)) {
+        codecCtx->sample_fmt = AV_SAMPLE_FMT_S16;
+    } else if (codecName == "pcm_s24le" && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S32)) {
+        codecCtx->sample_fmt = AV_SAMPLE_FMT_S32;
+    } else if (codecName == "pcm_f32le" && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_FLT)) {
+        codecCtx->sample_fmt = AV_SAMPLE_FMT_FLT;
     } else if (codec->sample_fmts) {
         // iterating to find best supported format
         const enum AVSampleFormat* p = codec->sample_fmts;
@@ -124,13 +265,26 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         DLL_Log("[AudioEncoder] No sample formats listed, defaulting to S16");
     }
 
-    if (config.bitrate > 0)
-        codecCtx->bit_rate = config.bitrate * 1000;
+    int configuredBitrate = config.bitrate;
+    if (policy.scaleLossyBitrate) {
+        configuredBitrate = ScaleLossyBitrateKbps(configuredBitrate, outputChannels);
+    }
+    if (configuredBitrate > 0) {
+        codecCtx->bit_rate = configuredBitrate * 1000;
+        if (policy.scaleLossyBitrate && configuredBitrate != config.bitrate) {
+            DLL_Log("[AudioEncoder] Scaled lossy bitrate for %d channels: %d -> %d Kbps", outputChannels,
+                    config.bitrate, configuredBitrate);
+        }
+    }
 
     // Parse sample rate - "default" means use 48000, otherwise parse as int
     int sampleRate = 48000;  // Default fallback
     if (!config.sampleRate.empty() && config.sampleRate != "default") {
         sampleRate = std::stoi(config.sampleRate);
+    }
+    if (codec->id == AV_CODEC_ID_OPUS && sampleRate != 48000) {
+        DLL_Log("[AudioEncoder] Opus requires 48000Hz output, adjusting sample_rate from %d to 48000", sampleRate);
+        sampleRate = 48000;
     }
     codecCtx->sample_rate = sampleRate;
 
@@ -153,26 +307,46 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         }
     }
 
-    // Channel Layout - Stereo (use av_channel_layout_copy for proper FFmpeg
-    // handling)
-    AVChannelLayout chLayout = AV_CHANNEL_LAYOUT_STEREO;
+    AVChannelLayout chLayout{};
+    if (outputChannelMask != 0 && av_channel_layout_from_mask(&chLayout, outputChannelMask) < 0) {
+        DLL_Log("[AudioEncoder] Unknown output channel mask 0x%x; using default layout for %d channels",
+                outputChannelMask, outputChannels);
+        av_channel_layout_default(&chLayout, outputChannels);
+        outputChannelMask = 0;
+    } else if (outputChannelMask == 0) {
+        av_channel_layout_default(&chLayout, outputChannels);
+    }
+    if (chLayout.nb_channels > 0 && chLayout.nb_channels != outputChannels) {
+        DLL_Log("[AudioEncoder] Channel mask 0x%x resolved to %d channels, overriding configured %d",
+                outputChannelMask, chLayout.nb_channels, outputChannels);
+        outputChannels = chLayout.nb_channels;
+    }
     av_channel_layout_copy(&codecCtx->ch_layout, &chLayout);
+    av_channel_layout_uninit(&chLayout);
 
-    DLL_Log("[AudioEncoder] Opening codec: %s sample_rate=%d sample_fmt=%d", codecName.c_str(), codecCtx->sample_rate,
-            codecCtx->sample_fmt);
+    DLL_Log("[AudioEncoder] Opening codec: %s sample_rate=%d sample_fmt=%d channels=%d mask=0x%x bit_depth=%d",
+            codecName.c_str(), codecCtx->sample_rate, codecCtx->sample_fmt, codecCtx->ch_layout.nb_channels,
+            outputChannelMask, policy.bitDepth);
 
     // ALAC: must set bits_per_raw_sample BEFORE avcodec_open2.
     // The encoder reads this during init to write the magic cookie (extradata).
     // Setting it after open causes a mismatch: extradata says 16-bit, stream
     // header says 32-bit, which makes decoders produce silence or white noise.
-    if (codec->id == AV_CODEC_ID_ALAC) {
-        codecCtx->bits_per_raw_sample = 24;
+    if (codec->id == AV_CODEC_ID_ALAC || codec->id == AV_CODEC_ID_FLAC) {
+        codecCtx->bits_per_raw_sample = policy.bitDepth == 16 ? 16 : (policy.bitDepth == 32 ? 32 : 24);
     }
 
     // Allow experimental codecs (like Opus in some builds)
     codecCtx->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
 
-    int ret = avcodec_open2(codecCtx, codec, nullptr);
+    AVDictionary* codecOptions = nullptr;
+    if (codec->id == AV_CODEC_ID_OPUS && codecName == "libopus") {
+        av_dict_set(&codecOptions, "application", "audio", 0);
+        av_dict_set(&codecOptions, "frame_duration", "20", 0);
+    }
+
+    int ret = avcodec_open2(codecCtx, codec, &codecOptions);
+    av_dict_free(&codecOptions);
     if (ret < 0) {
         char errbuf[256];
         av_strerror(ret, errbuf, sizeof(errbuf));
@@ -301,6 +475,13 @@ void AudioEncoder::ApplyPacketDuration(AVPacket* pkt) {
 
 void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
                                  int validBitsPerSample, int blockAlign, bool isFloat, int64_t timestamp) {
+    EncodeSamples(data, sizeBytes, channels, sampleRate, bitsPerSample, validBitsPerSample, blockAlign, isFloat, 0,
+                  timestamp);
+}
+
+void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
+                                 int validBitsPerSample, int blockAlign, bool isFloat, uint32_t channelMask,
+                                 int64_t timestamp) {
     // If encoder was invalidated (reopen failed in Stop), try to reinit
     if (!initDone && !savedConfig.codec.empty()) {
         DLL_Log("[AudioEnc] Attempting reinit after previous failure");
@@ -364,6 +545,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
     inputFmt.validBitsPerSample = validBitsPerSample;
     inputFmt.isFloat = isFloat;
     inputFmt.blockAlign = blockAlign;
+    inputFmt.channelMask = channelMask;
 
     // Initialize or reinitialize resampler if format changed
     bool needsInit = !resampler || !resampler->IsReady();
@@ -373,7 +555,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
             (currentInputFormat.channels != inputFmt.channels || currentInputFormat.sampleRate != inputFmt.sampleRate ||
              currentInputFormat.bitsPerSample != inputFmt.bitsPerSample ||
              currentInputFormat.validBitsPerSample != inputFmt.validBitsPerSample ||
-             currentInputFormat.isFloat != inputFmt.isFloat);
+             currentInputFormat.isFloat != inputFmt.isFloat || currentInputFormat.channelMask != inputFmt.channelMask);
     }
 
     if (needsInit) {
@@ -385,6 +567,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         outputFmt.channels = codecCtx->ch_layout.nb_channels;
         outputFmt.sampleRate = codecCtx->sample_rate;
         outputFmt.sampleFmt = codecCtx->sample_fmt;
+        outputFmt.channelMask = outputChannelMask;
 
         if (!resampler->Init(inputFmt, outputFmt)) {
             DLL_Log("[AudioEnc] Failed to init resampler");
@@ -392,9 +575,9 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         }
 
         currentInputFormat = inputFmt;
-        DLL_Log("[AudioEnc] Resampler initialized: %dHz %dch %s%d -> %dHz %dch fmt=%d", sampleRate, channels,
-                isFloat ? "float" : "int", bitsPerSample, codecCtx->sample_rate, outputFmt.channels,
-                (int)outputFmt.sampleFmt);
+        DLL_Log("[AudioEnc] Resampler initialized: %dHz %dch mask=0x%x %s%d -> %dHz %dch mask=0x%x fmt=%d",
+                sampleRate, channels, channelMask, isFloat ? "float" : "int", bitsPerSample, codecCtx->sample_rate,
+                outputFmt.channels, outputFmt.channelMask, (int)outputFmt.sampleFmt);
     }
 
     // Resample using AudioResampler
@@ -625,11 +808,12 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
     // This ensures audio PTS uses the same clock source as video (QPC)
     lastPacketTimestampMs = timestamp;
 
-    // Encode while we have enough samples
-    int frame_size = codecCtx->frame_size;
-    if (frame_size == 0) {
-        frame_size = 4096;  // Default for variable codecs
-    }
+    // Encode while we have enough samples. PCM and some lossless encoders do
+    // not report a fixed frame size; for those, emit the currently available
+    // chunk promptly instead of waiting for an arbitrary large buffer.
+    const int fixedFrameSize = codecCtx->frame_size;
+    constexpr int kMaxVariableFrameSamples = 4096;
+    const int logFrameSize = fixedFrameSize > 0 ? fixedFrameSize : kMaxVariableFrameSamples;
 
     // Periodic FIFO status (reduced frequency to avoid log spam)
     if (fifoLogCounter++ % 5000 == 0) {
@@ -639,11 +823,22 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         if (currentSize > fifoCapacity / 2) {
             DLL_Log("[AudioEnc] WARN: Audio FIFO high: %d/%d samples", currentSize, fifoCapacity);
         } else {
-            DLL_Log("[AudioEnc] FIFO size=%d, frame_size=%d", currentSize, frame_size);
+            DLL_Log("[AudioEnc] FIFO size=%d, frame_size=%d%s", currentSize, logFrameSize,
+                    fixedFrameSize > 0 ? "" : " (variable)");
         }
     }
 
-    while (av_audio_fifo_size(audioFifo) >= frame_size) {
+    while (true) {
+        int fifoSamples = av_audio_fifo_size(audioFifo);
+        if (fifoSamples <= 0 || (fixedFrameSize > 0 && fifoSamples < fixedFrameSize)) {
+            break;
+        }
+
+        int frame_size = fixedFrameSize > 0 ? fixedFrameSize : std::min(fifoSamples, kMaxVariableFrameSamples);
+        if (frame_size <= 0) {
+            break;
+        }
+
         // Make frame writable
         ret = av_frame_make_writable(frame);
         if (ret < 0) {
@@ -838,7 +1033,7 @@ void AudioEncoder::Flush() {
         codecCtx->codec && (codecCtx->codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE);
     const bool supportsSmallLastFrame =
         codecCtx->codec && (codecCtx->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME);
-    const bool canSendShortFrame = supportsVariableFrame || supportsSmallLastFrame;
+    const bool canSendShortFrame = allowShortFinalFrame && (supportsVariableFrame || supportsSmallLastFrame);
 
     // Only round up to frame boundary for codecs that require full-size frames.
     // Codecs with AV_CODEC_CAP_SMALL_LAST_FRAME (ALAC, AAC, FLAC, Opus) accept a
@@ -955,11 +1150,9 @@ void AudioEncoder::Flush() {
 
             int samplesToRead =
                 (int)std::min<int64_t>((int64_t)fifoSize, std::min<int64_t>((int64_t)frame_size, remainingAllowed));
-            // Use an exact (possibly short) final frame when the codec supports it.
-            // Codecs with AV_CODEC_CAP_SMALL_LAST_FRAME (ALAC, AAC, FLAC, Opus)
-            // accept fewer samples than frame_size for the final frame, which gives
-            // sample-accurate end alignment without any trailing_padding tricks.
-            // For codecs that require fixed-size frames, zero-pad to frame_size.
+            // Use an exact short final frame only for codecs that are known to
+            // represent it cleanly. AAC/Opus use fixed-frame padding plus explicit
+            // trailing discard metadata.
             int samplesToSend =
                 canSendShortFrame ? samplesToRead : ((codecCtx->frame_size > 0) ? codecCtx->frame_size : samplesToRead);
 
@@ -994,53 +1187,6 @@ void AudioEncoder::Flush() {
                 for (int p = 0; p < numPlanes && frame->data[p]; p++) {
                     uint8_t* dst = (uint8_t*)frame->data[p] + (samplesToRead * framePlaneStride);
                     memset(dst, 0, padBytes);
-                }
-            }
-
-            if (samplesToRead == fifoSize) {
-                const int FADE_SAMPLES = codecCtx->sample_rate / 20;
-                int fadeStart = std::max(0, samplesToRead - FADE_SAMPLES);
-
-                for (int p = 0; p < numPlanes && frame->data[p]; p++) {
-                    if (codecCtx->sample_fmt == AV_SAMPLE_FMT_FLT || codecCtx->sample_fmt == AV_SAMPLE_FMT_FLTP) {
-                        float* fData = (float*)frame->data[p];
-                        for (int i = fadeStart; i < samplesToRead; i++) {
-                            float fadePos = (float)(samplesToRead - 1 - i) / FADE_SAMPLES;
-                            float gain = fadePos < 1.0f ? fadePos : 1.0f;
-                            if (numPlanes == 1) {
-                                for (int c = 0; c < channels; c++)
-                                    fData[i * channels + c] *= gain;
-                            } else {
-                                fData[i] *= gain;
-                            }
-                        }
-                    } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S16 ||
-                               codecCtx->sample_fmt == AV_SAMPLE_FMT_S16P) {
-                        int16_t* sData = (int16_t*)frame->data[p];
-                        for (int i = fadeStart; i < samplesToRead; i++) {
-                            float fadePos = (float)(samplesToRead - 1 - i) / FADE_SAMPLES;
-                            float gain = fadePos < 1.0f ? fadePos : 1.0f;
-                            if (numPlanes == 1) {
-                                for (int c = 0; c < channels; c++)
-                                    sData[i * channels + c] = (int16_t)(sData[i * channels + c] * gain);
-                            } else {
-                                sData[i] = (int16_t)(sData[i] * gain);
-                            }
-                        }
-                    } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S32 ||
-                               codecCtx->sample_fmt == AV_SAMPLE_FMT_S32P) {
-                        int32_t* sData = (int32_t*)frame->data[p];
-                        for (int i = fadeStart; i < samplesToRead; i++) {
-                            float fadePos = (float)(samplesToRead - 1 - i) / FADE_SAMPLES;
-                            float gain = fadePos < 1.0f ? fadePos : 1.0f;
-                            if (numPlanes == 1) {
-                                for (int c = 0; c < channels; c++)
-                                    sData[i * channels + c] = (int32_t)(sData[i * channels + c] * gain);
-                            } else {
-                                sData[i] = (int32_t)(sData[i] * gain);
-                            }
-                        }
-                    }
                 }
             }
 

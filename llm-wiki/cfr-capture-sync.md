@@ -1,6 +1,6 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-05-13
+Last cross-checked: 2026-06-04
 Stale-risk: medium
 
 Primary sources:
@@ -11,6 +11,7 @@ Primary sources:
 - `mediaengine/audio_encoder.cpp`
 - `mediaengine/video_encoder.cpp`
 - `mediaengine/mux_invariants.h`
+- `llm-wiki/multi-audio-capture.md`
 - `tests/test_capture_pipeline_policy.cpp`
 - `tests/test_audio_sync_utils.cpp`
 - `tests/test_mux_invariants.cpp`
@@ -21,11 +22,15 @@ All CFR capture paths share the same invariant: the video CFR timeline is author
 
 Packet-level duration equality is necessary but not sufficient for real sync or visual smoothness. If the encoder thread discards accrued CFR timer debt during a stall, the visual timeline can jump forward while audio remains continuous. Final video/audio packet durations may still match, but content-level A/V sync can drift because video content skipped scheduled repeats. Conversely, `installed/captureengine/logs/20260513_183839` showed final A/V equality (`maxPacketDelta=1 us`, metadata `maxDelta=0 us`) while inject video was visibly juddery because live inject frames aged roughly hundreds of milliseconds and catch-up debt was paid with duplicate repeats instead of fresh queued frames. Therefore CFR timer-rebase debt must be preserved for both WGC and inject CFR, but inject CFR must also keep the live candidate buffer bounded and spend fresh ready candidates during catch-up when the encoder is healthy.
 
+Codec padding is handled below the same invariant. AAC and Opus may require padded codec frames internally, but the effective final sample count and mux duration tags follow the authoritative encoded video duration. Do not diagnose an AAC/Opus tail by packet frame size alone; inspect the final sample counters, skip/trailing metadata, and stream duration tags together.
+
 ## Invariants
 
 - Explicit CFR (`Video.useVFR=false`) disables the wall-clock audio anchor. Wall-clock chasing is a VFR/non-CFR tool, not a CFR sync tool.
 - Audio is not sped up or trimmed during normal CFR overload recovery. Only emergency near-capacity buffer protection may trim, and it must log as a continuity-risk event.
 - Final audio may be drained/filled up to the final video CFR timeline, but audio packets must not start beyond the final video duration and final packets are clamped sample-exactly where possible.
+- Final mux stream duration metadata is written from the final encoded video duration for every stream. This prevents codec padding or muxer rounding from making an audio track appear longer than video after sample accounting has already matched it.
+- Audio layout is per-track. Multichannel 5.1/7.1 tracks must preserve the resolved source layout when `downmix=false`; only `downmix=true` may force stereo.
 - Inject CFR may use cached last-frame repeats to close already accrued CFR debt at stop, because the injected source has no separate post-stop frame-drain path.
 - Live inject CFR should keep only a low-latency candidate reserve during steady-state: source-side overcapture is capped around `output_fps * 1.25`, live headroom returns to the low-latency cap after startup, and stale candidates are trimmed by age while preserving the minimum fence reserve.
 - Inject CFR catch-up should use fresh queued frames when CFR debt is large, frame credit is available, and the encoder is not bottlenecked/actively too slow. Cached repeats are still correct for true source limitation, fence deferral, no credit, hard encoder/mux pressure, or stop drain.
@@ -40,6 +45,8 @@ Use these signals together:
 - `[StopAudio] Source ... diff=+0 (+0.0 ms)`: sample-count equality to the selected final video timeline.
 - `[VideoEncoder] Final packet timeline`: actual last written packet end per stream and packet-level delta.
 - `[VideoEncoder] Final metadata durations`: container metadata duration after clamping.
+- `[AudioEncoder] Using codec: requested=... resolved=... channels=... mask=...`: codec alias, resolved encoder, and track layout policy.
+- `[AudioEncoder] Opus requires 48000 Hz ...`: expected adjustment when Opus was configured with another sample rate.
 - `[Cadence Health]` inject fields: `InjectCatch=fresh/repeat`, `InjectAgeTrim`, `TickUnique`, `TickDup`, `Shortfall`, and `AgeAvg/AgeMax` distinguish healthy fresh catch-up from repeat clusters.
 - `[Inject CFR SUMMARY]`: `FreshCatchup`, `RepeatCatchup`, `StaleTrim`, duplicate reasons, and source FPS show whether judder came from source/game FPS below target, fence deferral, or encoder pressure.
 

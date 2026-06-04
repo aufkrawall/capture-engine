@@ -51,6 +51,8 @@ public:
         AudioEncoder* sharedEncoderPtr = nullptr;     // Always points to the encoder to use
         std::unique_ptr<AudioRingBuffer> ringBuffer;  // Pull Model Buffer (Writer=Capture, Reader=Encoder)
         std::unique_ptr<AudioResampler> resampler;    // Resampler for this source (to standard format)
+        int mixChannels = 2;
+        uint32_t mixChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
 
         // Per-source drift compensation (Phase 2 of AV Sync overhaul)
         std::unique_ptr<AudioResampler> syncResampler;  // 48kHz->48kHz resampler with drift compensation
@@ -59,6 +61,7 @@ public:
         int dropFadeSamplesRemaining = 0;               // Remaining samples for post-drop transition smoothing
         float dropFadeStartL = 0.0f;                    // Left sample anchor for drop transition
         float dropFadeStartR = 0.0f;                    // Right sample anchor for drop transition
+        std::vector<float> dropFadeStart;               // Last full frame before a drop, one value per channel
         int underrunFadeSamplesRemaining = 0;           // Remaining samples for post-underrun fade-in
         int packetBoundaryFadeInSamplesRemaining = 0;   // Fade-in after silence/overlap packet timeline correction
         uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
@@ -117,6 +120,13 @@ public:
         AudioConfig::SourceType sourceType = AudioConfig::SystemAudio;
     };
 
+    struct TrackAudioFormat {
+        int channels = 2;
+        uint32_t channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+        int sampleRate = 48000;
+        int priority = 10;
+    };
+
     static float ComputeRaisedCosineFade(size_t index, size_t totalSamples) {
         if (totalSamples == 0) {
             return 1.0f;
@@ -140,6 +150,132 @@ public:
                 interleavedSamples[base + ch] *= fade;
             }
         }
+    }
+
+    static uint32_t DefaultChannelMaskForChannels(int channels) {
+        switch (channels) {
+            case 1:
+                return SPEAKER_FRONT_CENTER;
+            case 2:
+                return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+            case 3:
+                return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER;
+            case 4:
+                return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+            case 5:
+                return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_BACK_LEFT |
+                       SPEAKER_BACK_RIGHT;
+            case 6:
+                return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                       SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+            case 7:
+                return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                       SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | SPEAKER_BACK_CENTER;
+            case 8:
+                return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                       SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
+            default:
+                return 0;
+        }
+    }
+
+    static int ParseAudioSampleRate(const AudioConfig& audioConfig) {
+        if (!audioConfig.sampleRate.empty() && audioConfig.sampleRate != "default") {
+            return std::stoi(audioConfig.sampleRate);
+        }
+        return 48000;
+    }
+
+    static int AudioSourceLayoutPriority(AudioConfig::SourceType sourceType) {
+        return sourceType == AudioConfig::Microphone ? 2 : 1;
+    }
+
+    static TrackAudioFormat ProbeSourceTrackFormat(const AudioConfig& audioConfig) {
+        TrackAudioFormat format;
+        format.sampleRate = ParseAudioSampleRate(audioConfig);
+        if (audioConfig.downmix) {
+            format.channels = 2;
+            format.channelMask = DefaultChannelMaskForChannels(2);
+            format.priority = 0;
+            return format;
+        }
+
+        AudioPacket probed{};
+        bool probedOk = false;
+        if (audioConfig.sourceType == AudioConfig::AppAudio) {
+            // Process loopback accepts a requested format; preserve the default
+            // render endpoint layout for app-only tracks instead of hard-coding stereo.
+            probedOk = AudioCapture::ProbeMixFormat("", true, &probed);
+        } else {
+            probedOk = AudioCapture::ProbeMixFormat(audioConfig.device,
+                                                    audioConfig.sourceType == AudioConfig::SystemAudio, &probed);
+        }
+        if (probedOk && probed.channels > 0) {
+            format.channels = std::clamp(probed.channels, 1, 8);
+            format.channelMask =
+                probed.channelMask != 0 ? probed.channelMask : DefaultChannelMaskForChannels(format.channels);
+            format.sampleRate = 48000;
+        }
+        format.priority = AudioSourceLayoutPriority(audioConfig.sourceType);
+        return format;
+    }
+
+    std::map<int, TrackAudioFormat> ResolveTrackAudioFormats(const AppConfig& appConfig) {
+        std::map<int, TrackAudioFormat> resolved;
+        for (size_t i = 0; i < appConfig.audioSources.size(); ++i) {
+            const AudioConfig& audioConfig = appConfig.audioSources[i];
+            if (!audioConfig.enabled) {
+                continue;
+            }
+
+            std::vector<int> targetTracks = audioConfig.tracks;
+            if (targetTracks.empty()) {
+                targetTracks.push_back(static_cast<int>(i + 1));
+            }
+
+            TrackAudioFormat candidate = ProbeSourceTrackFormat(audioConfig);
+            for (int track : targetTracks) {
+                auto it = resolved.find(track);
+                if (it == resolved.end() || candidate.priority < it->second.priority) {
+                    resolved[track] = candidate;
+                    DLL_Log("[AudioFormat] Track %d resolved format: %dch mask=0x%x rate=%d priority=%d",
+                            track, candidate.channels, candidate.channelMask, candidate.sampleRate,
+                            candidate.priority);
+                }
+            }
+        }
+        return resolved;
+    }
+
+    TrackAudioFormat GetTrackAudioFormat(int track) const {
+        auto it = trackAudioFormats.find(track);
+        if (it != trackAudioFormats.end()) {
+            return it->second;
+        }
+        return {};
+    }
+
+    static void CaptureDropFadeAnchor(AudioSource& src, int channels) {
+        channels = std::clamp(channels, 1, 8);
+        src.dropFadeStart.assign(static_cast<size_t>(channels), 0.0f);
+        if (src.postResampleBuffer.size() < static_cast<size_t>(channels)) {
+            src.dropFadeStartL = 0.0f;
+            src.dropFadeStartR = 0.0f;
+            return;
+        }
+        const size_t base = src.postResampleBuffer.size() - static_cast<size_t>(channels);
+        for (int ch = 0; ch < channels; ++ch) {
+            src.dropFadeStart[static_cast<size_t>(ch)] = src.postResampleBuffer[base + static_cast<size_t>(ch)];
+        }
+        src.dropFadeStartL = src.dropFadeStart[0];
+        src.dropFadeStartR = channels > 1 ? src.dropFadeStart[1] : src.dropFadeStart[0];
+    }
+
+    static float GetDropFadeAnchor(const AudioSource& src, int channel) {
+        if (channel >= 0 && channel < static_cast<int>(src.dropFadeStart.size())) {
+            return src.dropFadeStart[static_cast<size_t>(channel)];
+        }
+        return 0.0f;
     }
 
     // Per-track encoder with optional mixing (when multiple sources target same
@@ -210,7 +346,7 @@ public:
     }
 
     size_t GetBufferedTimelineSamples(const AudioSource& src) const {
-        constexpr size_t kChannels = 2;
+        const size_t kChannels = static_cast<size_t>(std::clamp(src.mixChannels, 1, 8));
 
         size_t bufferedSamples = src.postResampleBuffer.size() / kChannels;
         if (src.ringBuffer) {
@@ -220,7 +356,7 @@ public:
     }
 
     size_t DropOldestBufferedSamples(AudioSource& src, size_t samplesToDrop) {
-        constexpr size_t kChannels = 2;
+        const size_t kChannels = static_cast<size_t>(std::clamp(src.mixChannels, 1, 8));
 
         if (samplesToDrop == 0) {
             return 0;
@@ -297,6 +433,7 @@ public:
             src.dropFadeSamplesRemaining = 0;
             src.dropFadeStartL = 0.0f;
             src.dropFadeStartR = 0.0f;
+            src.dropFadeStart.clear();
             src.underrunFadeSamplesRemaining = 0;
             src.packetBoundaryFadeInSamplesRemaining = 0;
             src.overflowDropSamples = 0;
@@ -369,6 +506,7 @@ public:
     int dropLogCounter = 0;
     int driftLogCounter = 0;
     std::map<int, int> trackSyncCheckCounters;
+    std::map<int, TrackAudioFormat> trackAudioFormats;
 
     // Per-recording frame log counters (avoid statics that leak across recordings)
     int injectFrameLogCount = 0;
@@ -469,6 +607,7 @@ public:
         DLL_Log("MediaEngine: Trusted QPC Frequency: %lld", qpcFreq);
 
         this->config = *config;
+        trackAudioFormats = ResolveTrackAudioFormats(*config);
 
         // Setup Video (Alloc Only) - skip for audio-only
         if (audioOnly) {
@@ -519,6 +658,11 @@ public:
 
             // For each target track, create or reuse an encoder
             for (int track : targetTracks) {
+                TrackAudioFormat trackFormat = GetTrackAudioFormat(track);
+                AudioConfig resolvedAudioConfig = audioConfig;
+                resolvedAudioConfig.outputChannels = audioConfig.downmix ? 2 : trackFormat.channels;
+                resolvedAudioConfig.outputChannelMask =
+                    audioConfig.downmix ? DefaultChannelMaskForChannels(2) : trackFormat.channelMask;
                 // Check if we already have an encoder for this track
                 AudioEncoder* encoderForTrack = nullptr;
                 auto it = trackToEncoder.find(track);
@@ -528,7 +672,8 @@ public:
                 } else {
                     // Create new encoder for this track
                     auto newEncoder = std::make_unique<AudioEncoder>();
-                    bool aRes = newEncoder->Init(audioConfig, [this](AVPacket* pkt) { this->WritePacket(pkt); });
+                    bool aRes =
+                        newEncoder->Init(resolvedAudioConfig, [this](AVPacket* pkt) { this->WritePacket(pkt); });
 
                     if (!aRes) {
                         DLL_Log("MediaEngine::Init Audio encoder for track %d failed", track);
@@ -537,7 +682,7 @@ public:
 
                     // Register with VideoEncoder for stream creation (skip in audio-only)
                     if (!audioOnly) {
-                        videoEnc->AddAudioContext(audioConfig, newEncoder->GetCodecContext(), track);
+                        videoEnc->AddAudioContext(resolvedAudioConfig, newEncoder->GetCodecContext(), track);
                     }
 
                     encoderForTrack = newEncoder.get();
@@ -545,9 +690,13 @@ public:
 
                     // Create AudioSource to own this encoder
                     AudioSource source;
-                    source.config = audioConfig;
+                    source.config = resolvedAudioConfig;
                     source.track = track;
                     source.sourceType = audioConfig.sourceType;
+                    source.mixChannels = resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
+                                                ? resolvedAudioConfig.outputChannelMask
+                                                : DefaultChannelMaskForChannels(source.mixChannels);
                     source.encoder = std::move(newEncoder);
                     source.sharedEncoderPtr = source.encoder.get();
 
@@ -557,6 +706,7 @@ public:
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
                         source.appCapture = std::make_unique<AppAudioCapture>();
+                        source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();
                     }
@@ -576,14 +726,20 @@ public:
                 if (it != trackToEncoder.end()) {
                     AudioSource source;
                     source.config = audioConfig;
+                    source.config = resolvedAudioConfig;
                     source.track = track;
                     source.sourceType = audioConfig.sourceType;
+                    source.mixChannels = resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
+                                                ? resolvedAudioConfig.outputChannelMask
+                                                : DefaultChannelMaskForChannels(source.mixChannels);
                     source.encoder = nullptr;  // Shared, not owned
                     source.sharedEncoderPtr = encoderForTrack;
 
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
                         source.appCapture = std::make_unique<AppAudioCapture>();
+                        source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();
                     }
@@ -829,6 +985,7 @@ public:
                 src.dropFadeSamplesRemaining = 0;
                 src.dropFadeStartL = 0.0f;
                 src.dropFadeStartR = 0.0f;
+                src.dropFadeStart.clear();
                 src.underrunFadeSamplesRemaining = 0;
                 src.packetBoundaryFadeInSamplesRemaining = 0;
                 src.overflowDropSamples = 0;
@@ -952,7 +1109,6 @@ public:
             }
             if (streamEnc2.size() > 1) {
                 constexpr int kChunkSamples = 4096;
-                std::vector<float> silence(kChunkSamples * 2, 0.0f);
                 int64_t target = 0;
                 for (auto& [si, enc] : streamEnc2) {
                     int64_t s = enc->GetSamplesCount();
@@ -960,6 +1116,10 @@ public:
                 }
                 target = ((target + kChunkSamples - 1) / kChunkSamples) * kChunkSamples;
                 for (auto& [si, enc] : streamEnc2) {
+                    AVCodecContext* ctx = enc->GetCodecContext();
+                    const int channels = std::clamp(ctx && ctx->ch_layout.nb_channels > 0 ? ctx->ch_layout.nb_channels : 2,
+                                                    1, 8);
+                    std::vector<float> silence(kChunkSamples * channels, 0.0f);
                     int64_t cur = enc->GetSamplesCount();
                     int64_t pad = target - cur;
                     if (pad > 0) {
@@ -967,8 +1127,8 @@ public:
                         while (remaining > 0) {
                             int chunk = (int)(std::min)(remaining, (int64_t)kChunkSamples);
                             enc->EncodeSamples((const uint8_t*)silence.data(),
-                                chunk * 2 * (int)sizeof(float),
-                                2, 48000, 32, 32, 8, true, GetTickCount64());
+                                chunk * channels * (int)sizeof(float),
+                                channels, 48000, 32, 32, channels * 4, true, GetTickCount64());
                             remaining -= chunk;
                         }
                     }
@@ -986,12 +1146,17 @@ public:
                         int64_t pad = target - cur;
                         if (pad > 0) {
                             allMatch = false;
+                            AVCodecContext* ctx = enc->GetCodecContext();
+                            const int channels =
+                                std::clamp(ctx && ctx->ch_layout.nb_channels > 0 ? ctx->ch_layout.nb_channels : 2, 1,
+                                           8);
+                            std::vector<float> silence(kChunkSamples * channels, 0.0f);
                             int64_t remaining = pad;
                             while (remaining > 0) {
                                 int chunk = (int)(std::min)(remaining, (int64_t)kChunkSamples);
                                 enc->EncodeSamples((const uint8_t*)silence.data(),
-                                    chunk * 2 * (int)sizeof(float),
-                                    2, 48000, 32, 32, 8, true, GetTickCount64());
+                                    chunk * channels * (int)sizeof(float),
+                                    channels, 48000, 32, 32, channels * 4, true, GetTickCount64());
                                 remaining -= chunk;
                             }
                             DLL_Log("[StopAudio] Convergence iter %d: stream %d +%lld to %lld",
@@ -1201,6 +1366,7 @@ public:
             src.dropFadeSamplesRemaining = 0;
             src.dropFadeStartL = 0.0f;
             src.dropFadeStartR = 0.0f;
+            src.dropFadeStart.clear();
             src.underrunFadeSamplesRemaining = 0;
             src.packetBoundaryFadeInSamplesRemaining = 0;
             src.overflowDropSamples = 0;
@@ -1501,7 +1667,6 @@ public:
             return;
 
         constexpr int SAMPLE_RATE = 48000;
-        constexpr int CHANNELS = 2;
         constexpr int64_t kSteadyAudioPullLatencyMs = ce::audio::kDefaultSteadyAudioPullLatencyMs;
         constexpr int64_t kPrimedSourceCushionSamples = SAMPLE_RATE / 50;  // 20ms
         constexpr int64_t kBootstrapHoldLimitMs = 500;
@@ -1694,6 +1859,10 @@ public:
             const auto& srcIndices = kv.second;
             if (srcIndices.empty())
                 continue;
+            const TrackAudioFormat trackFormat = GetTrackAudioFormat(track);
+            const int CHANNELS = std::clamp(trackFormat.channels, 1, 8);
+            const uint32_t CHANNEL_MASK =
+                trackFormat.channelMask != 0 ? trackFormat.channelMask : DefaultChannelMaskForChannels(CHANNELS);
 
             bool trackAllPrimed = true;
             int64_t trackMaxObservedLateStartMs = 0;
@@ -1962,14 +2131,7 @@ public:
                             src.wgcCoverageLossTrimAccumulator, kWgcCoverageLossMaxDropPerCall);
                         dropSamples = std::min(dropSamples, dropSamplesTotal);
                         if (dropSamples > 0 && src.ringBuffer) {
-                            if (src.postResampleBuffer.size() >= CHANNELS) {
-                                size_t base = src.postResampleBuffer.size() - CHANNELS;
-                                src.dropFadeStartL = src.postResampleBuffer[base];
-                                src.dropFadeStartR = src.postResampleBuffer[base + 1];
-                            } else {
-                                src.dropFadeStartL = 0.0f;
-                                src.dropFadeStartR = 0.0f;
-                            }
+                            CaptureDropFadeAnchor(src, CHANNELS);
                             src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
 
                             size_t trimmedFloats = src.ringBuffer->Skip((size_t)dropSamples * CHANNELS);
@@ -2019,14 +2181,7 @@ public:
                             kLatencyTrimHysteresisSamples);
                         int64_t dropSamples = std::min(dropSamplesTotal, kRuntimeMaxDropPerCall);
                         if (dropSamples > 0 && src.ringBuffer) {
-                            if (src.postResampleBuffer.size() >= CHANNELS) {
-                                size_t base = src.postResampleBuffer.size() - CHANNELS;
-                                src.dropFadeStartL = src.postResampleBuffer[base];
-                                src.dropFadeStartR = src.postResampleBuffer[base + 1];
-                            } else {
-                                src.dropFadeStartL = 0.0f;
-                                src.dropFadeStartR = 0.0f;
-                            }
+                            CaptureDropFadeAnchor(src, CHANNELS);
                             src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
 
                             size_t trimmedFloats = src.ringBuffer->Skip((size_t)dropSamples * CHANNELS);
@@ -2079,14 +2234,7 @@ public:
                                 const int64_t maxTrimThisCall =
                                     std::min(excessAboveCap, kWgcCoverageLossMaxDropPerCall);
                                 if (maxTrimThisCall > 0) {
-                                    if (src.postResampleBuffer.size() >= CHANNELS) {
-                                        size_t base = src.postResampleBuffer.size() - CHANNELS;
-                                        src.dropFadeStartL = src.postResampleBuffer[base];
-                                        src.dropFadeStartR = src.postResampleBuffer[base + 1];
-                                    } else {
-                                        src.dropFadeStartL = 0.0f;
-                                        src.dropFadeStartR = 0.0f;
-                                    }
+                                    CaptureDropFadeAnchor(src, CHANNELS);
                                     src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
 
                                     size_t trimmedFloats = src.ringBuffer->Skip((size_t)maxTrimThisCall * CHANNELS);
@@ -2243,14 +2391,7 @@ public:
                                         const int64_t tier2MaxTrim = std::min(tier2TrimBudget, std::abs(trueDrift));
                                         if (tier2MaxTrim > 0 && static_cast<int64_t>(rbAvailable) >
                                                                     targetLatencySamples + kRuntimeDropFadeSamples) {
-                                            if (src.postResampleBuffer.size() >= CHANNELS) {
-                                                size_t base = src.postResampleBuffer.size() - CHANNELS;
-                                                src.dropFadeStartL = src.postResampleBuffer[base];
-                                                src.dropFadeStartR = src.postResampleBuffer[base + 1];
-                                            } else {
-                                                src.dropFadeStartL = 0.0f;
-                                                src.dropFadeStartR = 0.0f;
-                                            }
+                                            CaptureDropFadeAnchor(src, CHANNELS);
                                             src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
 
                                             size_t trimmedFloats =
@@ -2309,14 +2450,7 @@ public:
                         const int64_t overflowExcess =
                             static_cast<int64_t>(rbAvailable) - targetLatencySamples - overflowCapSamples;
                         if (overflowExcess > kRuntimeDropFadeSamples) {
-                            if (src.postResampleBuffer.size() >= CHANNELS) {
-                                size_t base = src.postResampleBuffer.size() - CHANNELS;
-                                src.dropFadeStartL = src.postResampleBuffer[base];
-                                src.dropFadeStartR = src.postResampleBuffer[base + 1];
-                            } else {
-                                src.dropFadeStartL = 0.0f;
-                                src.dropFadeStartR = 0.0f;
-                            }
+                            CaptureDropFadeAnchor(src, CHANNELS);
                             src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
 
                             size_t trimmedFloats = src.ringBuffer->Skip((size_t)overflowExcess * CHANNELS);
@@ -2386,14 +2520,20 @@ public:
                                     int blendStart = kDropFadeSamples - src.dropFadeSamplesRemaining;
                                     for (int s = 0; s < blendSamples; s++) {
                                         float alpha = (float)(blendStart + s + 1) / kDropFadeSamples;
-                                        float inL = outFloats[s * CHANNELS];
-                                        float inR = outFloats[s * CHANNELS + 1];
-                                        outFloats[s * CHANNELS] =
-                                            src.dropFadeStartL + (inL - src.dropFadeStartL) * alpha;
-                                        outFloats[s * CHANNELS + 1] =
-                                            src.dropFadeStartR + (inR - src.dropFadeStartR) * alpha;
-                                        src.dropFadeStartL = outFloats[s * CHANNELS];
-                                        src.dropFadeStartR = outFloats[s * CHANNELS + 1];
+                                        for (int ch = 0; ch < CHANNELS; ++ch) {
+                                            const size_t idx = static_cast<size_t>(s) * CHANNELS + ch;
+                                            const float anchor = GetDropFadeAnchor(src, ch);
+                                            outFloats[idx] = anchor + (outFloats[idx] - anchor) * alpha;
+                                        }
+                                    }
+                                    if (blendSamples > 0) {
+                                        src.dropFadeStart.assign(static_cast<size_t>(CHANNELS), 0.0f);
+                                        const size_t base = static_cast<size_t>(blendSamples - 1) * CHANNELS;
+                                        for (int ch = 0; ch < CHANNELS; ++ch) {
+                                            src.dropFadeStart[static_cast<size_t>(ch)] = outFloats[base + ch];
+                                        }
+                                        src.dropFadeStartL = src.dropFadeStart[0];
+                                        src.dropFadeStartR = CHANNELS > 1 ? src.dropFadeStart[1] : src.dropFadeStart[0];
                                     }
                                     src.dropFadeSamplesRemaining -= blendSamples;
                                 }
@@ -2404,8 +2544,10 @@ public:
                                         const float alpha = ComputeRaisedCosineFade(
                                             static_cast<size_t>(s),
                                             static_cast<size_t>(std::max(src.packetBoundaryFadeInSamplesRemaining, 1)));
-                                        outFloats[s * CHANNELS] *= alpha;
-                                        outFloats[s * CHANNELS + 1] *= alpha;
+                                        const size_t base = static_cast<size_t>(s) * CHANNELS;
+                                        for (int ch = 0; ch < CHANNELS; ++ch) {
+                                            outFloats[base + ch] *= alpha;
+                                        }
                                     }
                                     src.packetBoundaryFadeInSamplesRemaining -= blendSamples;
                                 }
@@ -2419,8 +2561,10 @@ public:
                                     int blendStart = kUnderrunFadeSamples - src.underrunFadeSamplesRemaining;
                                     for (int s = 0; s < blendSamples; s++) {
                                         float alpha = (float)(blendStart + s + 1) / kUnderrunFadeSamples;
-                                        outFloats[s * CHANNELS] *= alpha;
-                                        outFloats[s * CHANNELS + 1] *= alpha;
+                                        const size_t base = static_cast<size_t>(s) * CHANNELS;
+                                        for (int ch = 0; ch < CHANNELS; ++ch) {
+                                            outFloats[base + ch] *= alpha;
+                                        }
                                     }
                                     src.underrunFadeSamplesRemaining -= blendSamples;
                                 }
@@ -2470,14 +2614,7 @@ public:
                     ce::audio::ConsumeSyntheticBufferedSamples(src.startupGapProtectionSamples, excess / CHANNELS);
                     src.postResampleTrimSamples += excess / CHANNELS;
 
-                    if (src.postResampleBuffer.size() >= CHANNELS) {
-                        size_t fadeBase = src.postResampleBuffer.size() - CHANNELS;
-                        src.dropFadeStartL = src.postResampleBuffer[fadeBase];
-                        src.dropFadeStartR = src.postResampleBuffer[fadeBase + 1];
-                    } else {
-                        src.dropFadeStartL = 0.0f;
-                        src.dropFadeStartR = 0.0f;
-                    }
+                    CaptureDropFadeAnchor(src, CHANNELS);
                     src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
 
                     if (dropLogCounter++ % 100 == 0) {
@@ -2523,8 +2660,10 @@ public:
                         int fadeStart = std::max(0, realSamples - kFadeSamples);
                         for (int s = fadeStart; s < realSamples; ++s) {
                             float alpha = static_cast<float>(realSamples - s) / static_cast<float>(kFadeSamples + 1);
-                            srcData[s * CHANNELS + 0] *= alpha;
-                            srcData[s * CHANNELS + 1] *= alpha;
+                            const size_t base = static_cast<size_t>(s) * CHANNELS;
+                            for (int ch = 0; ch < CHANNELS; ++ch) {
+                                srcData[base + ch] *= alpha;
+                            }
                         }
                     }
                     size_t padSamples = (totalFloats - toCopy) / CHANNELS;
@@ -2702,8 +2841,9 @@ public:
                         int64_t global = fadeStart + s;
                         float gain = (global >= fadeSamples) ? 1.0f : (float)global / (float)fadeSamples;
                         size_t base = (size_t)s * CHANNELS;
-                        mixBuffer[base + 0] *= gain;
-                        mixBuffer[base + 1] *= gain;
+                        for (int ch = 0; ch < CHANNELS; ++ch) {
+                            mixBuffer[base + ch] *= gain;
+                        }
                     }
                 }
             }
@@ -2742,6 +2882,7 @@ public:
                 encoder->EncodeSamples(encodeData.data(), (int)encodeData.size(), CHANNELS, SAMPLE_RATE, 32, 32,
                                        CHANNELS * 4,
                                        true,  // float32
+                                       CHANNEL_MASK,
                                        audioChunkTimestampMs);
 
                 if (srcIndices.size() > 1 && mixLogCounter++ % 5000 == 0) {
@@ -3024,6 +3165,7 @@ public:
 
         // Update config
         this->config = *newConfig;
+        trackAudioFormats = ResolveTrackAudioFormats(*newConfig);
 
         // If recording, we can't fully re-init, but we can log a warning.
         if (recording) {
@@ -3075,6 +3217,11 @@ public:
 
             // For each target track, create or reuse an encoder
             for (int track : targetTracks) {
+                TrackAudioFormat trackFormat = GetTrackAudioFormat(track);
+                AudioConfig resolvedAudioConfig = audioConfig;
+                resolvedAudioConfig.outputChannels = audioConfig.downmix ? 2 : trackFormat.channels;
+                resolvedAudioConfig.outputChannelMask =
+                    audioConfig.downmix ? DefaultChannelMaskForChannels(2) : trackFormat.channelMask;
                 AudioEncoder* encoderForTrack = nullptr;
                 auto it = trackToEncoder.find(track);
                 if (it != trackToEncoder.end()) {
@@ -3086,28 +3233,34 @@ public:
                 } else {
                     // Create new encoder for this track
                     auto newEncoder = std::make_unique<AudioEncoder>();
-                    bool aRes = newEncoder->Init(audioConfig, [this](AVPacket* pkt) { this->WritePacket(pkt); });
+                    bool aRes =
+                        newEncoder->Init(resolvedAudioConfig, [this](AVPacket* pkt) { this->WritePacket(pkt); });
 
                     if (!aRes) {
                         DLL_Log("MediaEngine::ReloadConfig Audio encoder for track %d failed", track);
                         continue;
                     }
 
-                    videoEnc->AddAudioContext(audioConfig, newEncoder->GetCodecContext(), track);
+                    videoEnc->AddAudioContext(resolvedAudioConfig, newEncoder->GetCodecContext(), track);
 
                     encoderForTrack = newEncoder.get();
                     trackToEncoder[track] = encoderForTrack;
 
                     AudioSource source;
-                    source.config = audioConfig;
+                    source.config = resolvedAudioConfig;
                     source.track = track;
                     source.sourceType = audioConfig.sourceType;
+                    source.mixChannels = resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
+                                                ? resolvedAudioConfig.outputChannelMask
+                                                : DefaultChannelMaskForChannels(source.mixChannels);
                     source.encoder = std::move(newEncoder);
                     source.sharedEncoderPtr = source.encoder.get();
 
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
                         source.appCapture = std::make_unique<AppAudioCapture>();
+                        source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();
                     }
@@ -3124,15 +3277,20 @@ public:
 
                 if (it != trackToEncoder.end()) {
                     AudioSource source;
-                    source.config = audioConfig;
+                    source.config = resolvedAudioConfig;
                     source.track = track;
                     source.sourceType = audioConfig.sourceType;
+                    source.mixChannels = resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
+                                                ? resolvedAudioConfig.outputChannelMask
+                                                : DefaultChannelMaskForChannels(source.mixChannels);
                     source.encoder = nullptr;
                     source.sharedEncoderPtr = encoderForTrack;
 
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
                         source.appCapture = std::make_unique<AppAudioCapture>();
+                        source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();
                     }
@@ -3169,25 +3327,29 @@ private:
         constexpr size_t kCfrAudioRingBufferSeconds = 30;
         const bool isCfrPath = ce::audio::ShouldUseCfrAudioContinuityPolicy(config.video.useVFR);
         const size_t ringBufferSeconds = isCfrPath ? kCfrAudioRingBufferSeconds : kDefaultAudioRingBufferSeconds;
-        size_t capacity = static_cast<size_t>(kMixerSampleRate) * ringBufferSeconds * 2;
+        const int channels = std::clamp(source.mixChannels, 1, 8);
+        size_t capacity = static_cast<size_t>(kMixerSampleRate) * ringBufferSeconds * channels;
         source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
-        DLL_Log("MediaEngine::Init RingBuffer created for source %zu. Cap=%zu samples (%zus), rate=%d", sourceIdx,
-                capacity, ringBufferSeconds, kMixerSampleRate);
+        DLL_Log("MediaEngine::Init RingBuffer created for source %zu. Cap=%zu floats (%zus), rate=%d channels=%d mask=0x%x",
+                sourceIdx, capacity, ringBufferSeconds, kMixerSampleRate, channels, source.mixChannelMask);
 
         source.syncResampler = std::make_unique<AudioResampler>();
         AudioResampler::InputFormat syncInFmt;
         syncInFmt.sampleRate = kMixerSampleRate;
-        syncInFmt.channels = 2;
+        syncInFmt.channels = channels;
         syncInFmt.bitsPerSample = 32;
         syncInFmt.validBitsPerSample = 32;
         syncInFmt.isFloat = true;
-        syncInFmt.blockAlign = 8;
+        syncInFmt.blockAlign = channels * 4;
+        syncInFmt.channelMask = source.mixChannelMask;
         AudioResampler::OutputFormat syncOutFmt;
         syncOutFmt.sampleRate = kMixerSampleRate;
-        syncOutFmt.channels = 2;
+        syncOutFmt.channels = channels;
         syncOutFmt.sampleFmt = AV_SAMPLE_FMT_FLT;
+        syncOutFmt.channelMask = source.mixChannelMask;
         source.syncResampler->Init(syncInFmt, syncOutFmt);
-        DLL_Log("MediaEngine::Init SyncResampler created for source %zu (rate=%d)", sourceIdx, kMixerSampleRate);
+        DLL_Log("MediaEngine::Init SyncResampler created for source %zu (rate=%d channels=%d)", sourceIdx,
+                kMixerSampleRate, channels);
     }
 
     void AudioLoop() {
@@ -3212,11 +3374,7 @@ private:
             }
         }
 
-        // Per-source sample buffers for mixing (float32 samples, interleaved
-        // stereo)
         const int MIX_CHUNK_SAMPLES = 480;  // 10ms at 48kHz
-        const int CHANNELS = 2;
-        const int CHUNK_SIZE = MIX_CHUNK_SAMPLES * CHANNELS;
 
         std::vector<int64_t> sourceTimestamps(audioSources.size(), 0);
         std::vector<bool> sourceLoggedPreStartDrop(audioSources.size(), false);
@@ -3304,8 +3462,9 @@ private:
                                 (int)packet.data.size());
                     }
 
-                    // Use AudioResampler to standardize all sources to 48kHz Float Stereo
-                    // This creates a unified timeline for the mixer
+                    // Standardize each source to the resolved track layout at 48kHz
+                    // float. This preserves multichannel tracks while still giving
+                    // the mixer a single format per track.
                     if (!src.resampler) {
                         src.resampler = std::make_unique<AudioResampler>();
                     }
@@ -3313,8 +3472,9 @@ private:
                     // Define target format for mixing (48kHz, Stereo, Float)
                     AudioResampler::OutputFormat targetFmt;
                     targetFmt.sampleRate = 48000;
-                    targetFmt.channels = 2;
+                    targetFmt.channels = std::clamp(src.mixChannels, 1, 8);
                     targetFmt.sampleFmt = AV_SAMPLE_FMT_FLT;  // Packed float (interleaved)
+                    targetFmt.channelMask = src.mixChannelMask;
 
                     // Define input format from packet
                     AudioResampler::InputFormat inputFmt;
@@ -3325,13 +3485,15 @@ private:
                         packet.validBitsPerSample > 0 ? packet.validBitsPerSample : packet.bitsPerSample;
                     inputFmt.isFloat = packet.isFloat;
                     inputFmt.blockAlign = (packet.channels * packet.bitsPerSample) / 8;
+                    inputFmt.channelMask = packet.channelMask;
 
                     // Initialize/Reinitialize resampler if needed (check all input format fields)
                     bool needReinit = !src.resampler->IsReady();
                     if (!needReinit) {
                         const auto& cur = src.resampler->GetInputFormat();
                         needReinit = (cur.sampleRate != inputFmt.sampleRate || cur.channels != inputFmt.channels ||
-                                      cur.bitsPerSample != inputFmt.bitsPerSample || cur.isFloat != inputFmt.isFloat);
+                                      cur.bitsPerSample != inputFmt.bitsPerSample || cur.isFloat != inputFmt.isFloat ||
+                                      cur.channelMask != inputFmt.channelMask);
                     }
                     if (needReinit) {
                         src.resampler->Init(inputFmt, targetFmt);
@@ -3481,6 +3643,7 @@ private:
                                             sizeof(float) * 8,  // validBitsPerSample
                                             targetFmt.channels * (int)sizeof(float),  // blockAlign
                                             true,   // isFloat
+                                            targetFmt.channelMask,
                                             GetTickCount64());
                                         // Track samples encoded per track for length alignment
                                         trackEncodedSamples[src.track] += writeSamples;

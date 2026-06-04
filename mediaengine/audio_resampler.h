@@ -29,6 +29,7 @@ public:
         int validBitsPerSample;  // Actual valid bits (from WAVEFORMATEXTENSIBLE)
         bool isFloat;
         int blockAlign;  // Bytes per frame (all channels)
+        uint32_t channelMask = 0;
     };
 
     // Output format description (for encoder)
@@ -36,6 +37,7 @@ public:
         int channels;
         int sampleRate;
         AVSampleFormat sampleFmt;  // e.g., AV_SAMPLE_FMT_S32P, AV_SAMPLE_FMT_FLTP
+        uint32_t channelMask = 0;
     };
 
     AudioResampler();

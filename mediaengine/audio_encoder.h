@@ -40,6 +40,9 @@ public:
     // validBitsPerSample: 0 means same as bitsPerSample (from
     // WAVEFORMATEXTENSIBLE) blockAlign: bytes per frame
     void EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
+                       int validBitsPerSample, int blockAlign, bool isFloat, uint32_t channelMask,
+                       int64_t timestamp);
+    void EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
                        int validBitsPerSample, int blockAlign, bool isFloat, int64_t timestamp);
 
     void SetStreamIndex(int index);  // Now flushes buffered packets
@@ -112,6 +115,9 @@ private:
     int fifoLogCounter = 0;
     int frameLogCounter = 0;
     int noPacketCount = 0;
+    bool allowShortFinalFrame = true;
+    int outputChannels = 2;
+    uint32_t outputChannelMask = 0;
 
     // FIFO overflow tracking - drop NEWEST samples to maintain timeline continuity
     bool wasDroppingSamples = false;

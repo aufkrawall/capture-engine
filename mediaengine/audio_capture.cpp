@@ -23,6 +23,48 @@ static bool IsIEEEFloat(const GUID& g) {
            g.Data4[6] == 0x9b && g.Data4[7] == 0x71;
 }
 
+static uint32_t ExtractChannelMask(const WAVEFORMATEX* format) {
+    if (!format) {
+        return 0;
+    }
+    if (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+        format->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)) {
+        const auto* wfex = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
+        return static_cast<uint32_t>(wfex->dwChannelMask);
+    }
+    if (format->nChannels == 1) {
+        return SPEAKER_FRONT_CENTER;
+    }
+    if (format->nChannels == 2) {
+        return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+    }
+    return 0;
+}
+
+static void FillPacketFormatFromWaveFormat(const WAVEFORMATEX* format, AudioPacket* packet) {
+    if (!format || !packet) {
+        return;
+    }
+
+    packet->channels = format->nChannels;
+    packet->sampleRate = format->nSamplesPerSec;
+    packet->bitsPerSample = format->wBitsPerSample;
+    packet->blockAlign = format->nBlockAlign;
+    packet->validBitsPerSample = 0;
+    packet->channelMask = ExtractChannelMask(format);
+    packet->isFloat = format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
+    packet->devicePosition = 0;
+    packet->qpcPosition = 0;
+
+    if (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+        const auto* wfex = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
+        if (IsIEEEFloat(wfex->SubFormat)) {
+            packet->isFloat = true;
+        }
+        packet->validBitsPerSample = wfex->Samples.wValidBitsPerSample;
+    }
+}
+
 AudioCapture::AudioCapture()
     : pEnumerator(NULL),
       pDevice(NULL),
@@ -38,6 +80,139 @@ AudioCapture::~AudioCapture() {
         CloseHandle(captureEvent_);
         captureEvent_ = nullptr;
     }
+}
+
+bool AudioCapture::ProbeMixFormat(const std::string& deviceId, bool isLoopback, AudioPacket* format) {
+    if (!format) {
+        return false;
+    }
+
+    *format = {};
+    HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    const bool coInitOwned = (hr == S_OK);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
+        DLL_Log("[AudioCapture] ProbeMixFormat CoInitializeEx failed: 0x%x", hr);
+        return false;
+    }
+
+    IMMDeviceEnumerator* enumerator = nullptr;
+    IMMDevice* device = nullptr;
+    IAudioClient* audioClient = nullptr;
+    WAVEFORMATEX* waveFormat = nullptr;
+    const EDataFlow dataFlow = isLoopback ? eRender : eCapture;
+
+    auto cleanup = [&]() {
+        if (waveFormat) {
+            CoTaskMemFree(waveFormat);
+        }
+        if (audioClient) {
+            audioClient->Release();
+        }
+        if (device) {
+            device->Release();
+        }
+        if (enumerator) {
+            enumerator->Release();
+        }
+        if (coInitOwned) {
+            CoUninitialize();
+        }
+    };
+
+    hr = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator,
+                          reinterpret_cast<void**>(&enumerator));
+    if (FAILED(hr) || !enumerator) {
+        DLL_Log("[AudioCapture] ProbeMixFormat CoCreateInstance failed: 0x%x", hr);
+        cleanup();
+        return false;
+    }
+
+    if (deviceId.empty()) {
+        hr = enumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &device);
+    } else {
+        int wideLen = MultiByteToWideChar(CP_UTF8, 0, deviceId.c_str(), -1, nullptr, 0);
+        if (wideLen > 0) {
+            std::wstring wideId(static_cast<size_t>(wideLen), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, deviceId.c_str(), -1, wideId.data(), wideLen);
+            hr = enumerator->GetDevice(wideId.c_str(), &device);
+        } else {
+            hr = E_FAIL;
+        }
+
+        if (FAILED(hr)) {
+            IMMDeviceCollection* devices = nullptr;
+            HRESULT enumHr = enumerator->EnumAudioEndpoints(dataFlow, DEVICE_STATE_ACTIVE, &devices);
+            if (SUCCEEDED(enumHr) && devices) {
+                UINT count = 0;
+                devices->GetCount(&count);
+                for (UINT i = 0; i < count && !device; ++i) {
+                    IMMDevice* candidate = nullptr;
+                    if (FAILED(devices->Item(i, &candidate)) || !candidate) {
+                        continue;
+                    }
+                    IPropertyStore* props = nullptr;
+                    if (SUCCEEDED(candidate->OpenPropertyStore(STGM_READ, &props)) && props) {
+                        PROPVARIANT var = {};
+                        if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var)) && var.vt == VT_LPWSTR &&
+                            var.pwszVal) {
+                            int nameLen =
+                                WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, nullptr, 0, nullptr, nullptr);
+                            if (nameLen > 0) {
+                                std::string friendlyName(static_cast<size_t>(nameLen), '\0');
+                                WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, friendlyName.data(), nameLen, nullptr,
+                                                    nullptr);
+                                if (!friendlyName.empty() && friendlyName.back() == '\0') {
+                                    friendlyName.pop_back();
+                                }
+                                if (friendlyName == deviceId) {
+                                    device = candidate;
+                                    device->AddRef();
+                                    hr = S_OK;
+                                }
+                            }
+                        }
+                        if (var.vt == VT_LPWSTR && var.pwszVal) {
+                            CoTaskMemFree(var.pwszVal);
+                        }
+                        props->Release();
+                    }
+                    candidate->Release();
+                }
+                devices->Release();
+            }
+        }
+
+        if (!device) {
+            hr = enumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &device);
+        }
+    }
+
+    if (FAILED(hr) || !device) {
+        DLL_Log("[AudioCapture] ProbeMixFormat endpoint lookup failed: 0x%x", hr);
+        cleanup();
+        return false;
+    }
+
+    hr = device->Activate(IID_IAudioClient, CLSCTX_ALL, NULL, reinterpret_cast<void**>(&audioClient));
+    if (FAILED(hr) || !audioClient) {
+        DLL_Log("[AudioCapture] ProbeMixFormat Activate failed: 0x%x", hr);
+        cleanup();
+        return false;
+    }
+
+    hr = audioClient->GetMixFormat(&waveFormat);
+    if (FAILED(hr) || !waveFormat) {
+        DLL_Log("[AudioCapture] ProbeMixFormat GetMixFormat failed: 0x%x", hr);
+        cleanup();
+        return false;
+    }
+
+    FillPacketFormatFromWaveFormat(waveFormat, format);
+    DLL_Log("[AudioCapture] ProbeMixFormat: device=%s loopback=%d channels=%d rate=%d bits=%d mask=0x%x",
+            deviceId.empty() ? "default" : deviceId.c_str(), isLoopback ? 1 : 0, format->channels, format->sampleRate,
+            format->bitsPerSample, format->channelMask);
+    cleanup();
+    return true;
 }
 
 bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
@@ -355,6 +530,7 @@ void AudioCapture::CaptureLoop() {
             packet.bitsPerSample = pwfx->wBitsPerSample;
             packet.blockAlign = pwfx->nBlockAlign;
             packet.validBitsPerSample = 0;           // Default: same as bitsPerSample
+            packet.channelMask = ExtractChannelMask(pwfx);
             packet.devicePosition = devicePosition;  // Store for debugging if needed
             packet.qpcPosition = qpcPosition;        // Store for debugging if needed
 

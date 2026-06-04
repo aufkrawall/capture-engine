@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-03 (updated: build 0.1.3695+ - x86 DX12 v10 focus-transition-hold; DRED proved any backbuffer touch hangs mid mode-switch)
+Last cross-checked: 2026-06-04 (updated: audio codec/layout hardening, build 0.1.3722)
 
 Primary sources:
 - `AGENTS.md`
@@ -54,12 +54,12 @@ Primary sources:
   - Controller-side pseudo-overlay for WGC capture: architecture, modes, foreground detection, process_list config parsing, known pitfalls (Trim charset, `;` comment skipping), debug logging, source anchors.
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
-- `multi-audio-capture.md` (planned)
-  - Multi system audio (`[Audio.N]`) and multi microphone (`[Microphone.N]`) capture. Device ID selection via `GetDevice` + friendly-name fallback. Config format, default track numbering, and codec inheritance from `[Audio]`.
+- `multi-audio-capture.md`
+  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture. Config inheritance for codec/quality/layout fields, per-track channel layout resolution, PCM/Opus codec policy, multichannel bitrate scaling, and final duration/layout diagnostics. Last verified 2026-06-04. Stale-risk: medium.
 - `wgc-capture.md`
   - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, WGC CFR audio continuity/stop-tail policy, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-05-07. Stale-risk: medium.
 - `cfr-capture-sync.md`
-  - Shared WGC/inject CFR timeline and audio sync invariants, packet-level duration diagnostics, stop-drain rules, and the inject timer-rebase debt fix. Last verified 2026-05-13. Stale-risk: medium.
+  - Shared WGC/inject CFR timeline and audio sync invariants, packet-level duration diagnostics, stop-drain rules, codec-padding finalization, and the inject timer-rebase debt fix. Last verified 2026-06-04. Stale-risk: medium.
 - `performance-priority.md`
   - `[Performance]` config section: `process_priority` (CPU), `gpu_priority` (encoder GPU thread), `copy_queue_priority` (D3D12 overlay queue). Defaults, data flow, source anchors, and open questions.
 - `log.md`

@@ -134,6 +134,7 @@ Default quality mode currently:
 - `build/verification/latest_summary.txt`, `latest_manifest.json`, `latest_run_dir.txt`, and `latest_build.log` always point at the most recent top-level verification/build run.
 - For long-running verification/build commands, prefer re-reading `build/verification/latest_summary.txt` or `latest_manifest.json` to check completion/status instead of leaving a shell in a passive polling/watch loop. The summary/manifest pair is the intended status contract.
 - On Windows, the script bootstraps MSYS2 and manages a custom FFmpeg build path.
+- The custom Windows FFmpeg recipe is part of audio codec support. The expected audio encoder set includes `aac`, `alac`, `flac`, `libopus`, `pcm_s16le`, `pcm_s24le`, and `pcm_f32le`; runtime DLL copying includes `libopus-0.dll`. `--skip-updates` may skip the FFmpeg rebuild when DLLs already exist, so codec-set changes need an explicit non-skip/force rebuild once before normal skip-updates builds can validate them.
 - On Windows, `--skip-updates` now also skips the old unconditional MSYS2 `pacman -S --needed ...` package-install step. Earlier behavior still entered pacman even on focused test runs and could hang on mirrors or stale package-manager state before any compile/test work started.
 - The nested sanitizer regression child now writes to its own log file inside the parent verification bundle instead of clobbering the parent top-level `build.log`.
 - MSYS2 package install now uses an explicit timeout and logs partial stdout/stderr on timeout instead of silently waiting forever.

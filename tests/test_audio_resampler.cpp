@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+#include <windows.h>
+#include <mmreg.h>
 
 #include "../mediaengine/audio_resampler.h"
 
@@ -16,6 +18,7 @@ AudioResampler::InputFormat MakeStereoPacked24Input() {
     inFmt.validBitsPerSample = 24;
     inFmt.isFloat = false;
     inFmt.blockAlign = 6;
+    inFmt.channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
     return inFmt;
 }
 
@@ -24,6 +27,7 @@ AudioResampler::OutputFormat MakeStereoFloatOutput(int sampleRate = 48000) {
     outFmt.channels = 2;
     outFmt.sampleRate = sampleRate;
     outFmt.sampleFmt = AV_SAMPLE_FMT_FLTP;
+    outFmt.channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
     return outFmt;
 }
 
@@ -88,11 +92,13 @@ TEST(AudioResamplerTest, ProcessCanUpmixMonoAndResampleToEncoderRate) {
     inFmt.validBitsPerSample = 16;
     inFmt.isFloat = false;
     inFmt.blockAlign = 2;
+    inFmt.channelMask = SPEAKER_FRONT_CENTER;
 
     AudioResampler::OutputFormat outFmt{};
     outFmt.channels = 2;
     outFmt.sampleRate = 48000;
     outFmt.sampleFmt = AV_SAMPLE_FMT_FLTP;
+    outFmt.channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
 
     ASSERT_TRUE(resampler.Init(inFmt, outFmt));
 
@@ -143,11 +149,13 @@ TEST(AudioResamplerTest, ResetClearsBufferedDelayAndClockTracking) {
     inFmt.validBitsPerSample = 16;
     inFmt.isFloat = false;
     inFmt.blockAlign = 4;
+    inFmt.channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
 
     AudioResampler::OutputFormat outFmt{};
     outFmt.channels = 2;
     outFmt.sampleRate = 48000;
     outFmt.sampleFmt = AV_SAMPLE_FMT_FLTP;
+    outFmt.channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
 
     ASSERT_TRUE(resampler.Init(inFmt, outFmt));
 
@@ -168,4 +176,37 @@ TEST(AudioResamplerTest, ResetClearsBufferedDelayAndClockTracking) {
     EXPECT_EQ(resampler.GetDelay(), 0);
     EXPECT_EQ(resampler.GetCurrentCompensationDelta(), 0);
     EXPECT_DOUBLE_EQ(resampler.GetCurrentCompensationPercent(), 0.0);
+}
+
+TEST(AudioResamplerTest, PreservesFivePointOneChannelCountWithMasks) {
+    AudioResampler resampler;
+    AudioResampler::InputFormat inFmt{};
+    inFmt.channels = 6;
+    inFmt.sampleRate = 48000;
+    inFmt.bitsPerSample = 32;
+    inFmt.validBitsPerSample = 32;
+    inFmt.isFloat = true;
+    inFmt.blockAlign = 24;
+    inFmt.channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                        SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+
+    AudioResampler::OutputFormat outFmt{};
+    outFmt.channels = 6;
+    outFmt.sampleRate = 48000;
+    outFmt.sampleFmt = AV_SAMPLE_FMT_FLT;
+    outFmt.channelMask = inFmt.channelMask;
+
+    ASSERT_TRUE(resampler.Init(inFmt, outFmt));
+
+    std::vector<float> input(128 * 6, 0.0f);
+    input[0] = 0.25f;
+    input[5] = -0.25f;
+    uint8_t** output = nullptr;
+    int outputSamples = 0;
+    ASSERT_TRUE(resampler.Process(reinterpret_cast<const uint8_t*>(input.data()),
+                                  static_cast<int>(input.size() * sizeof(float)), &output, &outputSamples));
+    ASSERT_NE(output, nullptr);
+    EXPECT_GT(outputSamples, 0);
+    EXPECT_EQ(resampler.GetOutputFormat().channels, 6);
+    AudioResampler::FreeOutputBuffer(output);
 }

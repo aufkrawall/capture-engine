@@ -255,6 +255,7 @@ PACKAGES = [
     "mingw-w64-clang-x86_64-amf-headers",
     "mingw-w64-clang-x86_64-onevpl",  # For QSV
     "mingw-w64-clang-x86_64-svt-av1",  # For libsvtav1 / AVIF screenshots
+    "mingw-w64-clang-x86_64-opus",  # For libopus audio encoding
     "mingw-w64-clang-x86_64-lld",  # For delay-load support (x64 + x86 cross-compile)
     "mingw-w64-clang-x86_64-clang-tools-extra",  # For clang-format
     "make",
@@ -545,6 +546,7 @@ def verify_msys2_ffmpeg_build_deps(msys2_dir: str) -> None:
     required_pkg_configs = [
         ("vpl", "mingw-w64-clang-x86_64-onevpl"),
         ("SvtAv1Enc", "mingw-w64-clang-x86_64-svt-av1"),
+        ("opus", "mingw-w64-clang-x86_64-opus"),
     ]
     required_headers = [
         (
@@ -1715,6 +1717,7 @@ LINUX_MSYS2_PACKAGES = [
     "mingw-w64-clang-x86_64-libva",
     "mingw-w64-clang-x86_64-libvpl",
     "mingw-w64-clang-x86_64-svt-av1",
+    "mingw-w64-clang-x86_64-opus",
     "mingw-w64-clang-x86_64-libwinpthread",
     "mingw-w64-clang-x86_64-crt",
 ]
@@ -1980,6 +1983,7 @@ WINDOWS_FFMPEG_RUNTIME_DEPS = [
     "libva.dll",
     "libvpl-2.dll",
     "libSvtAv1Enc-4.dll",
+    "libopus-0.dll",
     "libc++.dll",
     "libunwind.dll",
 ]
@@ -1997,6 +2001,7 @@ LINUX_FFMPEG_RUNTIME_DEPS = [
     "libva.dll",
     "libva_win32.dll",
     "libvpl-2.dll",
+    "libopus-0.dll",
     "libwinpthread-1.dll",
     "libgcc_s_seh-1.dll",
     "libstdc++-6.dll",
@@ -2162,6 +2167,15 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
                 (
                     os.path.join(license_root, "libvpl", "LICENSE"),
                     "MIT_libvpl.txt",
+                ),
+            ],
+        ),
+        (
+            "libopus-0.dll",
+            [
+                (
+                    os.path.join(license_root, "opus", "COPYING"),
+                    "BSD-3-Clause_libopus.txt",
                 ),
             ],
         ),
@@ -2543,6 +2557,7 @@ class FFmpegBuilder:
             "--enable-libvpl",  # QSV
             "--enable-mediafoundation",
             "--enable-libsvtav1",  # SVT-AV1 encoder (fast AV1, BSD license)
+            "--enable-libopus",  # Opus audio encoder with correct packetization support
             # Tuning
             "--disable-encoders",
             "--disable-decoders",
@@ -2555,7 +2570,7 @@ class FFmpegBuilder:
             "--enable-muxer=mp4,matroska,mov,flv,ts,avif",
             "--enable-demuxer=concat,matroska,mov,mp4",
             # SW Encoders (Audio)
-            "--enable-encoder=aac,opus,flac,alac",
+            "--enable-encoder=aac,libopus,flac,alac,pcm_s16le,pcm_s24le,pcm_f32le",
             "--enable-decoder=aac,opus,flac,alac",
             "--enable-parser=aac,opus,flac",
             # HW Encoders

@@ -4,6 +4,7 @@
 #include <mmdeviceapi.h>
 #include <windows.h>
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -18,6 +19,7 @@ struct AudioPacket {
     int bitsPerSample;
     int blockAlign;
     int validBitsPerSample;
+    uint32_t channelMask;
     bool isFloat;
     uint64_t devicePosition;  // For debug drift analysis
     uint64_t qpcPosition;     // WASAPI GetBuffer QPC position in 100-ns units
@@ -31,6 +33,7 @@ public:
     // Start capturing from a specific device (empty ID = Default)
     // isLoopback: true for System Audio, false for Mic
     bool Start(const std::string& deviceId, bool isLoopback);
+    static bool ProbeMixFormat(const std::string& deviceId, bool isLoopback, AudioPacket* format);
 
     void Stop();
 

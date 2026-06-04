@@ -19,7 +19,10 @@ extern "C" {
 
 #include <d3d11_4.h>
 #include <dxgi1_5.h>
+#include <algorithm>
 #include <chrono>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <unordered_map>
@@ -101,6 +104,13 @@ void ApplyFinalStreamDurations(AVFormatContext* fmtCtx, int64_t finalDurationUs)
     }
 
     fmtCtx->duration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, AV_TIME_BASE_Q);
+    const int64_t hours = finalDurationUs / 3600000000LL;
+    const int64_t minutes = (finalDurationUs / 60000000LL) % 60;
+    const int64_t seconds = (finalDurationUs / 1000000LL) % 60;
+    const int64_t nanos = (finalDurationUs % 1000000LL) * 1000LL;
+    char durationTag[64];
+    std::snprintf(durationTag, sizeof(durationTag), "%02lld:%02lld:%02lld.%09lld", (long long)hours,
+                  (long long)minutes, (long long)seconds, (long long)nanos);
     for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
         AVStream* stream = fmtCtx->streams[i];
         if (!HasValidStreamTimeBase(stream)) {
@@ -110,6 +120,7 @@ void ApplyFinalStreamDurations(AVFormatContext* fmtCtx, int64_t finalDurationUs)
         const int64_t streamDuration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, stream->time_base);
         if (streamDuration > 0) {
             stream->duration = streamDuration;
+            av_dict_set(&stream->metadata, "DURATION", durationTag, 0);
         }
     }
 }
@@ -1986,7 +1997,15 @@ int VideoEncoder::AddAudioStream(const AudioConfig& config, AVCodecContext* audi
     if (audioCtx) {
         codec = audioCtx->codec;
     } else {
-        codec = avcodec_find_encoder_by_name(config.codec.empty() ? "aac" : config.codec.c_str());
+        std::string codecName = config.codec.empty() ? "aac" : config.codec;
+        std::transform(codecName.begin(), codecName.end(), codecName.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (codecName == "pcm") {
+            codecName = config.bitDepth == "16" ? "pcm_s16le" : (config.bitDepth == "32" ? "pcm_f32le" : "pcm_s24le");
+        } else if (codecName == "opus") {
+            codecName = "libopus";
+        }
+        codec = avcodec_find_encoder_by_name(codecName.c_str());
     }
 
     if (!codec)
@@ -2011,7 +2030,13 @@ int VideoEncoder::AddAudioStream(const AudioConfig& config, AVCodecContext* audi
         st->codecpar->codec_id = codec->id;
         st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
         st->codecpar->sample_rate = sampleRate;
-        st->codecpar->ch_layout.nb_channels = 2;
+        const int channels = std::clamp(config.downmix ? 2 : (config.outputChannels > 0 ? config.outputChannels : 2),
+                                        1, 8);
+        if (config.outputChannelMask != 0 && !config.downmix) {
+            av_channel_layout_from_mask(&st->codecpar->ch_layout, config.outputChannelMask);
+        } else {
+            av_channel_layout_default(&st->codecpar->ch_layout, channels);
+        }
     }
 
     if (track > 0) {

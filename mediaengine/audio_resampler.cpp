@@ -93,14 +93,30 @@ bool AudioResampler::Init(const InputFormat& input, const OutputFormat& output) 
     // Determine FFmpeg input format
     AVSampleFormat inputSampleFmt = DetermineInputFormat();
 
-    // Setup channel layouts
-    AVChannelLayout inLayout, outLayout;
-    av_channel_layout_default(&inLayout, input.channels);
-    av_channel_layout_default(&outLayout, output.channels);
+    // Setup channel layouts. Prefer WAVEFORMATEXTENSIBLE masks when present so
+    // 5.1/7.1 channel identity survives resampling and rematrixing.
+    AVChannelLayout inLayout{};
+    AVChannelLayout outLayout{};
+    if (input.channelMask != 0 && av_channel_layout_from_mask(&inLayout, input.channelMask) < 0) {
+        DLL_Log("[AudioResampler] Unknown input channel mask 0x%x for %d channels; using default layout",
+                input.channelMask, input.channels);
+        av_channel_layout_default(&inLayout, input.channels);
+    } else if (input.channelMask == 0) {
+        av_channel_layout_default(&inLayout, input.channels);
+    }
+    if (output.channelMask != 0 && av_channel_layout_from_mask(&outLayout, output.channelMask) < 0) {
+        DLL_Log("[AudioResampler] Unknown output channel mask 0x%x for %d channels; using default layout",
+                output.channelMask, output.channels);
+        av_channel_layout_default(&outLayout, output.channels);
+    } else if (output.channelMask == 0) {
+        av_channel_layout_default(&outLayout, output.channels);
+    }
 
     // Allocate swresample context
     int ret = swr_alloc_set_opts2(&swrCtx, &outLayout, output.sampleFmt, output.sampleRate, &inLayout, inputSampleFmt,
                                   input.sampleRate, 0, nullptr);
+    av_channel_layout_uninit(&inLayout);
+    av_channel_layout_uninit(&outLayout);
 
     if (ret < 0 || !swrCtx) {
         char errbuf[256];
@@ -128,8 +144,9 @@ bool AudioResampler::Init(const InputFormat& input, const OutputFormat& output) 
         return false;
     }
 
-    DLL_Log("[AudioResampler] Initialized: %dHz %dch %s -> %dHz %dch fmt=%d", input.sampleRate, input.channels,
-            input.isFloat ? "float" : "int", output.sampleRate, output.channels, (int)output.sampleFmt);
+    DLL_Log("[AudioResampler] Initialized: %dHz %dch mask=0x%x %s -> %dHz %dch mask=0x%x fmt=%d", input.sampleRate,
+            input.channels, input.channelMask, input.isFloat ? "float" : "int", output.sampleRate, output.channels,
+            output.channelMask, (int)output.sampleFmt);
 
     return true;
 }

@@ -3,6 +3,7 @@
 #include <propvarutil.h>
 #include <psapi.h>
 #include <tlhelp32.h>
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include "../common/raii_helpers.h"
@@ -154,6 +155,19 @@ AppAudioCapture::~AppAudioCapture() {
     if (captureEvent_) {
         CloseHandle(captureEvent_);
         captureEvent_ = nullptr;
+    }
+}
+
+void AppAudioCapture::SetRequestedFormat(int sampleRate, int channels, uint32_t channelMask) {
+    requestedSampleRate = sampleRate > 0 ? sampleRate : 48000;
+    requestedChannels = std::clamp(channels > 0 ? channels : 2, 1, 8);
+    requestedChannelMask = channelMask;
+    if (requestedChannelMask == 0) {
+        if (requestedChannels == 1) {
+            requestedChannelMask = SPEAKER_FRONT_CENTER;
+        } else if (requestedChannels == 2) {
+            requestedChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+        }
     }
 }
 
@@ -414,11 +428,9 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
         return false;
     }
 
-    // Get mix format - for process loopback, GetMixFormat may return E_NOTIMPL
-    // In that case, we use CD quality format (44.1kHz 16-bit stereo) per
-    // Microsoft sample Force format to 48kHz Stereo Float 32-bit We use
-    // AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, so Windows handles the conversion from
-    // the app's actual format (e.g. 44.1k int16) to our requested format.
+    // Process loopback does not reliably expose the app's native mix format, so
+    // request the resolved output layout and let AUTOCONVERTPCM do only the
+    // unavoidable source conversion.
 
     if (pwfx) {
         CoTaskMemFree(pwfx);
@@ -438,14 +450,14 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
 
     WAVEFORMATEXTENSIBLE* wfex = (WAVEFORMATEXTENSIBLE*)pwfx;
     wfex->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    wfex->Format.nChannels = 2;
-    wfex->Format.nSamplesPerSec = 48000;
+    wfex->Format.nChannels = static_cast<WORD>(std::clamp(requestedChannels, 1, 8));
+    wfex->Format.nSamplesPerSec = requestedSampleRate > 0 ? requestedSampleRate : 48000;
     wfex->Format.wBitsPerSample = 32;
     wfex->Format.nBlockAlign = wfex->Format.nChannels * wfex->Format.wBitsPerSample / 8;
     wfex->Format.nAvgBytesPerSec = wfex->Format.nSamplesPerSec * wfex->Format.nBlockAlign;
     wfex->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
     wfex->Samples.wValidBitsPerSample = 32;
-    wfex->dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+    wfex->dwChannelMask = requestedChannelMask;
     wfex->SubFormat = kKsDataFormatSubtypeIeeeFloat;
 
     // Initialize audio client - per Microsoft sample, use LOOPBACK +
@@ -641,6 +653,7 @@ void AppAudioCapture::CaptureLoop() {
             packet.bitsPerSample = pwfx->wBitsPerSample;
             packet.blockAlign = pwfx->nBlockAlign;
             packet.validBitsPerSample = 0;
+            packet.channelMask = 0;
             packet.devicePosition = devicePosition;  // Store for debug drift analysis
             packet.qpcPosition = qpcPosition;        // Store for debug drift analysis
 
@@ -650,10 +663,18 @@ void AppAudioCapture::CaptureLoop() {
                 packet.isFloat = true;
             } else if (pwfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
                 WAVEFORMATEXTENSIBLE* wfex = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(pwfx);
+                packet.channelMask = static_cast<uint32_t>(wfex->dwChannelMask);
                 if (IsIEEEFloat(wfex->SubFormat)) {
                     packet.isFloat = true;
                 }
                 packet.validBitsPerSample = wfex->Samples.wValidBitsPerSample;
+            }
+            if (packet.channelMask == 0) {
+                if (packet.channels == 1) {
+                    packet.channelMask = SPEAKER_FRONT_CENTER;
+                } else if (packet.channels == 2) {
+                    packet.channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+                }
             }
 
             packet.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(qpcPosition);

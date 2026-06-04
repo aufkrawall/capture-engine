@@ -173,6 +173,26 @@ static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwnd = nullptr;
 static ID3D12GraphicsCommandList* s_descFreeCmdList = nullptr;
 static D3D12_CPU_DESCRIPTOR_HANDLE s_descFreeRtv = {};
 
+// Per-slot GPU-completion guard for the DescFree UPLOAD ring (vb_/ib_).
+//
+// Overlay render sites can set these two statics right before calling
+// RenderOverlay() when a slot-reuse guard is intentionally enabled:
+//   * s_descFreeSlotFence      = g_State.fence (the fence signaled for this
+//                                frame's overlay GPU work)
+//   * s_descFreeSlotGuardValue = the value that fence will reach once this
+//                                frame's overlay ECL has executed on the GPU,
+//                                or 0 to disable the guard for this frame.
+//
+// The DescFree backend round-robins through kPoolSize persistently-mapped
+// UPLOAD vertex/index buffers.  Without a per-slot fence it would memcpy new
+// geometry into a slot the GPU might still be reading from a previous frame.
+// That is harmless while the GPU keeps up, but during long GPU pauses the CPU
+// can wrap and overwrite in-flight vertex/index data.  Guard 0 leaves the
+// current behavior unchanged and is used unless a caller publishes a concrete
+// fence/value pair for this frame.
+static ID3D12Fence* s_descFreeSlotFence = nullptr;
+static UINT64 s_descFreeSlotGuardValue = 0;
+
 static void PostSLOverlayRender(IDXGISwapChain* pSwapChain);
 
 // Post-SL overlay rendering state.  Controls whether the re-entrant Present
@@ -603,9 +623,24 @@ public:
         if (!cmdList || !deviceReady_ || !fontBuffer_ || vertices.empty())
             return;
 
+        // Rebind the per-slot GPU-completion fence.  If the fence object changed
+        // (overlay reinit recreates g_State.fence), the recorded guard values
+        // belong to a dead fence — discard them so we never wait on a stale or
+        // released fence.
+        if (s_descFreeSlotFence != slotFence_) {
+            for (int i = 0; i < kPoolSize; ++i)
+                slotFenceValue_[i] = 0;
+            slotFence_ = s_descFreeSlotFence;
+        }
+
         // Upload vertex data
         int slot = frameIdx_ % kPoolSize;
         frameIdx_++;
+
+        // If a caller published a slot guard, block until the GPU has finished
+        // the previous frame that used this ring slot before overwriting it.
+        WaitForSlotGpuComplete(slot);
+
         size_t vbBytes = vertices.size() * sizeof(CustomOverlay::DrawVertex);
         if (vbBytes > vbSize_[slot]) {
             if (!ResizeBuffer(vb_[slot], vbPtr_[slot], vbSize_[slot], vbBytes))
@@ -664,6 +699,7 @@ public:
             }
             cmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0, 0);
         }
+        slotFenceValue_[slot] = s_descFreeSlotGuardValue;
     }
 
     void Shutdown() override {
@@ -867,6 +903,24 @@ private:
         return true;
     }
 
+    void WaitForSlotGpuComplete(int slot) {
+        if (!slotFence_ || slot < 0 || slot >= kPoolSize) {
+            return;
+        }
+        const UINT64 guardValue = slotFenceValue_[slot];
+        if (guardValue == 0 || slotFence_->GetCompletedValue() >= guardValue) {
+            return;
+        }
+        HANDLE eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!eventHandle) {
+            return;
+        }
+        if (SUCCEEDED(slotFence_->SetEventOnCompletion(guardValue, eventHandle))) {
+            WaitForSingleObject(eventHandle, INFINITE);
+        }
+        CloseHandle(eventHandle);
+    }
+
     static constexpr int kPoolSize = 4;
     static constexpr size_t kInitVBBytes = 4096 * 20;  // 4096 vertices * 20 bytes
     static constexpr size_t kInitIBBytes = 8192 * 2;   // 8192 indices * 2 bytes
@@ -890,6 +944,8 @@ private:
     void* ibPtr_[kPoolSize] = {};
     size_t vbSize_[kPoolSize] = {};
     size_t ibSize_[kPoolSize] = {};
+    ID3D12Fence* slotFence_ = nullptr;
+    UINT64 slotFenceValue_[kPoolSize] = {};
     int frameIdx_ = 0;
 };
 
