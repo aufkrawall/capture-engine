@@ -5,12 +5,14 @@
 
 extern "C" {
 #include <libavutil/audio_fifo.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
 }
 
 #include <algorithm>
 #include <cctype>
 #include <climits>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 
@@ -1011,21 +1013,49 @@ void AudioEncoder::Flush() {
 
     DLL_Log("[AudioEncoder] Flushing encoder...");
 
+    if (needsReset.exchange(false)) {
+        const int64_t deferredStartUs = pendingStartUs.exchange(0, std::memory_order_acq_rel);
+        const int64_t preservedEndUs = recordingEndUs;
+        int fifoSize = audioFifo ? av_audio_fifo_size(audioFifo) : 0;
+        DLL_Log(
+            "[AudioEnc] RECORDING START RESET during flush: startUs=%lld, OLD "
+            "samplesCount=%lld, resampledTotal=%lld, FIFO=%d, endUs=%lld",
+            (long long)deferredStartUs, (long long)samplesCount, (long long)resampledSamplesTotal, fifoSize,
+            (long long)preservedEndUs);
+
+        recordingStartUs = deferredStartUs;
+        recordingEndUs = preservedEndUs;
+        firstTimestamp = -1;
+        samplesCount = 0;
+        resampledSamplesTotal = 0;
+        lastPacketTimestampMs = 0;
+        pendingFrameDurations.clear();
+        lastInputTimestamp = -1;
+        if (audioFifo) {
+            av_audio_fifo_reset(audioFifo);
+        }
+        if (resampler) {
+            resampler->Reset();
+        }
+    }
+
     // Calculate maximum samples to encode based on video duration
     // This ensures audio ends exactly when video ends (Microsecond precision)
-    int64_t maxSamples = INT64_MAX;  // No limit by default
+    int64_t targetSamples = INT64_MAX;  // Exact video-authoritative duration
+    int64_t maxSamples = INT64_MAX;     // Samples submitted to the codec, including required padding
     if (recordingEndUs > 0 && recordingStartUs >= 0 && recordingEndUs >= recordingStartUs) {
         int64_t durationUs = recordingEndUs - recordingStartUs;
 
         // Use the same rounded sample target as MediaEngine stop diagnostics so
         // final packets cannot extend beyond the CFR video timeline by a codec
         // frame after metadata has already been clamped.
-        maxSamples = ce::audio::ComputeDurationUsToSamples(durationUs, codecCtx->sample_rate);
+        targetSamples = ce::audio::ComputeDurationUsToSamples(durationUs, codecCtx->sample_rate);
+        maxSamples = targetSamples;
 
         DLL_Log(
-            "[AudioEncoder] Video duration: %lld us, max audio samples: %lld, "
+            "[AudioEncoder] Video duration: %lld us, target audio samples: %lld, "
             "current: %lld",
-            durationUs, maxSamples, samplesCount);
+            durationUs, targetSamples, samplesCount);
     }
 
     const int fixedFrameSize = codecCtx->frame_size;
@@ -1035,9 +1065,9 @@ void AudioEncoder::Flush() {
         codecCtx->codec && (codecCtx->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME);
     const bool canSendShortFrame = allowShortFinalFrame && (supportsVariableFrame || supportsSmallLastFrame);
 
-    // Only round up to frame boundary for codecs that require full-size frames.
-    // Codecs with AV_CODEC_CAP_SMALL_LAST_FRAME (ALAC, AAC, FLAC, Opus) accept a
-    // short final frame, so we target the exact sample count instead.
+    // Only round up to a frame boundary for codecs that need padded final
+    // submission. AAC/Opus use this path deliberately so their final packet
+    // timeline is clamped with explicit skip-samples metadata.
     if (!canSendShortFrame && fixedFrameSize > 0 && maxSamples != INT64_MAX) {
         int64_t rem = maxSamples % fixedFrameSize;
         if (rem != 0) {
@@ -1045,21 +1075,50 @@ void AudioEncoder::Flush() {
         }
     }
 
-    auto packetWithinEndBoundary = [&](AVPacket* pkt) {
-        if (!pkt || maxSamples == INT64_MAX || pkt->pts == AV_NOPTS_VALUE) {
-            return true;
-        }
-        if (pkt->pts >= maxSamples) {
-            DLL_Log("[AudioEncoder] Dropping packet beyond recording end: pts=%lld max=%lld",
-                    (long long)pkt->pts, (long long)maxSamples);
+    bool finalDiscardSideDataAttached = false;
+    int64_t finalDiscardSideDataSamples = 0;
+    auto attachEndSkipSideData = [&](AVPacket* pkt, int64_t endSkipSamples) {
+        if (!pkt || endSkipSamples <= 0 || endSkipSamples > UINT32_MAX) {
             return false;
         }
-        if (pkt->duration > 0 && pkt->pts + pkt->duration > maxSamples) {
-            const int64_t clampedDuration = std::max<int64_t>(1, maxSamples - pkt->pts);
+        uint8_t* skipData = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+        if (!skipData) {
+            DLL_Log("[AudioEncoder] WARNING: failed to add packet end-skip side data: stream=%d endSkip=%lld samples",
+                    streamIndex, endSkipSamples);
+            return false;
+        }
+
+        AV_WL32(skipData, 0);
+        AV_WL32(skipData + 4, (uint32_t)endSkipSamples);
+        skipData[8] = 0;
+        skipData[9] = 0;  // padding silence
+        finalDiscardSideDataAttached = true;
+        finalDiscardSideDataSamples = endSkipSamples;
+        DLL_Log("[AudioEncoder] Added packet end-skip side data: stream=%d endSkip=%lld samples", streamIndex,
+                endSkipSamples);
+        return true;
+    };
+
+    auto packetWithinEndBoundary = [&](AVPacket* pkt) {
+        if (!pkt || targetSamples == INT64_MAX || pkt->pts == AV_NOPTS_VALUE) {
+            return true;
+        }
+        const ce::audio::PacketEndClamp clamp =
+            ce::audio::ClampPacketDurationToTargetSamples(pkt->pts, pkt->duration, targetSamples);
+        if (!clamp.keep) {
+            DLL_Log("[AudioEncoder] Dropping packet beyond recording end: pts=%lld max=%lld",
+                    (long long)pkt->pts, (long long)targetSamples);
+            return false;
+        }
+        if (clamp.clamped) {
+            const int64_t originalDuration = pkt->duration;
             DLL_Log("[AudioEncoder] Clamping final packet duration: pts=%lld dur=%lld -> %lld max=%lld",
-                    (long long)pkt->pts, (long long)pkt->duration, (long long)clampedDuration,
-                    (long long)maxSamples);
-            pkt->duration = clampedDuration;
+                    (long long)pkt->pts, (long long)pkt->duration, (long long)clamp.durationSamples,
+                    (long long)targetSamples);
+            pkt->duration = clamp.durationSamples;
+            if (!finalDiscardSideDataAttached) {
+                attachEndSkipSideData(pkt, originalDuration - clamp.durationSamples);
+            }
         }
         return true;
     };
@@ -1086,58 +1145,83 @@ void AudioEncoder::Flush() {
         }
     };
 
-    // PRE-FILL FIFO WITH SILENCE so the FIFO-drain loop covers any shortfall.
-    // This replaces a separate avcodec_send_frame(silenceFrame) path that was
-    // unreliable for some codecs (ALAC returned EINVAL). The FIFO-drain path is
-    // proven to work, so feeding silence through it is safer.
+    int64_t queuedSilenceSamplesTotal = 0;
+    int silenceQueueLogCount = 0;
+    auto queueSilenceToFifo = [&](int64_t silenceSamples) -> int {
+        if (!audioFifo || silenceSamples <= 0) {
+            return 0;
+        }
+        bool planarPre = av_sample_fmt_is_planar(codecCtx->sample_fmt) != 0;
+        int nchPre = codecCtx->ch_layout.nb_channels;
+        int bpsPre = av_get_bytes_per_sample(codecCtx->sample_fmt);
+        int numPlanesPre = planarPre ? nchPre : 1;
+        const size_t zeroBytes = ce::audio::ComputeAudioSampleBufferBytes(silenceSamples, bpsPre, nchPre);
+        if (zeroBytes == 0) {
+            DLL_Log(
+                "[AudioEncoder] Silence queue skipped invalid format: silenceSamples=%lld nch=%d bps=%d planar=%d",
+                silenceSamples, nchPre, bpsPre, (int)planarPre);
+            return 0;
+        }
+
+        std::vector<uint8_t> zeroBuf(zeroBytes, 0);
+        std::vector<uint8_t*> planePtrs(numPlanesPre);
+        for (int plane = 0; plane < numPlanesPre; plane++) {
+            // For planar: each channel gets its own region; for interleaved:
+            // the single plane contains all channels packed together.
+            planePtrs[plane] = zeroBuf.data() +
+                               ce::audio::ComputeAudioPlaneOffsetBytes(plane, silenceSamples, bpsPre, planarPre);
+        }
+        int written = av_audio_fifo_write(audioFifo, (void**)planePtrs.data(), (int)silenceSamples);
+        const int64_t beforeQueued = queuedSilenceSamplesTotal;
+        if (written > 0) {
+            queuedSilenceSamplesTotal += written;
+        }
+        const bool crossedSecond =
+            codecCtx->sample_rate > 0 && written > 0 &&
+            (queuedSilenceSamplesTotal / codecCtx->sample_rate) != (beforeQueued / codecCtx->sample_rate);
+        if (written <= 0 || silenceQueueLogCount < 3 || crossedSecond) {
+            DLL_Log(
+                "[AudioEncoder] Silence queue: requested=%lld wrote=%d totalQueued=%lld nch=%d bps=%d planar=%d "
+                "bytes=%zu planes=%d (samplesCount=%lld targetSamples=%lld codecLimitSamples=%lld)",
+                silenceSamples, written, queuedSilenceSamplesTotal, nchPre, bpsPre, (int)planarPre, zeroBytes,
+                numPlanesPre, samplesCount, targetSamples, maxSamples);
+        }
+        ++silenceQueueLogCount;
+        return written;
+    };
+
+    // Feed any required silence through the normal FIFO-drain encoder path. This
+    // avoids sparse container gaps and keeps AAC/Opus/ALAC/FLAC/PCM handling
+    // identical while still chunking long silent tails safely.
     DLL_Log(
         "[AudioEncoder] Post-duration: fixedFrameSize=%d canSendShortFrame=%d "
         "audioFifo=%p codecCtx=%p",
         fixedFrameSize, (int)canSendShortFrame, (void*)audioFifo, (void*)codecCtx);
 
-    if (maxSamples != INT64_MAX && audioFifo) {
-        int preFifoSize = av_audio_fifo_size(audioFifo);
-        int64_t totalCovered = samplesCount + preFifoSize;
-        int64_t silenceNeeded = maxSamples - totalCovered;
-        if (silenceNeeded > 0) {
-            // Cap to avoid runaway allocation (e.g. video duration >> audio)
-            silenceNeeded = std::min(silenceNeeded, (int64_t)(codecCtx->sample_rate * 3));
-            bool planarPre = av_sample_fmt_is_planar(codecCtx->sample_fmt) != 0;
-            int nchPre = codecCtx->ch_layout.nb_channels;
-            int bpsPre = av_get_bytes_per_sample(codecCtx->sample_fmt);
-            // Allocate a full zeroed buffer with separate regions per channel so
-            // av_audio_fifo_write gets independent (non-aliased) plane pointers.
-            int numPlanesPre = planarPre ? nchPre : 1;
-            std::vector<uint8_t> zeroBuf((size_t)silenceNeeded * bpsPre * numPlanesPre, 0);
-            std::vector<uint8_t*> planePtrs(nchPre);
-            for (int ch = 0; ch < nchPre; ch++) {
-                // For planar: each channel gets its own region; for interleaved: all
-                // channels share the single interleaved buffer.
-                int planeIdx = planarPre ? ch : 0;
-                planePtrs[ch] = zeroBuf.data() + (size_t)planeIdx * silenceNeeded * bpsPre;
-            }
-            DLL_Log(
-                "[AudioEncoder] Silence pre-fill: silenceNeeded=%lld "
-                "preFifoSize=%d nchPre=%d bpsPre=%d planar=%d",
-                silenceNeeded, preFifoSize, nchPre, bpsPre, (int)planarPre);
-            int written = av_audio_fifo_write(audioFifo, (void**)planePtrs.data(), (int)silenceNeeded);
-            DLL_Log(
-                "[AudioEncoder] Silence pre-fill: wrote %d / %lld samples "
-                "(samplesCount=%lld, maxSamples=%lld)",
-                written, silenceNeeded, samplesCount, maxSamples);
-        }
-    }
-
-    // Encode any remaining samples in FIFO (up to maxSamples limit)
-    int fifoSize = audioFifo ? av_audio_fifo_size(audioFifo) : 0;
-    if (fifoSize > 0 && frame) {
+    // Encode any remaining samples in FIFO and generate silence as needed (up
+    // to the codec submission limit).
+    if (audioFifo && frame) {
         int frame_size = codecCtx->frame_size ? codecCtx->frame_size : 4096;
         int sampleSize = av_get_bytes_per_sample(codecCtx->sample_fmt);
         int channels = codecCtx->ch_layout.nb_channels;
         bool planar = av_sample_fmt_is_planar(codecCtx->sample_fmt) != 0;
         int numPlanes = planar ? channels : 1;
 
-        while (fifoSize > 0) {
+        while (true) {
+            int fifoSize = av_audio_fifo_size(audioFifo);
+            if (fifoSize <= 0) {
+                if (maxSamples == INT64_MAX || samplesCount >= maxSamples) {
+                    break;
+                }
+                const int64_t remainingSilence = maxSamples - samplesCount;
+                const int silenceChunk =
+                    (int)std::min<int64_t>(remainingSilence, std::max<int>(frame_size, 1));
+                if (queueSilenceToFifo(silenceChunk) <= 0) {
+                    break;
+                }
+                fifoSize = av_audio_fifo_size(audioFifo);
+            }
+
             int64_t remainingAllowed = maxSamples - samplesCount;
             if (remainingAllowed <= 0) {
                 DLL_Log(
@@ -1203,8 +1287,6 @@ void AudioEncoder::Flush() {
             }
             pendingFrameDurations.push_back(samplesToSend);
             drainPackets();
-
-            fifoSize = av_audio_fifo_size(audioFifo);
         }
     }
 
@@ -1216,8 +1298,6 @@ void AudioEncoder::Flush() {
     // samples; those excess samples must be signalled for decoder-side discard.
     int64_t discardPaddingSamples = 0;
     if (!canSendShortFrame && recordingEndUs > 0 && maxSamples != INT64_MAX) {
-        int64_t durationUs = recordingEndUs - recordingStartUs;
-        int64_t targetSamples = av_rescale_rnd(durationUs, codecCtx->sample_rate, 1000000, AV_ROUND_DOWN);
         discardPaddingSamples = samplesCount - targetSamples;
 
         if (discardPaddingSamples > 0 && codecCtx->frame_size > 0 && discardPaddingSamples < codecCtx->frame_size) {
@@ -1230,9 +1310,10 @@ void AudioEncoder::Flush() {
     }
 
     DLL_Log(
-        "[AudioEncoder] Flush: samplesCount=%lld maxSamples=%lld "
-        "discardPadding=%lld",
-        samplesCount, maxSamples, discardPaddingSamples);
+        "[AudioEncoder] Flush: stream=%d samplesCount=%lld targetSamples=%lld codecLimitSamples=%lld "
+        "discardPadding=%lld priming=%d trailing=%d",
+        streamIndex, samplesCount, targetSamples, maxSamples, discardPaddingSamples, codecCtx->initial_padding,
+        codecCtx->trailing_padding);
     if (!pendingFrameDurations.empty()) {
         DLL_Log("[AudioEncoder] Flush: pending duration slots before final drain=%zu", pendingFrameDurations.size());
     }
@@ -1264,14 +1345,13 @@ void AudioEncoder::Flush() {
         flushedPackets.push_back(pkt);
     }
 
-    if (discardPaddingSamples > 0 && !flushedPackets.empty()) {
+    if (discardPaddingSamples > 0 && !finalDiscardSideDataAttached && !flushedPackets.empty()) {
         AVPacket* lastPkt = flushedPackets.back();
-        // AV_PKT_DATA_SKIP_SAMPLES expects 8 bytes: 32-bit start skip, 32-bit end skip
-        uint32_t* skipData = (uint32_t*)av_packet_new_side_data(lastPkt, AV_PKT_DATA_SKIP_SAMPLES, 8);
-        if (skipData) {
-            skipData[0] = 0;                                // No skip from start
-            skipData[1] = (uint32_t)discardPaddingSamples;  // Skip from end
-        }
+        attachEndSkipSideData(lastPkt, discardPaddingSamples);
+    } else if (discardPaddingSamples > 0 && finalDiscardSideDataAttached) {
+        DLL_Log(
+            "[AudioEncoder] Final discard side data already attached while clamping: stream=%d endSkip=%lld/%lld samples",
+            streamIndex, finalDiscardSideDataSamples, discardPaddingSamples);
     }
 
     for (AVPacket* pkt : flushedPackets) {

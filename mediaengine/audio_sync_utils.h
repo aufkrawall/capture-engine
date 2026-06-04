@@ -14,6 +14,12 @@ struct PacketTimelineAdjustment {
     int64_t overlapSamples = 0;
 };
 
+struct PacketEndClamp {
+    bool keep = true;
+    bool clamped = false;
+    int64_t durationSamples = 0;
+};
+
 struct WgcAudioLagTargets {
     int64_t driftLagMs = 0;
     int64_t targetBufferLagMs = 0;
@@ -275,6 +281,46 @@ inline int64_t ComputeDurationUsToSamples(int64_t durationUs, int sampleRate) {
 
     constexpr int64_t kMicrosecondsPerSecond = 1000000;
     return ((durationUs * static_cast<int64_t>(sampleRate)) + (kMicrosecondsPerSecond / 2)) / kMicrosecondsPerSecond;
+}
+
+inline size_t ComputeAudioSampleBufferBytes(int64_t samples, int bytesPerSample, int channels) {
+    if (samples <= 0 || bytesPerSample <= 0 || channels <= 0) {
+        return 0;
+    }
+
+    return static_cast<size_t>(samples) * static_cast<size_t>(bytesPerSample) * static_cast<size_t>(channels);
+}
+
+inline size_t ComputeAudioPlaneOffsetBytes(int planeIndex, int64_t samplesPerPlane, int bytesPerSample, bool planar) {
+    if (!planar || planeIndex <= 0 || samplesPerPlane <= 0 || bytesPerSample <= 0) {
+        return 0;
+    }
+
+    return static_cast<size_t>(planeIndex) * static_cast<size_t>(samplesPerPlane) *
+           static_cast<size_t>(bytesPerSample);
+}
+
+inline PacketEndClamp ClampPacketDurationToTargetSamples(int64_t packetPtsSamples, int64_t packetDurationSamples,
+                                                         int64_t targetSamples) {
+    PacketEndClamp result{};
+    result.durationSamples = packetDurationSamples;
+
+    if (targetSamples <= 0 || packetPtsSamples < 0) {
+        return result;
+    }
+
+    if (packetPtsSamples >= targetSamples) {
+        result.keep = false;
+        result.durationSamples = 0;
+        return result;
+    }
+
+    if (packetDurationSamples > 0 && packetDurationSamples > targetSamples - packetPtsSamples) {
+        result.clamped = true;
+        result.durationSamples = std::max<int64_t>(1, targetSamples - packetPtsSamples);
+    }
+
+    return result;
 }
 
 inline int64_t ComputeLeadTrimExcessSamples(int64_t bufferedSamples, int64_t targetLatencySamples,

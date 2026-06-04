@@ -211,6 +211,31 @@ TEST(AudioSyncUtilsTest, AudioEndBoundaryAccountsForEncodedAndQueuedSamples) {
     EXPECT_EQ(ce::audio::ComputeAudioSamplesAllowedBeforeEnd(-1, -1, -1), 0);
 }
 
+TEST(AudioSyncUtilsTest, PackedSilenceBufferIncludesEveryChannel) {
+    EXPECT_EQ(ce::audio::ComputeAudioSampleBufferBytes(720, 4, 2), 5760u);
+    EXPECT_EQ(ce::audio::ComputeAudioSampleBufferBytes(720, 4, 6), 17280u);
+    EXPECT_EQ(ce::audio::ComputeAudioPlaneOffsetBytes(0, 720, 4, false), 0u);
+    EXPECT_EQ(ce::audio::ComputeAudioPlaneOffsetBytes(1, 720, 4, false), 0u);
+    EXPECT_EQ(ce::audio::ComputeAudioPlaneOffsetBytes(1, 720, 4, true), 2880u);
+    EXPECT_EQ(ce::audio::ComputeAudioSampleBufferBytes(0, 4, 2), 0u);
+}
+
+TEST(AudioSyncUtilsTest, FinalPacketDurationClampsToVideoSampleTarget) {
+    auto clamp = ce::audio::ClampPacketDurationToTargetSamples(523264, 1024, 524000);
+    EXPECT_TRUE(clamp.keep);
+    EXPECT_TRUE(clamp.clamped);
+    EXPECT_EQ(clamp.durationSamples, 736);
+
+    auto exact = ce::audio::ClampPacketDurationToTargetSamples(522976, 1024, 524000);
+    EXPECT_TRUE(exact.keep);
+    EXPECT_FALSE(exact.clamped);
+    EXPECT_EQ(exact.durationSamples, 1024);
+
+    auto past = ce::audio::ClampPacketDurationToTargetSamples(524000, 1024, 524000);
+    EXPECT_FALSE(past.keep);
+    EXPECT_EQ(past.durationSamples, 0);
+}
+
 TEST(AudioSyncUtilsTest, WgcCoverageLossTrimSamplesUsesFractionalAccumulatorAndCap) {
     double accumulator = 0.0;
     EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.05, accumulator, 48), 12);

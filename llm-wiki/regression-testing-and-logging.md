@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-06-04 (audio codec/layout hardening, build 0.1.3722)
+Last cross-checked: 2026-06-04 (audio codec finalization/silence hardening, build 0.1.3737)
 
 Primary sources:
 - `AGENTS.md`
@@ -87,8 +87,8 @@ Primary sources:
   - Config, override, and shared-memory coverage for `Overlay.observer_only`, `Overlay.observer_policy_only`, `Overlay.observer_startup_present_only`, and other runtime-visible overlay config fields.
 - `tests/test_capture_pipeline_policy.cpp`, `tests/test_audio_sync_utils.cpp`, `tests/test_mux_invariants.cpp`
   - CFR capture cadence/audio/mux invariants, including WGC and inject stop-drain behavior, disabled wall-clock audio anchoring for CFR, final audio packet clamping, packet-level duration diagnostics, and source-limited versus hard-overload policy.
-- `tests/test_audio_encoder.cpp`, `tests/test_audio_resampler.cpp`, `tests/test_config.cpp`
-  - Audio codec/config/layout coverage: PCM alias resolution, PCM bit-depth variants, Opus/libopus 48 kHz policy, lossy multichannel bitrate scaling, multichannel packet output, channel-mask preserving resampling, and inheritance/override behavior for audio quality and downmix fields.
+- `tests/test_audio_encoder.cpp`, `tests/test_audio_sync_utils.cpp`, `tests/test_audio_resampler.cpp`, `tests/test_config.cpp`
+  - Audio codec/config/layout coverage: PCM alias resolution, PCM bit-depth variants, Opus/libopus 48 kHz policy, lossy multichannel bitrate scaling, multichannel packet output, channel-mask preserving resampling, inheritance/override behavior for audio quality/downmix fields, packed/interleaved silence buffer sizing, pure-silence tracks for AAC/ALAC/FLAC/Opus/PCM, and AAC/Opus final packet clamp/skip metadata.
 
 ## Useful Existing Logging Points
 - `captureengine/injection.cpp`
@@ -103,6 +103,9 @@ Primary sources:
 - `mediaengine/audio_capture.cpp` / `mediaengine/app_audio_capture.cpp` / `mediaengine/audio_resampler.cpp` / `mediaengine/audio_encoder.cpp`
   - Audio-format diagnostics should show endpoint/app requested format, channel masks, resampler input/output layouts, and resolved codec policy. For codec failures, confirm the log says `requested=... resolved=...`; `pcm` should resolve to a concrete PCM encoder and `opus` should resolve to `libopus`.
   - If Opus or PCM initialization fails before media samples are encoded, verify the bundled FFmpeg build first: Windows `--skip-updates` reuses the existing FFmpeg DLLs, and the expected bundle now includes `libopus`, `pcm_s16le`, `pcm_s24le`, and `pcm_f32le`.
+  - For silent or inactive-source recordings, confirm `Silence queue`, final packet clamp, and end-skip side-data logs where applicable. All enabled tracks should encode real zero samples through their selected codec rather than relying on sparse gaps.
+- `mediaengine/video_encoder.cpp`
+  - Post-write media validation logs as `[VideoEncoder] Post-mux duration probe ...`; use this reopened-file result as the external stream-duration authority after trailer write.
 - `hook/apis/dx12_hook.cpp`
   - Logs when observer-only suppresses early PostSL registration, PostSL callback execution, and DX12 overlay/PostSL transition management.
   - Fresh runtime-owned Streamline startup handoffs now log retained startup activation swapchain capture/release and DX12 startup activation service success/failure. A startup activation callback must use a retained or fresh non-null swapchain; a `nullptr` callback from Streamline flush/ECL-expiry paths is a regression.

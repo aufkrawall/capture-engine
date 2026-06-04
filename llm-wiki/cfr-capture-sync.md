@@ -1,6 +1,6 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-06-04
+Last cross-checked: 2026-06-04 (audio codec finalization/silence hardening, build 0.1.3737)
 Stale-risk: medium
 
 Primary sources:
@@ -22,13 +22,14 @@ All CFR capture paths share the same invariant: the video CFR timeline is author
 
 Packet-level duration equality is necessary but not sufficient for real sync or visual smoothness. If the encoder thread discards accrued CFR timer debt during a stall, the visual timeline can jump forward while audio remains continuous. Final video/audio packet durations may still match, but content-level A/V sync can drift because video content skipped scheduled repeats. Conversely, `installed/captureengine/logs/20260513_183839` showed final A/V equality (`maxPacketDelta=1 us`, metadata `maxDelta=0 us`) while inject video was visibly juddery because live inject frames aged roughly hundreds of milliseconds and catch-up debt was paid with duplicate repeats instead of fresh queued frames. Therefore CFR timer-rebase debt must be preserved for both WGC and inject CFR, but inject CFR must also keep the live candidate buffer bounded and spend fresh ready candidates during catch-up when the encoder is healthy.
 
-Codec padding is handled below the same invariant. AAC and Opus may require padded codec frames internally, but the effective final sample count and mux duration tags follow the authoritative encoded video duration. Do not diagnose an AAC/Opus tail by packet frame size alone; inspect the final sample counters, skip/trailing metadata, and stream duration tags together.
+Codec padding is handled below the same invariant. AAC and Opus may require padded codec frames internally, but the effective final sample count, packet duration, skip/trailing metadata, mux duration tags, and post-mux reopened-file probe follow the authoritative encoded video duration. Do not diagnose an AAC/Opus tail by packet frame size alone; inspect those signals together.
 
 ## Invariants
 
 - Explicit CFR (`Video.useVFR=false`) disables the wall-clock audio anchor. Wall-clock chasing is a VFR/non-CFR tool, not a CFR sync tool.
 - Audio is not sped up or trimmed during normal CFR overload recovery. Only emergency near-capacity buffer protection may trim, and it must log as a continuity-risk event.
 - Final audio may be drained/filled up to the final video CFR timeline, but audio packets must not start beyond the final video duration and final packets are clamped sample-exactly where possible.
+- Enabled audio tracks, including inactive app tracks or tracks whose sources stay silent, should be encoded as real zero samples through the selected codec up to the video timeline. Sparse container gaps are not the compatibility contract.
 - Final mux stream duration metadata is written from the final encoded video duration for every stream. This prevents codec padding or muxer rounding from making an audio track appear longer than video after sample accounting has already matched it.
 - Audio layout is per-track. Multichannel 5.1/7.1 tracks must preserve the resolved source layout when `downmix=false`; only `downmix=true` may force stereo.
 - Inject CFR may use cached last-frame repeats to close already accrued CFR debt at stop, because the injected source has no separate post-stop frame-drain path.
@@ -45,7 +46,9 @@ Use these signals together:
 - `[StopAudio] Source ... diff=+0 (+0.0 ms)`: sample-count equality to the selected final video timeline.
 - `[VideoEncoder] Final packet timeline`: actual last written packet end per stream and packet-level delta.
 - `[VideoEncoder] Final metadata durations`: container metadata duration after clamping.
+- `[VideoEncoder] Post-mux duration probe`: reopened-file stream duration/end check after trailer write; this is the external duration authority.
 - `[AudioEncoder] Using codec: requested=... resolved=... channels=... mask=...`: codec alias, resolved encoder, and track layout policy.
+- `[AudioEncoder] Silence queue ...`, `Clamping final packet duration ...`, and `Added packet end-skip side data ...`: encoded silence and AAC/Opus padded-tail handling.
 - `[AudioEncoder] Opus requires 48000 Hz ...`: expected adjustment when Opus was configured with another sample rate.
 - `[Cadence Health]` inject fields: `InjectCatch=fresh/repeat`, `InjectAgeTrim`, `TickUnique`, `TickDup`, `Shortfall`, and `AgeAvg/AgeMax` distinguish healthy fresh catch-up from repeat clusters.
 - `[Inject CFR SUMMARY]`: `FreshCatchup`, `RepeatCatchup`, `StaleTrim`, duplicate reasons, and source FPS show whether judder came from source/game FPS below target, fence deferral, or encoder pressure.
@@ -60,6 +63,7 @@ Important interpretation: a `Final packet timeline` delta near zero proves file-
 - `installed/captureengine/logs/20260513_183839` showed the opposite failure shape: file-level A/V stayed aligned (`Final packet timeline ... maxPacketDelta=1 us`, metadata `maxDelta=0 us`), but inject visual cadence was poor (`DupPct=32.8%`, many `60 unique / 60 duplicate` windows, and selected-frame age around hundreds of ms). The fix restored bounded source-side overcapture, the lower steady-state inject buffer reserve, age-based live trimming, and fresh inject catch-up when encoder health/credit allow it.
 - Build `0.1.3095` passed with `python build.py --skip-updates`.
 - The test-only run displayed build metadata `0.1.3096` and passed 734/734 tests with `python build.py --no-build --run-tests --skip-updates`.
+- Build/test `0.1.3735` fixed remaining AAC/Opus finalization gaps after codec/layout hardening: AAC packet-visible duration could extend past video by one padded tail fragment, Opus packed silence padding under-allocated interleaved buffers, and all-silent tracks could miss the pending recording-start reset. Focused audio/config tests passed 72/72, the full test-only run at metadata `0.1.3736` passed 894/894, and the required plain build passed at `0.1.3737`.
 
 ## Open Questions / Stale-Risk
 

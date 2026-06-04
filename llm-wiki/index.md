@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-04 (updated: audio codec/layout hardening, build 0.1.3722)
+Last cross-checked: 2026-06-04 (updated: audio codec finalization/silence hardening, build 0.1.3737)
 
 Primary sources:
 - `AGENTS.md`
@@ -55,7 +55,7 @@ Primary sources:
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
 - `multi-audio-capture.md`
-  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture. Config inheritance for codec/quality/layout fields, per-track channel layout resolution, PCM/Opus codec policy, multichannel bitrate scaling, and final duration/layout diagnostics. Last verified 2026-06-04. Stale-risk: medium.
+  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture. Config inheritance for codec/quality/layout fields, per-track channel layout resolution, PCM/Opus codec policy, multichannel bitrate scaling, encoded-silence handling, AAC/Opus finalization, and final duration/layout diagnostics. Last verified 2026-06-04. Stale-risk: medium.
 - `wgc-capture.md`
   - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, WGC CFR audio continuity/stop-tail policy, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-05-07. Stale-risk: medium.
 - `cfr-capture-sync.md`

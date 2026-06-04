@@ -2725,10 +2725,6 @@ public:
                 }
             }
 
-            // If ALL sources for this track are silent (game pause), SKIP encoding
-            // entirely. Do NOT encode silence here - the AudioEncoder has its own gap
-            // handling. Do NOT advance counters - this allows us to "catch up" when
-            // real audio arrives. This fixes the audio delay issue after game pauses.
             // If ALL sources for this track are silent (game pause), we MUST generate
             // silence. Otherwise, the Audio Stream timestamps stop advancing, and
             // av_interleaved_write_frame will BUFFER VIDEO PACKETS INDEFINITELY
@@ -2762,13 +2758,6 @@ public:
                         trackAudioTargetMs, encodedSamplesPerSource[firstSrcIdx]);
                     trackLastSilenceLogTick[track] = nowTick;
                 }
-                /*
-                   Logic:
-                   1. Create a zeroed buffer matching totalFloats.
- 2.
-                   Encode it.
-                   3. Advance counters.
-                */
                 if (silenceLogCounter++ % 500 == 0) {
                     DLL_Log(
                         "[PullAudio] Track %d silent - generating %lld samples of "

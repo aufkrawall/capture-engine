@@ -23,6 +23,7 @@ extern "C" {
 #include <chrono>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <unordered_map>
@@ -51,6 +52,130 @@ namespace {
 
 bool HasValidStreamTimeBase(const AVStream* stream) {
     return stream && stream->time_base.num > 0 && stream->time_base.den > 0;
+}
+
+int64_t ParseDurationTagUs(const char* value) {
+    if (!value || !*value) {
+        return 0;
+    }
+
+    char* end = nullptr;
+    long long hours = std::strtoll(value, &end, 10);
+    if (!end || *end != ':') {
+        return 0;
+    }
+    const char* minutesStart = end + 1;
+    long long minutes = std::strtoll(minutesStart, &end, 10);
+    if (!end || *end != ':') {
+        return 0;
+    }
+    const char* secondsStart = end + 1;
+    double seconds = std::strtod(secondsStart, &end);
+    if (seconds < 0.0 || hours < 0 || minutes < 0) {
+        return 0;
+    }
+
+    const double totalSeconds = static_cast<double>(hours * 3600LL + minutes * 60LL) + seconds;
+    return static_cast<int64_t>(totalSeconds * 1000000.0 + 0.5);
+}
+
+int64_t GetStreamStartUs(const AVStream* stream) {
+    if (!HasValidStreamTimeBase(stream) || stream->start_time == AV_NOPTS_VALUE) {
+        return 0;
+    }
+
+    return av_rescale_q(stream->start_time, stream->time_base, AVRational{1, 1000000});
+}
+
+int64_t GetStreamDurationUs(const AVStream* stream) {
+    if (!HasValidStreamTimeBase(stream)) {
+        return 0;
+    }
+
+    AVDictionaryEntry* tag = av_dict_get(stream->metadata, "DURATION", nullptr, 0);
+    if (tag) {
+        const int64_t tagDurationUs = ParseDurationTagUs(tag->value);
+        if (tagDurationUs > 0) {
+            return tagDurationUs;
+        }
+    }
+
+    if (stream->duration == AV_NOPTS_VALUE || stream->duration <= 0) {
+        return 0;
+    }
+    return av_rescale_q(stream->duration, stream->time_base, AVRational{1, 1000000});
+}
+
+void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationUs) {
+    if (filename.empty() || finalDurationUs <= 0) {
+        return;
+    }
+
+    AVFormatContext* probeCtx = nullptr;
+    int ret = avformat_open_input(&probeCtx, filename.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed to open '%s': %s", filename.c_str(), errbuf);
+        return;
+    }
+
+    ret = avformat_find_stream_info(probeCtx, nullptr);
+    if (ret < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed stream info for '%s': %s", filename.c_str(),
+                errbuf);
+        avformat_close_input(&probeCtx);
+        return;
+    }
+
+    int64_t maxVideoEndUs = 0;
+    int64_t minAudioEndUs = 0;
+    int64_t maxAudioEndUs = 0;
+    int64_t maxAudioDeltaUs = 0;
+    uint32_t videoStreamCount = 0;
+    uint32_t audioStreamCount = 0;
+
+    for (unsigned int i = 0; i < probeCtx->nb_streams; ++i) {
+        const AVStream* probedStream = probeCtx->streams[i];
+        if (!probedStream || !probedStream->codecpar) {
+            continue;
+        }
+
+        const int64_t durationUs = GetStreamDurationUs(probedStream);
+        if (durationUs <= 0) {
+            continue;
+        }
+        const int64_t startUs = GetStreamStartUs(probedStream);
+        const int64_t endUs = startUs + durationUs;
+        if (probedStream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            ++videoStreamCount;
+            maxVideoEndUs = std::max(maxVideoEndUs, endUs);
+        } else if (probedStream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            ++audioStreamCount;
+            if (minAudioEndUs == 0 || endUs < minAudioEndUs) {
+                minAudioEndUs = endUs;
+            }
+            maxAudioEndUs = std::max(maxAudioEndUs, endUs);
+            maxAudioDeltaUs = std::max(maxAudioDeltaUs, ce::mux::ComputeDurationDeltaUs(endUs, finalDurationUs));
+        }
+    }
+
+    DLL_Log(
+        "[VideoEncoder] Post-mux duration probe: target=%lld us videoEnd=%lld us audioMinEnd=%lld us "
+        "audioMaxEnd=%lld us maxAudioDelta=%lld us streams(v=%u a=%u)",
+        finalDurationUs, maxVideoEndUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, videoStreamCount,
+        audioStreamCount);
+
+    if (audioStreamCount > 0 && maxAudioDeltaUs > 0) {
+        DLL_Log(
+            "[VideoEncoder] WARNING: Post-mux audio duration mismatch (target=%lld audioMinEnd=%lld "
+            "audioMaxEnd=%lld maxDelta=%lld)",
+            finalDurationUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs);
+    }
+
+    avformat_close_input(&probeCtx);
 }
 
 bool ValidateFormatContextForHeader(const AVFormatContext* fmtCtx) {
@@ -4396,6 +4521,9 @@ void VideoEncoder::Stop() {
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
                 avio_closep(&fmtCtx->pb);
             }
+            if (finalDurationUs > 0) {
+                LogPostMuxDurationProbe(outputFilename, finalDurationUs);
+            }
         }
         fileOpened = false;
     }
@@ -6187,6 +6315,9 @@ void VideoEncoder::AsyncWriteLoop() {
                 av_write_trailer(fmtCtx);
                 if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
                     avio_closep(&fmtCtx->pb);
+                }
+                if (finalDurationUs > 0) {
+                    LogPostMuxDurationProbe(outputFilename, finalDurationUs);
                 }
                 fileOpened = false;
                 DLL_Log("[VideoEncoder] Async Finalize: Output file closed.");
