@@ -31,9 +31,15 @@ LOG_PATTERNS = {
     "wgc_stop_drain_aborted": re.compile(r"\[EncoderThread\] CFR stop drain aborted"),
     "wgc_fresh_catchup": re.compile(r"\[EncoderThread\] CFR Catchup applied using fresh frame"),
     "wgc_too_new_slot_repeat": re.compile(r"\[EncoderThread\] WGC CFR slot repeat: buffered frame is too new"),
+    "wgc_stale_visual_debt_drop": re.compile(r"\[EncoderThread\] WGC CFR stale visual debt drop"),
+    "wgc_stale_fresh_catchup_blocked": re.compile(r"\[EncoderThread\] WGC CFR stale fresh-catchup blocked"),
+    "wgc_visual_timeline_debt_drop": re.compile(r"\[EncoderThread\] WGC CFR visual timeline debt drop"),
+    "wgc_stop_frozen_tail_drop": re.compile(r"\[EncoderThread\] WGC CFR stop drain discarded frozen-tail debt"),
+    "wgc_post_stop_frame_drop": re.compile(r"\[EncoderThread\] WGC CFR post-stop frame drop"),
     "audio_extreme_drift": re.compile(r"\[PullAudio\] WARNING: Extreme drift detected"),
 }
 
+CADENCE_AGEMAX_RE = re.compile(r"AgeMax=(\d+)us")
 CADENCE_SELMISS_RE = re.compile(r"SelMiss=(\d+)")
 CADENCE_STALEUNI_RE = re.compile(r"StaleUni=(\d+)")
 CADENCE_ANCIENT_RE = re.compile(r"Ancient=(\d+)")
@@ -42,6 +48,8 @@ CADENCE_OVER_RE = re.compile(r"Over=0x([0-9A-Fa-f]+)")
 CADENCE_WGC_SEL_BIAS_RE = re.compile(r"WgcSelBias=(-?\d+)us")
 CADENCE_SHORTFALL_RE = re.compile(r"Shortfall=\d+/([0-9.]+)ms")
 CADENCE_LEAD_EXCESS_RE = re.compile(r"LeadExcess=([0-9.]+)ms")
+CADENCE_OLDEST_RE = re.compile(r"Oldest=([0-9.]+)ms")
+CADENCE_BUFNOW_RE = re.compile(r"BufNow=(\d+)")
 
 
 def fail(message) -> NoReturn:
@@ -247,6 +255,7 @@ def evaluate_thresholds(args, nominal_fps, video_timing, duplicate_runs, audio_d
         checks.append(make_upper_bound_check(f"log.{name}", log_summary["counts"].get(name, 0), limit, "count"))
 
     cadence_metric_values = {
+        "age_max_us": 0 if log_summary is None else log_summary["max_age_max_us"],
         "sel_miss": 0 if log_summary is None else log_summary["max_sel_miss"],
         "stale_unique": 0 if log_summary is None else log_summary["max_stale_unique"],
         "ancient": 0 if log_summary is None else log_summary["max_ancient"],
@@ -254,6 +263,8 @@ def evaluate_thresholds(args, nominal_fps, video_timing, duplicate_runs, audio_d
         "wgc_sel_bias_abs_us": 0 if log_summary is None else log_summary["max_wgc_sel_bias_abs_us"],
         "wgc_shortfall_ms": 0 if log_summary is None else log_summary["max_wgc_shortfall_ms"],
         "wgc_lead_excess_ms": 0 if log_summary is None else log_summary["max_wgc_lead_excess_ms"],
+        "wgc_oldest_ms": 0 if log_summary is None else log_summary["max_wgc_oldest_ms"],
+        "wgc_buffered_frames": 0 if log_summary is None else log_summary["max_wgc_buffered_frames"],
     }
     cadence_metric_thresholds = parse_named_int_thresholds(
         args.max_cadence_metric, cadence_metric_values.keys(), "--max-cadence-metric"
@@ -625,6 +636,7 @@ def analyze_log(log_path):
     cadence_window_count = 0
 
     cadence_metrics = {
+        "age_max_us": [],
         "sel_miss": [],
         "stale_unique": [],
         "ancient": [],
@@ -633,11 +645,16 @@ def analyze_log(log_path):
         "wgc_sel_bias_abs_us": [],
         "wgc_shortfall_ms": [],
         "wgc_lead_excess_ms": [],
+        "wgc_oldest_ms": [],
+        "wgc_buffered_frames": [],
     }
     for line in lines:
         if "[Cadence Health]" not in line:
             continue
         cadence_window_count += 1
+        age_max_match = CADENCE_AGEMAX_RE.search(line)
+        if age_max_match:
+            cadence_metrics["age_max_us"].append(parse_int(age_max_match.group(1)))
         sel_miss_match = CADENCE_SELMISS_RE.search(line)
         if sel_miss_match:
             cadence_metrics["sel_miss"].append(parse_int(sel_miss_match.group(1)))
@@ -662,10 +679,17 @@ def analyze_log(log_path):
         lead_excess_match = CADENCE_LEAD_EXCESS_RE.search(line)
         if lead_excess_match:
             cadence_metrics["wgc_lead_excess_ms"].append(int(round(parse_float(lead_excess_match.group(1)))))
+        oldest_match = CADENCE_OLDEST_RE.search(line)
+        if oldest_match:
+            cadence_metrics["wgc_oldest_ms"].append(int(round(parse_float(oldest_match.group(1)))))
+        buf_now_match = CADENCE_BUFNOW_RE.search(line)
+        if buf_now_match:
+            cadence_metrics["wgc_buffered_frames"].append(parse_int(buf_now_match.group(1)))
 
     return {
         "counts": counts,
         "cadence_windows": cadence_window_count,
+        "max_age_max_us": max(cadence_metrics["age_max_us"]) if cadence_metrics["age_max_us"] else 0,
         "max_sel_miss": max(cadence_metrics["sel_miss"]) if cadence_metrics["sel_miss"] else 0,
         "max_stale_unique": max(cadence_metrics["stale_unique"]) if cadence_metrics["stale_unique"] else 0,
         "max_ancient": max(cadence_metrics["ancient"]) if cadence_metrics["ancient"] else 0,
@@ -678,6 +702,10 @@ def analyze_log(log_path):
         else 0,
         "max_wgc_lead_excess_ms": max(cadence_metrics["wgc_lead_excess_ms"])
         if cadence_metrics["wgc_lead_excess_ms"]
+        else 0,
+        "max_wgc_oldest_ms": max(cadence_metrics["wgc_oldest_ms"]) if cadence_metrics["wgc_oldest_ms"] else 0,
+        "max_wgc_buffered_frames": max(cadence_metrics["wgc_buffered_frames"])
+        if cadence_metrics["wgc_buffered_frames"]
         else 0,
         "saw_encoder_overload": any(flags & 0x1 for flags in cadence_metrics["overload_flags"]),
         "saw_mux_overload": any(flags & 0x2 for flags in cadence_metrics["overload_flags"]),
@@ -912,8 +940,9 @@ def main():
         default=[],
         metavar="NAME=COUNT",
         help=(
-            "Fail if the named cadence summary metric exceeds COUNT. Valid names: sel_miss, stale_unique, "
-            "ancient, rep_no_fresh, wgc_sel_bias_abs_us, wgc_shortfall_ms, wgc_lead_excess_ms."
+            "Fail if the named cadence summary metric exceeds COUNT. Valid names: age_max_us, sel_miss, "
+            "stale_unique, ancient, rep_no_fresh, wgc_sel_bias_abs_us, wgc_shortfall_ms, "
+            "wgc_lead_excess_ms, wgc_oldest_ms, wgc_buffered_frames."
         ),
     )
     args = parser.parse_args()
@@ -1117,12 +1146,14 @@ def main():
             print(f"  {name}={count}")
         print(
             (
-                "  cadence_windows={windows} max_sel_miss={sel_miss} "
+                "  cadence_windows={windows} max_age_max_us={age_max} max_sel_miss={sel_miss} "
                 "max_stale_unique={stale_unique} max_ancient={ancient} "
                 "max_rep_no_fresh={rep_no_fresh} max_wgc_sel_bias_abs_us={wgc_bias} "
-                "max_wgc_shortfall_ms={shortfall} max_wgc_lead_excess_ms={lead_excess}"
+                "max_wgc_shortfall_ms={shortfall} max_wgc_lead_excess_ms={lead_excess} "
+                "max_wgc_oldest_ms={oldest} max_wgc_buffered_frames={buffered}"
             ).format(
                 windows=log_summary["cadence_windows"],
+                age_max=log_summary["max_age_max_us"],
                 sel_miss=log_summary["max_sel_miss"],
                 stale_unique=log_summary["max_stale_unique"],
                 ancient=log_summary["max_ancient"],
@@ -1130,6 +1161,8 @@ def main():
                 wgc_bias=log_summary["max_wgc_sel_bias_abs_us"],
                 shortfall=log_summary["max_wgc_shortfall_ms"],
                 lead_excess=log_summary["max_wgc_lead_excess_ms"],
+                oldest=log_summary["max_wgc_oldest_ms"],
+                buffered=log_summary["max_wgc_buffered_frames"],
             ),
         )
         print(

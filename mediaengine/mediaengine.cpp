@@ -1731,7 +1731,7 @@ public:
         constexpr int64_t kLatencyTrimHysteresisSamples = ce::audio::kDefaultAudioPullQuantumSamples;
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 10;  // 100ms
-        constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
+        constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = false;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
         constexpr double kTier1MaxPitchPercent = 0.05;  // Keep WGC source-clock correction below audible pitch shift.
         constexpr int64_t kTier2DriftThresholdMs = 20;
