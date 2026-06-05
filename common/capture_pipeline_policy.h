@@ -1022,21 +1022,37 @@ inline int64_t ClampWgcSelectionTargetToLiveQpc(
     uint32_t severeShortfallThresholdTicks = kCfrShortfallCatchupThresholdTicks) {
     (void)lowSourceMode;
     (void)liveRecoveryMode;
-    (void)outputShortfallTicks;
     (void)encoderBottlenecked;
-    (void)severeShortfallThresholdTicks;
-    (void)liveNowQpc;
-    (void)targetIntervalTicks;
-    (void)qpcTicksPerSecond;
     if (selectionTargetQpc <= 0) {
         return selectionTargetQpc;
     }
+    if (liveNowQpc <= 0 || targetIntervalTicks <= 0 || outputShortfallTicks < severeShortfallThresholdTicks) {
+        return selectionTargetQpc;
+    }
 
-    // Keep the effective selection target tied to the actual CFR slot.  Live
-    // visual debt is handled by dropping/holding ticks before selection; moving
-    // the selection target toward "now" lets a fresh WGC frame occupy an older
-    // audio/PTS slot and creates content-level A/V drift.
-    return selectionTargetQpc;
+    const int64_t visualDebtLimitQpc = GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
+    if (visualDebtLimitQpc <= 0) {
+        return selectionTargetQpc;
+    }
+    const uint32_t visualDebtLimitTicks = std::max<uint32_t>(
+        1u, static_cast<uint32_t>((visualDebtLimitQpc + targetIntervalTicks - 1) / targetIntervalTicks));
+    if (outputShortfallTicks <= visualDebtLimitTicks) {
+        return selectionTargetQpc;
+    }
+
+    const int64_t visualDebtFloorQpc =
+        GetWgcLiveVisualDebtFloorQpc(liveNowQpc, targetIntervalTicks, qpcTicksPerSecond);
+    if (visualDebtFloorQpc <= 0 || selectionTargetQpc >= visualDebtFloorQpc) {
+        return selectionTargetQpc;
+    }
+
+    // The CFR PTS/audio endpoint remain sequential and authoritative.  Once
+    // the encoder loop has fallen outside the bounded live window, however,
+    // keeping source selection pinned to the stale slot causes "too-new"
+    // repeats while good near-live frames pile up.  Clamp only the source-frame
+    // selection target to the live-window floor so overload is absorbed as
+    // visual debt drops, not audio cuts or fast-forwarded backlog.
+    return visualDebtFloorQpc;
 }
 
 inline bool IsWgcFrameTooNewForCfrSlot(int64_t frameSelectionQpc, int64_t selectionTargetQpc,

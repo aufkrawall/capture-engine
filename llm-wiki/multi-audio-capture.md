@@ -89,7 +89,7 @@ Focused regression coverage lives in:
 - `tests/test_audio_sync_utils.cpp`
   - Packed/interleaved silence buffer sizing includes every channel, final packet durations clamp to the video sample target, timeline-valid startup no longer waits for buffered real audio, app audio stays optional until first packet, source write cursors never trail the encoded track cursor, and late first packets overlap already-encoded silence.
 - `tools/analyze_capture_av.py`
-  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop paths, WGC fresh catch-up, stop-drain abort, and post-stop frame drops.
+  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop paths, WGC fresh catch-up, and stop-drain abort. Discarded post-stop WGC callbacks stay visible as endpoint-protection telemetry but are not audio failures by themselves.
 
 Verified on 2026-06-04:
 

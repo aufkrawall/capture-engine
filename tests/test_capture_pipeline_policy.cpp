@@ -668,14 +668,16 @@ TEST(CapturePipelinePolicyTest, WgcCoverageCatchupClampRelaxesAtSevereShortfall)
     EXPECT_DOUBLE_EQ(policy::GetWgcForceCatchupBudgetFrameMultiplier(500.0), 4.0);
 }
 
-TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetUsesCfrSlotEvenWithVisualDebt) {
+TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetClampsOnlyBeyondVisualDebtWindow) {
     EXPECT_EQ(policy::GetWgcLiveVisualDebtLimitQpc(100, 1000), 250);
     EXPECT_EQ(policy::GetWgcLiveVisualDebtLimitQpc(100, 0), 3200);
     EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpc(1600, 100, 1000), 1350);
 
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1400, 1600, 100, 1000, false, false, 0, false), 1400);
-    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, false, 0, false), 1000);
-    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true), 1000);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, false, 3, false), 1000);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, false, 4, false), 1350);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true), 1350);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1360, 1600, 100, 1000, true, true, 20, true), 1360);
     EXPECT_FALSE(
         policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true, true));
 }

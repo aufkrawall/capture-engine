@@ -65,7 +65,6 @@ STRICT_SYNC_LOG_EVENTS = (
     "audio_bootstrap_trim",
     "wgc_fresh_catchup",
     "wgc_stop_drain_aborted",
-    "wgc_post_stop_frame_drop",
 )
 
 CADENCE_AGEMAX_RE = re.compile(r"AgeMax=(\d+)us")
