@@ -71,6 +71,15 @@ inline uint64_t GetAdjustedCfrScheduledTicks(uint64_t elapsedTicks, uint64_t dis
     return elapsedTicks > discardedTicks ? (elapsedTicks - discardedTicks) : 0ull;
 }
 
+inline uint64_t GetCfrScheduledTicksForEndpoint(uint64_t elapsedTicks, uint64_t discardedTimerDebtTicks,
+                                                uint64_t wgcVisualDebtDiagnosticTicks) {
+    (void)wgcVisualDebtDiagnosticTicks;
+    // WGC visual debt is handled by source-frame holds/drops. It must not
+    // shorten the CFR/audio endpoint, because that turns visual recovery into
+    // an audio cut and makes stop timing depend on codec/capture pressure.
+    return GetAdjustedCfrScheduledTicks(elapsedTicks, discardedTimerDebtTicks);
+}
+
 inline uint32_t GetCfrTimerRebaseDiscardTicks(uint64_t elapsedTicks, uint64_t discardedTicks,
                                               uint64_t liveTicksOutput) {
     return GetCfrOutputShortfallTicks(GetAdjustedCfrScheduledTicks(elapsedTicks, discardedTicks), liveTicksOutput);
@@ -129,12 +138,11 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
 
 inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool bufferedWgcFrameAvailable, bool hasLastFrame,
                                         bool mediaEngineCanRepeatLastFrame) {
-    (void)hasLastFrame;
-    (void)mediaEngineCanRepeatLastFrame;
     // WGC stop drain may finish real content already captured by the WGC
-    // source. Cached repeats are not a valid multi-second tail: they make the
-    // picture visibly stop while audio keeps playing.
-    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable;
+    // source. If the encoder owes already-scheduled pre-stop CFR ticks, the
+    // cached last frame is also valid as a CFR hold; post-stop source frames
+    // are still rejected by timestamp before this policy is reached.
+    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable || (hasLastFrame && mediaEngineCanRepeatLastFrame);
 }
 
 inline bool CanDrainOutstandingCfrTicks(bool useScreenGrab, bool queuedFrameAvailable, bool bufferedFrameAvailable,
@@ -261,11 +269,11 @@ inline bool IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(uint32_t outputF
 }
 
 inline uint32_t GetWgcFreshCatchupBudgetThisLoop(uint32_t catchupTicksThisLoop) {
-    if (catchupTicksThisLoop <= 1u) {
-        return 0u;
-    }
-
-    return catchupTicksThisLoop - 1u;
+    (void)catchupTicksThisLoop;
+    // WGC CFR does not spend historical shortfall by encoding extra fresh
+    // frames.  Extra debt is represented as visual holds/drops so audio remains
+    // continuous and source content never fast-forwards.
+    return 0u;
 }
 
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, bool encoderActivelyTooSlow,
@@ -274,54 +282,22 @@ inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, bool encode
                                            uint32_t recentDeliveredMin250Fps, uint32_t recentInputMin250Fps,
                                            uint32_t noFreshTickPermille, bool lowSourceMode,
                                            double audioLeadExcessMs = 0.0) {
-    if (outputShortfallTicks < kCfrShortfallCatchupThresholdTicks) {
-        return 1u;
-    }
-
-    if (ShouldPrioritizeWgcAudioLeadCatchup(audioLeadExcessMs)) {
-        // Audio lead should restore live catchup immediately, but once the
-        // encoder/source recover enough to support smooth pacing again, do not
-        // keep escalating historical debt into repeat-heavy force bursts.
-        if (outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks && !encoderActivelyTooSlow &&
-            IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(outputFps, recentDeliveredMin250Fps,
-                                                                recentInputMin250Fps, noFreshTickPermille)) {
-            return 2u;
-        }
-
-        return std::max<uint32_t>(2u, GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderBottlenecked));
-    }
-
-    if (IsWgcSourceHealthyForLiveCatchup(outputFps, recentDeliveredMin250Fps, recentInputMin250Fps, noFreshTickPermille,
-                                         lowSourceMode)) {
-        // When WGC is already delivering near-target fresh content, draining
-        // historical shortfall via live duplicate bursts is visually worse than
-        // carrying that debt and letting stop-drain close the exact CFR count.
-        return 1u;
-    }
-
-    if (encoderBottlenecked && IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(
-                                   outputFps, recentInputMin250Fps, noFreshTickPermille, lowSourceMode)) {
-        // When the encoder is the limiter but WGC input is still healthy, live
-        // catch-up drains audio buffers and produces visibly uneven repeat
-        // bursts without improving source coverage. Carry the debt instead.
-        return 1u;
-    }
-
-    if (outputShortfallTicks < kCfrShortfallForceCatchupThresholdTicks &&
-        IsWgcSourceDegradedForLiveCatchup(outputFps, recentDeliveredMin250Fps, recentInputMin250Fps,
-                                          noFreshTickPermille)) {
-        return 1u;
-    }
-
-    const uint32_t baseCatchupTicks = GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderBottlenecked);
-    if (baseCatchupTicks > 1u) {
-        return baseCatchupTicks;
-    }
-
-    return ShouldAllowWgcExtraCatchupTicks(encoderBottlenecked, bufferedWgcFrames, frameCreditAccumulator,
-                                           outputShortfallTicks)
-               ? 2u
-               : 1u;
+    (void)encoderBottlenecked;
+    (void)encoderActivelyTooSlow;
+    (void)bufferedWgcFrames;
+    (void)frameCreditAccumulator;
+    (void)outputShortfallTicks;
+    (void)outputFps;
+    (void)recentDeliveredMin250Fps;
+    (void)recentInputMin250Fps;
+    (void)noFreshTickPermille;
+    (void)lowSourceMode;
+    (void)audioLeadExcessMs;
+    // WGC output emits one CFR tick per encoder-loop decision.  Backlog is not
+    // drained by burst-encoding old slots, because that creates visible speed
+    // changes and encourages audio trimming.  The smoother truthful result is
+    // one best-frame/hold/drop decision per tick.
+    return 1u;
 }
 
 inline double GetCfrShortfallDurationMs(uint32_t outputShortfallTicks, double frameIntervalMs) {
@@ -1049,20 +1025,18 @@ inline int64_t ClampWgcSelectionTargetToLiveQpc(
     (void)outputShortfallTicks;
     (void)encoderBottlenecked;
     (void)severeShortfallThresholdTicks;
+    (void)liveNowQpc;
+    (void)targetIntervalTicks;
+    (void)qpcTicksPerSecond;
     if (selectionTargetQpc <= 0) {
         return selectionTargetQpc;
     }
 
-    const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpc(liveNowQpc, targetIntervalTicks, qpcTicksPerSecond);
-    if (visualDebtFloorQpc <= 0) {
-        return selectionTargetQpc;
-    }
-
-    // CFR PTS remains scheduled-slot authoritative, but WGC source-frame
-    // selection must not carry seconds of visual backlog. Once old visual debt
-    // exceeds the bounded live window, drop that debt by selecting near the
-    // floor instead of replaying stale history at catch-up speed.
-    return std::max(selectionTargetQpc, visualDebtFloorQpc);
+    // Keep the effective selection target tied to the actual CFR slot.  Live
+    // visual debt is handled by dropping/holding ticks before selection; moving
+    // the selection target toward "now" lets a fresh WGC frame occupy an older
+    // audio/PTS slot and creates content-level A/V drift.
+    return selectionTargetQpc;
 }
 
 inline bool IsWgcFrameTooNewForCfrSlot(int64_t frameSelectionQpc, int64_t selectionTargetQpc,
@@ -1088,11 +1062,18 @@ inline bool IsWgcFrameWithinLiveVisualDebtWindow(int64_t frameSelectionQpc, int6
 
 inline bool ShouldUseFreshWgcCatchupFrame(int64_t frameSelectionQpc, int64_t liveNowQpc, int64_t targetIntervalTicks,
                                           int64_t qpcTicksPerSecond, uint32_t outputShortfallTicks) {
+    (void)frameSelectionQpc;
+    (void)liveNowQpc;
+    (void)targetIntervalTicks;
+    (void)qpcTicksPerSecond;
     if (outputShortfallTicks == 0) {
         return true;
     }
 
-    return IsWgcFrameWithinLiveVisualDebtWindow(frameSelectionQpc, liveNowQpc, targetIntervalTicks, qpcTicksPerSecond);
+    // Extra WGC catch-up ticks represent old CFR debt.  Encoding a fresh frame
+    // for those slots is a fast-forward/content-shift bug, even when final mux
+    // durations remain equal.  Old WGC debt must be absorbed by holds/drops.
+    return false;
 }
 
 inline bool ShouldKeepWgcFrameForStopDrain(int64_t sourceFrameQpc, int64_t stopQpc) {

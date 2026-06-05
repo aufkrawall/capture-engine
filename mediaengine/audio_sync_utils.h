@@ -434,6 +434,18 @@ inline bool ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(bool isW
                                                                        minShortfallMs);
 }
 
+inline bool ShouldAllowCfrSourceClockDriftCompensation(bool isCfrRecording, bool forceDrain,
+                                                       bool trackStartupSettled, bool startupTimelineProtected,
+                                                       bool encoderBottlenecked, int64_t timelineShortfallMs,
+                                                       bool coverageLossActive, int64_t minShortfallMs = 100) {
+    if (!isCfrRecording || forceDrain || !trackStartupSettled || startupTimelineProtected || coverageLossActive) {
+        return false;
+    }
+
+    return !ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(
+        isCfrRecording, forceDrain, timelineShortfallMs, encoderBottlenecked, minShortfallMs);
+}
+
 inline int64_t ComputeRuntimeOverflowCapSamples(bool isCfrContinuityProtected, int64_t targetLatencySamples,
                                                 int64_t ringCapacitySamples, int64_t defaultOverflowCapSamples,
                                                 int64_t emergencyMarginSamples) {

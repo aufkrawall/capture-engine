@@ -17,7 +17,15 @@ from typing import NoReturn
 LOG_PATTERNS = {
     "audio_latency_cap": re.compile(r"\[PullAudio\] Audio latency cap:"),
     "audio_retain_trim": re.compile(r"\[PullAudio\] WARNING: WGC CFR audio headroom exhausted"),
+    "audio_retained_trim_summary": re.compile(r"\[PullAudio\] Retained-audio trim summary"),
+    "audio_latency_trim_summary": re.compile(r"\[PullAudio\] Latency trim aggregate summary"),
     "audio_coverage_trim": re.compile(r"\[PullAudio\] WGC overload sync trim:"),
+    "audio_tier2_trim_summary": re.compile(r"\[PullAudio\] Tier2 drift trim summary"),
+    "audio_wgc_lead_cap_trim": re.compile(r"\[PullAudio\] WGC CFR lead cap trim:"),
+    "audio_overflow_protection_trim": re.compile(r"\[PullAudio\] Ring buffer overflow protection"),
+    "audio_post_resample_trim": re.compile(r"\[PullAudio\] WARNING: Post-resample buffer trim"),
+    "audio_cfr_ring_capacity": re.compile(r"\[PullAudio\] WARNING: CFR audio ring near capacity"),
+    "audio_cfr_post_resample_backlog": re.compile(r"\[PullAudio\] WARNING: CFR post-resample backlog exceeded guard"),
     "wgc_cfr_lead_warning": re.compile(r"\[PullAudio\] WGC CFR lead warning:"),
     "wgc_coverage_mode_active": re.compile(r"CovMode=1"),
     "audio_large_gap": re.compile(r"\[PullAudio\] Large A/V gap"),
@@ -35,9 +43,30 @@ LOG_PATTERNS = {
     "wgc_stale_fresh_catchup_blocked": re.compile(r"\[EncoderThread\] WGC CFR stale fresh-catchup blocked"),
     "wgc_visual_timeline_debt_drop": re.compile(r"\[EncoderThread\] WGC CFR visual timeline debt drop"),
     "wgc_stop_frozen_tail_drop": re.compile(r"\[EncoderThread\] WGC CFR stop drain discarded frozen-tail debt"),
+    "wgc_stop_hold_repeats": re.compile(r"\[EncoderThread\] WGC CFR stop drain using held pre-stop frame"),
     "wgc_post_stop_frame_drop": re.compile(r"\[EncoderThread\] WGC CFR post-stop frame drop"),
     "audio_extreme_drift": re.compile(r"\[PullAudio\] WARNING: Extreme drift detected"),
 }
+
+STRICT_SYNC_LOG_EVENTS = (
+    "audio_latency_cap",
+    "audio_retain_trim",
+    "audio_retained_trim_summary",
+    "audio_latency_trim_summary",
+    "audio_coverage_trim",
+    "audio_tier2_trim_summary",
+    "audio_wgc_lead_cap_trim",
+    "audio_overflow_protection_trim",
+    "audio_post_resample_trim",
+    "audio_large_gap",
+    "audio_underrun",
+    "audio_overflow",
+    "audio_forced_bootstrap",
+    "audio_bootstrap_trim",
+    "wgc_fresh_catchup",
+    "wgc_stop_drain_aborted",
+    "wgc_post_stop_frame_drop",
+)
 
 CADENCE_AGEMAX_RE = re.compile(r"AgeMax=(\d+)us")
 CADENCE_SELMISS_RE = re.compile(r"SelMiss=(\d+)")
@@ -249,6 +278,9 @@ def evaluate_thresholds(args, nominal_fps, video_timing, duplicate_runs, audio_d
         )
 
     log_event_thresholds = parse_named_int_thresholds(args.max_log_event, LOG_PATTERNS.keys(), "--max-log-event")
+    if args.strict_sync_events:
+        for name in STRICT_SYNC_LOG_EVENTS:
+            log_event_thresholds.setdefault(name, 0)
     if log_event_thresholds and log_summary is None:
         fail("--max-log-event requires --log")
     for name, limit in sorted(log_event_thresholds.items()):
@@ -933,6 +965,11 @@ def main():
         default=[],
         metavar="NAME=COUNT",
         help="Fail if the named log event count exceeds COUNT. Valid names match LOG_PATTERNS.",
+    )
+    parser.add_argument(
+        "--strict-sync-events",
+        action="store_true",
+        help="Fail on any known audio trim/drop/underrun event or stale CFR catch-up event in the log.",
     )
     parser.add_argument(
         "--max-cadence-metric",

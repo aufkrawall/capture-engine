@@ -127,7 +127,7 @@ public:
     }
 
     void SetMaxCompensationPercent(double percent) {
-        maxCompensationPercent_ = std::clamp(percent, 0.1, 15.0);
+        maxCompensationPercent_ = std::clamp(percent, 0.0, 15.0);
     }
 
     int32_t GetMaxCompensationDelta() const {

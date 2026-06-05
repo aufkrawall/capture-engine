@@ -224,22 +224,28 @@ bool ValidateFormatContextForHeader(const AVFormatContext* fmtCtx) {
     return true;
 }
 
-int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int64_t startPts, int64_t lastAssignedVideoPts) {
-    int64_t elapsedUs = timestampUs - startPts;
-    if (elapsedUs < 0) {
-        elapsedUs = 0;
-    }
-
+int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int fps, int64_t startPts,
+                              int64_t lastAssignedVideoPts, bool useExplicitCfrTimeline) {
     if (useVfr && startPts >= 0) {
+        int64_t elapsedUs = timestampUs - startPts;
+        if (elapsedUs < 0) {
+            elapsedUs = 0;
+        }
         return elapsedUs;
     }
 
-    // In CFR mode the host capture thread already owns the output slot schedule
-    // and explicitly emits repeats for missing source ticks. Re-sampling elapsed
-    // wall time here can skip CFR slot numbers whenever the encoder loop wakes
-    // up late or rebases its timer, which creates permanent PTS holes (e.g.
-    // 0,1,17,18,...) and visible judder even if the host later catches up.
-    // Every encode call therefore advances by exactly one CFR slot.
+    if (useExplicitCfrTimeline) {
+        int64_t elapsedUs = timestampUs;
+        if (elapsedUs < 0) {
+            elapsedUs = 0;
+        }
+        return ComputeCfrFrameIndexForElapsedUs(elapsedUs, fps, lastAssignedVideoPts);
+    }
+
+    // Generic CFR/inject mode still owns one explicit encoder call per output
+    // slot here. WGC passes useExplicitCfrTimeline because its caller already
+    // computes the live CFR slot elapsed time and may intentionally skip stale
+    // visual debt without letting fresh frames occupy old timestamps.
     return ComputeNextCfrFrameIndex(lastAssignedVideoPts);
 }
 
@@ -3518,7 +3524,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         DLL_Log("[VideoEncoder] Recording started at PTS %lld us", startPts.load());
     }
 
-    const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, startPts, lastAssignedVideoPts);
+    const int64_t targetPts =
+        ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, startPts, lastAssignedVideoPts, false);
 
     // 5. Encode (Direct D3D11 Frame) - with proper packet draining
     AVPacket* pkt = av_packet_alloc();
@@ -3688,7 +3695,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 // EncodeFrameD3D11: Direct D3D11 texture encoding for framegrab
 // mode Zero-copy path - texture is converted RGB/BGRA -> NV12/P010 directly on GPU
 bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, uint32_t frameWidth,
-                                    uint32_t frameHeight, bool isHDR, int32_t captureLeft, int32_t captureTop) {
+                                    uint32_t frameHeight, bool isHDR, int32_t captureLeft, int32_t captureTop,
+                                    bool useExplicitCfrTimeline) {
     if (!recordingRequested)
         return false;
 
@@ -3898,7 +3906,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld us", startPts.load());
     }
 
-    const int64_t targetPts = ComputeTargetVideoPts(pts, savedConfig.useVFR, startPts, lastAssignedVideoPts);
+    const int64_t targetPts = ComputeTargetVideoPts(pts, savedConfig.useVFR, savedConfig.fps, startPts,
+                                                    lastAssignedVideoPts, useExplicitCfrTimeline);
 
     // Encode
     AVPacket* pkt = av_packet_alloc();
@@ -4031,7 +4040,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     return true;
 }
 
-bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
+bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimeline) {
     if (!recordingRequested) {
         return false;
     }
@@ -4097,7 +4106,8 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
     // invalid repeated-frame header OBUs in the output stream, so AV1 repeats
     // must go through the cached-texture re-encode path below.
     if (cachedRepeatPacket_ && !savedConfig.useVFR && ce::video::SupportsEncodedPacketRepeat(savedConfig.encoder)) {
-        const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, startPts, lastAssignedVideoPts);
+        const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, startPts,
+                                                        lastAssignedVideoPts, useExplicitCfrTimeline);
 
         AVPacket* repeatPkt = av_packet_alloc();
         if (repeatPkt) {
@@ -4152,7 +4162,8 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
     auto afterConvert = PerfTimer::now();
     ApplyFrameColorMetadata(d3d11Frame, codecCtx);
 
-    const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, startPts, lastAssignedVideoPts);
+    const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, startPts,
+                                                    lastAssignedVideoPts, useExplicitCfrTimeline);
 
     AVPacket* pkt = av_packet_alloc();
     if (!pkt) {

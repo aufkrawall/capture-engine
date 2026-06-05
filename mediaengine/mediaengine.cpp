@@ -1586,7 +1586,8 @@ public:
                 ResolveCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs, injectTimelineState.lastElapsedUs);
         }
 
-        bool res = videoEnc->RepeatLastFrame(realElapsedUs);
+        const bool useExplicitWgcCfrTimeline = wgcCfrRecording && timelineElapsedUs >= 0;
+        bool res = videoEnc->RepeatLastFrame(realElapsedUs, useExplicitWgcCfrTimeline);
         if (!res) {
             return false;
         }
@@ -1676,8 +1677,9 @@ public:
             realElapsedUs = ResolveAuthoritativeCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs,
                                                                      d3d11TimelineState.lastElapsedUs);
         }
+        const bool useExplicitWgcCfrTimeline = IsWgcCfrRecording() && timelineElapsedUs >= 0;
         if (!videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedUs, width, height, isHDR, captureLeft,
-                                        captureTop)) {
+                                        captureTop, useExplicitWgcCfrTimeline)) {
             DLL_Log("MediaEngine: D3D11 frame encode failed at ts=%lld", debugTimestamp);
             return false;
         }
@@ -1731,7 +1733,7 @@ public:
         constexpr int64_t kLatencyTrimHysteresisSamples = ce::audio::kDefaultAudioPullQuantumSamples;
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 10;  // 100ms
-        constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = false;
+        constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
         constexpr double kTier1MaxPitchPercent = 0.05;  // Keep WGC source-clock correction below audible pitch shift.
         constexpr int64_t kTier2DriftThresholdMs = 20;
@@ -2291,9 +2293,9 @@ public:
                             static_cast<uint32_t>(std::min<int64_t>(audioLeadExcessSamples, INT32_MAX)));
                     }
 
-                    // Two-tier drift correction:
-                    // Tier 1 - Inaudible micro-pitch via swr_set_compensation.
-                    // Tier 2 - Ring buffer sample trimming with crossfade (when drift > 20ms)
+                    // Non-CFR modes may still use legacy drift correction. CFR
+                    // allows only tiny source-clock correction after startup; it
+                    // must not chase encoder debt, WGC coverage loss, or drain.
                     {
                         const int64_t rbLevel = static_cast<int64_t>(rbAvailable);
                         if (rbLevel >= kMinCompensationBufferSamples) {
@@ -2329,36 +2331,32 @@ public:
                                 const int64_t updateElapsed = nowVideoMs - src.lastRateUpdateMs;
 
                                 if (updateElapsed >= 500) {
-                                    // --- Tier 1: Micro-pitch correction ---
-                                    // Keep rate correction for real source drift, but do not spend buffered lead that
-                                    // only exists because the authoritative CFR timeline is slightly behind wall clock.
+                                    // --- Tier 1: bounded source-clock correction ---
+                                    // Keep a tiny correction lane for real device clock drift. It must not spend
+                                    // buffered lead that only exists because the CFR video timeline is behind wall
+                                    // clock or because WGC/source coverage is missing.
                                     int32_t tier1Delta = 0;
 
                                     if (isCfrRecording) {
-                                        const bool suppressPositiveCorrectionForLiveShortfall =
-                                            ce::audio::ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(
-                                                isCfrRecording, forceDrain, timelineShortfallMs,
-                                                wgcEncoderBottlenecked);
-                                        if (isWgcCfrRecording && wgcEncoderOnlyOverload) {
-                                            tier1Delta = 0;
-                                            src.targetRateSaturated = false;
-                                        } else {
-                                            const int64_t positiveCompensationHysteresisSamples =
-                                                ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
-                                                    targetLatencySamples, kWgcCfrLeadWarningSamples);
-                                            const bool allowSteadyStatePositiveCompensation =
-                                                ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
-                                                    trackStartupSettled, videoPipelineLagMs, rbLevel,
-                                                    targetLatencySamples, kWgcCfrLeadWarningSamples);
+                                        const bool allowCfrSourceClockCorrection =
+                                            ce::audio::ShouldAllowCfrSourceClockDriftCompensation(
+                                                isCfrRecording, forceDrain, trackStartupSettled,
+                                                startupTimelineProtected, wgcEncoderBottlenecked, timelineShortfallMs,
+                                                wgcCoverageLossActive);
+                                        if (allowCfrSourceClockCorrection) {
                                             tier1Delta = ce::audio::ComputeTier1CompensationDelta(
                                                 trueDrift, static_cast<int64_t>(SAMPLE_RATE) * 10,
                                                 kTier1MaxPitchPercent);
                                             src.targetRateSaturated =
                                                 std::abs(trueDrift) > src.syncResampler->GetMaxCompensationDelta();
-                                            if (tier1Delta > 0 && suppressPositiveCorrectionForLiveShortfall) {
-                                                tier1Delta = 0;
-                                                src.targetRateSaturated = false;
-                                            } else if (tier1Delta > 0) {
+                                            if (isWgcCfrRecording && tier1Delta > 0) {
+                                                const int64_t positiveCompensationHysteresisSamples =
+                                                    ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
+                                                        targetLatencySamples, kWgcCfrLeadWarningSamples);
+                                                const bool allowSteadyStatePositiveCompensation =
+                                                    ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
+                                                        trackStartupSettled, videoPipelineLagMs, rbLevel,
+                                                        targetLatencySamples, kWgcCfrLeadWarningSamples);
                                                 if (ce::audio::ShouldClearWgcPositiveDriftCompensation(
                                                         allowSteadyStatePositiveCompensation, rbLevel, expectedLead,
                                                         positiveCompensationHysteresisSamples)) {
@@ -2369,6 +2367,8 @@ public:
                                                             tier1Delta, positiveCompensationHysteresisSamples));
                                                 }
                                             }
+                                        } else {
+                                            src.targetRateSaturated = false;
                                         }
                                     } else {
                                         const int32_t maxDelta = src.syncResampler->GetMaxCompensationDelta();
@@ -2458,8 +2458,8 @@ public:
                         }
                     }
 
-                    // Overflow protection. Non-CFR modes keep the historical short cap; CFR
-                    // preserves audio continuity and only trims near the real ring capacity.
+                    // Overflow protection. Non-CFR modes keep the historical short cap. CFR logs pressure instead
+                    // of proactively trimming; if the ring actually overflows, validation must fail the recording.
                     if (!forceDrain && src.ringBuffer && !startupTimelineProtected) {
                         constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;            // 500ms max overflow
                         constexpr int64_t kWgcCfrEmergencyRingMarginSamples = SAMPLE_RATE;  // 1s before full
@@ -2471,7 +2471,7 @@ public:
                             kWgcCfrEmergencyRingMarginSamples);
                         const int64_t overflowExcess =
                             static_cast<int64_t>(rbAvailable) - targetLatencySamples - overflowCapSamples;
-                        if (overflowExcess > kRuntimeDropFadeSamples) {
+                        if (overflowExcess > kRuntimeDropFadeSamples && !isCfrRecording) {
                             CaptureDropFadeAnchor(src, CHANNELS);
                             src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
 
@@ -2491,6 +2491,14 @@ public:
                                     (long long)trimmedSamples, (long long)(rbAvailable + trimmedSamples),
                                     (long long)targetLatencySamples, (long long)overflowCapSamples);
                             }
+                        } else if (overflowExcess > kRuntimeDropFadeSamples && dropLogCounter++ % 500 == 0) {
+                            DLL_Log(
+                                "[PullAudio] WARNING: CFR audio ring near capacity - src %d excess=%lld "
+                                "rb=%lld target=%lld cap=%lld capacity=%lld. Preserving audio; any overflow/drop is "
+                                "a validation failure.",
+                                (int)srcIdx, (long long)overflowExcess, (long long)rbAvailable,
+                                (long long)targetLatencySamples, (long long)overflowCapSamples,
+                                (long long)rbCapacitySamples);
                         }
                     }
                 }
@@ -2630,7 +2638,7 @@ public:
                     static_cast<size_t>(std::max<int64_t>(0, remainingStartupProtectionSamples)) * CHANNELS;
                 const size_t MAX_POST_RESAMPLE_FLOATS =
                     std::max(totalFloats * 4, MIN_POST_RESAMPLE_FLOATS + startupProtectedFloats);
-                if (src.postResampleBuffer.size() > MAX_POST_RESAMPLE_FLOATS) {
+                if (src.postResampleBuffer.size() > MAX_POST_RESAMPLE_FLOATS && !isCfrRecording) {
                     size_t excess = src.postResampleBuffer.size() - MAX_POST_RESAMPLE_FLOATS;
                     ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticPostSamples, excess / CHANNELS);
                     ce::audio::ConsumeSyntheticBufferedSamples(src.startupGapProtectionSamples, excess / CHANNELS);
@@ -2648,6 +2656,11 @@ public:
                     }
                     src.postResampleBuffer.erase(src.postResampleBuffer.begin(),
                                                  src.postResampleBuffer.begin() + (std::ptrdiff_t)excess);
+                } else if (src.postResampleBuffer.size() > MAX_POST_RESAMPLE_FLOATS && dropLogCounter++ % 500 == 0) {
+                    DLL_Log(
+                        "[PullAudio] WARNING: CFR post-resample backlog exceeded guard - src %d backlog=%zu cap=%zu. "
+                        "Preserving audio; underrun/overflow validation will report any real failure.",
+                        (int)srcIdx, src.postResampleBuffer.size() / CHANNELS, MAX_POST_RESAMPLE_FLOATS / CHANNELS);
                 }
 
                 std::vector<float> srcData(totalFloats, 0.0f);

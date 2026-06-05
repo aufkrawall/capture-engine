@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-04 (audio startup cursor/validator hardening, build 0.1.3742)
+Last cross-checked: 2026-06-05 (CFR audio integrity and strict sync validation)
 Stale-risk: medium
 
 Primary sources:
@@ -22,9 +22,11 @@ Primary sources:
 
 The audio pipeline supports separate system audio, microphone, and process/app audio sources, with each source assigned to one or more output tracks. Track format is resolved per output track before encoder creation: sample rate, channel count, channel mask/layout, codec, bitrate, and bit depth are no longer hard-coded to stereo.
 
-The video timeline remains authoritative for normal recordings. Final audio is padded or trimmed by sample accounting to the encoded video duration, stream duration metadata is written from that final video duration, and per-track final deltas are logged. Enabled tracks are materialized through the encoder even when the contributing source is silent or inactive; do not rely on sparse container gaps to represent silence.
+The CFR media clock remains authoritative for normal recordings. Final audio is padded by sample accounting to the final video/CFR endpoint, stream duration metadata is written from that final video duration, and per-track final deltas are logged. Enabled tracks are materialized through the encoder even when the contributing source is silent or inactive; do not rely on sparse container gaps to represent silence.
 
 Each exported track owns an independent audio timeline cursor. Per-source counters are diagnostics and source-local stitching aids only; they must not decide the muxed stream timestamp. At the shared A/V anchor, system and microphone sources become timeline-valid immediately and contribute encoded silence until timestamped real packets arrive. App-audio sources remain optional until their first packet, then late packets are placed by QPC/source timestamp and overlap/drop already-encoded silence instead of delaying the whole track. This replaced the old 500 ms forced-bootstrap/backlog-trim behavior that made non-ALAC Track 3 content appear shorter even when container packet durations matched.
+
+For CFR capture, audio is not a recovery mechanism for WGC/inject video pressure. Live trim, source drop, overflow-protection skip, post-resample backlog trim, and broad pitch correction are validation failures rather than acceptable sync repair. A tiny source-clock-only resampler compensation lane remains for real device-clock drift after startup has settled and the timeline is healthy; it is currently capped at `0.05%`, and is disabled during force drain, startup protection, encoder-bottleneck shortfall, timeline shortfall, or WGC coverage loss.
 
 ## Config Semantics
 
@@ -67,6 +69,8 @@ Useful logs for this area:
 - `[A/V START] Audio source reset ... timelineValid=...`: confirms non-app sources are valid at the shared anchor and app sources are optional until first packet.
 - `[PullAudio] Track ... bootstrap complete ... forced=0 trimmed=0`: startup settled without the old forced-bootstrap/content-trim path. Any `forced=1` or nonzero `trimmed` is a validation failure.
 - `[AudioLoop] Late source cursor advance ...`: a late packet arrived after the track cursor already encoded silence; this is explicit placement diagnostics, not a reason to move the exported track.
+- `[PullAudio] WARNING: CFR audio ring near capacity ...`: pressure diagnostic. The code preserves audio; an actual overflow/drop is a validation failure.
+- `[PullAudio] WARNING: CFR post-resample backlog exceeded guard ...`: pressure diagnostic. The code preserves audio; post-resample trimming is a validation failure.
 - `[STOP AUDIO TRACK] Track ... encoded=... expected=... realMixed=... fullSilence=... partialSilence=... sources=[...]`: exported-track cursor summary, including real/silence accounting.
 - `[StopAudio] Source ... diff=+0 (+0.0 ms)`: final sample-count equality to the selected video duration.
 - `[VideoEncoder] Final packet timeline` and `[VideoEncoder] Final metadata durations`: mux-level final duration evidence.
@@ -85,7 +89,7 @@ Focused regression coverage lives in:
 - `tests/test_audio_sync_utils.cpp`
   - Packed/interleaved silence buffer sizing includes every channel, final packet durations clamp to the video sample target, timeline-valid startup no longer waits for buffered real audio, app audio stays optional until first packet, source write cursors never trail the encoded track cursor, and late first packets overlap already-encoded silence.
 - `tools/analyze_capture_av.py`
-  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, and log-event gates for forced bootstrap, bootstrap trim, source underrun, and other sync-risk events.
+  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop paths, WGC fresh catch-up, stop-drain abort, and post-stop frame drops.
 
 Verified on 2026-06-04:
 
@@ -95,7 +99,13 @@ Verified on 2026-06-04:
 - `python build.py --skip-updates` (build 0.1.3742)
 - Validator control checks against the supplied pre-fix recordings: ALAC `H:\captures\capture_6077109.mkv` passed strict spread/video-delta/decode/tail/log gates; old PCM `capture_6396843.mkv` failed on forced bootstrap, bootstrap trim, and a one-sample tail-marker spread; old Opus `capture_6344312.mkv` failed on forced bootstrap, bootstrap trim, and nonempty Opus parser stderr. Those old files are evidence that the checker catches the prior failures, not proof that fresh post-fix runtime captures are clean.
 
+Updated on 2026-06-05:
+
+- CFR audio recovery was hardened after fresh WGC captures showed pitch/distortion/desync despite equal packet durations. WGC/inject video pressure is handled on the visual side; audio trims/drops are no longer used as CFR recovery, and source-clock compensation is capped to `0.05%` only on settled, healthy timelines.
+- `tools/analyze_capture_av.py --strict-sync-events` now applies zero thresholds to known audio trim/drop/underrun events and WGC stale-catchup/stop/post-stop events.
+- Verification passed: focused build/test 137/137 for `CapturePipelinePolicyTest.*:AudioSyncUtilsTest.*:AudioResamplerTest.*`, required `python build.py --skip-updates` on build `0.1.3756`, and required `python build.py --no-build --run-tests --skip-updates` with 905/905 tests at displayed metadata `0.1.3757`.
+
 ## Open Questions / Stale-Risk
 
-- Fresh runtime validation is still required for WGC recordings across AAC, ALAC, FLAC, Opus, and PCM, then the same media-engine duration/layout validation for injected capture. Strict validation should include `--full-scan --decode-check --waveform-tail-scan --max-audio-spread-ms 0 --max-video-audio-delta-ms 0 --max-audio-tail-marker-spread-ms 0 --max-log-event audio_forced_bootstrap=0 --max-log-event audio_bootstrap_trim=0 --max-log-event audio_underrun=0`.
+- Fresh runtime validation is still required for WGC recordings across AAC, ALAC, FLAC, Opus, and PCM, then the same media-engine duration/layout validation for injected capture. Strict validation should include `--full-scan --decode-check --waveform-tail-scan --strict-sync-events --max-audio-spread-ms 0 --max-video-audio-delta-ms 0 --max-audio-tail-marker-spread-ms 0 --max-log-event audio_extreme_drift=0`.
 - Synthetic tests cover the codec/config/layout policy, but they do not prove every real device's channel mask maps losslessly. Logs should call out unknown masks so those devices can be handled explicitly.

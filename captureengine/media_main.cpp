@@ -1722,7 +1722,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint64_t liveTicksOutput = 0;
     uint64_t liveTicksScheduled = 0;
     uint64_t liveTicksDiscardedByTimerRebase = 0;
-    uint64_t liveTicksDiscardedByWgcVisualDebt = 0;
+    uint64_t wgcVisualDebtMaxExcessTicks = 0;
+    bool wgcStopDrainHeldFrameLogged = false;
     uint64_t wgcSelectionErrorAccumUs = 0;
     int64_t wgcSelectionErrorSignedAccumUs = 0;
     uint32_t wgcSelectionErrorSamples = 0;
@@ -1992,8 +1993,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
         const uint64_t elapsedTicks = static_cast<uint64_t>(scheduledUntilQpc - liveStartQpc.QuadPart) /
                                       static_cast<uint64_t>(targetIntervalTicks);
-        liveTicksScheduled = ce::capture_policy::GetAdjustedCfrScheduledTicks(
-            elapsedTicks, liveTicksDiscardedByTimerRebase + liveTicksDiscardedByWgcVisualDebt);
+        liveTicksScheduled = ce::capture_policy::GetCfrScheduledTicksForEndpoint(
+            elapsedTicks, liveTicksDiscardedByTimerRebase, wgcVisualDebtMaxExcessTicks);
         return ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
     };
     while (g_EncoderRunning || g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) || g_FrameQueue.Size() > 0 ||
@@ -2082,23 +2083,20 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return 0;
             }
 
-            const uint32_t droppedTicks = outputShortfallTicks - maxDebtTicks;
-            liveTicksDiscardedByWgcVisualDebt += droppedTicks;
-            LARGE_INTEGER debtDropNowQpc;
-            QueryPerformanceCounter(&debtDropNowQpc);
-            outputShortfallTicks = updateLiveCfrShortfall(debtDropNowQpc.QuadPart);
+            const uint32_t excessTicks = outputShortfallTicks - maxDebtTicks;
+            wgcVisualDebtMaxExcessTicks = std::max<uint64_t>(wgcVisualDebtMaxExcessTicks, excessTicks);
 
             static uint64_t s_lastWgcTimelineDebtDropLogTick = 0;
             const uint64_t nowTick = GetTickCount64();
-            if (nowTick - s_lastWgcTimelineDebtDropLogTick >= 1000 || droppedTicks >= maxDebtTicks) {
+            if (nowTick - s_lastWgcTimelineDebtDropLogTick >= 1000 || excessTicks >= maxDebtTicks) {
                 LogWarn(
-                    "[EncoderThread] WGC CFR visual timeline debt drop: reason=%s droppedTicks=%u maxDebtTicks=%u "
-                    "discardTotal=%llu remainingShortfall=%u",
-                    reason ? reason : "unknown", droppedTicks, maxDebtTicks,
-                    static_cast<unsigned long long>(liveTicksDiscardedByWgcVisualDebt), outputShortfallTicks);
+                    "[EncoderThread] WGC CFR visual timeline debt drop: reason=%s excessTicks=%u maxDebtTicks=%u "
+                    "maxExcessTicks=%llu shortfall=%u",
+                    reason ? reason : "unknown", excessTicks, maxDebtTicks,
+                    static_cast<unsigned long long>(wgcVisualDebtMaxExcessTicks), outputShortfallTicks);
                 s_lastWgcTimelineDebtDropLogTick = nowTick;
             }
-            return droppedTicks;
+            return excessTicks;
         };
         auto pruneStaleWgcVisualDebt = [&](int64_t liveNowQpc, const char* reason, bool allowDropAll) -> size_t {
             const int64_t visualDebtFloorQpc =
@@ -2207,21 +2205,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                     mediaEngineCanRepeatLastFrame ? 1 : 0);
                 s_lastStopDrainProgressLogTick = nowTick;
             }
-            if (activeScreenGrab && outputShortfallTicks > 0 && !bufferedFrameAvailable && g_FrameQueue.Size() == 0) {
-                const uint32_t frozenTailTicks = outputShortfallTicks;
-                liveTicksDiscardedByWgcVisualDebt += frozenTailTicks;
-                int64_t drainPolicyQpc = g_CfrDrainStopQpc.load(std::memory_order_acquire);
-                if (drainPolicyQpc <= 0) {
-                    LARGE_INTEGER drainNowQpc;
-                    QueryPerformanceCounter(&drainNowQpc);
-                    drainPolicyQpc = drainNowQpc.QuadPart;
-                }
-                outputShortfallTicks = updateLiveCfrShortfall(drainPolicyQpc);
+            if (activeScreenGrab && outputShortfallTicks > 0 && !bufferedFrameAvailable && g_FrameQueue.Size() == 0 &&
+                g_HasLastFrame && mediaEngineCanRepeatLastFrame && !wgcStopDrainHeldFrameLogged) {
                 LogWarn(
-                    "[EncoderThread] WGC CFR stop drain discarded frozen-tail debt: droppedTicks=%u discardTotal=%llu "
-                    "remainingShortfall=%u hostLast=%d cachedRepeat=%d",
-                    frozenTailTicks, static_cast<unsigned long long>(liveTicksDiscardedByWgcVisualDebt),
-                    outputShortfallTicks, g_HasLastFrame ? 1 : 0, mediaEngineCanRepeatLastFrame ? 1 : 0);
+                    "[EncoderThread] WGC CFR stop drain using held pre-stop frame: holdTicks=%u/%.1fms "
+                    "queued=0 buffered=0. Audio endpoint is preserved; this is visual hold debt, not audio recovery.",
+                    outputShortfallTicks,
+                    ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs));
+                wgcStopDrainHeldFrameLogged = true;
             }
             if (outputShortfallTicks == 0 || !canDrainOutstandingTicks) {
                 if (outputShortfallTicks == 0) {
@@ -2525,10 +2516,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const bool fallbackFreshEnough = ce::capture_policy::IsWgcTimestampFreshEnough(
                         candidate.timestamp, staleFallbackMinTimestampQpc);
                     const int64_t candidateSelectionTimestamp = GetFrameSelectionTimestamp(candidate);
-                    if (g_HasLastFrame && !g_LastFrame.isInjectMode &&
+                    const bool tooNewForSlot =
+                        g_HasLastFrame && !g_LastFrame.isInjectMode &&
                         ce::capture_policy::IsWgcFrameTooNewForCfrSlot(
-                            candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks)) {
+                            candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks);
+                    if (tooNewForSlot) {
                         skippedTooNewForSlot = true;
+                        continue;
                     }
                     if (requireFresh) {
                         if (!(sourceTimestampAdvanced && freshEnough)) {
@@ -3612,7 +3606,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 liveTicksOutput = 0;
                 liveTicksScheduled = 0;
                 liveTicksDiscardedByTimerRebase = 0;
-                liveTicksDiscardedByWgcVisualDebt = 0;
+                wgcVisualDebtMaxExcessTicks = 0;
+                wgcStopDrainHeldFrameLogged = false;
                 liveStartQpc = {};
                 wgcInputPredictor.Reset();
                 smoothedEncCycleMs = 0.0;
@@ -4975,7 +4970,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "DropDebt=%u/%llu DebtMax=%uus SelMiss=%u StaleUni=%u "
                 "Ancient=%u RepFreshMiss=%u RepHold=%u RepCov=%u CovDelay=%u RepLate=%u RepCatch=%u | TsReg=%u "
                 "TsStall=%u "
-                "TimerRebase=%u WgcTimelineDrop=%llu | "
+                "TimerRebase=%u WgcDebtMax=%llu | "
                 "InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | Over=0x%X "
                 "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms Budget=%upm Sust=%.1ffps TooSlow=%d "
                 "Bottleneck=%d | LowSrc=%d Recover=%d Cause=S%d/D%d/E%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u "
@@ -5008,7 +5003,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcRepeatNoFreshCount, wgcRepeatPolicyHoldCount, wgcCoverageRepeatHoldCount,
                 wgcCoverageDelayTicksCurrent, wgcRepeatTimerLateCount, wgcRepeatCatchupCount,
                 tsRegress - lastTimestampRegressionCount, tsStall - lastTimestampStallCount, timerRebases,
-                static_cast<unsigned long long>(liveTicksDiscardedByWgcVisualDebt), invalidMeta - lastInvalidMetaCount,
+                static_cast<unsigned long long>(wgcVisualDebtMaxExcessTicks), invalidMeta - lastInvalidMetaCount,
                 invalidHandle - lastInvalidHandleCount, packetClamps - lastPacketClampCount,
                 negativePts - lastNegativePtsCount, nonMonotonicPts - lastNonMonotonicPtsCount,
                 g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed), wgcAdaptiveThrottleAdjustments, overloadFlags,
@@ -5262,7 +5257,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     ? 0.0
                     : captureSessionSummary.minEncoderSustainFps,
                 captureSessionSummary.lowSourceImmediateExits, static_cast<unsigned long long>(wgcDropStaleDebtTotal),
-                static_cast<unsigned long long>(liveTicksDiscardedByWgcVisualDebt),
+                static_cast<unsigned long long>(wgcVisualDebtMaxExcessTicks),
                 static_cast<unsigned long long>(wgcPostStopFrameDropTotal), wgcPostStopFrameDropMaxUs);
         } else {
             LogInfo(

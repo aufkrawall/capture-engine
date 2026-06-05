@@ -198,6 +198,17 @@ TEST(AudioSyncUtilsTest, CfrLiveShortfallSuppressesPositiveDriftCorrection) {
     EXPECT_FALSE(ce::audio::ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(false, false, 1000, true));
 }
 
+TEST(AudioSyncUtilsTest, CfrSourceClockCompensationRequiresSettledHealthyTimeline) {
+    EXPECT_TRUE(ce::audio::ShouldAllowCfrSourceClockDriftCompensation(true, false, true, false, false, 0, false));
+    EXPECT_FALSE(ce::audio::ShouldAllowCfrSourceClockDriftCompensation(false, false, true, false, false, 0, false));
+    EXPECT_FALSE(ce::audio::ShouldAllowCfrSourceClockDriftCompensation(true, true, true, false, false, 0, false));
+    EXPECT_FALSE(ce::audio::ShouldAllowCfrSourceClockDriftCompensation(true, false, false, false, false, 0, false));
+    EXPECT_FALSE(ce::audio::ShouldAllowCfrSourceClockDriftCompensation(true, false, true, true, false, 0, false));
+    EXPECT_FALSE(ce::audio::ShouldAllowCfrSourceClockDriftCompensation(true, false, true, false, true, 0, false));
+    EXPECT_FALSE(ce::audio::ShouldAllowCfrSourceClockDriftCompensation(true, false, true, false, false, 100, false));
+    EXPECT_FALSE(ce::audio::ShouldAllowCfrSourceClockDriftCompensation(true, false, true, false, false, 0, true));
+}
+
 TEST(AudioSyncUtilsTest, WgcRuntimeOverflowCapUsesRingCapacityGuard) {
     EXPECT_EQ(ce::audio::ComputeRuntimeOverflowCapSamples(false, 6720, 1440000, 24000, 48000), 24000);
     EXPECT_EQ(ce::audio::ComputeRuntimeOverflowCapSamples(true, 6720, 1440000, 24000, 48000), 1385280);

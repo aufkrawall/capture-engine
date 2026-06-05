@@ -47,11 +47,11 @@ public:
     // Re-emit the previously encoded video frame content as a true duplicate.
     // Used by the host CFR scheduler when a live tick has no fresh source frame
     // or when an inject frame is deferred.
-    bool RepeatLastFrame(int64_t timestamp);
+    bool RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimeline = false);
 
     // Encode a D3D11 texture directly (framegrab mode - zero copy)
     bool EncodeFrameD3D11(ID3D11Texture2D* texture, int64_t pts, uint32_t frameWidth, uint32_t frameHeight, bool isHDR,
-                          int32_t captureLeft, int32_t captureTop);
+                          int32_t captureLeft, int32_t captureTop, bool useExplicitCfrTimeline = false);
 
     // Write a packet (already encoded)
     void WriteFrame(AVPacket* pkt);

@@ -58,6 +58,29 @@ TEST(AudioResamplerTest, MaxCompensationPercentCanBeRaisedForCoverageLoss) {
     EXPECT_EQ(resampler.GetMaxCompensationDelta(), 4800);
 }
 
+TEST(AudioResamplerTest, MaxCompensationPercentCanBeLoweredForCfrSourceClockCorrection) {
+    AudioResampler resampler;
+    AudioResampler::InputFormat inFmt{};
+    inFmt.channels = 2;
+    inFmt.sampleRate = 48000;
+    inFmt.bitsPerSample = 32;
+    inFmt.validBitsPerSample = 32;
+    inFmt.isFloat = true;
+    inFmt.blockAlign = 8;
+
+    AudioResampler::OutputFormat outFmt{};
+    outFmt.channels = 2;
+    outFmt.sampleRate = 48000;
+    outFmt.sampleFmt = AV_SAMPLE_FMT_FLTP;
+
+    ASSERT_TRUE(resampler.Init(inFmt, outFmt));
+    resampler.SetMaxCompensationPercent(0.05);
+    EXPECT_EQ(resampler.GetMaxCompensationDelta(), 240);
+
+    resampler.SetMaxCompensationPercent(0.0);
+    EXPECT_EQ(resampler.GetMaxCompensationDelta(), 0);
+}
+
 TEST(AudioResamplerTest, ProcessPacked24BitStereoProducesUsablePlanarFloatSamples) {
     AudioResampler resampler;
     ASSERT_TRUE(resampler.Init(MakeStereoPacked24Input(), MakeStereoFloatOutput()));
