@@ -5,8 +5,10 @@
 #include <atomic>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <cwctype>
+#include <mutex>
 
 namespace ce::overlay_compat {
 namespace detail {
@@ -38,6 +40,38 @@ inline bool ContainsInsensitive(const CharT* haystack, const CharT* needle) {
     }
 
     return false;
+}
+
+// Case-insensitive (ASCII) full-string equality. Locale-independent and deterministic so it
+// is safe to call under the loader lock (DLL load/unload notifications) and from unit tests.
+template <typename CharT>
+inline bool EqualsInsensitive(const CharT* a, const CharT* b) {
+    if (!a || !b) {
+        return false;
+    }
+    while (*a && *b) {
+        if (ToLowerAscii(*a) != ToLowerAscii(*b)) {
+            return false;
+        }
+        ++a;
+        ++b;
+    }
+    return *a == *b;  // both reached the terminator
+}
+
+// Returns the base-name portion of a module path/name (after the last '\\' or '/'). Never
+// touches the loader; safe under the loader lock.
+inline const char* ExtractBaseName(const char* pathOrName) {
+    if (!pathOrName) {
+        return pathOrName;
+    }
+    const char* base = pathOrName;
+    for (const char* cursor = pathOrName; *cursor; ++cursor) {
+        if (*cursor == '\\' || *cursor == '/') {
+            base = cursor + 1;
+        }
+    }
+    return base;
 }
 
 struct AuxiliaryProcessWindowSearchContext;
@@ -381,69 +415,152 @@ inline bool IsThirdPartyOverlayLoaded() {
     return false;
 }
 
-// Generation counter for the third-party-overlay module cache. Bumped whenever a
-// DLL is loaded into the process (via NotifyHookModuleLoaded ->
-// InvalidateThirdPartyOverlayModuleCache). The set of loaded modules only changes
-// on a DLL load, so caching the lookup and re-scanning only on a load event lets
-// GetLoadedThirdPartyOverlayModuleName() run on every Present essentially for free.
-inline std::atomic<uint32_t>& ThirdPartyOverlayModuleCacheGeneration() {
-    static std::atomic<uint32_t> generation{0};
-    return generation;
-}
-
-inline void InvalidateThirdPartyOverlayModuleCache() {
-    ThirdPartyOverlayModuleCacheGeneration().fetch_add(1, std::memory_order_release);
-}
-
-// Returns the name of the first loaded known third-party overlay module, or null.
+// ---------------------------------------------------------------------------------------
+// Third-party overlay detection — LOADER-FREE on the Present hot path.
 //
-// PERF/CORRECTNESS: this is called from DetourPresent on EVERY Present. The naive
-// implementation did 16 GetModuleHandleA() loader-lock walks per Present, which the
-// x86 (WoW64) freeze dumps showed the present thread stuck in — and which contends
-// with DWM's d3d11.dll load during the iflip<->composited Alt+Tab mode switch. The
-// loaded-module set only changes on a DLL load, so we cache the result and re-scan
-// only when the module-load generation changes. Steady-state Presents now cost one
-// atomic load + compare instead of 16 loader-lock walks.
-inline const char* GetLoadedThirdPartyOverlayModuleName() {
-    static constexpr const char* kOverlayModules[] = {
-        "gameoverlayrenderer64.dll",
-        "gameoverlayrenderer.dll",
-        "discord_hook64.dll",
-        "discord_hook.dll",
-        "socialclub.dll",
-        "socialclub",
-        "EOSOVH_Win64_Shipping.dll",
-        "EOSOVH_Win64_Shipping",
-        "EOSOVH_Win32_Shipping.dll",
-        "EOSOVH_Win32_Shipping",
-        "nvspcap64.dll",
-        "nvspcap.dll",
-        "nvoverlay.dll",
-        "RTSSHooks64.dll",
-        "RTSSHooks.dll",
-        "RTSSHooks",
-    };
+// WHY: GetLoadedThirdPartyOverlayModuleName() is called from DetourPresent on EVERY Present.
+// The previous implementation walked the loader (GetModuleHandleA over the list below) and
+// only cached the result behind a generation counter that was bumped on *every* DLL load. On
+// the Alt+Tab iflip<->composited mode switch the system reloads d3d11.dll (+deps) repeatedly,
+// invalidating that cache each time and forcing the next Present to re-walk the loader. For a
+// NOT-loaded name (socialclub.dll, discord_hook*, RTSSHooks*, ...) GetModuleHandleA takes the
+// expensive LdrGetDllHandleEx + ApiSet-resolution + module-DB-walk path; on x86/WoW64 that
+// stalled Present for >2 s and tripped the 2 s GPU TDR (DXGI_ERROR_DEVICE_HUNG), killing the
+// overlay. Native x64 ran the same walk in <=7 ms, so the freeze was x86-only. See the freeze
+// dump in installed/captureengine/logs/20260605_231633.
+//
+// FIX: the Present hot path now does ONLY a single atomic load. The set of loaded overlay
+// modules is tracked out-of-band — a one-time seed scan at init plus DLL load/unload
+// notifications (NotifyHookModuleLoaded + LdrRegisterDllNotification) — none of which run on
+// the Present thread. Detection logic is split into pure, unit-testable matchers.
+//
+// Canonical overlay-module list (one entry per overlay, highest detection priority first).
+// Downstream consumers only token-match the Steam entry ("gameoverlayrenderer"); everyone
+// else just checks for non-null or logs the string, so these exact strings preserve behavior.
+// List order is the priority: when several overlays are loaded the lowest-index one is
+// reported, matching the previous in-order walk (Steam still wins over RTSS/Discord/etc.).
+inline constexpr const char* kThirdPartyOverlayModules[] = {
+    "gameoverlayrenderer64.dll",
+    "gameoverlayrenderer.dll",
+    "discord_hook64.dll",
+    "discord_hook.dll",
+    "socialclub.dll",
+    "EOSOVH_Win64_Shipping.dll",
+    "EOSOVH_Win32_Shipping.dll",
+    "nvspcap64.dll",
+    "nvspcap.dll",
+    "nvoverlay.dll",
+    "RTSSHooks64.dll",
+    "RTSSHooks.dll",
+};
+inline constexpr size_t kThirdPartyOverlayModuleCount =
+    sizeof(kThirdPartyOverlayModules) / sizeof(kThirdPartyOverlayModules[0]);
+static_assert(kThirdPartyOverlayModuleCount <= 32, "overlay-module loaded-set is a 32-bit mask");
 
-    static std::atomic<uint32_t> s_cachedGeneration{0xFFFFFFFFu};
-    static std::atomic<const char*> s_cachedResult{nullptr};
-
-    const uint32_t generation = ThirdPartyOverlayModuleCacheGeneration().load(std::memory_order_acquire);
-    if (s_cachedGeneration.load(std::memory_order_acquire) == generation) {
-        return s_cachedResult.load(std::memory_order_acquire);
+// Pure / loader-free: index of the known overlay module whose base name case-insensitively
+// equals `baseName`, or -1. Directly unit-testable (no globals, no loader).
+inline int MatchKnownThirdPartyOverlayModuleIndex(const char* baseName) {
+    if (!baseName || !*baseName) {
+        return -1;
     }
+    for (size_t i = 0; i < kThirdPartyOverlayModuleCount; ++i) {
+        if (detail::EqualsInsensitive(baseName, kThirdPartyOverlayModules[i])) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
 
-    const char* found = nullptr;
-    for (const char* moduleName : kOverlayModules) {
-        if (GetModuleHandleA(moduleName) != nullptr) {
-            found = moduleName;
+// Pure / loader-free: canonical list entry for `baseName`, or nullptr. This is the exact
+// string handed to downstream code, so classifiers like IsSteamOverlayModule keep working.
+inline const char* MatchKnownThirdPartyOverlayModuleBaseName(const char* baseName) {
+    const int idx = MatchKnownThirdPartyOverlayModuleIndex(baseName);
+    return idx >= 0 ? kThirdPartyOverlayModules[idx] : nullptr;
+}
+
+// Out-of-band detection state. The Present hot path reads ONLY the name atomic; the loaded-set
+// bitmask and the derived name are mutated solely off the Present thread (seed scan + DLL
+// load/unload notifications), serialized by the mutex.
+inline std::mutex& ThirdPartyOverlayCacheMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+inline std::atomic<const char*>& ThirdPartyOverlayModuleNameCache() {
+    static std::atomic<const char*> cache{nullptr};
+    return cache;
+}
+// Bitmask over kThirdPartyOverlayModules of currently-loaded overlays. Guarded by
+// ThirdPartyOverlayCacheMutex().
+inline uint32_t& ThirdPartyOverlayLoadedBitsRef() {
+    static uint32_t bits = 0;
+    return bits;
+}
+// Recompute the published name from the loaded-set (lowest index = highest priority).
+// Caller must hold ThirdPartyOverlayCacheMutex().
+inline void RecomputeThirdPartyOverlayNameLocked() {
+    const uint32_t bits = ThirdPartyOverlayLoadedBitsRef();
+    const char* name = nullptr;
+    for (size_t i = 0; i < kThirdPartyOverlayModuleCount; ++i) {
+        if (bits & (1u << i)) {
+            name = kThirdPartyOverlayModules[i];
             break;
         }
     }
-    // Benign if two threads race here: the module state is identical so they compute
-    // the same result; the cache is only an optimization.
-    s_cachedResult.store(found, std::memory_order_release);
-    s_cachedGeneration.store(generation, std::memory_order_release);
-    return found;
+    ThirdPartyOverlayModuleNameCache().store(name, std::memory_order_release);
+}
+
+// Present HOT PATH: pure atomic load. NEVER touches the Windows loader.
+inline const char* GetLoadedThirdPartyOverlayModuleName() {
+    return ThirdPartyOverlayModuleNameCache().load(std::memory_order_acquire);
+}
+
+// Off-hot-path. Record that `moduleNameOrPath` just loaded; updates detection state only if it
+// is a known overlay module. No loader calls. Returns the canonical match (for logging) or null.
+inline const char* NoteModuleLoadedForOverlayCache(const char* moduleNameOrPath) {
+    const int idx = MatchKnownThirdPartyOverlayModuleIndex(detail::ExtractBaseName(moduleNameOrPath));
+    if (idx < 0) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(ThirdPartyOverlayCacheMutex());
+    ThirdPartyOverlayLoadedBitsRef() |= (1u << idx);
+    RecomputeThirdPartyOverlayNameLocked();
+    return kThirdPartyOverlayModules[idx];
+}
+
+// Off-hot-path. Record that `moduleNameOrPath` just unloaded; clears its bit if known. No
+// loader calls. Returns the canonical match (for logging) or null.
+inline const char* NoteModuleUnloadedForOverlayCache(const char* moduleNameOrPath) {
+    const int idx = MatchKnownThirdPartyOverlayModuleIndex(detail::ExtractBaseName(moduleNameOrPath));
+    if (idx < 0) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(ThirdPartyOverlayCacheMutex());
+    ThirdPartyOverlayLoadedBitsRef() &= ~(1u << idx);
+    RecomputeThirdPartyOverlayNameLocked();
+    return kThirdPartyOverlayModules[idx];
+}
+
+// One-time, OFF the Present thread (call once from hook init / HookThread). Walks the loader
+// ONCE to seed overlays that were already loaded before our hooks/notification installed.
+// Returns the seeded loaded-set bitmask (for logging/diagnostics).
+inline uint32_t SeedThirdPartyOverlayModuleCacheFromLoader() {
+    uint32_t seeded = 0;
+    for (size_t i = 0; i < kThirdPartyOverlayModuleCount; ++i) {
+        if (GetModuleHandleA(kThirdPartyOverlayModules[i]) != nullptr) {
+            seeded |= (1u << i);
+        }
+    }
+    std::lock_guard<std::mutex> lock(ThirdPartyOverlayCacheMutex());
+    ThirdPartyOverlayLoadedBitsRef() |= seeded;
+    RecomputeThirdPartyOverlayNameLocked();
+    return seeded;
+}
+
+// Test-only: clear all detection state between cases.
+inline void ResetThirdPartyOverlayModuleCacheForTesting() {
+    std::lock_guard<std::mutex> lock(ThirdPartyOverlayCacheMutex());
+    ThirdPartyOverlayLoadedBitsRef() = 0;
+    ThirdPartyOverlayModuleNameCache().store(nullptr, std::memory_order_release);
 }
 
 inline const char* GetStartupBlockingOverlayModuleName() {

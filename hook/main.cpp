@@ -1907,6 +1907,104 @@ LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName,
   return status;
 }
 
+// ----------------------------------------------------------------------------
+// LdrRegisterDllNotification: authoritative, loader-safe DLL load/unload tracking
+// for third-party-overlay detection. Fires for ALL load mechanisms (LoadLibrary,
+// LdrLoadDll, static-import resolution) and — crucially — for UNLOADs, which the
+// LoadLibrary/LdrLoadDll hooks do not see. The callback runs UNDER the loader lock,
+// so it must stay loader-safe: read the notification's base-name UNICODE_STRING,
+// match it against the static overlay list, and update an atomic. No GetModuleHandle,
+// no LoadLibrary, no heap-heavy work. This keeps the Present hot path loader-free
+// (it only reads the atomic) — the root-cause fix for the x86 Alt+Tab freeze.
+// ----------------------------------------------------------------------------
+#ifndef LDR_DLL_NOTIFICATION_REASON_LOADED
+#define LDR_DLL_NOTIFICATION_REASON_LOADED 1
+#define LDR_DLL_NOTIFICATION_REASON_UNLOADED 2
+typedef struct _LDR_DLL_NOTIFICATION_DATA {
+  ULONG Flags;
+  const UNICODE_STRING *FullDllName;
+  const UNICODE_STRING *BaseDllName;
+  PVOID DllBase;
+  ULONG SizeOfImage;
+} LDR_DLL_NOTIFICATION_DATA, *PLDR_DLL_NOTIFICATION_DATA;
+typedef const LDR_DLL_NOTIFICATION_DATA *PCLDR_DLL_NOTIFICATION_DATA;
+#endif
+typedef VOID(CALLBACK *PLDR_DLL_NOTIFICATION_FUNCTION)(
+    ULONG NotificationReason, PCLDR_DLL_NOTIFICATION_DATA NotificationData, PVOID Context);
+typedef NTSTATUS(NTAPI *PFN_LdrRegisterDllNotification)(
+    ULONG Flags, PLDR_DLL_NOTIFICATION_FUNCTION NotificationFunction, PVOID Context, PVOID *Cookie);
+
+static PVOID g_DllNotificationCookie = nullptr;
+
+static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
+                                                    PCLDR_DLL_NOTIFICATION_DATA data,
+                                                    PVOID /*context*/) {
+  if (!data || !data->BaseDllName || !data->BaseDllName->Buffer ||
+      data->BaseDllName->Length == 0) {
+    return;
+  }
+  // Narrow the (short) base name on the stack — loader-safe, no allocation.
+  char base[128];
+  const wchar_t *wide = data->BaseDllName->Buffer;
+  const size_t wideChars = data->BaseDllName->Length / sizeof(wchar_t);
+  size_t n = 0;
+  for (; n < wideChars && n < (sizeof(base) - 1); ++n) {
+    const wchar_t c = wide[n];
+    base[n] = (c > 0 && c < 128) ? static_cast<char>(c) : '?';
+  }
+  base[n] = '\0';
+
+  if (reason == LDR_DLL_NOTIFICATION_REASON_LOADED) {
+    const char *matched = ce::overlay_compat::NoteModuleLoadedForOverlayCache(base);
+    if (matched) {
+      HookLog("DllNotification: third-party overlay module loaded: %s", matched);
+    }
+  } else if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {
+    const char *matched = ce::overlay_compat::NoteModuleUnloadedForOverlayCache(base);
+    if (matched) {
+      HookLog("DllNotification: third-party overlay module unloaded: %s", matched);
+    }
+  }
+}
+
+// Seeds already-loaded overlays and registers the load/unload notification. MUST be called
+// off the Present thread and after DllMain returns (i.e. from HookThread) — registering and
+// the one-time GetModuleHandleA seed walk are not safe under the DllMain loader lock.
+static void InitializeThirdPartyOverlayDetection() {
+  static std::atomic<bool> s_initialized{false};
+  bool expected = false;
+  if (!s_initialized.compare_exchange_strong(expected, true)) {
+    return;
+  }
+
+  // 1) Seed overlays already present before our hooks installed (one-time loader walk).
+  const uint32_t seeded = ce::overlay_compat::SeedThirdPartyOverlayModuleCacheFromLoader();
+  const char *seededName = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+  HookLog("Third-party overlay detection: seed scan bits=0x%X active=%s", seeded,
+          seededName ? seededName : "none");
+
+  // 2) Register for all subsequent load/unload events (covers every load mechanism + unloads).
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  auto registerFn = ntdll ? reinterpret_cast<PFN_LdrRegisterDllNotification>(
+                                GetProcAddress(ntdll, "LdrRegisterDllNotification"))
+                          : nullptr;
+  if (registerFn) {
+    const NTSTATUS status =
+        registerFn(0, &OverlayDllNotificationCallback, nullptr, &g_DllNotificationCookie);
+    if (status == 0) {
+      HookLog("Third-party overlay detection: LdrRegisterDllNotification active (cookie=%p)",
+              g_DllNotificationCookie);
+    } else {
+      HookLog("Third-party overlay detection: LdrRegisterDllNotification FAILED (0x%lX) — "
+              "falling back to LoadLibrary/LdrLoadDll notifications only",
+              static_cast<unsigned long>(status));
+    }
+  } else {
+    HookLog("Third-party overlay detection: LdrRegisterDllNotification unavailable — falling "
+            "back to LoadLibrary/LdrLoadDll notifications only");
+  }
+}
+
 // Hooked Functions - Signal Event & Redirect
 static std::string g_SpoofedCmdLineA;
 static std::wstring g_SpoofedCmdLineW;
@@ -1915,9 +2013,12 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   if (!module)
     return;
 
-  // A DLL just loaded — invalidate the cached third-party-overlay module lookup so
-  // the next Present re-scans once (instead of walking the loader every Present).
-  ce::overlay_compat::InvalidateThirdPartyOverlayModuleCache();
+  // A DLL just loaded. Update third-party-overlay detection ONLY if this module is itself a
+  // known overlay module — a cheap base-name compare, no loader walk. Unrelated loads (e.g.
+  // d3d11.dll churn during the Alt+Tab mode switch) must NOT touch the detection state, so the
+  // Present hot path never has to re-walk the loader. Full load/unload coverage is provided by
+  // the LdrRegisterDllNotification callback; this is the belt-and-suspenders load path.
+  ce::overlay_compat::NoteModuleLoadedForOverlayCache(moduleNameOrPath);
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);
@@ -2856,6 +2957,11 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       }
 #endif // ENABLE_D3D12_WRAPPER
     }
+
+    // Seed third-party-overlay detection and register the loader-safe DLL load/unload
+    // notification. Done here (HookThread, after DllMain) so the seed's one-time loader walk
+    // and the registration are off both the DllMain loader lock and the Present hot path.
+    InitializeThirdPartyOverlayDetection();
 
     // perf_metrics_logging now folds into debug_logging so a single switch
     // controls all hook-side diagnostics.
