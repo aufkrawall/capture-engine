@@ -2132,9 +2132,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return 0;
             }
 
-            uint64_t skippedTicks = static_cast<uint64_t>(liveNowQpc - nextSampleTime.QuadPart) /
-                                    static_cast<uint64_t>(targetIntervalTicks);
-            skippedTicks = std::min<uint64_t>(skippedTicks, outputShortfallTicks);
+            const uint32_t requestedTicks = SaturatingToUint32(
+                static_cast<uint64_t>(liveNowQpc - nextSampleTime.QuadPart) /
+                static_cast<uint64_t>(targetIntervalTicks));
+            const uint32_t skippedTicks = ce::capture_policy::GetWgcLiveSchedulerRebaseTicksThisLoop(
+                requestedTicks, outputShortfallTicks, excessTicks);
             if (skippedTicks == 0) {
                 return 0;
             }
@@ -2146,7 +2148,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 encoderGridTickCount +=
                     static_cast<int64_t>(std::min<uint64_t>(skippedTicks, static_cast<uint64_t>(gridHeadroom)));
             }
-            nextSampleTime.QuadPart = liveNowQpc;
+            nextSampleTime.QuadPart += targetIntervalTicks * static_cast<int64_t>(skippedTicks);
             wgcLiveSchedulerRebaseTotal += skippedTicks;
             wgcLiveSchedulerRebaseThisWindow =
                 SaturatingToUint32(static_cast<uint64_t>(wgcLiveSchedulerRebaseThisWindow) + skippedTicks);
@@ -2161,9 +2163,11 @@ void EncoderThreadFunc(const AppConfig& config) {
             if (nowTick - s_lastWgcLiveSchedulerRebaseLogTick >= 1000 || skippedTicks >= 8) {
                 LogWarn(
                     "[EncoderThread] WGC CFR live scheduler rebase: skippedTicks=%llu excessTicks=%u "
-                    "shortfallBefore=%u nextQpc=%lld liveNowQpc=%lld timelineCovered=%llu",
-                    static_cast<unsigned long long>(skippedTicks), excessTicks, outputShortfallTicks,
-                    static_cast<long long>(oldNextSampleQpc), static_cast<long long>(liveNowQpc),
+                    "requestedTicks=%u shortfallBefore=%u nextQpc=%lld nextAfterQpc=%lld liveNowQpc=%lld "
+                    "timelineCovered=%llu",
+                    static_cast<unsigned long long>(skippedTicks), excessTicks, requestedTicks, outputShortfallTicks,
+                    static_cast<long long>(oldNextSampleQpc), static_cast<long long>(nextSampleTime.QuadPart),
+                    static_cast<long long>(liveNowQpc),
                     static_cast<unsigned long long>(liveTicksOutput));
                 s_lastWgcLiveSchedulerRebaseLogTick = nowTick;
             }
@@ -3651,6 +3655,60 @@ void EncoderThreadFunc(const AppConfig& config) {
                         continue;
                     }
 
+                    size_t startupBufferedExamined = 0;
+                    size_t startupQueueExamined = 0;
+                    size_t startupFreshened = 0;
+                    size_t startupDiscardedOlder = 0;
+                    size_t startupDiscardedBeforeBarrier = 0;
+                    size_t startupDiscardedPathMismatch = 0;
+                    auto considerStartupWgcCandidate = [&](QueuedFrame candidate, bool fromQueue) {
+                        if (fromQueue) {
+                            ++startupQueueExamined;
+                        } else {
+                            ++startupBufferedExamined;
+                        }
+
+                        if (candidate.isInjectMode) {
+                            ++startupDiscardedPathMismatch;
+                            DiscardQueuedFrame(candidate);
+                            return;
+                        }
+
+                        if (!ce::capture_policy::IsWgcFramePastStartupBarrier(candidate.timestamp,
+                                                                               wgcStartupBarrierQpc)) {
+                            ++startupDiscardedBeforeBarrier;
+                            ++wgcStartupBarrierDroppedFrames;
+                            ReleaseQueuedFrameTexture(candidate);
+                            return;
+                        }
+
+                        const int64_t candidateSelectionQpc = GetFrameSelectionTimestamp(candidate);
+                        const int64_t selectedSelectionQpc = GetFrameSelectionTimestamp(frame);
+                        const bool newerCandidate =
+                            candidate.timestamp > frame.timestamp ||
+                            (candidate.timestamp == frame.timestamp && candidateSelectionQpc > selectedSelectionQpc);
+                        if (newerCandidate) {
+                            ReleaseQueuedFrameTexture(frame);
+                            frame = std::move(candidate);
+                            ++startupFreshened;
+                        } else {
+                            ReleaseQueuedFrameTexture(candidate);
+                            ++startupDiscardedOlder;
+                        }
+                    };
+
+                    while (!bufferedWgcFrames.empty()) {
+                        QueuedFrame candidate = std::move(bufferedWgcFrames.front());
+                        bufferedWgcFrames.pop_front();
+                        considerStartupWgcCandidate(std::move(candidate), false);
+                    }
+
+                    QueuedFrame queuedStartupCandidate;
+                    while (g_FrameQueue.Pop(queuedStartupCandidate, 0)) {
+                        considerStartupWgcCandidate(std::move(queuedStartupCandidate), true);
+                        queuedStartupCandidate = QueuedFrame{};
+                    }
+
                     LARGE_INTEGER anchorNow;
                     QueryPerformanceCounter(&anchorNow);
                     const int64_t startDeltaUs =
@@ -3662,10 +3720,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                     LogInfo(
                         "[EncoderThread] WGC startup sync post-delay barrier satisfied: anchorQpc=%lld "
                         "firstFrameQpc=%lld delta=%lldus frameAge=%lldus droppedPostDelay=%u "
-                        "discardedBeforeDelay=%u",
+                        "discardedBeforeDelay=%u freshened=%zu bufferedExamined=%zu queueExamined=%zu "
+                        "discardedOlder=%zu discardedBeforeBarrier=%zu pathMismatch=%zu",
                         static_cast<long long>(wgcStartupBarrierQpc), static_cast<long long>(frame.timestamp),
                         static_cast<long long>(startDeltaUs), static_cast<long long>(frameAgeUs),
-                        wgcStartupBarrierDroppedFrames, wgcStartupPreLiveDelayDroppedFrames);
+                        wgcStartupBarrierDroppedFrames, wgcStartupPreLiveDelayDroppedFrames, startupFreshened,
+                        startupBufferedExamined, startupQueueExamined, startupDiscardedOlder,
+                        startupDiscardedBeforeBarrier, startupDiscardedPathMismatch);
                 }
 
                 pendingLiveActivation = true;

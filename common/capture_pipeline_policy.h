@@ -38,6 +38,7 @@ constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kWgcCfrSelectionMaxLeadTicks = 3;
 constexpr uint32_t kWgcMaxLiveVisualDebtMs = 250;
 constexpr uint32_t kWgcMaxLiveVisualDebtFrames = 32;
+constexpr uint32_t kWgcMaxLiveSchedulerRebaseTicksPerLoop = 1;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
 constexpr double kWgcSevereShortfallDurationMs = 500.0;
@@ -1043,6 +1044,16 @@ inline uint32_t GetWgcLiveVisualDebtExcessTicks(uint32_t outputShortfallTicks, i
     }
 
     return outputShortfallTicks - debtLimitTicks;
+}
+
+inline uint32_t GetWgcLiveSchedulerRebaseTicksThisLoop(
+    uint32_t requestedTicks, uint32_t outputShortfallTicks, uint32_t excessTicks,
+    uint32_t maxTicksPerLoop = kWgcMaxLiveSchedulerRebaseTicksPerLoop) {
+    if (requestedTicks == 0 || outputShortfallTicks == 0 || excessTicks == 0 || maxTicksPerLoop == 0) {
+        return 0;
+    }
+
+    return std::min(std::min(requestedTicks, outputShortfallTicks), std::min(excessTicks, maxTicksPerLoop));
 }
 
 inline int64_t GetWgcLiveVisualDebtFloorQpc(int64_t liveNowQpc, int64_t targetIntervalTicks,
