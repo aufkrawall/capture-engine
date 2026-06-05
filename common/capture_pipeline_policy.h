@@ -35,6 +35,7 @@ constexpr uint32_t kWgcSingleFreshHoldInputPermille = 995;
 constexpr uint32_t kWgcSteadyReserveBuildInputPermille = 995;
 constexpr uint32_t kWgcSelectionDelayTicks = 1;
 constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
+constexpr uint32_t kWgcCfrSelectionMaxLeadTicks = 1;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
 constexpr double kWgcSevereShortfallDurationMs = 500.0;
@@ -127,12 +128,11 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
 
 inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool bufferedWgcFrameAvailable, bool hasLastFrame,
                                         bool mediaEngineCanRepeatLastFrame) {
-    (void)hasLastFrame;
-    (void)mediaEngineCanRepeatLastFrame;
     // Stop drain may finish real WGC content that was already captured but not
-    // encoded yet. It must not extend the tail using only cached last-frame
-    // repeats, because that creates frozen video with continuing audio.
-    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable;
+    // encoded yet. If no captured frame remains, close only already-accrued CFR
+    // debt with cached repeats so continuous audio is never paired with a
+    // shortened visual timeline.
+    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable || (hasLastFrame && mediaEngineCanRepeatLastFrame);
 }
 
 inline bool CanDrainOutstandingCfrTicks(bool useScreenGrab, bool queuedFrameAvailable, bool bufferedFrameAvailable,
@@ -1017,25 +1017,28 @@ inline int64_t ClampWgcSelectionTargetToLiveQpc(
     int64_t selectionTargetQpc, int64_t liveNowQpc, int64_t targetIntervalTicks, bool lowSourceMode,
     bool liveRecoveryMode, uint32_t outputShortfallTicks, bool encoderBottlenecked,
     uint32_t severeShortfallThresholdTicks = kCfrShortfallCatchupThresholdTicks) {
-    if (selectionTargetQpc <= 0 || liveNowQpc <= 0 || targetIntervalTicks <= 0) {
-        return selectionTargetQpc;
+    (void)liveNowQpc;
+    (void)targetIntervalTicks;
+    (void)lowSourceMode;
+    (void)liveRecoveryMode;
+    (void)outputShortfallTicks;
+    (void)encoderBottlenecked;
+    (void)severeShortfallThresholdTicks;
+    // WGC CFR selection must stay tied to the scheduled slot. Advancing an old
+    // slot's target toward live time can encode current visual content at an old
+    // PTS while continuous audio still belongs to the old slot.
+    return selectionTargetQpc;
+}
+
+inline bool IsWgcFrameTooNewForCfrSlot(int64_t frameSelectionQpc, int64_t selectionTargetQpc,
+                                       int64_t targetIntervalTicks,
+                                       uint32_t maxLeadTicks = kWgcCfrSelectionMaxLeadTicks) {
+    if (frameSelectionQpc <= 0 || selectionTargetQpc <= 0 || targetIntervalTicks <= 0) {
+        return false;
     }
 
-    int64_t maxLiveLagQpc = GetWgcMaxSelectionLagQpc(targetIntervalTicks, lowSourceMode);
-    if (maxLiveLagQpc <= 0) {
-        return selectionTargetQpc;
-    }
-
-    if (liveRecoveryMode) {
-        maxLiveLagQpc = std::min<int64_t>(maxLiveLagQpc, targetIntervalTicks);
-    } else if (encoderBottlenecked || outputShortfallTicks >= severeShortfallThresholdTicks) {
-        maxLiveLagQpc = std::min<int64_t>(maxLiveLagQpc, targetIntervalTicks);
-    } else {
-        maxLiveLagQpc = std::min<int64_t>(maxLiveLagQpc, targetIntervalTicks * 2);
-    }
-
-    const int64_t liveSelectionFloorQpc = liveNowQpc - maxLiveLagQpc;
-    return std::max(selectionTargetQpc, liveSelectionFloorQpc);
+    const int64_t maxLeadQpc = targetIntervalTicks * static_cast<int64_t>(std::max<uint32_t>(1u, maxLeadTicks));
+    return frameSelectionQpc > selectionTargetQpc + maxLeadQpc;
 }
 
 inline int64_t GetWgcMinimumFreshTimestampQpc(int64_t lastEmittedSourceQpc, int64_t scheduledSampleQpc,

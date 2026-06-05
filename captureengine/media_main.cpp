@@ -2122,8 +2122,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     LogWarn(
                         "[EncoderThread] CFR stop drain aborted: no captured frame/repeat available for outstanding "
                         "shortfall=%u/%.1fms "
-                        "(queue=%u buffered=%zu hostLast=%d cachedRepeat=%d; cached repeats are not used for "
-                        "WGC stop-tail extension)",
+                        "(queue=%u buffered=%zu hostLast=%d cachedRepeat=%d; cached repeats close only accrued "
+                        "CFR debt)",
                         outputShortfallTicks,
                         ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
                         static_cast<unsigned>(g_FrameQueue.Size()), bufferedFrameCount, g_HasLastFrame ? 1 : 0,
@@ -2396,6 +2396,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return false;
             }
 
+            bool skippedTooNewForSlot = false;
             auto buildCandidateList = [&](std::vector<size_t>* outIndices, bool requireFresh) {
                 if (!outIndices) {
                     return;
@@ -2411,6 +2412,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                         ce::capture_policy::IsWgcTimestampFreshEnough(candidate.timestamp, minFreshTimestampQpc);
                     const bool fallbackFreshEnough = ce::capture_policy::IsWgcTimestampFreshEnough(
                         candidate.timestamp, staleFallbackMinTimestampQpc);
+                    const int64_t candidateSelectionTimestamp = GetFrameSelectionTimestamp(candidate);
+                    if (g_HasLastFrame && !g_LastFrame.isInjectMode &&
+                        ce::capture_policy::IsWgcFrameTooNewForCfrSlot(
+                            candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks)) {
+                        skippedTooNewForSlot = true;
+                        continue;
+                    }
                     if (requireFresh) {
                         if (!(sourceTimestampAdvanced && freshEnough)) {
                             continue;
@@ -2435,6 +2443,27 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             if (candidateIndices->empty()) {
                 ++wgcFreshSelectionMissCount;
+                if (skippedTooNewForSlot) {
+                    ++wgcRepeatPolicyHoldCount;
+                    static uint64_t s_lastTooNewWgcSelectionLogTick = 0;
+                    const uint64_t nowTick = GetTickCount64();
+                    if (nowTick - s_lastTooNewWgcSelectionLogTick >= 1000) {
+                        const int64_t firstSelectionTimestamp =
+                            !bufferedWgcFrames.empty() ? GetFrameSelectionTimestamp(bufferedWgcFrames.front()) : 0;
+                        int64_t leadUs = 0;
+                        if (qpcFreq.QuadPart > 0 && firstSelectionTimestamp > effectiveSelectionTargetQpc) {
+                            leadUs =
+                                ((firstSelectionTimestamp - effectiveSelectionTargetQpc) * 1000000) / qpcFreq.QuadPart;
+                        }
+                        LogInfo(
+                            "[EncoderThread] WGC CFR slot repeat: buffered frame is too new for scheduled slot "
+                            "(lead=%lldus targetQpc=%lld firstQpc=%lld buffered=%zu shortfall=%u)",
+                            static_cast<long long>(leadUs), static_cast<long long>(effectiveSelectionTargetQpc),
+                            static_cast<long long>(firstSelectionTimestamp), bufferedWgcFrames.size(),
+                            outputShortfallTicks);
+                        s_lastTooNewWgcSelectionLogTick = nowTick;
+                    }
+                }
                 if (repeatedBecauseNoFrameCoverage) {
                     *repeatedBecauseNoFrameCoverage = true;
                 }

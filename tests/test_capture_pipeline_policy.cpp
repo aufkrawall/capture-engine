@@ -30,18 +30,20 @@ TEST(CapturePipelinePolicyTest, InjectReserveFramesScaleWithFenceLeadTime) {
     EXPECT_EQ(policy::GetInjectReserveFrames(true, 19.0, 8.0), 0u);
 }
 
-TEST(CapturePipelinePolicyTest, WgcStopDrainRequiresCapturedFrames) {
+TEST(CapturePipelinePolicyTest, WgcStopDrainMayUseCapturedFramesOrCachedRepeat) {
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, true, false));
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, true));
+    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, true, true));
     EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(true, false, false, false));
     EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, true, false, false));
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, false));
 }
 
-TEST(CapturePipelinePolicyTest, WgcStopDrainRejectsCachedRepeatOnlyTail) {
+TEST(CapturePipelinePolicyTest, WgcStopDrainRequiresARepeatPathForCachedRepeat) {
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, false));
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, true, false));
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, true));
+    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, true, true));
 }
 
 TEST(CapturePipelinePolicyTest, InjectStopDrainMayUseCachedRepeatToCloseCfrDebt) {
@@ -52,8 +54,9 @@ TEST(CapturePipelinePolicyTest, InjectStopDrainMayUseCachedRepeatToCloseCfrDebt)
     EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(false, false, false, true, true));
 }
 
-TEST(CapturePipelinePolicyTest, WgcGenericStopDrainKeepsCapturedFrameRequirement) {
-    EXPECT_FALSE(policy::CanDrainOutstandingCfrTicks(true, false, false, true, true));
+TEST(CapturePipelinePolicyTest, WgcGenericStopDrainCanUseCachedRepeatToCloseCfrDebt) {
+    EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(true, false, false, true, true));
+    EXPECT_FALSE(policy::CanDrainOutstandingCfrTicks(true, false, false, true, false));
     EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(true, true, false, false, false));
     EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(true, false, true, false, false));
 }
@@ -664,11 +667,21 @@ TEST(CapturePipelinePolicyTest, WgcCoverageCatchupClampRelaxesAtSevereShortfall)
     EXPECT_DOUBLE_EQ(policy::GetWgcForceCatchupBudgetFrameMultiplier(500.0), 4.0);
 }
 
-TEST(CapturePipelinePolicyTest, WgcLiveRecoveryClampHugsLiveTimeAndDisablesReserveBias) {
-    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, false, 0, false), 1500);
-    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, true, 20, true), 1500);
+TEST(CapturePipelinePolicyTest, WgcLiveRecoveryKeepsSelectionTargetOnScheduledSlot) {
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, false, 0, false), 1000);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, true, 20, true), 1000);
     EXPECT_FALSE(
         policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true, true));
+}
+
+TEST(CapturePipelinePolicyTest, WgcCfrRejectsFramesTooNewForSlot) {
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1099, 1000, 100));
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1100, 1000, 100));
+    EXPECT_TRUE(policy::IsWgcFrameTooNewForCfrSlot(1101, 1000, 100));
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1250, 1000, 100, 3));
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(0, 1000, 100));
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1200, 0, 100));
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1200, 1000, 0));
 }
 
 TEST(CapturePipelinePolicyTest, CfrOutputShortfallTicksIsClampedToPositiveDelta) {
