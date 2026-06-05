@@ -3187,6 +3187,15 @@ static std::atomic<int> g_FocusLossRecentTransitionPresentWindow{0};
 #endif
 static std::atomic<bool> g_SwapchainPresentOccluded{false};
 
+// True once a real Present result has been observed via DX12_NoteWrappedD3D12PresentResult
+// from ANY present path (the CWrapDXGISwapChain wrapper OR the vtable DetourPresent path).
+// The not-presentable backbuffer-work hold needs a trustworthy present-result-derived
+// occlusion signal; historically that only existed on the wrapped path, so vtable-hooked
+// apps (e.g. dx12_test) never engaged the hold and drew to the backbuffer through the
+// Alt+Tab iflip<->composited mode switch — the GPU-hang root cause. DetourPresent now also
+// feeds the present result, so this gates the hold for both paths.
+static std::atomic<bool> g_HaveD3D12PresentResultSignal{false};
+
 // Focus-transition backbuffer-work hold (v10). DRED proved that ANY CE backbuffer
 // touch — direct overlay draw (v8) OR the offscreen path's bb<->offscreen copies
 // (v9) — pure-hangs the GPU (pageFaultVA=0) while the swapchain is mid
@@ -12007,6 +12016,11 @@ extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(
     const bool presentSucceeded = SUCCEEDED(presentHr);
     const bool presentDeviceLost = IsD3D12FocusLossPresentDeviceLostHRESULT(presentHr);
 
+    // Mark that we now have a trustworthy present-result-derived occlusion signal, so the
+    // not-presentable backbuffer-work hold can engage regardless of present path (wrapped or
+    // vtable DetourPresent).
+    g_HaveD3D12PresentResultSignal.store(true, std::memory_order_release);
+
     // Track swapchain visibility from the Present result. DXGI_STATUS_OCCLUDED (or
     // a minimized / zero-sized window) means the swapchain is not presentable and
     // the overlay is not visible to the user; that is the only state in which CE
@@ -13941,9 +13955,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     // the behavior RTSS provides and what the user expects. Focus is no longer a
     // reason to hide the overlay.
     const bool swapchainOccluded = g_SwapchainPresentOccluded.load(std::memory_order_acquire);
+    // The first predicate arg means "we have a reliable present-result occlusion signal",
+    // which is now true for both the wrapped path (context valid) and the vtable DetourPresent
+    // path (g_HaveD3D12PresentResultSignal). This lets vtable-hooked apps engage the
+    // invisible-safe not-presentable hold during the Alt+Tab mode switch instead of hanging.
+    const bool haveReliablePresentResultSignal =
+        s_WrappedPresentFocusLossContext.valid || g_HaveD3D12PresentResultSignal.load(std::memory_order_acquire);
     const bool focusLossBackgroundBackbufferHold =
         ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
-            s_WrappedPresentFocusLossContext.valid, !frameDesc.Windowed, swapchainOccluded, iconicWindow,
+            haveReliablePresentResultSignal, !frameDesc.Windowed, swapchainOccluded, iconicWindow,
             zeroSizedSwapchain, focusLossBackgroundFrameGenerationActive, focusLossBackgroundRuntimeOwnedPresentation,
             focusLossBackgroundUsingDedicatedQueue, focusLossBackgroundSteamDeferredSubmit,
             focusLossBackgroundDeviceLost, gameQueue != nullptr);

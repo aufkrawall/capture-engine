@@ -51,12 +51,46 @@ extern "C" void DX12_FlushDeferredSignal();
 extern "C" void DX12_SetDeferOverlaySubmitToSteamECL(bool defer);
 extern "C" void DX12_SubmitSteamDeferredOverlay();
 extern "C" bool DX12_IsDeferOverlaySubmitPending();
+extern "C" void DX12_NoteWrappedD3D12PresentResult(const char* presentName, int callCount, UINT syncInterval,
+                                                   UINT presentFlags, HRESULT presentHr, BOOL isFullscreen,
+                                                   BOOL isIconic, BOOL hasZeroSize, HWND gameWindow);
 
 static void InvokeDX12WaitForOverlayCompletion(ID3D12CommandQueue* pQueue) {
     DX12_WaitForOverlayCompletion(pQueue);
 }
 static void InvokeDX12FlushDeferredSignal() {
     DX12_FlushDeferredSignal();
+}
+
+// Feed the DX12 present result into the focus-transition / occlusion tracking for the vtable
+// DetourPresent path. The CWrapDXGISwapChain wrapper already calls
+// DX12_NoteWrappedD3D12PresentResult itself; IsInWrapperPresent() gives exactly-once
+// semantics (the wrapper keeps g_InWrapperPresent set across its real Present, so a re-entry
+// here is skipped; the delegated external-overlay path leaves it false and relies on this).
+// Without this, vtable-hooked apps (e.g. dx12_test) never update g_SwapchainPresentOccluded
+// and never engage the invisible-safe not-presentable backbuffer-work hold during the Alt+Tab
+// iflip<->composited mode switch, so the overlay touches the backbuffer mid-switch and the GPU
+// hangs (DEVICE_HUNG).
+static void NoteDX12PresentResultForVtablePath(IDXGISwapChain* pSwapChain, const char* presentName,
+                                               UINT SyncInterval, UINT Flags, HRESULT hr) {
+    if (!pSwapChain || IsInWrapperPresent()) {
+        return;
+    }
+    static std::atomic<int> s_vtablePresentResultCount{0};
+    const int callCount = s_vtablePresentResultCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    HWND hwnd = nullptr;
+    BOOL isFullscreen = FALSE;
+    BOOL isIconic = FALSE;
+    BOOL hasZeroSize = FALSE;
+    if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
+        hwnd = desc.OutputWindow;
+        isFullscreen = desc.Windowed ? FALSE : TRUE;  // borderless-fullscreen reports Windowed=TRUE
+        hasZeroSize = (desc.BufferDesc.Width == 0 || desc.BufferDesc.Height == 0) ? TRUE : FALSE;
+        isIconic = (hwnd && IsIconic(hwnd)) ? TRUE : FALSE;
+    }
+    DX12_NoteWrappedD3D12PresentResult(presentName, callCount, SyncInterval, Flags, hr, isFullscreen, isIconic,
+                                       hasZeroSize, hwnd);
 }
 
 // Inline wrappers for the new Steam ECL deferred overlay functions.
@@ -183,6 +217,9 @@ static bool InvokeDX12IsDeferOverlaySubmitPending() {
     PFN_DX12IsDeferOverlayPending fn = ResolveDX12IsDeferOverlayPending();
     return fn ? fn() : false;
 }
+
+// Stub for non-hook/test builds; present-result occlusion tracking lives in the hook DLL.
+static void NoteDX12PresentResultForVtablePath(IDXGISwapChain*, const char*, UINT, UINT, HRESULT) {}
 #endif
 
 namespace DXGIShared {
@@ -2681,6 +2718,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // stalls the GPU when Signal sits between our overlay ECL and Present.
     if (api == APIType::D3D12) {
         InvokeDX12FlushDeferredSignal();
+        // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
+        // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
+        // switch (the wrapped path already does this via the wrapper).
+        NoteDX12PresentResultForVtablePath(pSwapChain, "Present", SyncInterval, Flags, hr);
     }
 
     if (SUCCEEDED(hr)) {

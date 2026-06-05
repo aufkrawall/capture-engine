@@ -81,7 +81,8 @@ The `srv*`-only path misses CE's local PDBs and produces incomplete stack traces
 
 | Tool | Purpose | Installed/default path |
 | --- | --- | --- |
-| `cdb.exe` | Command-line `.dmp` debugging and stack inspection | `C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe` |
+| `cdb.exe` | Command-line `.dmp` debugging and stack inspection for 64 bit dump files| `C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe` |
+| `cdb.exe` | Command-line `.dmp` debugging and stack inspection for 32 bit dump files | `C:\Program Files\Windows Kits\10\Debuggers\x86\cdb.exe` |
 | `windbg.exe` | Interactive `.dmp` debugging | `C:\Program Files\Windows Kits\10\Debuggers\x64\windbg.exe` |
 | `ffmpeg.exe` | Media conversion/inspection helper for captures | `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin\ffmpeg.exe` |
 | `ffprobe.exe` | Media metadata/probing helper for captures | `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin\ffprobe.exe` |
