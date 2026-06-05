@@ -42,8 +42,12 @@ LOG_PATTERNS = {
     "wgc_stale_visual_debt_drop": re.compile(r"\[EncoderThread\] WGC CFR stale visual debt drop"),
     "wgc_stale_fresh_catchup_blocked": re.compile(r"\[EncoderThread\] WGC CFR stale fresh-catchup blocked"),
     "wgc_visual_timeline_debt_drop": re.compile(r"\[EncoderThread\] WGC CFR visual timeline debt drop"),
+    "wgc_live_scheduler_rebase": re.compile(r"\[EncoderThread\] WGC CFR live scheduler rebase"),
     "wgc_stop_frozen_tail_drop": re.compile(r"\[EncoderThread\] WGC CFR stop drain discarded frozen-tail debt"),
     "wgc_stop_hold_repeats": re.compile(r"\[EncoderThread\] WGC CFR stop drain using held pre-stop frame"),
+    "wgc_drain_duplicate_summary": re.compile(
+        r"\[WGC CFR SUMMARY\].*DupReason\(src=\d+ def=\d+ timer=\d+ drain=[1-9]\d*"
+    ),
     "wgc_post_stop_frame_drop": re.compile(r"\[EncoderThread\] WGC CFR post-stop frame drop"),
     "audio_extreme_drift": re.compile(r"\[PullAudio\] WARNING: Extreme drift detected"),
 }
@@ -63,8 +67,11 @@ STRICT_SYNC_LOG_EVENTS = (
     "audio_overflow",
     "audio_forced_bootstrap",
     "audio_bootstrap_trim",
+    "audio_extreme_drift",
     "wgc_fresh_catchup",
     "wgc_stop_drain_aborted",
+    "wgc_stop_hold_repeats",
+    "wgc_drain_duplicate_summary",
 )
 
 CADENCE_AGEMAX_RE = re.compile(r"AgeMax=(\d+)us")

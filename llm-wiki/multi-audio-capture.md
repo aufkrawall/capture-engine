@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-05 (CFR audio integrity and strict sync validation)
+Last cross-checked: 2026-06-05 (CFR audio integrity and WGC exact-stop validation)
 Stale-risk: medium
 
 Primary sources:
@@ -89,7 +89,7 @@ Focused regression coverage lives in:
 - `tests/test_audio_sync_utils.cpp`
   - Packed/interleaved silence buffer sizing includes every channel, final packet durations clamp to the video sample target, timeline-valid startup no longer waits for buffered real audio, app audio stays optional until first packet, source write cursors never trail the encoded track cursor, and late first packets overlap already-encoded silence.
 - `tools/analyze_capture_av.py`
-  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop paths, WGC fresh catch-up, and stop-drain abort. Discarded post-stop WGC callbacks stay visible as endpoint-protection telemetry but are not audio failures by themselves.
+  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop/extreme-drift paths, WGC fresh catch-up, stop-drain abort, WGC held stop repeats, and nonzero WGC drain duplicate summaries. Discarded post-stop WGC callbacks stay visible as endpoint-protection telemetry but are not audio failures by themselves.
 
 Verified on 2026-06-04:
 
@@ -104,6 +104,7 @@ Updated on 2026-06-05:
 - CFR audio recovery was hardened after fresh WGC captures showed pitch/distortion/desync despite equal packet durations. WGC/inject video pressure is handled on the visual side; audio trims/drops are no longer used as CFR recovery, and source-clock compensation is capped to `0.05%` only on settled, healthy timelines.
 - `tools/analyze_capture_av.py --strict-sync-events` now applies zero thresholds to known audio trim/drop/underrun events and WGC stale-catchup/stop/post-stop events.
 - Verification passed: focused build/test 137/137 for `CapturePipelinePolicyTest.*:AudioSyncUtilsTest.*:AudioResamplerTest.*`, required `python build.py --skip-updates` on build `0.1.3756`, and required `python build.py --no-build --run-tests --skip-updates` with 905/905 tests at displayed metadata `0.1.3757`.
+- WGC exact-stop validation was tightened after `installed/captureengine/logs/20260605_163937` showed equal stream durations but a frozen visual tail with continuing audio. `--strict-sync-events` now also fails `audio_extreme_drift`, WGC held stop repeats, and nonzero WGC drain duplicate summaries. Focused WGC policy tests passed on build `0.1.3761`; required `python build.py --skip-updates` passed on final build `0.1.3764`; required `python build.py --no-build --run-tests --skip-updates` passed 905/905 with displayed metadata `0.1.3765`.
 
 ## Open Questions / Stale-Risk
 

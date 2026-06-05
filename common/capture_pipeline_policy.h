@@ -93,6 +93,18 @@ inline bool ShouldDiscardCfrTimerRebaseDebt(bool useScreenGrab) {
     return false;
 }
 
+inline bool ShouldDrainOutstandingCfrTicksAtStop(bool useScreenGrab, bool useVFR) {
+    if (useVFR) {
+        return false;
+    }
+
+    // WGC has its own live scheduler. If it is behind at stop, draining old
+    // slots with a cached frame creates the frozen video tail that users hear
+    // as audio continuing after the picture stopped. WGC debt must be handled
+    // while live by timestamp rebases and visual drops, not after stop.
+    return !useScreenGrab;
+}
+
 inline bool ShouldUseInjectCaptureForAutoTarget(bool explicitInjectCapture, bool autoCapture,
                                                 bool gameWhitelistMatched) {
     return explicitInjectCapture || (autoCapture && gameWhitelistMatched);
@@ -138,11 +150,13 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
 
 inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool bufferedWgcFrameAvailable, bool hasLastFrame,
                                         bool mediaEngineCanRepeatLastFrame) {
-    // WGC stop drain may finish real content already captured by the WGC
-    // source. If the encoder owes already-scheduled pre-stop CFR ticks, the
-    // cached last frame is also valid as a CFR hold; post-stop source frames
-    // are still rejected by timestamp before this policy is reached.
-    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable || (hasLastFrame && mediaEngineCanRepeatLastFrame);
+    (void)queuedWgcFrameAvailable;
+    (void)bufferedWgcFrameAvailable;
+    (void)hasLastFrame;
+    (void)mediaEngineCanRepeatLastFrame;
+    // WGC stop drain is intentionally disabled. A held-frame drain hides live
+    // scheduler debt by appending synthetic visual time after capture stop.
+    return false;
 }
 
 inline bool CanDrainOutstandingCfrTicks(bool useScreenGrab, bool queuedFrameAvailable, bool bufferedFrameAvailable,
@@ -1006,6 +1020,31 @@ inline int64_t GetWgcLiveVisualDebtLimitQpc(int64_t targetIntervalTicks, int64_t
     return std::max<int64_t>(1, std::min(frameLimitQpc, timeLimitQpc));
 }
 
+inline uint32_t GetWgcLiveVisualDebtLimitTicks(int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
+                                               uint32_t maxDebtMs = kWgcMaxLiveVisualDebtMs,
+                                               uint32_t maxDebtFrames = kWgcMaxLiveVisualDebtFrames) {
+    const int64_t debtLimitQpc =
+        GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond, maxDebtMs, maxDebtFrames);
+    if (targetIntervalTicks <= 0 || debtLimitQpc <= 0) {
+        return 0;
+    }
+
+    return std::max<uint32_t>(1u,
+                              static_cast<uint32_t>((debtLimitQpc + targetIntervalTicks - 1) / targetIntervalTicks));
+}
+
+inline uint32_t GetWgcLiveVisualDebtExcessTicks(uint32_t outputShortfallTicks, int64_t targetIntervalTicks,
+                                                int64_t qpcTicksPerSecond, uint32_t maxDebtMs = kWgcMaxLiveVisualDebtMs,
+                                                uint32_t maxDebtFrames = kWgcMaxLiveVisualDebtFrames) {
+    const uint32_t debtLimitTicks =
+        GetWgcLiveVisualDebtLimitTicks(targetIntervalTicks, qpcTicksPerSecond, maxDebtMs, maxDebtFrames);
+    if (debtLimitTicks == 0 || outputShortfallTicks <= debtLimitTicks) {
+        return 0;
+    }
+
+    return outputShortfallTicks - debtLimitTicks;
+}
+
 inline int64_t GetWgcLiveVisualDebtFloorQpc(int64_t liveNowQpc, int64_t targetIntervalTicks,
                                             int64_t qpcTicksPerSecond) {
     const int64_t debtLimitQpc = GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
@@ -1030,18 +1069,11 @@ inline int64_t ClampWgcSelectionTargetToLiveQpc(
         return selectionTargetQpc;
     }
 
-    const int64_t visualDebtLimitQpc = GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
-    if (visualDebtLimitQpc <= 0) {
-        return selectionTargetQpc;
-    }
-    const uint32_t visualDebtLimitTicks = std::max<uint32_t>(
-        1u, static_cast<uint32_t>((visualDebtLimitQpc + targetIntervalTicks - 1) / targetIntervalTicks));
-    if (outputShortfallTicks <= visualDebtLimitTicks) {
+    if (GetWgcLiveVisualDebtExcessTicks(outputShortfallTicks, targetIntervalTicks, qpcTicksPerSecond) == 0) {
         return selectionTargetQpc;
     }
 
-    const int64_t visualDebtFloorQpc =
-        GetWgcLiveVisualDebtFloorQpc(liveNowQpc, targetIntervalTicks, qpcTicksPerSecond);
+    const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpc(liveNowQpc, targetIntervalTicks, qpcTicksPerSecond);
     if (visualDebtFloorQpc <= 0 || selectionTargetQpc >= visualDebtFloorQpc) {
         return selectionTargetQpc;
     }

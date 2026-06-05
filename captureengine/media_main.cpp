@@ -1723,6 +1723,9 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint64_t liveTicksScheduled = 0;
     uint64_t liveTicksDiscardedByTimerRebase = 0;
     uint64_t wgcVisualDebtMaxExcessTicks = 0;
+    uint64_t wgcLiveSchedulerRebaseTotal = 0;
+    uint32_t wgcLiveSchedulerRebaseMaxTicks = 0;
+    uint32_t wgcLiveSchedulerRebaseThisWindow = 0;
     bool wgcStopDrainHeldFrameLogged = false;
     uint64_t wgcSelectionErrorAccumUs = 0;
     int64_t wgcSelectionErrorSignedAccumUs = 0;
@@ -2069,17 +2072,35 @@ void EncoderThreadFunc(const AppConfig& config) {
         const bool activeScreenGrab = IsActiveScreenGrab();
         const bool useScreenGrab = activeScreenGrab;
         const uint32_t outputFps = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
+        if (!g_EncoderRunning && !g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) && activeScreenGrab) {
+            const size_t bufferedDiscarded = bufferedWgcFrames.size();
+            const size_t bufferedInjectDiscarded = bufferedInjectFrames.size();
+            ClearBufferedWgcFrames();
+            ClearBufferedInjectFrames();
+            size_t queuedDiscarded = 0;
+            QueuedFrame queuedFrame;
+            while (g_FrameQueue.Pop(queuedFrame, 0)) {
+                DiscardQueuedFrame(queuedFrame);
+                ++queuedDiscarded;
+            }
+            if (bufferedDiscarded > 0 || bufferedInjectDiscarded > 0 || queuedDiscarded > 0) {
+                LogInfo(
+                    "[EncoderThread] WGC CFR exact-stop discarded pending frames: queued=%zu bufferedWgc=%zu "
+                    "bufferedInject=%zu. "
+                    "No post-stop CFR drain will be encoded.",
+                    queuedDiscarded, bufferedDiscarded, bufferedInjectDiscarded);
+            }
+            break;
+        }
         auto dropWgcVisualTimelineDebtToLiveWindow = [&](const char* reason) -> uint32_t {
             if (!activeScreenGrab || config.video.useVFR || !recordingOutputLive || targetIntervalTicks <= 0 ||
                 qpcFreq.QuadPart <= 0) {
                 return 0;
             }
 
-            const int64_t debtLimitQpc =
-                ce::capture_policy::GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcFreq.QuadPart);
-            const uint32_t maxDebtTicks = std::max<uint32_t>(
-                1u, static_cast<uint32_t>((debtLimitQpc + targetIntervalTicks - 1) / targetIntervalTicks));
-            if (outputShortfallTicks <= maxDebtTicks) {
+            const uint32_t maxDebtTicks =
+                ce::capture_policy::GetWgcLiveVisualDebtLimitTicks(targetIntervalTicks, qpcFreq.QuadPart);
+            if (maxDebtTicks == 0 || outputShortfallTicks <= maxDebtTicks) {
                 return 0;
             }
 
@@ -2097,6 +2118,56 @@ void EncoderThreadFunc(const AppConfig& config) {
                 s_lastWgcTimelineDebtDropLogTick = nowTick;
             }
             return excessTicks;
+        };
+        auto rebaseWgcLiveSchedulerToNow = [&](int64_t liveNowQpc) -> uint32_t {
+            if (!activeScreenGrab || config.video.useVFR || !recordingOutputLive ||
+                !g_Recording.load(std::memory_order_acquire) || liveStartQpc.QuadPart <= 0 ||
+                targetIntervalTicks <= 0 || qpcFreq.QuadPart <= 0 || liveTicksOutput == 0) {
+                return 0;
+            }
+
+            const uint32_t excessTicks = ce::capture_policy::GetWgcLiveVisualDebtExcessTicks(
+                outputShortfallTicks, targetIntervalTicks, qpcFreq.QuadPart);
+            if (excessTicks == 0 || nextSampleTime.QuadPart <= 0 || liveNowQpc <= nextSampleTime.QuadPart) {
+                return 0;
+            }
+
+            uint64_t skippedTicks = static_cast<uint64_t>(liveNowQpc - nextSampleTime.QuadPart) /
+                                    static_cast<uint64_t>(targetIntervalTicks);
+            skippedTicks = std::min<uint64_t>(skippedTicks, outputShortfallTicks);
+            if (skippedTicks == 0) {
+                return 0;
+            }
+
+            const int64_t oldNextSampleQpc = nextSampleTime.QuadPart;
+            liveTicksOutput += skippedTicks;
+            const int64_t gridHeadroom = std::numeric_limits<int64_t>::max() - encoderGridTickCount;
+            if (gridHeadroom > 0) {
+                encoderGridTickCount +=
+                    static_cast<int64_t>(std::min<uint64_t>(skippedTicks, static_cast<uint64_t>(gridHeadroom)));
+            }
+            nextSampleTime.QuadPart = liveNowQpc;
+            wgcLiveSchedulerRebaseTotal += skippedTicks;
+            wgcLiveSchedulerRebaseThisWindow =
+                SaturatingToUint32(static_cast<uint64_t>(wgcLiveSchedulerRebaseThisWindow) + skippedTicks);
+            wgcLiveSchedulerRebaseMaxTicks = std::max(wgcLiveSchedulerRebaseMaxTicks, SaturatingToUint32(skippedTicks));
+            wgcVisualDebtMaxExcessTicks = std::max<uint64_t>(wgcVisualDebtMaxExcessTicks, excessTicks);
+            if (g_pSharedMem) {
+                g_pSharedMem->runtimeState.timerRebases.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            static uint64_t s_lastWgcLiveSchedulerRebaseLogTick = 0;
+            const uint64_t nowTick = GetTickCount64();
+            if (nowTick - s_lastWgcLiveSchedulerRebaseLogTick >= 1000 || skippedTicks >= 8) {
+                LogWarn(
+                    "[EncoderThread] WGC CFR live scheduler rebase: skippedTicks=%llu excessTicks=%u "
+                    "shortfallBefore=%u nextQpc=%lld liveNowQpc=%lld timelineCovered=%llu",
+                    static_cast<unsigned long long>(skippedTicks), excessTicks, outputShortfallTicks,
+                    static_cast<long long>(oldNextSampleQpc), static_cast<long long>(liveNowQpc),
+                    static_cast<unsigned long long>(liveTicksOutput));
+                s_lastWgcLiveSchedulerRebaseLogTick = nowTick;
+            }
+            return SaturatingToUint32(skippedTicks);
         };
         auto pruneStaleWgcVisualDebt = [&](int64_t liveNowQpc, const char* reason, bool allowDropAll) -> size_t {
             const int64_t visualDebtFloorQpc =
@@ -2173,6 +2244,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             QueryPerformanceCounter(&shortfallNow);
             outputShortfallTicks = updateLiveCfrShortfall(shortfallNow.QuadPart);
             dropWgcVisualTimelineDebtToLiveWindow(g_Recording.load(std::memory_order_acquire) ? "live" : "drain");
+            if (rebaseWgcLiveSchedulerToNow(shortfallNow.QuadPart) > 0) {
+                outputShortfallTicks = updateLiveCfrShortfall(shortfallNow.QuadPart);
+            }
         }
         if (!g_Recording.load(std::memory_order_acquire) && recordingOutputLive &&
             g_DrainOutstandingCfrTicks.load(std::memory_order_acquire)) {
@@ -4970,7 +5044,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "DropDebt=%u/%llu DebtMax=%uus SelMiss=%u StaleUni=%u "
                 "Ancient=%u RepFreshMiss=%u RepHold=%u RepCov=%u CovDelay=%u RepLate=%u RepCatch=%u | TsReg=%u "
                 "TsStall=%u "
-                "TimerRebase=%u WgcDebtMax=%llu | "
+                "TimerRebase=%u WgcDebtMax=%llu WgcLiveRebase=%u/%llu/%u | "
                 "InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | Over=0x%X "
                 "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms Budget=%upm Sust=%.1ffps TooSlow=%d "
                 "Bottleneck=%d | LowSrc=%d Recover=%d Cause=S%d/D%d/E%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u "
@@ -5003,16 +5077,18 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcRepeatNoFreshCount, wgcRepeatPolicyHoldCount, wgcCoverageRepeatHoldCount,
                 wgcCoverageDelayTicksCurrent, wgcRepeatTimerLateCount, wgcRepeatCatchupCount,
                 tsRegress - lastTimestampRegressionCount, tsStall - lastTimestampStallCount, timerRebases,
-                static_cast<unsigned long long>(wgcVisualDebtMaxExcessTicks), invalidMeta - lastInvalidMetaCount,
-                invalidHandle - lastInvalidHandleCount, packetClamps - lastPacketClampCount,
-                negativePts - lastNegativePtsCount, nonMonotonicPts - lastNonMonotonicPtsCount,
-                g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed), wgcAdaptiveThrottleAdjustments, overloadFlags,
-                (muxQueueBytes + 1023u) / 1024u, muxQueuePackets, muxBackpressureCount, muxBackpressureWaitUs,
-                muxBackpressureMaxWaitUs, smoothedEncodeMs, encoderBudgetUtilizationPermille, sustainableOutputFps,
-                encoderTooSlowForTarget ? 1 : 0, g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
-                wgcLowSourceModeActive ? 1 : 0, wgcLiveRecoveryModeActive ? 1 : 0, wgcSourceStarvedCurrent ? 1 : 0,
-                wgcSchedulerLimitedCurrent ? 1 : 0, wgcEncoderRecoveryLimitedCurrent ? 1 : 0, srcFpsX100Val / 100.0,
-                srcJitterUsVal, dupTsPerSec, smoothedEncCycleMs, encodeSpikeCountThisSecond);
+                static_cast<unsigned long long>(wgcVisualDebtMaxExcessTicks), wgcLiveSchedulerRebaseThisWindow,
+                static_cast<unsigned long long>(wgcLiveSchedulerRebaseTotal), wgcLiveSchedulerRebaseMaxTicks,
+                invalidMeta - lastInvalidMetaCount, invalidHandle - lastInvalidHandleCount,
+                packetClamps - lastPacketClampCount, negativePts - lastNegativePtsCount,
+                nonMonotonicPts - lastNonMonotonicPtsCount, g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed),
+                wgcAdaptiveThrottleAdjustments, overloadFlags, (muxQueueBytes + 1023u) / 1024u, muxQueuePackets,
+                muxBackpressureCount, muxBackpressureWaitUs, muxBackpressureMaxWaitUs, smoothedEncodeMs,
+                encoderBudgetUtilizationPermille, sustainableOutputFps, encoderTooSlowForTarget ? 1 : 0,
+                g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0, wgcLowSourceModeActive ? 1 : 0,
+                wgcLiveRecoveryModeActive ? 1 : 0, wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
+                wgcEncoderRecoveryLimitedCurrent ? 1 : 0, srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec,
+                smoothedEncCycleMs, encodeSpikeCountThisSecond);
 
             static uint64_t s_lastWgcCapacityWarnTick = 0;
             static uint64_t s_lastWgcSourceLimitedInfoTick = 0;
@@ -5151,6 +5227,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcDropObsoleteCount = 0;
             wgcDropStaleDebtCount = 0;
             wgcDropStaleDebtMaxUs = 0;
+            wgcLiveSchedulerRebaseThisWindow = 0;
             lastHealthLog = GetTickCount();
         }
     }
@@ -5238,7 +5315,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             LogInfo(
                 "[WGC CFR SUMMARY] SourceFps=%.2f..%.2f MinIn250=%u MinDel250=%u FreshMissMax=%upm JitterMax=%uus "
                 "SelMax=%uus WgcSelMax=%uus Oldest=%.1fms ShortfallMax=%.1fms EncEmaMax=%.2fms SustainMin=%.1ffps "
-                "LowSrcImmediate=%u StaleDebtDrop=%llu TimelineDebtDrop=%llu PostStopDrop=%llu/%uus",
+                "LowSrcImmediate=%u StaleDebtDrop=%llu TimelineDebtDrop=%llu LiveRebase=%llu/%u "
+                "PostStopDrop=%llu/%uus",
                 captureSessionSummary.worstSourceFpsX100 == std::numeric_limits<uint32_t>::max()
                     ? 0.0
                     : (captureSessionSummary.worstSourceFpsX100 / 100.0),
@@ -5258,6 +5336,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     : captureSessionSummary.minEncoderSustainFps,
                 captureSessionSummary.lowSourceImmediateExits, static_cast<unsigned long long>(wgcDropStaleDebtTotal),
                 static_cast<unsigned long long>(wgcVisualDebtMaxExcessTicks),
+                static_cast<unsigned long long>(wgcLiveSchedulerRebaseTotal), wgcLiveSchedulerRebaseMaxTicks,
                 static_cast<unsigned long long>(wgcPostStopFrameDropTotal), wgcPostStopFrameDropMaxUs);
         } else {
             LogInfo(
@@ -5454,7 +5533,9 @@ void StopRecording() {
     }
 
     const bool wasActiveScreenGrab = IsActiveScreenGrab();
-    const bool drainOutstandingCfrTicks = !g_RecordingUsesVfr.load(std::memory_order_acquire);
+    const bool recordingUsesVfr = g_RecordingUsesVfr.load(std::memory_order_acquire);
+    const bool drainOutstandingCfrTicks =
+        ce::capture_policy::ShouldDrainOutstandingCfrTicksAtStop(wasActiveScreenGrab, recordingUsesVfr);
     int64_t drainStopQpc = 0;
     if (drainOutstandingCfrTicks) {
         LARGE_INTEGER stopQpc;
@@ -5468,28 +5549,30 @@ void StopRecording() {
     SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
     g_CfrDrainStopQpc.store(drainStopQpc, std::memory_order_release);
     g_DrainOutstandingCfrTicks.store(drainOutstandingCfrTicks && drainStopQpc > 0, std::memory_order_release);
+    if (wasActiveScreenGrab) {
+        g_EncoderRunning = false;
+    }
     if (drainOutstandingCfrTicks && drainStopQpc > 0) {
         LogInfo("[Media] CFR stop drain armed at QPC=%lld path=%s", drainStopQpc,
                 IsActiveScreenGrab() ? "WGC" : "inject");
+    } else if (wasActiveScreenGrab && !recordingUsesVfr) {
+        LogInfo("[Media] WGC CFR exact-stop: generic stop drain disabled; live scheduler rebases own debt");
     }
 
-    if (!wasActiveScreenGrab) {
-        StopWgcCapturePipeline();
-    }
+    StopWgcCapturePipeline();
     StopInjectCapturePipeline();
+    if (!wasActiveScreenGrab) {
+        g_EncoderRunning = false;
+    }
 
-    g_EncoderRunning = false;
     g_InjectDeliveredFirstFrame.store(false, std::memory_order_release);
     g_RejectInjectFrames.store(false, std::memory_order_release);
     g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
 
     const bool encoderJoined = JoinThreadWithTimeout(g_EncoderThread, 60000, "encoder");
 
-    if (wasActiveScreenGrab) {
-        if (!encoderJoined) {
-            LogWarn("[Media] Stopping WGC after encoder join timeout; pending-frame drain may be incomplete");
-        }
-        StopWgcCapturePipeline();
+    if (wasActiveScreenGrab && !encoderJoined) {
+        LogWarn("[Media] WGC encoder join timed out after exact-stop shutdown");
     }
 
     g_FrameQueue.Clear();

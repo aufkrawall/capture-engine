@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-05 (updated: bounded WGC source-selection debt and audio integrity)
+Last cross-checked: 2026-06-05 (updated: WGC live scheduler rebase and exact-stop drain guard)
 
 Primary sources:
 - `AGENTS.md`
@@ -55,11 +55,11 @@ Primary sources:
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
 - `multi-audio-capture.md`
-  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture. Config inheritance for codec/quality/layout fields, per-track channel layout resolution, PCM/Opus codec policy, multichannel bitrate scaling, timeline-valid startup, per-track audio cursors, encoded-silence handling, AAC/Opus finalization, CFR audio-continuity rules, tiny source-clock-only drift compensation, and strict decode/waveform-tail validation. Last verified 2026-06-05. Stale-risk: medium.
+  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture. Config inheritance for codec/quality/layout fields, per-track channel layout resolution, PCM/Opus codec policy, multichannel bitrate scaling, timeline-valid startup, per-track audio cursors, encoded-silence handling, AAC/Opus finalization, CFR audio-continuity rules, tiny source-clock-only drift compensation, and strict decode/waveform-tail/WGC stop-tail validation. Last verified 2026-06-05. Stale-risk: medium.
 - `wgc-capture.md`
-  - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, WGC CFR bounded source-selection/live-window policy, audio-continuity/exact-stop policy, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-06-05. Stale-risk: medium.
+  - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, WGC CFR bounded live scheduler/source-selection policy, audio-continuity/exact-stop drain guard, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-06-05. Stale-risk: medium.
 - `cfr-capture-sync.md`
-  - Shared WGC/inject CFR timeline and audio sync invariants, packet-level and content-marker diagnostics, track startup/cursor rules, stop-drain rules, codec-padding finalization, WGC slot ownership with bounded source-selection clamping/fresh-catchup rejection, and inject timer-rebase debt handling. Last verified 2026-06-05. Stale-risk: medium.
+  - Shared WGC/inject CFR timeline and audio sync invariants, packet-level and content-marker diagnostics, track startup/cursor rules, stop-drain rules, codec-padding finalization, WGC live scheduler rebase with bounded source-selection clamping/fresh-catchup rejection, and inject timer-rebase debt handling. Last verified 2026-06-05. Stale-risk: medium.
 - `performance-priority.md`
   - `[Performance]` config section: `process_priority` (CPU), `gpu_priority` (encoder GPU thread), `copy_queue_priority` (D3D12 overlay queue). Defaults, data flow, source anchors, and open questions.
 - `log.md`
