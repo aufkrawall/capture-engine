@@ -866,14 +866,23 @@ TEST(OverlayCompatTest, InitializedOverlayStaysVisibleDuringStartupSuppression) 
     EXPECT_FALSE(ce::overlay_compat::ShouldKeepDX12OverlayVisibleDuringStartupSuppression(false));
 }
 
-TEST(OverlayCompatTest, DedicatedQueueSupportsFGAndStartupCompat) {
-    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, false, nullptr));
+TEST(OverlayCompatTest, DedicatedQueueSupportsFGAndPlainDX12) {
+    // FG always uses the dedicated queue.
     EXPECT_TRUE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(true, false, nullptr));
-    // Dedicated queue is now FG-only; startup compat uses single-queue mode to avoid
-    // cross-queue resource state conflicts (ERR_GFX_STATE in GTA5 Enhanced).
-    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, true, "socialclub.dll"));
-    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, true, nullptr));
     EXPECT_TRUE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(true, false, "sl.interposer.dll"));
+
+    // Plain DX12 (no FG, no startup delay, no startup-blocking overlay) now ALSO uses the
+    // dedicated queue, so the overlay's per-frame ExecuteCommandLists does not pressure the
+    // app's shared command-buffer pool (the Alt+Tab mode-switch kernel-alloc freeze trigger).
+    EXPECT_TRUE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, false, nullptr));
+
+    // Startup compat still settling -> single-queue while topology is unstable.
+    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, true, nullptr));
+
+    // A loaded startup-blocking third-party overlay (Social Club / EOS) stays single-queue to
+    // avoid cross-queue swapchain-backbuffer state conflicts (ERR_GFX_STATE in GTA5 Enhanced).
+    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, true, "socialclub.dll"));
+    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, false, "socialclub.dll"));
 }
 
 TEST_F(FpsLimiterTest, FreezeWatchdogTimeoutOnlyExpandsForActiveDLSSFG) {

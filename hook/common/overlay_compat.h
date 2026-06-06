@@ -775,14 +775,30 @@ inline bool FindAuxiliaryProcessWindow(DWORD processId, HWND primaryWindow,
 
 inline bool ShouldUseDedicatedDX12OverlayQueue(bool actualFGActive, bool processNeedsDelay = false,
                                                const char* startupBlockingOverlayModule = nullptr) {
-    (void)processNeedsDelay;
-    (void)startupBlockingOverlayModule;
-    // Only use a dedicated overlay queue when frame generation is active.
-    // Previously this also created a dedicated queue for startup compat with
-    // third-party overlays (Social Club, EOS), but cross-queue resource state
-    // transitions on swapchain backbuffers cause ERR_GFX_STATE in GTA5 Enhanced.
-    // Single-queue mode avoids the cross-queue barrier conflict entirely.
-    return actualFGActive;
+    // FG always uses the dedicated overlay queue.
+    if (actualFGActive) {
+        return true;
+    }
+    // During startup-overlay compatibility (third-party overlay still settling) stay single-queue
+    // while the swapchain/queue topology is unstable.
+    if (processNeedsDelay) {
+        return false;
+    }
+    // A loaded startup-blocking third-party overlay (Social Club / EOS) stays single-queue:
+    // cross-queue swapchain-backbuffer state transitions caused ERR_GFX_STATE in GTA5 Enhanced.
+    if (startupBlockingOverlayModule != nullptr) {
+        return false;
+    }
+    // Plain DX12 (no FG, no third-party startup overlay): use the dedicated overlay queue so the
+    // overlay's per-frame ExecuteCommandLists does NOT pressure the APPLICATION's shared
+    // command-queue command-buffer pool. That shared-queue pressure made the app's OWN
+    // ExecuteCommandLists allocate a command buffer (kernel GPU allocation,
+    // D3D12Core CDevice::AllocateCB -> NtGdiDdDDICreateAllocation) during the Alt+Tab
+    // iflip<->composited mode switch, which blocked ~2 s and tripped the GPU TDR
+    // (logs/20260606_150849). Isolating overlay GPU work on its own queue keeps the app's queue
+    // at bare-app behavior. Streamline-FG / runtime-owned-FG paths are excluded earlier by the
+    // caller (ShouldUseDedicatedOverlayQueue) where cross-queue access is rejected.
+    return true;
 }
 
 inline bool ShouldSuppressDX12OverlayForStartup(bool startupOverlayLoaded, bool actualFGActive,
