@@ -17,6 +17,22 @@ TEST(DXGISharedTest, ExternalHookBypassResumeExtendsPastPatchedFillBytes) {
     EXPECT_FALSE(ce::inline_hook_policy::ShouldExtendExternalHookResumeOffset(5, 14, false));
 }
 
+TEST(DXGISharedTest, DredIsOffByDefaultAndOnlyExplicitAffirmativeEnablesIt) {
+    // Default OFF: unset env, or empty/null value. DRED auto-breadcrumbs add a per-frame kernel
+    // GPU allocation on the app's CommandList::Reset that stalls Present during the Alt+Tab mode
+    // switch (logs/20260606_145929), so it must not be on unless explicitly requested.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv(nullptr, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("", true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("0", true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("off", true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("garbage", true));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("1", true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("on", true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("TRUE", true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("Yes", true));
+}
+
 TEST(DXGISharedTest, TransitionCooldownDoesNotHeavySuspendDrawableDX12Overlay) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHeavySuspendDX12OverlayForSwapchainState(false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldHeavySuspendDX12OverlayForSwapchainState(true, false));

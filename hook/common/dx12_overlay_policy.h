@@ -2713,4 +2713,17 @@ inline bool ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(bool strea
     return streamlineFGRunning || streamlineStartupHandoffPending;
 }
 
+// Pure decision for CE_DX12_DRED. DRED auto-breadcrumbs force the application's command-list
+// Reset() to do a per-frame kernel GPU allocation that stalls Present during the Alt+Tab mode
+// switch (logs/20260606_145929), so DRED is OFF unless explicitly enabled. `isSet` is whether
+// the env var is present; `value` its (possibly null) contents. Only an explicit affirmative
+// ("1"/"on"/"true"/"yes", case-insensitive) enables it.
+inline bool ShouldEnableDredFromEnv(const char* value, bool isSet) {
+    if (!isSet || value == nullptr || value[0] == '\0') {
+        return false;
+    }
+    return _stricmp(value, "1") == 0 || _stricmp(value, "on") == 0 || _stricmp(value, "true") == 0 ||
+           _stricmp(value, "yes") == 0;
+}
+
 }  // namespace ce::dx12_overlay_policy

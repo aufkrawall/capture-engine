@@ -10,6 +10,7 @@
 #include <cstring>
 #include <vector>
 
+#include "dx12_overlay_policy.h"
 #include "hook_common.h"
 
 // Retention belt-and-suspenders. The DRED entry points are `__declspec(dllexport)`
@@ -25,18 +26,24 @@ namespace {
 
 std::atomic<bool> s_dumpedThisEpoch{false};
 
-// Read CE_DX12_DRED once. Default ON during this diagnosis cycle.
+// Read CE_DX12_DRED once. Default OFF.
+//
+// DRED auto-breadcrumbs (SetAutoBreadcrumbsEnablement FORCED_ON) make the application's every
+// ID3D12GraphicsCommandList::Reset() allocate/open a breadcrumb buffer via a KERNEL GPU
+// allocation (D3D12Core Dred::AllocateBreadcrumbBuffer -> OpenExistingHeapFromAddress ->
+// NtGdiDdDDICreateAllocation/DestroyAllocation). During the Alt+Tab iflip<->composited mode
+// switch that kernel allocation contends with the GPU/DWM reconfiguration and stalls the
+// present thread for seconds, tripping the 2 s GPU TDR (DEVICE_HUNG). The freeze dump in
+// logs/20260606_145929 caught exactly that: dx12_test!Render -> CGraphicsCommandList::Reset ->
+// Dred::AllocateBreadcrumbBuffer -> NtGdiDdDDIDestroyAllocation2, gap=2646ms. So the diagnostic
+// itself was causing the freeze it was meant to capture. DRED is now opt-in: set CE_DX12_DRED=1
+// only while actively diagnosing a device-removal. Freeze dumps still give the CPU-side
+// present-thread stack without DRED.
 bool ReadEnabledFromEnv() {
     char buf[16] = {};
     DWORD n = GetEnvironmentVariableA("CE_DX12_DRED", buf, sizeof(buf));
-    if (n == 0 || n >= sizeof(buf)) {
-        return true;  // unset -> enabled
-    }
-    if (_stricmp(buf, "0") == 0 || _stricmp(buf, "off") == 0 || _stricmp(buf, "false") == 0 ||
-        _stricmp(buf, "no") == 0) {
-        return false;
-    }
-    return true;
+    const bool isSet = (n != 0 && n < sizeof(buf));
+    return ce::dx12_overlay_policy::ShouldEnableDredFromEnv(isSet ? buf : nullptr, isSet);
 }
 
 const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {
