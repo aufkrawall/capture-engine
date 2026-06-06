@@ -775,30 +775,20 @@ inline bool FindAuxiliaryProcessWindow(DWORD processId, HWND primaryWindow,
 
 inline bool ShouldUseDedicatedDX12OverlayQueue(bool actualFGActive, bool processNeedsDelay = false,
                                                const char* startupBlockingOverlayModule = nullptr) {
-    // FG always uses the dedicated overlay queue.
-    if (actualFGActive) {
-        return true;
-    }
-    // During startup-overlay compatibility (third-party overlay still settling) stay single-queue
-    // while the swapchain/queue topology is unstable.
-    if (processNeedsDelay) {
-        return false;
-    }
-    // A loaded startup-blocking third-party overlay (Social Club / EOS) stays single-queue:
-    // cross-queue swapchain-backbuffer state transitions caused ERR_GFX_STATE in GTA5 Enhanced.
-    if (startupBlockingOverlayModule != nullptr) {
-        return false;
-    }
-    // Plain DX12 (no FG, no third-party startup overlay): use the dedicated overlay queue so the
-    // overlay's per-frame ExecuteCommandLists does NOT pressure the APPLICATION's shared
-    // command-queue command-buffer pool. That shared-queue pressure made the app's OWN
-    // ExecuteCommandLists allocate a command buffer (kernel GPU allocation,
-    // D3D12Core CDevice::AllocateCB -> NtGdiDdDDICreateAllocation) during the Alt+Tab
-    // iflip<->composited mode switch, which blocked ~2 s and tripped the GPU TDR
-    // (logs/20260606_150849). Isolating overlay GPU work on its own queue keeps the app's queue
-    // at bare-app behavior. Streamline-FG / runtime-owned-FG paths are excluded earlier by the
-    // caller (ShouldUseDedicatedOverlayQueue) where cross-queue access is rejected.
-    return true;
+    (void)processNeedsDelay;
+    (void)startupBlockingOverlayModule;
+    // Only use a dedicated overlay queue when frame generation is active.
+    //
+    // DO NOT naively enable this for plain non-FG to offload the overlay's per-frame
+    // ExecuteCommandLists off the app's shared queue: the dedicated queue's overlay command list
+    // draws DIRECTLY to the swapchain backbuffer, and DXGI forbids a non-owning queue from
+    // touching the swapchain backbuffers — it returns DXGI_ERROR_ACCESS_DENIED (0x887A002B) and
+    // removes the device on the FIRST submit (proven at startup in logs/20260606_153428: "DEVICE
+    // REMOVED after reinit submit #1", queue=dedicated, offscreen=0). Only the queue passed to
+    // CreateSwapChainForHwnd may render the backbuffer. A dedicated queue can therefore only do
+    // OFFSCREEN overlay work; the composite onto the backbuffer must still happen on the app's
+    // queue. (The FG path that uses the dedicated queue does not direct-draw the backbuffer.)
+    return actualFGActive;
 }
 
 inline bool ShouldSuppressDX12OverlayForStartup(bool startupOverlayLoaded, bool actualFGActive,

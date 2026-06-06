@@ -866,22 +866,17 @@ TEST(OverlayCompatTest, InitializedOverlayStaysVisibleDuringStartupSuppression) 
     EXPECT_FALSE(ce::overlay_compat::ShouldKeepDX12OverlayVisibleDuringStartupSuppression(false));
 }
 
-TEST(OverlayCompatTest, DedicatedQueueSupportsFGAndPlainDX12) {
-    // FG always uses the dedicated queue.
+TEST(OverlayCompatTest, DedicatedQueueIsFGOnly) {
+    // FG uses the dedicated overlay queue.
     EXPECT_TRUE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(true, false, nullptr));
     EXPECT_TRUE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(true, false, "sl.interposer.dll"));
 
-    // Plain DX12 (no FG, no startup delay, no startup-blocking overlay) now ALSO uses the
-    // dedicated queue, so the overlay's per-frame ExecuteCommandLists does not pressure the
-    // app's shared command-buffer pool (the Alt+Tab mode-switch kernel-alloc freeze trigger).
-    EXPECT_TRUE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, false, nullptr));
-
-    // Startup compat still settling -> single-queue while topology is unstable.
+    // Non-FG stays single-queue: a non-owning queue drawing directly to the swapchain backbuffer
+    // is rejected by DXGI with DXGI_ERROR_ACCESS_DENIED (0x887A002B) and removes the device on
+    // the first submit (logs/20260606_153428). Only the swapchain's owning (app) queue may render
+    // the backbuffer, so plain non-FG must stay single-queue.
+    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, false, nullptr));
     EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, true, nullptr));
-
-    // A loaded startup-blocking third-party overlay (Social Club / EOS) stays single-queue to
-    // avoid cross-queue swapchain-backbuffer state conflicts (ERR_GFX_STATE in GTA5 Enhanced).
-    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, true, "socialclub.dll"));
     EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, false, "socialclub.dll"));
 }
 
