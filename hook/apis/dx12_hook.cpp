@@ -700,6 +700,20 @@ public:
             cmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0, 0);
         }
         slotFenceValue_[slot] = s_descFreeSlotGuardValue;
+
+        // DIAGNOSTIC: per-frame overlay GPU footprint (draw count + vertex/index bytes). This is
+        // what CE submits to the app's queue each frame; compare 32-bit vs 64-bit hook_debug.log
+        // (expected identical — confirming the freeze is WoW64 allocation speed, not a different
+        // CE code path — and quantifying how much a cached-texture composite would save).
+        {
+            static std::atomic<int> s_overlayFootprintLog{0};
+            const int n = s_overlayFootprintLog.fetch_add(1, std::memory_order_relaxed);
+            if (n < 5 || (n % 600) == 0) {
+                HookLogImportant(
+                    "DX12 DIAG: overlay footprint draws=%zu vbBytes=%zu ibBytes=%zu slot=%d sample=%d",
+                    commands.size(), vbBytes, ibBytes, slot, n);
+            }
+        }
     }
 
     void Shutdown() override {
@@ -17618,6 +17632,67 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             real(pThis, NumCommandLists, ppCommandLists);
         return;
     }
+
+    // ===================== DIAGNOSTIC: ExecuteCommandLists timing =====================
+    // Times the WHOLE ExecuteCommandLists call (including the real forward, where the NV
+    // driver's command-buffer allocation D3D12Core CDevice::AllocateCB ->
+    // NtGdiDdDDICreateAllocation happens). A slow ECL here during the Alt+Tab mode switch is
+    // the 32-bit/WoW64 freeze (kernel GPU allocation slow under WoW64); on native 64-bit the
+    // same ECL stays fast. Always-on, no env/flag — compare 32-bit vs 64-bit hook_debug.log.
+    const bool diagEclIsOverlayQueue = (pThis == g_State.overlayQueue);
+    LARGE_INTEGER diagEclStart;
+    QueryPerformanceCounter(&diagEclStart);
+    auto diagEclTimer = ce::make_scope_guard([&]() {
+        LARGE_INTEGER diagEclEnd, diagEclFreq;
+        QueryPerformanceCounter(&diagEclEnd);
+        QueryPerformanceFrequency(&diagEclFreq);
+        const double diagEclMs =
+            (double)(diagEclEnd.QuadPart - diagEclStart.QuadPart) * 1000.0 / (double)diagEclFreq.QuadPart;
+        // Windowed stats (per ~1s) so steady-state baselines are visible too, not just spikes.
+        static std::atomic<double> s_eclWindowMaxMs{0.0};
+        static std::atomic<double> s_eclWindowSumMs{0.0};
+        static std::atomic<uint32_t> s_eclWindowCount{0};
+        static std::atomic<ULONGLONG> s_eclWindowStartMs{0};
+        double prevMax = s_eclWindowMaxMs.load(std::memory_order_relaxed);
+        while (diagEclMs > prevMax &&
+               !s_eclWindowMaxMs.compare_exchange_weak(prevMax, diagEclMs, std::memory_order_relaxed)) {
+        }
+        // Approximate sum via double CAS-free add (relaxed; diagnostic only).
+        s_eclWindowSumMs.store(s_eclWindowSumMs.load(std::memory_order_relaxed) + diagEclMs,
+                               std::memory_order_relaxed);
+        const uint32_t windowCount = s_eclWindowCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        const ULONGLONG nowMs = GetTickCount64();
+        ULONGLONG windowStart = s_eclWindowStartMs.load(std::memory_order_relaxed);
+        if (windowStart == 0) {
+            s_eclWindowStartMs.compare_exchange_strong(windowStart, nowMs, std::memory_order_relaxed);
+            windowStart = nowMs;
+        }
+        // Immediately log any slow ECL (the freeze signature).
+        if (diagEclMs >= 2.0) {
+            static std::atomic<int> s_slowEclLogCount{0};
+            const int n = s_slowEclLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (n < 400 || (n % 50) == 0) {
+                auto* diagDev = g_Device.load(std::memory_order_acquire);
+                HRESULT diagDr = diagDev ? diagDev->GetDeviceRemovedReason() : E_FAIL;
+                HookLogImportant(
+                    "DX12 DIAG: ExecuteCommandLists SLOW %.1fms (queue=%p overlayQueue=%d lists=%u "
+                    "devRemoved=0x%08X tid=0x%04X)",
+                    diagEclMs, pThis, diagEclIsOverlayQueue ? 1 : 0, NumCommandLists, (unsigned)diagDr,
+                    GetCurrentThreadId());
+            }
+        }
+        // Periodic (~1s) ECL-timing summary for steady-state comparison.
+        if (nowMs - windowStart >= 1000 && windowCount > 0) {
+            if (s_eclWindowStartMs.compare_exchange_strong(windowStart, nowMs, std::memory_order_relaxed)) {
+                const double winMax = s_eclWindowMaxMs.exchange(0.0, std::memory_order_relaxed);
+                const double winSum = s_eclWindowSumMs.exchange(0.0, std::memory_order_relaxed);
+                const uint32_t winCnt = s_eclWindowCount.exchange(0, std::memory_order_relaxed);
+                HookLogImportant("DX12 DIAG: ECL timing/1s: count=%u maxMs=%.2f avgMs=%.3f tid=0x%04X", winCnt,
+                                 winMax, winCnt ? (winSum / (double)winCnt) : 0.0, GetCurrentThreadId());
+            }
+        }
+    });
+    // ================================================================================
 
     // ECL heartbeat counter — read by SL hook to verify ECL is still firing.
     static std::atomic<uint64_t> s_eclCallCounter{0};
