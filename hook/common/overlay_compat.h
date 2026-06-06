@@ -386,33 +386,11 @@ inline bool IsEffectiveCreateSwapchainCallerFromThirdPartyOverlay(const char* fo
         GetEffectiveCreateSwapchainCallerModulePath(forwardedCallerModulePath, immediateCallerModulePath));
 }
 
+// Loader-free: true if any known third-party overlay module is loaded. Defined in terms of
+// the cached GetLoadedThirdPartyOverlayModuleName() below (forward-declared here).
+inline const char* GetLoadedThirdPartyOverlayModuleName();
 inline bool IsThirdPartyOverlayLoaded() {
-    static constexpr const char* kOverlayModules[] = {
-        "gameoverlayrenderer64.dll",
-        "gameoverlayrenderer.dll",
-        "discord_hook64.dll",
-        "discord_hook.dll",
-        "socialclub.dll",
-        "socialclub",
-        "EOSOVH_Win64_Shipping.dll",
-        "EOSOVH_Win64_Shipping",
-        "EOSOVH_Win32_Shipping.dll",
-        "EOSOVH_Win32_Shipping",
-        "nvspcap64.dll",
-        "nvspcap.dll",
-        "nvoverlay.dll",
-        "RTSSHooks64.dll",
-        "RTSSHooks.dll",
-        "RTSSHooks",
-    };
-
-    for (const char* moduleName : kOverlayModules) {
-        if (GetModuleHandleA(moduleName) != nullptr) {
-            return true;
-        }
-    }
-
-    return false;
+    return GetLoadedThirdPartyOverlayModuleName() != nullptr;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -434,37 +412,52 @@ inline bool IsThirdPartyOverlayLoaded() {
 // notifications (NotifyHookModuleLoaded + LdrRegisterDllNotification) — none of which run on
 // the Present thread. Detection logic is split into pure, unit-testable matchers.
 //
-// Canonical overlay-module list (one entry per overlay, highest detection priority first).
-// Downstream consumers only token-match the Steam entry ("gameoverlayrenderer"); everyone
-// else just checks for non-null or logs the string, so these exact strings preserve behavior.
-// List order is the priority: when several overlays are loaded the lowest-index one is
-// reported, matching the previous in-order walk (Steam still wins over RTSS/Discord/etc.).
-inline constexpr const char* kThirdPartyOverlayModules[] = {
-    "gameoverlayrenderer64.dll",
-    "gameoverlayrenderer.dll",
-    "discord_hook64.dll",
-    "discord_hook.dll",
-    "socialclub.dll",
-    "EOSOVH_Win64_Shipping.dll",
-    "EOSOVH_Win32_Shipping.dll",
-    "nvspcap64.dll",
-    "nvspcap.dll",
-    "nvoverlay.dll",
-    "RTSSHooks64.dll",
-    "RTSSHooks.dll",
+// Unified tracked-module table. Each known module carries the subsets it belongs to, so a
+// single cached loaded-set serves every detector. The Present hot path then reads ONLY an
+// atomic bitmask + a tiny loop — it NEVER calls the Windows loader. (GetModuleHandleA for a
+// NOT-loaded module takes the slow LdrGetDllHandleEx + ApiSet-resolution / loader-snap path;
+// on x86 that stalled Present for >2 s and tripped the GPU TDR — see freeze dumps
+// logs/20260605_231633 (ApiSet) and logs/20260606_021018 (loader-snap) — both inside a
+// per-Present GetModuleHandleA from the present path.)
+//
+// List order is detection priority: the lowest-index loaded entry in a subset is reported,
+// matching the previous in-order walks — Steam wins for `overlay`; socialclub before EOSOVH
+// for `startupBlocking`; SocialClubD3D12Renderer before EOSOVH for `startupBlockingRender`.
+// Downstream consumers only token-match the Steam entry ("gameoverlayrenderer"); everyone else
+// checks for non-null or logs the string, so these exact strings preserve behavior.
+struct TrackedOverlayModule {
+    const char* name;
+    bool overlay;                // GetLoadedThirdPartyOverlayModuleName / IsThirdPartyOverlayLoaded
+    bool startupBlocking;        // GetStartupBlockingOverlayModuleName
+    bool startupBlockingRender;  // GetStartupBlockingOverlayRenderModuleName
 };
-inline constexpr size_t kThirdPartyOverlayModuleCount =
-    sizeof(kThirdPartyOverlayModules) / sizeof(kThirdPartyOverlayModules[0]);
-static_assert(kThirdPartyOverlayModuleCount <= 32, "overlay-module loaded-set is a 32-bit mask");
+inline constexpr TrackedOverlayModule kTrackedOverlayModules[] = {
+    {"gameoverlayrenderer64.dll", true, false, false},
+    {"gameoverlayrenderer.dll", true, false, false},
+    {"discord_hook64.dll", true, false, false},
+    {"discord_hook.dll", true, false, false},
+    {"socialclub.dll", true, true, false},
+    {"SocialClubD3D12Renderer.dll", false, false, true},
+    {"EOSOVH_Win64_Shipping.dll", true, true, true},
+    {"EOSOVH_Win32_Shipping.dll", true, true, true},
+    {"nvspcap64.dll", true, false, false},
+    {"nvspcap.dll", true, false, false},
+    {"nvoverlay.dll", true, false, false},
+    {"RTSSHooks64.dll", true, false, false},
+    {"RTSSHooks.dll", true, false, false},
+};
+inline constexpr size_t kTrackedOverlayModuleCount =
+    sizeof(kTrackedOverlayModules) / sizeof(kTrackedOverlayModules[0]);
+static_assert(kTrackedOverlayModuleCount <= 32, "tracked-module loaded-set is a 32-bit mask");
 
-// Pure / loader-free: index of the known overlay module whose base name case-insensitively
-// equals `baseName`, or -1. Directly unit-testable (no globals, no loader).
+// Pure / loader-free: index of the tracked module whose base name case-insensitively equals
+// `baseName`, or -1. Directly unit-testable (no globals, no loader).
 inline int MatchKnownThirdPartyOverlayModuleIndex(const char* baseName) {
     if (!baseName || !*baseName) {
         return -1;
     }
-    for (size_t i = 0; i < kThirdPartyOverlayModuleCount; ++i) {
-        if (detail::EqualsInsensitive(baseName, kThirdPartyOverlayModules[i])) {
+    for (size_t i = 0; i < kTrackedOverlayModuleCount; ++i) {
+        if (detail::EqualsInsensitive(baseName, kTrackedOverlayModules[i].name)) {
             return static_cast<int>(i);
         }
     }
@@ -475,126 +468,111 @@ inline int MatchKnownThirdPartyOverlayModuleIndex(const char* baseName) {
 // string handed to downstream code, so classifiers like IsSteamOverlayModule keep working.
 inline const char* MatchKnownThirdPartyOverlayModuleBaseName(const char* baseName) {
     const int idx = MatchKnownThirdPartyOverlayModuleIndex(baseName);
-    return idx >= 0 ? kThirdPartyOverlayModules[idx] : nullptr;
+    return idx >= 0 ? kTrackedOverlayModules[idx].name : nullptr;
 }
 
-// Out-of-band detection state. The Present hot path reads ONLY the name atomic; the loaded-set
-// bitmask and the derived name are mutated solely off the Present thread (seed scan + DLL
-// load/unload notifications), serialized by the mutex.
-inline std::mutex& ThirdPartyOverlayCacheMutex() {
-    static std::mutex mutex;
-    return mutex;
-}
-inline std::atomic<const char*>& ThirdPartyOverlayModuleNameCache() {
-    static std::atomic<const char*> cache{nullptr};
-    return cache;
-}
-// Bitmask over kThirdPartyOverlayModules of currently-loaded overlays. Guarded by
-// ThirdPartyOverlayCacheMutex().
-inline uint32_t& ThirdPartyOverlayLoadedBitsRef() {
-    static uint32_t bits = 0;
+// Lock-free loaded-set bitmask over kTrackedOverlayModules, mutated only off the Present hot
+// path (one-time seed + DLL load/unload notifications). `seeded` guards a one-time lazy loader
+// walk so the very first query is correct even if it beats the HookThread seed; afterwards
+// every query is loader-free.
+inline std::atomic<uint32_t>& TrackedOverlayLoadedBits() {
+    static std::atomic<uint32_t> bits{0};
     return bits;
 }
-// Recompute the published name from the loaded-set (lowest index = highest priority).
-// Caller must hold ThirdPartyOverlayCacheMutex().
-inline void RecomputeThirdPartyOverlayNameLocked() {
-    const uint32_t bits = ThirdPartyOverlayLoadedBitsRef();
-    const char* name = nullptr;
-    for (size_t i = 0; i < kThirdPartyOverlayModuleCount; ++i) {
-        if (bits & (1u << i)) {
-            name = kThirdPartyOverlayModules[i];
-            break;
+inline std::atomic<bool>& TrackedOverlaySeeded() {
+    static std::atomic<bool> seeded{false};
+    return seeded;
+}
+
+// Walks the loader ONCE to seed modules already loaded before our hooks/notification
+// installed. Returns the seeded bitmask (for logging/diagnostics). Call once from HookThread;
+// also lazy-triggered on first query.
+inline uint32_t SeedThirdPartyOverlayModuleCacheFromLoader() {
+    uint32_t seeded = 0;
+    for (size_t i = 0; i < kTrackedOverlayModuleCount; ++i) {
+        if (GetModuleHandleA(kTrackedOverlayModules[i].name) != nullptr) {
+            seeded |= (1u << i);
         }
     }
-    ThirdPartyOverlayModuleNameCache().store(name, std::memory_order_release);
+    TrackedOverlayLoadedBits().fetch_or(seeded, std::memory_order_acq_rel);
+    TrackedOverlaySeeded().store(true, std::memory_order_release);
+    return seeded;
 }
 
-// Present HOT PATH: pure atomic load. NEVER touches the Windows loader.
+inline void EnsureThirdPartyOverlayModuleCacheSeeded() {
+    if (!TrackedOverlaySeeded().load(std::memory_order_acquire)) {
+        SeedThirdPartyOverlayModuleCacheFromLoader();
+    }
+}
+
+enum class TrackedOverlaySubset { kOverlay, kStartupBlocking, kStartupBlockingRender };
+
+// Loader-free (after the one-time seed): first loaded tracked module in `subset` by list-order
+// priority, or nullptr.
+inline const char* FirstLoadedTrackedOverlayModule(TrackedOverlaySubset subset) {
+    EnsureThirdPartyOverlayModuleCacheSeeded();
+    const uint32_t bits = TrackedOverlayLoadedBits().load(std::memory_order_acquire);
+    if (bits == 0) {
+        return nullptr;
+    }
+    for (size_t i = 0; i < kTrackedOverlayModuleCount; ++i) {
+        if (!(bits & (1u << i))) {
+            continue;
+        }
+        const TrackedOverlayModule& e = kTrackedOverlayModules[i];
+        const bool inSubset = (subset == TrackedOverlaySubset::kOverlay && e.overlay) ||
+                              (subset == TrackedOverlaySubset::kStartupBlocking && e.startupBlocking) ||
+                              (subset == TrackedOverlaySubset::kStartupBlockingRender && e.startupBlockingRender);
+        if (inSubset) {
+            return e.name;
+        }
+    }
+    return nullptr;
+}
+
+// Present HOT PATH: loader-free. (Forward-declared earlier for IsThirdPartyOverlayLoaded.)
 inline const char* GetLoadedThirdPartyOverlayModuleName() {
-    return ThirdPartyOverlayModuleNameCache().load(std::memory_order_acquire);
+    return FirstLoadedTrackedOverlayModule(TrackedOverlaySubset::kOverlay);
 }
 
-// Off-hot-path. Record that `moduleNameOrPath` just loaded; updates detection state only if it
-// is a known overlay module. No loader calls. Returns the canonical match (for logging) or null.
+// Off-hot-path. Record that `moduleNameOrPath` just loaded; sets its bit if it is a tracked
+// module. No loader calls. Returns the canonical match (for logging) or null.
 inline const char* NoteModuleLoadedForOverlayCache(const char* moduleNameOrPath) {
     const int idx = MatchKnownThirdPartyOverlayModuleIndex(detail::ExtractBaseName(moduleNameOrPath));
     if (idx < 0) {
         return nullptr;
     }
-    std::lock_guard<std::mutex> lock(ThirdPartyOverlayCacheMutex());
-    ThirdPartyOverlayLoadedBitsRef() |= (1u << idx);
-    RecomputeThirdPartyOverlayNameLocked();
-    return kThirdPartyOverlayModules[idx];
+    TrackedOverlayLoadedBits().fetch_or(1u << idx, std::memory_order_acq_rel);
+    return kTrackedOverlayModules[idx].name;
 }
 
-// Off-hot-path. Record that `moduleNameOrPath` just unloaded; clears its bit if known. No
+// Off-hot-path. Record that `moduleNameOrPath` just unloaded; clears its bit if tracked. No
 // loader calls. Returns the canonical match (for logging) or null.
 inline const char* NoteModuleUnloadedForOverlayCache(const char* moduleNameOrPath) {
     const int idx = MatchKnownThirdPartyOverlayModuleIndex(detail::ExtractBaseName(moduleNameOrPath));
     if (idx < 0) {
         return nullptr;
     }
-    std::lock_guard<std::mutex> lock(ThirdPartyOverlayCacheMutex());
-    ThirdPartyOverlayLoadedBitsRef() &= ~(1u << idx);
-    RecomputeThirdPartyOverlayNameLocked();
-    return kThirdPartyOverlayModules[idx];
+    TrackedOverlayLoadedBits().fetch_and(~(1u << idx), std::memory_order_acq_rel);
+    return kTrackedOverlayModules[idx].name;
 }
 
-// One-time, OFF the Present thread (call once from hook init / HookThread). Walks the loader
-// ONCE to seed overlays that were already loaded before our hooks/notification installed.
-// Returns the seeded loaded-set bitmask (for logging/diagnostics).
-inline uint32_t SeedThirdPartyOverlayModuleCacheFromLoader() {
-    uint32_t seeded = 0;
-    for (size_t i = 0; i < kThirdPartyOverlayModuleCount; ++i) {
-        if (GetModuleHandleA(kThirdPartyOverlayModules[i]) != nullptr) {
-            seeded |= (1u << i);
-        }
-    }
-    std::lock_guard<std::mutex> lock(ThirdPartyOverlayCacheMutex());
-    ThirdPartyOverlayLoadedBitsRef() |= seeded;
-    RecomputeThirdPartyOverlayNameLocked();
-    return seeded;
-}
-
-// Test-only: clear all detection state between cases.
+// Test-only: clear all detection state and mark seeded so queries do not trigger a real loader
+// walk (tests fully control the loaded-set via NoteModuleLoaded/Unloaded).
 inline void ResetThirdPartyOverlayModuleCacheForTesting() {
-    std::lock_guard<std::mutex> lock(ThirdPartyOverlayCacheMutex());
-    ThirdPartyOverlayLoadedBitsRef() = 0;
-    ThirdPartyOverlayModuleNameCache().store(nullptr, std::memory_order_release);
+    TrackedOverlayLoadedBits().store(0, std::memory_order_release);
+    TrackedOverlaySeeded().store(true, std::memory_order_release);
 }
 
+// Loader-free (cached). Startup-blocking overlay modules (Social Club / EOS) gate early
+// temporary-swapchain Present-hook deferral and startup suppression.
 inline const char* GetStartupBlockingOverlayModuleName() {
-    static constexpr const char* kBlockingOverlayModules[] = {
-        "socialclub.dll",
-        "socialclub",
-        "EOSOVH_Win64_Shipping.dll",
-        "EOSOVH_Win64_Shipping",
-        "EOSOVH_Win32_Shipping.dll",
-        "EOSOVH_Win32_Shipping",
-    };
-
-    for (const char* moduleName : kBlockingOverlayModules) {
-        if (GetModuleHandleA(moduleName) != nullptr) {
-            return moduleName;
-        }
-    }
-
-    return nullptr;
+    return FirstLoadedTrackedOverlayModule(TrackedOverlaySubset::kStartupBlocking);
 }
 
+// Loader-free (cached). Startup-blocking RENDER modules (Social Club D3D12 renderer / EOS).
 inline const char* GetStartupBlockingOverlayRenderModuleName() {
-    static constexpr const char* kBlockingOverlayRenderModules[] = {
-        "SocialClubD3D12Renderer.dll", "SocialClubD3D12Renderer",   "EOSOVH_Win64_Shipping.dll",
-        "EOSOVH_Win64_Shipping",       "EOSOVH_Win32_Shipping.dll", "EOSOVH_Win32_Shipping",
-    };
-
-    for (const char* moduleName : kBlockingOverlayRenderModules) {
-        if (GetModuleHandleA(moduleName) != nullptr) {
-            return moduleName;
-        }
-    }
-
-    return nullptr;
+    return FirstLoadedTrackedOverlayModule(TrackedOverlaySubset::kStartupBlockingRender);
 }
 
 inline bool ShouldPreemptivelyDelayDX12OverlayInitForProcess(const char* processName) {

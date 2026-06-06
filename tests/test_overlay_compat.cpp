@@ -130,4 +130,45 @@ TEST_F(OverlayModuleDetectionTest, ListOrderPriorityIsIndependentOfLoadOrder) {
     EXPECT_NE(std::strstr(after, "RTSSHooks"), nullptr);
 }
 
+// --- Startup-blocking subsets must also be loader-free + correct (they're on per-present
+// paths too: ShouldDelegateDX12PresentToDetourHook etc.). This is the regression the
+// 20260606_021018 freeze exposed: GetStartupBlockingOverlayModuleName still walked the loader. ---
+TEST_F(OverlayModuleDetectionTest, StartupBlockingSubsetsAreCorrect) {
+    EXPECT_EQ(GetStartupBlockingOverlayModuleName(), nullptr);
+    EXPECT_EQ(GetStartupBlockingOverlayRenderModuleName(), nullptr);
+
+    // A pure overlay (Steam) is NOT a startup-blocking module.
+    NoteModuleLoadedForOverlayCache("gameoverlayrenderer64.dll");
+    EXPECT_TRUE(IsSteamName(GetLoadedThirdPartyOverlayModuleName()));
+    EXPECT_EQ(GetStartupBlockingOverlayModuleName(), nullptr);
+    EXPECT_EQ(GetStartupBlockingOverlayRenderModuleName(), nullptr);
+
+    // Social Club is overlay + startup-blocking (but not a render module).
+    NoteModuleLoadedForOverlayCache("socialclub.dll");
+    ASSERT_NE(GetStartupBlockingOverlayModuleName(), nullptr);
+    EXPECT_NE(std::strstr(GetStartupBlockingOverlayModuleName(), "socialclub"), nullptr);
+    EXPECT_EQ(GetStartupBlockingOverlayRenderModuleName(), nullptr);
+}
+
+// SocialClubD3D12Renderer is render-only: it must drive the render subset but must NOT be
+// reported as a general third-party overlay (preserves the old GetLoadedThirdPartyOverlayModuleName
+// behavior, which never listed it).
+TEST_F(OverlayModuleDetectionTest, SocialClubRendererIsRenderOnlyNotOverlay) {
+    NoteModuleLoadedForOverlayCache("SocialClubD3D12Renderer.dll");
+    ASSERT_NE(GetStartupBlockingOverlayRenderModuleName(), nullptr);
+    EXPECT_NE(std::strstr(GetStartupBlockingOverlayRenderModuleName(), "SocialClubD3D12Renderer"), nullptr);
+
+    EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
+    EXPECT_FALSE(IsThirdPartyOverlayLoaded());
+    EXPECT_EQ(GetStartupBlockingOverlayModuleName(), nullptr);
+}
+
+TEST_F(OverlayModuleDetectionTest, IsThirdPartyOverlayLoadedTracksOverlaySubset) {
+    EXPECT_FALSE(IsThirdPartyOverlayLoaded());
+    NoteModuleLoadedForOverlayCache("RTSSHooks64.dll");
+    EXPECT_TRUE(IsThirdPartyOverlayLoaded());
+    NoteModuleUnloadedForOverlayCache("RTSSHooks64.dll");
+    EXPECT_FALSE(IsThirdPartyOverlayLoaded());
+}
+
 }  // namespace
