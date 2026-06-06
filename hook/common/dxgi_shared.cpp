@@ -1725,6 +1725,29 @@ static void RefreshLivePresentHooksForSwapchainIfNeeded(IDXGISwapChain* pSwapCha
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
 
+    // DIAGNOSTIC: time the WHOLE DetourPresent call. The ECL diagnostic proved the Alt+Tab
+    // freeze stall is NOT in ExecuteCommandLists, so it is in the present path. With the
+    // ProcessFrame (overlay) and overlay-completion-wait phase timers, a slow total here with
+    // NO matching slow ProcessFrame/wait log means the stall is the real Present call blocking
+    // on the hung GPU (the iflip<->composited mode-switch GPU TDR). Compare 32-bit vs 64-bit.
+    LARGE_INTEGER diagPresentT0;
+    QueryPerformanceCounter(&diagPresentT0);
+    auto diagPresentTimer = ce::make_scope_guard([&]() {
+        LARGE_INTEGER diagPresentT1, diagPresentFreq;
+        QueryPerformanceCounter(&diagPresentT1);
+        QueryPerformanceFrequency(&diagPresentFreq);
+        const double diagPresentMs =
+            (double)(diagPresentT1.QuadPart - diagPresentT0.QuadPart) * 1000.0 / (double)diagPresentFreq.QuadPart;
+        if (diagPresentMs >= 20.0) {
+            static std::atomic<int> s_diagPresentLog{0};
+            const int n = s_diagPresentLog.fetch_add(1, std::memory_order_relaxed);
+            if (n < 200 || (n % 50) == 0) {
+                HookLogImportant("DX12 DIAG: DetourPresent TOTAL SLOW %.1fms (tid=0x%04X)", diagPresentMs,
+                                 GetCurrentThreadId());
+            }
+        }
+    });
+
     // CRITICAL: Recursion guard using thread-local depth counter.
     // When using vtable hooking with Steam overlay, Steam's trampoline can call
     // back into DetourPresent via early-return paths (wrapped swapchain, shutdown, etc.)
@@ -2597,7 +2620,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
 
         if (!steamOnlyTest && api == APIType::D3D12) {
+            // DIAGNOSTIC: time CE's overlay submission (ProcessFrame). If this is the multi-second
+            // phase, CE's overlay GPU record/submit path is the stall; if it's fast and the real
+            // Present (below) is slow, the swapchain flip blocked on the hung GPU.
+            LARGE_INTEGER diagPfT0, diagPfT1, diagPfFreq;
+            QueryPerformanceCounter(&diagPfT0);
             HandleDX12ProcessFrame(pSwapChain, true);
+            QueryPerformanceCounter(&diagPfT1);
+            QueryPerformanceFrequency(&diagPfFreq);
+            const double diagPfMs =
+                (double)(diagPfT1.QuadPart - diagPfT0.QuadPart) * 1000.0 / (double)diagPfFreq.QuadPart;
+            if (diagPfMs >= 5.0) {
+                static std::atomic<int> s_diagPfLog{0};
+                const int n = s_diagPfLog.fetch_add(1, std::memory_order_relaxed);
+                if (n < 200 || (n % 50) == 0) {
+                    HookLogImportant("DX12 DIAG: ProcessFrame (overlay) SLOW %.1fms (tid=0x%04X)", diagPfMs,
+                                     GetCurrentThreadId());
+                }
+            }
         } else if (!steamOnlyTest && DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(api)) {
             if (api == APIType::D3D10) {
                 static std::atomic<int> s_d3d10ProcessFrameLogCount{0};
@@ -2627,7 +2667,25 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // submitted during ProcessFrame (non-deferred), so the fence signals
     // completion before the buffer flips.
     if (api == APIType::D3D12) {
+        // DIAGNOSTIC: time the overlay-completion wait (one half of the present-thread cost; the
+        // other is the real Present call timed below). Compare 32-bit vs 64-bit; a multi-second
+        // wait here means CE's overlay GPU work hung, vs a slow real Present means the swapchain
+        // flip blocked on the hung GPU.
+        LARGE_INTEGER diagWaitT0, diagWaitT1, diagWaitFreq;
+        QueryPerformanceCounter(&diagWaitT0);
         InvokeDX12WaitForOverlayCompletion(nullptr);
+        QueryPerformanceCounter(&diagWaitT1);
+        QueryPerformanceFrequency(&diagWaitFreq);
+        const double diagWaitMs =
+            (double)(diagWaitT1.QuadPart - diagWaitT0.QuadPart) * 1000.0 / (double)diagWaitFreq.QuadPart;
+        if (diagWaitMs >= 5.0) {
+            static std::atomic<int> s_diagWaitLog{0};
+            const int n = s_diagWaitLog.fetch_add(1, std::memory_order_relaxed);
+            if (n < 200 || (n % 50) == 0) {
+                HookLogImportant("DX12 DIAG: overlay-completion wait SLOW %.1fms (tid=0x%04X)", diagWaitMs,
+                                 GetCurrentThreadId());
+            }
+        }
     }
 
     // CRITICAL: SL startup guard.  During SL DllMain / startup and subsequent
