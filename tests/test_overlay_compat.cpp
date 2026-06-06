@@ -171,4 +171,19 @@ TEST_F(OverlayModuleDetectionTest, IsThirdPartyOverlayLoadedTracksOverlaySubset)
     EXPECT_FALSE(IsThirdPartyOverlayLoaded());
 }
 
+// sl.interposer is tracked for a loader-free SL-loaded check (replaces a per-Present
+// GetModuleHandleA), but it is NOT an overlay/startup-blocking module.
+TEST_F(OverlayModuleDetectionTest, StreamlineInterposerTrackedButNotOverlay) {
+    EXPECT_FALSE(IsStreamlineInterposerModuleLoaded());
+
+    NoteModuleLoadedForOverlayCache("sl.interposer.dll");
+    EXPECT_TRUE(IsStreamlineInterposerModuleLoaded());
+    EXPECT_EQ(GetLoadedThirdPartyOverlayModuleName(), nullptr);
+    EXPECT_FALSE(IsThirdPartyOverlayLoaded());
+    EXPECT_EQ(GetStartupBlockingOverlayModuleName(), nullptr);
+
+    NoteModuleUnloadedForOverlayCache("sl.interposer.dll");
+    EXPECT_FALSE(IsStreamlineInterposerModuleLoaded());
+}
+
 }  // namespace

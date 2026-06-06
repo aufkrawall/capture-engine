@@ -445,6 +445,10 @@ inline constexpr TrackedOverlayModule kTrackedOverlayModules[] = {
     {"nvoverlay.dll", true, false, false},
     {"RTSSHooks64.dll", true, false, false},
     {"RTSSHooks.dll", true, false, false},
+    // Streamline interposer — NOT an overlay (no subset). Tracked only so SL-loaded checks on
+    // the Present hot path can be answered from the cache instead of a per-Present
+    // GetModuleHandleA("sl.interposer.dll") that stalls in the loader during the mode switch.
+    {"sl.interposer.dll", false, false, false},
 };
 inline constexpr size_t kTrackedOverlayModuleCount =
     sizeof(kTrackedOverlayModules) / sizeof(kTrackedOverlayModules[0]);
@@ -573,6 +577,23 @@ inline const char* GetStartupBlockingOverlayModuleName() {
 // Loader-free (cached). Startup-blocking RENDER modules (Social Club D3D12 renderer / EOS).
 inline const char* GetStartupBlockingOverlayRenderModuleName() {
     return FirstLoadedTrackedOverlayModule(TrackedOverlaySubset::kStartupBlockingRender);
+}
+
+// Loader-free (cached): is a specific tracked module currently loaded? Lazy-seeds once.
+inline bool IsTrackedModuleLoaded(const char* name) {
+    EnsureThirdPartyOverlayModuleCacheSeeded();
+    const int idx = MatchKnownThirdPartyOverlayModuleIndex(name);
+    if (idx < 0) {
+        return false;
+    }
+    return (TrackedOverlayLoadedBits().load(std::memory_order_acquire) & (1u << idx)) != 0;
+}
+
+// Loader-free (cached) Streamline-interposer presence check. Replaces per-Present
+// GetModuleHandleA("sl.interposer.dll"), which stalls in the loader during the Alt+Tab
+// mode-switch DLL churn.
+inline bool IsStreamlineInterposerModuleLoaded() {
+    return IsTrackedModuleLoaded("sl.interposer.dll");
 }
 
 inline bool ShouldPreemptivelyDelayDX12OverlayInitForProcess(const char* processName) {

@@ -914,7 +914,7 @@ static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, co
     }
     const bool steamBypassShouldOwnPath = ShouldForceSteamDX12BypassForState(
         bypassAvailable, IsSteamOverlayModule(overlayModule), true, false, false,
-        GetModuleHandleA("sl.interposer.dll") != nullptr, g_FGCompat.GetRuntimeMode(),
+        ce::overlay_compat::IsStreamlineInterposerModuleLoaded(), g_FGCompat.GetRuntimeMode(),
         g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.IsNvPresentLoaded());
     const bool bypassReady = EnsurePresentBypassTrampoline() != nullptr;
     if (!DXGIShared::ShouldAllowDX12StartupPresentPassForState(overlayModule != nullptr, oPresentTrampoline != nullptr,
@@ -1444,7 +1444,7 @@ static bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapCha
             "(hook=%p bypass=%p slLoaded=%d streamlineFG=%d streamlineStack=%d pluginGuard=%d "
             "steamNullGuard=%d steamCallbackReadable=%d steamCallback=%p tid=0x%04X)",
             invokeNum, reason ? reason : "Present", (void*)externalPresent, (void*)presentBypass,
-            GetModuleHandleA("sl.interposer.dll") ? 1 : 0, streamlineFGRunning ? 1 : 0,
+            ce::overlay_compat::IsStreamlineInterposerModuleLoaded() ? 1 : 0, streamlineFGRunning ? 1 : 0,
             streamlineStackActive ? 1 : 0, streamlinePluginLookupGuardReady ? 1 : 0,
             steamNullCallbackRecoveryReady ? 1 : 0, steamCallbackReadable ? 1 : 0, steamCallbackBefore,
             GetCurrentThreadId());
@@ -1518,11 +1518,20 @@ static bool IsSLInterposerLoaded();
 static std::atomic<bool> s_slRoutingActive{false};
 
 static bool IsSLInterposerLoaded() {
-    static bool detected = false;
-    if (detected)
+    // Latch once SL is seen (SL routing decisions assume SL stays present for the session).
+    // The presence check is LOADER-FREE (cached loaded-set maintained by the seed + DLL
+    // load/unload notifications); the old per-call GetModuleHandleA("sl.interposer.dll") was a
+    // per-Present loader walk that stalled the present thread during the Alt+Tab mode-switch
+    // DLL churn. SL loads via LoadLibrary/LdrLoadDll, which feed the cache, so detection timing
+    // is equivalent.
+    static std::atomic<bool> detected{false};
+    if (detected.load(std::memory_order_acquire))
         return true;
-    detected = (GetModuleHandleA("sl.interposer.dll") != nullptr);
-    return detected;
+    if (ce::overlay_compat::IsStreamlineInterposerModuleLoaded()) {
+        detected.store(true, std::memory_order_release);
+        return true;
+    }
+    return false;
 }
 
 static bool ShouldKeepSLPresentRoutingDisabledNow(ce::fg_runtime::RuntimeMode* runtimeModeOut = nullptr,
