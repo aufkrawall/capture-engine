@@ -1388,7 +1388,7 @@ inline bool ShouldWaitForOverlayUploadSlot(uint64_t slotGuardFenceValue, uint64_
 // tears down the independent-flip surfaces). A merely-unfocused but STILL-VISIBLE
 // window (e.g. a borderless background window, or a window on another monitor)
 // keeps presenting S_OK and MUST keep rendering the overlay directly to the
-// backbuffer — that is the behavior RTSS provides and what the user expects.
+// backbuffer — that is the behavior a proper inject overlay provides and what the user expects.
 // Focus is NOT an input here: losing focus never hides the overlay.
 inline bool ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
     bool isWrappedD3D12Present, bool isFullscreen, bool isOccluded, bool isIconic, bool hasZeroSize,
@@ -1418,7 +1418,7 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(bool 
 // swapchain backbuffer AT ALL (no draw, no copy) — this matches v7, which never
 // hung. Unlike v7, the hold is armed only by the focus-change EDGE and clears after
 // the mode switch settles, so steady states (focused AND unfocused-but-visible)
-// render directly, exactly like RTSS, and the overlay is only briefly absent during
+// render directly, exactly like a lightweight inject overlay, and the overlay is only briefly absent during
 // the actual mode switch (when the screen is transitioning anyway). FG /
 // runtime-owned / dedicated-queue / Steam-deferred routes manage their own
 // submission and are excluded. `transitionHoldFramesRemaining` is the edge-armed

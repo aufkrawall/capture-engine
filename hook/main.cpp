@@ -2895,7 +2895,7 @@ void CheckAndInstallHooks() {
 
     // Install D3DKMT hooks for VRAM override (universal solution)
     // This hooks kernel-mode driver calls that games use to query VRAM
-    // independently of DXGI (used by SpecialK and RTSS)
+    // independently of DXGI (a common VRAM-reporting override technique)
     static bool s_D3DKMTHooksInstalled = false;
     if (!s_D3DKMTHooksInstalled) {
       if (D3DKMTHooks::Install()) {

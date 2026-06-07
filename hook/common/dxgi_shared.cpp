@@ -2319,7 +2319,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
         // Post-SL overlay rendering: when SL FG is active, the overlay is
         // rendered HERE (after SL's FG interpolation), not in ProcessFrame
-        // (which runs before SL).  This matches RTSS's approach — overlay
+        // (which runs before SL).  This matches the standard inject-overlay approach — overlay
         // appears on both real and interpolated frames without interfering
         // with SL's FG pipeline.
         auto postSLCallback =

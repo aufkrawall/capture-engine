@@ -2,8 +2,7 @@
  * D3DKMT (Display Driver Kernel Mode) Hook Implementation
  *
  * This hooks the kernel-mode driver interface that games use to query VRAM
- * independently of DXGI. This is the universal solution used by SpecialK and
- * RTSS.
+ * independently of DXGI. This is a universal VRAM-reporting override technique.
  */
 
 #include <windows.h>

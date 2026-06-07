@@ -293,7 +293,7 @@ TEST(DXGISharedTest, D3D12NonPresentableSwapchainHoldsBackbufferWork) {
 
 // Regression for the v7 focus-based hide: an unfocused-but-VISIBLE window (Present
 // returns S_OK, not occluded; not minimized; non-zero size) must NOT hold
-// backbuffer work, so the overlay keeps rendering exactly like RTSS. Under the old
+// backbuffer work, so the overlay keeps rendering exactly like a proper inject overlay. Under the old
 // focus-gated policy this returned true (hold == overlay hidden).
 TEST(DXGISharedTest, D3D12UnfocusedButVisibleSwapchainKeepsOverlayVisible) {
     const bool hold = ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(

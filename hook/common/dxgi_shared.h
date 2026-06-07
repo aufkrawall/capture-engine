@@ -13,7 +13,7 @@ class PerformanceMetrics;
 
 // Post-SL overlay rendering callback.  Invoked during re-entrant Present
 // (after Streamline's FG pipeline finishes) so the overlay renders AFTER FG
-// interpolation — matching RTSS's approach for FG compatibility.
+// interpolation — matching the standard inject-overlay approach for FG compatibility.
 using PostSLOverlayRenderFn = void (*)(IDXGISwapChain* pSwapChain);
 using PostSLStartupActivationServiceFn = bool (*)(const char* source, bool clearStartupWindow);
 

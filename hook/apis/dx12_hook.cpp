@@ -97,6 +97,23 @@ typedef HRESULT(WINAPI* PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)(const D3D1
 ExecuteCommandListsPtr oExecuteCommandLists = nullptr;
 CreateSamplerPtr oCreateSampler = nullptr;
 CreateCommittedResourcePtr oCreateCommittedResource = nullptr;
+// --- DX12 API call trace diagnostic (gated by Dx12TraceEnabled; off by default) ---
+typedef HRESULT(STDMETHODCALLTYPE* CreateCommandQueuePtr)(ID3D12Device*, const D3D12_COMMAND_QUEUE_DESC*, REFIID,
+                                                          void**);
+typedef HRESULT(STDMETHODCALLTYPE* CreateDescriptorHeapPtr)(ID3D12Device*, const D3D12_DESCRIPTOR_HEAP_DESC*, REFIID,
+                                                            void**);
+typedef HRESULT(STDMETHODCALLTYPE* CommandQueueSignalPtr)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
+CreateCommandQueuePtr oTraceCreateCommandQueue = nullptr;
+CreateDescriptorHeapPtr oTraceCreateDescriptorHeap = nullptr;
+CommandQueueSignalPtr oTraceCommandQueueSignal = nullptr;
+HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+                                                        const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES,
+                                                        const D3D12_CLEAR_VALUE*, REFIID, void**);
+HRESULT STDMETHODCALLTYPE DetourTraceCreateCommandQueue(ID3D12Device*, const D3D12_COMMAND_QUEUE_DESC*, REFIID, void**);
+HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device*, const D3D12_DESCRIPTOR_HEAP_DESC*, REFIID,
+                                                          void**);
+HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
+// --- end DX12 API call trace diagnostic ---
 PFN_D3D12_SERIALIZE_ROOT_SIGNATURE oSerializeRootSignature = nullptr;
 PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE oSerializeVersionedRootSignature = nullptr;
 static std::recursive_mutex g_ExecuteCommandListsHookStateMutex;
@@ -2418,6 +2435,99 @@ static bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modul
     return true;
 }
 
+// ===================== DX12 API call trace diagnostic =====================
+// Gated by env CE_DX12_TRACE=1 or a flag file "ce_dx12_trace" next to the hook DLL. When enabled, logs
+// caller-attributed D3D12 device/queue calls (CreateCommandQueue / CreateCommittedResource /
+// CreateDescriptorHeap / CreateSwapChain[ForHwnd] / ExecuteCommandLists / Signal) so the overlay's --
+// and any co-resident injected module's -- interaction with the app's D3D12 device can be inspected
+// (queue usage, resource/descriptor footprint, per-frame submission/fence pattern). This is a
+// diagnostic aid for focus/mode-switch and overlay-coexistence investigations. Zero impact when
+// disabled: the extra vtable hooks are not installed and no logging runs.
+static bool Dx12TraceEnabled() {
+    static const bool s_enabled = []() -> bool {
+        char buf[16] = {};
+        DWORD n = GetEnvironmentVariableA("CE_DX12_TRACE", buf, sizeof(buf));
+        if (n > 0 && n < sizeof(buf)) {
+            if (buf[0] == '1' || _stricmp(buf, "on") == 0 || _stricmp(buf, "true") == 0 ||
+                _stricmp(buf, "yes") == 0) {
+                return true;
+            }
+        }
+        HMODULE self = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(&Dx12TraceEnabled), &self) &&
+            self) {
+            char path[MAX_PATH] = {};
+            DWORD len = GetModuleFileNameA(self, path, MAX_PATH);
+            if (len > 0 && len < MAX_PATH) {
+                for (DWORD i = len; i > 0; --i) {
+                    if (path[i - 1] == '\\' || path[i - 1] == '/') {
+                        path[i] = '\0';
+                        break;
+                    }
+                }
+                char flagPath[MAX_PATH] = {};
+                _snprintf_s(flagPath, sizeof(flagPath), _TRUNCATE, "%sce_dx12_trace", path);
+                HANDLE h = CreateFileA(flagPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (h != INVALID_HANDLE_VALUE) {
+                    CloseHandle(h);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }();
+    return s_enabled;
+}
+
+static bool Dx12TraceIsInfraModule(const char* base) {
+    return _stricmp(base, "capture_hook_x86.dll") == 0 || _stricmp(base, "capture_hook_x64.dll") == 0 ||
+           _stricmp(base, "d3d12.dll") == 0 || _stricmp(base, "d3d12core.dll") == 0 ||
+           _stricmp(base, "dxgi.dll") == 0 || _strnicmp(base, "nvwgf2um", 8) == 0 ||
+           _stricmp(base, "kernelbase.dll") == 0 || _stricmp(base, "kernel32.dll") == 0 ||
+           _stricmp(base, "ntdll.dll") == 0 || _stricmp(base, "win32u.dll") == 0;
+}
+
+// Capture the call stack, identify the originating module (first non-infra frame), and log a compact
+// module trail. The trail + the queue/resource pointers in `details` are the ground truth for analysis
+// (e.g. correlate ExecuteCommandLists/Signal queue pointers with the queue a given module created).
+static void Dx12TraceLog(const char* api, const char* details) {
+    constexpr USHORT kMaxFrames = 24;
+    void* frames[kMaxFrames] = {};
+    const USHORT frameCount = CaptureStackBackTrace(1, kMaxFrames, frames, nullptr);
+    char originator[64] = "?";
+    bool foundOriginator = false;
+    char trail[256] = {};
+    size_t trailLen = 0;
+    char lastBase[64] = {};
+    for (USHORT i = 0; i < frameCount; ++i) {
+        char modPath[MAX_PATH] = {};
+        if (!TryGetModulePathFromCodeAddress(frames[i], modPath, sizeof(modPath))) {
+            continue;  // trampoline / non-module code region
+        }
+        const char* slash = strrchr(modPath, '\\');
+        const char* base = slash ? slash + 1 : modPath;
+        if (!foundOriginator && !Dx12TraceIsInfraModule(base)) {
+            _snprintf_s(originator, sizeof(originator), _TRUNCATE, "%s", base);
+            foundOriginator = true;
+        }
+        if (_stricmp(base, lastBase) != 0) {  // collapse consecutive duplicate frames
+            int w = _snprintf_s(trail + trailLen, sizeof(trail) - trailLen, _TRUNCATE, "%s%s", trailLen ? ">" : "",
+                                base);
+            if (w > 0) {
+                trailLen += static_cast<size_t>(w);
+            }
+            _snprintf_s(lastBase, sizeof(lastBase), _TRUNCATE, "%s", base);
+        }
+        if (trailLen + 16 >= sizeof(trail)) {
+            break;
+        }
+    }
+    HookLogImportant("DX12 TRACE: %s orig=%s | %s | trail=%s", api, originator, details ? details : "", trail);
+}
+// ===================== end DX12 API call trace diagnostic =====================
+
 static bool IsCurrentECLCallerFromThirdPartyOverlay(char* modulePathOut = nullptr, size_t modulePathOutCount = 0) {
     if (modulePathOut && modulePathOutCount > 0) {
         modulePathOut[0] = '\0';
@@ -3218,7 +3328,7 @@ static std::atomic<bool> g_HaveD3D12PresentResultSignal{false};
 // edge (composited->iflip). So CE holds ALL backbuffer overlay/capture work for a
 // short window after EACH foreground-change edge (both directions), then resumes.
 // Steady states — focused AND unfocused-but-visible — render directly, exactly
-// like RTSS, so the overlay is only briefly absent during the actual mode switch
+// like a lightweight inject overlay, so the overlay is only briefly absent during the actual mode switch
 // (when the screen is transitioning anyway), never during steady visible use.
 // Counter is set on the edge by DX12_NoteWrappedD3D12PresentResult and decremented
 // per wrapped Present.
@@ -9300,7 +9410,7 @@ static void ApplyPrerenderLimitDX12(float limit) {
 //   3. Re-entrant DetourPresent → g_PostSLOverlayRenderCallback → THIS function
 //   4. We render overlay on the current backbuffer → bypass trampoline → real DXGI Present
 //
-// This matches RTSS's strategy: overlay is drawn after FG, before the real Present.
+// This matches the standard inject-overlay strategy: overlay is drawn after FG, before the real Present.
 //
 // KEY DESIGN DECISIONS (confirmed by diagnostics):
 //
@@ -13966,7 +14076,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     // occurred (DXGI tearing down the iflip surfaces). A merely-unfocused but
     // still-visible window (borderless background window, or a window on another
     // monitor) keeps presenting S_OK and MUST keep showing the overlay — that is
-    // the behavior RTSS provides and what the user expects. Focus is no longer a
+    // the behavior a proper inject overlay provides and what the user expects. Focus is no longer a
     // reason to hide the overlay.
     const bool swapchainOccluded = g_SwapchainPresentOccluded.load(std::memory_order_acquire);
     // The first predicate arg means "we have a reliable present-result occlusion signal",
@@ -13996,7 +14106,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     // removal on init (black screen, logs/20260603_155107). The Alt+Tab mode-switch
     // freeze (CE's overlay DRAW pure-hangs touching the backbuffer mid-switch, while
     // the bare app's input-less ClearRTV survives) is STILL UNRESOLVED and needs
-    // ground truth on RTSS's technique (D3D12 debug layer / PIX). focusTransitionActive
+    // ground truth on a robust inject overlay's technique (D3D12 debug layer / PIX). focusTransitionActive
     // is telemetry only — it marks the mode-switch window and widens the DRED dump
     // window; it does NOT gate the overlay.
     const int focusTransitionHoldRemaining = g_FocusTransitionHoldFrames.load(std::memory_order_acquire);
@@ -15183,7 +15293,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // backbuffer at all; that hold lives in the focus-transition hold computed
         // up in the hold block (see g_FocusTransitionHoldFrames). Steady states
         // (focused AND unfocused-but-visible) keep the fast direct draw, which is
-        // what RTSS does and does not hang. The post-FSR offscreen path
+        // what a lightweight inject overlay does and does not hang. The post-FSR offscreen path
         // (g_NeedOffscreenOverlayAfterPostFSRNonFG) is unrelated and stays intact.
         const bool focusLossOffscreenComposite = false;
         {
@@ -17633,6 +17743,17 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         return;
     }
 
+    if (Dx12TraceEnabled()) {
+        static std::atomic<int> s_traceEclN{0};
+        const int sn = s_traceEclN.fetch_add(1, std::memory_order_relaxed);
+        if (sn < 80 || (sn % 300) == 0) {
+            char d[200];
+            _snprintf_s(d, sizeof(d), _TRUNCATE, "queue=%p numLists=%u list0=%p seq=%d", (void*)pThis, NumCommandLists,
+                        (NumCommandLists && ppCommandLists) ? (void*)ppCommandLists[0] : nullptr, sn);
+            Dx12TraceLog("ExecuteCommandLists", d);
+        }
+    }
+
     // ===================== DIAGNOSTIC: ExecuteCommandLists timing =====================
     // Times the WHOLE ExecuteCommandLists call (including the real forward, where the NV
     // driver's command-buffer allocation D3D12Core CDevice::AllocateCB ->
@@ -18380,6 +18501,19 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
             g_ExecuteCommandListsOriginalByVTable[vtbl] = oExecuteCommandLists;
         }
     }
+
+    // DX12 trace: hook CommandQueue::Signal (slot 14) to observe per-frame fence usage. The queue
+    // vtable is shared by all queues from the device, so this also catches any co-resident module's
+    // own queue. Only installed when tracing is enabled (Dx12TraceEnabled).
+    if (Dx12TraceEnabled() && vtbl[14] && vtbl[14] != (void*)DetourTraceCommandQueueSignal) {
+        CommandQueueSignalPtr origSignal = nullptr;
+        if (VTableHook::Create(&vtbl[14], (LPVOID)DetourTraceCommandQueueSignal, (LPVOID*)&origSignal) ==
+                VTableHook::Success &&
+            origSignal && !oTraceCommandQueueSignal) {
+            oTraceCommandQueueSignal = origSignal;
+        }
+        HookLogImportant("DX12 TRACE: hooked CommandQueue::Signal for queue %p (vtbl=%p)", (void*)queue, (void*)vtbl);
+    }
 }
 
 // Hook device vtable for CreateSampler interception
@@ -18451,6 +18585,39 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
         HookLog("DX12: Hooking CreateSampler vtable for device %p", device);
         VTableHook::Create(&vtbl[22], (LPVOID)DetourCreateSampler, (LPVOID*)&oCreateSampler);
     }
+
+    // DX12 trace: hook device creation calls to inspect queue/resource architecture (own command
+    // queue? what resources/heaps?). CreateCommandQueue=8, CreateDescriptorHeap=14,
+    // CreateCommittedResource=27. Only installed when tracing is enabled (Dx12TraceEnabled).
+    if (Dx12TraceEnabled()) {
+        if (vtbl[8] && vtbl[8] != (void*)DetourTraceCreateCommandQueue) {
+            CreateCommandQueuePtr o = nullptr;
+            if (VTableHook::Create(&vtbl[8], (LPVOID)DetourTraceCreateCommandQueue, (LPVOID*)&o) ==
+                    VTableHook::Success &&
+                o && !oTraceCreateCommandQueue) {
+                oTraceCreateCommandQueue = o;
+            }
+            HookLogImportant("DX12 TRACE: hooked CreateCommandQueue for device %p", (void*)device);
+        }
+        if (vtbl[14] && vtbl[14] != (void*)DetourTraceCreateDescriptorHeap) {
+            CreateDescriptorHeapPtr o = nullptr;
+            if (VTableHook::Create(&vtbl[14], (LPVOID)DetourTraceCreateDescriptorHeap, (LPVOID*)&o) ==
+                    VTableHook::Success &&
+                o && !oTraceCreateDescriptorHeap) {
+                oTraceCreateDescriptorHeap = o;
+            }
+            HookLogImportant("DX12 TRACE: hooked CreateDescriptorHeap for device %p", (void*)device);
+        }
+        if (vtbl[27] && vtbl[27] != (void*)DetourCreateCommittedResource) {
+            CreateCommittedResourcePtr o = nullptr;
+            if (VTableHook::Create(&vtbl[27], (LPVOID)DetourCreateCommittedResource, (LPVOID*)&o) ==
+                    VTableHook::Success &&
+                o && !oCreateCommittedResource) {
+                oCreateCommittedResource = o;
+            }
+            HookLogImportant("DX12 TRACE: hooked CreateCommittedResource for device %p", (void*)device);
+        }
+    }
 }
 
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
@@ -18467,6 +18634,17 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pThis, IUnknown* p
     }
 
     HRESULT hr = oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain);
+    if (Dx12TraceEnabled()) {
+        char d[224];
+        _snprintf_s(d, sizeof(d), _TRUNCATE,
+                    "dev=%p w=%u h=%u fmt=%d count=%u effect=%d flags=0x%X windowed=%d -> sc=%p hr=0x%08X",
+                    (void*)pDevice, pDesc ? pDesc->BufferDesc.Width : 0, pDesc ? pDesc->BufferDesc.Height : 0,
+                    pDesc ? (int)pDesc->BufferDesc.Format : -1, pDesc ? pDesc->BufferCount : 0,
+                    pDesc ? (int)pDesc->SwapEffect : -1, pDesc ? (unsigned)pDesc->Flags : 0u,
+                    pDesc ? (int)pDesc->Windowed : -1, (SUCCEEDED(hr) && ppSwapChain) ? (void*)*ppSwapChain : nullptr,
+                    (unsigned)hr);
+        Dx12TraceLog("CreateSwapChain", d);
+    }
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         IDXGISwapChain3* sc3 = nullptr;
         if (SUCCEEDED((*ppSwapChain)->QueryInterface(IID_PPV_ARGS(&sc3)))) {
@@ -18494,6 +18672,16 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUn
     }
 
     HRESULT hr = oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    if (Dx12TraceEnabled()) {
+        char d[224];
+        _snprintf_s(d, sizeof(d), _TRUNCATE,
+                    "dev=%p hwnd=%p w=%u h=%u fmt=%d count=%u effect=%d flags=0x%X -> sc=%p hr=0x%08X", (void*)pDevice,
+                    (void*)hWnd, pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0, pDesc ? (int)pDesc->Format : -1,
+                    pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1,
+                    pDesc ? (unsigned)pDesc->Flags : 0u, (SUCCEEDED(hr) && ppSC) ? (void*)*ppSC : nullptr,
+                    (unsigned)hr);
+        Dx12TraceLog("CreateSwapChainForHwnd", d);
+    }
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
         IDXGISwapChain3* sc3 = nullptr;
@@ -18621,10 +18809,78 @@ HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device,
                                                         D3D12_RESOURCE_STATES InitialResourceState,
                                                         const D3D12_CLEAR_VALUE* pOptimizedClearValue,
                                                         REFIID riidResource, void** ppvResource) {
-    if (oCreateCommittedResource)
-        return oCreateCommittedResource(device, pHeapProperties, HeapFlags, pDesc, InitialResourceState,
-                                        pOptimizedClearValue, riidResource, ppvResource);
-    return E_FAIL;
+    HRESULT hr = oCreateCommittedResource
+                     ? oCreateCommittedResource(device, pHeapProperties, HeapFlags, pDesc, InitialResourceState,
+                                                pOptimizedClearValue, riidResource, ppvResource)
+                     : E_FAIL;
+    if (Dx12TraceEnabled()) {
+        static std::atomic<int> s_n{0};
+        const int sn = s_n.fetch_add(1, std::memory_order_relaxed);
+        if (sn < 300 || (sn % 200) == 0) {
+            char d[256];
+            _snprintf_s(d, sizeof(d), _TRUNCATE,
+                        "heapType=%d dim=%d w=%llu h=%u fmt=%d resFlags=0x%X state=0x%X -> res=%p hr=0x%08X seq=%d",
+                        pHeapProperties ? (int)pHeapProperties->Type : -1, pDesc ? (int)pDesc->Dimension : -1,
+                        pDesc ? (unsigned long long)pDesc->Width : 0ull, pDesc ? pDesc->Height : 0,
+                        pDesc ? (int)pDesc->Format : -1, pDesc ? (unsigned)pDesc->Flags : 0u,
+                        (unsigned)InitialResourceState, (SUCCEEDED(hr) && ppvResource) ? *ppvResource : nullptr,
+                        (unsigned)hr, sn);
+            Dx12TraceLog("CreateCommittedResource", d);
+        }
+    }
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourTraceCreateCommandQueue(ID3D12Device* device, const D3D12_COMMAND_QUEUE_DESC* pDesc,
+                                                      REFIID riid, void** ppQueue) {
+    HRESULT hr = oTraceCreateCommandQueue ? oTraceCreateCommandQueue(device, pDesc, riid, ppQueue) : E_FAIL;
+    if (Dx12TraceEnabled()) {
+        static std::atomic<int> s_n{0};
+        const int sn = s_n.fetch_add(1, std::memory_order_relaxed);
+        if (sn < 200) {
+            char d[256];
+            _snprintf_s(d, sizeof(d), _TRUNCATE,
+                        "type=%d prio=%d flags=0x%X node=%u dev=%p -> queue=%p hr=0x%08X seq=%d",
+                        pDesc ? (int)pDesc->Type : -1, pDesc ? (int)pDesc->Priority : 0,
+                        pDesc ? (unsigned)pDesc->Flags : 0u, pDesc ? pDesc->NodeMask : 0u, (void*)device,
+                        (SUCCEEDED(hr) && ppQueue) ? *ppQueue : nullptr, (unsigned)hr, sn);
+            Dx12TraceLog("CreateCommandQueue", d);
+        }
+    }
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device* device, const D3D12_DESCRIPTOR_HEAP_DESC* pDesc,
+                                                        REFIID riid, void** ppHeap) {
+    HRESULT hr = oTraceCreateDescriptorHeap ? oTraceCreateDescriptorHeap(device, pDesc, riid, ppHeap) : E_FAIL;
+    if (Dx12TraceEnabled()) {
+        static std::atomic<int> s_n{0};
+        const int sn = s_n.fetch_add(1, std::memory_order_relaxed);
+        if (sn < 200) {
+            char d[256];
+            _snprintf_s(d, sizeof(d), _TRUNCATE, "type=%d num=%u flags=0x%X node=%u -> heap=%p hr=0x%08X seq=%d",
+                        pDesc ? (int)pDesc->Type : -1, pDesc ? pDesc->NumDescriptors : 0u,
+                        pDesc ? (unsigned)pDesc->Flags : 0u, pDesc ? pDesc->NodeMask : 0u,
+                        (SUCCEEDED(hr) && ppHeap) ? *ppHeap : nullptr, (unsigned)hr, sn);
+            Dx12TraceLog("CreateDescriptorHeap", d);
+        }
+    }
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value) {
+    HRESULT hr = oTraceCommandQueueSignal ? oTraceCommandQueueSignal(queue, fence, value) : E_FAIL;
+    if (Dx12TraceEnabled()) {
+        static std::atomic<int> s_n{0};
+        const int sn = s_n.fetch_add(1, std::memory_order_relaxed);
+        if (sn < 80 || (sn % 300) == 0) {
+            char d[160];
+            _snprintf_s(d, sizeof(d), _TRUNCATE, "queue=%p fence=%p value=%llu hr=0x%08X seq=%d", (void*)queue,
+                        (void*)fence, (unsigned long long)value, (unsigned)hr, sn);
+            Dx12TraceLog("Signal", d);
+        }
+    }
+    return hr;
 }
 
 void DX12Hook::Shutdown() {

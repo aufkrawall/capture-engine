@@ -54,7 +54,7 @@ public:
     // State management
     void SetRecording(bool isRecording);
 
-    // Frame Generation metrics (for displaying base vs output FPS like RTSS)
+    // Frame Generation metrics (for displaying base vs output FPS)
     // fgType: 0=None, 1=DLSS_FG, 2=FSR_FG, 3=NVIDIA_SM
     void SetFGMetrics(float outputFPS, float baseFPS, int multiplier, int fgType = 0);
     float GetFGOutputFPS() const {

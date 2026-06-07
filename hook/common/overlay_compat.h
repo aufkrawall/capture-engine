@@ -401,7 +401,7 @@ inline bool IsThirdPartyOverlayLoaded() {
 // only cached the result behind a generation counter that was bumped on *every* DLL load. On
 // the Alt+Tab iflip<->composited mode switch the system reloads d3d11.dll (+deps) repeatedly,
 // invalidating that cache each time and forcing the next Present to re-walk the loader. For a
-// NOT-loaded name (socialclub.dll, discord_hook*, RTSSHooks*, ...) GetModuleHandleA takes the
+// NOT-loaded name (socialclub.dll, discord_hook*, ...) GetModuleHandleA takes the
 // expensive LdrGetDllHandleEx + ApiSet-resolution + module-DB-walk path; on x86/WoW64 that
 // stalled Present for >2 s and tripped the 2 s GPU TDR (DXGI_ERROR_DEVICE_HUNG), killing the
 // overlay. Native x64 ran the same walk in <=7 ms, so the freeze was x86-only. See the freeze
