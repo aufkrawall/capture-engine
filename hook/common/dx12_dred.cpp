@@ -26,6 +26,54 @@ namespace {
 
 std::atomic<bool> s_dumpedThisEpoch{false};
 
+// Read a flag file located next to the hook DLL into `out` (NUL-terminated, first whitespace-
+// delimited token only). Returns true if the file existed. The inject model makes env vars
+// awkward (the target is launched by something else), so a flag file the user just creates is
+// the robust toggle — same pattern as DebugLayerLevel()'s "ce_dx12_debug_layer".
+bool ReadHookDirFlagFile(const char* fileName, char* out, size_t outSize) {
+    if (out && outSize) {
+        out[0] = '\0';
+    }
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(&ReadHookDirFlagFile), &self) ||
+        !self) {
+        return false;
+    }
+    char path[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameA(self, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return false;
+    }
+    for (DWORD i = len; i > 0; --i) {
+        if (path[i - 1] == '\\' || path[i - 1] == '/') {
+            path[i] = '\0';
+            break;
+        }
+    }
+    char flagPath[MAX_PATH] = {};
+    _snprintf_s(flagPath, sizeof(flagPath), _TRUNCATE, "%s%s", path, fileName);
+    HANDLE h = CreateFileA(flagPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    char tmp[16] = {};
+    DWORD rd = 0;
+    ReadFile(h, tmp, sizeof(tmp) - 1, &rd, nullptr);
+    CloseHandle(h);
+    for (DWORD i = 0; i < rd && i < sizeof(tmp) - 1; ++i) {
+        if (tmp[i] == '\r' || tmp[i] == '\n' || tmp[i] == ' ' || tmp[i] == '\t') {
+            tmp[i] = '\0';
+            break;
+        }
+    }
+    if (out && outSize) {
+        strncpy_s(out, outSize, tmp, _TRUNCATE);
+    }
+    return true;
+}
+
 // Read CE_DX12_DRED once. Default OFF.
 //
 // DRED auto-breadcrumbs (SetAutoBreadcrumbsEnablement FORCED_ON) make the application's every
@@ -35,15 +83,43 @@ std::atomic<bool> s_dumpedThisEpoch{false};
 // switch that kernel allocation contends with the GPU/DWM reconfiguration and stalls the
 // present thread for seconds, tripping the 2 s GPU TDR (DEVICE_HUNG). The freeze dump in
 // logs/20260606_145929 caught exactly that: dx12_test!Render -> CGraphicsCommandList::Reset ->
-// Dred::AllocateBreadcrumbBuffer -> NtGdiDdDDIDestroyAllocation2, gap=2646ms. So the diagnostic
-// itself was causing the freeze it was meant to capture. DRED is now opt-in: set CE_DX12_DRED=1
-// only while actively diagnosing a device-removal. Freeze dumps still give the CPU-side
-// present-thread stack without DRED.
-bool ReadEnabledFromEnv() {
+// Dred::AllocateBreadcrumbBuffer -> NtGdiDdDDIDestroyAllocation2, gap=2646ms. So the full
+// (auto-breadcrumb) diagnostic itself was causing the freeze it was meant to capture, and it
+// likewise shifts timing enough to mask a timing-sensitive steady-state GPU hang.
+//
+// DRED is therefore opt-in with two levels (env CE_DX12_DRED, or a flag file "ce_dx12_dred"
+// next to the hook DLL for the inject model):
+//   page-fault-only ("pf"/"2", or an EMPTY flag file): arms ONLY page-fault output — no
+//     auto-breadcrumbs, no per-Reset kernel allocation. Low perturbation; still captures the
+//     faulting GPU VA + recently-freed/existing allocations on a DEVICE_HUNG. Use this for the
+//     uncapped steady-state repro.
+//   full ("1"/"on"/"true"/"yes"/"full"): auto-breadcrumbs + page-fault + context. Highest
+//     detail (names the exact hung op) but high perturbation — only for hangs the low-overhead
+//     mode reports as a "pure hang".
+ce::dx12_overlay_policy::DredArmMode ReadArmModeFromEnvAndFile() {
+    using Mode = ce::dx12_overlay_policy::DredArmMode;
     char buf[16] = {};
     DWORD n = GetEnvironmentVariableA("CE_DX12_DRED", buf, sizeof(buf));
     const bool isSet = (n != 0 && n < sizeof(buf));
-    return ce::dx12_overlay_policy::ShouldEnableDredFromEnv(isSet ? buf : nullptr, isSet);
+    Mode mode = ce::dx12_overlay_policy::DecideDredArmMode(isSet ? buf : nullptr, isSet);
+    if (mode != Mode::kOff) {
+        return mode;
+    }
+    // Flag-file fallback. An empty file selects page-fault-only (the low-perturbation default
+    // for diagnosis); otherwise the file contents pick the mode exactly like the env var.
+    char fileBuf[16] = {};
+    if (ReadHookDirFlagFile("ce_dx12_dred", fileBuf, sizeof(fileBuf))) {
+        if (fileBuf[0] == '\0') {
+            return Mode::kPageFaultOnly;
+        }
+        return ce::dx12_overlay_policy::DecideDredArmMode(fileBuf, true);
+    }
+    return Mode::kOff;
+}
+
+ce::dx12_overlay_policy::DredArmMode ArmMode() {
+    static const ce::dx12_overlay_policy::DredArmMode s_mode = ReadArmModeFromEnvAndFile();
+    return s_mode;
 }
 
 const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {
@@ -127,14 +203,17 @@ void LogAllocationNodes(const char* label, const D3D12_DRED_ALLOCATION_NODE1* he
 }  // namespace
 
 bool IsEnabled() {
-    static const bool s_enabled = ReadEnabledFromEnv();
-    return s_enabled;
+    return ArmMode() != ce::dx12_overlay_policy::DredArmMode::kOff;
 }
 
 CE_DRED_KEEP bool ArmBeforeDeviceCreation() {
-    if (!IsEnabled()) {
+    const ce::dx12_overlay_policy::DredArmMode mode = ArmMode();
+    if (mode == ce::dx12_overlay_policy::DredArmMode::kOff) {
         return false;
     }
+    // Full mode adds auto-breadcrumbs (per-Reset kernel GPU allocation, high perturbation);
+    // page-fault-only mode arms ONLY page-fault output (no auto-breadcrumbs, low perturbation).
+    const bool fullMode = (mode == ce::dx12_overlay_policy::DredArmMode::kFull);
 
     HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
     if (!d3d12) {
@@ -155,9 +234,11 @@ CE_DRED_KEEP bool ArmBeforeDeviceCreation() {
     ID3D12DeviceRemovedExtendedDataSettings1* dred1 = nullptr;
     HRESULT hr = pGetDebugInterface(__uuidof(ID3D12DeviceRemovedExtendedDataSettings1), (void**)&dred1);
     if (SUCCEEDED(hr) && dred1) {
-        dred1->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        if (fullMode) {
+            dred1->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dred1->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        }
         dred1->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-        dred1->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         dred1->Release();
     } else {
         ID3D12DeviceRemovedExtendedDataSettings* dred = nullptr;
@@ -170,7 +251,9 @@ CE_DRED_KEEP bool ArmBeforeDeviceCreation() {
             }
             return false;
         }
-        dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        if (fullMode) {
+            dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        }
         dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         dred->Release();
     }
@@ -178,8 +261,9 @@ CE_DRED_KEEP bool ArmBeforeDeviceCreation() {
     static std::atomic<bool> s_armedLog{false};
     if (!s_armedLog.exchange(true)) {
         HookLogImportant(
-            "DX12 DRED: armed auto-breadcrumbs + page-fault (forced on) before device creation (context1=%d)",
-            dred1 ? 1 : 0);
+            "DX12 DRED: armed %s (forced on) before device creation (mode=%s context1=%d)",
+            fullMode ? "auto-breadcrumbs + page-fault" : "page-fault only",
+            fullMode ? "full" : "page-fault-only", dred1 ? 1 : 0);
     }
     return true;
 }

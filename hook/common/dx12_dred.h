@@ -26,14 +26,18 @@ struct ID3D12Device;
 
 namespace ce::dx12_dred {
 
-// Whether DRED arming is enabled. Controlled by env var CE_DX12_DRED:
-//   unset / "1" / "on" / "true"  -> enabled (default during this diagnosis cycle)
-//   "0" / "off" / "false"        -> disabled
+// Whether DRED arming is enabled (either mode). Controlled by env var CE_DX12_DRED
+// or a flag file "ce_dx12_dred" next to the hook DLL (inject-friendly):
+//   "pf" / "2" / EMPTY flag file -> page-fault-only (low perturbation)
+//   "1" / "on" / "true" / "full" -> full auto-breadcrumbs + page-fault
+//   unset / "0" / "off"          -> disabled (default)
 CE_DRED_API bool IsEnabled();
 
-// Arm DRED auto-breadcrumbs + page-fault + breadcrumb-context as FORCED_ON.
-// Must be called before D3D12CreateDevice creates the device. Idempotent and
-// cheap; logs the first successful arm. Returns true if DRED was armed.
+// Arm DRED before the game's device is created (must precede D3D12CreateDevice).
+// Page-fault-only mode arms ONLY page-fault output (no auto-breadcrumbs, so no
+// per-Reset kernel GPU allocation -> low perturbation); full mode also arms
+// auto-breadcrumbs + breadcrumb-context. Idempotent and cheap; logs the first
+// successful arm with the mode. Returns true if DRED was armed.
 CE_DRED_API bool ArmBeforeDeviceCreation();
 
 // On device-removed, query the device's DRED output and log the hung command

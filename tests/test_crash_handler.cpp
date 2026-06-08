@@ -213,8 +213,12 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("Swapchain presentability changed ->"), std::string::npos);
     EXPECT_NE(contents.find("Requesting immediate freeze dump for focus-loss device removal"), std::string::npos);
     // DRED GPU-fault diagnostics (device-hung breadcrumbs + page-fault).
-    EXPECT_NE(contents.find("DX12 DRED: armed auto-breadcrumbs"), std::string::npos);
+    EXPECT_NE(contents.find("DX12 DRED: armed "), std::string::npos);
+    // Low-perturbation page-fault-only arming mode (steady-state DEVICE_HUNG repro).
+    EXPECT_NE(contents.find("page-fault only"), std::string::npos);
     EXPECT_NE(contents.find("DX12 DRED: ===== device-removed extended data"), std::string::npos);
+    // Device-removed ECL forward guard (avoids nvwgf2um AV after a DEVICE_HUNG TDR).
+    EXPECT_NE(contents.find("Skipping app ExecuteCommandLists forward"), std::string::npos);
 }
 
 TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentationMonitored) {

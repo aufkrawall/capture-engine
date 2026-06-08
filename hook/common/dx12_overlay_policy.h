@@ -2713,17 +2713,58 @@ inline bool ShouldPassThroughCreateSwapchainAccessDeniedForStreamline(bool strea
     return streamlineFGRunning || streamlineStartupHandoffPending;
 }
 
-// Pure decision for CE_DX12_DRED. DRED auto-breadcrumbs force the application's command-list
-// Reset() to do a per-frame kernel GPU allocation that stalls Present during the Alt+Tab mode
-// switch (logs/20260606_145929), so DRED is OFF unless explicitly enabled. `isSet` is whether
-// the env var is present; `value` its (possibly null) contents. Only an explicit affirmative
-// ("1"/"on"/"true"/"yes", case-insensitive) enables it.
-inline bool ShouldEnableDredFromEnv(const char* value, bool isSet) {
+// DRED arming level for CE_DX12_DRED.
+//
+// Full DRED auto-breadcrumbs force the application's command-list Reset() to do a
+// per-frame kernel GPU allocation; that stalls Present during the Alt+Tab mode
+// switch (logs/20260606_145929) AND shifts steady-state timing enough to mask a
+// timing-sensitive GPU hang. Page-fault-only arming does NOT enable
+// auto-breadcrumbs, so it adds no per-Reset allocation — it still records the
+// faulting GPU virtual address + existing/recently-freed allocation nodes on a
+// device-removal, which is the smoking gun for a GPU-side DEVICE_HUNG. Prefer
+// page-fault-only for the uncapped steady-state DEVICE_HUNG repro.
+enum class DredArmMode : int {
+    kOff = 0,
+    kPageFaultOnly = 1,  // page-fault output only — low perturbation
+    kFull = 2,           // auto-breadcrumbs + page-fault + context — high perturbation
+};
+
+// Decide DRED arming level from the CE_DX12_DRED env/flag value. `isSet` is whether
+// the value is present; `value` its (possibly null) contents.
+//   page-fault-only: "pf" / "pagefault" / "page-fault" / "2"
+//   full:            "1" / "on" / "true" / "yes" / "full"
+//   off:             unset / "0" / "off" / "false" / anything unrecognized
+inline DredArmMode DecideDredArmMode(const char* value, bool isSet) {
     if (!isSet || value == nullptr || value[0] == '\0') {
-        return false;
+        return DredArmMode::kOff;
     }
-    return _stricmp(value, "1") == 0 || _stricmp(value, "on") == 0 || _stricmp(value, "true") == 0 ||
-           _stricmp(value, "yes") == 0;
+    if (_stricmp(value, "pf") == 0 || _stricmp(value, "pagefault") == 0 || _stricmp(value, "page-fault") == 0 ||
+        _stricmp(value, "2") == 0) {
+        return DredArmMode::kPageFaultOnly;
+    }
+    if (_stricmp(value, "1") == 0 || _stricmp(value, "on") == 0 || _stricmp(value, "true") == 0 ||
+        _stricmp(value, "yes") == 0 || _stricmp(value, "full") == 0) {
+        return DredArmMode::kFull;
+    }
+    return DredArmMode::kOff;
+}
+
+// Pure decision for whether DRED arming is enabled at all (either mode). Kept as a
+// thin wrapper over DecideDredArmMode so DRED stays OFF unless explicitly requested.
+inline bool ShouldEnableDredFromEnv(const char* value, bool isSet) {
+    return DecideDredArmMode(value, isSet) != DredArmMode::kOff;
+}
+
+// When the D3D12 device is already removed/hung, forwarding the application's
+// command lists into the torn-down driver dereferences freed UMD state and crashes
+// inside the driver (observed: a 32-bit DEVICE_HUNG TDR is followed ~1s later by an
+// nvwgf2um access violation while the app's render loop keeps calling
+// ExecuteCommandLists). A D3D12 device is permanently lost once removed, so dropping
+// the submission is the only safe action — the app still learns of the loss when its
+// next Present returns DXGI_ERROR_DEVICE_*. Returns true only while the device is
+// healthy.
+inline bool ShouldForwardAppCommandListsToDriver(bool deviceRemoved) {
+    return !deviceRemoved;
 }
 
 }  // namespace ce::dx12_overlay_policy

@@ -17937,6 +17937,27 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         return;
     }
 
+    // Safety: once the D3D12 device is removed/hung, the NV UMD context behind this
+    // queue is torn down and forwarding the app's command lists into it dereferences
+    // freed driver state — the deterministic nvwgf2um access violation seen ~1s after
+    // a 32-bit DEVICE_HUNG TDR, while the app's render loop kept calling
+    // ExecuteCommandLists (logs/20260608_211517). A D3D12 device is permanently lost
+    // once removed; drop the submission. The app still learns of the loss when its next
+    // Present returns DXGI_ERROR_DEVICE_*. g_DeviceRemoved is cleared by
+    // DX12_SetCommandQueue when a fresh device is adopted, so a recovering app resumes.
+    if (!ce::dx12_overlay_policy::ShouldForwardAppCommandListsToDriver(
+            g_DeviceRemoved.load(std::memory_order_relaxed))) {
+        static std::atomic<int> s_eclRemovedSkipLog{0};
+        const int n = s_eclRemovedSkipLog.fetch_add(1, std::memory_order_relaxed);
+        if (n < 20 || (n % 500) == 0) {
+            HookLogImportant(
+                "DX12: Skipping app ExecuteCommandLists forward — device removed (queue=%p numLists=%u skip#%d); "
+                "avoids nvwgf2um AV from submitting into a torn-down driver",
+                (void*)pThis, NumCommandLists, n + 1);
+        }
+        return;
+    }
+
     if (Dx12TraceEnabled()) {
         static std::atomic<int> s_traceEclN{0};
         const int sn = s_traceEclN.fetch_add(1, std::memory_order_relaxed);

@@ -31,6 +31,42 @@ TEST(DXGISharedTest, DredIsOffByDefaultAndOnlyExplicitAffirmativeEnablesIt) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("on", true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("TRUE", true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("Yes", true));
+
+    // Page-fault-only spellings also count as "enabled" (a distinct, lower-perturbation mode).
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("pf", true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldEnableDredFromEnv("2", true));
+}
+
+TEST(DXGISharedTest, DredArmModeSelectsPageFaultOnlyVsFullVsOff) {
+    using ce::dx12_overlay_policy::DecideDredArmMode;
+    using Mode = ce::dx12_overlay_policy::DredArmMode;
+
+    // Off: unset / empty / explicit-negative / unrecognized.
+    EXPECT_EQ(DecideDredArmMode(nullptr, false), Mode::kOff);
+    EXPECT_EQ(DecideDredArmMode("", true), Mode::kOff);
+    EXPECT_EQ(DecideDredArmMode("0", true), Mode::kOff);
+    EXPECT_EQ(DecideDredArmMode("off", true), Mode::kOff);
+    EXPECT_EQ(DecideDredArmMode("garbage", true), Mode::kOff);
+
+    // Page-fault-only: low-perturbation diagnosis mode (no auto-breadcrumbs).
+    EXPECT_EQ(DecideDredArmMode("pf", true), Mode::kPageFaultOnly);
+    EXPECT_EQ(DecideDredArmMode("PageFault", true), Mode::kPageFaultOnly);
+    EXPECT_EQ(DecideDredArmMode("page-fault", true), Mode::kPageFaultOnly);
+    EXPECT_EQ(DecideDredArmMode("2", true), Mode::kPageFaultOnly);
+
+    // Full: auto-breadcrumbs + page-fault + context (high perturbation).
+    EXPECT_EQ(DecideDredArmMode("1", true), Mode::kFull);
+    EXPECT_EQ(DecideDredArmMode("on", true), Mode::kFull);
+    EXPECT_EQ(DecideDredArmMode("TRUE", true), Mode::kFull);
+    EXPECT_EQ(DecideDredArmMode("full", true), Mode::kFull);
+}
+
+TEST(DXGISharedTest, AppCommandListsAreNotForwardedIntoARemovedDevice) {
+    // Forwarding the app's ExecuteCommandLists into a torn-down driver after a
+    // DEVICE_HUNG TDR is the nvwgf2um access violation in logs/20260608_211517. Once
+    // the device is removed, the submission must be dropped; while healthy it forwards.
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldForwardAppCommandListsToDriver(/*deviceRemoved=*/false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldForwardAppCommandListsToDriver(/*deviceRemoved=*/true));
 }
 
 TEST(DXGISharedTest, TransitionCooldownDoesNotHeavySuspendDrawableDX12Overlay) {
