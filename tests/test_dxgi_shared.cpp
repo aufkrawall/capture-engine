@@ -423,6 +423,26 @@ TEST(DXGISharedTest, OverlayUploadSlotWaitsOnlyWhenGpuBehindActiveGuard) {
     EXPECT_TRUE(pol::ShouldWaitForOverlayUploadSlot(1u, 0u));
 }
 
+TEST(DXGISharedTest, DescFreeFontUploadRecordsOnlyWhenPendingAndResourcesExist) {
+    namespace pol = ce::dx12_overlay_policy;
+    EXPECT_TRUE(pol::ShouldRecordDescFreeFontUpload(true, true, true));
+    EXPECT_FALSE(pol::ShouldRecordDescFreeFontUpload(false, true, true));
+    EXPECT_FALSE(pol::ShouldRecordDescFreeFontUpload(true, false, true));
+    EXPECT_FALSE(pol::ShouldRecordDescFreeFontUpload(true, true, false));
+}
+
+TEST(DXGISharedTest, X86Dx12OverlayUsesStandardNativeBackendRoute) {
+    namespace pol = ce::dx12_overlay_policy;
+    EXPECT_TRUE(pol::ShouldUseTextureDx12OverlayBackendForProcess(true));
+    EXPECT_FALSE(pol::ShouldUseTextureDx12OverlayBackendForProcess(false));
+}
+
+TEST(DXGISharedTest, X86Dx12TextUsesSolidGeometry) {
+    namespace pol = ce::dx12_overlay_policy;
+    EXPECT_TRUE(pol::ShouldUseSolidDx12TextGeometryForProcess(true));
+    EXPECT_FALSE(pol::ShouldUseSolidDx12TextGeometryForProcess(false));
+}
+
 // Models the x86 Alt+Tab freeze root cause: during the iflip<->composited mode
 // switch the GPU stops retiring for a stretch while the CPU keeps drawing the
 // overlay every frame.  The DescFree backend round-robins kPoolSize UPLOAD

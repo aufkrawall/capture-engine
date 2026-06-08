@@ -22,6 +22,11 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
     if (initialized)
         return true;
 
+    memset(glyphs, 0, sizeof(glyphs));
+    for (auto& spans : glyphSpans) {
+        spans.clear();
+    }
+
     dpiScale = scale;
     int scaledSize = (int)(fontSize * scale);
 
@@ -152,6 +157,8 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
         }
     }
 
+    BuildGlyphSpans();
+
     // Cleanup
     SelectObject(hdc, oldBitmap);
     SelectObject(hdc, oldFont);
@@ -167,6 +174,11 @@ void FontAtlas::Shutdown() {
     textureData.clear();
     textureWidth = 0;
     textureHeight = 0;
+    lineHeight = 0;
+    memset(glyphs, 0, sizeof(glyphs));
+    for (auto& spans : glyphSpans) {
+        spans.clear();
+    }
     initialized = false;
 }
 
@@ -174,6 +186,72 @@ const Glyph* FontAtlas::GetGlyph(char c) const {
     if (c < 32 || c > 126)
         c = '?';
     return &glyphs[(int)c];
+}
+
+const std::vector<GlyphSpan>& FontAtlas::GetGlyphSpans(char c) const {
+    static const std::vector<GlyphSpan> empty;
+    if (c < 32 || c > 126)
+        c = '?';
+    const int index = (int)c;
+    if (index < 0 || index >= 128)
+        return empty;
+    return glyphSpans[index];
+}
+
+void FontAtlas::BuildGlyphSpans() {
+    if (textureData.empty() || textureWidth <= 0 || textureHeight <= 0)
+        return;
+
+    for (int c = 32; c < 127; ++c) {
+        const Glyph& g = glyphs[c];
+        auto& spans = glyphSpans[c];
+        spans.clear();
+
+        if (g.width == 0 || g.height == 0)
+            continue;
+
+        for (uint16_t row = 0; row < g.height; ++row) {
+            uint16_t runX = 0;
+            uint16_t runWidth = 0;
+            uint8_t runAlpha = 0;
+
+            auto flushRun = [&]() {
+                if (runWidth > 0) {
+                    spans.push_back({runX, row, runWidth, runAlpha});
+                    runWidth = 0;
+                }
+            };
+
+            for (uint16_t col = 0; col < g.width; ++col) {
+                const int tx = g.x + col;
+                const int ty = g.y + row;
+                if (tx < 0 || tx >= textureWidth || ty < 0 || ty >= textureHeight) {
+                    flushRun();
+                    continue;
+                }
+
+                const size_t idx = ((size_t)ty * (size_t)textureWidth + (size_t)tx) * 4 + 3;
+                const uint8_t alpha = textureData[idx];
+                if (alpha == 0) {
+                    flushRun();
+                    continue;
+                }
+
+                const int bucket = (std::min)(255, (std::max)(16, ((int)alpha + 15) & ~15));
+                const uint8_t quantizedAlpha = (uint8_t)bucket;
+                if (runWidth > 0 && runAlpha == quantizedAlpha) {
+                    ++runWidth;
+                } else {
+                    flushRun();
+                    runX = col;
+                    runWidth = 1;
+                    runAlpha = quantizedAlpha;
+                }
+            }
+
+            flushRun();
+        }
+    }
 }
 
 void FontAtlas::CalcTextSize(const char* text, float* outWidth, float* outHeight) const {

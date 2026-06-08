@@ -177,8 +177,8 @@ static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwnd = nullptr;
 // ---------------------------------------------------------------------------
 // Descriptor-free DX12 overlay backend.
 //
-// Renders the overlay using root constants + root SRV (ByteAddressBuffer for
-// the font atlas).  No descriptor heaps are bound, so SetDescriptorHeaps is
+// Renders the overlay using root constants + root SRV (structured uint buffer
+// for the font atlas).  No descriptor heaps are bound, so SetDescriptorHeaps is
 // never called.  This avoids the NVIDIA driver stall triggered by
 // SetDescriptorHeaps + OMSetRenderTargets(swapchain backbuffer) in the same
 // command list.
@@ -588,17 +588,20 @@ public:
         return true;
     }
 
-    // RendererBackend: upload font atlas as a ByteAddressBuffer
+    // RendererBackend: stage font atlas for a descriptor-free structured uint buffer.
+    // The pixel shader samples from a DEFAULT-heap buffer; reading a UPLOAD heap
+    // directly in the text draw has proven fragile on the x86 NVIDIA path.
     bool Initialize(int fontWidth, int fontHeight, const uint8_t* fontData) override {
         if (!device_ || !fontData)
             return false;
         fontWidth_ = fontWidth;
         fontHeight_ = fontHeight;
 
-        size_t dataSize = (size_t)fontWidth * fontHeight * 4;  // RGBA8
+        const size_t dataSize = (size_t)fontWidth * fontHeight * 4;  // RGBA8
+        fontBufferSize_ = dataSize;
 
-        D3D12_HEAP_PROPERTIES hp = {};
-        hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_HEAP_PROPERTIES defaultHeap = {};
+        defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC rd = {};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         rd.Width = dataSize;
@@ -609,27 +612,50 @@ public:
         rd.SampleDesc.Count = 1;
         rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-        HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                      nullptr, IID_PPV_ARGS(&fontBuffer_));
+        // D3D12 ignores non-COMMON initial states for buffers.  Start in the
+        // real state and record explicit transitions around the one-time copy;
+        // relying on implicit COMMON promotion before sampling the same command
+        // list was fragile on the x86 NVIDIA path.
+        HRESULT hr = device_->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &rd,
+                                                      D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                      IID_PPV_ARGS(&fontBuffer_));
         if (FAILED(hr)) {
-            HookLogImportant("DescFree: font buffer create failed hr=0x%08X", hr);
+            HookLogImportant("DescFree: font default buffer create failed hr=0x%08X", hr);
             return false;
         }
+        fontBuffer_->SetName(L"CE_DescFreeFontDefaultBuffer");
+
+        D3D12_HEAP_PROPERTIES uploadHeap = {};
+        uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        hr = device_->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &rd,
+                                              D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                              IID_PPV_ARGS(&fontUploadBuffer_));
+        if (FAILED(hr)) {
+            HookLogImportant("DescFree: font upload buffer create failed hr=0x%08X", hr);
+            fontBuffer_->Release();
+            fontBuffer_ = nullptr;
+            return false;
+        }
+        fontUploadBuffer_->SetName(L"CE_DescFreeFontUploadBuffer");
 
         void* mapped = nullptr;
         D3D12_RANGE readRange = {0, 0};
-        hr = fontBuffer_->Map(0, &readRange, &mapped);
+        hr = fontUploadBuffer_->Map(0, &readRange, &mapped);
         if (FAILED(hr)) {
-            HookLogImportant("DescFree: font buffer map failed hr=0x%08X", hr);
+            HookLogImportant("DescFree: font upload buffer map failed hr=0x%08X", hr);
+            fontUploadBuffer_->Release();
+            fontUploadBuffer_ = nullptr;
             fontBuffer_->Release();
             fontBuffer_ = nullptr;
             return false;
         }
         memcpy(mapped, fontData, dataSize);
-        fontBuffer_->Unmap(0, nullptr);
+        fontUploadBuffer_->Unmap(0, nullptr);
 
         fontGpuAddr_ = fontBuffer_->GetGPUVirtualAddress();
-        HookLogImportant("DescFree: font buffer ready (%dx%d, %zu bytes, gpu=0x%llX)", fontWidth, fontHeight, dataSize,
+        fontUploadPending_ = true;
+        HookLogImportant("DescFree: font structured buffer ready (%dx%d, %zu bytes, gpu=0x%llX)", fontWidth,
+                         fontHeight, dataSize,
                          (unsigned long long)fontGpuAddr_);
         return true;
     }
@@ -638,6 +664,8 @@ public:
                 const std::vector<CustomOverlay::DrawCommand>& commands, int vpW, int vpH) override {
         auto* cmdList = s_descFreeCmdList;
         if (!cmdList || !deviceReady_ || !fontBuffer_ || vertices.empty())
+            return;
+        if (fontUploadPending_ && !fontUploadBuffer_)
             return;
 
         // Rebind the per-slot GPU-completion fence.  If the fence object changed
@@ -656,7 +684,9 @@ public:
 
         // If a caller published a slot guard, block until the GPU has finished
         // the previous frame that used this ring slot before overwriting it.
-        WaitForSlotGpuComplete(slot);
+        if (!WaitForSlotGpuComplete(slot)) {
+            return;
+        }
 
         size_t vbBytes = vertices.size() * sizeof(CustomOverlay::DrawVertex);
         if (vbBytes > vbSize_[slot]) {
@@ -676,12 +706,37 @@ public:
         // Set pipeline — NO SetDescriptorHeaps!
         cmdList->SetGraphicsRootSignature(rootSig_);
 
+        if (ce::dx12_overlay_policy::ShouldRecordDescFreeFontUpload(fontUploadPending_, fontBuffer_ != nullptr,
+                                                                     fontUploadBuffer_ != nullptr)) {
+            D3D12_RESOURCE_BARRIER fontToCopy = {};
+            fontToCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            fontToCopy.Transition.pResource = fontBuffer_;
+            fontToCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+            fontToCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+            fontToCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            cmdList->ResourceBarrier(1, &fontToCopy);
+
+            cmdList->CopyBufferRegion(fontBuffer_, 0, fontUploadBuffer_, 0, fontBufferSize_);
+
+            D3D12_RESOURCE_BARRIER fontBarrier = {};
+            fontBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            fontBarrier.Transition.pResource = fontBuffer_;
+            fontBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+            fontBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            fontBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            cmdList->ResourceBarrier(1, &fontBarrier);
+
+            fontUploadPending_ = false;
+            HookLogImportant("DescFree: font upload recorded to default buffer (%zu bytes, gpu=0x%llX)", fontBufferSize_,
+                             (unsigned long long)fontGpuAddr_);
+        }
+
         // Root constants: viewportW, viewportH, hdrMode, paperWhiteNits, fontW, fontH
         float constants[6] = {(float)vpW,     (float)vpH,        (float)hdrMode,
                               paperWhiteNits, (float)fontWidth_, (float)fontHeight_};
         cmdList->SetGraphicsRoot32BitConstants(0, 6, constants, 0);
 
-        // Root SRV: font buffer (ByteAddressBuffer at t0)
+        // Root SRV: font buffer (StructuredBuffer<uint> at t0)
         cmdList->SetGraphicsRootShaderResourceView(1, fontGpuAddr_);
 
         // Render target + viewport
@@ -708,6 +763,20 @@ public:
 
         // Draw
         ID3D12PipelineState* lastPSO = nullptr;
+        {
+            static std::atomic<int> s_commandDetailLog{0};
+            const int logFrame = s_commandDetailLog.fetch_add(1, std::memory_order_relaxed);
+            if (logFrame < 6) {
+                for (size_t cmdIndex = 0; cmdIndex < commands.size(); ++cmdIndex) {
+                    const auto& cmd = commands[cmdIndex];
+                    HookLogImportant(
+                        "DX12 DIAG: DescFree command frame=%d cmd=%zu textured=%d vtxOff=%u vtxCount=%u idxOff=%u "
+                        "idxCount=%u",
+                        logFrame, cmdIndex, cmd.useTexture ? 1 : 0, cmd.vertexOffset, cmd.vertexCount,
+                        cmd.indexOffset, cmd.indexCount);
+                }
+            }
+        }
         for (const auto& cmd : commands) {
             auto* pso = cmd.useTexture ? psoTextured_ : psoSolid_;
             if (pso != lastPSO) {
@@ -758,6 +827,10 @@ public:
             fontBuffer_->Release();
             fontBuffer_ = nullptr;
         }
+        if (fontUploadBuffer_) {
+            fontUploadBuffer_->Release();
+            fontUploadBuffer_ = nullptr;
+        }
         if (psoTextured_) {
             psoTextured_->Release();
             psoTextured_ = nullptr;
@@ -771,6 +844,8 @@ public:
             rootSig_ = nullptr;
         }
         fontGpuAddr_ = 0;
+        fontBufferSize_ = 0;
+        fontUploadPending_ = false;
         deviceReady_ = false;
         // Drop the (non-owning) slot fence binding and guards; a fresh InitDevice
         // rebinds via the published static, and the GPU work that referenced this
@@ -791,7 +866,7 @@ private:
         params[0].Constants.Num32BitValues = 6;
         params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        // Parameter 1: root SRV at t0 (font ByteAddressBuffer)
+        // Parameter 1: root SRV at t0 (font StructuredBuffer<uint>)
         params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
         params[1].Descriptor.ShaderRegister = 0;
         params[1].Descriptor.RegisterSpace = 0;
@@ -856,7 +931,7 @@ private:
         psoDesc.RTVFormats[0] = rtvFormat_;
         psoDesc.SampleDesc.Count = 1;
 
-        // Textured PSO — uses ByteAddressBuffer (descriptor-free)
+        // Textured PSO — uses StructuredBuffer<uint> (descriptor-free)
         psoDesc.PS = {g_PS_Textured_DescFree_5_0, sizeof(g_PS_Textured_DescFree_5_0)};
         HRESULT hr = device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTextured_));
         if (FAILED(hr)) {
@@ -940,39 +1015,43 @@ private:
         return true;
     }
 
-    void WaitForSlotGpuComplete(int slot) {
+    bool WaitForSlotGpuComplete(int slot) {
         if (!slotFence_ || slot < 0 || slot >= kPoolSize) {
-            return;
+            return true;
         }
         const UINT64 guardValue = slotFenceValue_[slot];
         if (!ce::dx12_overlay_policy::ShouldWaitForOverlayUploadSlot(guardValue, slotFence_->GetCompletedValue())) {
-            return;
+            return true;
         }
         HANDLE eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!eventHandle) {
-            return;
+            return false;
         }
+        bool completed = false;
         if (SUCCEEDED(slotFence_->SetEventOnCompletion(guardValue, eventHandle))) {
             // The fence is the real synchronization that closes the CPU<->GPU
             // UPLOAD-buffer data race.  The bounded timeout is purely a liveness
             // safety net: a separate code path (FG transition / overlay reinit)
             // may legitimately discard the pending Signal for this guard value,
-            // which would otherwise wedge the present thread forever.  It sits
-            // well under the 2s GPU TDR so it can never itself trip a hang.
+            // which would otherwise wedge the present thread forever.  On timeout
+            // we skip this overlay draw; reusing the slot would corrupt in-flight
+            // GPU reads and can turn a transient mode switch into DEVICE_HUNG.
             const DWORD waitResult = WaitForSingleObject(eventHandle, kSlotWaitTimeoutMs);
-            if (waitResult != WAIT_OBJECT_0) {
+            completed = waitResult == WAIT_OBJECT_0;
+            if (!completed) {
                 static std::atomic<int> s_slotWaitTimeoutLog{0};
                 const int logN = s_slotWaitTimeoutLog.fetch_add(1, std::memory_order_relaxed);
                 if (logN < 40 || (logN % 200) == 0) {
                     HookLogImportant(
                         "DescFree: slot %d GPU-completion wait %s (guard=%llu completed=%llu) — overlay upload ring "
-                        "may be reused before GPU retired it; GPU not retiring (mode switch / discarded signal?)",
+                        "draw skipped to avoid reusing in-flight GPU data",
                         slot, waitResult == WAIT_TIMEOUT ? "timed out" : "failed", (unsigned long long)guardValue,
                         (unsigned long long)slotFence_->GetCompletedValue());
                 }
             }
         }
         CloseHandle(eventHandle);
+        return completed;
     }
 
     // Liveness bound for WaitForSlotGpuComplete (see comment there).  Must stay
@@ -993,7 +1072,10 @@ private:
     ID3D12PipelineState* psoSolid_ = nullptr;
 
     ID3D12Resource* fontBuffer_ = nullptr;
+    ID3D12Resource* fontUploadBuffer_ = nullptr;
     D3D12_GPU_VIRTUAL_ADDRESS fontGpuAddr_ = 0;
+    size_t fontBufferSize_ = 0;
+    bool fontUploadPending_ = false;
     int fontWidth_ = 0;
     int fontHeight_ = 0;
 
@@ -8411,6 +8493,11 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
     }
 
     g_OverlayAdapter.SetDX12RenderTarget(cmdList, (void*)rtvHandle.ptr);
+    g_OverlayAdapter.SetDX12UploadSlotFence(
+        g_State.fence,
+        ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
+            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) || g_FGCompat.IsFGActive(),
+            g_State.fence != nullptr, g_State.currentFenceValue));
 
     // Render overlay content
     g_OverlayAdapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
@@ -12539,10 +12626,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         s_firstFrame = false;
         HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
         HookLogImportant(
-            "DX12 focus-loss sync policy=v12 draw-every-frame + DescFree upload-ring per-slot fence (overlay never "
-            "hidden on focus; Alt+Tab mode-switch DEVICE_HUNG root-caused via DRED + NtGdiDdDDICreateAllocation: CPU "
-            "stomped UPLOAD vb/ib slots the GPU was still reading during the GPU-paused mode switch; fixed by gating "
-            "ring-slot reuse on the overlay fence)");
+            "DX12 focus-loss sync policy=v13 draw-every-frame + x86 solid-span text + upload-slot per-frame fence "
+            "(overlay never hidden on focus; x86 text avoids CE-owned font SRV sampling; upload slot reuse remains "
+            "gated on the overlay fence)");
     }
 
     // Diagnostic: when the D3D12 debug layer is enabled (CE_DX12_DEBUG_LAYER), flush
@@ -14292,17 +14378,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
                                                        std::memory_order_release);
     }
-    // v11r: do NOT hold the overlay on focus change — it renders EVERY frame so it
+    // v13: do NOT hold the overlay on focus change — it renders EVERY frame so it
     // never disappears (the user's firm requirement). v10's transition hold both hid
     // the overlay (rejected) and still froze (the hold expired mid-thrash under rapid
     // Alt+Tab). A v11 residency-priority attempt was REVERTED because
     // ID3D12Device1::SetResidencyPriority triggered DXGI_ERROR_INVALID_CALL device
-    // removal on init (black screen, logs/20260603_155107). The Alt+Tab mode-switch
-    // freeze (CE's overlay DRAW pure-hangs touching the backbuffer mid-switch, while
-    // the bare app's input-less ClearRTV survives) is STILL UNRESOLVED and needs
-    // ground truth on a robust inject overlay's technique (D3D12 debug layer / PIX). focusTransitionActive
-    // is telemetry only — it marks the mode-switch window and widens the DRED dump
-    // window; it does NOT gate the overlay.
+    // removal on init (black screen, logs/20260603_155107). x86 text now uses
+    // solid glyph spans so the direct native overlay path no longer samples a
+    // CE-owned font resource; focusTransitionActive remains telemetry only and
+    // widens the DRED dump window. It does NOT gate the overlay.
     const int focusTransitionHoldRemaining = g_FocusTransitionHoldFrames.load(std::memory_order_acquire);
     const bool focusTransitionActive =
         ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(
@@ -14325,8 +14409,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             if (!s_focusTransitionHoldActive || logCount < 40 || (logCount % 120) == 0) {
                 s_focusTransitionHoldActive = true;
                 HookLogImportant(
-                    "DX12: Focus-change mode switch active — overlay STILL RENDERING (not held; upload-ring fence "
-                    "paces slot reuse) (remaining=%d present=%s#%d queue=%p fg=%p/%lu game=%p/%lu foreground=%d)",
+                    "DX12: Focus-change mode switch active — overlay STILL RENDERING (not held; x86 solid-span text; "
+                    "upload-slot fence paces slot reuse) (remaining=%d present=%s#%d queue=%p fg=%p/%lu "
+                    "game=%p/%lu foreground=%d)",
                     focusTransitionHoldRemaining,
                     s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
                                                                  : "Present",
@@ -15479,17 +15564,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // SL captures our overlay as part of the scene, FG interpolates it naturally.
         // Overlay appears on all output frames (real + interpolated).
         const bool slFGActive = currentFGActive && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-        // v10: the focus-loss offscreen composite (v9) is retired. DRED proved
-        // (logs/20260603_150241) that even the offscreen path's `bb->offscreen`
-        // CopyTextureRegion pure-hangs (pageFaultVA=0) during the mode switch — i.e.
-        // ANY backbuffer touch (draw OR copy) hangs while the iflip<->composited
-        // transition is in flight. So during the transition CE must not touch the
-        // backbuffer at all; that hold lives in the focus-transition hold computed
-        // up in the hold block (see g_FocusTransitionHoldFrames). Steady states
-        // (focused AND unfocused-but-visible) keep the fast direct draw, which is
-        // what a lightweight inject overlay does and does not hang. The post-FSR offscreen path
-        // (g_NeedOffscreenOverlayAfterPostFSRNonFG) is unrelated and stays intact.
-        const bool focusLossOffscreenComposite = false;
+        // x86 text is emitted as solid glyph spans by the DX12 backend.  That
+        // keeps no-FG rendering on the fast native direct path; the independent
+        // post-FSR offscreen path below remains only for the existing FG handoff
+        // state where backbuffer ownership/state can be indeterminate.
         {
             if (slFGActive) {
                 // SL FG active: enable POST-SL overlay rendering.
@@ -16198,17 +16276,25 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                     // ================================================================
 
                                     // ============================================================
-                                    // PRIMARY: Descriptor-free DX12 overlay.
-                                    // Uses root constants + root SRV (ByteAddressBuffer for font)
-                                    // instead of descriptor heaps.  SetDescriptorHeaps is never
-                                    // called, avoiding the NVIDIA driver stall caused by
-                                    // SetDescriptorHeaps + OMSetRenderTargets(swapchain) in the
-                                    // same command list.
+                                    // PRIMARY: native DX12 overlay.
+                                    // x64 keeps the descriptor-free root-SRV font path that avoids
+                                    // SetDescriptorHeaps + OMSetRenderTargets(swapchain).  x86 uses
+                                    // the Texture2D/SRV backend because DRED isolated the 32-bit
+                                    // hang to the descriptor-free text sampling path.
                                     // ============================================================
+                                    bool usedPrimaryOverlayBackend = false;
                                     bool usedDescFree = false;
                                     bool offscreenCompositeRequired = false;
                                     {
                                         auto* dev = g_Device.load();
+#if defined(_WIN64)
+                                        constexpr bool kIs32BitProcess = false;
+#else
+                                        constexpr bool kIs32BitProcess = true;
+#endif
+                                        const bool useTextureDx12Backend =
+                                            ce::dx12_overlay_policy::ShouldUseTextureDx12OverlayBackendForProcess(
+                                                kIs32BitProcess);
                                         // Pre-DescFree device health check
                                         if (dev) {
                                             HRESULT preDescFreeDevHr = dev->GetDeviceRemovedReason();
@@ -16219,7 +16305,25 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     (unsigned)preDescFreeDevHr, GetCurrentThreadId());
                                             }
                                         }
-                                        if (dev && !g_DescFreeBackend) {
+                                        if (useTextureDx12Backend && g_DescFreeBackend) {
+                                            ShutdownDescFreeBackend("x86 Texture2D backend selected");
+                                        }
+                                        if (dev && useTextureDx12Backend && !g_D3D11On12Adapter.IsInitialized()) {
+                                            ID3D12CommandQueue* backendQueue =
+                                                gameQueue ? gameQueue : g_CommandQueue.load(std::memory_order_acquire);
+                                            if (backendQueue &&
+                                                g_D3D11On12Adapter.InitDX12(dev, backendQueue, g_State.format)) {
+                                                HookLogImportant(
+                                                    "DX12: x86 native Texture2D overlay backend ready "
+                                                    "(device=%p queue=%p fmt=%d)",
+                                                    dev, backendQueue, (int)g_State.format);
+                                            } else {
+                                                HookLogImportant(
+                                                    "DX12: x86 native Texture2D overlay backend init failed "
+                                                    "(device=%p queue=%p fmt=%d)",
+                                                    dev, backendQueue, (int)g_State.format);
+                                            }
+                                        } else if (dev && !useTextureDx12Backend && !g_DescFreeBackend) {
                                             auto* backend = new DX12DescFreeBackend();
                                             if (backend->InitDevice(dev, g_State.format)) {
                                                 g_DescFreeBackend = backend;
@@ -16233,7 +16337,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     "falling back to standard DX12");
                                             }
                                         }
-                                        if (g_DescFreeBackend && g_D3D11On12Adapter.IsInitialized()) {
+                                        const bool primaryOverlayReady =
+                                            useTextureDx12Backend
+                                                ? g_D3D11On12Adapter.IsInitialized()
+                                                : (g_DescFreeBackend && g_D3D11On12Adapter.IsInitialized());
+                                        if (primaryOverlayReady) {
                                             bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
                                             g_D3D11On12Adapter.SetReserveInactiveFGSpace(
                                                 ShouldReserveInactiveFGOverlaySpaceNow());
@@ -16258,42 +16366,24 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             // transition.
                                             const bool usePostFSROffscreenCopy =
                                                 g_NeedOffscreenOverlayAfterPostFSRNonFG;
-                                            const bool useFocusLossOffscreenCopy = focusLossOffscreenComposite;
-                                            bool useOffscreenCopy =
-                                                usePostFSROffscreenCopy || useFocusLossOffscreenCopy;
+                                            bool useOffscreenCopy = usePostFSROffscreenCopy;
 
                                             if (useOffscreenCopy) {
                                                 offscreenCompositeRequired = true;
+                                                const char* offscreenReason = "post-FSR DLSS";
                                                 if (!bb) {
                                                     HookLogImportant(
                                                         "DX12: Cannot use offscreen compositing for %s overlay because "
                                                         "backbuffer is null; direct backbuffer fallback suppressed",
-                                                        useFocusLossOffscreenCopy ? "focus-loss" : "post-FSR DLSS");
+                                                        offscreenReason);
                                                 } else {
-                                                    if (useFocusLossOffscreenCopy) {
-                                                        static int s_focusLossOffscreenLog = 0;
-                                                        if (s_focusLossOffscreenLog++ < 40 ||
-                                                            (s_focusLossOffscreenLog % 300) == 0) {
-                                                            HookLogImportant(
-                                                                "DX12: Using offscreen compositing for focus-loss "
-                                                                "overlay "
-                                                                "(bb=%p queue=%p bufIdx=%u present=%s#%d #%d)",
-                                                                bb, gameQueue, bufferIdx,
-                                                                s_WrappedPresentFocusLossContext.presentName
-                                                                    ? s_WrappedPresentFocusLossContext.presentName
-                                                                    : "Present",
-                                                                s_WrappedPresentFocusLossContext.callCount,
-                                                                s_focusLossOffscreenLog);
-                                                        }
-                                                    } else {
-                                                        static int s_postFSROffscreenLog = 0;
-                                                        if (s_postFSROffscreenLog++ < 10) {
-                                                            HookLogImportant(
-                                                                "DX12: Using offscreen compositing for post-FSR non-FG "
-                                                                "overlay "
-                                                                "(bb=%p queue=%p bufIdx=%u #%d)",
-                                                                bb, gameQueue, bufferIdx, s_postFSROffscreenLog);
-                                                        }
+                                                    static int s_postFSROffscreenLog = 0;
+                                                    if (s_postFSROffscreenLog++ < 10) {
+                                                        HookLogImportant(
+                                                            "DX12: Using offscreen compositing for post-FSR non-FG "
+                                                            "overlay "
+                                                            "(bb=%p queue=%p bufIdx=%u #%d)",
+                                                            bb, gameQueue, bufferIdx, s_postFSROffscreenLog);
                                                     }
                                                     // Two-copy compositing: avoids ALL explicit barriers on backbuffer.
                                                     // 1. Copy bb→offscreen (bb implicitly promotes COMMON→COPY_SOURCE)
@@ -16344,19 +16434,29 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     // Step 3: Render overlay to offscreen RT (on top of game frame)
                                                     D3D12_CPU_DESCRIPTOR_HANDLE offRtv =
                                                         g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart();
-                                                    s_descFreeCmdList = list;
-                                                    s_descFreeRtv = offRtv;
-                                                    // Publish the per-slot UPLOAD-ring guard.  Non-FG path: this
-                                                    // frame's overlay work is signaled on g_State.fence at
-                                                    // currentFenceValue+1, so the backend can pace slot reuse to the
-                                                    // GPU.  FG paths use a separate completion fence (g_State.fence
-                                                    // does not advance to this value) and already synchronize per
-                                                    // frame, so disable the guard there to avoid a stale-value wait.
-                                                    s_descFreeSlotFence = g_State.fence;
-                                                    s_descFreeSlotGuardValue =
-                                                        ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
-                                                            slFGActive || g_FGCompat.IsFGActive(),
-                                                            g_State.fence != nullptr, g_State.currentFenceValue);
+                                                    if (useTextureDx12Backend) {
+                                                        g_D3D11On12Adapter.SetDX12RenderTarget(list,
+                                                                                               (void*)offRtv.ptr);
+                                                        g_D3D11On12Adapter.SetDX12UploadSlotFence(
+                                                            g_State.fence,
+                                                            ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
+                                                                slFGActive || g_FGCompat.IsFGActive(),
+                                                                g_State.fence != nullptr, g_State.currentFenceValue));
+                                                    } else {
+                                                        s_descFreeCmdList = list;
+                                                        s_descFreeRtv = offRtv;
+                                                        // Publish the per-slot UPLOAD-ring guard.  Non-FG path: this
+                                                        // frame's overlay work is signaled on g_State.fence at
+                                                        // currentFenceValue+1, so the backend can pace slot reuse to the
+                                                        // GPU.  FG paths use a separate completion fence (g_State.fence
+                                                        // does not advance to this value) and already synchronize per
+                                                        // frame, so disable the guard there to avoid a stale-value wait.
+                                                        s_descFreeSlotFence = g_State.fence;
+                                                        s_descFreeSlotGuardValue =
+                                                            ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
+                                                                slFGActive || g_FGCompat.IsFGActive(),
+                                                                g_State.fence != nullptr, g_State.currentFenceValue);
+                                                    }
 
                                                     g_D3D11On12Adapter.SetIPCClient(g_IPC);
                                                     const auto metricsBinding =
@@ -16372,7 +16472,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     }
                                                     g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth,
                                                                                      g_State.cachedHeight);
-                                                    s_descFreeCmdList = nullptr;
+                                                    if (!useTextureDx12Backend) {
+                                                        s_descFreeCmdList = nullptr;
+                                                    }
 
                                                     // Step 4: Barrier offscreen RT → COPY_SOURCE
                                                     {
@@ -16406,16 +16508,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     static int s_offscreenLog = 0;
                                                     if (s_offscreenLog++ < 5) {
                                                         HookLogImportant(
-                                                            "DX12: Post-FSR DLSS overlay via 2-copy compositing (bb=%p "
+                                                            "DX12: %s overlay via 2-copy compositing (bb=%p "
                                                             "offRT=%p queue=%p)",
-                                                            bb, g_State.offscreenRT, gameQueue);
+                                                            offscreenReason, bb, g_State.offscreenRT, gameQueue);
                                                     }
-                                                    usedDescFree = true;
+                                                    usedPrimaryOverlayBackend = true;
+                                                    usedDescFree = !useTextureDx12Backend;
                                                 } else {
                                                     HookLogImportant(
                                                         "DX12: Failed to create offscreen RT for %s overlay; "
                                                         "direct backbuffer fallback suppressed",
-                                                        useFocusLossOffscreenCopy ? "focus-loss" : "post-FSR DLSS");
+                                                        offscreenReason);
                                                     }
                                                 }
                                             } else {
@@ -16426,7 +16529,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
                                                 rtvHandle.ptr += (SIZE_T)bufferIdx * rtvSize;
 
-                                                // ALWAYS add barriers in DescFree path.
+                                                // ALWAYS add barriers in the primary native DX12 path.
                                                 // At startup, extOverlay may be false
                                                 // (socialclub.dll not loaded yet); after
                                                 // FG teardown, Social Club may not render
@@ -16445,14 +16548,24 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     list->ResourceBarrier(1, &barrier);
                                                 }
 
-                                                s_descFreeCmdList = list;
-                                                s_descFreeRtv = rtvHandle;
-                                                // Publish the per-slot UPLOAD-ring guard (see offscreen path above).
-                                                s_descFreeSlotFence = g_State.fence;
-                                                s_descFreeSlotGuardValue =
-                                                    ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
-                                                        slFGActive || g_FGCompat.IsFGActive(),
-                                                        g_State.fence != nullptr, g_State.currentFenceValue);
+                                                if (useTextureDx12Backend) {
+                                                    g_D3D11On12Adapter.SetDX12RenderTarget(list,
+                                                                                           (void*)rtvHandle.ptr);
+                                                    g_D3D11On12Adapter.SetDX12UploadSlotFence(
+                                                        g_State.fence,
+                                                        ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
+                                                            slFGActive || g_FGCompat.IsFGActive(),
+                                                            g_State.fence != nullptr, g_State.currentFenceValue));
+                                                } else {
+                                                    s_descFreeCmdList = list;
+                                                    s_descFreeRtv = rtvHandle;
+                                                    // Publish the per-slot UPLOAD-ring guard (see offscreen path above).
+                                                    s_descFreeSlotFence = g_State.fence;
+                                                    s_descFreeSlotGuardValue =
+                                                        ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
+                                                            slFGActive || g_FGCompat.IsFGActive(),
+                                                            g_State.fence != nullptr, g_State.currentFenceValue);
+                                                }
 
                                                 g_D3D11On12Adapter.SetIPCClient(g_IPC);
                                                 const auto metricsBinding =
@@ -16485,15 +16598,18 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     list->ResourceBarrier(1, &barrier);
                                                 }
 
-                                                s_descFreeCmdList = nullptr;
-                                                usedDescFree = true;
+                                                if (!useTextureDx12Backend) {
+                                                    s_descFreeCmdList = nullptr;
+                                                }
+                                                usedPrimaryOverlayBackend = true;
+                                                usedDescFree = !useTextureDx12Backend;
                                             }  // end normal path
                                         }
                                     }
 
                                     // Fallback: standard DX12 rendering (uses SetDescriptorHeaps —
                                     // may cause 60% GPU on some NVIDIA configs)
-                                    if (!usedDescFree) {
+                                    if (!usedPrimaryOverlayBackend) {
                                         if (offscreenCompositeRequired) {
                                             static std::atomic<int> s_offscreenRequiredNoFallbackLogCount{0};
                                             const int logCount =
@@ -16503,8 +16619,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 HookLogImportant(
                                                     "DX12: Skipping direct backbuffer fallback because offscreen "
                                                     "composite is required for this frame "
-                                                    "(focusLoss=%d postFSR=%d queue=%p bufIdx=%u log=%d)",
-                                                    focusLossOffscreenComposite ? 1 : 0,
+                                                    "(postFSR=%d queue=%p bufIdx=%u log=%d)",
                                                     g_NeedOffscreenOverlayAfterPostFSRNonFG ? 1 : 0, gameQueue,
                                                     bufferIdx, logCount + 1);
                                             }
@@ -16543,7 +16658,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         }
                                     }
 
-                                    const bool overlayDrawRecorded = usedDescFree || !offscreenCompositeRequired;
+                                    const bool overlayDrawRecorded = usedPrimaryOverlayBackend || !offscreenCompositeRequired;
                                     QueryPerformanceCounter(&perfRecord);
 
                                     HRESULT closeHr = list->Close();
@@ -16565,9 +16680,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             auto* closeDev = g_Device.load(std::memory_order_acquire);
                                             HRESULT closeDevHr = closeDev ? closeDev->GetDeviceRemovedReason() : E_FAIL;
                                             HookLogImportant(
-                                                "DX12: Reinit Close #%d hr=0x%08X devRemoved=0x%08X descFree=%d",
+                                                "DX12: Reinit Close #%d hr=0x%08X devRemoved=0x%08X primaryOverlay=%d",
                                                 s_reinitCloseLogCount, (unsigned)closeHr, (unsigned)closeDevHr,
-                                                usedDescFree ? 1 : 0);
+                                                usedPrimaryOverlayBackend ? 1 : 0);
                                         }
                                     }
                                     if (FAILED(closeHr)) {

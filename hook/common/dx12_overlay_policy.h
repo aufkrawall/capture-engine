@@ -1377,6 +1377,25 @@ inline bool ShouldWaitForOverlayUploadSlot(uint64_t slotGuardFenceValue, uint64_
     return slotGuardFenceValue != 0 && gpuCompletedFenceValue < slotGuardFenceValue;
 }
 
+inline bool ShouldRecordDescFreeFontUpload(bool uploadPending, bool hasDefaultFontBuffer, bool hasUploadBuffer) {
+    return uploadPending && hasDefaultFontBuffer && hasUploadBuffer;
+}
+
+inline bool ShouldUseTextureDx12OverlayBackendForProcess(bool is32BitProcess) {
+    // Keep x86 on the standard native DX12 backend so the 32-bit path no longer
+    // uses DescFree's separate root-SRV text path.  Text itself is emitted as
+    // solid glyph spans by ShouldUseSolidDx12TextGeometryForProcess().
+    return is32BitProcess;
+}
+
+inline bool ShouldUseSolidDx12TextGeometryForProcess(bool is32BitProcess) {
+    // x86/WoW64 NVIDIA can hang on native DX12 overlay text draws that sample a
+    // CE-owned font resource.  Preserve the native overlay and direct backbuffer
+    // path, but encode glyph coverage as solid alpha geometry so text uses the
+    // same proven solid PSO path as rectangles/graphs.
+    return is32BitProcess;
+}
+
 // v8 visibility-gated hold (supersedes the v3-v7 focus-based holds and the
 // focus-loss offscreen composite).
 //

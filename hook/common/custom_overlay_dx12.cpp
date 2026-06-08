@@ -3,9 +3,11 @@
  */
 
 #include "custom_overlay_dx12.h"
+#include <algorithm>
 #include <cstring>
 #include "../apis/dx12_hook.h"
 #include "hook_common.h"
+#include "dx12_overlay_policy.h"
 #include "overlay_shader_bytecode.h"
 
 namespace CustomOverlay {
@@ -69,16 +71,29 @@ bool DX12Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const 
     DX12_DEBUG_STEP("Initialize", "Step 3/4: CreateBuffers - SUCCESS");
 
     DX12_DEBUG_STEP("Initialize", "Step 4/4: CreateFontTexture");
-    if (!CreateFontTexture(fontTextureWidth, fontTextureHeight, fontTextureData)) {
-        DX12_DEBUG_STEP("Initialize", "FAILED - CreateFontTexture");
-        HookLog("DX12 Overlay: Initialize - CreateFontTexture failed");
-        return false;
+    if (PreferSolidTextGeometry()) {
+        fontUploaded.store(true, std::memory_order_release);
+        DX12_DEBUG_STEP("Initialize", "Step 4/4: CreateFontTexture - SKIPPED for solid text geometry");
+    } else {
+        if (!CreateFontTexture(fontTextureWidth, fontTextureHeight, fontTextureData)) {
+            DX12_DEBUG_STEP("Initialize", "FAILED - CreateFontTexture");
+            HookLog("DX12 Overlay: Initialize - CreateFontTexture failed");
+            return false;
+        }
+        DX12_DEBUG_STEP("Initialize", "Step 4/4: CreateFontTexture - SUCCESS");
     }
-    DX12_DEBUG_STEP("Initialize", "Step 4/4: CreateFontTexture - SUCCESS");
 
     initialized = true;
+    if (PreferSolidTextGeometry()) {
+        HookLogImportant(
+            "DX12 Overlay: x86 solid-span text path enabled (native solid geometry, font SRV upload skipped)");
+    }
     DX12_DEBUG_STEP("Initialize", "COMPLETE - initialized=true");
     return true;
+}
+
+bool DX12Backend::PreferSolidTextGeometry() const {
+    return ce::dx12_overlay_policy::ShouldUseSolidDx12TextGeometryForProcess(sizeof(void*) == 4);
 }
 
 void DX12Backend::Shutdown() {
@@ -96,6 +111,7 @@ void DX12Backend::Shutdown() {
         }
         (void)rootSignature.Detach();
         (void)pipelineState.Detach();
+        (void)pipelineStateTexturedSdr.Detach();
         (void)pipelineStateSolid.Detach();
         (void)srvHeap.Detach();
         (void)fontTexture.Detach();
@@ -128,6 +144,7 @@ void DX12Backend::Shutdown() {
 
     rootSignature.Reset();
     pipelineState.Reset();
+    pipelineStateTexturedSdr.Reset();
     pipelineStateSolid.Reset();
     srvHeap.Reset();
     fontTexture.Reset();
@@ -266,6 +283,17 @@ bool DX12Backend::CreatePipelineState() {
         return false;
     }
 
+    DX12_DEBUG_STEP("CreatePipelineState", "Creating TEXTURED SDR PSO");
+    psoDesc.PS = {g_PS_Textured_SDR_5_0, sizeof(g_PS_Textured_SDR_5_0)};
+    DX12_DEBUG_STEP("CreatePipelineState", "PS_Textured_SDR size=%zu", sizeof(g_PS_Textured_SDR_5_0));
+    hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineStateTexturedSdr));
+    DX12_DEBUG_STEP("CreatePipelineState", "Textured SDR PSO result: hr=0x%08X (%s), pso=%p", hr,
+                    SUCCEEDED(hr) ? "OK" : "FAILED", pipelineStateTexturedSdr.Get());
+    if (FAILED(hr)) {
+        HookLog("DX12 Overlay: CreatePipelineState (textured SDR) failed, hr=0x%08X", hr);
+        return false;
+    }
+
     DX12_DEBUG_STEP("CreatePipelineState", "Creating SOLID PSO");
     psoDesc.PS = {g_PS_Solid_5_0, sizeof(g_PS_Solid_5_0)};
     DX12_DEBUG_STEP("CreatePipelineState", "PS_Solid size=%zu", sizeof(g_PS_Solid_5_0));
@@ -276,8 +304,8 @@ bool DX12Backend::CreatePipelineState() {
         HookLog("DX12 Overlay: CreatePipelineState (solid) failed, hr=0x%08X", hr);
         return false;
     }
-    DX12_DEBUG_STEP("CreatePipelineState", "SUCCESS - textured=%p, solid=%p", pipelineState.Get(),
-                    pipelineStateSolid.Get());
+    DX12_DEBUG_STEP("CreatePipelineState", "SUCCESS - textured=%p texturedSdr=%p solid=%p", pipelineState.Get(),
+                    pipelineStateTexturedSdr.Get(), pipelineStateSolid.Get());
     return true;
 }
 
@@ -451,6 +479,16 @@ void DX12Backend::SetRenderTarget(ID3D12GraphicsCommandList* cmdList, D3D12_CPU_
     currentRTV = rtvHandle;
 }
 
+void DX12Backend::SetUploadSlotFence(ID3D12Fence* fence, uint64_t guardValue) {
+    if (slotFence != fence) {
+        for (int i = 0; i < kFramePoolSize; ++i) {
+            slotFenceValue[i] = 0;
+        }
+        slotFence = fence;
+    }
+    nextSlotFenceValue = guardValue;
+}
+
 bool DX12Backend::PrimeResources(ID3D12GraphicsCommandList* cmdList) {
     DX12_DEBUG_STEP("PrimeResources", "START - initialized=%d, cmdList=%p, pending=%d", initialized ? 1 : 0, cmdList,
                     HasPendingResources() ? 1 : 0);
@@ -503,6 +541,54 @@ bool DX12Backend::UploadFontTextureIfNeeded(ID3D12GraphicsCommandList* cmdList) 
     fontUploaded.store(true, std::memory_order_release);
     DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "Font upload: COMPLETE - fontUploaded=true");
     return true;
+}
+
+bool DX12Backend::WaitForSlotGpuComplete(int slot) {
+    if (!slotFence || slot < 0 || slot >= kFramePoolSize) {
+        return true;
+    }
+
+    const uint64_t guardValue = slotFenceValue[slot];
+    const uint64_t completedBefore = slotFence->GetCompletedValue();
+    if (!ce::dx12_overlay_policy::ShouldWaitForOverlayUploadSlot(guardValue, completedBefore)) {
+        return true;
+    }
+
+    HANDLE eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!eventHandle) {
+        return false;
+    }
+
+    bool completed = false;
+    if (SUCCEEDED(slotFence->SetEventOnCompletion(guardValue, eventHandle))) {
+        constexpr DWORD kSlotWaitTimeoutMs = 1000;
+        const DWORD waitResult = WaitForSingleObject(eventHandle, kSlotWaitTimeoutMs);
+        completed = waitResult == WAIT_OBJECT_0;
+        if (completed) {
+            static std::atomic<int> s_slotWaitCompleteLog{0};
+            const int logN = s_slotWaitCompleteLog.fetch_add(1, std::memory_order_relaxed);
+            if (logN < 20 || (logN % 200) == 0) {
+                HookLogImportant(
+                    "DX12 Overlay: slot %d GPU-completion wait completed (guard=%llu completedBefore=%llu "
+                    "completedAfter=%llu)",
+                    slot, (unsigned long long)guardValue, (unsigned long long)completedBefore,
+                    (unsigned long long)slotFence->GetCompletedValue());
+            }
+        } else {
+            static std::atomic<int> s_slotWaitTimeoutLog{0};
+            const int logN = s_slotWaitTimeoutLog.fetch_add(1, std::memory_order_relaxed);
+            if (logN < 40 || (logN % 200) == 0) {
+                HookLogImportant(
+                    "DX12 Overlay: slot %d GPU-completion wait %s (guard=%llu completed=%llu) — upload ring may be "
+                    "draw skipped to avoid reusing in-flight GPU data",
+                    slot, waitResult == WAIT_TIMEOUT ? "timed out" : "failed", (unsigned long long)guardValue,
+                    (unsigned long long)slotFence->GetCompletedValue());
+            }
+        }
+    }
+
+    CloseHandle(eventHandle);
+    return completed;
 }
 
 bool DX12Backend::ResizeVertexBuffer(int slot, size_t requiredBytes) {
@@ -642,7 +728,11 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
         return;
     }
 
-    if (!UploadFontTextureIfNeeded(currentCmdList)) {
+    const bool hasTexturedCommands = std::any_of(commands.begin(), commands.end(), [](const DrawCommand& cmd) {
+        return cmd.useTexture;
+    });
+
+    if (hasTexturedCommands && !UploadFontTextureIfNeeded(currentCmdList)) {
         DX12_DEBUG_STEP("Render", "EARLY RETURN - deferred font upload failed");
         if (logThisRender) {
             HookLogImportant("DX12 Overlay: Backend render aborted because deferred font upload failed");
@@ -655,6 +745,9 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     // concurrent calls from different threads each get a unique slot.
     int slot = frameIdx.fetch_add(1, std::memory_order_relaxed) % kFramePoolSize;
     DX12_DEBUG_FRAME(s_RenderCounter, "Using buffer slot %d", slot);
+    if (!WaitForSlotGpuComplete(slot)) {
+        return;
+    }
     if (vbSize > vertexBufferSize[slot]) {
         DX12_DEBUG_STEP("Render", "Vertex buffer resize needed: %zu > %zu (slot=%d)", vbSize, vertexBufferSize[slot],
                         slot);
@@ -691,13 +784,25 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     DX12_DEBUG_FRAME(s_RenderCounter, "Setting pipeline state");
     currentCmdList->SetGraphicsRootSignature(rootSignature.Get());
 
-    ID3D12DescriptorHeap* heaps[] = {srvHeap.Get()};
-    currentCmdList->SetDescriptorHeaps(1, heaps);
+    D3D12_GPU_DESCRIPTOR_HANDLE fontSrvGpuHandle = {};
+    if (hasTexturedCommands) {
+        if (!srvHeap) {
+            static std::atomic<int> s_missingSrvLog{0};
+            const int logN = s_missingSrvLog.fetch_add(1, std::memory_order_relaxed);
+            if (logN < 10 || (logN % 200) == 0) {
+                HookLogImportant("DX12 Overlay: textured draw skipped because font SRV heap is unavailable");
+            }
+            return;
+        }
+
+        ID3D12DescriptorHeap* heaps[] = {srvHeap.Get()};
+        currentCmdList->SetDescriptorHeaps(1, heaps);
+        fontSrvGpuHandle = srvHeap->GetGPUDescriptorHandleForHeapStart();
+        currentCmdList->SetGraphicsRootDescriptorTable(1, fontSrvGpuHandle);
+    }
 
     float constants[4] = {(float)viewportWidth, (float)viewportHeight, (float)hdrMode, paperWhiteNits};
     currentCmdList->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
-
-    currentCmdList->SetGraphicsRootDescriptorTable(1, srvHeap->GetGPUDescriptorHandleForHeapStart());
 
     currentCmdList->OMSetRenderTargets(1, &currentRTV, FALSE, nullptr);
 
@@ -724,8 +829,30 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     int psoBindCount = 0;
     const DX12RenderProbeMode probeMode = GetDX12RenderProbeMode();
     int drawCallCount = 0;
+    const bool useHdrTextShader = hdrMode > 0;
+    {
+        static std::atomic<int> s_commandDetailLog{0};
+        const int logFrame = s_commandDetailLog.fetch_add(1, std::memory_order_relaxed);
+        if (logFrame < 6) {
+            HookLogImportant(
+                "DX12 DIAG: Texture2D backend bindings frame=%d slot=%d srvGpu=0x%llX vbGpu=0x%llX ibGpu=0x%llX "
+                "hdr=%d viewport=%dx%d",
+                logFrame, slot, (unsigned long long)fontSrvGpuHandle.ptr, (unsigned long long)vbv.BufferLocation,
+                (unsigned long long)ibv.BufferLocation, hdrMode, viewportWidth, viewportHeight);
+            for (size_t cmdIndex = 0; cmdIndex < commands.size(); ++cmdIndex) {
+                const auto& cmd = commands[cmdIndex];
+                HookLogImportant(
+                    "DX12 DIAG: Texture2D command frame=%d cmd=%zu textured=%d vtxOff=%u vtxCount=%u idxOff=%u "
+                    "idxCount=%u",
+                    logFrame, cmdIndex, cmd.useTexture ? 1 : 0, cmd.vertexOffset, cmd.vertexCount, cmd.indexOffset,
+                    cmd.indexCount);
+            }
+        }
+    }
     for (const auto& cmd : commands) {
-        ID3D12PipelineState* pso = cmd.useTexture ? pipelineState.Get() : pipelineStateSolid.Get();
+        ID3D12PipelineState* pso =
+            cmd.useTexture ? (useHdrTextShader ? pipelineState.Get() : pipelineStateTexturedSdr.Get())
+                           : pipelineStateSolid.Get();
         if (pso != lastPSO) {
             currentCmdList->SetPipelineState(pso);
             lastPSO = pso;
@@ -737,6 +864,7 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
         currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0, 0);
         drawCallCount++;
     }
+    slotFenceValue[slot] = nextSlotFenceValue;
     DX12_DEBUG_FRAME(s_RenderCounter, "Render complete: %d draw calls", drawCallCount);
     if (logThisRender) {
         if (probeMode == DX12RenderProbeMode::kStateSetupOnly) {

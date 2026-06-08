@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-05 (updated: WGC live scheduler rebase and exact-stop drain guard)
+Last cross-checked: 2026-06-09 (updated: x86 DX12 no-vsync overlay DEVICE_HUNG fixed with solid glyph-span text path)
 
 Primary sources:
 - `AGENTS.md`
@@ -31,7 +31,7 @@ Primary sources:
 
 ## Content Catalog
 - `handoff-dx12-32bit-crash.md`
-  - ⭐ ACTIVE pickup note (flushed-context-safe) for the OPEN 32-bit DX12 inject-overlay crash/freeze: fast repro, what's ruled out, the leading CPU-VA-exhaustion hypothesis, the just-added VA probe and how to read it, constraints, and anchors. Start here if continuing that investigation.
+  - Fixed-state pickup note for the 32-bit DX12 inject-overlay crash/freeze: root-cause isolation, solid glyph-span text fix, runtime validation logs, invariants, and source anchors.
 - `current.md`
   - Compact current-state summary, current logging model, and token-efficient routing into the longer wiki pages.
 - `codestyle.md`

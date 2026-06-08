@@ -24,6 +24,13 @@ struct Glyph {
     uint16_t xAdvance;         // Horizontal advance after drawing
 };
 
+struct GlyphSpan {
+    uint16_t x;
+    uint16_t y;
+    uint16_t width;
+    uint8_t alpha;
+};
+
 // Font atlas containing bitmap font data
 class FontAtlas {
 public:
@@ -40,6 +47,7 @@ public:
 
     // Get glyph info for a character (ASCII only for now)
     const Glyph* GetGlyph(char c) const;
+    const std::vector<GlyphSpan>& GetGlyphSpans(char c) const;
 
     // Get atlas texture data (RGBA)
     const uint8_t* GetTextureData() const {
@@ -64,6 +72,8 @@ public:
     void CalcTextSize(const char* text, float* outWidth, float* outHeight) const;
 
 private:
+    void BuildGlyphSpans();
+
     std::vector<uint8_t> textureData;  // RGBA pixel data
     int textureWidth = 0;
     int textureHeight = 0;
@@ -71,6 +81,7 @@ private:
     float dpiScale = 1.0f;
 
     Glyph glyphs[128];  // ASCII glyphs
+    std::vector<GlyphSpan> glyphSpans[128];
     bool initialized = false;
 };
 

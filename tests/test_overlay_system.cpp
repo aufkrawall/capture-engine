@@ -51,6 +51,22 @@ TEST_F(FontAtlasTest, TextureDataNonEmpty) {
     EXPECT_TRUE(hasPixel) << "Font atlas texture has no visible pixels";
 }
 
+TEST_F(FontAtlasTest, GlyphSpansStayInsideGlyphBounds) {
+    const Glyph* glyph = atlas.GetGlyph('A');
+    ASSERT_NE(glyph, nullptr);
+
+    const auto& spans = atlas.GetGlyphSpans('A');
+    ASSERT_FALSE(spans.empty()) << "Visible glyph should have alpha spans";
+
+    for (const auto& span : spans) {
+        EXPECT_LT(span.x, glyph->width);
+        EXPECT_LT(span.y, glyph->height);
+        EXPECT_LE((uint32_t)span.x + (uint32_t)span.width, (uint32_t)glyph->width);
+        EXPECT_GT(span.width, 0u);
+        EXPECT_GT(span.alpha, 0u);
+    }
+}
+
 TEST_F(FontAtlasTest, GetGlyphPrintableAscii) {
     // All printable ASCII characters (32-126) must have valid glyphs
     for (int c = 32; c <= 126; c++) {
@@ -154,6 +170,13 @@ public:
     }
 };
 
+class SolidTextMockBackend : public MockBackend {
+public:
+    bool PreferSolidTextGeometry() const override {
+        return true;
+    }
+};
+
 class RendererTest : public ::testing::Test {
 protected:
     MockBackend backend;
@@ -218,6 +241,22 @@ TEST_F(RendererTest, DrawTextCalculatesNonZeroSize) {
     renderer.CalcTextSize("Hello", &w, &h);
     EXPECT_GT(w, 0.0f);
     EXPECT_GT(h, 0.0f);
+}
+
+TEST(RendererSolidTextTest, PreferredSolidTextEmitsOnlySolidCommands) {
+    SolidTextMockBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.0f));
+
+    renderer.BeginFrame(1920, 1080);
+    renderer.DrawTextWithShadow(10, 10, "FPS: 60", Colors::White, Colors::Black);
+    renderer.EndFrame();
+
+    ASSERT_GT(backend.lastVertexCount, 0);
+    ASSERT_FALSE(renderer.GetCommands().empty());
+    for (const auto& cmd : renderer.GetCommands()) {
+        EXPECT_FALSE(cmd.useTexture);
+    }
 }
 
 TEST_F(RendererTest, DrawTextScaledSizeProportional) {

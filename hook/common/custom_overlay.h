@@ -127,6 +127,8 @@ public:
 private:
     void AddTextQuads(float x, float y, const char* text, uint32_t color);
     void AddTextQuadsScaled(float x, float y, const char* text, uint32_t color, float scale);
+    void AddTextSolidQuads(float x, float y, const char* text, uint32_t color);
+    void AddTextSolidQuadsScaled(float x, float y, const char* text, uint32_t color, float scale);
     void AddQuad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t color);
     void FlushBatch(bool useTexture);
     // Renders a connected polyline with miter joins and AA fringe
@@ -179,6 +181,11 @@ public:
     // Render the accumulated draw commands
     virtual void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                         const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) = 0;
+
+    // Some backends prefer glyph coverage as solid geometry instead of font SRV sampling.
+    virtual bool PreferSolidTextGeometry() const {
+        return false;
+    }
 
 protected:
     int hdrMode = 0;

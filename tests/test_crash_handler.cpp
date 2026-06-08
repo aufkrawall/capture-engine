@@ -197,12 +197,17 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("initializing FFX hooks immediately for native FSR callback bridge"), std::string::npos);
     EXPECT_NE(contents.find("Installed LdrLoadDll hook for module-load observation"), std::string::npos);
     EXPECT_NE(contents.find("IAT import patching skipped to avoid startup fail-fast"), std::string::npos);
-    EXPECT_NE(contents.find("DX12 focus-loss sync policy=v12 draw-every-frame + DescFree upload-ring per-slot fence"),
+    EXPECT_NE(contents.find("DX12 focus-loss sync policy=v13 draw-every-frame + x86 solid-span text"),
               std::string::npos);
-    EXPECT_NE(contents.find("overlay STILL RENDERING (not held; upload-ring fence paces slot reuse)"),
-              std::string::npos);
+    EXPECT_NE(
+        contents.find("overlay STILL RENDERING (not held; x86 solid-span text; upload-slot fence paces slot reuse)"),
+        std::string::npos);
     // DescFree UPLOAD-ring per-slot GPU-completion guard (x86 Alt+Tab DEVICE_HUNG fix).
     EXPECT_NE(contents.find("GPU-completion wait"), std::string::npos);
+    EXPECT_NE(contents.find("DescFree: font structured buffer ready"), std::string::npos);
+    EXPECT_NE(contents.find("DescFree: font upload recorded to default buffer"), std::string::npos);
+    EXPECT_NE(contents.find("DX12 Overlay: slot"), std::string::npos);
+    EXPECT_NE(contents.find("textured SDR"), std::string::npos);
     EXPECT_NE(contents.find("Focus-change edge ("), std::string::npos);
     EXPECT_NE(contents.find("Focus-loss same-frame overlay fence wait result"), std::string::npos);
     EXPECT_NE(contents.find("Requesting immediate freeze dump for focus-loss same-frame overlay fence wait"),

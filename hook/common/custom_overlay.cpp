@@ -4,11 +4,22 @@
 
 #include "custom_overlay.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include "hook_common.h"
 
 namespace CustomOverlay {
+
+namespace {
+
+uint32_t ApplyCoverageAlpha(uint32_t color, uint8_t coverage) {
+    const uint32_t alpha = (color >> 24) & 0xFFu;
+    const uint32_t coveredAlpha = (alpha * (uint32_t)coverage + 127u) / 255u;
+    return (color & 0x00FFFFFFu) | (coveredAlpha << 24);
+}
+
+}  // namespace
 
 Renderer::Renderer() {}
 
@@ -111,6 +122,16 @@ bool Renderer::RenderCachedFrame(int width, int height) {
 }
 
 void Renderer::AddQuad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t color) {
+    if (vertices.size() > 0xFFFFu - 4u) {
+        static std::atomic<int> s_overflowLogCount{0};
+        const int logN = s_overflowLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logN < 4 || (logN % 200) == 0) {
+            HookLogImportant("Overlay renderer: skipped quad because 16-bit vertex indices would overflow (verts=%zu)",
+                             vertices.size());
+        }
+        return;
+    }
+
     uint16_t baseIdx = (uint16_t)vertices.size();
 
     // Add vertices (4 corners)
@@ -173,6 +194,51 @@ void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t c
     }
 }
 
+void Renderer::AddTextSolidQuads(float x, float y, const char* text, uint32_t color) {
+    AddTextSolidQuadsScaled(x, y, text, color, 1.0f);
+}
+
+void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint32_t color, float scale) {
+    if (!text || scale <= 0.0f)
+        return;
+
+    const float originX = roundf(x);
+    float px = originX;
+    float py = roundf(y);
+
+    while (*text) {
+        char c = *text++;
+
+        if (c == '\n') {
+            px = originX;
+            py += fontAtlas.GetLineHeight() * scale;
+            continue;
+        }
+
+        const Glyph* g = fontAtlas.GetGlyph(c);
+        if (!g || g->width == 0)
+            continue;
+
+        const auto& spans = fontAtlas.GetGlyphSpans(c);
+        if (!spans.empty()) {
+            const float gx = px + g->xOffset * scale;
+            const float gy = py + g->yOffset * scale;
+            const float rowHeight = scale;
+
+            for (const auto& span : spans) {
+                const uint32_t spanColor = ApplyCoverageAlpha(color, span.alpha);
+                if ((spanColor & 0xFF000000u) == 0)
+                    continue;
+
+                AddQuad(gx + (float)span.x * scale, gy + (float)span.y * scale, (float)span.width * scale, rowHeight,
+                        0.0f, 0.0f, 0.0f, 0.0f, spanColor);
+            }
+        }
+
+        px += g->xAdvance * scale;
+    }
+}
+
 void Renderer::FlushBatch(bool useTexture) {
     if (vertices.empty())
         return;
@@ -209,10 +275,15 @@ void Renderer::DrawText(float x, float y, const char* text, uint32_t color) {
         return;
 
     size_t prevVertCount = vertices.size();
-    AddTextQuads(x, y, text, color);
+    const bool solidText = backend && backend->PreferSolidTextGeometry();
+    if (solidText) {
+        AddTextSolidQuads(x, y, text, color);
+    } else {
+        AddTextQuads(x, y, text, color);
+    }
 
     if (vertices.size() > prevVertCount) {
-        FlushBatch(true);  // Text uses texture
+        FlushBatch(!solidText);
     }
 }
 
@@ -223,11 +294,18 @@ void Renderer::DrawTextWithShadow(float x, float y, const char* text, uint32_t c
 
     // Scale shadow offset by DPI so it is proportional at all DPI levels.
     float off = shadowOffset * dpiScale;
-    // Draw shadow first
-    AddTextQuads(x + off, y + off, text, shadowColor);
-    // Draw main text on top
-    AddTextQuads(x, y, text, color);
-    FlushBatch(true);
+    const bool solidText = backend && backend->PreferSolidTextGeometry();
+    size_t prevVertCount = vertices.size();
+    if (solidText) {
+        AddTextSolidQuads(x + off, y + off, text, shadowColor);
+        AddTextSolidQuads(x, y, text, color);
+    } else {
+        AddTextQuads(x + off, y + off, text, shadowColor);
+        AddTextQuads(x, y, text, color);
+    }
+    if (vertices.size() > prevVertCount) {
+        FlushBatch(!solidText);
+    }
 }
 
 void Renderer::DrawTextScaled(float x, float y, const char* text, uint32_t color, float scale) {
@@ -235,10 +313,15 @@ void Renderer::DrawTextScaled(float x, float y, const char* text, uint32_t color
         return;
 
     size_t prevVertCount = vertices.size();
-    AddTextQuadsScaled(x, y, text, color, scale);
+    const bool solidText = backend && backend->PreferSolidTextGeometry();
+    if (solidText) {
+        AddTextSolidQuadsScaled(x, y, text, color, scale);
+    } else {
+        AddTextQuadsScaled(x, y, text, color, scale);
+    }
 
     if (vertices.size() > prevVertCount) {
-        FlushBatch(true);  // Text uses texture
+        FlushBatch(!solidText);
     }
 }
 
@@ -248,11 +331,18 @@ void Renderer::DrawTextScaledWithShadow(float x, float y, const char* text, uint
         return;
 
     float off = shadowOffset * dpiScale;
-    // Draw shadow first
-    AddTextQuadsScaled(x + off, y + off, text, shadowColor, scale);
-    // Draw main text on top
-    AddTextQuadsScaled(x, y, text, color, scale);
-    FlushBatch(true);
+    const bool solidText = backend && backend->PreferSolidTextGeometry();
+    size_t prevVertCount = vertices.size();
+    if (solidText) {
+        AddTextSolidQuadsScaled(x + off, y + off, text, shadowColor, scale);
+        AddTextSolidQuadsScaled(x, y, text, color, scale);
+    } else {
+        AddTextQuadsScaled(x + off, y + off, text, shadowColor, scale);
+        AddTextQuadsScaled(x, y, text, color, scale);
+    }
+    if (vertices.size() > prevVertCount) {
+        FlushBatch(!solidText);
+    }
 }
 
 void Renderer::DrawTextRightAligned(float rightX, float y, const char* text, uint32_t color, uint32_t shadowColor,

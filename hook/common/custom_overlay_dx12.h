@@ -36,6 +36,7 @@ public:
 
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
+    bool PreferSolidTextGeometry() const override;
 
     // Override to detect HDR10/PQ vs scRGB from render target format
     void SetHDRParams(int mode, float nits) override {
@@ -46,6 +47,7 @@ public:
 
     // DX12-specific: Set render target before rendering
     void SetRenderTarget(ID3D12GraphicsCommandList* cmdList, D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle);
+    void SetUploadSlotFence(ID3D12Fence* fence, uint64_t guardValue);
     bool PrimeResources(ID3D12GraphicsCommandList* cmdList);
     bool HasPendingResources() const {
         return !fontUploaded.load(std::memory_order_acquire) && uploadBuffer && fontTexture;
@@ -59,6 +61,7 @@ private:
     bool UploadFontTextureIfNeeded(ID3D12GraphicsCommandList* cmdList);
     bool ResizeVertexBuffer(int slot, size_t requiredBytes);
     bool ResizeIndexBuffer(int slot, size_t requiredBytes);
+    bool WaitForSlotGpuComplete(int slot);
 
     ID3D12Device* device = nullptr;
     ID3D12CommandQueue* commandQueue = nullptr;
@@ -66,6 +69,7 @@ private:
 
     ComPtr<ID3D12RootSignature> rootSignature;
     ComPtr<ID3D12PipelineState> pipelineState;
+    ComPtr<ID3D12PipelineState> pipelineStateTexturedSdr;
     ComPtr<ID3D12PipelineState> pipelineStateSolid;
     ComPtr<ID3D12DescriptorHeap> srvHeap;
     ComPtr<ID3D12Resource> fontTexture;
@@ -81,6 +85,9 @@ private:
     void* indexBufferPtr[kFramePoolSize] = {};
     size_t vertexBufferSize[kFramePoolSize] = {};
     size_t indexBufferSize[kFramePoolSize] = {};
+    ID3D12Fence* slotFence = nullptr;
+    uint64_t slotFenceValue[kFramePoolSize] = {};
+    uint64_t nextSlotFenceValue = 0;
     std::atomic<int> frameIdx{0};
 
     ID3D12GraphicsCommandList* currentCmdList = nullptr;

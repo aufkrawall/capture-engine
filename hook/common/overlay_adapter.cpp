@@ -424,6 +424,16 @@ void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
 #endif
 }
 
+void OverlayAdapter::SetDX12UploadSlotFence(void* fence, uint64_t guardValue) {
+#ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (backendType == OverlayBackendType::DX12 && backend) {
+        auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
+        dx12Backend->SetUploadSlotFence(static_cast<ID3D12Fence*>(fence), guardValue);
+    }
+#endif
+}
+
 bool OverlayAdapter::PrimeDX12Resources(void* cmdList) {
 #ifndef VK_LAYER_CE_OVERLAY
     std::lock_guard<std::mutex> lock(stateMutex);

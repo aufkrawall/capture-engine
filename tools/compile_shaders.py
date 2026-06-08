@@ -127,6 +127,25 @@ float4 main(PS_INPUT input) : SV_Target {
 }
 """
 
+PS_TEXTURED_SDR_SRC = b"""
+cbuffer Constants : register(b0) {
+    float2 viewportSize;
+    float hdrMode;
+    float paperWhiteNits;
+};
+Texture2D fontTexture : register(t0);
+SamplerState fontSampler : register(s0);
+struct PS_INPUT {
+    float4 pos : SV_POSITION;
+    float2 uv : TEXCOORD0;
+    float4 col : COLOR0;
+};
+float4 main(PS_INPUT input) : SV_Target {
+    float alpha = fontTexture.SampleLevel(fontSampler, input.uv, 0.0).a;
+    return float4(input.col.rgb, input.col.a * alpha);
+}
+"""
+
 PS_SOLID_SRC = b"""
 cbuffer Constants : register(b0) {
     float2 viewportSize;
@@ -164,11 +183,13 @@ float4 main(PS_INPUT input) : SV_Target {
 """
 
 # Descriptor-free textured pixel shader:
-# Uses ByteAddressBuffer (root SRV at t0) instead of Texture2D, so
+# Uses StructuredBuffer<uint> (root SRV at t0) instead of Texture2D, so
 # SetDescriptorHeaps is never needed.  Avoids the NVIDIA driver stall
 # caused by SetDescriptorHeaps + OMSetRenderTargets(swapchain) in the
-# same command list.  Manual bilinear filtering matches the static
-# sampler quality of the standard textured PS.
+# same command list.  The structured uint load keeps element addressing
+# explicit; x86 primary text rendering routes through the Texture2D backend.
+# Manual bilinear filtering matches the static sampler quality of the standard
+# textured PS.
 PS_TEXTURED_DESCFREE_SRC = b"""
 cbuffer Constants : register(b0) {
     float2 viewportSize;
@@ -176,7 +197,7 @@ cbuffer Constants : register(b0) {
     float paperWhiteNits;
     float2 fontTexSize;
 };
-ByteAddressBuffer fontBuffer : register(t0);
+StructuredBuffer<uint> fontPixels : register(t0);
 struct PS_INPUT {
     float4 pos : SV_POSITION;
     float2 uv : TEXCOORD0;
@@ -200,8 +221,8 @@ float3 ApplyHDR(float3 srgb) {
 }
 float4 LoadTexel(int2 coord) {
     coord = clamp(coord, int2(0, 0), int2(fontTexSize) - 1);
-    uint offset = (uint(coord.y) * uint(fontTexSize.x) + uint(coord.x)) * 4u;
-    uint packed = fontBuffer.Load(offset);
+    uint index = uint(coord.y) * uint(fontTexSize.x) + uint(coord.x);
+    uint packed = fontPixels[index];
     return float4(
         float((packed      ) & 0xFFu) / 255.0,
         float((packed >>  8) & 0xFFu) / 255.0,
@@ -274,6 +295,7 @@ def main():
         (VS_SRC, "vs_5_0", "g_VS_5_0"),
         (PS_TEXTURED_SRC, "ps_4_0", "g_PS_Textured_4_0"),
         (PS_TEXTURED_SRC, "ps_5_0", "g_PS_Textured_5_0"),
+        (PS_TEXTURED_SDR_SRC, "ps_5_0", "g_PS_Textured_SDR_5_0"),
         (PS_SOLID_SRC, "ps_4_0", "g_PS_Solid_4_0"),
         (PS_SOLID_SRC, "ps_5_0", "g_PS_Solid_5_0"),
         (PS_TEXTURED_DESCFREE_SRC, "ps_5_0", "g_PS_Textured_DescFree_5_0"),
