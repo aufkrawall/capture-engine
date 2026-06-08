@@ -17947,9 +17947,12 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // DX12_SetCommandQueue when a fresh device is adopted, so a recovering app resumes.
     if (!ce::dx12_overlay_policy::ShouldForwardAppCommandListsToDriver(
             g_DeviceRemoved.load(std::memory_order_relaxed))) {
+        // A naive app that ignores Present's DXGI_ERROR_DEVICE_* (e.g. dx12_test) keeps
+        // looping after removal, so this can fire hundreds of thousands of times — keep
+        // the log bounded so it never floods (a real game recreates the device instead).
         static std::atomic<int> s_eclRemovedSkipLog{0};
         const int n = s_eclRemovedSkipLog.fetch_add(1, std::memory_order_relaxed);
-        if (n < 20 || (n % 500) == 0) {
+        if (n < 5 || (n % 100000) == 0) {
             HookLogImportant(
                 "DX12: Skipping app ExecuteCommandLists forward — device removed (queue=%p numLists=%u skip#%d); "
                 "avoids nvwgf2um AV from submitting into a torn-down driver",

@@ -26,17 +26,20 @@ The visible `nvwgf2um` AV is **secondary**. The flight recorder proves a two-sta
 
 **VA-exhaustion hypothesis is RULED OUT** (probe flat). The upload-ring per-slot fence guard (the prior Alt+Tab fix) is present AND correct, and WoW64's *slower* CPU submission makes "CPU laps the GPU" LESS likely in 32-bit — so this DEVICE_HUNG is a **different, 32-bit-specific GPU-side hazard**, root cause still **unknown**. Need the GPU's faulting VA / last op (DRED), which was OFF in this run.
 
-## Next action — capture the GPU fault with the new low-perturbation DRED
-DRED was silent only because it's opt-in and was off. Full auto-breadcrumbs perturb timing (per-Reset kernel alloc — that masked the Alt+Tab case). **New page-fault-only DRED mode** arms ONLY page-fault output (no auto-breadcrumbs, low perturbation) and still records the faulting GPU VA + existing/recently-freed allocation nodes on the DEVICE_HUNG.
-1. Enable it inject-friendly: create an **empty file** `installed/captureengine/ce_dx12_dred` (empty ⇒ page-fault-only). Or `CE_DX12_DRED=pf`. (`1`/`full` = full breadcrumbs, only if pf reports a "pure hang".)
-2. Run the fast uncapped repro (below) until DEVICE_HUNG (~5–10 s).
-3. Read `DX12 DRED:` lines in `hook_debug.log`:
-   - `pageFaultVA=0x..` + `[existing]`/`[recently-freed]` allocation names → **names the GPU resource the overlay/app choked on** (e.g. a CE upload/offscreen resource ⇒ that's the fix target; a freed backbuffer ⇒ stale-bb access).
-   - `(no page-fault VA — likely a pure hang)` → re-run with `full` to get the exact hung op/breadcrumb.
-Code: `ce::dx12_dred` (`hook/common/dx12_dred.cpp`), `DecideDredArmMode`/`DredArmMode` in `hook/common/dx12_overlay_policy.h`.
+## ⭐ DRED RESULT (2026-06-08, logs/20260608_214604) — confirmed PURE GPU HANG (no page fault)
+Ran the repro with the new page-fault-only DRED. `DX12 DRED: armed page-fault only ...` then on the hang:
+`DX12 DRED: pageFaultVA=0x0` → **`(no page-fault VA — likely a pure hang, not an invalid access)`**. So the GPU did **not** fault on a bad address — it got **stuck executing/waiting**. Matches the v8/v9 DRED precedent (a PURE hang inside CE's OWN overlay command list: v8 direct-draw hung on `DRAWINDEXEDINSTANCED`, v9 offscreen hung on `COPYTEXTUREREGION`). The current non-FG path is v8-like (direct draw), so the hung op is almost certainly the overlay's **`DrawIndexedInstanced`**.
 
-## Already fixed this session (secondary crash hardening)
-`DetourExecuteCommandLists` now drops the app's ECL once `g_DeviceRemoved` is set (`ShouldForwardAppCommandListsToDriver`) — forwarding into a torn-down driver was the nvwgf2um AV. Prevents the hard crash and keeps the process alive so DRED dumps cleanly. Log marker: `DX12: Skipping app ExecuteCommandLists forward — device removed`. This does NOT fix the PRIMARY hang.
+**The hang is DETERMINISTIC**: both runs hang at `DetourPresent: heartbeat #78 gap=1875ms`, ~2.4 s after overlay rendering starts, with the overlay content small/stable (`footprint draws=4 vbBytes≈14000 ibBytes≈2100`), **no** DescFree slot-wait timeouts, no resizes, no debug-layer. So it is NOT content explosion, NOT the upload ring lagging — a trivial textured-quad draw pure-hangs the 32-bit GPU. Identical GPU commands run fine on 64-bit ⇒ the 32-bit/WoW64 NV-UMD interaction with CE's per-frame shared-queue overlay draw is the open mechanism.
+
+## Next action — confirm the exact hung op, then attack the draw-submit mechanism
+1. **Full DRED breadcrumbs** to nail the op: write `full` (or `1`) into `installed/captureengine/ce_dx12_dred` (or `CE_DX12_DRED=1`), re-run. Read `DX12 DRED: node# ... op[..]=DRAWINDEXEDINSTANCED  <== last completed` etc. Caveat: full mode's per-Reset kernel alloc perturbs timing — if it stops reproducing, that itself confirms timing-sensitivity. (Expectation per v8: it's the overlay draw.)
+2. Then the real work is **why** the overlay `DrawIndexedInstanced` on the app's shared queue pure-hangs the WoW64 GPU. Compare against the reference that works (RTSS/D3D11On12, which wraps the backbuffer so the D3D11 runtime owns Acquire/Release/Flush around the same shared-queue draw). Candidate angles not yet disproven: backbuffer resource-STATE/ownership across the app↔overlay handoff on the shared queue (barriers vs what the D3D11 runtime inserts), flip-model backbuffer-rotation/scanout ownership, or a genuine 32-bit NV-UMD limitation. **Do NOT throw speculative timing fixes (v3–v12 failed that way).**
+
+## Already fixed this session (secondary crash hardening + diagnostics)
+- `DetourExecuteCommandLists` drops the app's ECL once `g_DeviceRemoved` is set (`ShouldForwardAppCommandListsToDriver`) — forwarding into a torn-down driver was the nvwgf2um AV. **Verified**: in logs/20260608_214604 the AV is gone; instead `DX12: Skipping app ExecuteCommandLists forward — device removed` fires. Does NOT fix the PRIMARY hang.
+- Page-fault-only DRED mode (low perturbation) — used above. Log: `DX12 DRED: armed page-fault only`.
+- **Side effect to be aware of**: a naive app that ignores Present's `DXGI_ERROR_DEVICE_*` (dx12_test) now busy-spins post-removal (~1M presents @ ~31k/s until it exits) instead of crashing. Real games recreate the device. The mid-stall FREEZE dump catches the present thread in `DetourPresent`'s inlined overlay-detection `tolower` loop during this spin — a Present-hot-path string-work FOLLOW-UP to investigate (`InstallPresentInlineHooks` matcher at `dxgi_shared.cpp:3897`, LTO-inlined into `DetourPresent`), NOT the GPU-hang cause.
 
 ## Hard constraints (all the easy outs are rejected)
 Native D3D12 (no D3D11On12 — that's what RTSS uses), never hide the overlay, no compositing/DComp separate-surface, no timing/sleep bandaid, no dedicated queue for the backbuffer (ACCESS_DENIED). A real fix must remove whatever GPU-side hazard the overlay submission creates on the shared queue under WoW64, or it's a driver limitation.
