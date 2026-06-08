@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-06-08 (ACTIVE: x86 Alt+Tab freeze still OPEN but now exhaustively characterized — a 32-bit timing-race in the kernel GPU-VA map during the iflip<->composited transition, triggered by CE's native backbuffer touch; residency/magnitude/iflip-disable all RULED OUT; see the rewritten "ACTIVE INVESTIGATION" section below)
+Last cross-checked: 2026-06-08 (ACTIVE: still OPEN, but now has a FAST Alt+Tab-FREE repro — at uncapped FPS the SAME NV-UMD fault crashes in steady-state within seconds; CE-overlay-caused; root cause reframed as CE's overlay shared-queue submission corrupting a driver structure, hit by either the iflip GPU-pause OR raw throughput. See ACTIVE INVESTIGATION → "FAST REPRO" first.)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -25,6 +25,15 @@ This page records the current repo knowledge for making our DX12 overlay work we
 
 ## ACTIVE INVESTIGATION: x86 Alt+Tab DX12 freeze (dx12_test) — consolidated state as of 2026-06-08
 Single hand-off reference for continuing in a fresh session. The bug is STILL OPEN, but it is now exhaustively characterized and most hypotheses are eliminated with hard evidence. Chronology in `log/recent.md` (2026-06-06..08, newest-first).
+
+### ⭐ FAST REPRO + reframe (2026-06-08 latest — READ FIRST)
+- A test-app vsync bug was fixed (`testapp/dx12_test.cpp`, commit `7f60c06`): it used flip-model `Present(0,0)` with no `ALLOW_TEARING`, so `vsync=0` was actually vsync-capped at the refresh rate. (Consequence: ALL earlier freeze repros were silently vsync-capped, so the per-frame race could previously only be hit during the Alt+Tab mode-switch GPU-pause.)
+- With true uncapped FPS + CE overlay ON, the **SAME fault now crashes in steady-state within ~5 s with NO Alt+Tab, no debug layer, no GPUView** (`logs/20260608_174503`). It is **byte-identical** to the Alt+Tab freeze-crash (`logs/20260608_162931`): `dx12_test!Render → DetourExecuteCommandLists → D3D12Core!CCommandQueue::ExecuteCommandLists → nvwgf2um!OpenAdapter10+0x116c23: mov [ecx],eax`, `ecx=0x7f2700d4` (invalid), `eax=0x2005e017` — same offset/address/registers across runs (DETERMINISTIC corruption).
+- **Confirmed CE-overlay-caused**: at the same uncapped FPS, **no-CE and `observer_only=true` are both stable** (`logs/20260608_175213`).
+- **REFRAME**: the bug is NOT only an "iflip transition" race. It is a race/corruption in **CE's overlay shared-queue submission that corrupts a driver-internal structure** — the fault is a CPU-side NV-UMD dereference of a corrupted pointer/handle DURING the APP's own `ExecuteCommandLists` (not corrupted geometry, not a GPU draw hang). Two triggers reach the same corruption: (a) the iflip<->composited GPU-pause (Alt+Tab), (b) raw high submission throughput (uncapped). 32-bit/WoW64 only.
+- **How to repro (use this — it's far easier than Alt+Tab)**: fixed test app, `testappconfig.ini vsync=0`, borderless 4K; CE injected, overlay ON (default `observer_only=false`); run ~5–10 s. Crashes with the signature above. Do NOT enable the debug layer (it masks via timing).
+- **Fix target**: CE's overlay submission on the app's shared command queue (live overlay backend's per-frame submission + UPLOAD vertex/index ring + command-list/allocator/handle reuse vs the app's at high submission rate). The deterministic corrupted handle (`0x7f2700d4`/`0x2005e017`) implies a specific corrupted driver structure, not random heap. Constraints unchanged (native D3D12, never hide, no D3D11On12/compositing, no timing bandaid).
+- The rest of this section (below) remains valid background but predates the uncapped repro; where it says "timing race during the iflip transition," read it as ONE trigger of the shared-queue-submission corruption described here.
 
 ### Symptom
 Injected **32-bit** `dx12_test.exe` in borderless-fullscreen (4K, vsync=1) freezes ~2–3.8 s on Alt+Tab in/out → GPU `DEVICE_HUNG (0x887A0006)`, a **real GPU TDR** (`DxgKrnl/TdrCaptureDumpStart/Finish` in the GPUView trace). **64-bit never freezes.** **Bare 32-bit (no CE) never freezes. app+RTSS never freezes.** So CE is the trigger.
