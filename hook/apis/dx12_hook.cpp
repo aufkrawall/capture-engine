@@ -12388,12 +12388,55 @@ static bool IsDX12FocusAnalysisModeActive(SharedMemoryLayout* shm) {
     return IsOverlayDx12FocusAnalysis(GetActiveDX12OverlayConfig(shm));
 }
 
+// Sample the process virtual address space. The uncapped-FPS crash on 32-bit (NV UMD AV in the APP's
+// ExecuteCommandLists, deterministic ecx=0x7f2700d4, 64-bit immune) is hypothesized to be CPU VA /
+// command-buffer-pool exhaustion rather than GPU residency (which is flat). Walk committed/free regions
+// and report the largest contiguous free block — if it collapses toward 0 over the seconds before the
+// crash, that confirms VA exhaustion as the root cause and points the fix at CE's per-frame
+// command-buffer/VA churn on the shared queue. Done at most ~1/s + once at the stall (not per-present).
+static void Dx12SampleVaSpace(uint32_t* outCommitMB, uint32_t* outFreeMB, uint32_t* outLargestFreeMB) {
+    SYSTEM_INFO si = {};
+    GetSystemInfo(&si);
+    const uintptr_t maxAddr = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
+    uintptr_t addr = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
+    size_t totalCommit = 0, totalFree = 0, largestFree = 0;
+    int guard = 0;
+    MEMORY_BASIC_INFORMATION mbi = {};
+    while (addr <= maxAddr && VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        if (mbi.State == MEM_FREE) {
+            totalFree += mbi.RegionSize;
+            if (mbi.RegionSize > largestFree) {
+                largestFree = mbi.RegionSize;
+            }
+        } else if (mbi.State == MEM_COMMIT) {
+            totalCommit += mbi.RegionSize;
+        }
+        const uintptr_t next = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        if (next <= addr || ++guard > 300000) {
+            break;
+        }
+        addr = next;
+    }
+    if (outCommitMB)
+        *outCommitMB = static_cast<uint32_t>(totalCommit >> 20);
+    if (outFreeMB)
+        *outFreeMB = static_cast<uint32_t>(totalFree >> 20);
+    if (outLargestFreeMB)
+        *outLargestFreeMB = static_cast<uint32_t>(largestFree >> 20);
+}
+
 static void DX12_DumpFocusAnalysisRing(const char* reason) {
     static std::atomic<int> s_dumpCount{0};
     if (s_dumpCount.fetch_add(1, std::memory_order_relaxed) >= 30) {
         return;  // bound log volume across a repro
     }
     HookLogImportant("DX12 ANALYSIS: ===== flight recorder dump (%s) =====", reason ? reason : "?");
+    {
+        uint32_t commitMB = 0, freeMB = 0, largestFreeMB = 0;
+        Dx12SampleVaSpace(&commitMB, &freeMB, &largestFreeMB);
+        HookLogImportant("DX12 ANALYSIS:  vaspace-at-stall committedMB=%u freeMB=%u largestFreeBlockMB=%u", commitMB,
+                         freeMB, largestFreeMB);
+    }
     const uint64_t total = g_Dx12FaCount.load(std::memory_order_relaxed);
     const uint32_t n = static_cast<uint32_t>((total < kDx12FaRingSize) ? total : kDx12FaRingSize);
     for (uint64_t i = total - n; i < total; ++i) {
@@ -12460,6 +12503,13 @@ static void DX12_UpdateFocusAnalysis(SharedMemoryLayout* shm) {
             "DX12 ANALYSIS: residency localBudget=%uMB localUsage=%uMB%s nonLocalUsage=%uMB fg=%d (present#%llu)",
             localBudgetMB, localUsageMB, (localBudgetMB && localUsageMB > localBudgetMB) ? " OVER-BUDGET" : "",
             nonLocalUsageMB, foreground, (unsigned long long)idx);
+        // CPU virtual-address-space probe (32-bit VA-exhaustion hypothesis for the uncapped crash).
+        // Watch largestFreeBlockMB over the seconds before the crash: a steady collapse toward 0 = VA
+        // exhaustion (the fix target); flat = driver-internal corruption (escalate).
+        uint32_t commitMB = 0, freeMB = 0, largestFreeMB = 0;
+        Dx12SampleVaSpace(&commitMB, &freeMB, &largestFreeMB);
+        HookLogImportant("DX12 ANALYSIS: vaspace committedMB=%u freeMB=%u largestFreeBlockMB=%u (present#%llu)",
+                         commitMB, freeMB, largestFreeMB, (unsigned long long)idx);
     }
 
     // Stall: dump the recorder so the residency/gap trajectory INTO the freeze is captured.

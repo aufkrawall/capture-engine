@@ -30,6 +30,8 @@ Primary sources:
 - For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog
+- `handoff-dx12-32bit-crash.md`
+  - ⭐ ACTIVE pickup note (flushed-context-safe) for the OPEN 32-bit DX12 inject-overlay crash/freeze: fast repro, what's ruled out, the leading CPU-VA-exhaustion hypothesis, the just-added VA probe and how to read it, constraints, and anchors. Start here if continuing that investigation.
 - `current.md`
   - Compact current-state summary, current logging model, and token-efficient routing into the longer wiki pages.
 - `codestyle.md`
