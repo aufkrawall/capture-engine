@@ -39,7 +39,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 25: Added OverlayConfig::observerStartupPresentOnly staged DXGI startup-Present probe mode
 // Version 26: Added WGC capture health flags for source-starvation diagnostics
 // Version 27: Added WGC-specific selection-bias telemetry separate from output schedule bias
-static constexpr uint32_t SHARED_MEMORY_VERSION = 27;
+// Version 28: Added OverlayConfig::dx12FocusAnalysis (config-gated DX12 focus/mode-switch analysis)
+static constexpr uint32_t SHARED_MEMORY_VERSION = 28;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -230,6 +231,11 @@ struct OverlayConfig {
 
     // HDR
     float hdrPaperWhite;  // 0.0 = auto, otherwise manual nits
+
+    // Diagnostics (off by default). Config-gated, in-process DX12 focus/mode-switch analysis: records a
+    // per-present flight recorder (GPU residency budget/usage, present gap, foreground) and dumps it on a
+    // stall or device removal — an in-process substitute for an external GPU-scheduler trace.
+    bool dx12FocusAnalysis;
 };
 
 struct SharedGraphicsConfig {

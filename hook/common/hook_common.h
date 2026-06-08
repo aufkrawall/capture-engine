@@ -130,6 +130,10 @@ inline bool HookOverlayObserverStartupPresentOnlyEnabled() {
     return IsOverlayObserverStartupPresentOnly(GetHookOverlayConfig());
 }
 
+inline bool HookOverlayDx12FocusAnalysisEnabled() {
+    return IsOverlayDx12FocusAnalysis(GetHookOverlayConfig());
+}
+
 // DX12 exports this so shared routing code can distinguish a fully confirmed
 // PostSL path from the still-fragile post-activation warm-up phase.
 bool HookIsPostSLOverlayActiveButUnconfirmed();

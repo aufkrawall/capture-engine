@@ -112,6 +112,10 @@ text_update_interval=500
 ;observer_only=false
 ;observer_policy_only=false
 ;observer_startup_present_only=false
+; dx12_focus_analysis - in-process DX12 focus/mode-switch analysis (Alt+Tab freeze diagnostics).
+; Logs per-present GPU residency (budget/usage) + a flight recorder dumped on a stall or device
+; removal. No external tools needed. Off by default. Values: true, false
+;dx12_focus_analysis=false
 
 [Hotkeys]
 ; start_stop - Values: key string (e.g. F9, Ctrl+Shift+F10)

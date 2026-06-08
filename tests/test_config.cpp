@@ -216,6 +216,22 @@ TEST_F(ConfigTest, ParseOverlayInclusionOptions) {
     EXPECT_TRUE(config.overlay.observerStartupPresentOnly);
     EXPECT_FALSE(config.overlay.captureIncludeOverlay);
     EXPECT_FALSE(config.overlay.screenshotIncludeOverlay);
+    // dx12_focus_analysis is absent here -> defaults off.
+    EXPECT_FALSE(config.overlay.dx12FocusAnalysis);
+    EXPECT_FALSE(IsOverlayDx12FocusAnalysis(config.overlay));
+}
+
+TEST_F(ConfigTest, ParseDx12FocusAnalysisOption) {
+    WriteConfig(
+        "[Overlay]\n"
+        "enabled=true\n"
+        "dx12_focus_analysis=true\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.overlay.dx12FocusAnalysis);
+    EXPECT_TRUE(IsOverlayDx12FocusAnalysis(config.overlay));
 }
 
 TEST_F(ConfigTest, PseudoOverlayProcessListIsNormalized) {

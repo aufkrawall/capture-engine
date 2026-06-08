@@ -1101,6 +1101,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.overlay.observerOnly = GetBool("Overlay", "observer_only", false);
     config.overlay.observerPolicyOnly = GetBool("Overlay", "observer_policy_only", false);
     config.overlay.observerStartupPresentOnly = GetBool("Overlay", "observer_startup_present_only", false);
+    config.overlay.dx12FocusAnalysis = GetBool("Overlay", "dx12_focus_analysis", false);
     config.overlay.captureIncludeOverlay = GetBool("Overlay", "capture_include_overlay", true);
     config.overlay.screenshotIncludeOverlay = GetBool("Overlay", "screenshot_include_overlay", true);
 

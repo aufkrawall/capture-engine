@@ -372,6 +372,10 @@ inline bool IsOverlayObserverStartupPresentOnly(const OverlayConfig& cfg) {
     return cfg.observerOnly && cfg.observerPolicyOnly && cfg.observerStartupPresentOnly;
 }
 
+inline bool IsOverlayDx12FocusAnalysis(const OverlayConfig& cfg) {
+    return cfg.dx12FocusAnalysis;
+}
+
 inline bool IsDebugLoggingEnabled(LogLevel level) {
     return static_cast<int>(level) >= static_cast<int>(LogLevel::Debug);
 }

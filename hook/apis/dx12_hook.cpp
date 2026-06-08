@@ -12338,6 +12338,139 @@ static bool WaitForFocusLossImmediateOverlayFenceBeforePresent(
     return completed;
 }
 
+// ===================== DX12 focus/mode-switch analysis (config-gated; off by default) =====================
+// Enabled by [Overlay] dx12_focus_analysis=true. An in-process substitute for an external GPU-scheduler
+// trace (GPUView/xperf) for the 32-bit Alt+Tab freeze investigation: each present it records a "flight
+// recorder" sample (GPU residency budget/usage via IDXGIAdapter3, the present-to-present gap, and
+// foreground state) and, on a stall (large present gap) or device removal, dumps the recent samples so we
+// can see whether the iflip<->composited focus transition drives a VRAM budget drop / over-budget
+// eviction (which would explain the app's own ExecuteCommandLists stalling in a kernel GPU-VA re-residency
+// map). Deliberately low-overhead and non-perturbing: it does NOT arm DRED forced breadcrumbs or
+// GPU-based validation (both were proven to CAUSE this very freeze).
+static std::atomic<bool> g_Dx12FocusAnalysisActive{false};
+
+namespace {
+struct Dx12FocusAnalysisSample {
+    uint64_t presentIdx;
+    double gapMs;
+    uint32_t localBudgetMB;
+    uint32_t localUsageMB;
+    uint32_t nonLocalUsageMB;
+    int foreground;
+};
+constexpr uint32_t kDx12FaRingSize = 256;
+Dx12FocusAnalysisSample g_Dx12FaRing[kDx12FaRingSize] = {};
+std::atomic<uint64_t> g_Dx12FaCount{0};
+IDXGIAdapter3* g_Dx12FaAdapter = nullptr;
+
+void EnsureDx12FaAdapter() {
+    if (g_Dx12FaAdapter) {
+        return;
+    }
+    ID3D12Device* dev = g_Device.load(std::memory_order_acquire);
+    if (!dev) {
+        return;
+    }
+    const LUID luid = dev->GetAdapterLuid();
+    IDXGIFactory4* factory = nullptr;
+    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory) {
+        IDXGIAdapter1* adapter1 = nullptr;
+        if (SUCCEEDED(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter1))) && adapter1) {
+            adapter1->QueryInterface(IID_PPV_ARGS(&g_Dx12FaAdapter));
+            adapter1->Release();
+        }
+        factory->Release();
+    }
+}
+}  // namespace
+
+static bool IsDX12FocusAnalysisModeActive(SharedMemoryLayout* shm) {
+    return IsOverlayDx12FocusAnalysis(GetActiveDX12OverlayConfig(shm));
+}
+
+static void DX12_DumpFocusAnalysisRing(const char* reason) {
+    static std::atomic<int> s_dumpCount{0};
+    if (s_dumpCount.fetch_add(1, std::memory_order_relaxed) >= 30) {
+        return;  // bound log volume across a repro
+    }
+    HookLogImportant("DX12 ANALYSIS: ===== flight recorder dump (%s) =====", reason ? reason : "?");
+    const uint64_t total = g_Dx12FaCount.load(std::memory_order_relaxed);
+    const uint32_t n = static_cast<uint32_t>((total < kDx12FaRingSize) ? total : kDx12FaRingSize);
+    for (uint64_t i = total - n; i < total; ++i) {
+        const Dx12FocusAnalysisSample& s = g_Dx12FaRing[i % kDx12FaRingSize];
+        HookLogImportant(
+            "DX12 ANALYSIS:  present#%llu gap=%.1fms localBudget=%uMB localUsage=%uMB%s nonLocalUsage=%uMB fg=%d",
+            (unsigned long long)s.presentIdx, s.gapMs, s.localBudgetMB, s.localUsageMB,
+            (s.localBudgetMB && s.localUsageMB > s.localBudgetMB) ? " OVER-BUDGET" : "", s.nonLocalUsageMB,
+            s.foreground);
+    }
+    HookLogImportant("DX12 ANALYSIS: ===== end flight recorder dump =====");
+}
+
+static void DX12_UpdateFocusAnalysis(SharedMemoryLayout* shm) {
+    const bool active = IsDX12FocusAnalysisModeActive(shm);
+    g_Dx12FocusAnalysisActive.store(active, std::memory_order_relaxed);
+    if (!active) {
+        return;
+    }
+
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    static LARGE_INTEGER s_last = {};
+    const double gapMs =
+        s_last.QuadPart ? (double)(now.QuadPart - s_last.QuadPart) * 1000.0 / (double)freq.QuadPart : 0.0;
+    s_last = now;
+
+    uint32_t localBudgetMB = 0, localUsageMB = 0, nonLocalUsageMB = 0;
+    EnsureDx12FaAdapter();
+    if (g_Dx12FaAdapter) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO li = {}, ni = {};
+        if (SUCCEEDED(g_Dx12FaAdapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &li))) {
+            localBudgetMB = static_cast<uint32_t>(li.Budget >> 20);
+            localUsageMB = static_cast<uint32_t>(li.CurrentUsage >> 20);
+        }
+        if (SUCCEEDED(g_Dx12FaAdapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &ni))) {
+            nonLocalUsageMB = static_cast<uint32_t>(ni.CurrentUsage >> 20);
+        }
+    }
+
+    int foreground = 0;
+    if (HWND fg = GetForegroundWindow()) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(fg, &pid);
+        foreground = (pid == GetCurrentProcessId()) ? 1 : 0;
+    }
+
+    const uint64_t idx = g_Dx12FaCount.fetch_add(1, std::memory_order_relaxed);
+    Dx12FocusAnalysisSample& slot = g_Dx12FaRing[idx % kDx12FaRingSize];
+    slot.presentIdx = idx;
+    slot.gapMs = gapMs;
+    slot.localBudgetMB = localBudgetMB;
+    slot.localUsageMB = localUsageMB;
+    slot.nonLocalUsageMB = nonLocalUsageMB;
+    slot.foreground = foreground;
+
+    // Periodic residency snapshot (~1/s) so steady-state budget/usage is visible even without a stall.
+    static std::atomic<ULONGLONG> s_lastResLogMs{0};
+    const ULONGLONG nowMs = GetTickCount64();
+    ULONGLONG prevMs = s_lastResLogMs.load(std::memory_order_relaxed);
+    if (nowMs - prevMs >= 1000 && s_lastResLogMs.compare_exchange_strong(prevMs, nowMs, std::memory_order_relaxed)) {
+        HookLogImportant(
+            "DX12 ANALYSIS: residency localBudget=%uMB localUsage=%uMB%s nonLocalUsage=%uMB fg=%d (present#%llu)",
+            localBudgetMB, localUsageMB, (localBudgetMB && localUsageMB > localBudgetMB) ? " OVER-BUDGET" : "",
+            nonLocalUsageMB, foreground, (unsigned long long)idx);
+    }
+
+    // Stall: dump the recorder so the residency/gap trajectory INTO the freeze is captured.
+    if (gapMs > 250.0) {
+        char reason[96] = {};
+        _snprintf_s(reason, sizeof(reason), _TRUNCATE, "present gap %.0fms fg=%d", gapMs, foreground);
+        DX12_DumpFocusAnalysisRing(reason);
+    }
+}
+// ===================== end DX12 focus/mode-switch analysis =====================
+
 void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // Re-entrancy guard: NVIDIA driver can pump window messages during
     // ExecuteCommandLists (via WaitImpl → DefWindowProc), which can re-enter
@@ -12415,6 +12548,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         return;
     }
 
+    // Advanced DX12 focus/mode-switch analysis (config-gated by [Overlay] dx12_focus_analysis; off by
+    // default). Runs before the device-removed early-return so the stall present and its residency
+    // trajectory are captured. No-op when disabled.
+    DX12_UpdateFocusAnalysis(g_IPC ? g_IPC->GetSharedMem() : nullptr);
+
     // Skip everything when device is removed — avoids reinit spam on a dead
     // device.  DX12_SetCommandQueue clears g_DeviceRemoved when a new device
     // arrives.
@@ -12434,6 +12572,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             g_RenderWatchdog.SetForceMonitor(true);
             HookLogImportant("DX12: GPU device removed (0x%08X) — stopping overlay",
                              (unsigned)devCheck->GetDeviceRemovedReason());
+            if (g_Dx12FocusAnalysisActive.load(std::memory_order_relaxed)) {
+                char reason[96] = {};
+                _snprintf_s(reason, sizeof(reason), _TRUNCATE, "device removed 0x%08X",
+                            (unsigned)devCheck->GetDeviceRemovedReason());
+                DX12_DumpFocusAnalysisRing(reason);
+            }
             ce::dx12_dred::DumpOnDeviceRemoved(devCheck, "D3D12 device removed before ProcessFrame setup");
             if (s_WrappedPresentFocusLossContext.valid) {
                 HWND foregroundWindow = nullptr;
