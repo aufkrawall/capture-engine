@@ -17,6 +17,7 @@
 #include <d3dcompiler.h>
 #include <directxmath.h>
 #include <dxgi1_4.h>
+#include <dxgi1_5.h>
 #include <shellscalingapi.h>
 #include <wrl/client.h>
 #include <chrono>
@@ -42,6 +43,7 @@ static int g_WindowHeight = 2160;
 static int g_GpuLoadPasses = 40;  // Default ~70% GPU at 4K 120fps
 static int g_VSync = 0;           // 0 = off, 1 = on
 static int g_Fullscreen = 1;
+static BOOL g_AllowTearing = FALSE;  // true if DXGI tearing (true uncapped / vsync-off) is supported
 
 // Read config from testappconfig.ini
 void LoadConfig() {
@@ -150,6 +152,21 @@ bool InitDX12(HWND hwnd) {
     ComPtr<IDXGIFactory4> factory;
     CreateDXGIFactory1(IID_PPV_ARGS(&factory));
 
+    // Detect tearing support. REQUIRED for true uncapped / vsync-off presentation in the flip model:
+    // without it, Present(0, 0) on a FLIP_DISCARD swapchain still synchronizes to vblank (FPS capped at
+    // the refresh rate) even though SyncInterval is 0.
+    {
+        ComPtr<IDXGIFactory5> factory5;
+        if (SUCCEEDED(factory.As(&factory5))) {
+            BOOL allowTearing = FALSE;
+            if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing,
+                                                        sizeof(allowTearing)))) {
+                g_AllowTearing = allowTearing;
+            }
+        }
+        printf("Tearing (uncapped vsync-off) support: %s\n", g_AllowTearing ? "yes" : "no");
+    }
+
     if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_Device)))) {
         printf("Failed to create D3D12 device\n");
         return false;
@@ -168,6 +185,10 @@ bool InitDX12(HWND hwnd) {
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    // The swapchain must carry ALLOW_TEARING for the matching present-time flag to be legal.
+    if (g_AllowTearing) {
+        swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    }
 
     ComPtr<IDXGISwapChain1> swapChain1;
     factory->CreateSwapChainForHwnd(g_CommandQueue.Get(), hwnd, &swapChainDesc, nullptr, nullptr, &swapChain1);
@@ -255,7 +276,11 @@ void Render() {
     ID3D12CommandList* ppCommandLists[] = {g_CommandList.Get()};
     g_CommandQueue->ExecuteCommandLists(1, ppCommandLists);
 
-    g_SwapChain->Present(g_VSync, 0);  // VSync controlled by config
+    // VSync controlled by config. For vsync off, DXGI_PRESENT_ALLOW_TEARING is REQUIRED to actually
+    // uncap the frame rate on a flip-model swapchain; it is only legal with SyncInterval==0 on a
+    // swapchain created with DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.
+    const UINT presentFlags = (g_VSync == 0 && g_AllowTearing) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+    g_SwapChain->Present((UINT)g_VSync, presentFlags);
     MoveToNextFrame();
 }
 
