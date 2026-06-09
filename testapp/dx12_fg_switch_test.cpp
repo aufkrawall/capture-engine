@@ -173,6 +173,10 @@ static bool g_SlDeviceSet = false;
 static bool g_DlssInitialized = false;
 static bool g_DlssEnabled = false;
 static bool g_DlssSuspended = false;
+// Reflex low-latency belongs to the active DLSS-G pipeline only. Tracked here so it can be
+// driven strictly by the DLSS FG enable/suspend edge and never linger as a stale FG-aware
+// (half-rate VRR) frame cap once FG is off or suspended.
+static bool g_ReflexLowLatencyActive = false;
 static uint32_t g_FrameTokenIndex = 0;
 static std::mutex g_RuntimeLoadMutex;
 static std::thread g_FsrPreloadThread;

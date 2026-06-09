@@ -89,6 +89,26 @@ static bool LoadStreamlineAndInit() {
     return true;
 }
 
+// Drives Reflex strictly from the DLSS-G active state. eLowLatency only while FG is actually
+// generating frames; eOff otherwise. Idempotent so per-frame/per-transition callers stay cheap.
+static void ApplyReflexMode(bool active, const char* reason) {
+    if (!g_SlReflexSetOptions) {
+        return;
+    }
+    if (active == g_ReflexLowLatencyActive) {
+        return;
+    }
+    sl::ReflexOptions reflex = {};
+    reflex.mode = active ? sl::ReflexMode::eLowLatency : sl::ReflexMode::eOff;
+    sl::Result reflexResult = g_SlReflexSetOptions(reflex);
+    testapp::Log("[FG-DIAG] slReflexSetOptions(mode=%s) reason=%s result=%d (%s)\n",
+                 active ? "LowLatency" : "Off", reason ? reason : "unknown",
+                 static_cast<int>(reflexResult), SlResultName(reflexResult));
+    if (reflexResult == sl::Result::eOk) {
+        g_ReflexLowLatencyActive = active;
+    }
+}
+
 static bool TryInitDLSSFG() {
     if (!g_SlInitialized || !g_SlGetFeatureFunction) {
         return false;
@@ -121,13 +141,9 @@ static bool TryInitDLSSFG() {
         g_SlPCLSetMarker = reinterpret_cast<PFun_slPCLSetMarker*>(fnPtr);
         testapp::Log("[FG-DIAG] Resolved slPCLSetMarker @ %p\n", (void*)g_SlPCLSetMarker);
     }
-    if (g_SlReflexSetOptions) {
-        sl::ReflexOptions reflex = {};
-        reflex.mode = sl::ReflexMode::eLowLatency;
-        sl::Result reflexResult = g_SlReflexSetOptions(reflex);
-        testapp::Log("[FG-DIAG] slReflexSetOptions(mode=LowLatency) result=%d (%s)\n",
-                     static_cast<int>(reflexResult), SlResultName(reflexResult));
-    }
+    // Do NOT force Reflex on at init: FG is not active yet. Reflex is driven by SetDLSSFGMode()
+    // so the FG-aware Reflex frame limiter cannot linger while FG is off or suspended.
+    ApplyReflexMode(false, "DLSS init");
     return g_SlDLSSGSetOptions && g_SlDLSSGGetState;
 }
 
@@ -156,6 +172,16 @@ static bool SetDLSSFGMode(bool enable) {
     testapp::Log("[FG-DIAG] slDLSSGSetOptions(mode=%u) backBuffers=%u color=%dx%d result=%d (%s)\n",
                  static_cast<uint32_t>(options.mode), options.numBackBuffers, options.colorWidth, options.colorHeight,
                  static_cast<int>(ret), SlResultName(ret));
+    // Reflex (low-latency + per-frame slReflexSleep) is only valid while DLSS FG actually
+    // generates frames. Bind it to this FG enable/disable edge so a stale FG-aware Reflex frame
+    // cap (e.g. half-rate ~69 fps instead of the ~138 fps VRR cap) can never survive FG-off /
+    // FG-suspend. On a failed enable, Reflex stays off because FG did not actually start.
+    if (enable) {
+        const bool dlssOk = ret == sl::Result::eOk;
+        ApplyReflexMode(dlssOk, dlssOk ? "DLSS FG enable" : "DLSS FG enable failed");
+    } else {
+        ApplyReflexMode(false, "DLSS FG disable/suspend");
+    }
     testapp::LogFlush();
     return ret == sl::Result::eOk;
 }
@@ -195,7 +221,9 @@ static sl::FrameToken* BeginStreamlineFrame() {
                      static_cast<int>(ret), SlResultName(ret));
         return nullptr;
     }
-    if (g_SlReflexSleep) {
+    // Only sleep on the Reflex pacing line while DLSS FG is actively generating frames. Sleeping
+    // when FG is off/suspended would re-apply the FG-aware half-rate frame cap.
+    if (g_SlReflexSleep && g_DlssEnabled && !g_DlssSuspended) {
         sl::Result sleepResult = g_SlReflexSleep(*token);
         if (sleepResult != sl::Result::eOk && frameIndex < 8) {
             testapp::Log("[FG-DIAG] slReflexSleep frame=%u result=%d (%s)\n", frameIndex,
@@ -304,5 +332,6 @@ static void ShutdownStreamline() {
     g_SlInitialized = false;
     g_SlDeviceSet = false;
     g_DlssInitialized = false;
+    g_ReflexLowLatencyActive = false;
     g_FrameTokenIndex = 0;
 }
