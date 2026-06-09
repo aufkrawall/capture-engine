@@ -339,5 +339,9 @@ static bool InitDX12(HWND hwnd, bool useFfxSwapChain = false, const char* reason
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     testapp::dx12fg::CreateAuxiliaryResources(g_Device.Get(), static_cast<UINT>(g_WindowWidth),
                                               static_cast<UINT>(g_WindowHeight), g_FgInputs);
+    if (!g_CubeScene.Initialize(g_Device.Get())) {
+        testapp::Log("[FG-DIAG] WARN CubeScene init failed; scene will fall back to a flat clear (%s)\n",
+                     reason ? reason : "init");
+    }
     return true;
 }

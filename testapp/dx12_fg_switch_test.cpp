@@ -34,6 +34,7 @@
 #include <sl_reflex.h>
 
 #include "dx12_fg_resources.h"
+#include "dx12_fg_scene.h"
 #include "testapp_common.h"
 
 #pragma comment(lib, "d3d12.lib")
@@ -117,6 +118,7 @@ ComPtr<ID3D12CommandAllocator> g_CommandAllocators[kMaxSwapChainBuffers];
 ComPtr<ID3D12GraphicsCommandList> g_CommandList;
 ComPtr<ID3D12Fence> g_Fence;
 testapp::dx12fg::AuxiliaryResources g_FgInputs;
+testapp::dx12fg::CubeScene g_CubeScene;
 HANDLE g_FenceEvent = nullptr;
 HANDLE g_FrameLatencyWaitHandle = nullptr;
 UINT64 g_FenceValues[kMaxSwapChainBuffers] = {};
@@ -199,7 +201,6 @@ static bool g_SuspensionTogglePending = false;
 static bool g_ModeSwitchingArmed = false;
 static bool g_ManualMode = false;
 static int g_AutoStage = 0;
-static float g_BarPosition = 0.0f;
 static uint64_t g_LastModeSwitchFrameId = 0;
 static auto g_StartTime = std::chrono::high_resolution_clock::now();
 static auto g_LastFsrSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
@@ -297,6 +298,7 @@ static const uint8_t* GlyphRows(char ch) {
         {'E', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}},
         {'F', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}},
         {'G', {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E}},
+        {'H', {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
         {'I', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F}},
         {'L', {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}},
         {'N', {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}},
@@ -798,6 +800,7 @@ static void ReleaseDX12RendererResourcesForSwitch(const char* reason) {
         WaitForGpu();
     }
     testapp::dx12fg::ReleaseAuxiliaryResources(g_FgInputs);
+    g_CubeScene.Release();
     for (auto& renderTarget : g_RenderTargets) {
         renderTarget.Reset();
     }
@@ -1082,6 +1085,64 @@ static void RunAutoSequence(float elapsedSeconds) {
     }
 }
 
+// Renders the frame-generation scene inputs: a real 3D cube into the hud-less color +
+// motion-vector targets (so FG interpolates it to the output/generated rate), and the HUD +
+// status into the UI-layer texture. The UI layer is registered with FSR / tagged for DLSS, so
+// it is composited crisp on every real and generated frame at the base rate (no ghosting).
+static void RenderSwitchSceneInputs(float elapsedSeconds, LONG hudX, LONG hudY) {
+    testapp::dx12fg::AuxiliaryResources& aux = g_FgInputs;
+    if (!aux.valid || !g_CommandList) {
+        return;
+    }
+
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.hudlessColor.Get(), aux.hudlessState,
+                                D3D12_RESOURCE_STATE_RENDER_TARGET);
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.uiColor.Get(), aux.uiState,
+                                D3D12_RESOURCE_STATE_RENDER_TARGET);
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.motionVectors.Get(), aux.motionState,
+                                D3D12_RESOURCE_STATE_RENDER_TARGET);
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.depth.Get(), aux.depthState,
+                                D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+    float sceneColor[] = {0.06f, 0.06f, 0.07f, 1.0f};
+    if (g_CurrentMode == FGMode::FSR) {
+        sceneColor[1] = g_FsrSuspended ? 0.10f : 0.16f;
+        sceneColor[0] = g_FsrSuspended ? 0.16f : sceneColor[0];
+    } else if (g_CurrentMode == FGMode::DLSS) {
+        sceneColor[0] = g_DlssSuspended ? 0.16f : sceneColor[0];
+        sceneColor[2] = g_DlssSuspended ? 0.10f : 0.18f;
+    }
+    const float uiClear[] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const float motionClear[] = {0.0f, 0.0f, 0.0f, 0.0f};
+    g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), sceneColor, 0, nullptr);
+    g_CommandList->ClearRenderTargetView(aux.UiRtv(), uiClear, 0, nullptr);
+    g_CommandList->ClearRenderTargetView(aux.MotionRtv(), motionClear, 0, nullptr);
+    g_CommandList->ClearDepthStencilView(aux.DepthDsv(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    // Simulated GPU load: repeated hud-less clears (the cube overwrites the visible region).
+    for (int pass = 0; pass < g_GpuLoadPasses; ++pass) {
+        float loadColor[] = {sceneColor[0] + (pass % 2) * 0.01f, sceneColor[1], sceneColor[2], 1.0f};
+        g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), loadColor, 0, nullptr);
+    }
+    g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), sceneColor, 0, nullptr);
+
+    // Scene: a real 3D cube with per-pixel motion vectors -> interpolated by FG (output rate).
+    g_CubeScene.Render(g_CommandList.Get(), aux, g_FrameIndex, g_WindowWidth, g_WindowHeight, elapsedSeconds);
+
+    // UI layer: animated "100 HP" HUD + status, drawn into the registered/tagged UI resource.
+    const float hudColor[] = {0.2f, 1.0f, 0.4f, 1.0f};
+    DrawTextLine(g_CommandList.Get(), aux.UiRtv(), hudColor, "100 HP", hudX, hudY, 5);
+    DrawStatusText(g_CommandList.Get(), aux.UiRtv());
+
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.hudlessColor.Get(), aux.hudlessState,
+                                testapp::dx12fg::kColorReadState);
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.uiColor.Get(), aux.uiState,
+                                testapp::dx12fg::kColorReadState);
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.motionVectors.Get(), aux.motionState,
+                                testapp::dx12fg::kColorReadState);
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.depth.Get(), aux.depthState,
+                                testapp::dx12fg::kDepthReadState);
+}
+
 static void Render() {
     auto now = std::chrono::high_resolution_clock::now();
     if (g_FramePacingInitialized) {
@@ -1105,7 +1166,6 @@ static void Render() {
     }
     g_LastFramePacingTime = now;
     float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
-    g_BarPosition = static_cast<float>(std::fmod(static_cast<double>(elapsed * 0.5f), 1.0));
 
     if (g_AutoExitSeconds > 0 && elapsed >= static_cast<float>(g_AutoExitSeconds)) {
         testapp::Log("[FG-DIAG] Auto exit after %d seconds at frameID=%llu mode=%s fsr=%d fsrSuspended=%d "
@@ -1185,37 +1245,38 @@ static void Render() {
     WaitForSwapChainFrameLatency();
     g_CommandAllocators[frameIndex]->Reset();
     g_CommandList->Reset(g_CommandAllocators[frameIndex].Get(), nullptr);
-    testapp::dx12fg::RenderAuxiliaryInputs(g_CommandList.Get(), g_FgInputs, g_WindowWidth, g_WindowHeight,
-                                           g_BarPosition);
+    const float hudSweep = std::sin(elapsed * 1.2f) * 0.5f + 0.5f;
+    LONG hudSpan = g_WindowWidth - 280;
+    if (hudSpan < 0) {
+        hudSpan = 0;
+    }
+    const LONG hudX = 40 + static_cast<LONG>(hudSweep * static_cast<float>(hudSpan));
+    const LONG hudY = g_WindowHeight > 220 ? g_WindowHeight - 90 : 40;
+    RenderSwitchSceneInputs(elapsed, hudX, hudY);
 
+    // Compose the presented backbuffer from the hud-less scene (cube), then draw the UI on top
+    // so all-FG-off and real frames match the FG UI layer (hud-less + UI == presented frame).
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = g_RenderTargets[frameIndex].Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    g_CommandList->ResourceBarrier(1, &barrier);
+
+    testapp::dx12fg::Transition(g_CommandList.Get(), g_FgInputs.hudlessColor.Get(), g_FgInputs.hudlessState,
+                                D3D12_RESOURCE_STATE_COPY_SOURCE);
+    g_CommandList->CopyResource(g_RenderTargets[frameIndex].Get(), g_FgInputs.hudlessColor.Get());
+    testapp::dx12fg::Transition(g_CommandList.Get(), g_FgInputs.hudlessColor.Get(), g_FgInputs.hudlessState,
+                                testapp::dx12fg::kColorReadState);
+
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     g_CommandList->ResourceBarrier(1, &barrier);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtvHandle.ptr += frameIndex * g_RtvDescriptorSize;
-    float clearColor[] = {0.08f, 0.08f, 0.08f, 1.0f};
-    if (g_CurrentMode == FGMode::FSR) {
-        clearColor[1] = g_FsrSuspended ? 0.10f : 0.16f;
-        clearColor[0] = g_FsrSuspended ? 0.16f : clearColor[0];
-    } else if (g_CurrentMode == FGMode::DLSS) {
-        clearColor[0] = g_DlssSuspended ? 0.16f : clearColor[0];
-        clearColor[2] = g_DlssSuspended ? 0.10f : 0.18f;
-    }
-    g_CommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-    D3D12_RECT scissor = {static_cast<LONG>(g_BarPosition * (g_WindowWidth - 100)), g_WindowHeight / 2 - 50,
-                          static_cast<LONG>(g_BarPosition * (g_WindowWidth - 100) + 100), g_WindowHeight / 2 + 50};
-    const float barColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
-    g_CommandList->ClearRenderTargetView(rtvHandle, barColor, 1, &scissor);
-    for (int pass = 0; pass < g_GpuLoadPasses; pass++) {
-        float loadColor[] = {clearColor[0] + (pass % 2) * 0.01f, clearColor[1], clearColor[2], 1.0f};
-        g_CommandList->ClearRenderTargetView(rtvHandle, loadColor, 0, nullptr);
-    }
-    g_CommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-    g_CommandList->ClearRenderTargetView(rtvHandle, barColor, 1, &scissor);
+    const float hudColor[] = {0.2f, 1.0f, 0.4f, 1.0f};
+    DrawTextLine(g_CommandList.Get(), rtvHandle, hudColor, "100 HP", hudX, hudY, 5);
     DrawStatusText(g_CommandList.Get(), rtvHandle);
     if (!g_FsrSuspended) {
         DispatchFSRPrepare(elapsed);
@@ -1265,6 +1326,7 @@ static void Cleanup() {
     }
     DestroyFSRContexts();
     testapp::dx12fg::ReleaseAuxiliaryResources(g_FgInputs);
+    g_CubeScene.Release();
     for (auto& renderTarget : g_RenderTargets) {
         renderTarget.Reset();
     }
