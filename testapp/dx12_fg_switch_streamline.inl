@@ -221,9 +221,14 @@ static sl::FrameToken* BeginStreamlineFrame() {
                      static_cast<int>(ret), SlResultName(ret));
         return nullptr;
     }
-    // Only sleep on the Reflex pacing line while DLSS FG is actively generating frames. Sleeping
-    // when FG is off/suspended would re-apply the FG-aware half-rate frame cap.
-    if (g_SlReflexSleep && g_DlssEnabled && !g_DlssSuspended) {
+    // Call slReflexSleep once per frame whenever the Reflex frame token exists, per Streamline's
+    // integration contract. We still emit PCL markers (SimulationStart/PresentStart/...) every
+    // frame; skipping the matching sleep on those tokens left Streamline's present/PCL pipeline
+    // waiting on an un-slept token and stalled the present queue after suspending DLSS FG (a GPU
+    // fence that never signals, observed in a freeze dump). The FG-aware half-rate frame cap is
+    // removed by setting Reflex mode eOff (ApplyReflexMode) when FG is off/suspended -- with mode
+    // eOff this call does not apply a frame limiter -- NOT by skipping the call.
+    if (g_SlReflexSleep) {
         sl::Result sleepResult = g_SlReflexSleep(*token);
         if (sleepResult != sl::Result::eOk && frameIndex < 8) {
             testapp::Log("[FG-DIAG] slReflexSleep frame=%u result=%d (%s)\n", frameIndex,

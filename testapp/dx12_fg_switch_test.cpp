@@ -90,6 +90,9 @@ static bool g_FsrKeepRuntimeLoadedInitialOff = false;
 static bool g_FsrStartupDisabledContextStress = false;
 static bool g_FsrSuspendResumeStress = true;
 static int g_FsrSuspendResumeIntervalSeconds = 3;
+static bool g_DlssSuspendResumeStress = false;
+static int g_DlssSuspendResumeIntervalSeconds = 3;
+static bool g_DlssStressDidSuspend = false;
 static bool g_FsrPresentCallbackStress = true;
 static int g_FsrPresentCallbackToggleIntervalSeconds = 6;
 static bool g_DxgiVideoMemoryQueryStress = true;
@@ -204,6 +207,7 @@ static int g_AutoStage = 0;
 static uint64_t g_LastModeSwitchFrameId = 0;
 static auto g_StartTime = std::chrono::high_resolution_clock::now();
 static auto g_LastFsrSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
+static auto g_LastDlssSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
 static auto g_FsrPresentCallbackStressStartTime = std::chrono::high_resolution_clock::now();
 static uint64_t g_LastFsrSuspendResumeToggleFrameId = 0;
 static uint64_t g_LastDxgiVideoMemoryQueryStressLogFrame = 0;
@@ -475,10 +479,17 @@ static void UpdateWindowTitle() {
 }
 
 static UINT ResolvePresentSyncInterval() {
-    // DLSS-G disables interpolation when the app presents with vsync
-    // SyncInterval=1. Keep configured vsync for FG-off/FSR/suspended phases,
-    // but present active DLSS FG uncapped so Streamline can generate frames.
-    if (g_CurrentMode == FGMode::DLSS && g_DlssEnabled && !g_DlssSuspended) {
+    // The Streamline/DLSS-G proxy swapchain must be presented uncapped (SyncInterval=0) the entire
+    // time it is in use -- while DLSS-G is generating frames AND while DLSS-G is merely suspended.
+    // Suspending DLSS FG does not recreate a native swapchain (it only calls slDLSSGSetOptions),
+    // so the proxy swapchain stays in place; presenting it with SyncInterval=1 hangs the GPU device
+    // (DXGI_ERROR_DEVICE_HUNG) after a few hundred suspended frames -- Streamline's present-pacer
+    // allocator gets stuck on the suspend's fence and the queue wedges (observed in a freeze dump
+    // and the [FG-DIAG] Present hr=0x887a0005 log). Driver-forced vsync (e.g. NVCP "VSync On")
+    // still paces the output, so the user's vsync is honored even though we request SyncInterval=0;
+    // that is exactly how real DLSS-G games behave. Only native/FSR/OFF swapchains, which are real
+    // (non-proxy) swapchains, honor the app-configured vsync.
+    if (g_CurrentMode == FGMode::DLSS) {
         return 0;
     }
     return static_cast<UINT>(g_VSync);
@@ -1116,6 +1127,33 @@ static void RunAutoSequence(float elapsedSeconds) {
 }
 
 // Renders the frame-generation scene inputs: a real 3D cube into the hud-less color +
+// Auto DLSS-FG suspend-and-HOLD stress (off by default). Once in DLSS FG for the configured
+// interval, suspend DLSS-G once and stay suspended for the rest of the run -- this reproduces the
+// sustained-suspended state without manual key presses. A suspend/resume *cycle* does NOT
+// reproduce the failure: each switch resets Streamline's present-pacer, so the regression only
+// shows up when the app holds the suspended state (the GPU device hung after ~hundreds of
+// suspended frames when the proxy swapchain was presented with SyncInterval=1).
+static void MaybeToggleDLSSSuspensionStress() {
+    if (!g_DlssSuspendResumeStress || g_ManualMode || g_DlssStressDidSuspend || g_DlssSuspended ||
+        g_CurrentMode != FGMode::DLSS || !g_DlssInitialized || !g_SlDLSSGSetOptions) {
+        return;
+    }
+    const auto now = std::chrono::high_resolution_clock::now();
+    const float elapsed = std::chrono::duration<float>(now - g_LastDlssSuspendResumeToggleTime).count();
+    if (elapsed < static_cast<float>(g_DlssSuspendResumeIntervalSeconds)) {
+        return;
+    }
+    if (SetDLSSFGMode(false)) {
+        g_DlssEnabled = false;
+        g_DlssSuspended = true;
+        g_DlssStressDidSuspend = true;
+    }
+    testapp::Log("[FG-DIAG] DLSS suspend-and-hold stress: suspended FG frameID=%llu (holding suspended)\n",
+                 static_cast<unsigned long long>(g_FrameIdCounter));
+    testapp::LogFlush();
+    UpdateWindowTitle();
+}
+
 // motion-vector targets (so FG interpolates the moving cube to the output/generated rate), and
 // the HUD + status into the UI-layer texture. The UI layer is registered with FSR / tagged for
 // DLSS, so it is composited crisp on every real and generated frame at the base rate (no
@@ -1245,6 +1283,7 @@ static void Render() {
     SetPCLMarker(frameToken, sl::PCLMarker::eSimulationEnd, "SimulationEnd");
     ++g_FrameIdCounter;
     MaybeToggleFSRSuspensionStress(frameIndex);
+    MaybeToggleDLSSSuspensionStress();
 
     const UINT presentSyncInterval = ResolvePresentSyncInterval();
     const UINT presentFlags = ResolvePresentFlags(presentSyncInterval);
@@ -1561,6 +1600,7 @@ int main(int argc, char* argv[]) {
     UpdateWindowTitle();
     g_StartTime = std::chrono::high_resolution_clock::now();
     g_LastFsrSuspendResumeToggleTime = g_StartTime;
+    g_LastDlssSuspendResumeToggleTime = g_StartTime;
     g_FsrPresentCallbackStressStartTime = g_StartTime;
     g_FramePacingInitialized = false;
     g_MaxFrameDeltaMs = 0.0;

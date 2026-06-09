@@ -40,6 +40,12 @@ static void LoadConfig() {
         GetPrivateProfileIntA("Stress", "fsr_suspend_resume_interval_seconds", g_FsrSuspendResumeIntervalSeconds,
                               configPath.c_str()),
         1, 60);
+    g_DlssSuspendResumeStress = GetPrivateProfileIntA("Stress", "dlss_suspend_resume",
+                                                      g_DlssSuspendResumeStress ? 1 : 0, configPath.c_str()) != 0;
+    g_DlssSuspendResumeIntervalSeconds = ClampInt(
+        GetPrivateProfileIntA("Stress", "dlss_suspend_resume_interval_seconds", g_DlssSuspendResumeIntervalSeconds,
+                              configPath.c_str()),
+        1, 60);
     g_FsrPresentCallbackStress =
         GetPrivateProfileIntA("Stress", "fsr_present_callback_toggle_stress",
                               g_FsrPresentCallbackStress ? 1 : 0, configPath.c_str()) != 0;
@@ -150,6 +156,22 @@ static void ParseCommandLine(int argc, char* argv[]) {
         }
         if (TryParseIntOption(argv[i], "--fsr-suspend-interval", &value)) {
             g_FsrSuspendResumeIntervalSeconds = ClampInt(value, 1, 60);
+            continue;
+        }
+        if (strcmp(argv[i], "--dlss-suspend-interval") == 0 && i + 1 < argc) {
+            g_DlssSuspendResumeIntervalSeconds = ClampInt(atoi(argv[++i]), 1, 60);
+            continue;
+        }
+        if (TryParseIntOption(argv[i], "--dlss-suspend-interval", &value)) {
+            g_DlssSuspendResumeIntervalSeconds = ClampInt(value, 1, 60);
+            continue;
+        }
+        if (strcmp(argv[i], "--dlss-suspend-stress") == 0) {
+            g_DlssSuspendResumeStress = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-dlss-suspend-stress") == 0) {
+            g_DlssSuspendResumeStress = false;
             continue;
         }
         if (strcmp(argv[i], "--fsr-present-callback-interval") == 0 && i + 1 < argc) {

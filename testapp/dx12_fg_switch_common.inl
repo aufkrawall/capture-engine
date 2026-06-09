@@ -6,19 +6,30 @@ static void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
     }
     g_Fence->SetEventOnCompletion(fenceValue, g_FenceEvent);
     const uint64_t startMs = GetTickCount64();
+    uint64_t nextLogMs = 500;
+    int logCount = 0;
     while (g_Fence->GetCompletedValue() < fenceValue) {
         const DWORD waitResult = WaitForSingleObject(g_FenceEvent, 100);
         if (waitResult == WAIT_OBJECT_0) {
             return;
         }
-        if (GetTickCount64() - startMs >= 500) {
-            static std::atomic<bool> s_LoggedSlowFence{false};
-            if (!s_LoggedSlowFence.exchange(true)) {
-                testapp::Log("[FG-DIAG] WARN slow fence wait (%s): waiting=%llu completed=%llu frameIndex=%u\n",
-                             reason ? reason : "unknown", static_cast<unsigned long long>(fenceValue),
-                             static_cast<unsigned long long>(g_Fence->GetCompletedValue()), g_FrameIndex);
-                testapp::LogFlush();
-            }
+        // Re-log periodically while a fence wait stalls so a hang leaves a clear, repeated trail
+        // (the device-removed reason distinguishes a genuine GPU TDR from a present-pipeline stall
+        // where the device stays alive but the queued Signal never executes).
+        const uint64_t elapsedMs = GetTickCount64() - startMs;
+        if (elapsedMs >= nextLogMs && logCount < 30) {
+            ++logCount;
+            nextLogMs += 1000;
+            const HRESULT removedReason = g_Device ? g_Device->GetDeviceRemovedReason() : S_OK;
+            testapp::Log("[FG-DIAG] WARN stalled fence wait (%s): elapsedMs=%llu waiting=%llu completed=%llu "
+                         "frameIndex=%u mode=%s fsrSuspended=%d dlssSuspended=%d frameID=%llu deviceRemoved=0x%08lx\n",
+                         reason ? reason : "unknown", static_cast<unsigned long long>(elapsedMs),
+                         static_cast<unsigned long long>(fenceValue),
+                         static_cast<unsigned long long>(g_Fence->GetCompletedValue()), g_FrameIndex,
+                         ModeName(g_CurrentMode), g_FsrSuspended ? 1 : 0, g_DlssSuspended ? 1 : 0,
+                         static_cast<unsigned long long>(g_FrameIdCounter),
+                         static_cast<unsigned long>(removedReason));
+            testapp::LogFlush();
         }
     }
 }
