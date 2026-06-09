@@ -234,6 +234,10 @@ static void RegisterFSRUiResource() {
     uiDesc.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12;
     uiDesc.uiResource = ffxApiGetResourceDX12(g_FgInputs.uiColor.Get(), testapp::dx12fg::kColorReadState,
                                               FFX_API_RESOURCE_USAGE_READ_ONLY);
+    // We re-render the UI texture every frame without synchronizing against the FG swapchain's
+    // interpolation present. Ask the swapchain to double-buffer (snapshot) the UI resource so a
+    // next-frame UI rewrite can't race compositing onto an in-flight generated frame (HUD tearing).
+    uiDesc.flags = FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING;
     ffxReturnCode_t ret = g_FfxConfigure(&g_FfxSwapChainCtx, &uiDesc.header);
     if (ret != FFX_API_RETURN_OK || g_LastFsrUiRegisterLogFrame == kNoFsrUiRegisterLogFrame ||
         g_FrameIdCounter - g_LastFsrUiRegisterLogFrame >= 120) {
@@ -344,7 +348,9 @@ static void DispatchFSRPrepare(float elapsedSeconds) {
     prepare.frameID = g_FrameIdCounter;
     prepare.commandList = g_CommandList.Get();
     prepare.renderSize = {static_cast<uint32_t>(g_WindowWidth), static_cast<uint32_t>(g_WindowHeight)};
-    prepare.motionVectorScale = {1.0f, 1.0f};
+    // Scene motion vectors are emitted in UV space (prevUV - curUV); FFX expects pixel-space
+    // motion, so scale by renderSize (per ffx_framegeneration.h motionVectorScale docs).
+    prepare.motionVectorScale = {static_cast<float>(g_WindowWidth), static_cast<float>(g_WindowHeight)};
     prepare.frameTimeDelta = elapsedSeconds * 1000.0f;
     prepare.reset = g_FrameIdCounter < 4;
     prepare.cameraNear = 0.1f;

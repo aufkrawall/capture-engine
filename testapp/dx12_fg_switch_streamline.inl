@@ -246,7 +246,10 @@ static void SubmitStreamlineFrameInputs(sl::FrameToken* token, UINT frameIndex) 
     constants.clipToPrevClip = IdentityMatrix();
     constants.prevClipToClip = IdentityMatrix();
     constants.jitterOffset = sl::float2(0.0f, 0.0f);
-    constants.mvecScale = sl::float2(1.0f, 1.0f);
+    // Scene motion vectors are emitted in UV space (prevUV - curUV). Streamline expects motion
+    // normalized to [-1,1] (NDC): UV delta * 2 = NDC delta in x, and -2 in y (UV y is flipped
+    // relative to NDC y).
+    constants.mvecScale = sl::float2(2.0f, -2.0f);
     constants.cameraPinholeOffset = sl::float2(0.0f, 0.0f);
     constants.cameraPos = sl::float3(0.0f, 0.0f, -2.0f);
     constants.cameraUp = sl::float3(0.0f, 1.0f, 0.0f);

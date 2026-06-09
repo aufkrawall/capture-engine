@@ -118,7 +118,7 @@ ComPtr<ID3D12CommandAllocator> g_CommandAllocators[kMaxSwapChainBuffers];
 ComPtr<ID3D12GraphicsCommandList> g_CommandList;
 ComPtr<ID3D12Fence> g_Fence;
 testapp::dx12fg::AuxiliaryResources g_FgInputs;
-testapp::dx12fg::CubeScene g_CubeScene;
+testapp::dx12fg::SceneRenderer g_Scene;
 HANDLE g_FenceEvent = nullptr;
 HANDLE g_FrameLatencyWaitHandle = nullptr;
 UINT64 g_FenceValues[kMaxSwapChainBuffers] = {};
@@ -432,6 +432,36 @@ static void DrawStatusText(ID3D12GraphicsCommandList* commandList, D3D12_CPU_DES
 
     DrawTextLine(commandList, rtvHandle, textColor, CurrentFGStatusText(), 30, 30, 4);
     DrawTextLine(commandList, rtvHandle, textColor, "1 OFF  2 DLSS  3 FSR", 30, 76, 3);
+}
+
+// Game-style HUD: "100 HP" readout plus a health bar. Drawn into both the FG UI-layer texture
+// and the presented backbuffer at the same animated position, so it stays crisp and excluded
+// from frame generation (base rate, no ghosting).
+static void DrawHudOverlay(ID3D12GraphicsCommandList* commandList, D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle, LONG hudX,
+                           LONG hudY) {
+    if (!commandList) {
+        return;
+    }
+    const float textColor[] = {0.85f, 1.0f, 0.55f, 1.0f};
+    DrawTextLine(commandList, rtvHandle, textColor, "100 HP", hudX, hudY, 5);
+
+    auto drawRect = [&](LONG l, LONG t, LONG r, LONG b, const float* color) {
+        if (l < 0) l = 0;
+        if (t < 0) t = 0;
+        if (r > g_WindowWidth) r = g_WindowWidth;
+        if (b > g_WindowHeight) b = g_WindowHeight;
+        if (l < r && t < b) {
+            const D3D12_RECT rect = {l, t, r, b};
+            commandList->ClearRenderTargetView(rtvHandle, color, 1, &rect);
+        }
+    };
+    const LONG barTop = hudY + 44;
+    const LONG barBottom = barTop + 16;
+    const LONG barRight = hudX + 232;
+    const float frameColor[] = {0.04f, 0.05f, 0.06f, 1.0f};
+    const float fillColor[] = {0.20f, 0.95f, 0.35f, 1.0f};
+    drawRect(hudX, barTop, barRight, barBottom, frameColor);
+    drawRect(hudX + 3, barTop + 3, barRight - 3, barBottom - 3, fillColor);
 }
 
 static void UpdateWindowTitle() {
@@ -800,7 +830,7 @@ static void ReleaseDX12RendererResourcesForSwitch(const char* reason) {
         WaitForGpu();
     }
     testapp::dx12fg::ReleaseAuxiliaryResources(g_FgInputs);
-    g_CubeScene.Release();
+    g_Scene.Release();
     for (auto& renderTarget : g_RenderTargets) {
         renderTarget.Reset();
     }
@@ -1086,9 +1116,10 @@ static void RunAutoSequence(float elapsedSeconds) {
 }
 
 // Renders the frame-generation scene inputs: a real 3D cube into the hud-less color +
-// motion-vector targets (so FG interpolates it to the output/generated rate), and the HUD +
-// status into the UI-layer texture. The UI layer is registered with FSR / tagged for DLSS, so
-// it is composited crisp on every real and generated frame at the base rate (no ghosting).
+// motion-vector targets (so FG interpolates the moving cube to the output/generated rate), and
+// the HUD + status into the UI-layer texture. The UI layer is registered with FSR / tagged for
+// DLSS, so it is composited crisp on every real and generated frame at the base rate (no
+// ghosting). The static camera/floor/sky carry zero motion, which is correct.
 static void RenderSwitchSceneInputs(float elapsedSeconds, LONG hudX, LONG hudY) {
     testapp::dx12fg::AuxiliaryResources& aux = g_FgInputs;
     if (!aux.valid || !g_CommandList) {
@@ -1104,33 +1135,26 @@ static void RenderSwitchSceneInputs(float elapsedSeconds, LONG hudX, LONG hudY) 
     testapp::dx12fg::Transition(g_CommandList.Get(), aux.depth.Get(), aux.depthState,
                                 D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
-    float sceneColor[] = {0.06f, 0.06f, 0.07f, 1.0f};
-    if (g_CurrentMode == FGMode::FSR) {
-        sceneColor[1] = g_FsrSuspended ? 0.10f : 0.16f;
-        sceneColor[0] = g_FsrSuspended ? 0.16f : sceneColor[0];
-    } else if (g_CurrentMode == FGMode::DLSS) {
-        sceneColor[0] = g_DlssSuspended ? 0.16f : sceneColor[0];
-        sceneColor[2] = g_DlssSuspended ? 0.10f : 0.18f;
-    }
+    // Clear the FG inputs. The scene (sky + floor + cube) fills hud-less color; motion starts at
+    // zero (static parts stay zero); depth clears to far. The UI layer starts transparent.
+    const float clearBlack[] = {0.0f, 0.0f, 0.0f, 1.0f};
     const float uiClear[] = {0.0f, 0.0f, 0.0f, 0.0f};
     const float motionClear[] = {0.0f, 0.0f, 0.0f, 0.0f};
-    g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), sceneColor, 0, nullptr);
     g_CommandList->ClearRenderTargetView(aux.UiRtv(), uiClear, 0, nullptr);
     g_CommandList->ClearRenderTargetView(aux.MotionRtv(), motionClear, 0, nullptr);
     g_CommandList->ClearDepthStencilView(aux.DepthDsv(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    // Simulated GPU load: repeated hud-less clears (the cube overwrites the visible region).
+    // Simulated GPU load: repeated hud-less clears (the scene overwrites every pixel afterwards).
     for (int pass = 0; pass < g_GpuLoadPasses; ++pass) {
-        float loadColor[] = {sceneColor[0] + (pass % 2) * 0.01f, sceneColor[1], sceneColor[2], 1.0f};
-        g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), loadColor, 0, nullptr);
+        g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), clearBlack, 0, nullptr);
     }
-    g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), sceneColor, 0, nullptr);
+    g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), clearBlack, 0, nullptr);
 
-    // Scene: a real 3D cube with per-pixel motion vectors -> interpolated by FG (output rate).
-    g_CubeScene.Render(g_CommandList.Get(), aux, g_FrameIndex, g_WindowWidth, g_WindowHeight, elapsedSeconds);
+    // Scene: sky + procedural checker floor (spatial depth/fog) + a lit moving cube. The cube
+    // carries per-pixel motion vectors -> interpolated by FG (output rate); floor/sky are static.
+    g_Scene.Render(g_CommandList.Get(), aux, g_FrameIndex, g_WindowWidth, g_WindowHeight, elapsedSeconds);
 
-    // UI layer: animated "100 HP" HUD + status, drawn into the registered/tagged UI resource.
-    const float hudColor[] = {0.2f, 1.0f, 0.4f, 1.0f};
-    DrawTextLine(g_CommandList.Get(), aux.UiRtv(), hudColor, "100 HP", hudX, hudY, 5);
+    // UI layer: animated "100 HP" HUD + health bar + status, into the registered/tagged UI resource.
+    DrawHudOverlay(g_CommandList.Get(), aux.UiRtv(), hudX, hudY);
     DrawStatusText(g_CommandList.Get(), aux.UiRtv());
 
     testapp::dx12fg::Transition(g_CommandList.Get(), aux.hudlessColor.Get(), aux.hudlessState,
@@ -1275,8 +1299,7 @@ static void Render() {
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtvHandle.ptr += frameIndex * g_RtvDescriptorSize;
-    const float hudColor[] = {0.2f, 1.0f, 0.4f, 1.0f};
-    DrawTextLine(g_CommandList.Get(), rtvHandle, hudColor, "100 HP", hudX, hudY, 5);
+    DrawHudOverlay(g_CommandList.Get(), rtvHandle, hudX, hudY);
     DrawStatusText(g_CommandList.Get(), rtvHandle);
     if (!g_FsrSuspended) {
         DispatchFSRPrepare(elapsed);
@@ -1326,7 +1349,7 @@ static void Cleanup() {
     }
     DestroyFSRContexts();
     testapp::dx12fg::ReleaseAuxiliaryResources(g_FgInputs);
-    g_CubeScene.Release();
+    g_Scene.Release();
     for (auto& renderTarget : g_RenderTargets) {
         renderTarget.Reset();
     }

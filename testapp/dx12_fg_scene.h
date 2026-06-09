@@ -1,18 +1,22 @@
-// Shared spinning-cube scene + motion-vector renderer for the DX12 frame-generation test apps.
+// Shared 3D scene renderer for the DX12 frame-generation test apps.
 //
-// Renders a real 3D cube into the hud-less color target (SV_Target0) and the motion-vector
-// target (SV_Target1) with depth, so frame generation can interpolate the scene (the cube
-// runs at the generated/output frame rate, e.g. 2x under FSR/DLSS FG). The HUD/UI is drawn
-// separately into the UI-layer texture by the app and excluded from FG via the runtime UI
-// resource, so it animates at the base (rendered) frame rate without ghosting.
+// Renders a small "real game" scene into the hud-less color target (SV_Target0) and the
+// motion-vector target (SV_Target1) with depth:
+//   - a sky gradient (fullscreen),
+//   - a procedural checkerboard ground plane receding to the horizon with distance fog
+//     (spatial depth), and
+//   - a lit cube that moves/rotates within the scene.
+// The camera is static, so only the cube carries motion vectors; the floor/sky are static
+// (zero motion) which is correct and avoids ghosting there. The cube's motion vectors are
+// emitted in UV space (prevUV - curUV); the caller scales them per runtime (FSR wants
+// renderSize, DLSS wants ~{2,-2} to reach NDC [-1,1]). Frame generation therefore interpolates
+// the moving cube to the output rate (e.g. ~2x under FSR/DLSS FG) while the HUD, drawn into the
+// UI-layer texture by the app, stays at the base rate without ghosting.
 //
-// The cube emits per-pixel motion vectors (prevUV - curUV, matching the test apps' existing
-// motion-vector sign convention with motionVectorScale = {1,1}) so the interpolated cube does
-// not ghost. Geometry/constant buffers live in upload heaps for simplicity (small static mesh).
-//
-// Matrices are hand-rolled row-major (row-vector convention, v' = v * M) to avoid a
-// DirectXMath dependency, which is fragile on the project's MinGW/clang toolchain. The HLSL
-// cbuffer therefore declares the matrices as row_major.
+// Geometry/constant buffers live in upload heaps (small static mesh). Per-face cube normals are
+// computed in the pixel shader via screen-space derivatives, so no normal attribute is needed.
+// Matrices are hand-rolled row-major (row-vector, v' = v * M) to avoid DirectXMath, which is
+// fragile on the project's MinGW/clang toolchain; the HLSL cbuffer declares them row_major.
 
 #pragma once
 
@@ -98,46 +102,83 @@ inline Mat4 Mat4PerspectiveFovLH(float fovY, float aspect, float zn, float zf) {
     return r;
 }
 
-struct CubeSceneConstants {
-    float curMVP[16];   // row-major (HLSL declares row_major)
-    float prevMVP[16];  // previous rendered-frame MVP for per-pixel motion vectors
+// Left-handed look-at (DirectX convention, row-vector / row-major).
+inline Mat4 Mat4LookAtLH(float ex, float ey, float ez, float ax, float ay, float az, float ux, float uy, float uz) {
+    float zx = ax - ex, zy = ay - ey, zz = az - ez;
+    float zl = std::sqrt(zx * zx + zy * zy + zz * zz);
+    zx /= zl;
+    zy /= zl;
+    zz /= zl;
+    float xx = uy * zz - uz * zy, xy = uz * zx - ux * zz, xz = ux * zy - uy * zx;
+    float xl = std::sqrt(xx * xx + xy * xy + xz * xz);
+    xx /= xl;
+    xy /= xl;
+    xz /= xl;
+    float yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+    Mat4 r = Mat4Identity();
+    r.m[0] = xx;
+    r.m[1] = yx;
+    r.m[2] = zx;
+    r.m[4] = xy;
+    r.m[5] = yy;
+    r.m[6] = zy;
+    r.m[8] = xz;
+    r.m[9] = yz;
+    r.m[10] = zz;
+    r.m[12] = -(xx * ex + xy * ey + xz * ez);
+    r.m[13] = -(yx * ex + yy * ey + yz * ez);
+    r.m[14] = -(zx * ex + zy * ey + zz * ez);
+    return r;
+}
+
+struct SceneConstants {
+    float curModel[16];   // row-major
+    float prevModel[16];  // previous-frame model for per-pixel motion vectors
+    float viewProj[16];   // shared camera view*proj
+    float params[4];      // x = material id (0 cube, 1 floor), y = fog far distance
 };
 
-class CubeScene {
+class SceneRenderer {
 public:
     static constexpr UINT kFrameCount = 4;  // >= kMaxSwapChainBuffers ceiling
+    static constexpr UINT kObjectsPerFrame = 2;  // floor + cube
 
     bool valid() const {
         return valid_;
     }
 
     bool Initialize(ID3D12Device* device);
-    // Renders the cube into aux.hudlessColor (SV_Target0) + aux.motionVectors (SV_Target1) with
-    // aux.depth as the depth target. The caller must have transitioned those targets to
-    // RENDER_TARGET / DEPTH_WRITE and cleared them first. cbIndex selects a per-frame CB slot.
-    void Render(ID3D12GraphicsCommandList* commandList, const AuxiliaryResources& aux, UINT cbIndex, int width,
+    // Renders sky + floor + cube into aux.hudlessColor (SV_Target0) + aux.motionVectors
+    // (SV_Target1) with aux.depth. The caller must have transitioned those targets to
+    // RENDER_TARGET / DEPTH_WRITE and cleared depth (to 1.0) and motion (to 0) first.
+    void Render(ID3D12GraphicsCommandList* commandList, const AuxiliaryResources& aux, UINT frameIndex, int width,
                 int height, float timeSeconds);
     void Release();
 
 private:
     static ComPtr<ID3D12Resource> CreateUploadBuffer(ID3D12Device* device, UINT64 size, const void* initialData);
+    bool CreatePipeline(ID3D12Device* device, const void* vs, size_t vsSize, const void* ps, size_t psSize,
+                        bool depthEnable, bool hasInputLayout, ComPtr<ID3D12PipelineState>& outPso);
 
     ComPtr<ID3D12RootSignature> rootSignature_;
-    ComPtr<ID3D12PipelineState> pipelineState_;
+    ComPtr<ID3D12PipelineState> skyPso_;
+    ComPtr<ID3D12PipelineState> scenePso_;
     ComPtr<ID3D12Resource> vertexBuffer_;
     ComPtr<ID3D12Resource> indexBuffer_;
-    ComPtr<ID3D12Resource> constantBuffers_[kFrameCount];
-    uint8_t* constantPtr_[kFrameCount] = {};
+    ComPtr<ID3D12Resource> constantBuffers_[kFrameCount * kObjectsPerFrame];
+    uint8_t* constantPtr_[kFrameCount * kObjectsPerFrame] = {};
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView_ = {};
     D3D12_INDEX_BUFFER_VIEW indexBufferView_ = {};
-    UINT indexCount_ = 0;
-    Mat4 prevMVP_ = {};
+    UINT floorIndexCount_ = 0;
+    UINT cubeIndexCount_ = 0;
+    UINT cubeBaseVertex_ = 0;
+    Mat4 prevCubeModel_ = {};
     bool hasPrev_ = false;
     bool valid_ = false;
 };
 
-inline ComPtr<ID3D12Resource> CubeScene::CreateUploadBuffer(ID3D12Device* device, UINT64 size,
-                                                            const void* initialData) {
+inline ComPtr<ID3D12Resource> SceneRenderer::CreateUploadBuffer(ID3D12Device* device, UINT64 size,
+                                                                const void* initialData) {
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 
@@ -168,91 +209,9 @@ inline ComPtr<ID3D12Resource> CubeScene::CreateUploadBuffer(ID3D12Device* device
     return resource;
 }
 
-inline bool CubeScene::Initialize(ID3D12Device* device) {
-    Release();
-    if (!device) {
-        return false;
-    }
-
-    D3D12_ROOT_PARAMETER param = {};
-    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    param.Descriptor.ShaderRegister = 0;
-    param.Descriptor.RegisterSpace = 0;
-    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 1;
-    rsDesc.pParameters = &param;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    ComPtr<ID3DBlob> rsBlob;
-    ComPtr<ID3DBlob> rsError;
-    HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &rsError);
-    if (FAILED(hr)) {
-        testapp::Log("[FG-DIAG] CubeScene: D3D12SerializeRootSignature failed hr=0x%08lx %s\n",
-                     static_cast<unsigned long>(hr),
-                     rsError ? static_cast<const char*>(rsError->GetBufferPointer()) : "");
-        return false;
-    }
-    hr = device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-                                     IID_PPV_ARGS(&rootSignature_));
-    if (FAILED(hr)) {
-        testapp::Log("[FG-DIAG] CubeScene: CreateRootSignature failed hr=0x%08lx\n", static_cast<unsigned long>(hr));
-        return false;
-    }
-
-    static const char kShaderSource[] =
-        "cbuffer SceneCB : register(b0) {\n"
-        "    row_major float4x4 curMVP;\n"
-        "    row_major float4x4 prevMVP;\n"
-        "};\n"
-        "struct VSIn { float3 pos : POSITION; float3 color : COLOR; };\n"
-        "struct VSOut {\n"
-        "    float4 pos : SV_Position;\n"
-        "    float3 color : COLOR;\n"
-        "    float4 curClip : TEXCOORD0;\n"
-        "    float4 prevClip : TEXCOORD1;\n"
-        "};\n"
-        "struct PSOut { float4 color : SV_Target0; float2 motion : SV_Target1; };\n"
-        "VSOut VSMain(VSIn input) {\n"
-        "    VSOut output;\n"
-        "    float4 p = float4(input.pos, 1.0);\n"
-        "    output.pos = mul(p, curMVP);\n"
-        "    output.curClip = output.pos;\n"
-        "    output.prevClip = mul(p, prevMVP);\n"
-        "    output.color = input.color;\n"
-        "    return output;\n"
-        "}\n"
-        "PSOut PSMain(VSOut input) {\n"
-        "    PSOut output;\n"
-        "    float2 curNdc = input.curClip.xy / input.curClip.w;\n"
-        "    float2 prevNdc = input.prevClip.xy / input.prevClip.w;\n"
-        "    float2 curUV = float2(curNdc.x * 0.5 + 0.5, -curNdc.y * 0.5 + 0.5);\n"
-        "    float2 prevUV = float2(prevNdc.x * 0.5 + 0.5, -prevNdc.y * 0.5 + 0.5);\n"
-        "    output.color = float4(input.color, 1.0);\n"
-        "    output.motion = prevUV - curUV;\n"
-        "    return output;\n"
-        "}\n";
-
-    UINT compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
-    ComPtr<ID3DBlob> vsBlob;
-    ComPtr<ID3DBlob> psBlob;
-    ComPtr<ID3DBlob> compileError;
-    hr = D3DCompile(kShaderSource, sizeof(kShaderSource) - 1, "cube_scene", nullptr, nullptr, "VSMain", "vs_5_0",
-                    compileFlags, 0, &vsBlob, &compileError);
-    if (FAILED(hr)) {
-        testapp::Log("[FG-DIAG] CubeScene: VS compile failed hr=0x%08lx %s\n", static_cast<unsigned long>(hr),
-                     compileError ? static_cast<const char*>(compileError->GetBufferPointer()) : "");
-        return false;
-    }
-    hr = D3DCompile(kShaderSource, sizeof(kShaderSource) - 1, "cube_scene", nullptr, nullptr, "PSMain", "ps_5_0",
-                    compileFlags, 0, &psBlob, &compileError);
-    if (FAILED(hr)) {
-        testapp::Log("[FG-DIAG] CubeScene: PS compile failed hr=0x%08lx %s\n", static_cast<unsigned long>(hr),
-                     compileError ? static_cast<const char*>(compileError->GetBufferPointer()) : "");
-        return false;
-    }
-
+inline bool SceneRenderer::CreatePipeline(ID3D12Device* device, const void* vs, size_t vsSize, const void* ps,
+                                          size_t psSize, bool depthEnable, bool hasInputLayout,
+                                          ComPtr<ID3D12PipelineState>& outPso) {
     D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -260,9 +219,11 @@ inline bool CubeScene::Initialize(ID3D12Device* device) {
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = rootSignature_.Get();
-    psoDesc.VS = {vsBlob->GetBufferPointer(), vsBlob->GetBufferSize()};
-    psoDesc.PS = {psBlob->GetBufferPointer(), psBlob->GetBufferSize()};
-    psoDesc.InputLayout = {inputLayout, _countof(inputLayout)};
+    psoDesc.VS = {vs, vsSize};
+    psoDesc.PS = {ps, psSize};
+    if (hasInputLayout) {
+        psoDesc.InputLayout = {inputLayout, _countof(inputLayout)};
+    }
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 2;
     psoDesc.RTVFormats[0] = kColorFormat;
@@ -276,14 +237,143 @@ inline bool CubeScene::Initialize(ID3D12Device* device) {
     for (auto& renderTarget : psoDesc.BlendState.RenderTarget) {
         renderTarget.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     }
-    psoDesc.DepthStencilState.DepthEnable = TRUE;
-    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    psoDesc.DepthStencilState.DepthEnable = depthEnable ? TRUE : FALSE;
+    psoDesc.DepthStencilState.DepthWriteMask = depthEnable ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
     psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 
-    hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState_));
+    HRESULT hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&outPso));
     if (FAILED(hr)) {
-        testapp::Log("[FG-DIAG] CubeScene: CreateGraphicsPipelineState failed hr=0x%08lx\n",
+        testapp::Log("[FG-DIAG] SceneRenderer: CreateGraphicsPipelineState failed hr=0x%08lx depth=%d\n",
+                     static_cast<unsigned long>(hr), depthEnable ? 1 : 0);
+        return false;
+    }
+    return true;
+}
+
+inline bool SceneRenderer::Initialize(ID3D12Device* device) {
+    Release();
+    if (!device) {
+        return false;
+    }
+
+    D3D12_ROOT_PARAMETER param = {};
+    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    param.Descriptor.ShaderRegister = 0;
+    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 1;
+    rsDesc.pParameters = &param;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> rsBlob;
+    ComPtr<ID3DBlob> rsError;
+    HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &rsError);
+    if (FAILED(hr)) {
+        testapp::Log("[FG-DIAG] SceneRenderer: SerializeRootSignature failed hr=0x%08lx %s\n",
+                     static_cast<unsigned long>(hr),
+                     rsError ? static_cast<const char*>(rsError->GetBufferPointer()) : "");
+        return false;
+    }
+    hr = device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+                                     IID_PPV_ARGS(&rootSignature_));
+    if (FAILED(hr)) {
+        testapp::Log("[FG-DIAG] SceneRenderer: CreateRootSignature failed hr=0x%08lx\n",
                      static_cast<unsigned long>(hr));
+        return false;
+    }
+
+    static const char kShaderSource[] =
+        "cbuffer SceneCB : register(b0) {\n"
+        "    row_major float4x4 curModel;\n"
+        "    row_major float4x4 prevModel;\n"
+        "    row_major float4x4 viewProj;\n"
+        "    float4 params;\n"  // x = material id, y = fog far
+        "};\n"
+        "struct SkyOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
+        "struct MrtOut { float4 color : SV_Target0; float2 motion : SV_Target1; };\n"
+        "SkyOut VSSky(uint id : SV_VertexID) {\n"
+        "    SkyOut o;\n"
+        "    o.uv = float2((id << 1) & 2, id & 2);\n"
+        "    o.pos = float4(o.uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n"
+        "    return o;\n"
+        "}\n"
+        "MrtOut PSSky(SkyOut i) {\n"
+        "    MrtOut o;\n"
+        "    float3 top = float3(0.16, 0.28, 0.55);\n"
+        "    float3 horizon = float3(0.58, 0.66, 0.80);\n"
+        "    o.color = float4(lerp(top, horizon, saturate(i.uv.y)), 1.0);\n"
+        "    o.motion = float2(0.0, 0.0);\n"
+        "    return o;\n"
+        "}\n"
+        "struct VSIn { float3 pos : POSITION; float3 color : COLOR; };\n"
+        "struct VSOut {\n"
+        "    float4 pos : SV_Position;\n"
+        "    float3 color : COLOR;\n"
+        "    float3 worldPos : TEXCOORD0;\n"
+        "    float4 curClip : TEXCOORD1;\n"
+        "    float4 prevClip : TEXCOORD2;\n"
+        "};\n"
+        "VSOut VSScene(VSIn input) {\n"
+        "    VSOut o;\n"
+        "    float4 world = mul(float4(input.pos, 1.0), curModel);\n"
+        "    o.worldPos = world.xyz;\n"
+        "    o.pos = mul(world, viewProj);\n"
+        "    o.curClip = o.pos;\n"
+        "    o.prevClip = mul(mul(float4(input.pos, 1.0), prevModel), viewProj);\n"
+        "    o.color = input.color;\n"
+        "    return o;\n"
+        "}\n"
+        "MrtOut PSScene(VSOut i) {\n"
+        "    MrtOut o;\n"
+        "    float3 n = normalize(cross(ddx(i.worldPos), ddy(i.worldPos)));\n"
+        "    float3 L = normalize(float3(0.45, 0.8, -0.35));\n"
+        "    float ndl = saturate(dot(n, L));\n"
+        "    float3 albedo = i.color;\n"
+        "    if (params.x > 0.5) {\n"
+        "        float2 cell = floor(i.worldPos.xz * 0.5);\n"
+        "        float checker = frac((cell.x + cell.y) * 0.5) * 2.0;\n"
+        "        albedo = lerp(float3(0.16, 0.18, 0.22), float3(0.32, 0.35, 0.42), checker);\n"
+        "    }\n"
+        "    float3 lit = albedo * (0.28 + 0.85 * ndl);\n"
+        "    float fog = saturate((i.curClip.w - 8.0) / params.y);\n"
+        "    lit = lerp(lit, float3(0.58, 0.66, 0.80), fog);\n"
+        "    o.color = float4(lit, 1.0);\n"
+        "    float2 curUV = float2(i.curClip.x / i.curClip.w * 0.5 + 0.5, -i.curClip.y / i.curClip.w * 0.5 + 0.5);\n"
+        "    float2 prevUV = float2(i.prevClip.x / i.prevClip.w * 0.5 + 0.5, -i.prevClip.y / i.prevClip.w * 0.5 + 0.5);\n"
+        "    o.motion = prevUV - curUV;\n"
+        "    return o;\n"
+        "}\n";
+
+    struct ShaderBlob {
+        const char* entry;
+        const char* target;
+        ComPtr<ID3DBlob> blob;
+    };
+    ShaderBlob shaders[] = {
+        {"VSSky", "vs_5_0", {}},
+        {"PSSky", "ps_5_0", {}},
+        {"VSScene", "vs_5_0", {}},
+        {"PSScene", "ps_5_0", {}},
+    };
+    for (auto& shader : shaders) {
+        ComPtr<ID3DBlob> error;
+        hr = D3DCompile(kShaderSource, sizeof(kShaderSource) - 1, "fg_scene", nullptr, nullptr, shader.entry,
+                        shader.target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &shader.blob, &error);
+        if (FAILED(hr)) {
+            testapp::Log("[FG-DIAG] SceneRenderer: %s compile failed hr=0x%08lx %s\n", shader.entry,
+                         static_cast<unsigned long>(hr),
+                         error ? static_cast<const char*>(error->GetBufferPointer()) : "");
+            return false;
+        }
+    }
+
+    if (!CreatePipeline(device, shaders[0].blob->GetBufferPointer(), shaders[0].blob->GetBufferSize(),
+                        shaders[1].blob->GetBufferPointer(), shaders[1].blob->GetBufferSize(), /*depth*/ false,
+                        /*inputLayout*/ false, skyPso_) ||
+        !CreatePipeline(device, shaders[2].blob->GetBufferPointer(), shaders[2].blob->GetBufferSize(),
+                        shaders[3].blob->GetBufferPointer(), shaders[3].blob->GetBufferSize(), /*depth*/ true,
+                        /*inputLayout*/ true, scenePso_)) {
         return false;
     }
 
@@ -292,12 +382,25 @@ inline bool CubeScene::Initialize(ID3D12Device* device) {
         float r, g, b;
     };
     static const Vertex kVertices[] = {
-        {-0.5f, -0.5f, -0.5f, 1.0f, 0.15f, 0.15f}, {0.5f, -0.5f, -0.5f, 0.15f, 1.0f, 0.15f},
-        {0.5f, 0.5f, -0.5f, 0.15f, 0.35f, 1.0f},   {-0.5f, 0.5f, -0.5f, 1.0f, 0.9f, 0.15f},
-        {-0.5f, -0.5f, 0.5f, 1.0f, 0.15f, 1.0f},   {0.5f, -0.5f, 0.5f, 0.15f, 1.0f, 1.0f},
-        {0.5f, 0.5f, 0.5f, 0.95f, 0.95f, 0.95f},   {-0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f},
+        // Floor quad (matId selects checker in the shader; vertex color unused).
+        {-80.0f, 0.0f, -24.0f, 0.0f, 0.0f, 0.0f},
+        {80.0f, 0.0f, -24.0f, 0.0f, 0.0f, 0.0f},
+        {80.0f, 0.0f, 200.0f, 0.0f, 0.0f, 0.0f},
+        {-80.0f, 0.0f, 200.0f, 0.0f, 0.0f, 0.0f},
+        // Cube (side ~1.1, warm color; lit by per-face normal in the shader).
+        {-0.55f, -0.55f, -0.55f, 0.95f, 0.55f, 0.22f},
+        {0.55f, -0.55f, -0.55f, 0.95f, 0.55f, 0.22f},
+        {0.55f, 0.55f, -0.55f, 0.95f, 0.55f, 0.22f},
+        {-0.55f, 0.55f, -0.55f, 0.95f, 0.55f, 0.22f},
+        {-0.55f, -0.55f, 0.55f, 0.95f, 0.55f, 0.22f},
+        {0.55f, -0.55f, 0.55f, 0.95f, 0.55f, 0.22f},
+        {0.55f, 0.55f, 0.55f, 0.95f, 0.55f, 0.22f},
+        {-0.55f, 0.55f, 0.55f, 0.95f, 0.55f, 0.22f},
     };
     static const uint16_t kIndices[] = {
+        // Floor (verts 0..3).
+        0, 1, 2, 0, 2, 3,
+        // Cube (0-based; drawn with BaseVertexLocation = 4).
         0, 1, 2, 0, 2, 3,  // back
         4, 6, 5, 4, 7, 6,  // front
         4, 5, 1, 4, 1, 0,  // bottom
@@ -305,12 +408,14 @@ inline bool CubeScene::Initialize(ID3D12Device* device) {
         4, 0, 3, 4, 3, 7,  // left
         1, 5, 6, 1, 6, 2,  // right
     };
-    indexCount_ = _countof(kIndices);
+    floorIndexCount_ = 6;
+    cubeIndexCount_ = _countof(kIndices) - 6;
+    cubeBaseVertex_ = 4;
 
     vertexBuffer_ = CreateUploadBuffer(device, sizeof(kVertices), kVertices);
     indexBuffer_ = CreateUploadBuffer(device, sizeof(kIndices), kIndices);
     if (!vertexBuffer_ || !indexBuffer_) {
-        testapp::Log("[FG-DIAG] CubeScene: failed to create vertex/index buffers\n");
+        testapp::Log("[FG-DIAG] SceneRenderer: failed to create vertex/index buffers\n");
         return false;
     }
     vertexBufferView_.BufferLocation = vertexBuffer_->GetGPUVirtualAddress();
@@ -320,49 +425,73 @@ inline bool CubeScene::Initialize(ID3D12Device* device) {
     indexBufferView_.SizeInBytes = sizeof(kIndices);
     indexBufferView_.Format = DXGI_FORMAT_R16_UINT;
 
-    const UINT cbSize = (sizeof(CubeSceneConstants) + 255u) & ~255u;
-    for (UINT i = 0; i < kFrameCount; ++i) {
+    const UINT cbSize = (sizeof(SceneConstants) + 255u) & ~255u;
+    for (UINT i = 0; i < kFrameCount * kObjectsPerFrame; ++i) {
         constantBuffers_[i] = CreateUploadBuffer(device, cbSize, nullptr);
         if (!constantBuffers_[i]) {
-            testapp::Log("[FG-DIAG] CubeScene: failed to create constant buffer %u\n", i);
+            testapp::Log("[FG-DIAG] SceneRenderer: failed to create constant buffer %u\n", i);
             return false;
         }
         void* mapped = nullptr;
         D3D12_RANGE readRange = {0, 0};
         if (FAILED(constantBuffers_[i]->Map(0, &readRange, &mapped)) || !mapped) {
-            testapp::Log("[FG-DIAG] CubeScene: failed to map constant buffer %u\n", i);
+            testapp::Log("[FG-DIAG] SceneRenderer: failed to map constant buffer %u\n", i);
             return false;
         }
         constantPtr_[i] = static_cast<uint8_t*>(mapped);
     }
 
     valid_ = true;
-    testapp::Log("[FG-DIAG] CubeScene initialized indices=%u cbSize=%u\n", indexCount_, cbSize);
+    testapp::Log("[FG-DIAG] SceneRenderer initialized floorIdx=%u cubeIdx=%u cbSize=%u\n", floorIndexCount_,
+                 cubeIndexCount_, cbSize);
     return true;
 }
 
-inline void CubeScene::Render(ID3D12GraphicsCommandList* commandList, const AuxiliaryResources& aux, UINT cbIndex,
-                              int width, int height, float timeSeconds) {
+inline void SceneRenderer::Render(ID3D12GraphicsCommandList* commandList, const AuxiliaryResources& aux,
+                                  UINT frameIndex, int width, int height, float timeSeconds) {
     if (!valid_ || !commandList || width <= 0 || height <= 0) {
         return;
     }
-    if (cbIndex >= kFrameCount) {
-        cbIndex %= kFrameCount;
+    if (frameIndex >= kFrameCount) {
+        frameIndex %= kFrameCount;
     }
 
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
-    const Mat4 model =
-        Mat4Mul(Mat4Mul(Mat4RotationX(timeSeconds * 0.7f), Mat4RotationY(timeSeconds * 0.9f)),
-                Mat4Translation(0.6f * std::sin(timeSeconds * 0.8f), 0.0f, 0.0f));
-    const Mat4 view = Mat4Translation(0.0f, 0.0f, 3.0f);  // camera at (0,0,-3) looking +Z (LH)
-    const Mat4 proj = Mat4PerspectiveFovLH(0.7853982f, aspect, 0.1f, 1000.0f);
-    const Mat4 mvp = Mat4Mul(Mat4Mul(model, view), proj);
+    const Mat4 view = Mat4LookAtLH(0.0f, 2.4f, -5.5f, 0.0f, 0.7f, 1.4f, 0.0f, 1.0f, 0.0f);
+    const Mat4 proj = Mat4PerspectiveFovLH(1.04719755f, aspect, 0.1f, 1000.0f);
+    const Mat4 viewProj = Mat4Mul(view, proj);
 
-    CubeSceneConstants constants;
-    std::memcpy(constants.curMVP, mvp.m, sizeof(mvp.m));
-    std::memcpy(constants.prevMVP, (hasPrev_ ? prevMVP_.m : mvp.m), sizeof(mvp.m));
-    std::memcpy(constantPtr_[cbIndex], &constants, sizeof(constants));
-    prevMVP_ = mvp;
+    const float sweep = 2.6f * std::sin(timeSeconds * 0.55f);
+    const float bob = 0.85f + 0.18f * std::sin(timeSeconds * 1.7f);
+    const Mat4 cubeModel =
+        Mat4Mul(Mat4Mul(Mat4RotationX(timeSeconds * 0.7f), Mat4RotationY(timeSeconds * 0.9f)),
+                Mat4Translation(sweep, bob, 1.4f));
+    const Mat4 floorModel = Mat4Identity();
+    const float fogFar = 70.0f;
+
+    const UINT floorSlot = frameIndex * kObjectsPerFrame + 0;
+    const UINT cubeSlot = frameIndex * kObjectsPerFrame + 1;
+
+    SceneConstants floorCB;
+    std::memcpy(floorCB.curModel, floorModel.m, sizeof(floorModel.m));
+    std::memcpy(floorCB.prevModel, floorModel.m, sizeof(floorModel.m));
+    std::memcpy(floorCB.viewProj, viewProj.m, sizeof(viewProj.m));
+    floorCB.params[0] = 1.0f;
+    floorCB.params[1] = fogFar;
+    floorCB.params[2] = 0.0f;
+    floorCB.params[3] = 0.0f;
+    std::memcpy(constantPtr_[floorSlot], &floorCB, sizeof(floorCB));
+
+    SceneConstants cubeCB;
+    std::memcpy(cubeCB.curModel, cubeModel.m, sizeof(cubeModel.m));
+    std::memcpy(cubeCB.prevModel, (hasPrev_ ? prevCubeModel_.m : cubeModel.m), sizeof(cubeModel.m));
+    std::memcpy(cubeCB.viewProj, viewProj.m, sizeof(viewProj.m));
+    cubeCB.params[0] = 0.0f;
+    cubeCB.params[1] = fogFar;
+    cubeCB.params[2] = 0.0f;
+    cubeCB.params[3] = 0.0f;
+    std::memcpy(constantPtr_[cubeSlot], &cubeCB, sizeof(cubeCB));
+    prevCubeModel_ = cubeModel;
     hasPrev_ = true;
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = {aux.HudlessRtv(), aux.MotionRtv()};
@@ -374,16 +503,26 @@ inline void CubeScene::Render(ID3D12GraphicsCommandList* commandList, const Auxi
     commandList->RSSetViewports(1, &viewport);
     commandList->RSSetScissorRects(1, &scissor);
     commandList->SetGraphicsRootSignature(rootSignature_.Get());
-    commandList->SetPipelineState(pipelineState_.Get());
-    commandList->SetGraphicsRootConstantBufferView(0, constantBuffers_[cbIndex]->GetGPUVirtualAddress());
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // Sky (fullscreen triangle; ignores the bound CB, no depth).
+    commandList->SetPipelineState(skyPso_.Get());
+    commandList->SetGraphicsRootConstantBufferView(0, constantBuffers_[floorSlot]->GetGPUVirtualAddress());
+    commandList->IASetVertexBuffers(0, 0, nullptr);
+    commandList->DrawInstanced(3, 1, 0, 0);
+
+    // Floor + cube (depth-tested geometry).
+    commandList->SetPipelineState(scenePso_.Get());
     commandList->IASetVertexBuffers(0, 1, &vertexBufferView_);
     commandList->IASetIndexBuffer(&indexBufferView_);
-    commandList->DrawIndexedInstanced(indexCount_, 1, 0, 0, 0);
+    commandList->SetGraphicsRootConstantBufferView(0, constantBuffers_[floorSlot]->GetGPUVirtualAddress());
+    commandList->DrawIndexedInstanced(floorIndexCount_, 1, 0, 0, 0);
+    commandList->SetGraphicsRootConstantBufferView(0, constantBuffers_[cubeSlot]->GetGPUVirtualAddress());
+    commandList->DrawIndexedInstanced(cubeIndexCount_, 1, floorIndexCount_, cubeBaseVertex_, 0);
 }
 
-inline void CubeScene::Release() {
-    for (UINT i = 0; i < kFrameCount; ++i) {
+inline void SceneRenderer::Release() {
+    for (UINT i = 0; i < kFrameCount * kObjectsPerFrame; ++i) {
         if (constantBuffers_[i] && constantPtr_[i]) {
             constantBuffers_[i]->Unmap(0, nullptr);
         }
@@ -392,11 +531,14 @@ inline void CubeScene::Release() {
     }
     vertexBuffer_.Reset();
     indexBuffer_.Reset();
-    pipelineState_.Reset();
+    skyPso_.Reset();
+    scenePso_.Reset();
     rootSignature_.Reset();
     vertexBufferView_ = {};
     indexBufferView_ = {};
-    indexCount_ = 0;
+    floorIndexCount_ = 0;
+    cubeIndexCount_ = 0;
+    cubeBaseVertex_ = 0;
     hasPrev_ = false;
     valid_ = false;
 }
