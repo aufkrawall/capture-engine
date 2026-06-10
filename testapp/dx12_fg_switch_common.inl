@@ -30,6 +30,16 @@ static void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
                          static_cast<unsigned long long>(g_FrameIdCounter),
                          static_cast<unsigned long>(removedReason));
             testapp::LogFlush();
+            if (removedReason != S_OK) {
+                // The fence can never signal on a removed device: dump DRED (once, internal guard)
+                // and abandon the wait so the run ends with a diagnosed log instead of a live-lock.
+                DumpDredOnDeviceRemoved(reason);
+                testapp::Log("[FG-DIAG] Abandoning fence wait (%s) after device removal; stopping main loop\n",
+                             reason ? reason : "unknown");
+                testapp::LogFlush();
+                g_Running = false;
+                return;
+            }
         }
     }
 }

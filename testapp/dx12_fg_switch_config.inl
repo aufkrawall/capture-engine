@@ -46,6 +46,8 @@ static void LoadConfig() {
         GetPrivateProfileIntA("Stress", "dlss_suspend_resume_interval_seconds", g_DlssSuspendResumeIntervalSeconds,
                               configPath.c_str()),
         1, 60);
+    g_DlssOffAfterActiveStress = GetPrivateProfileIntA("Stress", "dlss_off_after_active",
+                                                       g_DlssOffAfterActiveStress ? 1 : 0, configPath.c_str()) != 0;
     g_FsrPresentCallbackStress =
         GetPrivateProfileIntA("Stress", "fsr_present_callback_toggle_stress",
                               g_FsrPresentCallbackStress ? 1 : 0, configPath.c_str()) != 0;
@@ -172,6 +174,18 @@ static void ParseCommandLine(int argc, char* argv[]) {
         }
         if (strcmp(argv[i], "--no-dlss-suspend-stress") == 0) {
             g_DlssSuspendResumeStress = false;
+            continue;
+        }
+        if (strcmp(argv[i], "--dlss-off-stress") == 0) {
+            g_DlssOffAfterActiveStress = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-dlss-off-stress") == 0) {
+            g_DlssOffAfterActiveStress = false;
+            continue;
+        }
+        if (strcmp(argv[i], "--dred") == 0) {
+            g_EnableDred = true;
             continue;
         }
         if (strcmp(argv[i], "--fsr-present-callback-interval") == 0 && i + 1 < argc) {

@@ -1,9 +1,10 @@
 # Current State
 
-Last cross-checked: 2026-06-09.
+Last cross-checked: 2026-06-10.
 
 ## High-Signal Current Items
 
+- **Streamline Reflex/DLSS-G invariant (test app, 2026-06-10):** Reflex must stay `eLowLatency` for as long as the DLSS-G proxy swapchain presents — including suspended FG (the proxy's pacer keeps running; Reflex `eOff` under it hangs the GPU within ~100 frames, DRED-proven). Reflex genuinely turns off only with the proxy teardown when leaving DLSS mode (`dx12_fg_switch_test.exe` DLSS→OFF now recreates a native swapchain). See `frame-generation/guardrails.md` and `log/recent.md` (2026-06-10).
 - **x86 DX12 overlay crash/freeze is fixed as of build `0.1.3822`.** The 32-bit `dx12_test.exe` no-vsync DEVICE_HUNG was isolated to overlay text draws that sampled CE-owned font resources. x86 DX12 text now renders as native solid glyph-span geometry, while the overlay remains direct native DX12. No pseudo overlay, DirectPresent overlay, D3D11On12, sleeps, or focus-transition copy fallback are part of the fix. Start with `handoff-dx12-32bit-crash.md`; chronology is in `log/recent.md` (2026-06-09).
 - **DX12 focus/fallback policy:** focus changes must not hide an otherwise drawable overlay. Truly non-presentable swapchains (occluded/iconic/zero-sized) still hold backbuffer work. The current marker is `DX12 focus-loss sync policy=v13 draw-every-frame + x86 solid-span text + upload-slot per-frame fence`.
 - **DX12 third-party/FG coexistence remains topology-driven.** Steam/Rockstar/EOS/Streamline/FFX handling should be based on observed module, queue, swapchain, runtime, and callback state, not game-specific branches. See `dx12-overlay-third-party-coexistence.md`, `frame-generation/guardrails.md`, and `frame-generation/case-studies.md`.

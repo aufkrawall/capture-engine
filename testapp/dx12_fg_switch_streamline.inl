@@ -169,18 +169,22 @@ static bool SetDLSSFGMode(bool enable) {
     options.enableUserInterfaceRecomposition = sl::eTrue;
 
     sl::Result ret = g_SlDLSSGSetOptions(g_SlViewport, options);
-    testapp::Log("[FG-DIAG] slDLSSGSetOptions(mode=%u) backBuffers=%u color=%dx%d result=%d (%s)\n",
+    // frameToken makes an enable/disable pair landing on the SAME frame visible in the log --
+    // Streamline treats that as a race with Present() and it leaves the pacer half-initialized.
+    testapp::Log("[FG-DIAG] slDLSSGSetOptions(mode=%u) backBuffers=%u color=%dx%d frameToken=%u result=%d (%s)\n",
                  static_cast<uint32_t>(options.mode), options.numBackBuffers, options.colorWidth, options.colorHeight,
-                 static_cast<int>(ret), SlResultName(ret));
-    // Reflex (low-latency + per-frame slReflexSleep) is only valid while DLSS FG actually
-    // generates frames. Bind it to this FG enable/disable edge so a stale FG-aware Reflex frame
-    // cap (e.g. half-rate ~69 fps instead of the ~138 fps VRR cap) can never survive FG-off /
-    // FG-suspend. On a failed enable, Reflex stays off because FG did not actually start.
-    if (enable) {
-        const bool dlssOk = ret == sl::Result::eOk;
-        ApplyReflexMode(dlssOk, dlssOk ? "DLSS FG enable" : "DLSS FG enable failed");
-    } else {
-        ApplyReflexMode(false, "DLSS FG disable/suspend");
+                 g_FrameTokenIndex, static_cast<int>(ret), SlResultName(ret));
+    // INVARIANT (DRED-proven, 3 reproductions): Reflex must stay eLowLatency for as long as the
+    // DLSS-G proxy swapchain presents -- INCLUDING the suspended state (slDLSSGSetOptions(eOff)
+    // leaves the proxy and its present pacer alive, still submitting "pacer command list" GPU work
+    // per present). Calling slReflexSetOptions(eOff) under that live pacer wedges the GPU within
+    // ~100 frames (DXGI_ERROR_DEVICE_HUNG 0x887a0006) -- immediately, after a fence/present-gated
+    // drain, and even after slFreeResources(kFeatureDLSS_G) (the pacer is owned by the proxy, not
+    // the per-viewport feature resources). With Reflex kept on, the suspended hold is stable and
+    // capped by the normal Reflex limiter, exactly like a real game with FG off in a menu. Reflex
+    // genuinely turns off only with the proxy teardown (ShutdownStreamline) when leaving DLSS mode.
+    if (enable && ret == sl::Result::eOk) {
+        ApplyReflexMode(true, "DLSS FG enable");
     }
     testapp::LogFlush();
     return ret == sl::Result::eOk;
@@ -225,9 +229,10 @@ static sl::FrameToken* BeginStreamlineFrame() {
     // integration contract. We still emit PCL markers (SimulationStart/PresentStart/...) every
     // frame; skipping the matching sleep on those tokens left Streamline's present/PCL pipeline
     // waiting on an un-slept token and stalled the present queue after suspending DLSS FG (a GPU
-    // fence that never signals, observed in a freeze dump). The FG-aware half-rate frame cap is
-    // removed by setting Reflex mode eOff (ApplyReflexMode) when FG is off/suspended -- with mode
-    // eOff this call does not apply a frame limiter -- NOT by skipping the call.
+    // fence that never signals, observed in a freeze dump). While DLSS FG is suspended this sleep
+    // keeps running with Reflex eLowLatency (required by the live proxy pacer, see SetDLSSFGMode);
+    // the Reflex frame cap disappears with the proxy teardown when DLSS mode is left, NOT by
+    // skipping this call.
     if (g_SlReflexSleep) {
         sl::Result sleepResult = g_SlReflexSleep(*token);
         if (sleepResult != sl::Result::eOk && frameIndex < 8) {
@@ -313,6 +318,11 @@ static void ShutdownStreamline() {
         g_DlssEnabled = false;
     }
     g_DlssSuspended = false;
+    // All shutdown paths destroy the proxy swapchain and idle the GPU before reaching here
+    // (ReleaseDX12RendererResourcesForSwitch / Cleanup), so the pacer is gone and a synchronous
+    // Reflex eOff is safe. This is the ONLY place Reflex turns off (see SetDLSSFGMode invariant),
+    // and it removes the lingering Reflex frame cap once DLSS mode is fully left.
+    ApplyReflexMode(false, "Streamline shutdown");
     if (g_SlShutdown && g_SlInitialized) {
         sl::Result shutdownResult = g_SlShutdown();
         testapp::Log("[FG-DIAG] slShutdown result=%d (%s)\n", static_cast<int>(shutdownResult),

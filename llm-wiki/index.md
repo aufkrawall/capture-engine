@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-09 (updated: x86 DX12 no-vsync overlay DEVICE_HUNG fixed with solid glyph-span text path)
+Last cross-checked: 2026-06-10 (updated: Streamline Reflex/DLSS-G proxy invariant — Reflex stays on while the proxy presents; DLSS→OFF teardown lets it genuinely turn off)
 
 Primary sources:
 - `AGENTS.md`

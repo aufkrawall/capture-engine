@@ -35,6 +35,7 @@
 
 #include "dx12_fg_resources.h"
 #include "dx12_fg_scene.h"
+#include "fg_present_policy.h"
 #include "testapp_common.h"
 
 #pragma comment(lib, "d3d12.lib")
@@ -93,6 +94,9 @@ static int g_FsrSuspendResumeIntervalSeconds = 3;
 static bool g_DlssSuspendResumeStress = false;
 static int g_DlssSuspendResumeIntervalSeconds = 3;
 static bool g_DlssStressDidSuspend = false;
+static bool g_DlssOffAfterActiveStress = false;
+static bool g_DlssStressDidRequestOff = false;
+static bool g_EnableDred = false;
 static bool g_FsrPresentCallbackStress = true;
 static int g_FsrPresentCallbackToggleIntervalSeconds = 6;
 static bool g_DxgiVideoMemoryQueryStress = true;
@@ -178,9 +182,11 @@ static bool g_SlDeviceSet = false;
 static bool g_DlssInitialized = false;
 static bool g_DlssEnabled = false;
 static bool g_DlssSuspended = false;
-// Reflex low-latency belongs to the active DLSS-G pipeline only. Tracked here so it can be
-// driven strictly by the DLSS FG enable/suspend edge and never linger as a stale FG-aware
-// (half-rate VRR) frame cap once FG is off or suspended.
+// Reflex low-latency turns on with DLSS FG and MUST stay on for as long as the DLSS-G proxy
+// swapchain presents (active AND suspended FG): switching Reflex off under the proxy's live pacer
+// wedges the GPU within ~100 frames (DRED-proven; see the invariant in
+// dx12_fg_switch_streamline.inl). It genuinely turns off only with the proxy teardown
+// (ShutdownStreamline) when leaving DLSS mode, which removes the Reflex frame cap.
 static bool g_ReflexLowLatencyActive = false;
 static uint32_t g_FrameTokenIndex = 0;
 static std::mutex g_RuntimeLoadMutex;
@@ -273,6 +279,8 @@ static const char* FfxReturnName(ffxReturnCode_t code) {
 
 static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer, const char* reason, bool forceLog);
 static void RegisterFSRUiResource();
+
+#include "dx12_fg_switch_dred.inl"
 
 static bool IsModeSuspended(FGMode mode) {
     if (mode == FGMode::FSR) {
@@ -478,25 +486,20 @@ static void UpdateWindowTitle() {
     SetWindowTextW(g_Hwnd, title);
 }
 
+// Policy rationale lives in fg_present_policy.h: DLSS mode (active and suspended) presents the
+// Streamline proxy uncapped with Reflex pacing the output; OFF/FSR run real swapchains that honor
+// the configured vsync; the tearing flag follows the user's vsync intent.
+static testapp::fg::ProxyPresentPolicy ResolvePresentPolicy() {
+    return testapp::fg::ResolveProxyPresentPolicy(g_CurrentMode == FGMode::DLSS, g_VSync,
+                                                  g_CurrentSwapChainAllowTearing);
+}
+
 static UINT ResolvePresentSyncInterval() {
-    // The Streamline/DLSS-G proxy swapchain must be presented uncapped (SyncInterval=0) the entire
-    // time it is in use -- while DLSS-G is generating frames AND while DLSS-G is merely suspended.
-    // Suspending DLSS FG does not recreate a native swapchain (it only calls slDLSSGSetOptions),
-    // so the proxy swapchain stays in place; presenting it with SyncInterval=1 hangs the GPU device
-    // (DXGI_ERROR_DEVICE_HUNG) after a few hundred suspended frames -- Streamline's present-pacer
-    // allocator gets stuck on the suspend's fence and the queue wedges (observed in a freeze dump
-    // and the [FG-DIAG] Present hr=0x887a0005 log). Driver-forced vsync (e.g. NVCP "VSync On")
-    // still paces the output, so the user's vsync is honored even though we request SyncInterval=0;
-    // that is exactly how real DLSS-G games behave. Only native/FSR/OFF swapchains, which are real
-    // (non-proxy) swapchains, honor the app-configured vsync.
-    if (g_CurrentMode == FGMode::DLSS) {
-        return 0;
-    }
-    return static_cast<UINT>(g_VSync);
+    return ResolvePresentPolicy().syncInterval;
 }
 
 static UINT ResolvePresentFlags(UINT syncInterval) {
-    if (syncInterval == 0 && g_CurrentSwapChainAllowTearing) {
+    if (syncInterval == 0 && ResolvePresentPolicy().allowTearing) {
         return DXGI_PRESENT_ALLOW_TEARING;
     }
     return 0;
@@ -878,6 +881,19 @@ static bool ReinitializeDX12ForFSR(const char* reason) {
     return InitDX12(g_Hwnd, true, reason ? reason : "enter FSR mode");
 }
 
+// Leaving DLSS mode for OFF must fully tear down the Streamline proxy swapchain and recreate a
+// truly native one: keeping the proxy would keep its present pacer alive, and Reflex must stay on
+// while that pacer presents (turning it off wedges the GPU; see dx12_fg_switch_streamline.inl).
+// Only the teardown lets Reflex genuinely turn off, removing its frame cap in OFF mode -- exactly
+// like a real game that rebuilds presentation when FG is switched off for good.
+static bool ReinitializeDX12ForNativeOff(const char* reason) {
+    ReleaseDX12RendererResourcesForSwitch(reason);
+    if (g_SlInitialized || g_SlModule) {
+        ShutdownStreamlineSerialized(reason ? reason : "enter OFF mode");
+    }
+    return InitDX12(g_Hwnd, false, reason ? reason : "enter OFF mode");
+}
+
 static bool ReinitializeDX12ForDLSS(const char* reason) {
     ReleaseDX12RendererResourcesForSwitch(reason);
     if (!g_SlInitialized && !LoadStreamlineAndInitSerialized(reason ? reason : "enter DLSS")) {
@@ -1061,6 +1077,13 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
         } else if (ok && SetDLSSFGMode(true)) {
             g_DlssEnabled = true;
             g_DlssSuspended = false;
+            // Anchor the one-shot DLSS stress interval to the FG enable. Without this the stress
+            // timer (armed at startup) was already expired on entering DLSS mode and suspended FG in
+            // the SAME Render iteration / frame token as the enable, before a single present consumed
+            // it -- Streamline flags that as "Repeated slDLSSGSetOptions() call ... race condition
+            // with Present()" and it leaves the pacer half-initialized. The stress must exercise the
+            // realistic sequence: FG actually generates frames for the interval, THEN suspends.
+            g_LastDlssSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
             PollDLSSFGState();
         } else if (ok) {
             testapp::Log("[FG-DIAG] DLSS FG enable failed during switch\n");
@@ -1083,6 +1106,12 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             ok = RecreateSwapChain(false, "enter OFF mode") && ok;
             MaybeUnloadFSRRuntimeAfterSwitch("enter OFF mode");
             StartAsyncFSRRuntimePreload("after entering OFF mode");
+        } else if (ok && (g_SwapChainUsesStreamline || g_SlInitialized || g_SlModule)) {
+            testapp::Log(
+                "[FG-DIAG] OFF mode tears down the Streamline proxy swapchain and Streamline itself, then "
+                "recreates a native swapchain (swapChain=%p streamline=%d) so Reflex can genuinely turn off\n",
+                g_SwapChain.Get(), g_SwapChainUsesStreamline ? 1 : 0);
+            ok = ReinitializeDX12ForNativeOff("enter OFF mode after DLSS") && ok;
         }
     }
 
@@ -1126,16 +1155,23 @@ static void RunAutoSequence(float elapsedSeconds) {
     }
 }
 
-// Renders the frame-generation scene inputs: a real 3D cube into the hud-less color +
-// Auto DLSS-FG suspend-and-HOLD stress (off by default). Once in DLSS FG for the configured
-// interval, suspend DLSS-G once and stay suspended for the rest of the run -- this reproduces the
-// sustained-suspended state without manual key presses. A suspend/resume *cycle* does NOT
-// reproduce the failure: each switch resets Streamline's present-pacer, so the regression only
-// shows up when the app holds the suspended state (the GPU device hung after ~hundreds of
-// suspended frames when the proxy swapchain was presented with SyncInterval=1).
+// Auto one-shot DLSS-FG stress stages (off by default). Once DLSS FG ran for the configured
+// interval: --dlss-suspend-stress suspends DLSS-G once and HOLDS it; --dlss-off-stress switches
+// DLSS->OFF once and holds. With BOTH flags the stages chain (suspend at T, OFF after another
+// interval), reproducing the full manual scenario "FG active -> suspend -> hold -> OFF" without key
+// presses. A suspend/resume *cycle* does NOT reproduce the pacer failure class: each switch resets
+// Streamline's present-pacer, so those regressions only show up when the app HOLDS the post-FG
+// state (the GPU device hung after ~hundreds of suspended frames when the proxy swapchain was
+// presented with SyncInterval=1, and within ~100 frames when Reflex was switched off under the
+// suspended proxy's live pacer).
 static void MaybeToggleDLSSSuspensionStress() {
-    if (!g_DlssSuspendResumeStress || g_ManualMode || g_DlssStressDidSuspend || g_DlssSuspended ||
+    if ((!g_DlssSuspendResumeStress && !g_DlssOffAfterActiveStress) || g_ManualMode || g_ModeSwitchPending ||
         g_CurrentMode != FGMode::DLSS || !g_DlssInitialized || !g_SlDLSSGSetOptions) {
+        return;
+    }
+    const bool suspendPending = g_DlssSuspendResumeStress && !g_DlssStressDidSuspend;
+    const bool offPending = g_DlssOffAfterActiveStress && !g_DlssStressDidRequestOff && !suspendPending;
+    if (!suspendPending && !offPending) {
         return;
     }
     const auto now = std::chrono::high_resolution_clock::now();
@@ -1143,17 +1179,28 @@ static void MaybeToggleDLSSSuspensionStress() {
     if (elapsed < static_cast<float>(g_DlssSuspendResumeIntervalSeconds)) {
         return;
     }
-    if (SetDLSSFGMode(false)) {
+    if (offPending) {
+        g_DlssStressDidRequestOff = true;
+        RequestMode(FGMode::Off, "dlss off-after-active stress", false);
+        return;
+    }
+    const bool ok = SetDLSSFGMode(false);
+    if (ok) {
         g_DlssEnabled = false;
         g_DlssSuspended = true;
         g_DlssStressDidSuspend = true;
+        // Re-anchor so a chained --dlss-off-stress stage holds the suspended state for a full
+        // interval before switching OFF.
+        g_LastDlssSuspendResumeToggleTime = now;
     }
-    testapp::Log("[FG-DIAG] DLSS suspend-and-hold stress: suspended FG frameID=%llu (holding suspended)\n",
+    testapp::Log("[FG-DIAG] DLSS suspend-and-hold stress: %s frameID=%llu\n",
+                 ok ? "suspended FG (holding suspended)" : "suspend FAILED (state unchanged)",
                  static_cast<unsigned long long>(g_FrameIdCounter));
     testapp::LogFlush();
     UpdateWindowTitle();
 }
 
+// Renders the frame-generation scene inputs: a real 3D cube into the hud-less color +
 // motion-vector targets (so FG interpolates the moving cube to the output/generated rate), and
 // the HUD + status into the UI-layer texture. The UI layer is registered with FSR / tagged for
 // DLSS, so it is composited crisp on every real and generated frame at the base rate (no
@@ -1288,15 +1335,29 @@ static void Render() {
     const UINT presentSyncInterval = ResolvePresentSyncInterval();
     const UINT presentFlags = ResolvePresentFlags(presentSyncInterval);
     if ((g_FrameIdCounter % 60) == 0) {
+        // Measured fps per heartbeat window makes a lingering Reflex frame cap (FG half-rate ~69 or
+        // the normal low-latency cap) objectively visible in the log after FG off/suspend.
+        static std::chrono::high_resolution_clock::time_point s_lastHeartbeatTime;
+        static uint64_t s_lastHeartbeatFrameId = 0;
+        double fps = 0.0;
+        if (s_lastHeartbeatFrameId != 0 && g_FrameIdCounter > s_lastHeartbeatFrameId) {
+            const double windowSeconds = std::chrono::duration<double>(now - s_lastHeartbeatTime).count();
+            if (windowSeconds > 0.0) {
+                fps = static_cast<double>(g_FrameIdCounter - s_lastHeartbeatFrameId) / windowSeconds;
+            }
+        }
+        s_lastHeartbeatTime = now;
+        s_lastHeartbeatFrameId = g_FrameIdCounter;
         testapp::Log(
             "[FG-DIAG] heartbeat frameID=%llu frameIndex=%u mode=%s fsr=%d dlss=%d manual=%d autoStage=%d "
             "fsrConfigureEveryFrame=%d fsrSuspended=%d dlssSuspended=%d presentSync=%u presentFlags=0x%x "
-            "configuredVsync=%d lastSuspendToggleFrame=%llu\n",
+            "configuredVsync=%d lastSuspendToggleFrame=%llu fps=%.1f reflexLL=%d\n",
             static_cast<unsigned long long>(g_FrameIdCounter), frameIndex, ModeName(g_CurrentMode),
             g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, g_ManualMode ? 1 : 0, g_AutoStage,
             g_FsrConfigureEveryFrame ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssSuspended ? 1 : 0,
             presentSyncInterval, presentFlags, g_VSync,
-            static_cast<unsigned long long>(g_LastFsrSuspendResumeToggleFrameId));
+            static_cast<unsigned long long>(g_LastFsrSuspendResumeToggleFrameId), fps,
+            g_ReflexLowLatencyActive ? 1 : 0);
     }
 
     if (g_FsrEnabled && g_FsrConfigureEveryFrame) {
@@ -1365,6 +1426,19 @@ static void Render() {
                      presentSyncInterval, presentFlags, g_VSync, static_cast<unsigned long>(presentHr));
         testapp::LogFlush();
     }
+    if (IsDeviceRemovedHr(presentHr)) {
+        // Dump DRED (once, internal guard) and stop the loop instead of live-locking on a dead device.
+        DumpDredOnDeviceRemoved("Present device-removed");
+        static bool s_loggedDeviceRemovedStop = false;
+        if (!s_loggedDeviceRemovedStop) {
+            s_loggedDeviceRemovedStop = true;
+            testapp::Log("[FG-DIAG] Stopping main loop after device removal at frameID=%llu mode=%s suspended=%d\n",
+                         static_cast<unsigned long long>(g_FrameIdCounter), ModeName(g_CurrentMode),
+                         g_DlssSuspended ? 1 : 0);
+            testapp::LogFlush();
+        }
+        g_Running = false;
+    }
     SetPCLMarker(frameToken, sl::PCLMarker::ePresentEnd, "PresentEnd");
     MoveToNextFrame();
     if (g_DlssEnabled && (g_FrameTokenIndex % 120) == 0) {
@@ -1420,6 +1494,7 @@ int main(int argc, char* argv[]) {
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
     testapp::OpenLogFile();
+    EnableDredIfRequested();  // must run before any D3D12 device is created
     testapp::Log("DX12 FG Switch Test App\n");
     testapp::Log("=======================\n");
     testapp::Log("Resolution: %dx%d\n", g_WindowWidth, g_WindowHeight);
@@ -1449,6 +1524,9 @@ int main(int argc, char* argv[]) {
                  g_StartupNativeSwapchainRecreateCount);
     testapp::Log("Stress: Async FG runtime preload after visible startup = %d\n",
                  g_AsyncRuntimePreload ? 1 : 0);
+    testapp::Log("Stress: DLSS one-shot suspend-and-hold = %d, off-after-active hold = %d (interval %ds)\n",
+                 g_DlssSuspendResumeStress ? 1 : 0, g_DlssOffAfterActiveStress ? 1 : 0,
+                 g_DlssSuspendResumeIntervalSeconds);
     testapp::Log("Stress: Auto exit seconds = %d\n\n", g_AutoExitSeconds);
     testapp::LogFlush();
 
