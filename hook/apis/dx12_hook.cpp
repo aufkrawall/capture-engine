@@ -50,7 +50,7 @@ bool SaveDX12TextureAsHDR(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D1
 static bool IsActualFrameGenerationActive();
 static bool IsStreamlineLoaded();
 static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue,
-                                   bool authoritativeFFXRuntimeQueue);
+                                   bool authoritativeFFXRuntimeQueue, bool gameCreatedSwapchain = false);
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
@@ -1468,6 +1468,16 @@ static std::atomic<int> g_AuthoritativeFSRRealFrameOnlyStreak{0};
 static std::atomic<int> g_StaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak{0};
 static std::atomic<bool> g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun{false};
 static std::atomic<bool> g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown{false};
+// Set when native FSR contexts are destroyed while no fresh session replaced
+// them. Together with the explicit-off latch this is the evidence that lets a
+// later GAME-created swapchain creation end the runtime-owned teardown.
+static std::atomic<bool> g_NativeFSRContextsDestroyedAwaitingGameSwapchain{false};
+// Identity-only marker (raw pointer, never dereferenced) for the queue of the
+// game-created swapchain that ended the runtime-owned native-FSR teardown.
+// Lets the FG transition cooldown and the swapchain-change reinit guard skip
+// blanking the overlay for the FSR->off recovery that already proved its
+// present path.
+static std::atomic<ID3D12CommandQueue*> g_PostNativeFSROffGameSwapchainRecoveryQueue{nullptr};
 static std::atomic<bool> g_NativeFSRStartupConfigureArmingPending{false};
 static std::atomic<bool> g_ProtectedOfficialFFXStartupSwapchainPending{false};
 static std::atomic<uint32_t> g_ProtectedOfficialFFXStartupProcessFrameSkips{0};
@@ -4485,6 +4495,9 @@ void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeA
 
 void DX12_OnNativeFSRFrameGenerationContextsDestroyed() {
     ForceClearNativeFSRInternalNoCallbackComposition("native FSR contexts destroyed");
+    // The destroyed contexts are the strong half of the "stronger off signal":
+    // the next GAME-created swapchain ends the runtime-owned teardown.
+    g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(true, std::memory_order_release);
     DX12_OnNativeFSRPresentCallbackRoutingConfigured(false, false, false);
     g_RenderWatchdog.SetRuntimePresentationMonitor(false);
     ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
@@ -4509,6 +4522,10 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresen
         g_FGCompat.SetFSRFGMultiplier(2);
         g_FGCompat.SetFSRFGActive(true);
         ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+        // A fresh enabled configure starts a new FSR session; stale
+        // off/destroy recovery evidence must not leak into it.
+        g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
+        g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr, std::memory_order_release);
         char deferredModulePath[MAX_PATH] = {};
         ID3D12CommandQueue* deferredQueue =
             ConsumeDeferredOfficialFFXTakeoverSideEffects(deferredModulePath, sizeof(deferredModulePath));
@@ -6052,7 +6069,7 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
 // for overlay submission.  Only accepts DIRECT queues (same rule as
 // DX12_SetCommandQueue).  Also hooks the queue vtable for ECL interception.
 static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue,
-                                   bool authoritativeFFXRuntimeQueue) {
+                                   bool authoritativeFFXRuntimeQueue, bool gameCreatedSwapchain) {
     if (!pQueue)
         return false;
 
@@ -6089,6 +6106,54 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
 
         // Track whether an FG runtime owns this swapchain/queue
         bool runtimeOwns = (g_OriginalGameQueue && pQueue != g_OriginalGameQueue);
+
+        // A GAME-created swapchain (caller is neither an FG runtime nor a
+        // third-party overlay) arriving while explicit native-FSR OFF/destroy
+        // evidence is pending is the stronger off signal the runtime-owned
+        // teardown was waiting for. Games that recreate their swapchain on a
+        // FRESH queue never satisfy the origGame-return teardown end below and
+        // would otherwise stay misclassified as runtime-owned, blanking the
+        // overlay through FG cooldowns and re-latching FSR heuristics on a
+        // plain game queue (20260611_191950 FSR->OFF).
+        const bool endNativeFGTeardownOnGameSwapchainCreation =
+            ce::dx12_overlay_policy::ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(
+                gameCreatedSwapchain,
+                g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
+                g_NativeFSRContextsDestroyedAwaitingGameSwapchain.load(std::memory_order_acquire),
+                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
+        if (endNativeFGTeardownOnGameSwapchainCreation) {
+            runtimeOwns = false;
+            g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
+            g_PostNativeFSROffGameSwapchainRecoveryQueue.store(pQueue, std::memory_order_release);
+            const bool ownershipWasHeld = g_FGRuntimeOwnsSwapchain;
+            if (g_FGRuntimeOwnsSwapchain) {
+                g_FGRuntimeOwnsSwapchain = false;
+                DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
+                g_FGRuntimeOwnsSwapchainSince = 0;
+                ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+            }
+            ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+            s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
+            ForceClearNativeFSRInternalNoCallbackComposition(
+                "game-created swapchain after explicit native FSR OFF/destroy");
+            g_FGCompat.SetHeuristicFSRFGActive(false);
+            g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+            ResetAuthoritativeFSRRealFrameOnlyStreak();
+            SetNativeFSRStartupConfigureArmingPending(false,
+                                                      "game-created swapchain after explicit native FSR OFF/destroy");
+            ClearOfficialFFXRuntimeOwnedPresentPathAssumption(
+                "game-created swapchain after explicit native FSR OFF/destroy");
+            if (g_FGCompat.IsFSRFGApiActive()) {
+                g_FGCompat.SetFSRFGActive(false);
+                g_FGCompat.SetFSRFGMultiplier(0);
+            }
+            HookLogImportant(
+                "DX12: Game-created swapchain after explicit native FSR OFF/destroy — ending runtime-owned "
+                "native-FG teardown so the overlay resumes without FG cooldowns (queue=%p origGame=%p "
+                "ownershipWasHeld=%d caller=%s)",
+                pQueue, g_OriginalGameQueue, ownershipWasHeld ? 1 : 0, "game");
+        }
+
         if (runtimeOwns && !g_FGRuntimeOwnsSwapchain) {
             g_FGRuntimeOwnsSwapchain = true;
             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(true, std::memory_order_release);
@@ -6367,8 +6432,17 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
                     context, pQueue, captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "stack");
             }
         }
-        const bool runtimeOwnershipJustActivated =
-            DX12_SetSwapchainQueue(pQueue, authoritativeStreamlineRuntimeQueue, authoritativeFFXRuntimeQueue);
+        // A caller that is neither an FG runtime, an FFX stack, nor a
+        // third-party overlay is the game itself creating its swapchain. This
+        // provenance is what lets explicit native-FSR OFF/destroy teardowns end
+        // on game swapchain recreation instead of waiting for an origGame queue
+        // return that fresh-queue games never deliver.
+        const bool gameCreatedSwapchain = !captureEvidence.callerFromThirdPartyOverlay &&
+                                          !captureEvidence.authoritativeFFXRuntimeCreator &&
+                                          !captureEvidence.officialAMDFFXRuntimeCreator &&
+                                          !captureEvidence.authoritativeStreamlineRuntimeCreator;
+        const bool runtimeOwnershipJustActivated = DX12_SetSwapchainQueue(
+            pQueue, authoritativeStreamlineRuntimeQueue, authoritativeFFXRuntimeQueue, gameCreatedSwapchain);
         if (freshAuthoritativeStreamlineHandoff) {
             if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchain(
                     IsDX12Swapchain(pSwapChain), freshAuthoritativeStreamlineHandoff,
@@ -6944,6 +7018,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                         "Streamline FG comeback cleared stale native-FG Present ownership");
                     ForceClearNativeFSRInternalNoCallbackComposition(
                         "Streamline FG comeback cleared stale native-FG Present ownership");
+                    g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
+                    g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr, std::memory_order_release);
                     HookLogImportant(
                         "DX12: Streamline FG ON after FSR — cleared stale native-FG Present ownership before explicit "
                         "DLSS comeback activation (scQueue=%p origGame=%p)",
@@ -13178,13 +13254,24 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
                         g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr,
                         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
-                if (guardSwapchainReinit && immediateReinitAfterNoCallbackFFXTakeover) {
-                    // The enabled ffxConfigure already finalized the official FFX
-                    // takeover, applied the staged runtime queue, and drained CE's
-                    // overlay GPU work. Normal overlay rendering on the runtime-owned
-                    // swapchain queue is the approved transport for the no-callback
-                    // route, so rebuild the overlay on the new swapchain immediately
-                    // instead of blanking it for the generic transition cooldown.
+                const bool immediateReinitAfterGameSwapchainRecovery =
+                    ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff(
+                        currentSwapchainQueue != nullptr &&
+                            g_PostNativeFSROffGameSwapchainRecoveryQueue.load(std::memory_order_acquire) ==
+                                currentSwapchainQueue,
+                        g_FGCompat.IsFSRFGApiActive(),
+                        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
+                if (guardSwapchainReinit &&
+                    (immediateReinitAfterNoCallbackFFXTakeover || immediateReinitAfterGameSwapchainRecovery)) {
+                    // Enable direction: the enabled ffxConfigure already finalized
+                    // the official FFX takeover, applied the staged runtime queue,
+                    // and drained CE's overlay GPU work; normal overlay rendering on
+                    // the runtime-owned swapchain queue is the approved transport
+                    // for the no-callback route. Off direction: the game-created
+                    // recovery swapchain already ended the runtime-owned teardown
+                    // and its queue was captured at creation. Either way, rebuild
+                    // the overlay immediately instead of blanking it for the
+                    // generic transition cooldown.
                     const int previousCooldown = g_FGTransitionCooldown;
                     g_FGTransitionCooldown = 0;
                     g_PostSLCooldownRemaining.store(0, std::memory_order_release);
@@ -13196,9 +13283,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         g_State.syncInit = false;
                     }
                     HookLogImportant(
-                        "DX12: Swapchain change is finalized no-callback official FFX takeover — immediate overlay "
-                        "reinit on runtime-owned swapchain queue instead of FG transition cooldown "
+                        "DX12: Swapchain change is %s — immediate overlay "
+                        "reinit on its captured queue instead of FG transition cooldown "
                         "(scQueue=%p origGame=%p cmdQ=%p prevCooldown=%d)",
+                        immediateReinitAfterNoCallbackFFXTakeover
+                            ? "finalized no-callback official FFX takeover"
+                            : "game-created swapchain recovery after explicit native FSR OFF/destroy",
                         currentSwapchainQueue, currentOriginalGameQueue, currentCommandQueue, previousCooldown);
                 } else if (guardSwapchainReinit) {
                     int cooldownFrames = 90;  // ~1.5s at 60fps — longer than normal transition
@@ -15154,26 +15244,37 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             ID3D12CommandQueue* transitionOverlayBackendQueue =
                 g_OverlayAdapterBackendQueue.load(std::memory_order_acquire);
             const bool liveNoCallbackNativeFSRSuspensionToggle =
-                ce::dx12_overlay_policy::IsLiveNoCallbackNativeFSRSuspensionToggle(
-                    s_lastRuntimeMode_saved, currentRuntimeMode, currentSLFGRunning,
-                    g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
-                    g_FGRuntimeOwnsSwapchain, transitionSwapchainQueue != nullptr, g_State.overlayInit,
-                    transitionSwapchainQueue != nullptr &&
-                        transitionOverlayBackendQueue == transitionSwapchainQueue);
+                !slSignalChanged && ce::dx12_overlay_policy::IsLiveNoCallbackNativeFSRSuspensionToggle(
+                                        s_lastRuntimeMode_saved, currentRuntimeMode, currentSLFGRunning,
+                                        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+                                        g_FGRuntimeOwnsSwapchain, transitionSwapchainQueue != nullptr,
+                                        g_State.overlayInit,
+                                        transitionSwapchainQueue != nullptr &&
+                                            transitionOverlayBackendQueue == transitionSwapchainQueue);
+            ID3D12CommandQueue* postNativeFSROffRecoveryQueue =
+                g_PostNativeFSROffGameSwapchainRecoveryQueue.load(std::memory_order_acquire);
+            const bool gameSwapchainRecoveryToggleAfterNativeFSROff =
+                !slSignalChanged && ce::dx12_overlay_policy::IsGameSwapchainRecoveryToggleAfterNativeFSROff(
+                                        s_lastRuntimeMode_saved, currentRuntimeMode, currentSLFGRunning,
+                                        transitionSwapchainQueue != nullptr &&
+                                            postNativeFSROffRecoveryQueue == transitionSwapchainQueue);
             const bool shouldStartFGTransitionCooldown =
                 ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
                     s_lastRuntimeMode_saved, currentRuntimeMode, s_lastFGActive, currentFGActive,
-                    s_lastSLFGRunning, currentSLFGRunning, liveNoCallbackNativeFSRSuspensionToggle);
+                    s_lastSLFGRunning, currentSLFGRunning,
+                    liveNoCallbackNativeFSRSuspensionToggle || gameSwapchainRecoveryToggleAfterNativeFSROff);
             if (!shouldStartFGTransitionCooldown) {
                 HookLogImportant(
                     "DX12: Runtime state changed without generated-frame transition "
                     "(prev_mode=%s next_mode=%s active=%d->%d sl_signal=%d->%d "
-                    "liveNoCallbackNativeFSRSuspensionToggle=%d backendQ=%p scQueue=%p) — overlay remains live",
+                    "liveNoCallbackNativeFSRSuspensionToggle=%d gameSwapchainRecoveryToggle=%d backendQ=%p "
+                    "scQueue=%p recoveryQ=%p) — overlay remains live",
                     ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
                     ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), s_lastFGActive ? 1 : 0,
                     currentFGActive ? 1 : 0, s_lastSLFGRunning ? 1 : 0, currentSLFGRunning ? 1 : 0,
-                    liveNoCallbackNativeFSRSuspensionToggle ? 1 : 0, transitionOverlayBackendQueue,
-                    transitionSwapchainQueue);
+                    liveNoCallbackNativeFSRSuspensionToggle ? 1 : 0,
+                    gameSwapchainRecoveryToggleAfterNativeFSROff ? 1 : 0, transitionOverlayBackendQueue,
+                    transitionSwapchainQueue, postNativeFSROffRecoveryQueue);
                 s_lastFGActive = currentFGActive;
                 s_lastRuntimeMode = currentRuntimeMode;
                 s_lastSLFGRunning = currentSLFGRunning;
@@ -19311,6 +19412,8 @@ void DX12Hook::Shutdown() {
     ResetFFXPresentCallbackFirstStallDetection();
     g_FFXPresentCallbackBridgeExpected.store(false, std::memory_order_release);
     g_NativeFSRInternalNoCallbackComposition.store(false, std::memory_order_release);
+    g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
+    g_PostNativeFSROffGameSwapchainRecoveryQueue.store(nullptr, std::memory_order_release);
     g_RenderWatchdog.SetRuntimePresentationMonitor(false);
     g_OverlaySuppressedSinceMs.store(0, std::memory_order_release);
 

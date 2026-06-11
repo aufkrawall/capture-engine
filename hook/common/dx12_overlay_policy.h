@@ -636,6 +636,48 @@ inline bool ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainCha
            runtimeOwnsSwapchain && hasSwapchainQueue && !streamlineFGRunning;
 }
 
+// A game-created (non-runtime, non-third-party-overlay caller) swapchain
+// creation while explicit native-FSR OFF/destroy evidence is pending is the
+// "stronger off signal" the runtime-owned teardown was waiting for. The
+// existing teardown end only fires when the swapchain queue returns to the
+// original game queue; games that recreate their swapchain on a FRESH queue
+// (observed in dx12_fg_switch_test FSR->OFF, 20260611_191950) otherwise stay
+// misclassified as runtime-owned forever, which blanks the overlay through
+// FG cooldowns and can re-latch FSR heuristics on plain game queues.
+inline bool ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(bool gameCreatedSwapchain,
+                                                                         bool explicitNativeFSROffPending,
+                                                                         bool nativeFSRContextsDestroyedPending,
+                                                                         bool streamlineFGRunning) {
+    return gameCreatedSwapchain && !streamlineFGRunning &&
+           (explicitNativeFSROffPending || nativeFSRContextsDestroyedPending);
+}
+
+// FSR_FG -> Off classification flip right after the game-created swapchain
+// recovery ended the runtime-owned native-FSR teardown. The live swapchain
+// queue IS the recovery queue the game just created, so there is no
+// present-path movement left for the draw cooldown to protect; arming it
+// only blanks the overlay for ~60 frames after every real FSR FG -> off.
+inline bool IsGameSwapchainRecoveryToggleAfterNativeFSROff(fg_runtime::RuntimeMode previousRuntimeMode,
+                                                           fg_runtime::RuntimeMode nextRuntimeMode,
+                                                           bool streamlineFGRunning,
+                                                           bool recoveryQueueMatchesLiveSwapchainQueue) {
+    if (streamlineFGRunning || !recoveryQueueMatchesLiveSwapchainQueue) {
+        return false;
+    }
+    return previousRuntimeMode == fg_runtime::RuntimeMode::kFSRFG &&
+           nextRuntimeMode == fg_runtime::RuntimeMode::kOff;
+}
+
+// Swapchain change onto the game-created recovery swapchain after explicit
+// native-FSR OFF/destroy. The recovery edge already ended runtime ownership
+// and the new swapchain's queue was captured at creation, so the overlay can
+// rebuild immediately instead of blanking through the recent-FG 90-frame
+// reinit cooldown.
+inline bool ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff(
+    bool recoveryQueueMatchesCurrentSwapchainQueue, bool fsrFGApiActive, bool streamlineFGRunning) {
+    return recoveryQueueMatchesCurrentSwapchainQueue && !fsrFGApiActive && !streamlineFGRunning;
+}
+
 // Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown
 // leaves GPU resources in an indeterminate state; the overlay's first GPU
 // submit (offscreen compositing on the original game queue) can trigger

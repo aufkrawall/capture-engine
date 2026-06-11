@@ -1540,6 +1540,50 @@ TEST(DXGISharedTest, NativeFSRNoCallbackCompositionRetainedAcrossSuspension) {
                                                                                         false));
 }
 
+TEST(DXGISharedTest, GameSwapchainCreationEndsRuntimeOwnedNativeFSRTeardown) {
+    using ce::dx12_overlay_policy::ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation;
+
+    // 20260611_191950 FSR->OFF: the game recreates its swapchain on a FRESH
+    // queue after explicit native-FSR OFF/destroy; that creation is the
+    // stronger off signal and must end the runtime-owned teardown.
+    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, true, false, false));
+    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, false, true, false));
+    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, true, true, false));
+
+    // Runtime/third-party creators, missing off/destroy evidence, or live
+    // Streamline FG keep the existing conservative teardown handling.
+    EXPECT_FALSE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(false, true, true, false));
+    EXPECT_FALSE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, false, false, false));
+    EXPECT_FALSE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, true, true, true));
+}
+
+TEST(DXGISharedTest, GameSwapchainRecoveryToggleSkipsFSROffTransitionCooldown) {
+    using ce::dx12_overlay_policy::IsGameSwapchainRecoveryToggleAfterNativeFSROff;
+    using ce::fg_runtime::RuntimeMode;
+
+    EXPECT_TRUE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true));
+
+    EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kFSRFG, RuntimeMode::kOff, true, true));
+    EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, false));
+    EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kOff, RuntimeMode::kFSRFG, false, true));
+    EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kDLSSFG, RuntimeMode::kOff, false, true));
+
+    // The exemption feeds the same transition-cooldown gate as the suspension
+    // toggle: FSR_FG -> Off with the recovery proof must not arm the cooldown.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kFSRFG, RuntimeMode::kOff, true, false, false, false, true));
+}
+
+TEST(DXGISharedTest, GameSwapchainRecoveryReinitsOverlayImmediatelyAfterNativeFSROff) {
+    using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff;
+
+    EXPECT_TRUE(ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff(true, false, false));
+
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff(false, false, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff(true, true, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff(true, false, true));
+}
+
 TEST(DXGISharedTest, FinalizedNoCallbackFFXTakeoverReinitsOverlayImmediately) {
     using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange;
 
