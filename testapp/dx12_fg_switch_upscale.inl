@@ -307,10 +307,12 @@ static bool SetDLSSSROptions(bool enable) {
     options.outputWidth = static_cast<uint32_t>(g_WindowWidth);
     options.outputHeight = static_cast<uint32_t>(g_WindowHeight);
     // The FP16 chain carries display-referred SDR values (presented unchanged), so the truthful
-    // hint is eFalse: with eTrue DLSS runs its HDR tonemap/inverse-tonemap path on the dark linear
-    // values, which amplifies the DLSS-4 transformer presets' quantization banding on smooth
-    // gradients (user-visible on the animated cube faces with preset K; preset M masks it).
-    // FSR/TAAU on identical inputs do not band, so the input chain itself is clean.
+    // hint is eFalse (eTrue declares scene-referred linear HDR and routes DLSS through its
+    // tonemap/inverse-tonemap path). A/B-tested 2026-06-11: NO visible difference for the
+    // preset-K gradient banding on the cube faces -- that banding is the DLSS-4 transformer
+    // preset K model itself (FSR/TAAU on identical inputs are clean; preset M is clean;
+    // dlss_preset=m or a newer nvngx_dlss.dll are the remedies). eFalse stays as the
+    // semantically correct default; dlss_hdr=1 remains for future A/Bs against DLSS updates.
     options.colorBuffersHDR = g_DlssHdrInput ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     options.useAutoExposure = sl::Boolean::eTrue;
     const sl::DLSSPreset preset = MapDLSSPreset();

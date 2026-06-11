@@ -122,9 +122,9 @@ static testapp::fg::UpscaleQuality g_UpscaleQuality = testapp::fg::UpscaleQualit
 static int g_UpscaleScalePercent = 0;  // 0 = use the quality-mode ratio
 static char g_DlssPresetConfig = 0;    // 0 = SL default; 'j'/'k'/'l'/'m' = DLSS-4 transformer presets
 // Color-space hint for DLSS SR. Our chain is display-referred SDR (values reach the screen
-// unchanged), so the truthful hint is eFalse; the HDR hint routes DLSS through its
-// tonemap/inverse-tonemap path on dark linear values and amplifies transformer-preset banding on
-// smooth gradients. Kept configurable (dlss_hdr=1 / --dlss-hdr 1) for A/B against DLSS updates.
+// unchanged), so the truthful hint is eFalse. A/B-tested with no visible quality difference
+// (the preset-K gradient banding is model-side, unaffected by this hint); kept configurable
+// (dlss_hdr=1 / --dlss-hdr 1) for A/Bs against future DLSS updates.
 static bool g_DlssHdrInput = false;
 static int g_FsrUpscaleVersionConfig = 0;  // 0 = runtime default; 3/4 = force provider major version
 static bool g_FsrSharpeningEnabled = false;
