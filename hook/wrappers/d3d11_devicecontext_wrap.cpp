@@ -995,7 +995,8 @@ CWrapD3D11DeviceContext::CWrapD3D11DeviceContext(ID3D11DeviceContext* pReal, CWr
     if (m_pDevice) {
         m_pDevice->AddRef();
     }
-    WrapperLog("D3D11 Context Wrapper: Created (real=%p, version=%d)", pReal, m_Version);
+    WrapperLog("D3D11 Context Wrapper: Created (real=%p, version=%d, ctx1=%d ctx2=%d ctx3=%d ctx4=%d)", pReal,
+               m_Version, m_pReal1 != nullptr, m_pReal2 != nullptr, m_pReal3 != nullptr, m_pReal4 != nullptr);
 }
 
 CWrapD3D11DeviceContext::~CWrapD3D11DeviceContext() {
@@ -1026,14 +1027,20 @@ void CWrapD3D11DeviceContext::PromoteInterfaces() {
     if (!m_pReal)
         return;
 
+    // Cache every inherited context interface independently. A modern context may
+    // support ID3D11DeviceContext4 while callers still use Context1 methods like
+    // ClearView; stopping at the highest interface would leave those forwards null.
+    if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1)))) {
+        m_Version = 1;
+    }
+    if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2)))) {
+        m_Version = 2;
+    }
+    if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3)))) {
+        m_Version = 3;
+    }
     if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4)))) {
         m_Version = 4;
-    } else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3)))) {
-        m_Version = 3;
-    } else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2)))) {
-        m_Version = 2;
-    } else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1)))) {
-        m_Version = 1;
     }
 }
 
@@ -2136,25 +2143,25 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11DeviceContext::QueryInterface(REFIID riid, v
         return S_OK;
     }
 
-    if (riid == IID_ID3D11DeviceContext1 && m_Version >= 1) {
+    if (riid == IID_ID3D11DeviceContext1 && m_pReal1) {
         AddRef();
         *ppvObj = static_cast<ID3D11DeviceContext1*>(this);
         return S_OK;
     }
 
-    if (riid == IID_ID3D11DeviceContext2 && m_Version >= 2) {
+    if (riid == IID_ID3D11DeviceContext2 && m_pReal2) {
         AddRef();
         *ppvObj = static_cast<ID3D11DeviceContext2*>(this);
         return S_OK;
     }
 
-    if (riid == IID_ID3D11DeviceContext3 && m_Version >= 3) {
+    if (riid == IID_ID3D11DeviceContext3 && m_pReal3) {
         AddRef();
         *ppvObj = static_cast<ID3D11DeviceContext3*>(this);
         return S_OK;
     }
 
-    if (riid == IID_ID3D11DeviceContext4 && m_Version >= 4) {
+    if (riid == IID_ID3D11DeviceContext4 && m_pReal4) {
         AddRef();
         *ppvObj = static_cast<ID3D11DeviceContext4*>(this);
         return S_OK;
@@ -2971,8 +2978,16 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::SwapDeviceContextState(ID3DDevic
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::ClearView(ID3D11View* pView, const FLOAT Color[4],
                                                           const D3D11_RECT* pRect, UINT NumRects) {
-    if (m_pReal1)
+    static std::atomic<int> s_ClearViewMissingRealContext1Logs{0};
+    if (m_pReal1) {
         m_pReal1->ClearView(pView, Color, pRect, NumRects);
+    } else {
+        int logIndex = s_ClearViewMissingRealContext1Logs.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 4) {
+            WrapperLog("D3D11 Context Wrapper: ClearView requested without real Context1; view=%p rects=%u", pView,
+                       NumRects);
+        }
+    }
     MarkForcedAFViewMutation(pView, "ClearView");
 }
 

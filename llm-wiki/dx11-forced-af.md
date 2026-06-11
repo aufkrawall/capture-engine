@@ -1,6 +1,6 @@
 # DX11 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-05-17
+Last cross-checked: 2026-06-11
 
 Primary sources:
 - `hook/common/sampler_override_utils.h`
@@ -10,6 +10,7 @@ Primary sources:
 - `hook/wrappers/d3d11_devicecontext_wrap.h`
 - `hook/wrappers/wrapper_hooks.cpp`
 - `tests/test_sampler_override_utils.cpp`
+- `tests/test_d3d11_context_wrapper_source.cpp`
 
 ## Summary
 Forced D3D11 AF is shader-aware and draw-time reconciled. This is aimed at NVIDIA
@@ -109,6 +110,13 @@ forced-AF bookkeeping when it cannot affect the draw.
   under that guard and must not update raw AF state. Seeing both `Wrapper: AF allow`
   and `DX11: AF allow` for the same wrapped context in one frame is a regression
   signal for duplicate state tracking.
+- D3D11 context wrappers must cache every supported inherited context interface
+  independently. Modern real contexts commonly support `ID3D11DeviceContext4`, but
+  games can still query/use `ID3D11DeviceContext1`; if promotion stops at Context4
+  and leaves `m_pReal1` null, wrapper-advertised Context1 methods such as
+  `ClearView` become no-ops. `dx11_test.exe` draws its animated rectangle with
+  `ID3D11DeviceContext1::ClearView` after normal full-screen background clears, so
+  this specific failure makes the app render only background under inject/overlay.
 
 ## Resource Policy
 The current safe resource classifier allows only shader-sampled, mipmapped
@@ -174,6 +182,10 @@ should make it back off.
   log pass-through/disabled-AF diagnostics only at low rate. A game-owned 16x AF
   control run should not produce wrapper AF draw stats or millions of registry
   misses; that indicates forced-AF bookkeeping leaked into a disabled configuration.
+- Wrapper context construction now logs the cached context-interface set
+  (`ctx1=... ctx2=... ctx3=... ctx4=...`). `ClearView requested without real
+  Context1` is a regression breadcrumb: a Context1 method reached the wrapper
+  without the matching real interface pointer.
 
 ## Verification
 - Focused shader/parser coverage still lives in `SamplerOverrideUtilsTest.*`.
@@ -195,6 +207,14 @@ should make it back off.
   `python build.py --no-build --run-tests --skip-updates --gtest-filter=SamplerOverrideUtilsTest.*`
   passed 21/21 tests on 2026-05-17. The command bumped displayed metadata to
   `0.1.3247`.
+- Full build: `python build.py --skip-updates` passed on 2026-06-11 and produced
+  build `0.1.3856`, compiling both x64/x86 hook DLLs and test apps.
+- Focused no-rebuild unit run:
+  `python build.py --no-build --run-tests --skip-updates --gtest-filter=D3D11ContextWrapperSourceTest.*`
+  passed 1/1 on 2026-06-11.
+- Full no-rebuild unit run:
+  `python build.py --no-build --run-tests --skip-updates` passed 939/939 on
+  2026-06-11.
 
 ## Open Questions / Stale-Risk
 - BioShock Infinite should be rerun with AF=16x on build `0.1.3246` or later.
