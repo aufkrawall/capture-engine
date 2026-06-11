@@ -6125,6 +6125,27 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             runtimeOwns = false;
             g_NativeFSRContextsDestroyedAwaitingGameSwapchain.store(false, std::memory_order_release);
             g_PostNativeFSROffGameSwapchainRecoveryQueue.store(pQueue, std::memory_order_release);
+            // The game retired its previous present queue and created this
+            // swapchain on a fresh one with game provenance. Re-baseline the
+            // original-game-queue anchor so frame classification counts the
+            // game's real ECLs again (a stale dead anchor classifies every
+            // present as zero-ECL/interpolated and starves ProcessFrame —
+            // 20260612_000936: overlay disappeared forever after FSR->off),
+            // and so future FG cycles' takeover/teardown proofs compare
+            // against the queue that actually presents. Games that recreate
+            // on the SAME queue (Talos-style) hit the pointer-equality no-op.
+            if (g_OriginalGameQueue != pQueue) {
+                ID3D12CommandQueue* oldOriginalGameQueue = g_OriginalGameQueue;
+                g_OriginalGameQueue = pQueue;
+                pQueue->AddRef();
+                HookLogImportant(
+                    "DX12: Re-baselined original game queue to game-created recovery queue %p "
+                    "(was %p; old queue retired by the game itself)",
+                    pQueue, oldOriginalGameQueue);
+                if (oldOriginalGameQueue) {
+                    oldOriginalGameQueue->Release();
+                }
+            }
             const bool ownershipWasHeld = g_FGRuntimeOwnsSwapchain;
             if (g_FGRuntimeOwnsSwapchain) {
                 g_FGRuntimeOwnsSwapchain = false;
@@ -17825,7 +17846,10 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
 
     if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
             isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning,
-            recentStreamlineTeardown, postFSRNonFGRecovery, g_FGCompat.GetRuntimeMode())) {
+            recentStreamlineTeardown, postFSRNonFGRecovery, g_FGCompat.GetRuntimeMode(),
+            currentSwapchainQueue != nullptr &&
+                g_PostNativeFSROffGameSwapchainRecoveryQueue.load(std::memory_order_acquire) ==
+                    currentSwapchainQueue)) {
         sc3->Release();
         return;
     }

@@ -1574,6 +1574,23 @@ TEST(DXGISharedTest, GameSwapchainRecoveryToggleSkipsFSROffTransitionCooldown) {
         RuntimeMode::kFSRFG, RuntimeMode::kOff, true, false, false, false, true));
 }
 
+TEST(DXGISharedTest, GameRecoverySwapchainPresentsDriveProcessFrameDespiteZeroECLClassification) {
+    using ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent;
+    using ce::fg_runtime::RuntimeMode;
+
+    // 20260612_000936: after the game-created recovery ended runtime ownership
+    // and cleared the heuristic keep-alives, zero-ECL classification against
+    // the game's retired original queue skipped ProcessFrame on every present
+    // and the overlay never came back. Presents on the game-created recovery
+    // swapchain are real game frames by construction.
+    EXPECT_FALSE(ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false, false,
+                                                         RuntimeMode::kOff, true));
+
+    // Without the recovery proof the conservative zero-ECL skip stays.
+    EXPECT_TRUE(ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, false, false, false,
+                                                        RuntimeMode::kOff, false));
+}
+
 TEST(DXGISharedTest, GameSwapchainRecoveryReinitsOverlayImmediatelyAfterNativeFSROff) {
     using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff;
 

@@ -799,7 +799,8 @@ inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bo
                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,
                                                     bool postFSRNonFGRecovery,
-                                                    ce::fg_runtime::RuntimeMode runtimeMode) {
+                                                    ce::fg_runtime::RuntimeMode runtimeMode,
+                                                    bool liveSwapchainQueueIsGameRecoveryQueue = false) {
     if (!isInterpolatedFrame) {
         return false;
     }
@@ -812,6 +813,15 @@ inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bo
     // authoritative ECL counts even though top-level Presents are still the
     // frames that must drive normal ProcessFrame recovery.
     if (runtimeOwnsSwapchain && !streamlineFGRunning) {
+        return false;
+    }
+
+    // The live swapchain is the game-created recovery swapchain after an
+    // explicit native-FSR OFF/destroy. Its presents are real game frames by
+    // construction even when ECL classification has not caught up with the
+    // game's recreated queue; skipping them starves ProcessFrame forever
+    // (20260612_000936: overlay never came back after FSR->off).
+    if (liveSwapchainQueueIsGameRecoveryQueue) {
         return false;
     }
 
