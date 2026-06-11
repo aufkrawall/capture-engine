@@ -8,10 +8,31 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Sequence, Union
 
-from scripts.script_safety import PROJECT_ROOT, run_subprocess_checked
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 LOG_PATH = PROJECT_ROOT / "git-clean.log"
+
+
+def run_subprocess_checked(
+    args: Sequence[str],
+    cwd: Optional[Union[str, Path]] = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess and raise RuntimeError with captured output on failure."""
+    result = subprocess.run(
+        list(args),
+        cwd=str(cwd) if cwd is not None else None,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Command failed ({result.returncode}): {' '.join(args)}\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+    return result
 
 
 def parse_args() -> argparse.Namespace:
