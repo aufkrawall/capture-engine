@@ -116,7 +116,7 @@ Primary sources:
 - `testapp/dx12_av_sync_test.cpp`
   - Deterministic content-level capture stimulus. App logs must include `AVSYNC START`, `AVSYNC EVENT`, `AVSYNC FRAME`, `AVSYNC AUDIO_BUFFER`, `AVSYNC WARNING`, and `AVSYNC SUMMARY`. The manifest `dx12_av_sync_test_manifest.json` is required evidence for decoding event colors, audio frequencies, marker geometry, QPC anchors, requested/render geometry, fullscreen/window-chrome/borderless state, and app-side timing. Windowed mode defaults to borderless so WGC captures only the rendered client area.
 - `tools/analyze_av_sync_stimulus.py`
-  - Stimulus-aware MKV analyzer. Failure classes intentionally distinguish `corrupted_video_frame`, `visual_judder`, `repeat_cluster`, `video_content_drift`, `missing_marker`, `audio_marker_missing`, `audio_video_event_offset`, `inter_track_spread`, `decode_error`, and `ce_strict_log_event`. It auto-scales video decode for marker readability, uses Goertzel refinement around audio transition edges, and keeps benign `trimmed=0` bootstrap logs out of strict audio-trim failures. Mixed and microphone streams should be passed as non-strict ordinals when used as opportunistic evidence.
+  - Stimulus-aware MKV analyzer. Failure classes intentionally distinguish `planned_source_stall`, `unplanned_repeat_cluster`, `corrupted_video_frame`, `visual_judder`, `video_content_drift`, `missing_marker`, `audio_marker_missing`, `audio_video_event_offset`, `inter_track_spread`, `decode_error`, and `ce_strict_log_event`. It auto-scales video decode for marker readability, uses Goertzel refinement around audio transition edges, and keeps benign `trimmed=0` bootstrap logs out of strict audio-trim failures. Mixed and microphone streams should be passed as non-strict ordinals when used as opportunistic evidence.
 - `tools/run_av_sync_matrix.py`
   - Automated CE runner for WGC/inject, AAC/ALAC/FLAC/Opus/PCM, and target FPS cases. It snapshots/restores `installed/captureengine/config.ini`, kills stale stimulus/CE processes, launches CE with `--auto-record=... --launch ...`, passes `--fullscreen 0 --window-chrome 0` by default, and writes reports under `installed/captureengine/avsync_runs/<timestamp>/`. Each scenario report must link the capture file, CE session dir, media/hook logs, app log, app manifest, analyzer JSON, and analyzer stdout. Pure system/app tracks are strict; mixed system+app and microphone tracks are diagnostic/non-strict by default.
 - `hook/apis/dx12_hook.cpp`
@@ -250,6 +250,9 @@ Primary sources:
 - After build/test workflow changes, verify the focused iteration path too: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=...` should stop before the expensive product builds and should show live compile/test progress instead of going silent for long periods.
 - If `ProcessIPCTest.*` fails at the initial `Connect(1000)` assertion, first distinguish a real IPC regression from environment leakage: tests should be using unique override pipe names, and the override pipe security descriptor should allow the test process to open the client side for both read and write. A plain production pipe name can collide with running helpers and make the test result meaningless.
 - If you touch perf CSV durability, verify that `perf_metrics_*.csv` gains rows during long-running and hang/crash sessions instead of relying on a clean-process shutdown to flush buffered data.
+- If you touch A/V sync, CFR smoothness, WGC source-starvation, or mux duration logging, run the deterministic stimulus workflow: `tools/run_av_sync_matrix.py --include-source-stall` for synthetic evidence and `tools/analyze_capture_av.py --session-dir <logs> --json-out <report.json>` for real-session attribution. The triage report should separate source Present gaps / WGC source starvation from CE encoder/mux backpressure and audio/visual timeline faults.
+- `perf_metrics_*.csv` now has an appended `qpc_delta_us` column. Existing readers should ignore unknown trailing columns; new stutter triage should prefer `qpc_delta_us` over recomputing gaps when present.
+- Post-mux audio deltas at or below one audio sample or one mux timebase tick are informational rounding evidence, not strict warnings. Larger `Post-mux audio duration mismatch` lines remain strict.
 
 ## Useful Commands
 ```powershell
@@ -270,7 +273,8 @@ python .\testapp\run_tests.py --api dx9 --arch both --tests 1 --duration 5 --min
 python .\testapp\run_tests.py --api all --arch both --tests 1 --duration 5 --min-frames 60
 
 python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs alac --fps 60 --duration-sec 7
-python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs aac,alac,flac,opus,pcm --fps 60,120 --keep-going
+python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs aac,alac,flac,opus,pcm --fps 60,120 --include-source-stall --keep-going
+python .\tools\analyze_capture_av.py --session-dir .\installed\captureengine\logs\<session> --json-out .\installed\captureengine\logs\<session>\av_triage_report.json
 
 powershell -ExecutionPolicy Bypass -File .\analysis\analyze_dump.ps1 .\installed\captureengine\logs\<session>\<dump>.dmp
 ```

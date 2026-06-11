@@ -1947,8 +1947,9 @@ public:
                 forceDrain ? 0
                            : ce::audio::ComputeAudioPullLatencyMs(kSteadyAudioPullLatencyMs, trackStartupSettled,
                                                                   trackMaxObservedLateStartMs);
-            if (isCfrRecording && trackStartupSettled && trackAllPrimed) {
-                trackAudioPullLatencyMs = std::min<int64_t>(trackAudioPullLatencyMs, 30);
+            if (isCfrRecording) {
+                trackAudioPullLatencyMs = ce::audio::ComputeSettledCfrAudioPullLatencyMs(
+                    trackAudioPullLatencyMs, trackStartupSettled, trackAllPrimed);
             }
             const int64_t trackAudioTargetUs = audioTargetUs - (std::max<int64_t>(trackAudioPullLatencyMs, 0) * 1000);
             const int64_t trackAudioTargetMs = trackAudioTargetUs > 0 ? (trackAudioTargetUs / 1000) : 0;

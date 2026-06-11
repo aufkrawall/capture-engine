@@ -135,6 +135,7 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     int64_t minAudioEndUs = 0;
     int64_t maxAudioEndUs = 0;
     int64_t maxAudioDeltaUs = 0;
+    int64_t maxAudioRoundingToleranceUs = 1;
     uint32_t videoStreamCount = 0;
     uint32_t audioStreamCount = 0;
     std::vector<int64_t> firstPacketStartUs(probeCtx->nb_streams, INT64_MAX);
@@ -179,6 +180,11 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             }
             maxAudioEndUs = std::max(maxAudioEndUs, endUs);
             maxAudioDeltaUs = std::max(maxAudioDeltaUs, ce::mux::ComputeDurationDeltaUs(endUs, finalDurationUs));
+            maxAudioRoundingToleranceUs = std::max(
+                maxAudioRoundingToleranceUs,
+                ce::mux::ComputeAudioMuxRoundingToleranceUs(probedStream->codecpar->sample_rate,
+                                                            probedStream->time_base.num,
+                                                            probedStream->time_base.den));
         }
     }
 
@@ -188,11 +194,16 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
         finalDurationUs, maxVideoEndUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, videoStreamCount,
         audioStreamCount);
 
-    if (audioStreamCount > 0 && maxAudioDeltaUs > 0) {
+    if (audioStreamCount > 0 && maxAudioDeltaUs > 0 && maxAudioDeltaUs <= maxAudioRoundingToleranceUs) {
+        DLL_Log(
+            "[VideoEncoder] Post-mux audio duration rounding evidence (target=%lld audioMinEnd=%lld "
+            "audioMaxEnd=%lld maxDelta=%lld tolerance=%lld)",
+            finalDurationUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, maxAudioRoundingToleranceUs);
+    } else if (audioStreamCount > 0 && maxAudioDeltaUs > maxAudioRoundingToleranceUs) {
         DLL_Log(
             "[VideoEncoder] WARNING: Post-mux audio duration mismatch (target=%lld audioMinEnd=%lld "
-            "audioMaxEnd=%lld maxDelta=%lld)",
-            finalDurationUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs);
+            "audioMaxEnd=%lld maxDelta=%lld tolerance=%lld)",
+            finalDurationUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, maxAudioRoundingToleranceUs);
     }
 
     avformat_close_input(&probeCtx);

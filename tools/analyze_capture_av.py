@@ -2,6 +2,7 @@
 
 import argparse
 import collections
+import csv
 import json
 import math
 import os
@@ -10,6 +11,7 @@ import statistics
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NoReturn
 
@@ -88,6 +90,57 @@ CADENCE_BUFNOW_RE = re.compile(r"BufNow=(\d+)")
 CADENCE_WGC_LIVE_REBASE_RE = re.compile(r"WgcLiveRebase=\d+/\d+/(\d+)")
 WGC_SUMMARY_LIVE_REBASE_RE = re.compile(r"\bLiveRebase=\d+/(\d+)")
 WGC_STARTUP_FRAME_AGE_RE = re.compile(r"WGC startup sync post-delay barrier satisfied:.*frameAge=(\d+)us")
+PRESENT_HEARTBEAT_GAP_RE = re.compile(r"DetourPresent: heartbeat #\d+ gap=([0-9.]+)ms", re.IGNORECASE)
+WGC_SOURCE_STARVED_RE = re.compile(
+    r"\[WGC CFR\] Source-starved episode: duration=(\d+)ms out=(\d+) dup=(\d+) minIn=(\d+) minDel=(\d+) "
+    r"freshMiss=(\d+)pm minBuf=(\d+)",
+    re.IGNORECASE,
+)
+WGC_ATTRIBUTION_RE = re.compile(r"\[WGC CFR ATTRIBUTION\]\s*(.*)", re.IGNORECASE)
+WGC_SUMMARY_RE = re.compile(
+    r"\[WGC CFR SUMMARY\].*Live=(\d+) Dup=(\d+).*DupReason\(src=(\d+) def=(\d+) timer=(\d+) drain=(\d+)\).*"
+    r"SourceLimitedRepeats=(\d+) StarvedEpisodes=(\d+) longest=(\d+)ms",
+    re.IGNORECASE,
+)
+WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
+FINAL_PACKET_TIMELINE_RE = re.compile(
+    r"Final packet timeline: target=(\d+) us videoEnd=(\d+) us audioMinEnd=(\d+) us audioMaxEnd=(\d+) us "
+    r"maxPacketDelta=(\d+) us.*audioPastTarget=(\d+)",
+    re.IGNORECASE,
+)
+FINAL_METADATA_RE = re.compile(
+    r"Final metadata durations: target=(\d+) us video=(\d+) us audioMin=(\d+) us audioMax=(\d+) us maxDelta=(\d+) us "
+    r".*overload\(encoder=(\d+) mux=(\d+)\) backpressure=(\d+)",
+    re.IGNORECASE,
+)
+POST_MUX_AUDIO_MISMATCH_RE = re.compile(r"Post-mux audio duration mismatch .*maxDelta=(\d+)", re.IGNORECASE)
+PACKET_MISMATCH_RE = re.compile(r"Packet-level A/V duration mismatch", re.IGNORECASE)
+EXTERNAL_OVERLAY_RE = re.compile(r"\b(Steam|Rockstar|RTSS|ReShade|SpecialK|Streamline|FFX)\b", re.IGNORECASE)
+
+TRIAGE_AUDIO_FAULT_EVENTS = {
+    "audio_latency_cap",
+    "audio_retain_trim",
+    "audio_retained_trim_summary",
+    "audio_latency_trim_summary",
+    "audio_coverage_trim",
+    "audio_tier2_trim_summary",
+    "audio_wgc_lead_cap_trim",
+    "audio_overflow_protection_trim",
+    "audio_post_resample_trim",
+    "audio_large_gap",
+    "audio_underrun",
+    "audio_overflow",
+    "audio_forced_bootstrap",
+    "audio_bootstrap_trim",
+    "audio_extreme_drift",
+}
+
+TRIAGE_VISUAL_FAULT_EVENTS = {
+    "wgc_fresh_catchup",
+    "wgc_stop_drain_aborted",
+    "wgc_stop_hold_repeats",
+    "wgc_drain_duplicate_summary",
+}
 
 
 def fail(message) -> NoReturn:
@@ -772,6 +825,403 @@ def analyze_log(log_path):
     }
 
 
+def read_text_if_exists(path):
+    try:
+        return path.read_text(encoding="utf-8", errors="replace") if path and path.exists() else ""
+    except OSError:
+        return ""
+
+
+def parse_session_manifest(session_dir):
+    manifest = {}
+    path = session_dir / "session_manifest.txt"
+    for line in read_text_if_exists(path).splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        manifest[key.strip()] = value.strip()
+    return manifest
+
+
+def parse_wgc_perf_line(line):
+    def find_int(pattern, default=0):
+        match = re.search(pattern, line)
+        return parse_int(match.group(1), default) if match else default
+
+    cb_gap_match = re.search(r"CbGap:\s*(-?\d+)/(-?\d+)us", line)
+    min_in_match = re.search(r"MinIn250/500:\s*(\d+)/(\d+)", line)
+    min_del_match = re.search(r"MinDel250/500:\s*(\d+)/(\d+)", line)
+    km_fail_match = re.search(r"KMFail:\s*(\d+)/(\d+)", line)
+    flush_match = re.search(r"Flush:\s*(\d+)/(\d+)", line)
+    return {
+        "input": find_int(r"Input:\s*(\d+)"),
+        "queued": find_int(r"Queued:\s*(\d+)"),
+        "duplicate": find_int(r"Dup:\s*(\d+)"),
+        "late": find_int(r"Late:\s*(\d+)"),
+        "min_in_250": parse_int(min_in_match.group(1)) if min_in_match else 0,
+        "min_in_500": parse_int(min_in_match.group(2)) if min_in_match else 0,
+        "min_del_250": parse_int(min_del_match.group(1)) if min_del_match else 0,
+        "min_del_500": parse_int(min_del_match.group(2)) if min_del_match else 0,
+        "fresh_miss_pm": find_int(r"FreshMiss:\s*(\d+)pm"),
+        "buf_min": find_int(r"BufMin:\s*(\d+)"),
+        "no_fresh": find_int(r"NoFresh:\s*(\d+)"),
+        "cb_gap_avg_us": parse_int(cb_gap_match.group(1)) if cb_gap_match else 0,
+        "cb_gap_max_us": parse_int(cb_gap_match.group(2)) if cb_gap_match else 0,
+        "copy_us": find_int(r"Copy:\s*(-?\d+)us"),
+        "fence_us": find_int(r"Fence:\s*(-?\d+)us"),
+        "mux_kb": find_int(r"Mux:\s*(\d+)KB"),
+        "overload_flags": int(re.search(r"Overload:\s*0x([0-9A-Fa-f]+)", line).group(1), 16)
+        if re.search(r"Overload:\s*0x([0-9A-Fa-f]+)", line)
+        else 0,
+        "keyed_acquire_fail": parse_int(km_fail_match.group(1)) if km_fail_match else 0,
+        "keyed_release_fail": parse_int(km_fail_match.group(2)) if km_fail_match else 0,
+        "flush_count": parse_int(flush_match.group(1)) if flush_match else 0,
+        "flush_skipped": parse_int(flush_match.group(2)) if flush_match else 0,
+    }
+
+
+def parse_attribution_payload(payload):
+    values = {}
+    for key, value in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)=([^|\s]+)", payload):
+        values[key] = value.rstrip(",")
+    return values
+
+
+def parse_media_triage(media_text):
+    source_starved = []
+    attribution = []
+    wgc_perf = []
+    wgc_summary = []
+    final_packet_timelines = []
+    final_metadata = []
+    post_mux_audio_mismatches = []
+    packet_mismatch_warnings = 0
+    for line in media_text.splitlines():
+        source_match = WGC_SOURCE_STARVED_RE.search(line)
+        if source_match:
+            source_starved.append(
+                {
+                    "duration_ms": parse_int(source_match.group(1)),
+                    "output_ticks": parse_int(source_match.group(2)),
+                    "duplicate_ticks": parse_int(source_match.group(3)),
+                    "min_input_fps": parse_int(source_match.group(4)),
+                    "min_delivered_fps": parse_int(source_match.group(5)),
+                    "fresh_miss_pm": parse_int(source_match.group(6)),
+                    "min_buffered_frames": parse_int(source_match.group(7)),
+                    "line": line,
+                }
+            )
+        attribution_match = WGC_ATTRIBUTION_RE.search(line)
+        if attribution_match:
+            attribution.append(parse_attribution_payload(attribution_match.group(1)))
+        if WGC_PERF_RE.search(line):
+            wgc_perf.append(parse_wgc_perf_line(line))
+        summary_match = WGC_SUMMARY_RE.search(line)
+        if summary_match:
+            wgc_summary.append(
+                {
+                    "live": parse_int(summary_match.group(1)),
+                    "duplicate": parse_int(summary_match.group(2)),
+                    "dup_src": parse_int(summary_match.group(3)),
+                    "dup_def": parse_int(summary_match.group(4)),
+                    "dup_timer": parse_int(summary_match.group(5)),
+                    "dup_drain": parse_int(summary_match.group(6)),
+                    "source_limited_repeats": parse_int(summary_match.group(7)),
+                    "starved_episodes": parse_int(summary_match.group(8)),
+                    "longest_ms": parse_int(summary_match.group(9)),
+                    "line": line,
+                }
+            )
+        packet_match = FINAL_PACKET_TIMELINE_RE.search(line)
+        if packet_match:
+            final_packet_timelines.append(
+                {
+                    "target_us": parse_int(packet_match.group(1)),
+                    "video_end_us": parse_int(packet_match.group(2)),
+                    "audio_min_end_us": parse_int(packet_match.group(3)),
+                    "audio_max_end_us": parse_int(packet_match.group(4)),
+                    "max_packet_delta_us": parse_int(packet_match.group(5)),
+                    "audio_past_target": parse_int(packet_match.group(6)),
+                    "line": line,
+                }
+            )
+        metadata_match = FINAL_METADATA_RE.search(line)
+        if metadata_match:
+            final_metadata.append(
+                {
+                    "target_us": parse_int(metadata_match.group(1)),
+                    "video_us": parse_int(metadata_match.group(2)),
+                    "audio_min_us": parse_int(metadata_match.group(3)),
+                    "audio_max_us": parse_int(metadata_match.group(4)),
+                    "max_delta_us": parse_int(metadata_match.group(5)),
+                    "encoder_overload": parse_int(metadata_match.group(6)),
+                    "mux_overload": parse_int(metadata_match.group(7)),
+                    "backpressure": parse_int(metadata_match.group(8)),
+                    "line": line,
+                }
+            )
+        post_mux_match = POST_MUX_AUDIO_MISMATCH_RE.search(line)
+        if post_mux_match:
+            post_mux_audio_mismatches.append(parse_int(post_mux_match.group(1)))
+        if PACKET_MISMATCH_RE.search(line):
+            packet_mismatch_warnings += 1
+    return {
+        "source_starved_episodes": source_starved,
+        "wgc_attribution": attribution,
+        "wgc_perf": wgc_perf,
+        "wgc_summary": wgc_summary,
+        "final_packet_timelines": final_packet_timelines,
+        "final_metadata": final_metadata,
+        "post_mux_audio_mismatch_delta_us": post_mux_audio_mismatches,
+        "packet_mismatch_warnings": packet_mismatch_warnings,
+    }
+
+
+def parse_hook_triage(session_dir):
+    gaps = []
+    external_overlay_lines = []
+    present_stalled_lines = []
+    for path in sorted(session_dir.glob("*.log")):
+        if path.name.lower() == "media.log":
+            continue
+        text = read_text_if_exists(path)
+        for line in text.splitlines():
+            gap_match = PRESENT_HEARTBEAT_GAP_RE.search(line)
+            if gap_match:
+                gaps.append({"path": str(path), "gap_ms": parse_float(gap_match.group(1)), "line": line})
+            if "Present STALLED" in line:
+                present_stalled_lines.append({"path": str(path), "line": line})
+            if EXTERNAL_OVERLAY_RE.search(line) and ("overlay" in line.lower() or "streamline" in line.lower()):
+                external_overlay_lines.append({"path": str(path), "line": line})
+    return {
+        "present_gaps": gaps,
+        "present_stalled_lines": present_stalled_lines,
+        "external_overlay_lines": external_overlay_lines[:20],
+    }
+
+
+def parse_perf_csvs(session_dir):
+    summaries = []
+    for path in sorted(session_dir.glob("perf_metrics_*.csv")):
+        try:
+            with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        except OSError:
+            continue
+        previous_qpc = None
+        max_qpc_delta_us = 0
+        large_gaps = []
+        max_total_us = 0
+        max_capture_us = 0
+        max_present_call_us = 0
+        max_mux_kb = 0
+        overload_rows = 0
+        for row in rows:
+            qpc = parse_int(row.get("qpc_us"), 0)
+            if "qpc_delta_us" in row and row.get("qpc_delta_us") not in (None, ""):
+                delta = parse_int(row.get("qpc_delta_us"), 0)
+            elif previous_qpc and qpc > previous_qpc:
+                delta = qpc - previous_qpc
+            else:
+                delta = 0
+            previous_qpc = qpc if qpc > 0 else previous_qpc
+            max_qpc_delta_us = max(max_qpc_delta_us, delta)
+            if delta >= 100000:
+                large_gaps.append(
+                    {
+                        "frame": parse_int(row.get("frame"), 0),
+                        "qpc_us": qpc,
+                        "qpc_delta_us": delta,
+                        "total_us": parse_int(row.get("total_us"), 0),
+                        "capture_us": parse_int(row.get("capture_us"), 0),
+                        "overload_flags": row.get("overload_flags", "0"),
+                    }
+                )
+            max_total_us = max(max_total_us, parse_int(row.get("total_us"), 0))
+            max_capture_us = max(max_capture_us, parse_int(row.get("capture_us"), 0))
+            max_present_call_us = max(max_present_call_us, parse_int(row.get("present_call_us"), 0))
+            max_mux_kb = max(max_mux_kb, parse_int(row.get("mux_queue_kb"), 0))
+            overload = row.get("overload_flags", "0")
+            try:
+                overload_value = int(str(overload), 0)
+            except ValueError:
+                overload_value = 0
+            if overload_value != 0:
+                overload_rows += 1
+        summaries.append(
+            {
+                "path": str(path),
+                "rows": len(rows),
+                "max_qpc_delta_us": max_qpc_delta_us,
+                "large_qpc_gaps": large_gaps[:20],
+                "max_total_us": max_total_us,
+                "max_capture_us": max_capture_us,
+                "max_present_call_us": max_present_call_us,
+                "max_mux_queue_kb": max_mux_kb,
+                "overload_rows": overload_rows,
+            }
+        )
+    return summaries
+
+
+def has_source_starvation(media_evidence):
+    if media_evidence["source_starved_episodes"]:
+        return True
+    if any(summary["source_limited_repeats"] > 0 or summary["starved_episodes"] > 0 for summary in media_evidence["wgc_summary"]):
+        return True
+    return any(item["fresh_miss_pm"] >= 250 and item["min_in_250"] > 0 and item["min_in_250"] < item["min_del_250"]
+               for item in media_evidence["wgc_perf"])
+
+
+def summarize_wgc_source_limits(media_evidence):
+    summary_rows = media_evidence["wgc_summary"]
+    return {
+        "detail_episode_count": len(media_evidence["source_starved_episodes"]),
+        "summary_starved_episodes": sum(row["starved_episodes"] for row in summary_rows),
+        "summary_source_limited_repeats": sum(row["source_limited_repeats"] for row in summary_rows),
+        "summary_longest_ms": max((row["longest_ms"] for row in summary_rows), default=0),
+    }
+
+
+def has_encoder_or_mux_backpressure(media_evidence, perf_summaries):
+    if any(item.get("encoder_overload") or item.get("mux_overload") or item.get("backpressure")
+           for item in media_evidence["final_metadata"]):
+        return True
+    if any(item["overload_rows"] > 0 for item in perf_summaries):
+        return True
+    for item in media_evidence["wgc_perf"]:
+        if item["overload_flags"] != 0:
+            return True
+    return False
+
+
+def classify_session_triage(session_dir, capture_path=None):
+    media_log = session_dir / "media.log"
+    media_text = read_text_if_exists(media_log)
+    log_summary = analyze_log(media_log) if media_text else None
+    media_evidence = parse_media_triage(media_text)
+    hook_evidence = parse_hook_triage(session_dir)
+    perf_summaries = parse_perf_csvs(session_dir)
+    manifest = parse_session_manifest(session_dir)
+    wgc_source_limits = summarize_wgc_source_limits(media_evidence)
+
+    verdicts = []
+    max_present_gap_ms = max((item["gap_ms"] for item in hook_evidence["present_gaps"]), default=0.0)
+    if max_present_gap_ms >= 100.0:
+        verdicts.append("source_present_gap")
+    if has_source_starvation(media_evidence):
+        verdicts.append("wgc_source_starvation")
+    if has_encoder_or_mux_backpressure(media_evidence, perf_summaries):
+        verdicts.append("ce_encoder_or_mux_backpressure")
+
+    audio_fault_counts = {}
+    visual_fault_counts = {}
+    if log_summary:
+        audio_fault_counts = {name: log_summary["counts"].get(name, 0) for name in TRIAGE_AUDIO_FAULT_EVENTS}
+        visual_fault_counts = {name: log_summary["counts"].get(name, 0) for name in TRIAGE_VISUAL_FAULT_EVENTS}
+    post_mux_strict_mismatches = [
+        delta for delta in media_evidence["post_mux_audio_mismatch_delta_us"] if delta > 1
+    ]
+    final_packet_strict = [
+        item for item in media_evidence["final_packet_timelines"]
+        if item["max_packet_delta_us"] > 1000 or item["audio_past_target"] > 0
+    ]
+    if any(audio_fault_counts.values()) or post_mux_strict_mismatches or final_packet_strict:
+        verdicts.append("ce_audio_timeline_fault")
+    if any(visual_fault_counts.values()):
+        verdicts.append("ce_visual_timeline_fault")
+    if hook_evidence["external_overlay_lines"]:
+        verdicts.append("external_overlay_context")
+    if not verdicts:
+        verdicts.append("unknown")
+
+    rounding_evidence = {
+        "post_mux_audio_mismatch_delta_us": media_evidence["post_mux_audio_mismatch_delta_us"],
+        "post_mux_one_us_or_less_is_info": all(
+            delta <= 1 for delta in media_evidence["post_mux_audio_mismatch_delta_us"]
+        ),
+    }
+    report = {
+        "schema": "ce-session-av-triage-v1",
+        "session_dir": str(session_dir),
+        "capture": str(capture_path) if capture_path else None,
+        "manifest": manifest,
+        "paths": {
+            "media_log": str(media_log) if media_log.exists() else None,
+            "hook_logs": [str(path) for path in sorted(session_dir.glob("*.log")) if path.name.lower() != "media.log"],
+            "perf_csv": [item["path"] for item in perf_summaries],
+            "session_manifest": str(session_dir / "session_manifest.txt") if (session_dir / "session_manifest.txt").exists() else None,
+        },
+        "verdicts": verdicts,
+        "faults": {
+            "encoder_or_mux_backpressure": "ce_encoder_or_mux_backpressure" in verdicts,
+            "audio_timeline": "ce_audio_timeline_fault" in verdicts,
+            "visual_timeline": "ce_visual_timeline_fault" in verdicts,
+        },
+        "evidence": {
+            "max_present_gap_ms": max_present_gap_ms,
+            "present_gaps": hook_evidence["present_gaps"][:20],
+            "present_stalled_lines": hook_evidence["present_stalled_lines"][:20],
+            "external_overlay_lines": hook_evidence["external_overlay_lines"],
+            "wgc_source_starved_episodes": media_evidence["source_starved_episodes"],
+            "wgc_source_limits": wgc_source_limits,
+            "wgc_attribution": media_evidence["wgc_attribution"],
+            "wgc_summary": media_evidence["wgc_summary"],
+            "wgc_perf_worst": {
+                "max_fresh_miss_pm": max((item["fresh_miss_pm"] for item in media_evidence["wgc_perf"]), default=0),
+                "min_input_250_fps": min((item["min_in_250"] for item in media_evidence["wgc_perf"] if item["min_in_250"] > 0), default=0),
+                "min_delivered_250_fps": min((item["min_del_250"] for item in media_evidence["wgc_perf"] if item["min_del_250"] > 0), default=0),
+                "max_callback_gap_us": max((item["cb_gap_max_us"] for item in media_evidence["wgc_perf"]), default=0),
+                "max_copy_us": max((item["copy_us"] for item in media_evidence["wgc_perf"]), default=0),
+                "max_fence_us": max((item["fence_us"] for item in media_evidence["wgc_perf"]), default=0),
+            },
+            "perf_csv": perf_summaries,
+            "audio_fault_counts": audio_fault_counts,
+            "visual_fault_counts": visual_fault_counts,
+            "final_packet_timelines": media_evidence["final_packet_timelines"],
+            "final_metadata": media_evidence["final_metadata"],
+            "rounding_evidence": rounding_evidence,
+        },
+    }
+    return report
+
+
+def print_triage_report(report):
+    print("session_av_triage:")
+    print(f"  session_dir={report['session_dir']}")
+    if report.get("capture"):
+        print(f"  capture={report['capture']}")
+    print(f"  verdicts={','.join(report['verdicts'])}")
+    print(
+        "  faults encoder_or_mux={enc} audio={audio} visual={visual}".format(
+            enc=int(report["faults"]["encoder_or_mux_backpressure"]),
+            audio=int(report["faults"]["audio_timeline"]),
+            visual=int(report["faults"]["visual_timeline"]),
+        )
+    )
+    evidence = report["evidence"]
+    print(f"  max_present_gap_ms={evidence['max_present_gap_ms']:.3f}")
+    wgc_source_limits = evidence["wgc_source_limits"]
+    print(
+        "  wgc_source_starved_episodes={detail} summary_episodes={summary} "
+        "source_limited_repeats={repeats} longest_ms={longest} perf_csv={perf_count}".format(
+            detail=wgc_source_limits["detail_episode_count"],
+            summary=wgc_source_limits["summary_starved_episodes"],
+            repeats=wgc_source_limits["summary_source_limited_repeats"],
+            longest=wgc_source_limits["summary_longest_ms"],
+            perf_count=len(evidence["perf_csv"]),
+        )
+    )
+    rounding = evidence["rounding_evidence"]
+    if rounding["post_mux_audio_mismatch_delta_us"]:
+        print(
+            "  post_mux_rounding_delta_us={deltas} informational={info}".format(
+                deltas=",".join(str(value) for value in rounding["post_mux_audio_mismatch_delta_us"]),
+                info=int(rounding["post_mux_one_us_or_less_is_info"]),
+            )
+        )
+
+
 def print_top_histogram(name, histogram, limit=6):
     print(f"{name}:")
     if not histogram:
@@ -911,11 +1361,81 @@ def print_window_summary(name, window):
         )
 
 
+def self_test():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        def make_session(name, media="", hook="", perf=""):
+            session = root / name
+            session.mkdir()
+            (session / "session_manifest.txt").write_text(
+                "build_version=test\ncapture_method=wgc\nnotes=test fixture\n", encoding="utf-8"
+            )
+            (session / "media.log").write_text(media, encoding="utf-8")
+            if hook:
+                (session / "hook_debug.log").write_text(hook, encoding="utf-8")
+            if perf:
+                (session / "perf_metrics_1.csv").write_text(perf, encoding="utf-8")
+            return session
+
+        source_gap = make_session(
+            "source_gap",
+            media="[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) backpressure=0 peakMux=0KB peakPkts=0\n",
+            hook="DetourPresent: heartbeat #3514 gap=299ms presentOwner=0x0000 depth=0 slFG=0 tid=0x1234\n",
+            perf=(
+                "frame,qpc_us,total_us,capture_us,present_call_us,mux_queue_kb,overload_flags,api\n"
+                "1,1000000,100,20,40,0,0,DX12\n2,1299402,196,64,50,0,0,DX12\n"
+            ),
+        )
+        report = classify_session_triage(source_gap)
+        assert "source_present_gap" in report["verdicts"]
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+
+        wgc_starved = make_session(
+            "wgc_starved",
+            media=(
+                "[WGC CFR] Source-starved episode: duration=1016ms out=121 dup=34 minIn=4 minDel=4 freshMiss=465pm minBuf=0\n"
+                "[WGC CFR SUMMARY] Live=5791 Dup=151 DupPct=2.6% NoFresh=10pm NoReserve=0pm DupReason(src=151 def=0 timer=0 drain=0) SourceLimitedRepeats=151 StarvedEpisodes=319 longest=1109ms longestDup=34 worstIn=4 worstDel=4\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_starved)
+        assert "wgc_source_starvation" in report["verdicts"]
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+        assert report["evidence"]["wgc_source_limits"]["detail_episode_count"] == 1
+        assert report["evidence"]["wgc_source_limits"]["summary_starved_episodes"] == 319
+        assert report["evidence"]["wgc_source_limits"]["summary_source_limited_repeats"] == 151
+
+        mux_overload = make_session(
+            "mux_overload",
+            media="[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=1) backpressure=3 peakMux=20000KB peakPkts=50\n",
+        )
+        report = classify_session_triage(mux_overload)
+        assert "ce_encoder_or_mux_backpressure" in report["verdicts"]
+
+        audio_fault = make_session("audio_fault", media="[PullAudio] WARNING: Source underrun track=1\n")
+        report = classify_session_triage(audio_fault)
+        assert "ce_audio_timeline_fault" in report["verdicts"]
+
+        one_us = make_session(
+            "one_us",
+            media="[VideoEncoder] WARNING: Post-mux audio duration mismatch (target=48266667 audioMinEnd=48266666 audioMaxEnd=48266666 maxDelta=1)\n",
+        )
+        report = classify_session_triage(one_us)
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert report["evidence"]["rounding_evidence"]["post_mux_one_us_or_less_is_info"]
+
+    print("self-test: PASS")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Analyze a capture file for CFR timing, duplicate-frame runs, and exact audio track alignment."
     )
-    parser.add_argument("capture", type=Path, help="Capture file to analyze")
+    parser.add_argument("capture", nargs="?", type=Path, help="Capture file to analyze")
+    parser.add_argument("--capture", dest="capture_option", type=Path, help="Capture file to attach to session triage")
+    parser.add_argument("--session-dir", type=Path, help="Analyze a CE logs session for stutter attribution")
+    parser.add_argument("--json-out", type=Path, help="Write JSON report")
     parser.add_argument("--log", type=Path, help="Optional media.log to summarize alongside the capture")
     parser.add_argument("--ffprobe", type=Path, default=Path("ffprobe"), help="Path to ffprobe executable")
     parser.add_argument("--ffmpeg", type=Path, default=Path("ffmpeg"), help="Path to ffmpeg executable")
@@ -1011,13 +1531,37 @@ def main():
             "wgc_startup_frame_age_us."
         ),
     )
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
-    if not args.capture.exists():
-        fail(f"capture file not found: {args.capture}")
+    if args.self_test:
+        self_test()
+        return
+
+    effective_capture = args.capture_option or args.capture
+
+    if args.session_dir:
+        if not args.session_dir.exists():
+            fail(f"session dir not found: {args.session_dir}")
+        if effective_capture and not effective_capture.exists():
+            fail(f"capture file not found: {effective_capture}")
+        report = classify_session_triage(args.session_dir, effective_capture)
+        print_triage_report(report)
+        if args.json_out:
+            args.json_out.parent.mkdir(parents=True, exist_ok=True)
+            args.json_out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        return
+
+    if args.capture_option:
+        fail("--capture is only supported with --session-dir; pass the capture as a positional argument otherwise")
+    if not effective_capture:
+        fail("capture is required unless --session-dir or --self-test is used")
+    if not effective_capture.exists():
+        fail(f"capture file not found: {effective_capture}")
     if args.log and not args.log.exists():
         fail(f"log file not found: {args.log}")
 
+    args.capture = effective_capture
     format_info, video_streams, audio_streams = analyze_streams(args.ffprobe, args.capture)
     video_stream = video_streams[0]
     format_duration = parse_float(format_info.get("duration"))

@@ -7,6 +7,7 @@
 namespace ce::audio {
 
 constexpr int64_t kDefaultSteadyAudioPullLatencyMs = 60;
+constexpr int64_t kSettledCfrAudioPullLatencyMs = 0;
 constexpr int64_t kDefaultAudioPullQuantumSamples = 240;
 
 struct PacketTimelineAdjustment {
@@ -268,6 +269,16 @@ inline int64_t ComputeAudioPullLatencyMs(int64_t steadyLatencyMs, bool allSource
 
     const int64_t startupLatencyMs = std::max<int64_t>(baseLatencyMs + 30, maxObservedLateStartMs + 20);
     return std::clamp<int64_t>(startupLatencyMs, baseLatencyMs, 120);
+}
+
+inline int64_t ComputeSettledCfrAudioPullLatencyMs(int64_t currentLatencyMs, bool trackStartupSettled,
+                                                   bool allSourcesPrimed,
+                                                   int64_t settledLatencyMs = kSettledCfrAudioPullLatencyMs) {
+    if (!trackStartupSettled || !allSourcesPrimed) {
+        return std::max<int64_t>(0, currentLatencyMs);
+    }
+
+    return std::min<int64_t>(std::max<int64_t>(0, currentLatencyMs), std::max<int64_t>(0, settledLatencyMs));
 }
 
 inline int64_t ComputeLatencyAdjustedAvDriftMs(int64_t rawAvDriftMs, int64_t intentionalPullLatencyMs) {

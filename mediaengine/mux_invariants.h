@@ -51,6 +51,24 @@ inline bool IsDurationWithinToleranceUs(int64_t lhsUs, int64_t rhsUs, int64_t to
     return ComputeDurationDeltaUs(lhsUs, rhsUs) <= toleranceUs;
 }
 
+inline int64_t CeilDurationUnitUs(int64_t numerator, int64_t denominator) {
+    if (numerator <= 0 || denominator <= 0) {
+        return 0;
+    }
+    return (numerator * 1000000LL + denominator - 1) / denominator;
+}
+
+inline int64_t ComputeAudioMuxRoundingToleranceUs(int sampleRate, int timeBaseNum, int timeBaseDen) {
+    int64_t toleranceUs = 1;
+    if (sampleRate > 0) {
+        toleranceUs = std::max<int64_t>(toleranceUs, CeilDurationUnitUs(1, sampleRate));
+    }
+    if (timeBaseNum > 0 && timeBaseDen > 0) {
+        toleranceUs = std::max<int64_t>(toleranceUs, CeilDurationUnitUs(timeBaseNum, timeBaseDen));
+    }
+    return toleranceUs;
+}
+
 struct PacketTimelineStats {
     bool seen = false;
     uint32_t packetCount = 0;

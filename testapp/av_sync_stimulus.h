@@ -4,6 +4,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <string>
 
 namespace testapp::avsync {
 
@@ -15,6 +17,14 @@ constexpr double kEventPeriodSeconds = 1.0;
 constexpr double kPreStartSeconds = 1.0;
 constexpr double kTwoPi = 6.283185307179586476925286766559;
 constexpr int kFrameMarkerBits = 16;
+constexpr int kVisualMarkerVersion = 2;
+constexpr int kDefaultAudioBufferMs = 20;
+constexpr int kMinAudioBufferMs = 5;
+constexpr int kMaxAudioBufferMs = 500;
+constexpr double kDefaultAudioLeadMs = 75.0;
+constexpr double kMinAudioLeadMs = -500.0;
+constexpr double kMaxAudioLeadMs = 500.0;
+constexpr double kDefaultSourceStallToleranceSeconds = 0.050;
 
 struct Rgb8 {
     uint8_t r;
@@ -29,6 +39,16 @@ struct StimulusState {
     double eventEndSeconds;
     double frequencyHz;
     Rgb8 color;
+};
+
+struct SourceStallSpec {
+    double startSeconds = 0.0;
+    double durationSeconds = 0.0;
+    bool valid = false;
+
+    double EndSeconds() const {
+        return startSeconds + durationSeconds;
+    }
 };
 
 inline constexpr std::array<double, 16> kFrequenciesHz = {
@@ -88,6 +108,21 @@ inline uint16_t EncodeFrameMarker(uint64_t frameId) {
     return static_cast<uint16_t>(frameId & 0xffffu);
 }
 
+inline uint8_t FrameMarkerChecksum(uint16_t marker, int paletteIndex) {
+    return static_cast<uint8_t>((marker & 0xffu) ^ ((marker >> 8) & 0xffu) ^
+                                static_cast<uint8_t>(paletteIndex < 0 ? 0 : paletteIndex));
+}
+
+inline bool FrameMarkerParity(uint16_t marker, int paletteIndex) {
+    uint32_t value = static_cast<uint32_t>(marker) ^ static_cast<uint32_t>(FrameMarkerChecksum(marker, paletteIndex));
+    bool parity = false;
+    while (value) {
+        parity = !parity;
+        value &= value - 1u;
+    }
+    return parity;
+}
+
 inline bool FrameMarkerBit(uint16_t marker, int bitIndex) {
     if (bitIndex < 0 || bitIndex >= kFrameMarkerBits) {
         return false;
@@ -112,6 +147,47 @@ inline double SmoothLanePosition(double stimulusSeconds) {
     }
     const double cycle = std::fmod(stimulusSeconds * 0.25, 1.0);
     return cycle < 0.0 ? cycle + 1.0 : cycle;
+}
+
+inline double ExpectedMotionPosition(double stimulusSeconds) {
+    return SmoothLanePosition(stimulusSeconds);
+}
+
+inline int ClampAudioBufferMs(int value) {
+    return std::clamp(value, kMinAudioBufferMs, kMaxAudioBufferMs);
+}
+
+inline double ClampAudioLeadMs(double value) {
+    return std::clamp(value, kMinAudioLeadMs, kMaxAudioLeadMs);
+}
+
+inline bool ParseSourceStallSpec(const std::string& text, SourceStallSpec* out) {
+    if (!out) {
+        return false;
+    }
+    *out = {};
+    const size_t colon = text.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= text.size()) {
+        return false;
+    }
+
+    char* end = nullptr;
+    const std::string startText = text.substr(0, colon);
+    const double start = std::strtod(startText.c_str(), &end);
+    if (!end || *end != '\0' || start < 0.0 || !std::isfinite(start)) {
+        return false;
+    }
+    end = nullptr;
+    const std::string durationText = text.substr(colon + 1);
+    const double durationMs = std::strtod(durationText.c_str(), &end);
+    if (!end || *end != '\0' || durationMs <= 0.0 || !std::isfinite(durationMs)) {
+        return false;
+    }
+
+    out->startSeconds = start;
+    out->durationSeconds = durationMs / 1000.0;
+    out->valid = true;
+    return true;
 }
 
 inline double SegmentCycleBase(int eventIndex) {

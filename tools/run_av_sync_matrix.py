@@ -3,6 +3,7 @@
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -32,6 +33,19 @@ class Scenario:
     @property
     def name(self):
         return f"{self.capture_method}_{self.audio_codec}_{self.fps}fps"
+
+
+def resolve_app_fps(app_fps_arg, output_fps):
+    text = str(app_fps_arg).strip().lower()
+    if text in ("", "auto"):
+        return max(240, int(output_fps) * 2)
+    try:
+        value = int(text)
+    except ValueError:
+        fail(f"invalid app fps: {app_fps_arg}")
+    if value <= 0:
+        fail(f"app fps must be positive: {app_fps_arg}")
+    return max(value, int(output_fps))
 
 
 def fail(message):
@@ -91,6 +105,28 @@ def taskkill_processes():
     for proc in ["captureengine.exe", PROCESS_NAME]:
         subprocess.run(["taskkill", "/F", "/IM", proc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.5)
+
+
+def is_process_running(process_name):
+    result = subprocess.run(
+        ["tasklist", "/FI", f"IMAGENAME eq {process_name}", "/NH"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return process_name.lower() in result.stdout.lower()
+
+
+def wait_for_process_exit(process_name, timeout_seconds):
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        if not is_process_running(process_name):
+            return True
+        time.sleep(0.25)
+    return not is_process_running(process_name)
 
 
 def read_config_snapshot():
@@ -210,6 +246,19 @@ def newest_existing(paths, since_unix):
     return candidates[0]
 
 
+def snapshot_artifact(source, destination):
+    if not source:
+        return None
+    try:
+        if not source.exists():
+            return None
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        return destination
+    except OSError:
+        return None
+
+
 def find_latest_run_log_dir(since_unix):
     logs_root = CAPTURE_BIN / "logs"
     if not logs_root.exists():
@@ -292,6 +341,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     captures_dir = scenario_dir / "captures"
     analyzer_json = scenario_dir / "analyzer.json"
     analyzer_stdout = scenario_dir / "analyzer_stdout.txt"
+    triage_json = scenario_dir / "triage.json"
+    triage_stdout = scenario_dir / "triage_stdout.txt"
     scenario_report_path = scenario_dir / "scenario_report.json"
     scenario_dir.mkdir(parents=True, exist_ok=True)
 
@@ -303,6 +354,7 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     delay_ms = args.delay_ms
     duration_ms = args.duration_sec * 1000
     app_duration = args.duration_sec + max(4, delay_ms // 1000 + 2)
+    app_fps = resolve_app_fps(args.app_fps, scenario.fps)
     launch = [
         ce_exe,
         f"--auto-record={delay_ms},{duration_ms}",
@@ -313,7 +365,7 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         "--height",
         args.height,
         "--fps",
-        scenario.fps,
+        app_fps,
         "--duration",
         app_duration,
         "--gpu-load",
@@ -324,14 +376,29 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         args.fullscreen,
         "--window-chrome",
         args.window_chrome,
+        "--topmost",
+        1,
+        "--audio-buffer-ms",
+        args.app_audio_buffer_ms,
+        "--audio-lead-ms",
+        args.app_audio_lead_ms,
     ]
+    if args.app_audio_clock_scheduling:
+        launch.append("--audio-clock-scheduling")
+    if args.include_source_stall:
+        launch.extend(["--source-stall", args.source_stall])
 
     start_unix = time.time()
     return_code, elapsed, timed_out = run_process(launch, timeout=args.duration_sec + delay_ms / 1000.0 + 30.0)
-    time.sleep(1.0)
+    app_exited = wait_for_process_exit(PROCESS_NAME, args.app_exit_timeout_sec)
+    if not app_exited:
+        taskkill_processes()
+    time.sleep(0.5)
 
     manifest = newest_existing(generated_app_paths("dx12_av_sync_test_manifest.json"), start_unix)
     app_log = newest_existing(generated_app_paths("dx12_av_sync_test.log"), start_unix)
+    manifest_snapshot = snapshot_artifact(manifest, scenario_dir / "dx12_av_sync_test_manifest.json")
+    app_log_snapshot = snapshot_artifact(app_log, scenario_dir / "dx12_av_sync_test.log")
     capture = find_latest_capture(captures_dir, start_unix)
     session_dir = find_latest_run_log_dir(start_unix)
     media_log = (session_dir / "media.log") if session_dir else CAPTURE_BIN / "logs" / "media.log"
@@ -341,24 +408,33 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "capture_method": scenario.capture_method,
             "audio_codec": scenario.audio_codec,
             "fps": scenario.fps,
+            "app_fps": app_fps,
+            "app_audio_clock_scheduling": args.app_audio_clock_scheduling,
+            "app_audio_buffer_ms": args.app_audio_buffer_ms,
+            "app_audio_lead_ms": args.app_audio_lead_ms,
             "microphone_enabled": args.include_microphone,
+            "external_system_audio": args.external_system_audio,
         },
         "process": {
             "return_code": return_code,
             "elapsed_seconds": round(elapsed, 3),
             "timed_out": timed_out,
+            "stimulus_app_exited": app_exited,
         },
         "paths": {
             "capture_file": str(capture) if capture else None,
             "ce_session_dir": str(session_dir) if session_dir else None,
             "media_log": str(media_log) if media_log and media_log.exists() else None,
             "hook_logs": list_hook_logs(session_dir),
-            "app_log": str(app_log) if app_log else None,
-            "manifest": str(manifest) if manifest else None,
+            "app_log": str(app_log_snapshot) if app_log_snapshot else (str(app_log) if app_log else None),
+            "manifest": str(manifest_snapshot) if manifest_snapshot else (str(manifest) if manifest else None),
             "analyzer_json": str(analyzer_json),
             "analyzer_stdout": str(analyzer_stdout),
+            "triage_json": str(triage_json),
+            "triage_stdout": str(triage_stdout),
         },
         "analyzer_exit_code": None,
+        "triage_exit_code": None,
         "passed": False,
         "failure": None,
     }
@@ -367,23 +443,31 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         result["failure"] = "captureengine timed out"
     elif return_code != 0:
         result["failure"] = f"captureengine exited with {return_code}"
+    elif not app_exited:
+        result["failure"] = "stimulus app did not exit before manifest snapshot"
     elif not capture:
         result["failure"] = "capture file not found"
-    elif not manifest:
+    elif not manifest_snapshot:
         result["failure"] = "stimulus manifest not found"
     elif not media_log.exists():
         result["failure"] = "CE media log not found"
     else:
         # 0-based ffmpeg audio ordinals: a:0=Track 1 system, a:1=Track 2 app,
         # a:2=Track 3 mixed system+app, a:3=Track 4 microphone.
-        # The mixed and mic streams are diagnostic evidence, while pure system/app are strict timing gates.
-        non_strict_audio = "2,3" if args.include_microphone else "2"
+        # The mixed and mic streams are diagnostic evidence, while pure system/app are strict timing gates by default.
+        # When unrelated desktop audio is known to be playing, system loopback can be downgraded for that run only.
+        non_strict_ordinals = [2]
+        if args.external_system_audio:
+            non_strict_ordinals.append(0)
+        if args.include_microphone:
+            non_strict_ordinals.append(3)
+        non_strict_audio = ",".join(str(value) for value in sorted(set(non_strict_ordinals)))
         analyzer_cmd = [
             sys.executable,
             SCRIPT_DIR / "analyze_av_sync_stimulus.py",
             capture,
             "--manifest",
-            manifest,
+            manifest_snapshot,
             "--ffmpeg",
             args.ffmpeg,
             "--ffprobe",
@@ -409,9 +493,23 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         ]
         analyzer_rc = run_analyzer(analyzer_cmd, analyzer_stdout)
         result["analyzer_exit_code"] = analyzer_rc
-        result["passed"] = analyzer_rc == 0
+        if session_dir:
+            triage_cmd = [
+                sys.executable,
+                SCRIPT_DIR / "analyze_capture_av.py",
+                "--session-dir",
+                session_dir,
+                "--capture",
+                capture,
+                "--json-out",
+                triage_json,
+            ]
+            result["triage_exit_code"] = run_analyzer(triage_cmd, triage_stdout)
+        result["passed"] = analyzer_rc == 0 and result["triage_exit_code"] in (None, 0)
         if analyzer_rc != 0:
             result["failure"] = "analyzer failed"
+        elif result["triage_exit_code"] not in (None, 0):
+            result["failure"] = "triage analyzer failed"
 
     scenario_report_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(f"  {'PASS' if result['passed'] else 'FAIL'} report={scenario_report_path}")
@@ -432,8 +530,14 @@ def main():
     parser.add_argument("--capture-methods", default="wgc,inject")
     parser.add_argument("--codecs", default="aac,alac,flac,opus,pcm")
     parser.add_argument("--fps", default="60,120")
+    parser.add_argument(
+        "--app-fps",
+        default="auto",
+        help="Stimulus render FPS. 'auto' uses at least 240 fps so capture has fresh source frames.",
+    )
     parser.add_argument("--duration-sec", type=int, default=20)
     parser.add_argument("--delay-ms", type=int, default=1200)
+    parser.add_argument("--app-exit-timeout-sec", type=float, default=10.0)
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fullscreen", type=int, choices=[0, 1], default=0)
@@ -448,10 +552,25 @@ def main():
     parser.add_argument("--max-track-spread-ms", type=float, default=30.0)
     parser.add_argument("--max-longest-repeat", type=int, default=2)
     parser.add_argument("--max-motion-stall", type=int, default=3)
+    parser.add_argument("--include-source-stall", action="store_true")
+    parser.add_argument("--source-stall", default="8.0:300")
+    parser.add_argument("--app-audio-buffer-ms", type=int, default=20)
+    parser.add_argument(
+        "--app-audio-lead-ms",
+        type=float,
+        default=75.0,
+        help="Stimulus audio lead used to neutralize local render/loopback path latency in content checks.",
+    )
+    parser.add_argument("--no-app-audio-clock-scheduling", dest="app_audio_clock_scheduling", action="store_false")
+    parser.add_argument(
+        "--external-system-audio",
+        action="store_true",
+        help="Treat system loopback as opportunistic evidence when unrelated desktop audio is playing.",
+    )
     parser.add_argument("--no-microphone", dest="include_microphone", action="store_false")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
-    parser.set_defaults(include_microphone=True)
+    parser.set_defaults(include_microphone=True, app_audio_clock_scheduling=True)
     args = parser.parse_args()
 
     ce_exe, app_exe = ensure_inputs()

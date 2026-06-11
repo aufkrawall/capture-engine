@@ -66,9 +66,10 @@ void PerfLogger::Init(const char* logPath) {
                 "lock_rect_us,d3d11_upload_us,staging_depth,staging_dropped,"
                 "present_call_us,source_frame_index,capture_phase,encoder_queue_depth,mux_queue_kb,"
                 "overload_flags,source_1pct_low_x100,source_0_1pct_low_x100,source_frametime_stddev_us,"
-                "source_current_fps_x100,api\n");
+                "source_current_fps_x100,api,qpc_delta_us\n");
         fflush(file_);
         headerWritten_ = true;
+        lastLoggedQpcUs_ = 0;
         HookLog("PerfLogger: Initialized CSV logging to %s", logPath);
     } else {
         HookLog("PerfLogger: Failed to open %s for writing", logPath);
@@ -92,8 +93,13 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
 
     uint64_t frameNum = frameCount_.fetch_add(1, std::memory_order_relaxed) + 1;
     const int64_t writeStartUs = g_ActivePresentDebugSample ? GetQpcUs() : 0;
+    const int64_t qpcDeltaUs =
+        (lastLoggedQpcUs_ > 0 && metrics.qpcUs > lastLoggedQpcUs_) ? (metrics.qpcUs - lastLoggedQpcUs_) : 0;
+    if (metrics.qpcUs > 0) {
+        lastLoggedQpcUs_ = metrics.qpcUs;
+    }
 
-    fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%d,%d,%d,%d,%s\n",
+    fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%d,%d,%d,%d,%s,%lld\n",
             (unsigned long long)frameNum, (long long)metrics.qpcUs, metrics.totalUs, metrics.overlayUs,
             metrics.captureUs, metrics.deviceInitUs, metrics.prerenderWaitUs, metrics.fpsLimitWaitUs,
             metrics.fenceWaitUs, metrics.cmdListResetUs, metrics.renderUs, metrics.executeUs, metrics.stretchRectUs,
@@ -101,7 +107,7 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
             metrics.stagingDepth, metrics.stagingDropped, metrics.presentCallUs, metrics.sourceFrameIndex,
             metrics.sourceCapturePhase, metrics.sourceEncoderQueueDepth, metrics.sourceMuxQueueKb,
             metrics.sourceOverloadFlags, metrics.source1PctLowTimes100, metrics.sourcePoint1PctLowTimes100,
-            metrics.sourceFrameTimeStdDevUs, metrics.sourceCurrentFpsTimes100, metrics.api);
+            metrics.sourceFrameTimeStdDevUs, metrics.sourceCurrentFpsTimes100, metrics.api, (long long)qpcDeltaUs);
 
     if (ShouldFlushPerfMetricsCsvAfterFrame(frameNum)) {
         fflush(file_);

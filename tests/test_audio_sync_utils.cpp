@@ -34,6 +34,13 @@ TEST(AudioSyncUtilsTest, AudioPullLatencyIsTrackScoped) {
     EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(kSteadyPullLatencyMs, true, 120), kSteadyPullLatencyMs);
 }
 
+TEST(AudioSyncUtilsTest, SettledCfrAudioPullLatencyRemovesIntentionalContentDelay) {
+    EXPECT_EQ(ce::audio::ComputeSettledCfrAudioPullLatencyMs(60, true, true), 0);
+    EXPECT_EQ(ce::audio::ComputeSettledCfrAudioPullLatencyMs(60, false, true), 60);
+    EXPECT_EQ(ce::audio::ComputeSettledCfrAudioPullLatencyMs(90, true, false), 90);
+    EXPECT_EQ(ce::audio::ComputeSettledCfrAudioPullLatencyMs(60, true, true, 5), 5);
+}
+
 TEST(AudioSyncUtilsTest, AudioPullQuantumDefersOnlySmallSteadyStatePulls) {
     EXPECT_TRUE(ce::audio::ShouldDeferAudioPullUntilQuantum(0, true, false));
     EXPECT_TRUE(

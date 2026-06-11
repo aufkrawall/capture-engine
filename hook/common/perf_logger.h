@@ -143,6 +143,7 @@ private:
     std::atomic<uint64_t> frameCount_{0};
     int64_t qpcFreq_ = 0;
     bool headerWritten_ = false;
+    int64_t lastLoggedQpcUs_ = 0;
     std::mutex debugSummaryMutex_;
     DebugSummaryState debugSummary_;
 

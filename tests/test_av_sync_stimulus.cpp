@@ -39,6 +39,45 @@ TEST(AvSyncStimulusTest, FrameMarkerRoundTripsLowSixteenBits) {
     }
 }
 
+TEST(AvSyncStimulusTest, FrameMarkerRedundancyDetectsChecksumAndParity) {
+    const uint16_t marker = avs::EncodeFrameMarker(0x1234);
+    const uint8_t checksum = avs::FrameMarkerChecksum(marker, 5);
+    unsigned parityValue = static_cast<unsigned>(marker ^ checksum);
+    bool expectedParity = false;
+    while (parityValue) {
+        expectedParity = !expectedParity;
+        parityValue &= parityValue - 1u;
+    }
+    EXPECT_EQ(checksum, static_cast<uint8_t>(0x12 ^ 0x34 ^ 5));
+    EXPECT_EQ(avs::FrameMarkerParity(marker, 5), expectedParity);
+    EXPECT_NE(avs::FrameMarkerChecksum(marker, 5), avs::FrameMarkerChecksum(marker ^ 0x0001u, 5));
+}
+
+TEST(AvSyncStimulusTest, SourceStallSpecParsesStartAndDuration) {
+    avs::SourceStallSpec spec;
+    EXPECT_TRUE(avs::ParseSourceStallSpec("8.0:300", &spec));
+    EXPECT_TRUE(spec.valid);
+    EXPECT_DOUBLE_EQ(spec.startSeconds, 8.0);
+    EXPECT_DOUBLE_EQ(spec.durationSeconds, 0.3);
+    EXPECT_DOUBLE_EQ(spec.EndSeconds(), 8.3);
+
+    EXPECT_FALSE(avs::ParseSourceStallSpec("8.0", &spec));
+    EXPECT_FALSE(avs::ParseSourceStallSpec("-1:300", &spec));
+    EXPECT_FALSE(avs::ParseSourceStallSpec("1:0", &spec));
+}
+
+TEST(AvSyncStimulusTest, AudioBufferClampKeepsDeterministicLowLatencyBounds) {
+    EXPECT_EQ(avs::ClampAudioBufferMs(1), avs::kMinAudioBufferMs);
+    EXPECT_EQ(avs::ClampAudioBufferMs(avs::kDefaultAudioBufferMs), avs::kDefaultAudioBufferMs);
+    EXPECT_EQ(avs::ClampAudioBufferMs(1000), avs::kMaxAudioBufferMs);
+}
+
+TEST(AvSyncStimulusTest, AudioLeadClampKeepsStimulusCompensationBounded) {
+    EXPECT_DOUBLE_EQ(avs::ClampAudioLeadMs(-1000.0), avs::kMinAudioLeadMs);
+    EXPECT_DOUBLE_EQ(avs::ClampAudioLeadMs(avs::kDefaultAudioLeadMs), avs::kDefaultAudioLeadMs);
+    EXPECT_DOUBLE_EQ(avs::ClampAudioLeadMs(1000.0), avs::kMaxAudioLeadMs);
+}
+
 TEST(AvSyncStimulusTest, PaletteNearestRecoversNoisyMarkerColors) {
     for (size_t index = 0; index < avs::kPalette.size(); ++index) {
         const auto color = avs::kPalette[index];
@@ -63,4 +102,5 @@ TEST(AvSyncStimulusTest, SmoothLanePositionWrapsDeterministically) {
     EXPECT_NEAR(avs::SmoothLanePosition(1.0), 0.25, 0.000001);
     EXPECT_NEAR(avs::SmoothLanePosition(4.0), 0.0, 0.000001);
     EXPECT_NEAR(avs::SmoothLanePosition(5.0), 0.25, 0.000001);
+    EXPECT_NEAR(avs::ExpectedMotionPosition(5.0), avs::SmoothLanePosition(5.0), 0.000001);
 }

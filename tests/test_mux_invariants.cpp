@@ -5,6 +5,7 @@
 namespace {
 
 using ce::mux::ComputeDurationDeltaUs;
+using ce::mux::ComputeAudioMuxRoundingToleranceUs;
 using ce::mux::ComputePacketEndUs;
 using ce::mux::HeaderValidationIssue;
 using ce::mux::HeaderValidationIssueToString;
@@ -43,6 +44,13 @@ TEST(MuxInvariantTest, DurationDeltaAndToleranceAreAbsolute) {
     EXPECT_FALSE(IsDurationWithinToleranceUs(1000, 1002, 1));
     EXPECT_TRUE(IsDurationWithinToleranceUs(1000, 1000, -1));
     EXPECT_FALSE(IsDurationWithinToleranceUs(1000, 1002, -1));
+}
+
+TEST(MuxInvariantTest, AudioMuxRoundingToleranceCoversOneSampleOrTimebaseTick) {
+    EXPECT_EQ(ComputeAudioMuxRoundingToleranceUs(48000, 1, 1000000), 21);
+    EXPECT_EQ(ComputeAudioMuxRoundingToleranceUs(0, 1, 1000000), 1);
+    EXPECT_EQ(ComputeAudioMuxRoundingToleranceUs(48000, 1, 1000), 1000);
+    EXPECT_EQ(ComputeAudioMuxRoundingToleranceUs(0, 0, 0), 1);
 }
 
 TEST(MuxInvariantTest, PacketTimelineTracksActualPacketEnd) {

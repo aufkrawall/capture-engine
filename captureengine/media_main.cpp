@@ -1798,12 +1798,21 @@ void EncoderThreadFunc(const AppConfig& config) {
     struct WgcStarvedEpisodeSummary {
         bool active = false;
         uint64_t startTickMs = 0;
+        int64_t startQpc = 0;
         uint64_t startLiveTicks = 0;
         uint64_t startDuplicateTicks = 0;
         uint32_t minInputFps = std::numeric_limits<uint32_t>::max();
         uint32_t minDeliveredFps = std::numeric_limits<uint32_t>::max();
         uint32_t peakFreshMissPermille = 0;
         uint32_t minBufferedFrames = std::numeric_limits<uint32_t>::max();
+        uint32_t maxCallbackGapUs = 0;
+        uint32_t maxCopyUs = 0;
+        uint32_t maxFenceUs = 0;
+        uint32_t maxMuxBackpressureCount = 0;
+        uint32_t maxMuxBackpressureWaitUs = 0;
+        uint32_t maxMuxQueueKb = 0;
+        uint32_t peakOverloadFlags = 0;
+        double maxEncodeEmaMs = 0.0;
 
         void Reset() {
             *this = {};
@@ -1932,6 +1941,47 @@ void EncoderThreadFunc(const AppConfig& config) {
         const uint32_t minBufferedFrames = wgcStarvedEpisode.minBufferedFrames == std::numeric_limits<uint32_t>::max()
                                                ? 0u
                                                : wgcStarvedEpisode.minBufferedFrames;
+        const uint32_t targetOutputFps = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
+        wgcStarvedEpisode.maxEncodeEmaMs = std::max(wgcStarvedEpisode.maxEncodeEmaMs, smoothedEncodeMs);
+        wgcStarvedEpisode.maxFenceUs = std::max(
+            wgcStarvedEpisode.maxFenceUs,
+            SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(0, MediaEngine_GetLastFrameFenceWaitUs()))));
+        if (g_WgcCap) {
+            wgcStarvedEpisode.maxCallbackGapUs =
+                std::max(wgcStarvedEpisode.maxCallbackGapUs,
+                         SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(
+                             0, g_WgcCap->GetCallbackGapMaxUs()))));
+            wgcStarvedEpisode.maxCopyUs =
+                std::max(wgcStarvedEpisode.maxCopyUs,
+                         SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(
+                             0, g_WgcCap->GetLastCopyTimeUs()))));
+        }
+        if (g_pSharedMem) {
+            const auto& runtimeState = g_pSharedMem->runtimeState;
+            const uint32_t muxQueueBytes = runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
+            wgcStarvedEpisode.maxMuxQueueKb =
+                std::max(wgcStarvedEpisode.maxMuxQueueKb, (muxQueueBytes + 1023u) / 1024u);
+            wgcStarvedEpisode.maxMuxBackpressureCount =
+                std::max(wgcStarvedEpisode.maxMuxBackpressureCount,
+                         runtimeState.muxBackpressureCount.load(std::memory_order_relaxed));
+            wgcStarvedEpisode.maxMuxBackpressureWaitUs =
+                std::max(wgcStarvedEpisode.maxMuxBackpressureWaitUs,
+                         runtimeState.muxBackpressureMaxWaitUs.load(std::memory_order_relaxed));
+            wgcStarvedEpisode.peakOverloadFlags |=
+                runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+        }
+        LARGE_INTEGER endQpc = {};
+        QueryPerformanceCounter(&endQpc);
+        const bool capacityPressure = wgcStarvedEpisode.peakOverloadFlags != 0 ||
+                                      wgcStarvedEpisode.maxMuxBackpressureCount > 0 ||
+                                      wgcStarvedEpisode.maxEncodeEmaMs >= frameIntervalMs;
+        const char* faultHint = capacityPressure ? "ce_capacity_pressure"
+                             : minInputFps > 0 && minInputFps < targetOutputFps
+                                 ? "source_present_gap_or_source_underfeed"
+                                 : "source_starved";
+        const uint32_t frameBudgetUs = static_cast<uint32_t>(std::max(1.0, frameIntervalMs * 1000.0));
+        const bool copySlow = wgcStarvedEpisode.maxCopyUs > frameBudgetUs;
+        const bool fenceSlow = wgcStarvedEpisode.maxFenceUs > frameBudgetUs;
         if (durationMs >= captureSessionSummary.longestStarvedEpisodeMs) {
             captureSessionSummary.longestStarvedEpisodeMs = durationMs;
             captureSessionSummary.longestStarvedEpisodeOutputTicks = outputTicks;
@@ -1947,6 +1997,19 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(durationMs), static_cast<unsigned long long>(outputTicks),
                 static_cast<unsigned long long>(duplicateTicks), minInputFps, minDeliveredFps,
                 wgcStarvedEpisode.peakFreshMissPermille, minBufferedFrames);
+            LogInfo(
+                "[WGC CFR ATTRIBUTION] fault_hint=%s qpc=%lld..%lld duration=%llums out=%llu dup=%llu "
+                "minIn=%u minDel=%u freshMiss=%upm minBuf=%u cbGapMax=%uus encEmaMax=%.2fms "
+                "muxBp=%u waitMax=%uus muxMax=%uKB overload=0x%X copyMax=%uus copyHealth=%s "
+                "fenceMax=%uus fenceHealth=%s",
+                faultHint, static_cast<long long>(wgcStarvedEpisode.startQpc),
+                static_cast<long long>(endQpc.QuadPart), static_cast<unsigned long long>(durationMs),
+                static_cast<unsigned long long>(outputTicks), static_cast<unsigned long long>(duplicateTicks),
+                minInputFps, minDeliveredFps, wgcStarvedEpisode.peakFreshMissPermille, minBufferedFrames,
+                wgcStarvedEpisode.maxCallbackGapUs, wgcStarvedEpisode.maxEncodeEmaMs,
+                wgcStarvedEpisode.maxMuxBackpressureCount, wgcStarvedEpisode.maxMuxBackpressureWaitUs,
+                wgcStarvedEpisode.maxMuxQueueKb, wgcStarvedEpisode.peakOverloadFlags, wgcStarvedEpisode.maxCopyUs,
+                copySlow ? "slow" : "ok", wgcStarvedEpisode.maxFenceUs, fenceSlow ? "slow" : "ok");
         }
         wgcStarvedEpisode.Reset();
     };
@@ -3066,6 +3129,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcStarvedEpisode.Reset();
                         wgcStarvedEpisode.active = true;
                         wgcStarvedEpisode.startTickMs = GetTickCount64();
+                        LARGE_INTEGER episodeStartQpc = {};
+                        QueryPerformanceCounter(&episodeStartQpc);
+                        wgcStarvedEpisode.startQpc = episodeStartQpc.QuadPart;
                         wgcStarvedEpisode.startLiveTicks = liveTicksOutput;
                         wgcStarvedEpisode.startDuplicateTicks = captureSessionSummary.duplicateTicks;
                     }
@@ -5040,6 +5106,30 @@ void EncoderThreadFunc(const AppConfig& config) {
             const bool encoderTooSlowForTarget =
                 ce::capture_policy::IsEncoderTooSlowForTargetFps(smoothedEncodeMs, frameIntervalMs, outputFps);
             const double oldestBufferedFrameAgeMs = static_cast<double>(oldestBufferedFrameAgeUs) / 1000.0;
+            if (wgcStarvedEpisode.active) {
+                wgcStarvedEpisode.maxEncodeEmaMs = std::max(wgcStarvedEpisode.maxEncodeEmaMs, smoothedEncodeMs);
+                wgcStarvedEpisode.maxMuxBackpressureCount =
+                    std::max(wgcStarvedEpisode.maxMuxBackpressureCount, muxBackpressureCount);
+                wgcStarvedEpisode.maxMuxBackpressureWaitUs =
+                    std::max(wgcStarvedEpisode.maxMuxBackpressureWaitUs, muxBackpressureMaxWaitUs);
+                wgcStarvedEpisode.maxMuxQueueKb =
+                    std::max(wgcStarvedEpisode.maxMuxQueueKb, (muxQueueBytes + 1023u) / 1024u);
+                wgcStarvedEpisode.peakOverloadFlags |= overloadFlags;
+                wgcStarvedEpisode.maxFenceUs = std::max(
+                    wgcStarvedEpisode.maxFenceUs,
+                    SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(
+                        0, MediaEngine_GetLastFrameFenceWaitUs()))));
+                if (g_WgcCap) {
+                    wgcStarvedEpisode.maxCallbackGapUs =
+                        std::max(wgcStarvedEpisode.maxCallbackGapUs,
+                                 SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(
+                                     0, g_WgcCap->GetCallbackGapMaxUs()))));
+                    wgcStarvedEpisode.maxCopyUs =
+                        std::max(wgcStarvedEpisode.maxCopyUs,
+                                 SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(
+                                     0, g_WgcCap->GetLastCopyTimeUs()))));
+                }
+            }
 
             const uint32_t bufferedAtTickAvgPermille =
                 wgcQueueTickSampleCount > 0

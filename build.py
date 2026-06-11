@@ -3499,15 +3499,44 @@ def run_tests(env, test_exe, gtest_filter=None):
             details={"exit_code": result.returncode, "gtest_filter": gtest_filter},
         )
         return False
-    else:
-        log("=== Unit Tests Passed ===")
-        record_verification_step(
-            "unit_tests",
-            "passed",
-            duration_seconds=elapsed,
-            details={"exit_code": result.returncode, "gtest_filter": gtest_filter},
-        )
+
+    log("=== Unit Tests Passed ===")
+    record_verification_step(
+        "unit_tests",
+        "passed",
+        duration_seconds=elapsed,
+        details={"exit_code": result.returncode, "gtest_filter": gtest_filter},
+    )
+    if gtest_filter:
         return True
+    return run_python_tool_self_tests(env)
+
+
+def run_python_tool_self_tests(env):
+    log("=== Running Python Tool Self-Tests ===")
+    tool_tests = [
+        ("analyze_av_sync_stimulus", os.path.join(PROJECT_ROOT, "tools", "analyze_av_sync_stimulus.py")),
+        ("analyze_capture_av", os.path.join(PROJECT_ROOT, "tools", "analyze_capture_av.py")),
+    ]
+    ok = True
+    for name, script in tool_tests:
+        start = time.time()
+        result = subprocess.run([sys.executable, script, "--self-test"], env=env)
+        elapsed = time.time() - start
+        record_verification_step(
+            f"python_tool_self_test.{name}",
+            "passed" if result.returncode == 0 else "failed",
+            duration_seconds=elapsed,
+            details={"exit_code": result.returncode, "script": script},
+        )
+        if result.returncode != 0:
+            log(f"Python tool self-test failed: {name} (exit code {result.returncode})")
+            ok = False
+    if ok:
+        log("=== Python Tool Self-Tests Passed ===")
+    else:
+        log("=== Python Tool Self-Tests FAILED ===")
+    return ok
 
 
 def run_integration_tests(env, full_matrix=False):

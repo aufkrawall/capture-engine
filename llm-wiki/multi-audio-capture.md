@@ -87,8 +87,10 @@ Useful logs for this area:
 - `[StopAudio] Source ... diff=+0 (+0.0 ms)`: final sample-count equality to the selected video duration.
 - `[VideoEncoder] Final packet timeline` and `[VideoEncoder] Final metadata durations`: mux-level final duration evidence.
 - `[VideoEncoder] Post-mux duration probe ...`: post-write reopened-file duration check; this is the pass/fail authority for external stream duration.
+- `[VideoEncoder] Post-mux audio duration rounding evidence ...`: reopened MKV duration delta is at or below one audio sample / one mux timebase tick. Treat this as informational rounding evidence; larger post-mux deltas still warn.
 - `dx12_av_sync_test.exe` logs `AVSYNC AUDIO_BUFFER` once per second with sample cursor, padding, available frames, underrun count, and stimulus time. `AVSYNC START audio ... audioStartQpc=... stimulusStartQpc=...` anchors the app-rendered sine schedule against the video event schedule.
 - `tools/analyze_av_sync_stimulus.py` decodes every audio stream to mono float, detects the scheduled sine-frequency transitions with a coarse state machine plus short-window Goertzel refinement, compares strict streams against recovered video event transitions, and checks inter-track spread across strict tracks. Use `--non-strict-audio-ordinals` for mixed and microphone streams so they stay visible without creating false failures.
+- `tools/run_av_sync_matrix.py` keeps Track 1 system loopback and Track 2 app loopback strict by default. Track 3 mixed and Track 4 microphone stay opportunistic unless a run explicitly demands them. If unrelated desktop audio is playing, pass `--external-system-audio` so system loopback is evidence rather than a deterministic gate; otherwise keep it strict.
 
 ## Validation
 
