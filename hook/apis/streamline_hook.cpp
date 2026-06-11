@@ -479,6 +479,22 @@ void LogSkippedStreamlineCoreExportsOnce(const char* moduleBaseName, HMODULE mod
         moduleBaseName, module, hasGetFeature ? 1 : 0, hasGetPlugin ? 1 : 0, hasSetD3DDevice ? 1 : 0);
 }
 
+size_t GetModuleImageSizeBytes(HMODULE module) {
+    if (!module) {
+        return 0;
+    }
+    const auto* dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
+        return 0;
+    }
+    const auto* ntHeaders =
+        reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const uint8_t*>(module) + dosHeader->e_lfanew);
+    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE) {
+        return 0;
+    }
+    return ntHeaders->OptionalHeader.SizeOfImage;
+}
+
 bool DoesAddressBelongToLoadedModule(void* address, HMODULE* ownerModule, char* ownerPath, DWORD ownerPathCapacity,
                                      DWORD* outError) {
     if (ownerModule) {
@@ -1865,7 +1881,66 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     }
 
     if (moduleBit != 0 && (g_InstalledModuleMask.load(std::memory_order_acquire) & moduleBit) != 0) {
-        return false;
+        // Self-heal for unload/reload generations when the unload notification
+        // was unavailable: the mask claims this core module is hooked, but the
+        // stored core targets must belong to the ARRIVING instance. If none
+        // do, the mask refers to a previous unloaded generation (whose address
+        // range may since have been re-mapped by a different module —
+        // 20260612_003407 crash) and the fresh instance must be re-hooked.
+        const auto targetWithinModule = [](std::atomic<void*>& targetSlot, HMODULE candidate) {
+            if (!candidate) {
+                return false;
+            }
+            void* target = targetSlot.load(std::memory_order_acquire);
+            return ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(
+                target, nullptr, reinterpret_cast<const void*>(candidate), GetModuleImageSizeBytes(candidate));
+        };
+        const bool anyCoreHookTargetWithinModule = targetWithinModule(g_SLGetFeatureFunctionTarget, module) ||
+                                                   targetWithinModule(g_SLGetPluginFunctionTarget, module) ||
+                                                   targetWithinModule(g_SLSetD3DDeviceTarget, module);
+        if (!ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(
+                true, anyCoreHookTargetWithinModule)) {
+            return false;
+        }
+
+        // Clear only the core slots that no longer belong to ANY live core
+        // module instance; a still-loaded sibling core module's valid slots
+        // must survive this self-heal.
+        const HMODULE liveInterposer = GetModuleHandleA("sl.interposer.dll");
+        const HMODULE liveCommon = GetModuleHandleA("sl.common.dll");
+        struct CoreSlotView {
+            const char* name;
+            std::atomic<void*>* target;
+            std::atomic<bool>* installed;
+            void* volatile* original;
+        };
+        CoreSlotView coreSlots[] = {
+            {"slGetFeatureFunction", &g_SLGetFeatureFunctionTarget, &g_SLGetFeatureFunctionHooked,
+             reinterpret_cast<void* volatile*>(&g_Original_slGetFeatureFunction)},
+            {"slGetPluginFunction", &g_SLGetPluginFunctionTarget, &g_SLGetPluginFunctionHooked,
+             reinterpret_cast<void* volatile*>(&g_Original_slGetPluginFunction)},
+            {"slSetD3DDevice", &g_SLSetD3DDeviceTarget, &g_SLSetD3DDeviceHooked,
+             reinterpret_cast<void* volatile*>(&g_Original_slSetD3DDevice)},
+        };
+        int healedSlots = 0;
+        for (CoreSlotView& slot : coreSlots) {
+            void* target = slot.target->load(std::memory_order_acquire);
+            if (!target || targetWithinModule(*slot.target, module) ||
+                targetWithinModule(*slot.target, liveInterposer) || targetWithinModule(*slot.target, liveCommon)) {
+                continue;
+            }
+            InterlockedExchangePointer(slot.original, nullptr);
+            slot.target->store(nullptr, std::memory_order_release);
+            slot.installed->store(false, std::memory_order_release);
+            ++healedSlots;
+        }
+        HookLogImportant(
+            "Streamline Hook: %s reloaded at %p but the installed-module mask refers to a previous unloaded "
+            "generation — cleared %d stale core slot(s) and re-hooking the fresh instance (liveInterposer=%p "
+            "liveCommon=%p)",
+            moduleBaseName, module, healedSlots, liveInterposer, liveCommon);
+        g_InstalledModuleMask.fetch_and(~moduleBit, std::memory_order_acq_rel);
+        g_IATPatchesMask.fetch_and(~moduleBit, std::memory_order_acq_rel);
     }
 
     if (!shouldHookCoreExports &&
@@ -2911,6 +2986,86 @@ void Init() {
         }
     } else {
         g_NoModulesLogged.store(false, std::memory_order_release);
+    }
+}
+
+void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char* moduleBaseName) {
+    if (!moduleBase || moduleSizeBytes == 0 ||
+        !ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload(moduleBaseName)) {
+        return;
+    }
+
+    // Runs under the loader lock: interlocked/atomic writes and lightweight
+    // logging only. Do NOT take g_ModuleHookMutex here (InstallHooksForModule
+    // holds it across GetProcAddress, which needs the loader lock).
+    struct HookSlotView {
+        const char* name;
+        std::atomic<void*>* target;
+        std::atomic<bool>* installed;
+        void* volatile* original;
+    };
+    HookSlotView slots[] = {
+        {"slGetFeatureFunction", &g_SLGetFeatureFunctionTarget, &g_SLGetFeatureFunctionHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slGetFeatureFunction)},
+        {"slGetPluginFunction", &g_SLGetPluginFunctionTarget, &g_SLGetPluginFunctionHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slGetPluginFunction)},
+        {"slSetD3DDevice", &g_SLSetD3DDeviceTarget, &g_SLSetD3DDeviceHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slSetD3DDevice)},
+        {"slDLSSGSetOptions", &g_DLSSGSetOptionsTarget, &g_DLSSGSetOptionsHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slDLSSGSetOptions)},
+        {"slDLSSGGetState", &g_DLSSGGetStateTarget, &g_DLSSGGetStateHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slDLSSGGetState)},
+        {"slReflexSleep", &g_ReflexSleepTarget, &g_ReflexSleepHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slReflexSleep)},
+        {"slReflexSetOptions", &g_ReflexSetOptionsTarget, &g_ReflexSetOptionsHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slReflexSetOptions)},
+        {"slReflexSetConstants", &g_ReflexSetConstantsTarget, &g_ReflexSetConstantsHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slReflexSetConstants)},
+    };
+
+    int invalidatedSlots = 0;
+    for (HookSlotView& slot : slots) {
+        void* target = slot.target->load(std::memory_order_acquire);
+        void* original = *slot.original;
+        if (!ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(target, original, moduleBase,
+                                                                                          moduleSizeBytes)) {
+            continue;
+        }
+        // Clear the original first so detours fail safe (GetCallableOriginal*
+        // returns null) before the installed flag re-arms installation.
+        InterlockedExchangePointer(slot.original, nullptr);
+        slot.target->store(nullptr, std::memory_order_release);
+        slot.installed->store(false, std::memory_order_release);
+        ++invalidatedSlots;
+        HookLogImportant(
+            "Streamline Hook: Invalidated %s hook slot for unloaded %s (target=%p original=%p base=%p size=0x%zX)",
+            slot.name, moduleBaseName, target, original, moduleBase, moduleSizeBytes);
+    }
+
+    std::atomic<void*>* attemptedTargets[] = {
+        &g_DLSSGSetOptionsImportFallbackAttemptedTarget, &g_DLSSGGetStateImportFallbackAttemptedTarget,
+        &g_ReflexSleepImportFallbackAttemptedTarget,     &g_ReflexSetOptionsImportFallbackAttemptedTarget,
+        &g_ReflexSetConstantsImportFallbackAttemptedTarget,
+    };
+    for (std::atomic<void*>* attempted : attemptedTargets) {
+        void* target = attempted->load(std::memory_order_acquire);
+        if (ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(target, nullptr, moduleBase,
+                                                                                         moduleSizeBytes)) {
+            attempted->store(nullptr, std::memory_order_release);
+        }
+    }
+
+    const uint32_t moduleBit = GetModuleMaskBit(moduleBaseName);
+    if (moduleBit != 0) {
+        g_InstalledModuleMask.fetch_and(~moduleBit, std::memory_order_acq_rel);
+        g_IATPatchesMask.fetch_and(~moduleBit, std::memory_order_acq_rel);
+    }
+
+    if (invalidatedSlots > 0 || moduleBit != 0) {
+        HookLogImportant(
+            "Streamline Hook: Module %s unloaded (base=%p size=0x%zX) — invalidated %d stale hook slot(s); the next "
+            "load of this name re-installs hooks for the fresh instance",
+            moduleBaseName, moduleBase, moduleSizeBytes, invalidatedSlots);
     }
 }
 

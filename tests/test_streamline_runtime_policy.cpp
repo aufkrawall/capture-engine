@@ -671,4 +671,51 @@ TEST(StreamlineRuntimePolicyTest, ObserverPolicyOnlyPreservesStartupTransitionWi
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(false, true));
 }
 
+TEST(StreamlineRuntimePolicyTest, StreamlineModuleUnloadDispatchesHookInvalidation) {
+    // Crash 20260612_003407: the game unloads/reloads the whole SL stack when
+    // toggling DLSS FG; every sl.* unload must invalidate stale hook slots.
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload("sl.interposer.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload("sl.common.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload("sl.dlss_g.dll"));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload("SL.COMMON.DLL"));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload("slang.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload("common.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload("dxgi.dll"));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload(nullptr));
+}
+
+TEST(StreamlineRuntimePolicyTest, HookSlotInvalidationMatchesUnloadedImageRange) {
+    alignas(16) static unsigned char image[0x100];
+    const void* base = image;
+    const size_t size = sizeof(image);
+    void* inRange = image + 0x40;
+    void* pastEnd = image + sizeof(image);
+    void* outside = image - 0x40;
+
+    // Patched target inside the departing image.
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, nullptr, base,
+                                                                                             size));
+    // Saved original/export inside the departing image (import-fallback slots).
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(nullptr, inRange, base,
+                                                                                             size));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(outside, pastEnd, base,
+                                                                                              size));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(nullptr, nullptr, base,
+                                                                                              size));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, inRange,
+                                                                                              nullptr, size));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, inRange, base,
+                                                                                              0));
+}
+
+TEST(StreamlineRuntimePolicyTest, ReloadedCoreModuleMaskIsStaleWhenNoTargetBelongsToArrivingInstance) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(true, false));
+
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(true, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(false, false));
+    EXPECT_FALSE(ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(false, true));
+}
+
 }  // namespace

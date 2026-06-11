@@ -27,6 +27,7 @@
 #include "common/ipc_client.h"
 #include "common/overlay_compat.h"
 #include "common/perf_logger.h"
+#include "common/streamline_runtime_policy.h"
 #include "common/reflex_limiter.h"
 #include "common/system_metrics.h"
 #include "wrappers/d3dkmt_hook.h"
@@ -1963,6 +1964,14 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     const char *matched = ce::overlay_compat::NoteModuleUnloadedForOverlayCache(base);
     if (matched) {
       HookLog("DllNotification: third-party overlay module unloaded: %s", matched);
+    }
+    // Games can unload the whole Streamline stack when toggling DLSS FG off.
+    // Stale CE hook slots pointing into the departing image generation must be
+    // invalidated here (loader-safe: interlocked/atomic writes + light logging),
+    // or the next reload can land a different sl.* module inside the old range
+    // and stale trampolines jump mid-instruction into it (20260612_003407).
+    if (ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload(base)) {
+      StreamlineHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
     }
   }
 }

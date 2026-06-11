@@ -6,6 +6,16 @@ namespace StreamlineHook {
 
 void Init();
 void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath);
+
+// Called from the loader DLL-unload notification (runs UNDER the loader lock
+// — atomics/interlocked writes and lightweight logging only). Invalidates
+// every hook slot whose patched target or saved original belongs to the
+// departing module image, and clears the per-module install/IAT masks so the
+// next load of the same name re-hooks the fresh instance. Without this,
+// games that unload and reload the Streamline stack when toggling DLSS FG
+// leave CE forwarding through trampolines into a dead (and possibly
+// re-mapped) module generation (crash 20260612_003407).
+void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char* moduleBaseName);
 bool IsInitialized();
 void Shutdown();
 

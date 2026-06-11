@@ -152,6 +152,44 @@ inline bool ShouldInspectStreamlineModuleOnLoad(const char* moduleNameOrPath) {
     return IsStreamlineModuleNameForFeatureHooking(moduleNameOrPath);
 }
 
+// Games can fully unload and reload the Streamline stack when toggling DLSS
+// FG off/on (dx12_fg_switch_test crash 20260612_003407: the reloaded
+// sl.common landed inside the address range of the previous generation's
+// sl.interposer, so stale trampolines jumped mid-instruction into the wrong
+// module). Every sl.* unload must invalidate the hook slots that belong to
+// the departing module generation.
+inline bool ShouldInvalidateStreamlineHooksOnModuleUnload(const char* moduleBaseName) {
+    return IsStreamlineModuleNameForFeatureHooking(moduleBaseName);
+}
+
+// A hook slot belongs to an unloaded module generation when its patched
+// target or its saved original/export pointer lies inside the unloaded
+// image range. Saved originals that are CE trampolines live in CE's pool
+// and are matched through the target instead.
+inline bool IsStreamlineHookSlotInvalidatedByModuleUnload(const void* hookTarget, const void* savedOriginal,
+                                                          const void* unloadedModuleBase,
+                                                          size_t unloadedModuleSizeBytes) {
+    if (!unloadedModuleBase || unloadedModuleSizeBytes == 0) {
+        return false;
+    }
+    const uintptr_t base = reinterpret_cast<uintptr_t>(unloadedModuleBase);
+    const uintptr_t end = base + unloadedModuleSizeBytes;
+    const uintptr_t target = reinterpret_cast<uintptr_t>(hookTarget);
+    const uintptr_t original = reinterpret_cast<uintptr_t>(savedOriginal);
+    return (hookTarget && target >= base && target < end) || (savedOriginal && original >= base && original < end);
+}
+
+// Load-time self-heal for the same reload family: when a core Streamline
+// module name arrives again while the installed-module mask still claims it
+// is hooked, the stored core targets must belong to the arriving instance.
+// If none do, the mask refers to a previous unloaded generation and the
+// module must be re-hooked (covers environments where the unload
+// notification could not be registered).
+inline bool IsInstalledStreamlineModuleMaskStaleForReloadedModule(bool moduleMaskClaimsInstalled,
+                                                                  bool anyCoreHookTargetWithinModule) {
+    return moduleMaskClaimsInstalled && !anyCoreHookTargetWithinModule;
+}
+
 inline bool ShouldHookStreamlineCoreExportsOnLoad(const char* moduleNameOrPath) {
     return IsStreamlineCoreModuleName(moduleNameOrPath);
 }
