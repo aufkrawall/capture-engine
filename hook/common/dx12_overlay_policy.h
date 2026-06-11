@@ -450,7 +450,8 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
     bool runtimeOwnsSwapchain, bool streamlineFGActive, bool fsrFGActive, bool hadFSRFGPhase, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue,
     bool postSLLastWorkingQueueStillActiveDuringRecentTeardown, bool commandQueueMatchesPrimaryGameQueue,
-    bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false) {
+    bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false,
+    bool nativeFSRInternalNoCallbackCompositionLive = false) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
                                  : SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
@@ -458,6 +459,19 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
 
     if (streamlineFGActive && hasOriginalGameQueue) {
         return SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue;
+    }
+
+    if (explicitNativeFSROffPendingRuntimeOwnedTeardown && nativeFSRInternalNoCallbackCompositionLive &&
+        runtimeOwnsSwapchain) {
+        // Suspended native FSR on AMD's internal no-callback composition route:
+        // the FSR-owned swapchain is still the live present path and no
+        // callback bridge exists that could draw the overlay, so keep rendering
+        // through the runtime-owned swapchain queue exactly like the active
+        // no-callback case. Routing the still-live FSR swapchain's backbuffers
+        // to the original game queue would be exactly the cross-queue mismatch
+        // the post-FSR-inactive recovery below exists to avoid.
+        return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue
+                                 : SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue;
     }
 
     if (explicitNativeFSROffPendingRuntimeOwnedTeardown && !fsrFGActive && hadFSRFGPhase && hasOriginalGameQueue) {
@@ -540,7 +554,17 @@ inline bool ShouldStartFrameGenerationTransitionCooldown(fg_runtime::RuntimeMode
                                                          bool previousEffectiveFGActive,
                                                          bool nextEffectiveFGActive,
                                                          bool previousStreamlineFGSignal,
-                                                         bool nextStreamlineFGSignal) {
+                                                         bool nextStreamlineFGSignal,
+                                                         bool liveNoCallbackNativeFSRSuspensionToggle = false) {
+    if (liveNoCallbackNativeFSRSuspensionToggle) {
+        // Native-FSR suspend/resume on AMD's internal no-callback composition
+        // route flips only the FG flag: the runtime-owned swapchain stays the
+        // live present path and the overlay backend already renders on that
+        // exact queue. Arming the draw cooldown here is what visibly blanks
+        // the overlay at every menu-style FG suspension toggle.
+        return false;
+    }
+
     if (previousStreamlineFGSignal != nextStreamlineFGSignal) {
         return true;
     }
@@ -556,6 +580,60 @@ inline bool ShouldStartFrameGenerationTransitionCooldown(fg_runtime::RuntimeMode
     }
 
     return false;
+}
+
+// Native-FSR suspend/resume toggles (menu/loading style ffxConfigure
+// frameGenerationEnabled flips) on AMD's internal no-callback composition
+// route do not move presentation: the runtime-owned swapchain and its queue
+// stay live, and the overlay backend is already initialized on that queue.
+// Only that exact shape may skip the FG transition draw cooldown. Requiring
+// the backend queue to match the swapchain queue keeps the early enable edge
+// (backend still on the original game queue before the FFX swapchain goes
+// live) on the protected cooldown path.
+inline bool IsLiveNoCallbackNativeFSRSuspensionToggle(
+    fg_runtime::RuntimeMode previousRuntimeMode, fg_runtime::RuntimeMode nextRuntimeMode, bool streamlineFGRunning,
+    bool nativeFSRInternalNoCallbackComposition, bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
+    bool overlayBackendInitialized, bool overlayBackendQueueIsSwapchainQueue) {
+    if (streamlineFGRunning || !nativeFSRInternalNoCallbackComposition || !runtimeOwnsSwapchain ||
+        !hasSwapchainQueue || !overlayBackendInitialized || !overlayBackendQueueIsSwapchainQueue) {
+        return false;
+    }
+
+    const bool previousIsFSR = previousRuntimeMode == fg_runtime::RuntimeMode::kFSRFG;
+    const bool nextIsFSR = nextRuntimeMode == fg_runtime::RuntimeMode::kFSRFG;
+    const bool previousIsOff = previousRuntimeMode == fg_runtime::RuntimeMode::kOff;
+    const bool nextIsOff = nextRuntimeMode == fg_runtime::RuntimeMode::kOff;
+    return (previousIsFSR && nextIsOff) || (previousIsOff && nextIsFSR);
+}
+
+// A disabled native-FSR configure with no callback route is a suspension
+// (menu/loading) as long as the runtime-owned swapchain is still the live
+// present path. AMD keeps presenting through its internal no-callback
+// composition, so the normal DX12 overlay route on the runtime-owned
+// swapchain queue remains the only transport that can keep the overlay
+// visible; dropping the latch would leave the suspension with no overlay
+// route at all. Context destruction and real ownership unwind clear the
+// latch through their own explicit paths.
+inline bool ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure(
+    bool enabled, bool bridgeActive, bool appCallbackProvided, bool previousInternalNoCallbackComposition,
+    bool runtimeOwnsLivePresentPath) {
+    return !enabled && !bridgeActive && !appCallbackProvided && previousInternalNoCallbackComposition &&
+           runtimeOwnsLivePresentPath;
+}
+
+// The first Present through AMD's runtime-owned swapchain right after an
+// enabled ffxConfigure finalized the official FFX takeover on the internal
+// no-callback composition route. The staged runtime queue is already applied
+// and normal overlay rendering on it is the approved transport, so the
+// generic 90-frame FG-transition reinit cooldown would only blank the
+// overlay for ~1.5s. Pre-enable protected startup windows can never reach
+// this gate because direct FFX confirmation requires the enabled-configure
+// proof first.
+inline bool ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange(
+    bool directFFXApiConfirmation, bool fsrFGApiActive, bool nativeFSRInternalNoCallbackComposition,
+    bool runtimeOwnsSwapchain, bool hasSwapchainQueue, bool streamlineFGRunning) {
+    return directFFXApiConfirmation && fsrFGApiActive && nativeFSRInternalNoCallbackComposition &&
+           runtimeOwnsSwapchain && hasSwapchainQueue && !streamlineFGRunning;
 }
 
 // Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown

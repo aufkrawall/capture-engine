@@ -1439,6 +1439,132 @@ TEST(DXGISharedTest, ExplicitNativeFSROffRecoveryUsesOriginalQueueDespiteStaleSw
               SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
 }
 
+TEST(DXGISharedTest, SuspendedNoCallbackNativeFSRKeepsFSRSwapchainQueueRouting) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    // Suspended native FSR (explicit disabled configure) on AMD's internal
+    // no-callback composition route: the runtime-owned swapchain is still the
+    // live present path, so the overlay must keep rendering on the FSR
+    // swapchain queue instead of being routed into post-FSR recovery
+    // (20260611_142923: overlay disappeared forever during FSR FG suspension).
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, true, true, false, false, false, true, true),
+              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+
+    // Without a captured swapchain queue there is no safe submit target —
+    // skip instead of falling back to the original game queue cross-queue.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, false, true, false, true, false, false, false, true, true),
+              SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue);
+
+    // A stale no-callback latch without live runtime ownership must keep the
+    // proven post-FSR-inactive original-queue recovery.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, true, true, false, false, false, true, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+
+    // Active Streamline routing keeps precedence over the suspension branch.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, true, false, true, true, true, false, false, false, true, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue);
+}
+
+TEST(DXGISharedTest, LiveNoCallbackNativeFSRSuspensionToggleSkipsTransitionCooldown) {
+    using ce::fg_runtime::RuntimeMode;
+
+    // Suspend and resume edges of a live no-callback native-FSR session flip
+    // only the FG flag; the draw cooldown would blank the overlay for ~60
+    // frames at every menu-style toggle.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kFSRFG, RuntimeMode::kOff, true, false, false, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kOff, RuntimeMode::kFSRFG, false, true, false, false, true));
+
+    // The same transitions without the live no-callback suspension shape keep
+    // the protective cooldown.
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kFSRFG, RuntimeMode::kOff, true, false, false, false, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
+        RuntimeMode::kOff, RuntimeMode::kFSRFG, false, true, false, false, false));
+}
+
+TEST(DXGISharedTest, LiveNoCallbackNativeFSRSuspensionToggleRequiresExactShape) {
+    using ce::dx12_overlay_policy::IsLiveNoCallbackNativeFSRSuspensionToggle;
+    using ce::fg_runtime::RuntimeMode;
+
+    EXPECT_TRUE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, true,
+                                                          true, true, true));
+    EXPECT_TRUE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kOff, RuntimeMode::kFSRFG, false, true, true,
+                                                          true, true, true));
+
+    // Streamline running, missing latch, missing ownership, missing queue,
+    // uninitialized backend, or a backend on a different queue (early enable
+    // edge before the FFX swapchain goes live) must all keep the cooldown.
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, true, true, true,
+                                                           true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, false, true,
+                                                           true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, false,
+                                                           true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, true,
+                                                           false, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, true,
+                                                           true, false, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true, true,
+                                                           true, true, false));
+
+    // Only FSR_FG <-> Off toggles qualify; DLSS transitions keep their paths.
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kDLSSFG, false, true,
+                                                           true, true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kDLSSFG, RuntimeMode::kOff, false, true, true,
+                                                           true, true, true));
+}
+
+TEST(DXGISharedTest, NativeFSRNoCallbackCompositionRetainedAcrossSuspension) {
+    using ce::dx12_overlay_policy::ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure;
+
+    // Disabled (suspend) configure with no callback route while the runtime
+    // still owns the live present path keeps the latch alive.
+    EXPECT_TRUE(ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure(false, false, false, true,
+                                                                                       true));
+
+    // Enabled configures compute the latch directly; bridge/app-callback
+    // routes own suspension rendering; a fresh session has nothing to retain;
+    // and without live runtime ownership the suspension is really a teardown.
+    EXPECT_FALSE(ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure(true, false, false, true,
+                                                                                        true));
+    EXPECT_FALSE(ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure(false, true, false, true,
+                                                                                        true));
+    EXPECT_FALSE(ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure(false, false, true, true,
+                                                                                        true));
+    EXPECT_FALSE(ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure(false, false, false, false,
+                                                                                        true));
+    EXPECT_FALSE(ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure(false, false, false, true,
+                                                                                        false));
+}
+
+TEST(DXGISharedTest, FinalizedNoCallbackFFXTakeoverReinitsOverlayImmediately) {
+    using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange;
+
+    // Enabled-configure proof + applied staged runtime queue + internal
+    // no-callback route: the first Present on AMD's swapchain may rebuild the
+    // overlay immediately instead of blanking through the 90-frame cooldown
+    // (20260611_142923: ~1.3s overlay blank on OFF -> FSR FG).
+    EXPECT_TRUE(ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange(true, true, true, true, true,
+                                                                                        false));
+
+    // Every missing proof keeps the protective cooldown.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange(false, true, true, true,
+                                                                                         true, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange(true, false, true, true,
+                                                                                         true, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange(true, true, false, true,
+                                                                                         true, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange(true, true, true, false,
+                                                                                         true, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange(true, true, true, true,
+                                                                                         false, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange(true, true, true, true, true,
+                                                                                         true));
+}
+
 TEST(DXGISharedTest, ReusesValidatedLastWorkingQueueForResumedDLSSDuringPostFSRInactiveRecovery) {
     EXPECT_TRUE(ce::dx12_overlay_policy::
                     ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(

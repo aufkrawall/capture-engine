@@ -4434,8 +4434,22 @@ static void ResetFFXPresentCallbackOverlayBackend(const char* reason) {
     }
 }
 
+static void ForceClearNativeFSRInternalNoCallbackComposition(const char* reason) {
+    if (g_NativeFSRInternalNoCallbackComposition.exchange(false, std::memory_order_acq_rel)) {
+        HookLogImportant("DX12: Cleared retained native FSR internal no-callback composition route (%s)", reason);
+    }
+}
+
 void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeActive, bool appCallbackProvided) {
-    const bool internalNoCallbackComposition = enabled && !bridgeActive && !appCallbackProvided;
+    const bool previousInternalNoCallbackComposition =
+        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
+    const bool runtimeOwnsLivePresentPath = g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath();
+    const bool retainedNoCallbackSuspension =
+        ce::dx12_overlay_policy::ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure(
+            enabled, bridgeActive, appCallbackProvided, previousInternalNoCallbackComposition,
+            runtimeOwnsLivePresentPath);
+    const bool internalNoCallbackComposition =
+        (enabled && !bridgeActive && !appCallbackProvided) || retainedNoCallbackSuspension;
     g_FFXPresentCallbackBridgeExpected.store(bridgeActive, std::memory_order_release);
     g_NativeFSRInternalNoCallbackComposition.store(internalNoCallbackComposition, std::memory_order_release);
     if (!bridgeActive) {
@@ -4443,19 +4457,34 @@ void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeA
         ResetFFXPresentCallbackFirstStallDetection();
     }
 
+    if (retainedNoCallbackSuspension) {
+        static std::atomic<int> s_retainedNoCallbackSuspensionLogCount{0};
+        const int retainLogCount = s_retainedNoCallbackSuspensionLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (retainLogCount < 20 || (retainLogCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Native FSR suspension retains internal no-callback composition route — normal overlay "
+                "rendering stays allowed on the runtime-owned swapchain queue (runtime=%s scQueue=%p origGame=%p "
+                "fgOwned=%d log=%d)",
+                ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_SwapchainQueue,
+                g_OriginalGameQueue, g_FGRuntimeOwnsSwapchain ? 1 : 0, retainLogCount + 1);
+        }
+    }
+
     static std::atomic<int> s_nativeFSRCallbackRoutingLogCount{0};
     const int logCount = s_nativeFSRCallbackRoutingLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 30 || (logCount % 300) == 0 || internalNoCallbackComposition) {
         HookLogImportant(
             "DX12: Native FSR present routing configured (enabled=%d bridgeActive=%d appCallback=%d "
-            "internalNoCallback=%d runtime=%s scQueue=%p origGame=%p log=%d)",
+            "internalNoCallback=%d retainedNoCallbackSuspension=%d runtime=%s scQueue=%p origGame=%p log=%d)",
             enabled ? 1 : 0, bridgeActive ? 1 : 0, appCallbackProvided ? 1 : 0,
-            internalNoCallbackComposition ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
+            internalNoCallbackComposition ? 1 : 0, retainedNoCallbackSuspension ? 1 : 0,
+            ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
             g_SwapchainQueue, g_OriginalGameQueue, logCount + 1);
     }
 }
 
 void DX12_OnNativeFSRFrameGenerationContextsDestroyed() {
+    ForceClearNativeFSRInternalNoCallbackComposition("native FSR contexts destroyed");
     DX12_OnNativeFSRPresentCallbackRoutingConfigured(false, false, false);
     g_RenderWatchdog.SetRuntimePresentationMonitor(false);
     ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
@@ -6112,6 +6141,8 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
                     runtimeOwnedNativeFGPresentPath ? 1 : 0, ffxPresentCallbackStalled ? 1 : 0);
                 g_FGCompat.SetHeuristicFSRFGActive(false);
                 ResetAuthoritativeFSRRealFrameOnlyStreak();
+                ForceClearNativeFSRInternalNoCallbackComposition(
+                    "explicit native FSR OFF plus origGame swapchain return");
             }
 
             g_FGRuntimeOwnsSwapchain = false;
@@ -6910,6 +6941,8 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 if (clearStaleNativeFGPresentOwnership) {
                     ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
                     ClearOfficialFFXRuntimeOwnedPresentPathAssumption(
+                        "Streamline FG comeback cleared stale native-FG Present ownership");
+                    ForceClearNativeFSRInternalNoCallbackComposition(
                         "Streamline FG comeback cleared stale native-FG Present ownership");
                     HookLogImportant(
                         "DX12: Streamline FG ON after FSR — cleared stale native-FG Present ownership before explicit "
@@ -8302,7 +8335,8 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
             lastWorkingQueueStillActiveDuringRecentTeardown,
             currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
-            g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
+            g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
+            g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire));
 
         if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
             // After FSR→DLSS: use scQueue (swapchain creation queue)
@@ -13138,7 +13172,35 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr, currentOriginalGameQueue != nullptr,
                     currentSwapchainQueue != nullptr && currentOriginalGameQueue != nullptr &&
                         currentSwapchainQueue != currentOriginalGameQueue);
-                if (guardSwapchainReinit) {
+                const bool immediateReinitAfterNoCallbackFFXTakeover =
+                    ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainChange(
+                        g_FGCompat.HasDirectFFXApiConfirmation(), g_FGCompat.IsFSRFGApiActive(),
+                        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+                        g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr,
+                        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
+                if (guardSwapchainReinit && immediateReinitAfterNoCallbackFFXTakeover) {
+                    // The enabled ffxConfigure already finalized the official FFX
+                    // takeover, applied the staged runtime queue, and drained CE's
+                    // overlay GPU work. Normal overlay rendering on the runtime-owned
+                    // swapchain queue is the approved transport for the no-callback
+                    // route, so rebuild the overlay on the new swapchain immediately
+                    // instead of blanking it for the generic transition cooldown.
+                    const int previousCooldown = g_FGTransitionCooldown;
+                    g_FGTransitionCooldown = 0;
+                    g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+                    g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
+                    g_PostSLOverlayActive.store(false, std::memory_order_release);
+                    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+                    // Force sync re-init: old allocators/fence were on the old queue.
+                    if (g_State.syncInit) {
+                        g_State.syncInit = false;
+                    }
+                    HookLogImportant(
+                        "DX12: Swapchain change is finalized no-callback official FFX takeover — immediate overlay "
+                        "reinit on runtime-owned swapchain queue instead of FG transition cooldown "
+                        "(scQueue=%p origGame=%p cmdQ=%p prevCooldown=%d)",
+                        currentSwapchainQueue, currentOriginalGameQueue, currentCommandQueue, previousCooldown);
+                } else if (guardSwapchainReinit) {
                     int cooldownFrames = 90;  // ~1.5s at 60fps — longer than normal transition
                     if (ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
                             commandQueueSettledToPrimary, g_HadFSRFGPhase, slOffSwapchainGrace > 0)) {
@@ -13270,7 +13332,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
                 lastWorkingQueueStillActiveDuringRecentTeardown,
                 currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
-                g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
+                g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
+                g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire));
 
             if (routingDecision ==
             ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {
@@ -15088,17 +15151,29 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             auto s_lastRuntimeMode_saved = s_lastRuntimeMode;  // save before update for syncInit logic
             const bool previousWasFG = ce::fg_runtime::IsActualGeneratedFrameMode(s_lastRuntimeMode_saved);
             const bool targetIsFGOff = !ce::fg_runtime::IsActualGeneratedFrameMode(currentRuntimeMode);
+            ID3D12CommandQueue* transitionOverlayBackendQueue =
+                g_OverlayAdapterBackendQueue.load(std::memory_order_acquire);
+            const bool liveNoCallbackNativeFSRSuspensionToggle =
+                ce::dx12_overlay_policy::IsLiveNoCallbackNativeFSRSuspensionToggle(
+                    s_lastRuntimeMode_saved, currentRuntimeMode, currentSLFGRunning,
+                    g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+                    g_FGRuntimeOwnsSwapchain, transitionSwapchainQueue != nullptr, g_State.overlayInit,
+                    transitionSwapchainQueue != nullptr &&
+                        transitionOverlayBackendQueue == transitionSwapchainQueue);
             const bool shouldStartFGTransitionCooldown =
                 ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
                     s_lastRuntimeMode_saved, currentRuntimeMode, s_lastFGActive, currentFGActive,
-                    s_lastSLFGRunning, currentSLFGRunning);
+                    s_lastSLFGRunning, currentSLFGRunning, liveNoCallbackNativeFSRSuspensionToggle);
             if (!shouldStartFGTransitionCooldown) {
                 HookLogImportant(
                     "DX12: Runtime state changed without generated-frame transition "
-                    "(prev_mode=%s next_mode=%s active=%d->%d sl_signal=%d->%d) — overlay remains live",
+                    "(prev_mode=%s next_mode=%s active=%d->%d sl_signal=%d->%d "
+                    "liveNoCallbackNativeFSRSuspensionToggle=%d backendQ=%p scQueue=%p) — overlay remains live",
                     ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
                     ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), s_lastFGActive ? 1 : 0,
-                    currentFGActive ? 1 : 0, s_lastSLFGRunning ? 1 : 0, currentSLFGRunning ? 1 : 0);
+                    currentFGActive ? 1 : 0, s_lastSLFGRunning ? 1 : 0, currentSLFGRunning ? 1 : 0,
+                    liveNoCallbackNativeFSRSuspensionToggle ? 1 : 0, transitionOverlayBackendQueue,
+                    transitionSwapchainQueue);
                 s_lastFGActive = currentFGActive;
                 s_lastRuntimeMode = currentRuntimeMode;
                 s_lastSLFGRunning = currentSLFGRunning;
