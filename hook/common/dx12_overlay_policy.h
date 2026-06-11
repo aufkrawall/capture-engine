@@ -800,12 +800,24 @@ inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bo
                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,
                                                     bool postFSRNonFGRecovery,
                                                     ce::fg_runtime::RuntimeMode runtimeMode,
-                                                    bool liveSwapchainQueueIsGameRecoveryQueue = false) {
+                                                    bool liveSwapchainQueueIsGameRecoveryQueue = false,
+                                                    bool fgTransitionCooldownActive = false) {
     if (!isInterpolatedFrame) {
         return false;
     }
 
     if (hasDedicatedQueue || heuristicFSRFG) {
+        return false;
+    }
+
+    // The FG transition cooldown counts down in ProcessFrame. If zero-ECL
+    // classification starves ProcessFrame while a cooldown is armed (e.g. the
+    // game retired its original render queue when switching FG modes, so no
+    // present ever counts ECLs again), the cooldown can never complete and
+    // PostSL/pre-SL rendering stays disabled forever (20260612_002523:
+    // overlay never came back after all-FG-off -> DLSS FG). Armed cooldowns
+    // must always be allowed to tick.
+    if (fgTransitionCooldownActive) {
         return false;
     }
 
@@ -2652,13 +2664,20 @@ inline bool ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
     bool streamlineFGRunning, bool postSLConfirmedRendering, bool confirmedPostSLBackendWarmupProtected,
     bool hadFSRFGPhase, bool runtimeOwnsSwapchain, bool hasSwapchainQueue, bool hasOriginalGameQueue,
     bool swapchainQueueDiffersFromOriginalGameQueue) {
-    // During an FSR -> DLSS handoff, GTA can briefly report a swapchain pointer
-    // change after PostSL has already rendered successfully on Streamline's
-    // runtime-owned queue. Treating that as an ordinary reinit destroys the only
-    // proven-safe path and can trip ERR_GFX_STATE. Preserve only the narrow case
-    // where the active DLSS/PostSL route is confirmed, still in warmup proof, and
-    // clearly backed by an FG-owned queue that differs from the original game queue.
-    return streamlineFGRunning && postSLConfirmedRendering && confirmedPostSLBackendWarmupProtected && hadFSRFGPhase &&
+    // GTA can briefly report a swapchain pointer change after PostSL has
+    // already rendered successfully on Streamline's runtime-owned queue
+    // (FSR -> DLSS handoff, 20260531_232108). Treating that as an ordinary
+    // reinit destroys the only proven-safe path and can trip ERR_GFX_STATE.
+    // 20260612_002523 proved the same for the PURE-DLSS startup (no FSR
+    // history): PostSL confirmed on the live Streamline swapchain, then the
+    // bookkeeping pointer-change catch-up armed the 90-frame cooldown,
+    // deactivated PostSL, and the overlay never came back because the game
+    // had retired its original queue and zero-ECL classification starved the
+    // cooldown ticks. PostSL confirmation is by definition proof on the LIVE
+    // swapchain (the callback hands CE the presenting swapchain), so it is
+    // preserve-worthy with or without FSR history.
+    (void)hadFSRFGPhase;
+    return streamlineFGRunning && postSLConfirmedRendering && confirmedPostSLBackendWarmupProtected &&
            runtimeOwnsSwapchain && hasSwapchainQueue && hasOriginalGameQueue &&
            swapchainQueueDiffersFromOriginalGameQueue;
 }

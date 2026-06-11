@@ -13206,13 +13206,13 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     s_preservedConfirmedPostSLSwapchainCleanupLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 20 || (logCount % 120) == 0) {
                     HookLogImportant(
-                        "DX12: Preserving confirmed PostSL backend during active FSR->DLSS swapchain handoff "
-                        "(oldSC=%p newSC=%p stableFrames=%d warmupProtected=%d fgOwned=%d scQueue=%p origGame=%p "
-                        "cmdQ=%p cooldown=%d log=%d)",
+                        "DX12: Preserving confirmed PostSL backend during active Streamline FG swapchain change "
+                        "(oldSC=%p newSC=%p stableFrames=%d warmupProtected=%d hadFSR=%d fgOwned=%d scQueue=%p "
+                        "origGame=%p cmdQ=%p cooldown=%d log=%d)",
                         g_LastSwapChain, pSwapChain, postSLStableFramesForSwapchainChange,
-                        confirmedPostSLBackendWarmupProtected ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
-                        preserveSwapchainQueue, preserveOriginalGameQueue, preserveCommandQueue, g_FGTransitionCooldown,
-                        logCount + 1);
+                        confirmedPostSLBackendWarmupProtected ? 1 : 0, g_HadFSRFGPhase ? 1 : 0,
+                        g_FGRuntimeOwnsSwapchain ? 1 : 0, preserveSwapchainQueue, preserveOriginalGameQueue,
+                        preserveCommandQueue, g_FGTransitionCooldown, logCount + 1);
                 }
             } else if (deferredFreshStreamlineNoFGSwapchainCleanup) {
                 static std::atomic<int> s_deferredFreshSLNoFGSwapchainCleanupLogCount{0};
@@ -17849,7 +17849,8 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             recentStreamlineTeardown, postFSRNonFGRecovery, g_FGCompat.GetRuntimeMode(),
             currentSwapchainQueue != nullptr &&
                 g_PostNativeFSROffGameSwapchainRecoveryQueue.load(std::memory_order_acquire) ==
-                    currentSwapchainQueue)) {
+                    currentSwapchainQueue,
+            g_FGTransitionCooldown > 0)) {
         sc3->Release();
         return;
     }

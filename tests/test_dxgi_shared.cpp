@@ -3528,14 +3528,20 @@ TEST(DXGISharedTest, PostFSRConfirmedPostSLBackendSurvivesActiveSwapchainChange)
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
         true, true, true, true, true, true, true, true));
 
+    // 20260612_002523: the PURE-DLSS startup (no FSR history) must preserve a
+    // confirmed PostSL backend too. PostSL confirmation is proof on the LIVE
+    // Streamline swapchain; the ordinary reinit + 90-frame cooldown blanked
+    // the overlay permanently when zero-ECL classification also starved the
+    // cooldown ticks.
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, true, false, true, true, true, true));
+
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
         false, true, true, true, true, true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
         true, false, true, true, true, true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
         true, true, false, true, true, true, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        true, true, true, false, true, true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
         true, true, true, true, false, true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
@@ -3544,6 +3550,22 @@ TEST(DXGISharedTest, PostFSRConfirmedPostSLBackendSurvivesActiveSwapchainChange)
         true, true, true, true, true, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
         true, true, true, true, true, true, true, false));
+}
+
+TEST(DXGISharedTest, ArmedFGTransitionCooldownAlwaysTicksDespiteZeroECLClassification) {
+    using ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent;
+    using ce::fg_runtime::RuntimeMode;
+
+    // 20260612_002523: the game retired its original render queue when
+    // entering DLSS FG, so every present classified as zero-ECL and the
+    // armed 90-frame cooldown never counted down - PostSL stayed disabled
+    // forever. Armed cooldowns must always be allowed to tick.
+    EXPECT_FALSE(ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, true, false, false,
+                                                         RuntimeMode::kDLSSFG, false, true));
+
+    // Without an armed cooldown the conservative zero-ECL skip stays.
+    EXPECT_TRUE(ShouldSkipProcessFrameForZeroECLPresent(true, false, false, false, true, false, false,
+                                                        RuntimeMode::kDLSSFG, false, false));
 }
 
 TEST(DXGISharedTest, FreshStreamlineStartupHandoffStaysPendingWhileSyntheticStartupIsHalfArmed) {
