@@ -337,10 +337,22 @@ static bool InitDX12(HWND hwnd, bool useFfxSwapChain = false, const char* reason
     g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_Fence));
     g_FenceValues[g_FrameIndex]++;
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    // The scene -> upscaler -> hudless chain runs in FP16 linear (band-free temporal accumulation);
+    // the present blit dithers down to the 8-bit backbuffer.
     testapp::dx12fg::CreateAuxiliaryResources(g_Device.Get(), static_cast<UINT>(g_WindowWidth),
-                                              static_cast<UINT>(g_WindowHeight), g_FgInputs);
-    if (!g_Scene.Initialize(g_Device.Get())) {
+                                              static_cast<UINT>(g_WindowHeight), g_FgInputs,
+                                              static_cast<UINT>(g_RenderWidth), static_cast<UINT>(g_RenderHeight),
+                                              testapp::dx12fg::kHdrColorFormat);
+    if (!g_Scene.Initialize(g_Device.Get(), testapp::dx12fg::kHdrColorFormat)) {
         testapp::Log("[FG-DIAG] WARN SceneRenderer init failed; scene will fall back to a flat clear (%s)\n",
+                     reason ? reason : "init");
+    }
+    if (UpscalingActive() && !g_Taa.Initialize(g_Device.Get(), testapp::dx12fg::kHdrColorFormat)) {
+        testapp::Log("[FG-DIAG] WARN TemporalUpscaler init failed; OFF-mode/fallback output would stay black (%s)\n",
+                     reason ? reason : "init");
+    }
+    if (!g_PresentBlit.Initialize(g_Device.Get(), testapp::dx12fg::kHdrColorFormat)) {
+        testapp::Log("[FG-DIAG] WARN PresentBlitPass init failed; backbuffer would stay black (%s)\n",
                      reason ? reason : "init");
     }
     return true;

@@ -15,43 +15,67 @@ namespace testapp::dx12fg {
 using Microsoft::WRL::ComPtr;
 
 constexpr DXGI_FORMAT kColorFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+// High-precision linear color for the scene -> upscaler -> hudless chain. 8-bit UNORM inputs band
+// visibly once a temporal upscaler accumulates/sharpens slow gradients (DLSS SR showed marching
+// brightness bands on the animated cube faces); FP16 keeps the whole temporal chain band-free and
+// the present blit dithers the final 8-bit quantization.
+constexpr DXGI_FORMAT kHdrColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr DXGI_FORMAT kMotionVectorFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
+constexpr DXGI_FORMAT kMaskFormat = DXGI_FORMAT_R8_UNORM;
 constexpr D3D12_RESOURCE_STATES kColorReadState = static_cast<D3D12_RESOURCE_STATES>(
     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+// Plain shader-read for the depth texture between frames. Deliberately WITHOUT
+// D3D12_RESOURCE_STATE_DEPTH_READ: nothing rebinds it as a read-only DSV, and the pure SRV combo is
+// exactly representable as the FFX-side FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ declared for FSR
+// dispatch inputs (FFX state flags are NOT D3D12 state bits; mismatched declarations make the FFX
+// backend emit wrong transition barriers).
 constexpr D3D12_RESOURCE_STATES kDepthReadState = static_cast<D3D12_RESOURCE_STATES>(
-    D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
-    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
+// Render-resolution inputs (sceneColor/motionVectors/depth/masks) feed the upscalers; the
+// display-resolution hudlessColor is the upscaled pre-UI frame consumed by FG and present-compose.
+// When no upscaling is active (render == display) sceneColor still exists but the scene renders
+// straight into hudlessColor and the upscale stage is skipped.
 struct AuxiliaryResources {
     ComPtr<ID3D12DescriptorHeap> rtvHeap;
     ComPtr<ID3D12DescriptorHeap> dsvHeap;
-    ComPtr<ID3D12Resource> hudlessColor;
-    ComPtr<ID3D12Resource> uiColor;
-    ComPtr<ID3D12Resource> motionVectors;
-    ComPtr<ID3D12Resource> depth;
+    ComPtr<ID3D12Resource> hudlessColor;   // display res; upscaler output (UAV-capable)
+    ComPtr<ID3D12Resource> uiColor;        // display res
+    ComPtr<ID3D12Resource> sceneColor;     // render res; upscaler color input
+    ComPtr<ID3D12Resource> motionVectors;  // render res
+    ComPtr<ID3D12Resource> depth;          // render res
+    // Render-res upscaler mask inputs (FSR reactive / transparency-and-composition); cleared every
+    // frame for now, ready for future render elements (particles, animated screens, DOF, ...).
+    ComPtr<ID3D12Resource> reactiveMask;
+    ComPtr<ID3D12Resource> transparencyMask;
     UINT rtvStride = 0;
+    UINT renderWidth = 0;
+    UINT renderHeight = 0;
+    UINT displayWidth = 0;
+    UINT displayHeight = 0;
+    DXGI_FORMAT colorFormat = kColorFormat;  // format of sceneColor + hudlessColor
     D3D12_RESOURCE_STATES hudlessState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES uiState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES sceneState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES motionState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES depthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    D3D12_RESOURCE_STATES reactiveState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES transparencyState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     bool valid = false;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE HudlessRtv() const {
-        return rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    }
-
-    D3D12_CPU_DESCRIPTOR_HANDLE UiRtv() const {
+    D3D12_CPU_DESCRIPTOR_HANDLE RtvAt(UINT index) const {
         D3D12_CPU_DESCRIPTOR_HANDLE handle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
-        handle.ptr += rtvStride;
+        handle.ptr += static_cast<SIZE_T>(rtvStride) * index;
         return handle;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE MotionRtv() const {
-        D3D12_CPU_DESCRIPTOR_HANDLE handle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
-        handle.ptr += rtvStride * 2;
-        return handle;
-    }
+    D3D12_CPU_DESCRIPTOR_HANDLE HudlessRtv() const { return RtvAt(0); }
+    D3D12_CPU_DESCRIPTOR_HANDLE UiRtv() const { return RtvAt(1); }
+    D3D12_CPU_DESCRIPTOR_HANDLE MotionRtv() const { return RtvAt(2); }
+    D3D12_CPU_DESCRIPTOR_HANDLE SceneRtv() const { return RtvAt(3); }
+    D3D12_CPU_DESCRIPTOR_HANDLE ReactiveRtv() const { return RtvAt(4); }
+    D3D12_CPU_DESCRIPTOR_HANDLE TransparencyRtv() const { return RtvAt(5); }
 
     D3D12_CPU_DESCRIPTOR_HANDLE DepthDsv() const {
         return dsvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -84,13 +108,22 @@ inline D3D12_RESOURCE_DESC Texture2DDesc(DXGI_FORMAT format, UINT width, UINT he
     return desc;
 }
 
-inline bool CreateAuxiliaryResources(ID3D12Device* device, UINT width, UINT height, AuxiliaryResources& out) {
+// renderWidth/renderHeight and sceneColorFormat default to the display size / 8-bit color so the
+// single-runtime test apps (dx12_dlss_fg_test, dx12_fsr_fg_test) keep their existing behavior
+// unchanged; the switch app passes the render resolution and kHdrColorFormat.
+inline bool CreateAuxiliaryResources(ID3D12Device* device, UINT width, UINT height, AuxiliaryResources& out,
+                                     UINT renderWidth = 0, UINT renderHeight = 0,
+                                     DXGI_FORMAT sceneColorFormat = kColorFormat) {
     if (!device || width == 0 || height == 0) {
         return false;
     }
+    if (renderWidth == 0 || renderHeight == 0) {
+        renderWidth = width;
+        renderHeight = height;
+    }
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = 3;
+    rtvHeapDesc.NumDescriptors = 6;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&out.rtvHeap)))) {
         testapp::Log("[FG-DIAG] Failed to create auxiliary RTV heap\n");
@@ -108,7 +141,7 @@ inline bool CreateAuxiliaryResources(ID3D12Device* device, UINT width, UINT heig
 
     const D3D12_HEAP_PROPERTIES heapProps = DefaultHeapProperties();
     D3D12_CLEAR_VALUE colorClear = {};
-    colorClear.Format = kColorFormat;
+    colorClear.Format = sceneColorFormat;
     colorClear.Color[3] = 1.0f;
     D3D12_CLEAR_VALUE uiClear = {};
     uiClear.Format = kColorFormat;
@@ -117,24 +150,44 @@ inline bool CreateAuxiliaryResources(ID3D12Device* device, UINT width, UINT heig
     D3D12_CLEAR_VALUE depthClear = {};
     depthClear.Format = kDepthFormat;
     depthClear.DepthStencil.Depth = 1.0f;
+    D3D12_CLEAR_VALUE maskClear = {};
+    maskClear.Format = kMaskFormat;
 
-    D3D12_RESOURCE_DESC colorDesc = Texture2DDesc(kColorFormat, width, height, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    // hudlessColor is the upscaler output target: DLSS/FSR super resolution write it as a UAV.
+    D3D12_RESOURCE_DESC hudlessDesc =
+        Texture2DDesc(sceneColorFormat, width, height,
+                      D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    D3D12_RESOURCE_DESC uiDesc = Texture2DDesc(kColorFormat, width, height, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    D3D12_RESOURCE_DESC sceneDesc =
+        Texture2DDesc(sceneColorFormat, renderWidth, renderHeight, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
     D3D12_RESOURCE_DESC motionDesc =
-        Texture2DDesc(kMotionVectorFormat, width, height, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-    D3D12_RESOURCE_DESC depthDesc = Texture2DDesc(kDepthFormat, width, height, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+        Texture2DDesc(kMotionVectorFormat, renderWidth, renderHeight, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    D3D12_RESOURCE_DESC depthDesc =
+        Texture2DDesc(kDepthFormat, renderWidth, renderHeight, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+    D3D12_RESOURCE_DESC maskDesc =
+        Texture2DDesc(kMaskFormat, renderWidth, renderHeight, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
-    if (FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &colorDesc,
+    if (FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &hudlessDesc,
                                                D3D12_RESOURCE_STATE_RENDER_TARGET, &colorClear,
                                                IID_PPV_ARGS(&out.hudlessColor))) ||
-        FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &colorDesc,
+        FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &uiDesc,
                                                D3D12_RESOURCE_STATE_RENDER_TARGET, &uiClear,
                                                IID_PPV_ARGS(&out.uiColor))) ||
+        FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &sceneDesc,
+                                               D3D12_RESOURCE_STATE_RENDER_TARGET, &colorClear,
+                                               IID_PPV_ARGS(&out.sceneColor))) ||
         FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &motionDesc,
                                                D3D12_RESOURCE_STATE_RENDER_TARGET, &motionClear,
                                                IID_PPV_ARGS(&out.motionVectors))) ||
         FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &depthDesc,
                                                D3D12_RESOURCE_STATE_DEPTH_WRITE, &depthClear,
-                                               IID_PPV_ARGS(&out.depth)))) {
+                                               IID_PPV_ARGS(&out.depth))) ||
+        FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &maskDesc,
+                                               D3D12_RESOURCE_STATE_RENDER_TARGET, &maskClear,
+                                               IID_PPV_ARGS(&out.reactiveMask))) ||
+        FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &maskDesc,
+                                               D3D12_RESOURCE_STATE_RENDER_TARGET, &maskClear,
+                                               IID_PPV_ARGS(&out.transparencyMask)))) {
         testapp::Log("[FG-DIAG] Failed to create auxiliary FG input textures\n");
         return false;
     }
@@ -142,25 +195,47 @@ inline bool CreateAuxiliaryResources(ID3D12Device* device, UINT width, UINT heig
     device->CreateRenderTargetView(out.hudlessColor.Get(), nullptr, out.HudlessRtv());
     device->CreateRenderTargetView(out.uiColor.Get(), nullptr, out.UiRtv());
     device->CreateRenderTargetView(out.motionVectors.Get(), nullptr, out.MotionRtv());
+    device->CreateRenderTargetView(out.sceneColor.Get(), nullptr, out.SceneRtv());
+    device->CreateRenderTargetView(out.reactiveMask.Get(), nullptr, out.ReactiveRtv());
+    device->CreateRenderTargetView(out.transparencyMask.Get(), nullptr, out.TransparencyRtv());
     device->CreateDepthStencilView(out.depth.Get(), nullptr, out.DepthDsv());
+    out.renderWidth = renderWidth;
+    out.renderHeight = renderHeight;
+    out.displayWidth = width;
+    out.displayHeight = height;
+    out.colorFormat = sceneColorFormat;
     out.valid = true;
-    testapp::Log("[FG-DIAG] Auxiliary FG resources: hudless=%p ui=%p mvec=%p depth=%p size=%ux%u\n",
-                 out.hudlessColor.Get(), out.uiColor.Get(), out.motionVectors.Get(), out.depth.Get(), width, height);
+    testapp::Log("[FG-DIAG] Auxiliary FG resources: hudless=%p ui=%p scene=%p mvec=%p depth=%p reactive=%p "
+                 "transparency=%p display=%ux%u render=%ux%u colorFormat=%d\n",
+                 out.hudlessColor.Get(), out.uiColor.Get(), out.sceneColor.Get(), out.motionVectors.Get(),
+                 out.depth.Get(), out.reactiveMask.Get(), out.transparencyMask.Get(), width, height, renderWidth,
+                 renderHeight, static_cast<int>(sceneColorFormat));
     return true;
 }
 
 inline void ReleaseAuxiliaryResources(AuxiliaryResources& resources) {
     resources.hudlessColor.Reset();
     resources.uiColor.Reset();
+    resources.sceneColor.Reset();
     resources.motionVectors.Reset();
     resources.depth.Reset();
+    resources.reactiveMask.Reset();
+    resources.transparencyMask.Reset();
     resources.rtvHeap.Reset();
     resources.dsvHeap.Reset();
     resources.rtvStride = 0;
+    resources.renderWidth = 0;
+    resources.renderHeight = 0;
+    resources.displayWidth = 0;
+    resources.displayHeight = 0;
+    resources.colorFormat = kColorFormat;
     resources.hudlessState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     resources.uiState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    resources.sceneState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     resources.motionState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     resources.depthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    resources.reactiveState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    resources.transparencyState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     resources.valid = false;
 }
 

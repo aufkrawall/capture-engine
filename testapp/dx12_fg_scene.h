@@ -102,8 +102,42 @@ inline Mat4 Mat4PerspectiveFovLH(float fovY, float aspect, float zn, float zf) {
     return r;
 }
 
-// Left-handed look-at (DirectX convention, row-vector / row-major).
-inline Mat4 Mat4LookAtLH(float ex, float ey, float ez, float ax, float ay, float az, float ux, float uy, float uz) {
+// Analytic inverse of Mat4PerspectiveFovLH (clip -> view for the row-vector convention):
+// view.x = clip.x/xScale, view.y = clip.y/yScale, view.z = clip.w, and the homogeneous column
+// reconstructs 1 from clip.z*1/m14 + clip.w*(-m10/m14).
+inline Mat4 Mat4PerspectiveFovLHInverse(const Mat4& proj) {
+    Mat4 r = {};
+    r.m[0] = 1.0f / proj.m[0];
+    r.m[5] = 1.0f / proj.m[5];
+    r.m[11] = 1.0f / proj.m[14];
+    r.m[14] = 1.0f;
+    r.m[15] = -proj.m[10] / proj.m[14];
+    return r;
+}
+
+// Applies a sub-pixel camera jitter (in pixels at render resolution) to a projection matrix:
+// clip.x += w * 2*jx/renderW and clip.y += w * -2*jy/renderH (w == view z for this projection),
+// the standard FSR/DLSS jittered-projection convention.
+inline Mat4 Mat4ApplyJitter(const Mat4& proj, float jitterX, float jitterY, int renderWidth, int renderHeight) {
+    Mat4 r = proj;
+    if (renderWidth > 0 && renderHeight > 0) {
+        r.m[8] += 2.0f * jitterX / static_cast<float>(renderWidth);
+        r.m[9] += -2.0f * jitterY / static_cast<float>(renderHeight);
+    }
+    return r;
+}
+
+// Orthonormal camera basis (right/up/forward) for a left-handed look-at; shared by the view matrix
+// and the upscaler camera constants (Streamline sl::Constants, FFX dispatch camera vectors).
+struct CameraBasis {
+    float eye[3];
+    float right[3];
+    float up[3];
+    float forward[3];
+};
+
+inline CameraBasis ComputeLookAtBasisLH(float ex, float ey, float ez, float ax, float ay, float az, float ux, float uy,
+                                        float uz) {
     float zx = ax - ex, zy = ay - ey, zz = az - ez;
     float zl = std::sqrt(zx * zx + zy * zy + zz * zz);
     zx /= zl;
@@ -115,19 +149,25 @@ inline Mat4 Mat4LookAtLH(float ex, float ey, float ez, float ax, float ay, float
     xy /= xl;
     xz /= xl;
     float yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+    return {{ex, ey, ez}, {xx, xy, xz}, {yx, yy, yz}, {zx, zy, zz}};
+}
+
+// Left-handed look-at (DirectX convention, row-vector / row-major).
+inline Mat4 Mat4LookAtLH(float ex, float ey, float ez, float ax, float ay, float az, float ux, float uy, float uz) {
+    const CameraBasis b = ComputeLookAtBasisLH(ex, ey, ez, ax, ay, az, ux, uy, uz);
     Mat4 r = Mat4Identity();
-    r.m[0] = xx;
-    r.m[1] = yx;
-    r.m[2] = zx;
-    r.m[4] = xy;
-    r.m[5] = yy;
-    r.m[6] = zy;
-    r.m[8] = xz;
-    r.m[9] = yz;
-    r.m[10] = zz;
-    r.m[12] = -(xx * ex + xy * ey + xz * ez);
-    r.m[13] = -(yx * ex + yy * ey + yz * ez);
-    r.m[14] = -(zx * ex + zy * ey + zz * ez);
+    r.m[0] = b.right[0];
+    r.m[1] = b.up[0];
+    r.m[2] = b.forward[0];
+    r.m[4] = b.right[1];
+    r.m[5] = b.up[1];
+    r.m[6] = b.forward[1];
+    r.m[8] = b.right[2];
+    r.m[9] = b.up[2];
+    r.m[10] = b.forward[2];
+    r.m[12] = -(b.right[0] * ex + b.right[1] * ey + b.right[2] * ez);
+    r.m[13] = -(b.up[0] * ex + b.up[1] * ey + b.up[2] * ez);
+    r.m[14] = -(b.forward[0] * ex + b.forward[1] * ey + b.forward[2] * ez);
     return r;
 }
 
@@ -136,6 +176,20 @@ struct SceneConstants {
     float prevModel[16];  // previous-frame model for per-pixel motion vectors
     float viewProj[16];   // shared camera view*proj
     float params[4];      // x = material id (0 cube, 1 floor), y = fog far distance
+};
+
+// Camera state of the last rendered frame, exposed for upscaler constants (Streamline
+// sl::Constants matrices/vectors, FFX dispatch camera fields). proj/projInverse are UNJITTERED.
+struct SceneCamera {
+    CameraBasis basis = {};
+    Mat4 view = {};
+    Mat4 proj = {};
+    Mat4 projInverse = {};
+    float fovY = 0.0f;
+    float nearZ = 0.0f;
+    float farZ = 0.0f;
+    float aspect = 0.0f;
+    bool valid = false;
 };
 
 class SceneRenderer {
@@ -147,13 +201,22 @@ public:
         return valid_;
     }
 
-    bool Initialize(ID3D12Device* device);
-    // Renders sky + floor + cube into aux.hudlessColor (SV_Target0) + aux.motionVectors
-    // (SV_Target1) with aux.depth. The caller must have transitioned those targets to
-    // RENDER_TARGET / DEPTH_WRITE and cleared depth (to 1.0) and motion (to 0) first.
-    void Render(ID3D12GraphicsCommandList* commandList, const AuxiliaryResources& aux, UINT frameIndex, int width,
-                int height, float timeSeconds);
+    // colorFormat is the SV_Target0 (scene color) format; motion/depth formats are fixed.
+    bool Initialize(ID3D12Device* device, DXGI_FORMAT colorFormat = kColorFormat);
+    // Renders sky + floor + cube into the bound color target (SV_Target0) + aux.motionVectors
+    // (SV_Target1) with aux.depth at render resolution width x height. The caller must have
+    // transitioned those targets to RENDER_TARGET / DEPTH_WRITE and cleared depth (to 1.0) and
+    // motion (to 0) first. jitterX/jitterY are the sub-pixel camera jitter in pixels; the SAME
+    // jittered viewProj is used for current and previous clip positions, so the UV-space motion
+    // vectors (prevUV - curUV) cancel the jitter exactly and stay jitter-free.
+    void Render(ID3D12GraphicsCommandList* commandList, D3D12_CPU_DESCRIPTOR_HANDLE colorRtv,
+                const AuxiliaryResources& aux, UINT frameIndex, int width, int height, float timeSeconds,
+                float jitterX = 0.0f, float jitterY = 0.0f);
     void Release();
+
+    const SceneCamera& Camera() const {
+        return camera_;
+    }
 
 private:
     static ComPtr<ID3D12Resource> CreateUploadBuffer(ID3D12Device* device, UINT64 size, const void* initialData);
@@ -173,6 +236,8 @@ private:
     UINT cubeIndexCount_ = 0;
     UINT cubeBaseVertex_ = 0;
     Mat4 prevCubeModel_ = {};
+    SceneCamera camera_ = {};
+    DXGI_FORMAT colorFormat_ = kColorFormat;
     bool hasPrev_ = false;
     bool valid_ = false;
 };
@@ -226,7 +291,7 @@ inline bool SceneRenderer::CreatePipeline(ID3D12Device* device, const void* vs, 
     }
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 2;
-    psoDesc.RTVFormats[0] = kColorFormat;
+    psoDesc.RTVFormats[0] = colorFormat_;
     psoDesc.RTVFormats[1] = kMotionVectorFormat;
     psoDesc.DSVFormat = kDepthFormat;
     psoDesc.SampleDesc.Count = 1;
@@ -250,11 +315,12 @@ inline bool SceneRenderer::CreatePipeline(ID3D12Device* device, const void* vs, 
     return true;
 }
 
-inline bool SceneRenderer::Initialize(ID3D12Device* device) {
+inline bool SceneRenderer::Initialize(ID3D12Device* device, DXGI_FORMAT colorFormat) {
     Release();
     if (!device) {
         return false;
     }
+    colorFormat_ = colorFormat;
 
     D3D12_ROOT_PARAMETER param = {};
     param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -447,8 +513,9 @@ inline bool SceneRenderer::Initialize(ID3D12Device* device) {
     return true;
 }
 
-inline void SceneRenderer::Render(ID3D12GraphicsCommandList* commandList, const AuxiliaryResources& aux,
-                                  UINT frameIndex, int width, int height, float timeSeconds) {
+inline void SceneRenderer::Render(ID3D12GraphicsCommandList* commandList, D3D12_CPU_DESCRIPTOR_HANDLE colorRtv,
+                                  const AuxiliaryResources& aux, UINT frameIndex, int width, int height,
+                                  float timeSeconds, float jitterX, float jitterY) {
     if (!valid_ || !commandList || width <= 0 || height <= 0) {
         return;
     }
@@ -456,10 +523,21 @@ inline void SceneRenderer::Render(ID3D12GraphicsCommandList* commandList, const 
         frameIndex %= kFrameCount;
     }
 
+    constexpr float kFovY = 1.04719755f;
+    constexpr float kNearZ = 0.1f;
+    constexpr float kFarZ = 1000.0f;
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
-    const Mat4 view = Mat4LookAtLH(0.0f, 2.4f, -5.5f, 0.0f, 0.7f, 1.4f, 0.0f, 1.0f, 0.0f);
-    const Mat4 proj = Mat4PerspectiveFovLH(1.04719755f, aspect, 0.1f, 1000.0f);
-    const Mat4 viewProj = Mat4Mul(view, proj);
+    camera_.basis = ComputeLookAtBasisLH(0.0f, 2.4f, -5.5f, 0.0f, 0.7f, 1.4f, 0.0f, 1.0f, 0.0f);
+    camera_.view = Mat4LookAtLH(0.0f, 2.4f, -5.5f, 0.0f, 0.7f, 1.4f, 0.0f, 1.0f, 0.0f);
+    camera_.proj = Mat4PerspectiveFovLH(kFovY, aspect, kNearZ, kFarZ);
+    camera_.projInverse = Mat4PerspectiveFovLHInverse(camera_.proj);
+    camera_.fovY = kFovY;
+    camera_.nearZ = kNearZ;
+    camera_.farZ = kFarZ;
+    camera_.aspect = aspect;
+    camera_.valid = true;
+    const Mat4 jitteredProj = Mat4ApplyJitter(camera_.proj, jitterX, jitterY, width, height);
+    const Mat4 viewProj = Mat4Mul(camera_.view, jitteredProj);
 
     const float sweep = 2.6f * std::sin(timeSeconds * 0.55f);
     const float bob = 0.85f + 0.18f * std::sin(timeSeconds * 1.7f);
@@ -494,7 +572,7 @@ inline void SceneRenderer::Render(ID3D12GraphicsCommandList* commandList, const 
     prevCubeModel_ = cubeModel;
     hasPrev_ = true;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = {aux.HudlessRtv(), aux.MotionRtv()};
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = {colorRtv, aux.MotionRtv()};
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = aux.DepthDsv();
     commandList->OMSetRenderTargets(2, rtvs, FALSE, &dsv);
 
@@ -539,6 +617,8 @@ inline void SceneRenderer::Release() {
     floorIndexCount_ = 0;
     cubeIndexCount_ = 0;
     cubeBaseVertex_ = 0;
+    camera_ = {};
+    colorFormat_ = kColorFormat;
     hasPrev_ = false;
     valid_ = false;
 }

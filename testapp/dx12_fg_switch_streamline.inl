@@ -30,6 +30,7 @@ static bool LoadStreamlineAndInit() {
         reinterpret_cast<PFun_slGetNewFrameToken*>(GetProcAddress(g_SlModule, "slGetNewFrameToken"));
     g_SlSetConstants = reinterpret_cast<PFun_slSetConstants*>(GetProcAddress(g_SlModule, "slSetConstants"));
     g_SlSetTagForFrame = reinterpret_cast<PFun_slSetTagForFrame*>(GetProcAddress(g_SlModule, "slSetTagForFrame"));
+    g_SlEvaluateFeature = reinterpret_cast<PFun_slEvaluateFeature*>(GetProcAddress(g_SlModule, "slEvaluateFeature"));
     g_SlCreateDXGIFactory1 =
         reinterpret_cast<PFun_CreateDXGIFactory1>(GetProcAddress(g_SlModule, "CreateDXGIFactory1"));
     g_SlD3D12CreateDevice =
@@ -47,7 +48,7 @@ static bool LoadStreamlineAndInit() {
 
     std::wstring pluginPath = ExeDirectoryW();
     const wchar_t* pluginPaths[] = {pluginPath.c_str()};
-    sl::Feature features[] = {sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
+    sl::Feature features[] = {sl::kFeatureDLSS_G, sl::kFeatureDLSS, sl::kFeatureReflex, sl::kFeaturePCL};
     sl::Preferences pref = {};
     pref.logLevel = sl::LogLevel::eVerbose;
     pref.pathsToPlugins = pluginPaths;
@@ -81,6 +82,7 @@ static bool LoadStreamlineAndInit() {
         g_SlGetNewFrameToken = nullptr;
         g_SlSetConstants = nullptr;
         g_SlSetTagForFrame = nullptr;
+        g_SlEvaluateFeature = nullptr;
         g_SlCreateDXGIFactory1 = nullptr;
         g_SlD3D12CreateDevice = nullptr;
         return false;
@@ -129,6 +131,18 @@ static bool TryInitDLSSFG() {
         g_SlDLSSGGetState = reinterpret_cast<PFun_slDLSSGGetState*>(fnPtr);
         testapp::Log("[FG-DIAG] Resolved slDLSSGGetState @ %p\n", (void*)g_SlDLSSGGetState);
     }
+    // DLSS Super Resolution feature functions: optional -- when unavailable the upscale stage
+    // falls back to TAA/TAAU so DLSS FG keeps working without SR.
+    if (g_SlGetFeatureFunction(sl::kFeatureDLSS, "slDLSSSetOptions", fnPtr) == sl::Result::eOk && fnPtr) {
+        g_SlDLSSSetOptions = reinterpret_cast<PFun_slDLSSSetOptions*>(fnPtr);
+        testapp::Log("[FG-DIAG] Resolved slDLSSSetOptions @ %p\n", (void*)g_SlDLSSSetOptions);
+    } else {
+        testapp::Log("[FG-DIAG] WARN kFeatureDLSS slDLSSSetOptions unavailable (DLSS SR disabled, TAA fallback)\n");
+    }
+    if (g_SlGetFeatureFunction(sl::kFeatureDLSS, "slDLSSGetOptimalSettings", fnPtr) == sl::Result::eOk && fnPtr) {
+        g_SlDLSSGetOptimalSettings = reinterpret_cast<PFun_slDLSSGetOptimalSettings*>(fnPtr);
+        testapp::Log("[FG-DIAG] Resolved slDLSSGetOptimalSettings @ %p\n", (void*)g_SlDLSSGetOptimalSettings);
+    }
     if (g_SlGetFeatureFunction(sl::kFeatureReflex, "slReflexSetOptions", fnPtr) == sl::Result::eOk && fnPtr) {
         g_SlReflexSetOptions = reinterpret_cast<PFun_slReflexSetOptions*>(fnPtr);
         testapp::Log("[FG-DIAG] Resolved slReflexSetOptions @ %p\n", (void*)g_SlReflexSetOptions);
@@ -159,11 +173,12 @@ static bool SetDLSSFGMode(bool enable) {
     options.colorWidth = static_cast<uint32_t>(g_WindowWidth);
     options.colorHeight = static_cast<uint32_t>(g_WindowHeight);
     options.colorBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-    options.mvecDepthWidth = static_cast<uint32_t>(g_WindowWidth);
-    options.mvecDepthHeight = static_cast<uint32_t>(g_WindowHeight);
+    // Depth + motion vectors are produced at RENDER resolution when super resolution is active.
+    options.mvecDepthWidth = static_cast<uint32_t>(g_RenderWidth);
+    options.mvecDepthHeight = static_cast<uint32_t>(g_RenderHeight);
     options.mvecBufferFormat = testapp::dx12fg::kMotionVectorFormat;
     options.depthBufferFormat = testapp::dx12fg::kDepthFormat;
-    options.hudLessBufferFormat = testapp::dx12fg::kColorFormat;
+    options.hudLessBufferFormat = testapp::dx12fg::kHdrColorFormat;
     options.uiBufferFormat = testapp::dx12fg::kColorFormat;
     options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
     options.enableUserInterfaceRecomposition = sl::eTrue;
@@ -243,35 +258,63 @@ static sl::FrameToken* BeginStreamlineFrame() {
     return token;
 }
 
+static sl::float4x4 MakeSlMatrix(const testapp::dx12fg::Mat4& m) {
+    sl::float4x4 r;
+    for (int row = 0; row < 4; ++row) {
+        r[row] = sl::float4(m.m[row * 4 + 0], m.m[row * 4 + 1], m.m[row * 4 + 2], m.m[row * 4 + 3]);
+    }
+    return r;
+}
+
+// Records the per-frame Streamline constants and ALL resource tags (frame generation + DLSS super
+// resolution). MUST run after the scene rendered (camera state is current) and BEFORE
+// slEvaluateFeature(kFeatureDLSS) in the upscale stage -- the evaluate consumes these tags.
 static void SubmitStreamlineFrameInputs(sl::FrameToken* token, UINT frameIndex) {
     if (!token || !g_SlSetConstants || !g_SlSetTagForFrame || !g_FgInputs.valid ||
         frameIndex >= g_SwapChainBufferCount || !g_RenderTargets[frameIndex]) {
         return;
     }
+    const testapp::dx12fg::SceneCamera& camera = g_Scene.Camera();
 
     sl::Constants constants = {};
-    constants.cameraViewToClip = IdentityMatrix();
-    constants.clipToCameraView = IdentityMatrix();
+    // Real (unjittered) camera matrices: viewToClip is the projection, clipToCameraView its
+    // analytic inverse. The camera is static, so current and previous clip spaces are identical
+    // (clipToPrevClip == identity is exact, not an approximation).
+    constants.cameraViewToClip = camera.valid ? MakeSlMatrix(camera.proj) : IdentityMatrix();
+    constants.clipToCameraView = camera.valid ? MakeSlMatrix(camera.projInverse) : IdentityMatrix();
     constants.clipToLensClip = IdentityMatrix();
     constants.clipToPrevClip = IdentityMatrix();
     constants.prevClipToClip = IdentityMatrix();
-    constants.jitterOffset = sl::float2(0.0f, 0.0f);
+    constants.jitterOffset = sl::float2(g_CurrentJitter.x, g_CurrentJitter.y);
     // Scene motion vectors are emitted in UV space (prevUV - curUV). Streamline expects motion
     // normalized to [-1,1] (NDC): UV delta * 2 = NDC delta in x, and -2 in y (UV y is flipped
     // relative to NDC y).
     constants.mvecScale = sl::float2(2.0f, -2.0f);
     constants.cameraPinholeOffset = sl::float2(0.0f, 0.0f);
-    constants.cameraPos = sl::float3(0.0f, 0.0f, -2.0f);
-    constants.cameraUp = sl::float3(0.0f, 1.0f, 0.0f);
-    constants.cameraRight = sl::float3(1.0f, 0.0f, 0.0f);
-    constants.cameraFwd = sl::float3(0.0f, 0.0f, 1.0f);
-    constants.cameraNear = 0.1f;
-    constants.cameraFar = 1000.0f;
-    constants.cameraFOV = 1.04719755f;
-    constants.cameraAspectRatio = static_cast<float>(g_WindowWidth) / static_cast<float>(g_WindowHeight);
+    if (camera.valid) {
+        constants.cameraPos = sl::float3(camera.basis.eye[0], camera.basis.eye[1], camera.basis.eye[2]);
+        constants.cameraUp = sl::float3(camera.basis.up[0], camera.basis.up[1], camera.basis.up[2]);
+        constants.cameraRight = sl::float3(camera.basis.right[0], camera.basis.right[1], camera.basis.right[2]);
+        constants.cameraFwd = sl::float3(camera.basis.forward[0], camera.basis.forward[1], camera.basis.forward[2]);
+        constants.cameraNear = camera.nearZ;
+        constants.cameraFar = camera.farZ;
+        constants.cameraFOV = camera.fovY;
+        constants.cameraAspectRatio = camera.aspect;
+    } else {
+        constants.cameraPos = sl::float3(0.0f, 0.0f, -2.0f);
+        constants.cameraUp = sl::float3(0.0f, 1.0f, 0.0f);
+        constants.cameraRight = sl::float3(1.0f, 0.0f, 0.0f);
+        constants.cameraFwd = sl::float3(0.0f, 0.0f, 1.0f);
+        constants.cameraNear = 0.1f;
+        constants.cameraFar = 1000.0f;
+        constants.cameraFOV = 1.04719755f;
+        constants.cameraAspectRatio = static_cast<float>(g_WindowWidth) / static_cast<float>(g_WindowHeight);
+    }
     constants.motionVectorsInvalidValue = 65504.0f;
     constants.depthInverted = sl::eFalse;
-    constants.cameraMotionIncluded = sl::eFalse;
+    // The UV-space motion vectors are complete (object + camera motion; the camera just happens to
+    // be static), so SL must not synthesize camera motion on top.
+    constants.cameraMotionIncluded = sl::eTrue;
     constants.motionVectors3D = sl::eFalse;
     constants.reset = g_FrameTokenIndex < 4 ? sl::eTrue : sl::eFalse;
     sl::Result constantsResult = g_SlSetConstants(constants, *token, g_SlViewport);
@@ -280,35 +323,56 @@ static void SubmitStreamlineFrameInputs(sl::FrameToken* token, UINT frameIndex) 
                      SlResultName(constantsResult));
     }
 
-    sl::Extent extent = {};
-    extent.width = static_cast<uint32_t>(g_WindowWidth);
-    extent.height = static_cast<uint32_t>(g_WindowHeight);
+    // Depth/motion (and the SR input color) are render-resolution; hudless/UI/backbuffer are
+    // display-resolution.
+    sl::Extent renderExtent = {};
+    renderExtent.width = static_cast<uint32_t>(g_RenderWidth);
+    renderExtent.height = static_cast<uint32_t>(g_RenderHeight);
+    sl::Extent displayExtent = {};
+    displayExtent.width = static_cast<uint32_t>(g_WindowWidth);
+    displayExtent.height = static_cast<uint32_t>(g_WindowHeight);
+
     sl::Resource depth(sl::ResourceType::eTex2d, g_FgInputs.depth.Get(), testapp::dx12fg::kDepthReadState);
     sl::Resource motion(sl::ResourceType::eTex2d, g_FgInputs.motionVectors.Get(), testapp::dx12fg::kColorReadState);
-    sl::Resource hudless(sl::ResourceType::eTex2d, g_FgInputs.hudlessColor.Get(), testapp::dx12fg::kColorReadState);
+    sl::Resource hudless(sl::ResourceType::eTex2d, g_FgInputs.hudlessColor.Get(), g_FgInputs.hudlessState);
     sl::Resource ui(sl::ResourceType::eTex2d, g_FgInputs.uiColor.Get(), testapp::dx12fg::kColorReadState);
     sl::Resource backbuffer(sl::ResourceType::eTex2d, g_RenderTargets[frameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT);
-    depth.width = motion.width = hudless.width = ui.width = backbuffer.width = extent.width;
-    depth.height = motion.height = hudless.height = ui.height = backbuffer.height = extent.height;
+    sl::Resource scalingInput(sl::ResourceType::eTex2d, g_FgInputs.sceneColor.Get(), g_FgInputs.sceneState);
+    depth.width = motion.width = scalingInput.width = renderExtent.width;
+    depth.height = motion.height = scalingInput.height = renderExtent.height;
+    hudless.width = ui.width = backbuffer.width = displayExtent.width;
+    hudless.height = ui.height = backbuffer.height = displayExtent.height;
     depth.nativeFormat = testapp::dx12fg::kDepthFormat;
     motion.nativeFormat = testapp::dx12fg::kMotionVectorFormat;
-    hudless.nativeFormat = testapp::dx12fg::kColorFormat;
+    hudless.nativeFormat = g_FgInputs.colorFormat;
     ui.nativeFormat = testapp::dx12fg::kColorFormat;
+    scalingInput.nativeFormat = g_FgInputs.colorFormat;
     backbuffer.nativeFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-    sl::ResourceTag tags[] = {
-        sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::eValidUntilPresent, &extent),
-        sl::ResourceTag(&motion, sl::kBufferTypeMotionVectors, sl::eValidUntilPresent, &extent),
-        sl::ResourceTag(&hudless, sl::kBufferTypeHUDLessColor, sl::eValidUntilPresent, &extent),
-        sl::ResourceTag(&ui, sl::kBufferTypeUIColorAndAlpha, sl::eValidUntilPresent, &extent),
-        sl::ResourceTag(&backbuffer, sl::kBufferTypeBackbuffer, sl::eValidUntilPresent, &extent),
+    sl::ResourceTag tags[7] = {
+        sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::eValidUntilPresent, &renderExtent),
+        sl::ResourceTag(&motion, sl::kBufferTypeMotionVectors, sl::eValidUntilPresent, &renderExtent),
+        sl::ResourceTag(&hudless, sl::kBufferTypeHUDLessColor, sl::eValidUntilPresent, &displayExtent),
+        sl::ResourceTag(&ui, sl::kBufferTypeUIColorAndAlpha, sl::eValidUntilPresent, &displayExtent),
+        sl::ResourceTag(&backbuffer, sl::kBufferTypeBackbuffer, sl::eValidUntilPresent, &displayExtent),
     };
-    sl::Result tagResult = g_SlSetTagForFrame(*token, g_SlViewport, tags, _countof(tags), g_CommandList.Get());
+    uint32_t tagCount = 5;
+    if (UpscalingActive()) {
+        // DLSS SR input/output pair: the render-res scene color upscales into the display-res
+        // hudless color (which then feeds FG + present-compose).
+        tags[tagCount++] = sl::ResourceTag(&scalingInput, sl::kBufferTypeScalingInputColor, sl::eValidUntilPresent,
+                                           &renderExtent);
+        tags[tagCount++] =
+            sl::ResourceTag(&hudless, sl::kBufferTypeScalingOutputColor, sl::eValidUntilPresent, &displayExtent);
+    }
+    sl::Result tagResult = g_SlSetTagForFrame(*token, g_SlViewport, tags, tagCount, g_CommandList.Get());
     if (tagResult != sl::Result::eOk || g_FrameTokenIndex < 5 || (g_FrameTokenIndex % 120) == 0) {
-        testapp::Log("[FG-DIAG] slSetTagForFrame frame=%u result=%d (%s) depth=%p mvec=%p hudless=%p ui=%p backbuffer=%p\n",
-                     g_FrameTokenIndex - 1, static_cast<int>(tagResult), SlResultName(tagResult),
+        testapp::Log("[FG-DIAG] slSetTagForFrame frame=%u result=%d (%s) tags=%u depth=%p mvec=%p hudless=%p ui=%p "
+                     "backbuffer=%p sceneColor=%p renderExtent=%ux%u\n",
+                     g_FrameTokenIndex - 1, static_cast<int>(tagResult), SlResultName(tagResult), tagCount,
                      g_FgInputs.depth.Get(), g_FgInputs.motionVectors.Get(), g_FgInputs.hudlessColor.Get(),
-                     g_FgInputs.uiColor.Get(), g_RenderTargets[frameIndex].Get());
+                     g_FgInputs.uiColor.Get(), g_RenderTargets[frameIndex].Get(), g_FgInputs.sceneColor.Get(),
+                     renderExtent.width, renderExtent.height);
     }
 }
 
@@ -345,6 +409,10 @@ static void ShutdownStreamline() {
     g_SlReflexSetOptions = nullptr;
     g_SlReflexSleep = nullptr;
     g_SlPCLSetMarker = nullptr;
+    g_SlDLSSGetOptimalSettings = nullptr;
+    g_SlDLSSSetOptions = nullptr;
+    g_SlEvaluateFeature = nullptr;
+    g_DlssSrActive = false;
     g_SlCreateDXGIFactory1 = nullptr;
     g_SlD3D12CreateDevice = nullptr;
     g_SlInitialized = false;

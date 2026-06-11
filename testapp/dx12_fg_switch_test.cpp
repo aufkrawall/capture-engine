@@ -29,13 +29,17 @@
 #include <dx12/ffx_api_dx12.h>
 #include <dx12/ffx_api_framegeneration_dx12.h>
 #include <ffx_framegeneration.h>
+#include <ffx_upscale.h>
 #include <sl.h>
+#include <sl_dlss.h>
 #include <sl_dlss_g.h>
 #include <sl_reflex.h>
 
 #include "dx12_fg_resources.h"
 #include "dx12_fg_scene.h"
+#include "dx12_fg_taa.h"
 #include "fg_present_policy.h"
+#include "fg_upscale_policy.h"
 #include "testapp_common.h"
 
 #pragma comment(lib, "d3d12.lib")
@@ -109,6 +113,18 @@ static int g_AutoFsrStartSeconds = 3;
 static int g_AutoDlssStartSeconds = 12;
 static int g_AutoReturnFsrSeconds = 30;
 
+// Super-resolution upscaling configuration (config-file/CLI driven, fixed for the run). Default:
+// ON at Quality (66.7% per dimension) so every soak exercises SR+FG together. The render
+// resolution derives from these in UpdateRenderResolution(); --no-upscaling reproduces the legacy
+// native-resolution behavior exactly.
+static bool g_UpscalingEnabled = true;
+static testapp::fg::UpscaleQuality g_UpscaleQuality = testapp::fg::UpscaleQuality::Quality;
+static int g_UpscaleScalePercent = 0;  // 0 = use the quality-mode ratio
+static char g_DlssPresetConfig = 0;    // 0 = SL default; 'j'/'k'/'l'/'m' = DLSS-4 transformer presets
+static int g_FsrUpscaleVersionConfig = 0;  // 0 = runtime default; 3/4 = force provider major version
+static bool g_FsrSharpeningEnabled = false;
+static int g_FsrSharpnessPercent = 80;
+
 #include "dx12_fg_switch_config.inl"
 
 constexpr int kRequestedBackBuffers = 3;
@@ -126,6 +142,16 @@ ComPtr<ID3D12GraphicsCommandList> g_CommandList;
 ComPtr<ID3D12Fence> g_Fence;
 testapp::dx12fg::AuxiliaryResources g_FgInputs;
 testapp::dx12fg::SceneRenderer g_Scene;
+// TAA/TAAU resolve for OFF mode and as graceful fallback when a vendor upscaler is unavailable.
+static testapp::dx12fg::TemporalUpscaler g_Taa;
+// Dithered FP16 -> 8-bit backbuffer compose (replaces the old CopyResource; kills banding).
+static testapp::dx12fg::PresentBlitPass g_PresentBlit;
+// Render resolution (display * upscaling scale) and the per-frame camera jitter state.
+static int g_RenderWidth = 0;
+static int g_RenderHeight = 0;
+static int g_JitterPhaseCount = 8;
+static testapp::fg::JitterOffset g_CurrentJitter = {0.0f, 0.0f};
+static float g_LastFrameDeltaMs = 16.7f;
 HANDLE g_FenceEvent = nullptr;
 HANDLE g_FrameLatencyWaitHandle = nullptr;
 UINT64 g_FenceValues[kMaxSwapChainBuffers] = {};
@@ -144,6 +170,14 @@ static PfnFfxCreateContext g_FfxCreateContext = nullptr;
 static PfnFfxConfigure g_FfxConfigure = nullptr;
 static PfnFfxDispatch g_FfxDispatch = nullptr;
 static PfnFfxDestroyContext g_FfxDestroyContext = nullptr;
+// FSR super-resolution upscaler: a SEPARATE module from the FG runtime (each FFX kit DLL exports
+// the full ffx* set), so the validated FG load/unload stress paths stay untouched.
+static HMODULE g_FfxUpscalerModule = nullptr;
+static PfnFfxCreateContext g_FfxUpCreateContext = nullptr;
+static PfnFfxDispatch g_FfxUpDispatch = nullptr;
+static PfnFfxQuery g_FfxUpQuery = nullptr;
+static PfnFfxDestroyContext g_FfxUpDestroyContext = nullptr;
+static ffxContext g_FfxUpscaleCtx = nullptr;
 static bool g_FsrInitialized = false;
 static bool g_FsrEnabled = false;
 static bool g_FsrSuspended = false;
@@ -172,6 +206,11 @@ static PFun_slDLSSGGetState* g_SlDLSSGGetState = nullptr;
 static PFun_slReflexSetOptions* g_SlReflexSetOptions = nullptr;
 static PFun_slReflexSleep* g_SlReflexSleep = nullptr;
 static PFun_slPCLSetMarker* g_SlPCLSetMarker = nullptr;
+// DLSS Super Resolution (sl.dlss feature + the core evaluate export).
+static PFun_slDLSSGetOptimalSettings* g_SlDLSSGetOptimalSettings = nullptr;
+static PFun_slDLSSSetOptions* g_SlDLSSSetOptions = nullptr;
+static PFun_slEvaluateFeature* g_SlEvaluateFeature = nullptr;
+static bool g_DlssSrActive = false;
 using PFun_CreateDXGIFactory1 = HRESULT(WINAPI*)(REFIID, void**);
 using PFun_D3D12CreateDevice = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
 static PFun_CreateDXGIFactory1 g_SlCreateDXGIFactory1 = nullptr;
@@ -279,6 +318,11 @@ static const char* FfxReturnName(ffxReturnCode_t code) {
 
 static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer, const char* reason, bool forceLog);
 static void RegisterFSRUiResource();
+static void DestroyFSRUpscaleContext();
+static void UnloadFSRUpscalerRuntime(const char* reason);
+static bool TryInitFSRUpscaleContext();
+static bool SetDLSSSROptions(bool enable);
+static bool UpscalingActive();
 
 #include "dx12_fg_switch_dred.inl"
 
@@ -481,9 +525,38 @@ static void UpdateWindowTitle() {
         return;
     }
     wchar_t title[256];
-    swprintf(title, 256, L"DX12 FG Switch Test - %dx%d - %hs%hs", g_WindowWidth, g_WindowHeight,
+    swprintf(title, 256, L"DX12 FG Switch Test - %dx%d (render %dx%d %hs) - %hs%hs", g_WindowWidth, g_WindowHeight,
+             g_RenderWidth, g_RenderHeight,
+             g_UpscalingEnabled ? testapp::fg::UpscaleQualityName(g_UpscaleQuality) : "no upscaling",
              ModeName(g_CurrentMode), IsModeSuspended(g_CurrentMode) ? " (suspended)" : "");
     SetWindowTextW(g_Hwnd, title);
+}
+
+// Derives the render resolution + jitter phase count from the upscaling config. Called once after
+// the display size is final (the upscaling settings are fixed for the run).
+static void UpdateRenderResolution() {
+    if (!g_UpscalingEnabled) {
+        g_RenderWidth = g_WindowWidth;
+        g_RenderHeight = g_WindowHeight;
+        g_JitterPhaseCount = 8;
+        g_CurrentJitter = {0.0f, 0.0f};
+        testapp::Log("[FG-DIAG] Upscaling disabled: native rendering at %dx%d (legacy behavior)\n", g_WindowWidth,
+                     g_WindowHeight);
+        return;
+    }
+    const testapp::fg::RenderSize renderSize =
+        testapp::fg::ComputeRenderSize(static_cast<unsigned>(g_WindowWidth), static_cast<unsigned>(g_WindowHeight),
+                                       g_UpscaleQuality, g_UpscaleScalePercent);
+    g_RenderWidth = static_cast<int>(renderSize.width);
+    g_RenderHeight = static_cast<int>(renderSize.height);
+    g_JitterPhaseCount =
+        testapp::fg::JitterPhaseCount(static_cast<unsigned>(g_RenderWidth), static_cast<unsigned>(g_WindowWidth));
+    testapp::Log(
+        "[FG-DIAG] Upscaling: quality=%s scaleOverride=%d%% display=%dx%d render=%dx%d jitterPhases=%d "
+        "dlssPreset=%c fsrVersion=%d sharpening=%d\n",
+        testapp::fg::UpscaleQualityName(g_UpscaleQuality), g_UpscaleScalePercent, g_WindowWidth, g_WindowHeight,
+        g_RenderWidth, g_RenderHeight, g_JitterPhaseCount, g_DlssPresetConfig ? g_DlssPresetConfig : '-',
+        g_FsrUpscaleVersionConfig, g_FsrSharpeningEnabled ? 1 : 0);
 }
 
 // Policy rationale lives in fg_present_policy.h: DLSS mode (active and suspended) presents the
@@ -707,6 +780,7 @@ static void UnloadFSRRuntimeSerialized(const char* reason);
 #include "dx12_fg_switch_streamline.inl"
 #include "dx12_fg_switch_fsr.inl"
 #include "dx12_fg_switch_swapchain.inl"
+#include "dx12_fg_switch_upscale.inl"
 
 static bool LoadStreamlineAndInitSerialized(const char* reason) {
     if (g_SlInitialized) {
@@ -843,6 +917,10 @@ static void ReleaseDX12RendererResourcesForSwitch(const char* reason) {
                      g_SwapChainUsesStreamline ? 1 : 0);
         WaitForGpu();
     }
+    // Device-bound upscaling state must die with the renderer (idempotent if already gone).
+    DestroyFSRUpscaleContext();
+    g_Taa.Release();
+    g_PresentBlit.Release();
     testapp::dx12fg::ReleaseAuxiliaryResources(g_FgInputs);
     g_Scene.Release();
     for (auto& renderTarget : g_RenderTargets) {
@@ -1045,6 +1123,10 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             g_FsrInitialized = TryInitFSR();
             ok = ok && g_FsrInitialized;
         }
+        if (ok && UpscalingActive() && !g_FfxUpscaleCtx) {
+            // Non-fatal: without the upscaler context the upscale stage falls back to TAA/TAAU.
+            TryInitFSRUpscaleContext();
+        }
         ResetFSRPresentCallbackStressState("enter FSR mode");
         UINT activeFrameIndex = g_FrameIndex < g_SwapChainBufferCount ? g_FrameIndex : frameIndex;
         if (ok &&
@@ -1084,6 +1166,9 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             // with Present()" and it leaves the pacer half-initialized. The stress must exercise the
             // realistic sequence: FG actually generates frames for the interval, THEN suspends.
             g_LastDlssSuspendResumeToggleTime = std::chrono::high_resolution_clock::now();
+            if (UpscalingActive()) {
+                SetDLSSSROptions(true);
+            }
             PollDLSSFGState();
         } else if (ok) {
             testapp::Log("[FG-DIAG] DLSS FG enable failed during switch\n");
@@ -1128,6 +1213,9 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
     g_CurrentMode = target;
     g_ModeSwitchPending = false;
     g_LastModeSwitchFrameId = g_FrameIdCounter;
+    // Temporal history from the previous mode is meaningless after a switch (different upscaler /
+    // recreated resources); restart accumulation cleanly.
+    g_Taa.Reset();
     if (ok && target == FGMode::FSR) {
         StartAsyncStreamlinePreload("after entering FSR mode");
     }
@@ -1211,7 +1299,15 @@ static void RenderSwitchSceneInputs(float elapsedSeconds, LONG hudX, LONG hudY) 
         return;
     }
 
-    testapp::dx12fg::Transition(g_CommandList.Get(), aux.hudlessColor.Get(), aux.hudlessState,
+    // With upscaling the jittered scene renders into the render-res sceneColor and the upscale
+    // stage produces the display-res hudlessColor; without upscaling the scene renders straight
+    // into hudlessColor (render == display), reproducing the legacy pipeline exactly.
+    const bool upscaling = UpscalingActive();
+    ID3D12Resource* sceneTarget = upscaling ? aux.sceneColor.Get() : aux.hudlessColor.Get();
+    D3D12_RESOURCE_STATES& sceneTargetState = upscaling ? aux.sceneState : aux.hudlessState;
+    const D3D12_CPU_DESCRIPTOR_HANDLE sceneRtv = upscaling ? aux.SceneRtv() : aux.HudlessRtv();
+
+    testapp::dx12fg::Transition(g_CommandList.Get(), sceneTarget, sceneTargetState,
                                 D3D12_RESOURCE_STATE_RENDER_TARGET);
     testapp::dx12fg::Transition(g_CommandList.Get(), aux.uiColor.Get(), aux.uiState,
                                 D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -1220,30 +1316,46 @@ static void RenderSwitchSceneInputs(float elapsedSeconds, LONG hudX, LONG hudY) 
     testapp::dx12fg::Transition(g_CommandList.Get(), aux.depth.Get(), aux.depthState,
                                 D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
-    // Clear the FG inputs. The scene (sky + floor + cube) fills hud-less color; motion starts at
-    // zero (static parts stay zero); depth clears to far. The UI layer starts transparent.
+    // Clear the FG/upscaler inputs. The scene (sky + floor + cube) fills the scene color; motion
+    // starts at zero (static parts stay zero); depth clears to far. The UI layer starts
+    // transparent. The reactive/transparency masks are cleared to zero (no reactive content yet --
+    // ready for future render elements like particles or animated screens).
     const float clearBlack[] = {0.0f, 0.0f, 0.0f, 1.0f};
     const float uiClear[] = {0.0f, 0.0f, 0.0f, 0.0f};
     const float motionClear[] = {0.0f, 0.0f, 0.0f, 0.0f};
     g_CommandList->ClearRenderTargetView(aux.UiRtv(), uiClear, 0, nullptr);
     g_CommandList->ClearRenderTargetView(aux.MotionRtv(), motionClear, 0, nullptr);
     g_CommandList->ClearDepthStencilView(aux.DepthDsv(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    // Simulated GPU load: repeated hud-less clears (the scene overwrites every pixel afterwards).
-    for (int pass = 0; pass < g_GpuLoadPasses; ++pass) {
-        g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), clearBlack, 0, nullptr);
+    if (upscaling) {
+        const float maskClear[] = {0.0f, 0.0f, 0.0f, 0.0f};
+        testapp::dx12fg::Transition(g_CommandList.Get(), aux.reactiveMask.Get(), aux.reactiveState,
+                                    D3D12_RESOURCE_STATE_RENDER_TARGET);
+        testapp::dx12fg::Transition(g_CommandList.Get(), aux.transparencyMask.Get(), aux.transparencyState,
+                                    D3D12_RESOURCE_STATE_RENDER_TARGET);
+        g_CommandList->ClearRenderTargetView(aux.ReactiveRtv(), maskClear, 0, nullptr);
+        g_CommandList->ClearRenderTargetView(aux.TransparencyRtv(), maskClear, 0, nullptr);
+        testapp::dx12fg::Transition(g_CommandList.Get(), aux.reactiveMask.Get(), aux.reactiveState,
+                                    testapp::dx12fg::kColorReadState);
+        testapp::dx12fg::Transition(g_CommandList.Get(), aux.transparencyMask.Get(), aux.transparencyState,
+                                    testapp::dx12fg::kColorReadState);
     }
-    g_CommandList->ClearRenderTargetView(aux.HudlessRtv(), clearBlack, 0, nullptr);
+    // Simulated GPU load: repeated scene-target clears (the scene overwrites every pixel afterwards).
+    for (int pass = 0; pass < g_GpuLoadPasses; ++pass) {
+        g_CommandList->ClearRenderTargetView(sceneRtv, clearBlack, 0, nullptr);
+    }
+    g_CommandList->ClearRenderTargetView(sceneRtv, clearBlack, 0, nullptr);
 
-    // Scene: sky + procedural checker floor (spatial depth/fog) + a lit moving cube. The cube
-    // carries per-pixel motion vectors -> interpolated by FG (output rate); floor/sky are static.
-    g_Scene.Render(g_CommandList.Get(), aux, g_FrameIndex, g_WindowWidth, g_WindowHeight, elapsedSeconds);
+    // Scene: sky + procedural checker floor (spatial depth/fog) + a lit moving cube, rendered at
+    // render resolution with the per-frame jittered projection. The cube carries per-pixel motion
+    // vectors -> interpolated by FG (output rate); floor/sky are static.
+    g_Scene.Render(g_CommandList.Get(), sceneRtv, aux, g_FrameIndex, g_RenderWidth, g_RenderHeight, elapsedSeconds,
+                   g_CurrentJitter.x, g_CurrentJitter.y);
 
     // UI layer: animated "100 HP" HUD + health bar + status, into the registered/tagged UI resource.
     DrawHudOverlay(g_CommandList.Get(), aux.UiRtv(), hudX, hudY);
     DrawStatusText(g_CommandList.Get(), aux.UiRtv());
 
-    testapp::dx12fg::Transition(g_CommandList.Get(), aux.hudlessColor.Get(), aux.hudlessState,
-                                testapp::dx12fg::kColorReadState);
+    testapp::dx12fg::Transition(g_CommandList.Get(), sceneTarget, sceneTargetState, testapp::dx12fg::kColorReadState);
     testapp::dx12fg::Transition(g_CommandList.Get(), aux.uiColor.Get(), aux.uiState,
                                 testapp::dx12fg::kColorReadState);
     testapp::dx12fg::Transition(g_CommandList.Get(), aux.motionVectors.Get(), aux.motionState,
@@ -1256,6 +1368,7 @@ static void Render() {
     auto now = std::chrono::high_resolution_clock::now();
     if (g_FramePacingInitialized) {
         const double deltaMs = std::chrono::duration<double, std::milli>(now - g_LastFramePacingTime).count();
+        g_LastFrameDeltaMs = static_cast<float>(deltaMs);
         if (deltaMs > g_MaxFrameDeltaMs) {
             g_MaxFrameDeltaMs = deltaMs;
         }
@@ -1332,6 +1445,12 @@ static void Render() {
     MaybeToggleFSRSuspensionStress(frameIndex);
     MaybeToggleDLSSSuspensionStress();
 
+    // Per-frame sub-pixel camera jitter for the temporal upscalers (Halton 2,3 over the
+    // scale-dependent phase count); zero when upscaling is disabled (legacy behavior).
+    g_CurrentJitter = UpscalingActive()
+                          ? testapp::fg::ComputeJitter(g_FrameIdCounter, g_JitterPhaseCount)
+                          : testapp::fg::JitterOffset{0.0f, 0.0f};
+
     const UINT presentSyncInterval = ResolvePresentSyncInterval();
     const UINT presentFlags = ResolvePresentFlags(presentSyncInterval);
     if ((g_FrameIdCounter % 60) == 0) {
@@ -1351,13 +1470,13 @@ static void Render() {
         testapp::Log(
             "[FG-DIAG] heartbeat frameID=%llu frameIndex=%u mode=%s fsr=%d dlss=%d manual=%d autoStage=%d "
             "fsrConfigureEveryFrame=%d fsrSuspended=%d dlssSuspended=%d presentSync=%u presentFlags=0x%x "
-            "configuredVsync=%d lastSuspendToggleFrame=%llu fps=%.1f reflexLL=%d\n",
+            "configuredVsync=%d lastSuspendToggleFrame=%llu fps=%.1f reflexLL=%d render=%dx%d upscaler=%s\n",
             static_cast<unsigned long long>(g_FrameIdCounter), frameIndex, ModeName(g_CurrentMode),
             g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, g_ManualMode ? 1 : 0, g_AutoStage,
             g_FsrConfigureEveryFrame ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssSuspended ? 1 : 0,
             presentSyncInterval, presentFlags, g_VSync,
             static_cast<unsigned long long>(g_LastFsrSuspendResumeToggleFrameId), fps,
-            g_ReflexLowLatencyActive ? 1 : 0);
+            g_ReflexLowLatencyActive ? 1 : 0, g_RenderWidth, g_RenderHeight, ActiveUpscalerName());
     }
 
     if (g_FsrEnabled && g_FsrConfigureEveryFrame) {
@@ -1378,31 +1497,32 @@ static void Render() {
     const LONG hudY = g_WindowHeight > 220 ? g_WindowHeight - 90 : 40;
     RenderSwitchSceneInputs(elapsed, hudX, hudY);
 
-    // Compose the presented backbuffer from the hud-less scene (cube), then draw the UI on top
-    // so all-FG-off and real frames match the FG UI layer (hud-less + UI == presented frame).
+    // Streamline constants + ALL resource tags (FG + super-resolution) must be recorded for this
+    // frame token BEFORE slEvaluateFeature(kFeatureDLSS) runs inside the upscale stage.
+    SubmitStreamlineFrameInputs(frameToken, frameIndex);
+    // Upscale stage: fills the display-res hudlessColor from the render-res scene inputs
+    // (TAA/TAAU for OFF mode and fallbacks, DLSS SR or FSR upscale otherwise).
+    RunUpscaleStage(frameToken, frameIndex, g_LastFrameDeltaMs);
+
+    // Compose the presented backbuffer from the (FP16) hud-less scene via the dithered present
+    // blit, then draw the UI on top so all-FG-off and real frames match the FG UI layer
+    // (hud-less + UI == presented frame).
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = g_RenderTargets[frameIndex].Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    g_CommandList->ResourceBarrier(1, &barrier);
-
-    testapp::dx12fg::Transition(g_CommandList.Get(), g_FgInputs.hudlessColor.Get(), g_FgInputs.hudlessState,
-                                D3D12_RESOURCE_STATE_COPY_SOURCE);
-    g_CommandList->CopyResource(g_RenderTargets[frameIndex].Get(), g_FgInputs.hudlessColor.Get());
-    testapp::dx12fg::Transition(g_CommandList.Get(), g_FgInputs.hudlessColor.Get(), g_FgInputs.hudlessState,
-                                testapp::dx12fg::kColorReadState);
-
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     g_CommandList->ResourceBarrier(1, &barrier);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtvHandle.ptr += frameIndex * g_RtvDescriptorSize;
+    g_PresentBlit.Render(g_CommandList.Get(), g_FgInputs.hudlessColor.Get(), rtvHandle,
+                         static_cast<UINT>(g_WindowWidth), static_cast<UINT>(g_WindowHeight), frameIndex,
+                         static_cast<uint32_t>(g_FrameIdCounter));
     DrawHudOverlay(g_CommandList.Get(), rtvHandle, hudX, hudY);
     DrawStatusText(g_CommandList.Get(), rtvHandle);
     if (!g_FsrSuspended) {
-        DispatchFSRPrepare(elapsed);
+        DispatchFSRPrepare(g_LastFrameDeltaMs);
     }
     if (g_FsrEnabled && !g_FsrSuspended) {
         RegisterFSRUiResource();
@@ -1411,7 +1531,6 @@ static void Render() {
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     g_CommandList->ResourceBarrier(1, &barrier);
-    SubmitStreamlineFrameInputs(frameToken, frameIndex);
     g_CommandList->Close();
 
     ID3D12CommandList* lists[] = {g_CommandList.Get()};
@@ -1461,6 +1580,8 @@ static void Cleanup() {
         WaitForGpu();
     }
     DestroyFSRContexts();
+    g_Taa.Release();
+    g_PresentBlit.Release();
     testapp::dx12fg::ReleaseAuxiliaryResources(g_FgInputs);
     g_Scene.Release();
     for (auto& renderTarget : g_RenderTargets) {
@@ -1480,6 +1601,7 @@ static void Cleanup() {
     JoinAsyncRuntimePreloadThreads("cleanup");
     ShutdownStreamlineSerialized("cleanup");
     UnloadFSRRuntimeSerialized("cleanup");
+    UnloadFSRUpscalerRuntime("cleanup");
     if (g_FenceEvent) {
         CloseHandle(g_FenceEvent);
         g_FenceEvent = nullptr;
@@ -1498,6 +1620,10 @@ int main(int argc, char* argv[]) {
     testapp::Log("DX12 FG Switch Test App\n");
     testapp::Log("=======================\n");
     testapp::Log("Resolution: %dx%d\n", g_WindowWidth, g_WindowHeight);
+    testapp::Log("Upscaling: enabled=%d quality=%s scaleOverride=%d%% dlssPreset=%c fsrVersion=%d sharpening=%d\n",
+                 g_UpscalingEnabled ? 1 : 0, testapp::fg::UpscaleQualityName(g_UpscaleQuality), g_UpscaleScalePercent,
+                 g_DlssPresetConfig ? g_DlssPresetConfig : '-', g_FsrUpscaleVersionConfig,
+                 g_FsrSharpeningEnabled ? 1 : 0);
     testapp::Log("GPU Load Passes: %d\n", g_GpuLoadPasses);
     testapp::Log("Back Buffers (requested): %d\n", kRequestedBackBuffers);
     testapp::Log("Process ID: %lu\n", GetCurrentProcessId());
@@ -1553,6 +1679,7 @@ int main(int argc, char* argv[]) {
         "[FG-DIAG] Display resolved: configured=%dx%d actual=%dx%d fullscreen=%d monitor=(%ld,%ld)-(%ld,%ld)\n",
         configuredWindowWidth, configuredWindowHeight, g_WindowWidth, g_WindowHeight, g_Fullscreen, monitorRect.left,
         monitorRect.top, monitorRect.right, monitorRect.bottom);
+    UpdateRenderResolution();
     DWORD style = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     RECT rc = testapp::AdjustWindowRectForClientSize(style, 0, g_WindowWidth, g_WindowHeight);
     g_Hwnd = CreateWindowW(kWindowClass, L"DX12 FG Switch Test", style, g_Fullscreen ? monitorRect.left : 0,

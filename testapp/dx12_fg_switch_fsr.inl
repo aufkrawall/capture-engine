@@ -177,6 +177,14 @@ static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer, const char* re
     cfgDesc.frameGenerationEnabled = enable;
     cfgDesc.allowAsyncWorkloads = true;
     if (g_FgInputs.valid && g_FgInputs.hudlessColor) {
+        // EMPIRICAL CONTRACT (do not "fix" to FFX_API_RESOURCE_STATE_* flags): resources consumed
+        // by the frame-interpolation swapchain (HUDLessColor here, the registered UI resource
+        // below) interpret FfxApiResource.state as NATIVE D3D12 states. Declaring the documented
+        // FFX flag (PIXEL_COMPUTE_READ = 0xC) makes AMD's async FG worker record a barrier with
+        // before-state RENDER_TARGET|UNORDERED_ACCESS (D3D12 0xC) and the NV driver AVs in
+        // CCommandList::Close within ~1 s of FG enable (cdb-verified, deterministic). The
+        // dispatch-time prepare inputs follow the documented FFX flags instead (see
+        // DispatchFSRPrepare).
         cfgDesc.HUDLessColor =
             ffxApiGetResourceDX12(g_FgInputs.hudlessColor.Get(), testapp::dx12fg::kColorReadState,
                                   FFX_API_RESOURCE_USAGE_READ_ONLY);
@@ -232,6 +240,8 @@ static void RegisterFSRUiResource() {
 
     ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 uiDesc = {};
     uiDesc.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12;
+    // NATIVE D3D12 state by the same frame-interpolation-swapchain contract as HUDLessColor in
+    // ConfigureFSR (see the comment there).
     uiDesc.uiResource = ffxApiGetResourceDX12(g_FgInputs.uiColor.Get(), testapp::dx12fg::kColorReadState,
                                               FFX_API_RESOURCE_USAGE_READ_ONLY);
     // We re-render the UI texture every frame without synchronizing against the FG swapchain's
@@ -308,7 +318,7 @@ static bool TryInitFSR() {
     ffxCreateContextDescFrameGenerationHudless hudlessDesc = {};
     hudlessDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_HUDLESS;
     hudlessDesc.header.pNext = &versionDesc.header;
-    hudlessDesc.hudlessBackBufferFormat = ffxApiGetSurfaceFormatDX12(testapp::dx12fg::kColorFormat);
+    hudlessDesc.hudlessBackBufferFormat = ffxApiGetSurfaceFormatDX12(testapp::dx12fg::kHdrColorFormat);
 
     ffxCreateBackendDX12Desc backendDesc = {};
     backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
@@ -338,33 +348,51 @@ static bool TryInitFSR() {
     return true;
 }
 
-static void DispatchFSRPrepare(float elapsedSeconds) {
+static void DispatchFSRPrepare(float frameDeltaMs) {
     if (!g_FsrEnabled || g_FsrSuspended || !g_FfxDispatch || !g_FfxCtx || !g_FgInputs.valid) {
         return;
     }
+    const testapp::dx12fg::SceneCamera& camera = g_Scene.Camera();
 
     ffxDispatchDescFrameGenerationPrepareV2 prepare = {};
     prepare.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2;
     prepare.frameID = g_FrameIdCounter;
     prepare.commandList = g_CommandList.Get();
-    prepare.renderSize = {static_cast<uint32_t>(g_WindowWidth), static_cast<uint32_t>(g_WindowHeight)};
+    // Depth + motion vectors are produced at RENDER resolution when upscaling is active.
+    prepare.renderSize = {static_cast<uint32_t>(g_RenderWidth), static_cast<uint32_t>(g_RenderHeight)};
+    // Same jitter the camera rendered with (FSR convention: the value whose projection offset is
+    // (2*jx/renderW, -2*jy/renderH) -- exactly how Mat4ApplyJitter applies it).
+    prepare.jitterOffset = {g_CurrentJitter.x, g_CurrentJitter.y};
     // Scene motion vectors are emitted in UV space (prevUV - curUV); FFX expects pixel-space
     // motion, so scale by renderSize (per ffx_framegeneration.h motionVectorScale docs).
-    prepare.motionVectorScale = {static_cast<float>(g_WindowWidth), static_cast<float>(g_WindowHeight)};
-    prepare.frameTimeDelta = elapsedSeconds * 1000.0f;
+    prepare.motionVectorScale = {static_cast<float>(g_RenderWidth), static_cast<float>(g_RenderHeight)};
+    prepare.frameTimeDelta = frameDeltaMs;
     prepare.reset = g_FrameIdCounter < 4;
-    prepare.cameraNear = 0.1f;
-    prepare.cameraFar = 1000.0f;
-    prepare.cameraFovAngleVertical = 1.04719755f;
+    prepare.cameraNear = camera.valid ? camera.nearZ : 0.1f;
+    prepare.cameraFar = camera.valid ? camera.farZ : 1000.0f;
+    prepare.cameraFovAngleVertical = camera.valid ? camera.fovY : 1.04719755f;
     prepare.viewSpaceToMetersFactor = 1.0f;
-    prepare.depth = ffxApiGetResourceDX12(g_FgInputs.depth.Get(), testapp::dx12fg::kDepthReadState,
+    // Dispatch-time inputs use the documented FFX state flags (AMD's FidelityFX_FSR sample passes
+    // exactly FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ here); both textures sit in the
+    // PIXEL|NON_PIXEL shader-read D3D12 state, which this FFX flag maps to.
+    prepare.depth = ffxApiGetResourceDX12(g_FgInputs.depth.Get(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ,
                                           FFX_API_RESOURCE_USAGE_DEPTHTARGET);
-    prepare.motionVectors = ffxApiGetResourceDX12(g_FgInputs.motionVectors.Get(), testapp::dx12fg::kColorReadState,
+    prepare.motionVectors = ffxApiGetResourceDX12(g_FgInputs.motionVectors.Get(),
+                                                  FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ,
                                                   FFX_API_RESOURCE_USAGE_READ_ONLY);
-    prepare.cameraPosition[2] = -2.0f;
-    prepare.cameraUp[1] = 1.0f;
-    prepare.cameraRight[0] = 1.0f;
-    prepare.cameraForward[2] = 1.0f;
+    if (camera.valid) {
+        for (int axis = 0; axis < 3; ++axis) {
+            prepare.cameraPosition[axis] = camera.basis.eye[axis];
+            prepare.cameraRight[axis] = camera.basis.right[axis];
+            prepare.cameraUp[axis] = camera.basis.up[axis];
+            prepare.cameraForward[axis] = camera.basis.forward[axis];
+        }
+    } else {
+        prepare.cameraPosition[2] = -2.0f;
+        prepare.cameraUp[1] = 1.0f;
+        prepare.cameraRight[0] = 1.0f;
+        prepare.cameraForward[2] = 1.0f;
+    }
 
     ffxReturnCode_t ret = g_FfxDispatch(&g_FfxCtx, &prepare.header);
     if (ret != FFX_API_RETURN_OK || g_FrameIdCounter < 5 || g_FrameIdCounter - g_LastFsrPrepareLogFrame >= 120) {
@@ -376,6 +404,7 @@ static void DispatchFSRPrepare(float elapsedSeconds) {
 }
 
 static void DestroyFSRContexts() {
+    DestroyFSRUpscaleContext();
     if (g_FfxConfigure && g_FfxCtx) {
         ConfigureFSR(false, nullptr, "destroy FSR contexts", true);
         WaitForFSRSwapChainPresents("destroy FSR contexts");

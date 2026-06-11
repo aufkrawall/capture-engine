@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-10 (updated: Streamline Reflex/DLSS-G proxy invariant — Reflex stays on while the proxy presents; DLSS→OFF teardown lets it genuinely turn off)
+Last cross-checked: 2026-06-11 (updated: dx12_fg_switch_test super resolution — DLSS SR/FSR upscale/TAA + FP16 chain; FFX state contract split)
 
 Primary sources:
 - `AGENTS.md`

@@ -1342,11 +1342,16 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     ffx_header_probe = os.path.join(
         fidelityfx_include_dir, "Kits", "FidelityFX", "framegeneration", "include", "ffx_framegeneration.h"
     )
+    # Upscaler kit header probe: forces a header re-extract on installs that predate the FSR
+    # super-resolution integration (the FG header alone used to satisfy the probe).
+    ffx_upscale_header_probe = os.path.join(
+        fidelityfx_include_dir, "Kits", "FidelityFX", "upscalers", "include", "ffx_upscale.h"
+    )
 
     # -- Required DLLs by test app --
-    # FSR FG: core + companion AMD runtime DLLs
+    # FSR FG + FSR upscaler (super resolution): core + companion AMD runtime DLLs
     fsr_dlls = ["amd_fidelityfx_framegeneration_dx12.dll", "amd_fidelityfx_loader_dx12.dll",
-                 "amd_acs_x64.dll", "amd_ags_x64.dll"]
+                 "amd_fidelityfx_upscaler_dx12.dll", "amd_acs_x64.dll", "amd_ags_x64.dll"]
     # Streamline interposer loads companion .dlls + NGX DLLs at load time;
     # we must extract ALL .dll files from the zip's x64 bin dir.
     sl_known_dlls = ["sl.interposer.dll", "sl.common.dll", "sl.dlss_g.dll",
@@ -1359,7 +1364,8 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     missing_fsr = [d for d in fsr_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
     missing_sl = [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
     missing_nvngx = not os.path.exists(os.path.join(testapp_dir, "_nvngx.dll"))
-    missing_headers = not os.path.exists(streamline_header_probe) or not os.path.exists(ffx_header_probe)
+    missing_headers = (not os.path.exists(streamline_header_probe) or not os.path.exists(ffx_header_probe) or
+                       not os.path.exists(ffx_upscale_header_probe))
 
     if not missing_fsr and not missing_sl and not missing_nvngx and not missing_headers:
         log("FG SDK DLLs already present - skipping download")
@@ -1471,6 +1477,9 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
         allowed_prefixes = (
             "Kits/FidelityFX/api/include/",
             "Kits/FidelityFX/framegeneration/include/",
+            # ffx_upscale.h/.hpp only -- the per-implementation fsr3/ and gpu/ shader headers live
+            # under upscalers/fsr3/include/ and are intentionally NOT matched by this prefix.
+            "Kits/FidelityFX/upscalers/include/",
         )
         extracted = 0
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -1504,7 +1513,7 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     if not os.path.exists(streamline_header_probe):
         _extract_streamline_headers(_ensure_zip(STREAMLINE_SDK_URL, STREAMLINE_SDK_ZIP_NAME))
 
-    if not os.path.exists(ffx_header_probe):
+    if not os.path.exists(ffx_header_probe) or not os.path.exists(ffx_upscale_header_probe):
         _extract_fidelityfx_headers(_ensure_zip(FFX_SDK_SOURCE_URL, FFX_SDK_SOURCE_ZIP_NAME))
 
     # Copy _nvngx.dll from NVIDIA driver DriverStore if not present
@@ -1544,6 +1553,7 @@ def get_fg_sdk_include_flags() -> List[str]:
         "-I" + streamline_include,
         "-I" + os.path.join(fidelityfx_root, "api", "include"),
         "-I" + os.path.join(fidelityfx_root, "framegeneration", "include"),
+        "-I" + os.path.join(fidelityfx_root, "upscalers", "include"),
     ]
 
 

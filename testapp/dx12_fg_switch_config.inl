@@ -83,6 +83,36 @@ static void LoadConfig() {
     g_AutoReturnFsrSeconds = ClampInt(
         GetPrivateProfileIntA("Stress", "auto_return_fsr_seconds", g_AutoReturnFsrSeconds, configPath.c_str()), 0,
         3600);
+
+    // [Upscaling]: super-resolution configuration (fixed for the run).
+    g_UpscalingEnabled =
+        GetPrivateProfileIntA("Upscaling", "upscaling", g_UpscalingEnabled ? 1 : 0, configPath.c_str()) != 0;
+    char textValue[64] = {};
+    GetPrivateProfileStringA("Upscaling", "quality", testapp::fg::UpscaleQualityName(g_UpscaleQuality), textValue,
+                             sizeof(textValue), configPath.c_str());
+    if (!testapp::fg::ParseUpscaleQuality(textValue, &g_UpscaleQuality)) {
+        testapp::Log("[FG-DIAG] WARN unknown [Upscaling] quality '%s'; keeping %s\n", textValue,
+                     testapp::fg::UpscaleQualityName(g_UpscaleQuality));
+    }
+    g_UpscaleScalePercent =
+        ClampInt(GetPrivateProfileIntA("Upscaling", "scale", g_UpscaleScalePercent, configPath.c_str()), 0, 100);
+    GetPrivateProfileStringA("Upscaling", "dlss_preset", "default", textValue, sizeof(textValue), configPath.c_str());
+    g_DlssPresetConfig = (textValue[0] && strcmp(textValue, "default") != 0) ? textValue[0] : 0;
+    if (g_DlssPresetConfig && (g_DlssPresetConfig < 'j' || g_DlssPresetConfig > 'm')) {
+        testapp::Log("[FG-DIAG] WARN unknown [Upscaling] dlss_preset '%s'; using SL default\n", textValue);
+        g_DlssPresetConfig = 0;
+    }
+    g_FsrUpscaleVersionConfig =
+        GetPrivateProfileIntA("Upscaling", "fsr_version", g_FsrUpscaleVersionConfig, configPath.c_str());
+    if (g_FsrUpscaleVersionConfig != 0 && g_FsrUpscaleVersionConfig != 3 && g_FsrUpscaleVersionConfig != 4) {
+        testapp::Log("[FG-DIAG] WARN [Upscaling] fsr_version must be 0(auto)/3/4; using auto\n");
+        g_FsrUpscaleVersionConfig = 0;
+    }
+    g_FsrSharpeningEnabled = GetPrivateProfileIntA("Upscaling", "fsr_sharpening", g_FsrSharpeningEnabled ? 1 : 0,
+                                                   configPath.c_str()) != 0;
+    g_FsrSharpnessPercent = ClampInt(
+        GetPrivateProfileIntA("Upscaling", "fsr_sharpness_percent", g_FsrSharpnessPercent, configPath.c_str()), 0,
+        100);
 }
 
 static void NormalizeAutoSequenceTimings() {
@@ -186,6 +216,43 @@ static void ParseCommandLine(int argc, char* argv[]) {
         }
         if (strcmp(argv[i], "--dred") == 0) {
             g_EnableDred = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--upscaling") == 0) {
+            g_UpscalingEnabled = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-upscaling") == 0) {
+            g_UpscalingEnabled = false;
+            continue;
+        }
+        if (strcmp(argv[i], "--upscale-quality") == 0 && i + 1 < argc) {
+            if (!testapp::fg::ParseUpscaleQuality(argv[++i], &g_UpscaleQuality)) {
+                testapp::Log("[FG-DIAG] WARN unknown --upscale-quality '%s'; keeping %s\n", argv[i],
+                             testapp::fg::UpscaleQualityName(g_UpscaleQuality));
+            }
+            continue;
+        }
+        if (strcmp(argv[i], "--upscale-scale") == 0 && i + 1 < argc) {
+            g_UpscaleScalePercent = ClampInt(atoi(argv[++i]), 0, 100);
+            continue;
+        }
+        if (TryParseIntOption(argv[i], "--upscale-scale", &value)) {
+            g_UpscaleScalePercent = ClampInt(value, 0, 100);
+            continue;
+        }
+        if (strcmp(argv[i], "--dlss-preset") == 0 && i + 1 < argc) {
+            const char* preset = argv[++i];
+            g_DlssPresetConfig = (preset[0] && strcmp(preset, "default") != 0) ? preset[0] : 0;
+            if (g_DlssPresetConfig && (g_DlssPresetConfig < 'j' || g_DlssPresetConfig > 'm')) {
+                testapp::Log("[FG-DIAG] WARN unknown --dlss-preset '%s'; using SL default\n", preset);
+                g_DlssPresetConfig = 0;
+            }
+            continue;
+        }
+        if (strcmp(argv[i], "--fsr-upscale-version") == 0 && i + 1 < argc) {
+            const int version = atoi(argv[++i]);
+            g_FsrUpscaleVersionConfig = (version == 3 || version == 4) ? version : 0;
             continue;
         }
         if (strcmp(argv[i], "--fsr-present-callback-interval") == 0 && i + 1 < argc) {
