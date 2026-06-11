@@ -156,9 +156,10 @@ static bool TryInitFSRUpscaleContext() {
     ffxCreateContextDescUpscale createDesc = {};
     createDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
     createDesc.header.pNext = &backendDesc.header;
-    // The scene color input is FP16 LINEAR (kHdrColorFormat) -> HIGH_DYNAMIC_RANGE; exposure is
-    // derived automatically (no exposure texture provided).
-    createDesc.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;
+    // The FP16 scene color carries display-referred LINEAR SDR values in [0,1] (presented
+    // unchanged): neither HIGH_DYNAMIC_RANGE (scene-referred HDR) nor NON_LINEAR_COLORSPACE
+    // (gamma-encoded) applies. Exposure is derived automatically (no exposure texture provided).
+    createDesc.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
     createDesc.maxRenderSize = {static_cast<uint32_t>(g_RenderWidth), static_cast<uint32_t>(g_RenderHeight)};
     createDesc.maxUpscaleSize = {static_cast<uint32_t>(g_WindowWidth), static_cast<uint32_t>(g_WindowHeight)};
     createDesc.fpMessage = FfxUpscaleMessageCallback;
@@ -305,9 +306,12 @@ static bool SetDLSSSROptions(bool enable) {
     options.mode = enable ? MapDLSSSRMode() : sl::DLSSMode::eOff;
     options.outputWidth = static_cast<uint32_t>(g_WindowWidth);
     options.outputHeight = static_cast<uint32_t>(g_WindowHeight);
-    // The scene/upscale chain is FP16 LINEAR (kHdrColorFormat): tell DLSS the color buffers are
-    // HDR/linear and let it derive exposure (no exposure texture is tagged).
-    options.colorBuffersHDR = sl::Boolean::eTrue;
+    // The FP16 chain carries display-referred SDR values (presented unchanged), so the truthful
+    // hint is eFalse: with eTrue DLSS runs its HDR tonemap/inverse-tonemap path on the dark linear
+    // values, which amplifies the DLSS-4 transformer presets' quantization banding on smooth
+    // gradients (user-visible on the animated cube faces with preset K; preset M masks it).
+    // FSR/TAAU on identical inputs do not band, so the input chain itself is clean.
+    options.colorBuffersHDR = g_DlssHdrInput ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     options.useAutoExposure = sl::Boolean::eTrue;
     const sl::DLSSPreset preset = MapDLSSPreset();
     options.dlaaPreset = preset;
@@ -332,9 +336,9 @@ static bool SetDLSSSROptions(bool enable) {
     }
 
     sl::Result ret = g_SlDLSSSetOptions(g_SlViewport, options);
-    testapp::Log("[FG-DIAG] slDLSSSetOptions(mode=%u preset=%u) output=%ux%u result=%d (%s)\n",
-                 static_cast<uint32_t>(options.mode), static_cast<uint32_t>(preset), options.outputWidth,
-                 options.outputHeight, static_cast<int>(ret), SlResultName(ret));
+    testapp::Log("[FG-DIAG] slDLSSSetOptions(mode=%u preset=%u hdr=%d) output=%ux%u result=%d (%s)\n",
+                 static_cast<uint32_t>(options.mode), static_cast<uint32_t>(preset), g_DlssHdrInput ? 1 : 0,
+                 options.outputWidth, options.outputHeight, static_cast<int>(ret), SlResultName(ret));
     testapp::LogFlush();
     g_DlssSrActive = enable && ret == sl::Result::eOk;
     return g_DlssSrActive;

@@ -121,6 +121,11 @@ static bool g_UpscalingEnabled = true;
 static testapp::fg::UpscaleQuality g_UpscaleQuality = testapp::fg::UpscaleQuality::Quality;
 static int g_UpscaleScalePercent = 0;  // 0 = use the quality-mode ratio
 static char g_DlssPresetConfig = 0;    // 0 = SL default; 'j'/'k'/'l'/'m' = DLSS-4 transformer presets
+// Color-space hint for DLSS SR. Our chain is display-referred SDR (values reach the screen
+// unchanged), so the truthful hint is eFalse; the HDR hint routes DLSS through its
+// tonemap/inverse-tonemap path on dark linear values and amplifies transformer-preset banding on
+// smooth gradients. Kept configurable (dlss_hdr=1 / --dlss-hdr 1) for A/B against DLSS updates.
+static bool g_DlssHdrInput = false;
 static int g_FsrUpscaleVersionConfig = 0;  // 0 = runtime default; 3/4 = force provider major version
 static bool g_FsrSharpeningEnabled = false;
 static int g_FsrSharpnessPercent = 80;
@@ -553,10 +558,10 @@ static void UpdateRenderResolution() {
         testapp::fg::JitterPhaseCount(static_cast<unsigned>(g_RenderWidth), static_cast<unsigned>(g_WindowWidth));
     testapp::Log(
         "[FG-DIAG] Upscaling: quality=%s scaleOverride=%d%% display=%dx%d render=%dx%d jitterPhases=%d "
-        "dlssPreset=%c fsrVersion=%d sharpening=%d\n",
+        "dlssPreset=%c dlssHdr=%d fsrVersion=%d sharpening=%d\n",
         testapp::fg::UpscaleQualityName(g_UpscaleQuality), g_UpscaleScalePercent, g_WindowWidth, g_WindowHeight,
         g_RenderWidth, g_RenderHeight, g_JitterPhaseCount, g_DlssPresetConfig ? g_DlssPresetConfig : '-',
-        g_FsrUpscaleVersionConfig, g_FsrSharpeningEnabled ? 1 : 0);
+        g_DlssHdrInput ? 1 : 0, g_FsrUpscaleVersionConfig, g_FsrSharpeningEnabled ? 1 : 0);
 }
 
 // Policy rationale lives in fg_present_policy.h: DLSS mode (active and suspended) presents the

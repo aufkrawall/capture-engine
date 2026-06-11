@@ -102,6 +102,8 @@ static void LoadConfig() {
         testapp::Log("[FG-DIAG] WARN unknown [Upscaling] dlss_preset '%s'; using SL default\n", textValue);
         g_DlssPresetConfig = 0;
     }
+    g_DlssHdrInput =
+        GetPrivateProfileIntA("Upscaling", "dlss_hdr", g_DlssHdrInput ? 1 : 0, configPath.c_str()) != 0;
     g_FsrUpscaleVersionConfig =
         GetPrivateProfileIntA("Upscaling", "fsr_version", g_FsrUpscaleVersionConfig, configPath.c_str());
     if (g_FsrUpscaleVersionConfig != 0 && g_FsrUpscaleVersionConfig != 3 && g_FsrUpscaleVersionConfig != 4) {
@@ -253,6 +255,10 @@ static void ParseCommandLine(int argc, char* argv[]) {
         if (strcmp(argv[i], "--fsr-upscale-version") == 0 && i + 1 < argc) {
             const int version = atoi(argv[++i]);
             g_FsrUpscaleVersionConfig = (version == 3 || version == 4) ? version : 0;
+            continue;
+        }
+        if (strcmp(argv[i], "--dlss-hdr") == 0 && i + 1 < argc) {
+            g_DlssHdrInput = atoi(argv[++i]) != 0;
             continue;
         }
         if (strcmp(argv[i], "--fsr-present-callback-interval") == 0 && i + 1 < argc) {
