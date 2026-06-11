@@ -3981,6 +3981,24 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
                 make_cmd_x86(clang_exe_x86, cflags_x86, dx12_src, dx12_ldflags, dx12_exe_x86),
             )
 
+    # DX12 + WASAPI A/V Sync Stimulus App
+    av_sync_src = os.path.join(testapp_src_dir, "dx12_av_sync_test.cpp")
+    av_sync_exe = os.path.join(testapp_bin_dir, "dx12_av_sync_test.exe")
+    if os.path.exists(av_sync_src):
+        av_sync_ldflags = list(dx12_ldflags)
+        av_sync_ldflags.extend(["-lole32", "-luuid", "-lwinmm"])
+        add_task(
+            "dx12_av_sync_test.exe",
+            make_cmd(clang_exe, cflags, av_sync_src, av_sync_ldflags, av_sync_exe),
+        )
+
+        if have_x86:
+            av_sync_exe_x86 = os.path.join(x86_bin_dir, "dx12_av_sync_test.exe")
+            add_task(
+                "dx12_av_sync_test.exe (x86)",
+                make_cmd_x86(clang_exe_x86, cflags_x86, av_sync_src, av_sync_ldflags, av_sync_exe_x86),
+            )
+
     # FSR FG DX12 Test App
     fsr_fg_src = os.path.join(testapp_src_dir, "dx12_fsr_fg_test.cpp")
     fsr_fg_exe = os.path.join(testapp_bin_dir, "dx12_fsr_fg_test.exe")

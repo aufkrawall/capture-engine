@@ -495,6 +495,15 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
     }
     activeStreamFlags = streamFlags;
 
+    REFERENCE_TIME streamLatency = 0;
+    hr = pAudioClient->GetStreamLatency(&streamLatency);
+    if (SUCCEEDED(hr)) {
+        streamLatency100ns = static_cast<uint64_t>(std::max<REFERENCE_TIME>(0, streamLatency));
+    } else {
+        DLL_Log("[AppAudioCapture] GetStreamLatency failed: 0x%x", hr);
+        streamLatency100ns = 0;
+    }
+
     if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
         ResetEvent(captureEvent_);
         hr = pAudioClient->SetEventHandle(captureEvent_);
@@ -520,8 +529,9 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
         return false;
     }
 
-    DLL_Log("[AppAudioCapture] Started: PID=%lu channels=%d rate=%d bits=%d", pid, pwfx->nChannels,
-            pwfx->nSamplesPerSec, pwfx->wBitsPerSample);
+    DLL_Log("[AppAudioCapture] Started: PID=%lu channels=%d rate=%d bits=%d streamLatency=%lluus compensate=1", pid,
+            pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
+            static_cast<unsigned long long>(streamLatency100ns / 10));
 
     DLL_Log("[AppAudioCapture] Capture mode: %s",
             (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
@@ -556,6 +566,7 @@ void AppAudioCapture::CleanupCapture() {
     }
 
     activeStreamFlags = 0;
+    streamLatency100ns = 0;
 }
 
 void AppAudioCapture::CaptureLoop() {
@@ -632,8 +643,13 @@ void AppAudioCapture::CaptureLoop() {
                 firstLogicalFramePos = logicalFramePos;
                 firstQpcPos = qpcPosition;
                 firstSet = true;
-                DLL_Log("[AppAudioCapture] Source Sync Start (%lu): Frames=%llu QPC=%llu", targetPID.load(),
-                        firstLogicalFramePos, firstQpcPos);
+                const uint64_t adjustedFirstQpc =
+                    ce::audio::ApplyCaptureLatencyCompensation(firstQpcPos, streamLatency100ns, true);
+                DLL_Log(
+                    "[AppAudioCapture] Source Sync Start (%lu): Frames=%llu QPC=%llu AdjustedQPC=%llu "
+                    "Latency=%lluus",
+                    targetPID.load(), firstLogicalFramePos, firstQpcPos, adjustedFirstQpc,
+                    static_cast<unsigned long long>(streamLatency100ns / 10));
             } else if (firstSet && qpcPosition > firstQpcPos && logCounter++ % 500 == 0) {  // ~5 seconds
                 double samplesDuration = (double)(logicalFramePos - firstLogicalFramePos) / pwfx->nSamplesPerSec;
                 double qpcDuration = ce::audio::HundredNanosecondsToSeconds(qpcPosition - firstQpcPos);
@@ -655,7 +671,9 @@ void AppAudioCapture::CaptureLoop() {
             packet.validBitsPerSample = 0;
             packet.channelMask = 0;
             packet.devicePosition = devicePosition;  // Store for debug drift analysis
-            packet.qpcPosition = qpcPosition;        // Store for debug drift analysis
+            packet.rawQpcPosition = qpcPosition;     // Store raw WASAPI timestamp for debug drift analysis
+            packet.streamLatency = streamLatency100ns;
+            packet.qpcPosition = ce::audio::ApplyCaptureLatencyCompensation(qpcPosition, streamLatency100ns, true);
 
             // Check for float format
             packet.isFloat = false;
@@ -677,7 +695,7 @@ void AppAudioCapture::CaptureLoop() {
                 }
             }
 
-            packet.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(qpcPosition);
+            packet.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(packet.qpcPosition);
 
             // Copy or generate silence
             size_t bytes = numFramesAvailable * pwfx->nBlockAlign;

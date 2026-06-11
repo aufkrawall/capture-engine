@@ -1,0 +1,66 @@
+#include <gtest/gtest.h>
+
+#include <array>
+#include <cmath>
+
+#include "../testapp/av_sync_stimulus.h"
+
+namespace avs = testapp::avsync;
+
+TEST(AvSyncStimulusTest, EventScheduleMapsTimesToPaletteAndFrequency) {
+    EXPECT_EQ(avs::EventIndexAt(-0.001), -1);
+    EXPECT_EQ(avs::EventIndexAt(0.0), 0);
+    EXPECT_EQ(avs::EventIndexAt(0.999), 0);
+    EXPECT_EQ(avs::EventIndexAt(1.0), 1);
+    EXPECT_EQ(avs::EventIndexAt(16.0), 16);
+
+    const auto first = avs::StateAt(0.25);
+    EXPECT_EQ(first.eventIndex, 0);
+    EXPECT_EQ(first.paletteIndex, 0);
+    EXPECT_DOUBLE_EQ(first.eventStartSeconds, 0.0);
+    EXPECT_DOUBLE_EQ(first.eventEndSeconds, 1.0);
+    EXPECT_DOUBLE_EQ(first.frequencyHz, avs::kFrequenciesHz[0]);
+    EXPECT_EQ(first.color.r, avs::kPalette[0].r);
+
+    const auto wrapped = avs::StateAt(16.25);
+    EXPECT_EQ(wrapped.eventIndex, 16);
+    EXPECT_EQ(wrapped.paletteIndex, 0);
+    EXPECT_DOUBLE_EQ(wrapped.frequencyHz, avs::kFrequenciesHz[0]);
+}
+
+TEST(AvSyncStimulusTest, FrameMarkerRoundTripsLowSixteenBits) {
+    for (uint64_t frameId : {0ull, 1ull, 0x1234ull, 0xffffull, 0x10000ull, 0x12345ull}) {
+        const uint16_t marker = avs::EncodeFrameMarker(frameId);
+        std::array<bool, avs::kFrameMarkerBits> bits = {};
+        for (int bit = 0; bit < avs::kFrameMarkerBits; ++bit) {
+            bits[bit] = avs::FrameMarkerBit(marker, bit);
+        }
+        EXPECT_EQ(avs::DecodeFrameMarkerBits(bits.data(), static_cast<int>(bits.size())), marker);
+    }
+}
+
+TEST(AvSyncStimulusTest, PaletteNearestRecoversNoisyMarkerColors) {
+    for (size_t index = 0; index < avs::kPalette.size(); ++index) {
+        const auto color = avs::kPalette[index];
+        const uint8_t r = static_cast<uint8_t>(std::min<int>(255, color.r + 3));
+        const uint8_t g = static_cast<uint8_t>(std::max<int>(0, color.g - 2));
+        const uint8_t b = static_cast<uint8_t>(std::min<int>(255, color.b + 1));
+        EXPECT_EQ(avs::NearestPaletteIndex(r, g, b), static_cast<int>(index));
+    }
+}
+
+TEST(AvSyncStimulusTest, AudioTransitionsAreAtZeroCrossings) {
+    for (int eventIndex = 0; eventIndex < 8; ++eventIndex) {
+        const double boundarySeconds = static_cast<double>(eventIndex);
+        EXPECT_NEAR(avs::AudioSampleAt(boundarySeconds, 0, 2), 0.0f, 0.0001f);
+        EXPECT_NEAR(avs::AudioSampleAt(boundarySeconds, 1, 2), 0.0f, 0.0001f);
+    }
+}
+
+TEST(AvSyncStimulusTest, SmoothLanePositionWrapsDeterministically) {
+    EXPECT_DOUBLE_EQ(avs::SmoothLanePosition(-0.1), 0.0);
+    EXPECT_NEAR(avs::SmoothLanePosition(0.0), 0.0, 0.000001);
+    EXPECT_NEAR(avs::SmoothLanePosition(1.0), 0.25, 0.000001);
+    EXPECT_NEAR(avs::SmoothLanePosition(4.0), 0.0, 0.000001);
+    EXPECT_NEAR(avs::SmoothLanePosition(5.0), 0.25, 0.000001);
+}

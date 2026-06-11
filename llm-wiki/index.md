@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-11 (updated: dx12_fg_switch_test super resolution — DLSS SR/FSR upscale/TAA + FP16 chain; FFX state contract split)
+Last cross-checked: 2026-06-11 (updated: A/V sync stimulus harness, live smoke, and matrix runner)
 
 Primary sources:
 - `AGENTS.md`
@@ -55,13 +55,13 @@ Primary sources:
 - `pseudo-overlay.md`
   - Controller-side pseudo-overlay for WGC capture: architecture, modes, foreground detection, process_list config parsing, known pitfalls (Trim charset, `;` comment skipping), debug logging, source anchors.
 - `regression-testing-and-logging.md`
-  - Regression coverage expectations, useful test files, and logging expectations for risky runtime changes.
+  - Regression coverage expectations, useful test files, logging expectations, and the deterministic `dx12_av_sync_test.exe`/stimulus analyzer/runner workflow for risky runtime changes, including borderless WGC stimulus capture and strict system/app A/V checks.
 - `multi-audio-capture.md`
-  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture. Config inheritance for codec/quality/layout fields, per-track channel layout resolution, PCM/Opus codec policy, multichannel bitrate scaling, timeline-valid startup, per-track audio cursors, encoded-silence handling, AAC/Opus finalization, CFR audio-continuity rules, tiny source-clock-only drift compensation, and strict decode/waveform-tail/WGC stop-tail validation. Last verified 2026-06-05. Stale-risk: medium.
+  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture. Config inheritance for codec/quality/layout fields, per-track channel layout resolution, PCM/Opus codec policy, multichannel bitrate scaling, timeline-valid startup, per-track audio cursors, encoded-silence handling, AAC/Opus finalization, CFR audio-continuity rules, tiny source-clock-only drift compensation, WASAPI latency telemetry/compensation, strict decode/waveform-tail/WGC stop-tail validation, and the A/V sync stimulus matrix for strict system/app tracks plus opportunistic mixed/microphone evidence. Last verified 2026-06-11. Stale-risk: medium.
 - `wgc-capture.md`
   - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, WGC CFR bounded live scheduler/source-selection policy, audio-continuity/exact-stop drain guard, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-06-05. Stale-risk: medium.
 - `cfr-capture-sync.md`
-  - Shared WGC/inject CFR timeline and audio sync invariants, packet-level and content-marker diagnostics, track startup/cursor rules, stop-drain rules, codec-padding finalization, WGC live scheduler rebase with bounded source-selection clamping/fresh-catchup rejection, and inject timer-rebase debt handling. Last verified 2026-06-05. Stale-risk: medium.
+  - Shared WGC/inject CFR timeline and audio sync invariants, packet-level and deterministic content-marker diagnostics, track startup/cursor rules, stop-drain rules, codec-padding finalization, WGC live scheduler rebase with bounded source-selection clamping/fresh-catchup rejection, inject timer-rebase debt handling, borderless `dx12_av_sync_test.exe` stimulus captures, and the `run_av_sync_matrix.py` workflow. Last verified 2026-06-11. Stale-risk: medium.
 - `performance-priority.md`
   - `[Performance]` config section: `process_priority` (CPU), `gpu_priority` (encoder GPU thread), `copy_queue_priority` (D3D12 overlay queue). Defaults, data flow, source anchors, and open questions.
 - `log.md`

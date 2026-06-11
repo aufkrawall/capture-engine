@@ -22,7 +22,9 @@ struct AudioPacket {
     uint32_t channelMask;
     bool isFloat;
     uint64_t devicePosition;  // For debug drift analysis
-    uint64_t qpcPosition;     // WASAPI GetBuffer QPC position in 100-ns units
+    uint64_t qpcPosition;     // Latency-compensated WASAPI packet QPC position in 100-ns units
+    uint64_t rawQpcPosition;  // Raw WASAPI GetBuffer QPC position in 100-ns units
+    uint64_t streamLatency;   // IAudioClient stream latency in 100-ns units used for compensation
 };
 
 class AudioCapture {
@@ -55,6 +57,8 @@ private:
     WAVEFORMATEX* pwfx;
     HANDLE captureEvent_ = nullptr;
     DWORD activeStreamFlags = 0;
+    bool isLoopback_ = false;
+    uint64_t streamLatency100ns_ = 0;
 
     std::atomic<bool> isCapturing;
     std::thread captureThread;

@@ -25,3 +25,13 @@ TEST(AudioTimeUtilsTest, RawQpcToHundredNanosecondsHandlesLargeCountersWithoutOv
     const uint64_t rawQpc = 1234567890123456789ULL;
     EXPECT_EQ(ce::audio::RawQpcToHundredNanoseconds(rawQpc, 10000000ULL), rawQpc);
 }
+
+TEST(AudioTimeUtilsTest, CaptureLatencyCompensationSubtractsWhenEnabled) {
+    EXPECT_EQ(ce::audio::ApplyCaptureLatencyCompensation(1230000, 300000, true), 930000u);
+    EXPECT_EQ(ce::audio::ApplyCaptureLatencyCompensation(1230000, 300000, false), 1230000u);
+    EXPECT_EQ(ce::audio::ApplyCaptureLatencyCompensation(1230000, 0, true), 1230000u);
+}
+
+TEST(AudioTimeUtilsTest, CaptureLatencyCompensationClampsUnderflow) {
+    EXPECT_EQ(ce::audio::ApplyCaptureLatencyCompensation(100000, 300000, true), 0u);
+}

@@ -1,5 +1,6 @@
 #include "audio_capture.h"
 #include <iostream>
+#include <algorithm>
 // PKEY_Device_FriendlyName defined locally to avoid cross-compile link errors
 // (MinGW on Linux needs INITGUID for the header definition, this is portable)
 static const PROPERTYKEY PKEY_Device_FriendlyName = {
@@ -55,6 +56,8 @@ static void FillPacketFormatFromWaveFormat(const WAVEFORMATEX* format, AudioPack
     packet->isFloat = format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
     packet->devicePosition = 0;
     packet->qpcPosition = 0;
+    packet->rawQpcPosition = 0;
+    packet->streamLatency = 0;
 
     if (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
         const auto* wfex = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
@@ -218,6 +221,8 @@ bool AudioCapture::ProbeMixFormat(const std::string& deviceId, bool isLoopback, 
 bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
     DLL_Log("[AudioCapture] Start called: deviceId=%s loopback=%d", deviceId.empty() ? "default" : deviceId.c_str(),
             isLoopback);
+    isLoopback_ = isLoopback;
+    streamLatency100ns_ = 0;
     HRESULT hr;
 
     // Clear any stale packets from previous session
@@ -367,6 +372,15 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
     }
     activeStreamFlags = flags;
 
+    REFERENCE_TIME streamLatency = 0;
+    hr = pAudioClient->GetStreamLatency(&streamLatency);
+    if (SUCCEEDED(hr)) {
+        streamLatency100ns_ = static_cast<uint64_t>(std::max<REFERENCE_TIME>(0, streamLatency));
+    } else {
+        DLL_Log("[AudioCapture] GetStreamLatency failed: 0x%x", hr);
+        streamLatency100ns_ = 0;
+    }
+
     if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
         ResetEvent(captureEvent_);
         hr = pAudioClient->SetEventHandle(captureEvent_);
@@ -392,8 +406,9 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
         return false;
     }
 
-    DLL_Log("[AudioCapture] Started: channels=%d rate=%d bits=%d", pwfx->nChannels, pwfx->nSamplesPerSec,
-            pwfx->wBitsPerSample);
+    DLL_Log("[AudioCapture] Started: channels=%d rate=%d bits=%d streamLatency=%lluus compensate=%d",
+            pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
+            static_cast<unsigned long long>(streamLatency100ns_ / 10), isLoopback_ ? 1 : 0);
     DLL_Log("[AudioCapture] Capture mode: %s",
             (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
 
@@ -413,6 +428,8 @@ void AudioCapture::Stop() {
 
     DiscardPendingPackets();
     activeStreamFlags = 0;
+    streamLatency100ns_ = 0;
+    isLoopback_ = false;
     if (captureEvent_) {
         ResetEvent(captureEvent_);
     }
@@ -511,7 +528,11 @@ void AudioCapture::CaptureLoop() {
                 firstDevicePos = devicePosition;
                 firstQpcPos = qpcPosition;
                 firstSet = true;
-                DLL_Log("[AudioCapture] Source Sync Start: DevPos=%llu QPC=%llu", firstDevicePos, firstQpcPos);
+                const uint64_t adjustedFirstQpc =
+                    ce::audio::ApplyCaptureLatencyCompensation(firstQpcPos, streamLatency100ns_, isLoopback_);
+                DLL_Log("[AudioCapture] Source Sync Start: DevPos=%llu QPC=%llu AdjustedQPC=%llu Latency=%lluus",
+                        firstDevicePos, firstQpcPos, adjustedFirstQpc,
+                        static_cast<unsigned long long>(streamLatency100ns_ / 10));
             } else if (firstSet && logCounter++ % 500 == 0) {  // Log every ~5 seconds
                 double samplesDuration = (double)(devicePosition - firstDevicePos) / pwfx->nSamplesPerSec;
                 double qpcDuration = ce::audio::HundredNanosecondsToSeconds(qpcPosition - firstQpcPos);
@@ -532,7 +553,10 @@ void AudioCapture::CaptureLoop() {
             packet.validBitsPerSample = 0;           // Default: same as bitsPerSample
             packet.channelMask = ExtractChannelMask(pwfx);
             packet.devicePosition = devicePosition;  // Store for debugging if needed
-            packet.qpcPosition = qpcPosition;        // Store for debugging if needed
+            packet.rawQpcPosition = qpcPosition;     // Store raw WASAPI timestamp for debugging
+            packet.streamLatency = streamLatency100ns_;
+            packet.qpcPosition =
+                ce::audio::ApplyCaptureLatencyCompensation(qpcPosition, streamLatency100ns_, isLoopback_);
 
             // Check if float format and extract validBitsPerSample from
             // WAVEFORMATEXTENSIBLE
@@ -548,7 +572,7 @@ void AudioCapture::CaptureLoop() {
                 packet.validBitsPerSample = wfex->Samples.wValidBitsPerSample;
             }
 
-            packet.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(qpcPosition);
+            packet.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(packet.qpcPosition);
 
             // Copy data - or generate silence if silent flag is set (critical for A/V
             // sync!)

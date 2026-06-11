@@ -38,4 +38,15 @@ inline uint64_t RawQpcToHundredNanoseconds(uint64_t rawQpc, uint64_t qpcFrequenc
            ((remainingTicks * kHundredNanosecondsPerSecond) / qpcFrequency);
 }
 
+inline uint64_t ApplyCaptureLatencyCompensation(uint64_t qpcPosition100ns, uint64_t streamLatency100ns,
+                                                bool compensate) {
+    if (!compensate || streamLatency100ns == 0) {
+        return qpcPosition100ns;
+    }
+    if (qpcPosition100ns <= streamLatency100ns) {
+        return 0;
+    }
+    return qpcPosition100ns - streamLatency100ns;
+}
+
 }  // namespace ce::audio

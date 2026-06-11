@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-06-04 (audio codec finalization/silence hardening, build 0.1.3737)
+Last cross-checked: 2026-06-11 (A/V sync stimulus app, analyzer, matrix runner, and live WGC/inject smoke)
 
 Primary sources:
 - `AGENTS.md`
@@ -50,6 +50,11 @@ Primary sources:
 - `tests/test_config.cpp`
 - `tests/test_audio_encoder.cpp`
 - `tests/test_audio_resampler.cpp`
+- `testapp/av_sync_stimulus.h`
+- `testapp/dx12_av_sync_test.cpp`
+- `tools/analyze_av_sync_stimulus.py`
+- `tools/run_av_sync_matrix.py`
+- `tests/test_av_sync_stimulus.cpp`
 - `tests/test_config_override.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `installed/captureengine/logs/20260602_215620`
@@ -89,6 +94,8 @@ Primary sources:
   - CFR capture cadence/audio/mux invariants, including WGC and inject stop-drain behavior, disabled wall-clock audio anchoring for CFR, final audio packet clamping, packet-level duration diagnostics, and source-limited versus hard-overload policy.
 - `tests/test_audio_encoder.cpp`, `tests/test_audio_sync_utils.cpp`, `tests/test_audio_resampler.cpp`, `tests/test_config.cpp`
   - Audio codec/config/layout coverage: PCM alias resolution, PCM bit-depth variants, Opus/libopus 48 kHz policy, lossy multichannel bitrate scaling, multichannel packet output, channel-mask preserving resampling, inheritance/override behavior for audio quality/downmix fields, packed/interleaved silence buffer sizing, pure-silence tracks for AAC/ALAC/FLAC/Opus/PCM, and AAC/Opus final packet clamp/skip metadata.
+- `tests/test_av_sync_stimulus.cpp`
+  - Shared deterministic A/V stimulus contract: event schedule, frame-marker encode/decode, palette recovery, zero-crossing audio transition boundaries, and smooth-lane wrap behavior.
 
 ## Useful Existing Logging Points
 - `captureengine/injection.cpp`
@@ -106,6 +113,12 @@ Primary sources:
   - For silent or inactive-source recordings, confirm `Silence queue`, final packet clamp, and end-skip side-data logs where applicable. All enabled tracks should encode real zero samples through their selected codec rather than relying on sparse gaps.
 - `mediaengine/video_encoder.cpp`
   - Post-write media validation logs as `[VideoEncoder] Post-mux duration probe ...`; use this reopened-file result as the external stream-duration authority after trailer write.
+- `testapp/dx12_av_sync_test.cpp`
+  - Deterministic content-level capture stimulus. App logs must include `AVSYNC START`, `AVSYNC EVENT`, `AVSYNC FRAME`, `AVSYNC AUDIO_BUFFER`, `AVSYNC WARNING`, and `AVSYNC SUMMARY`. The manifest `dx12_av_sync_test_manifest.json` is required evidence for decoding event colors, audio frequencies, marker geometry, QPC anchors, requested/render geometry, fullscreen/window-chrome/borderless state, and app-side timing. Windowed mode defaults to borderless so WGC captures only the rendered client area.
+- `tools/analyze_av_sync_stimulus.py`
+  - Stimulus-aware MKV analyzer. Failure classes intentionally distinguish `corrupted_video_frame`, `visual_judder`, `repeat_cluster`, `video_content_drift`, `missing_marker`, `audio_marker_missing`, `audio_video_event_offset`, `inter_track_spread`, `decode_error`, and `ce_strict_log_event`. It auto-scales video decode for marker readability, uses Goertzel refinement around audio transition edges, and keeps benign `trimmed=0` bootstrap logs out of strict audio-trim failures. Mixed and microphone streams should be passed as non-strict ordinals when used as opportunistic evidence.
+- `tools/run_av_sync_matrix.py`
+  - Automated CE runner for WGC/inject, AAC/ALAC/FLAC/Opus/PCM, and target FPS cases. It snapshots/restores `installed/captureengine/config.ini`, kills stale stimulus/CE processes, launches CE with `--auto-record=... --launch ...`, passes `--fullscreen 0 --window-chrome 0` by default, and writes reports under `installed/captureengine/avsync_runs/<timestamp>/`. Each scenario report must link the capture file, CE session dir, media/hook logs, app log, app manifest, analyzer JSON, and analyzer stdout. Pure system/app tracks are strict; mixed system+app and microphone tracks are diagnostic/non-strict by default.
 - `hook/apis/dx12_hook.cpp`
   - Logs when observer-only suppresses early PostSL registration, PostSL callback execution, and DX12 overlay/PostSL transition management.
   - Fresh runtime-owned Streamline startup handoffs now log retained startup activation swapchain capture/release and DX12 startup activation service success/failure. A startup activation callback must use a retained or fresh non-null swapchain; a `nullptr` callback from Streamline flush/ECL-expiry paths is a regression.
@@ -255,6 +268,9 @@ python build.py --full-integration --skip-updates
 
 python .\testapp\run_tests.py --api dx9 --arch both --tests 1 --duration 5 --min-frames 60
 python .\testapp\run_tests.py --api all --arch both --tests 1 --duration 5 --min-frames 60
+
+python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs alac --fps 60 --duration-sec 7
+python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs aac,alac,flac,opus,pcm --fps 60,120 --keep-going
 
 powershell -ExecutionPolicy Bypass -File .\analysis\analyze_dump.ps1 .\installed\captureengine\logs\<session>\<dump>.dmp
 ```
