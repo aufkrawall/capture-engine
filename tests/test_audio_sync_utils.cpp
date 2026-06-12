@@ -374,20 +374,30 @@ TEST(AudioSyncUtilsTest, StopDrainRunsOnlyForVideoAudioSessions) {
 }
 
 TEST(AudioSyncUtilsTest, CfrAudioPullDefersUntilActiveSourceHasRequestedSamples) {
-    EXPECT_TRUE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, false, false, 480, 479));
-    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, false, false, 480, 480));
-    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(false, false, false, 480, 0));
-    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, true, false, 480, 0));
-    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, false, true, 480, 0));
+    EXPECT_TRUE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, false, false, false, 480, 479));
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, false, false, false, 480, 480));
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(false, false, false, false, 480, 0));
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, true, false, false, 480, 0));
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, false, true, false, 480, 0));
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, false, false, true, 480, 0));
 }
 
 TEST(AudioSyncUtilsTest, FinalCfrSourceCatchupWaitsOnlyForStrictStartedSources) {
-    EXPECT_TRUE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, false, 480, 479));
-    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, false, 480, 480));
-    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(false, true, false, 480, 0));
-    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, false, false, 480, 0));
-    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, true, 480, 0));
-    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, false, 0, 0));
+    EXPECT_TRUE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, false, false, 480, 479));
+    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, false, false, 480, 480));
+    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(false, true, false, false, 480, 0));
+    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, false, false, false, 480, 0));
+    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, true, false, 480, 0));
+    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, false, true, 480, 0));
+    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, false, false, 0, 0));
+}
+
+TEST(AudioSyncUtilsTest, StartedSparseAppAudioSourcesMayContributeSilence) {
+    EXPECT_TRUE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, false));
+    EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(false, true, true, false));
+    EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, false, true, false));
+    EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, false, false));
+    EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, true));
 }
 
 TEST(AudioSyncUtilsTest, LateFirstPacketOverlapsAlreadyEncodedSilence) {

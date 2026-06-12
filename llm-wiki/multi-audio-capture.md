@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-12 (strict system/app matrix, app-audio startup race fix, process-loopback timestamp bias)
+Last cross-checked: 2026-06-12 (duplicate app-source routing stall and finalization crash fix)
 Stale-risk: medium
 
 Primary sources:
@@ -29,9 +29,13 @@ Primary sources:
 
 The audio pipeline supports separate system audio, microphone, and process/app audio sources, with each source assigned to one or more output tracks. Track format is resolved per output track before encoder creation: sample rate, channel count, channel mask/layout, codec, bitrate, and bit depth are no longer hard-coded to stereo.
 
+Recording the same source to multiple output tracks is supported, including duplicate app-audio tracks and mixed tracks that combine system/app/microphone sources. This is a contract, not a configuration error: fixes must preserve duplicate routing and mixing rather than disabling or deduplicating sources to avoid bugs.
+
 The CFR media clock remains authoritative for normal recordings. Final audio is padded by sample accounting to the final video/CFR endpoint, stream duration metadata is written from that final video duration, and per-track final deltas are logged. Enabled tracks are materialized through the encoder even when the contributing source is silent or inactive; do not rely on sparse container gaps to represent silence.
 
 Each exported track owns an independent audio timeline cursor. Per-source counters are diagnostics and source-local stitching aids only; they must not decide the muxed stream timestamp. At the shared A/V anchor, system and microphone sources become timeline-valid immediately and contribute encoded silence until timestamped real packets arrive. App-audio sources remain optional only when CE has not seen evidence that the process is already producing audio. If process-loopback packets arrived while sync was pending, the app source must wait for the first post-anchor packet and enough real buffered samples before bootstrap; otherwise the app track can encode a one-chunk silent head and appear shifted against system loopback. Late app packets are still placed by QPC/source timestamp and overlap/drop already-encoded silence instead of delaying the whole track. This replaced the old 500 ms forced-bootstrap/backlog-trim behavior that made non-ALAC Track 3 content appear shorter even when container packet durations matched.
+
+After bootstrap, a sparse started app source contributes silence for the requested range when it lacks buffered samples. It must not block the entire exported track during live pulls or final drain. Stop-time force drain loops over bounded chunks until all exported track cursors reach the video endpoint or no progress is possible, so long recordings cannot end with only one extra 500 ms pull.
 
 For CFR capture, audio is not a recovery mechanism for WGC/inject video pressure. Live trim, source drop, overflow-protection skip, post-resample backlog trim, and broad pitch correction are validation failures rather than acceptable sync repair. A tiny source-clock-only resampler compensation lane remains for real device-clock drift after startup has settled and the timeline is healthy; it is currently capped at `0.05%`, and is disabled during force drain, startup protection, encoder-bottleneck shortfall, timeline shortfall, or WGC coverage loss.
 
@@ -66,6 +70,7 @@ The bundled Windows FFmpeg build must include `libopus` plus the concrete PCM en
 - Mixing stays float32. Sources already matching the track layout are mixed channel-for-channel. Lower-channel secondary sources are upmixed conservatively into the resolved track layout.
 - Inactive app sources and all-silent tracks still produce full-length encoded silence when configured as an output track. Silence is fed through each codec path in bounded chunks, then packet duration/skip metadata clamps the externally visible end to the video duration.
 - Source startup is timeline-valid, not real-sample-gated. A silent-but-started source is ready at sample 0. A late source joins by timestamp and may log a late cursor advance, but it must not shift the track cursor or cause startup trimming.
+- A started app source that later goes sparse is silence-padded source-locally. Mixed tracks continue with the other sources and the shared track cursor.
 
 ## Diagnostics
 
@@ -80,10 +85,12 @@ Useful logs for this area:
 - `[AudioEncoder] Clamping final packet duration ...` and `Added packet end-skip side data ...`: AAC/Opus padded final frames are being exposed sample-exactly.
 - `[A/V START] Audio source reset ... timelineValid=...`: confirms non-app sources are valid at the shared anchor. App sources are optional only until first packet evidence; if pre-start process-loopback packets were seen, bootstrap should wait for post-start real samples instead of encoding a leading silent chunk.
 - `[PullAudio] Track ... bootstrap complete ... forced=0 trimmed=0`: startup settled without the old forced-bootstrap/content-trim path. Any `forced=1` or nonzero `trimmed` is a validation failure.
+- `[PullAudio] App source gap silence ...`: source-local sparse app padding. Expected for a started app source with no available packet for the current track range; not by itself a failure.
 - `[AudioLoop] Late source cursor advance ...`: a late packet arrived after the track cursor already encoded silence; this is explicit placement diagnostics, not a reason to move the exported track.
 - `[PullAudio] WARNING: CFR audio ring near capacity ...`: pressure diagnostic. The code preserves audio; an actual overflow/drop is a validation failure.
 - `[PullAudio] WARNING: CFR post-resample backlog exceeded guard ...`: pressure diagnostic. The code preserves audio; post-resample trimming is a validation failure.
 - `[STOP AUDIO TRACK] Track ... encoded=... expected=... realMixed=... fullSilence=... partialSilence=... sources=[...]`: exported-track cursor summary, including real/silence accounting.
+- `[StopAudio] forceDrain ... iterations=...`: stop-time drain may require multiple bounded pulls. `forceDrain incomplete` and `forceDrain made no progress` are strict investigation breadcrumbs.
 - `[StopAudio] Source ... diff=+0 (+0.0 ms)`: final sample-count equality to the selected video duration.
 - `[VideoEncoder] Final packet timeline` and `[VideoEncoder] Final metadata durations`: mux-level final duration evidence.
 - `[VideoEncoder] Post-mux duration probe ...`: post-write reopened-file duration check; this is the pass/fail authority for external stream duration.
@@ -107,7 +114,7 @@ Focused regression coverage lives in:
 - `tests/test_audio_time_utils.cpp`
   - Loopback capture-latency compensation clamps safely and leaves non-loopback timestamps unchanged.
 - `tools/analyze_capture_av.py`
-  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop/extreme-drift paths, WGC fresh catch-up, stop-drain abort, WGC held stop repeats, and nonzero WGC drain duplicate summaries. Discarded post-stop WGC callbacks stay visible as endpoint-protection telemetry but are not audio failures by themselves.
+  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop/extreme-drift paths, WGC fresh catch-up, stop-drain abort, WGC held stop repeats, nonzero WGC drain duplicate summaries, writer finalize timeout, and multi-source stop-time audio shortfalls. Discarded post-stop WGC callbacks stay visible as endpoint-protection telemetry but are not audio failures by themselves.
 - `testapp/av_sync_stimulus.h` and `tests/test_av_sync_stimulus.cpp`
   - Shared deterministic event schedule, frame-marker, palette, smooth-lane, and zero-crossing audio boundary coverage used by both the app and analyzer expectations.
 - `tools/run_av_sync_matrix.py`
@@ -138,6 +145,7 @@ Updated on 2026-06-12:
 - Full strict system/app matrix `installed/captureengine/avsync_runs/20260612_200944` passed WGC and inject across AAC, ALAC, FLAC, Opus, PCM and 60/120 fps with planned source-stall evidence. Worst strict values were max A/V event offset `20.285 ms`, max absolute mean offset `12.907 ms`, and max inter-track spread `5.99 ms`.
 - The matrix exposed a real inject app-audio startup race in an Opus 60 run (`Track 2 fullSilence=800`, about 16.7 ms). The fix makes app-audio with pre-start process-loopback packets non-optional for bootstrap until post-start real samples are buffered. Focused regression tests passed in `AudioSyncUtilsTest.OptionalUnstartedAppAudioDoesNotBlockStartupPriming` and `AudioSyncUtilsTest.AppAudioRemainsOptionalUntilTimelineValid`.
 - Additional runtime checks passed for WGC 45 fps source into 60 fps CFR (`20260612_202629`), GPU-load Opus/PCM at 60 fps (`20260612_202716`), and 1080p/120 PCM WGC+inject (`20260612_203000`). Microphone evidence remains opportunistic; if the system mic is disabled, system/app tracks still provide deterministic coverage.
+- `installed/captureengine/logs/fortiappaudiodied` proved duplicate/mixed app-source routing must handle sparse sources after bootstrap. Tracks 1 and 2 were multi-source app tracks and stopped about `231883 ms` short while the system track reached the target; the fix silence-pads sparse started app sources and loops final force drain instead of blocking the whole track. The accompanying crash was a writer finalization ownership bug: after a 5 s async writer timeout, the old code detached and synchronously wrote the trailer on the same FFmpeg context. The current policy logs `writer_finalize_timeout` and leaves the async writer as the sole owner.
 
 ## Open Questions / Stale-Risk
 

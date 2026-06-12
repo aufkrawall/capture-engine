@@ -417,6 +417,7 @@ private:
     std::mutex queueMutex;
     std::condition_variable queueCV;
     std::atomic<bool> writerRunning = false;
+    std::atomic<bool> writerFinalizeTimedOut = false;
     std::atomic<size_t> currentQueueBytes = 0;
 
     // Max queue size before dropping frames (512MB)

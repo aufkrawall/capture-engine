@@ -578,9 +578,11 @@ inline bool ShouldDrainStoppedCaptureQueuesBeforeFinalAudioPull(bool audioThread
 }
 
 inline bool ShouldDeferCfrAudioPullForSourceBuffer(bool isCfrRecording, bool forceDrain,
-                                                   bool optionalUnstartedSource, int64_t requestedSamples,
+                                                   bool optionalUnstartedSource, bool sparseStartedSourceMaySilence,
+                                                   int64_t requestedSamples,
                                                    size_t bufferedTimelineSamples) {
-    if (!isCfrRecording || forceDrain || optionalUnstartedSource || requestedSamples <= 0) {
+    if (!isCfrRecording || forceDrain || optionalUnstartedSource || sparseStartedSourceMaySilence ||
+        requestedSamples <= 0) {
         return false;
     }
 
@@ -588,13 +590,20 @@ inline bool ShouldDeferCfrAudioPullForSourceBuffer(bool isCfrRecording, bool for
 }
 
 inline bool ShouldWaitForFinalCfrSourceCatchup(bool isCfrRecording, bool strictSource,
-                                               bool optionalUnstartedSource, int64_t requestedSamples,
+                                               bool optionalUnstartedSource, bool sparseStartedSourceMaySilence,
+                                               int64_t requestedSamples,
                                                size_t bufferedTimelineSamples) {
-    if (!isCfrRecording || !strictSource || optionalUnstartedSource || requestedSamples <= 0) {
+    if (!isCfrRecording || !strictSource || optionalUnstartedSource || sparseStartedSourceMaySilence ||
+        requestedSamples <= 0) {
         return false;
     }
 
     return bufferedTimelineSamples < static_cast<size_t>(requestedSamples);
+}
+
+inline bool ShouldTreatSparseStartedSourceAsSilence(bool isCfrRecording, bool isAppAudioSource,
+                                                    bool sourceBootstrapComplete, bool optionalUnstartedSource) {
+    return isCfrRecording && isAppAudioSource && sourceBootstrapComplete && !optionalUnstartedSource;
 }
 
 inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples,

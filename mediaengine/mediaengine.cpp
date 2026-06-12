@@ -468,10 +468,13 @@ public:
                 const bool optionalUnstarted =
                     ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.timelineValid,
                                                                  src.sawSyncPendingPackets);
+                const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
+                    true, isAppAudioSource, src.bootstrapComplete, optionalUnstarted);
                 const bool strictSource = src.sourceType != AudioConfig::Microphone;
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
                 if (ce::audio::ShouldWaitForFinalCfrSourceCatchup(
-                        true, strictSource, optionalUnstarted, requestedSamples, bufferedTimelineSamples)) {
+                        true, strictSource, optionalUnstarted, sparseStartedSourceMaySilence, requestedSamples,
+                        bufferedTimelineSamples)) {
                     status.ready = false;
                     status.sourceIndex = srcIdx;
                     status.track = track;
@@ -1411,26 +1414,66 @@ public:
                     // CFR: use PTS-based target so audio matches video exactly.
                     // The encoder thread's drain already covers most audio; this final
                     // pull fills any remaining gap without racing (drain is done by now).
+                    // PullAndEncodeAudio intentionally limits very large gaps to bounded
+                    // chunks, so force-drain loops until every exported track reaches the
+                    // selected video endpoint or forward progress genuinely stops.
                     const int64_t cfrAudioTargetUs =
                         IsCfrRecording() ? videoEnc->GetExpectedFinalDurationUs() : endUs;
+                    const int64_t cfrAudioTargetSamples =
+                        ce::audio::ComputeDurationUsToSamples(cfrAudioTargetUs, kStopSampleRate);
                     auto minTrackCursorSamples = [this]() -> int64_t {
-                        if (trackTimelineSamples.empty()) {
+                        if (cachedTrackToSources.empty()) {
                             return 0;
                         }
                         int64_t minSamples = std::numeric_limits<int64_t>::max();
-                        for (const auto& kv : trackTimelineSamples) {
-                            minSamples = std::min(minSamples, kv.second);
+                        for (const auto& kv : cachedTrackToSources) {
+                            const auto trackIt = trackTimelineSamples.find(kv.first);
+                            const int64_t trackSamples =
+                                trackIt != trackTimelineSamples.end() ? trackIt->second : 0;
+                            minSamples = std::min(minSamples, trackSamples);
                         }
                         return minSamples == std::numeric_limits<int64_t>::max() ? 0 : minSamples;
                     };
                     const int64_t minEncodedBefore = minTrackCursorSamples();
-                    PullAndEncodeAudio(cfrAudioTargetUs, true);
-                    const int64_t minEncodedAfter = minTrackCursorSamples();
+                    int64_t minEncodedAfter = minEncodedBefore;
+                    const int64_t missingBefore = std::max<int64_t>(0, cfrAudioTargetSamples - minEncodedBefore);
+                    const int64_t maxForceDrainIterations =
+                        std::max<int64_t>(1, (missingBefore + (kStopSampleRate / 2) - 1) / (kStopSampleRate / 2) + 4);
+                    int64_t forceDrainIterations = 0;
+                    for (int64_t attempt = 0; attempt < maxForceDrainIterations; ++attempt) {
+                        const int64_t beforeIteration = minTrackCursorSamples();
+                        if (beforeIteration >= cfrAudioTargetSamples) {
+                            minEncodedAfter = beforeIteration;
+                            break;
+                        }
+                        PullAndEncodeAudio(cfrAudioTargetUs, true);
+                        ++forceDrainIterations;
+                        const int64_t afterIteration = minTrackCursorSamples();
+                        minEncodedAfter = afterIteration;
+                        if (afterIteration >= cfrAudioTargetSamples) {
+                            break;
+                        }
+                        if (afterIteration <= beforeIteration) {
+                            DLL_Log(
+                                "[StopAudio] WARNING: forceDrain made no progress: targetUs=%lld targetSamples=%lld "
+                                "minTrack=%lld iteration=%lld/%lld",
+                                cfrAudioTargetUs, cfrAudioTargetSamples, afterIteration, forceDrainIterations,
+                                maxForceDrainIterations);
+                            break;
+                        }
+                    }
+                    if (minEncodedAfter < cfrAudioTargetSamples) {
+                        DLL_Log(
+                            "[StopAudio] WARNING: forceDrain incomplete: targetUs=%lld targetSamples=%lld "
+                            "minTrackAfter=%lld missing=%lld iterations=%lld/%lld",
+                            cfrAudioTargetUs, cfrAudioTargetSamples, minEncodedAfter,
+                            cfrAudioTargetSamples - minEncodedAfter, forceDrainIterations, maxForceDrainIterations);
+                    }
                     DLL_Log(
                         "[StopAudio] forceDrain: targetUs=%lld minTrackBefore=%lld minTrackAfter=%lld "
-                        "pulled=%lld samples (%.1f ms)",
+                        "pulled=%lld samples (%.1f ms) iterations=%lld",
                         cfrAudioTargetUs, minEncodedBefore, minEncodedAfter, minEncodedAfter - minEncodedBefore,
-                        (double)(minEncodedAfter - minEncodedBefore) / 48.0);
+                        (double)(minEncodedAfter - minEncodedBefore) / 48.0, forceDrainIterations);
                 }
             }
 
@@ -2243,9 +2286,12 @@ public:
                 const bool optionalUnstarted =
                     ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.timelineValid,
                                                                  src.sawSyncPendingPackets);
+                const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
+                    isCfrRecording, isAppAudioSource, src.bootstrapComplete, optionalUnstarted);
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
                 if (ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
-                        isCfrRecording, forceDrain, optionalUnstarted, samplesToEncode, bufferedTimelineSamples)) {
+                        isCfrRecording, forceDrain, optionalUnstarted, sparseStartedSourceMaySilence, samplesToEncode,
+                        bufferedTimelineSamples)) {
                     deferForSourceBuffer = true;
                     if (dropLogCounter++ % 500 == 0) {
                         DLL_Log(
@@ -2255,6 +2301,15 @@ public:
                             trackCursorSamples);
                     }
                     break;
+                }
+                if (sparseStartedSourceMaySilence &&
+                    bufferedTimelineSamples < static_cast<size_t>(std::max<int64_t>(samplesToEncode, 0)) &&
+                    dropLogCounter++ % 500 == 0) {
+                    DLL_Log(
+                        "[PullAudio] App source gap silence: track=%d src=%zu buffered=%zu requested=%lld "
+                        "target=%lldms encoded=%lld. Source contributes silence for missing range.",
+                        track, srcIdx, bufferedTimelineSamples, samplesToEncode, trackAudioTargetMs,
+                        trackCursorSamples);
                 }
             }
             if (deferForSourceBuffer) {

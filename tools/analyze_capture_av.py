@@ -53,6 +53,11 @@ LOG_PATTERNS = {
     ),
     "wgc_post_stop_frame_drop": re.compile(r"\[EncoderThread\] WGC CFR post-stop frame drop"),
     "audio_extreme_drift": re.compile(r"\[PullAudio\] WARNING: Extreme drift detected"),
+    "writer_finalize_timeout": re.compile(
+        r"\[VideoEncoder\] Stop: (?:ERROR writer_finalize_timeout|WARNING - Writer thread did not finish)",
+        re.IGNORECASE,
+    ),
+    "writer_sync_finalize": re.compile(r"\[VideoEncoder\] Sync Stop: Finalizing file", re.IGNORECASE),
 }
 
 STRICT_SYNC_LOG_EVENTS = (
@@ -76,6 +81,7 @@ STRICT_SYNC_LOG_EVENTS = (
     "wgc_stop_drain_aborted",
     "wgc_stop_hold_repeats",
     "wgc_drain_duplicate_summary",
+    "writer_finalize_timeout",
 )
 
 CADENCE_AGEMAX_RE = re.compile(r"AgeMax=(\d+)us")
@@ -128,6 +134,11 @@ FINAL_METADATA_RE = re.compile(
 )
 POST_MUX_AUDIO_MISMATCH_RE = re.compile(r"Post-mux audio duration mismatch .*maxDelta=(\d+)", re.IGNORECASE)
 PACKET_MISMATCH_RE = re.compile(r"Packet-level A/V duration mismatch", re.IGNORECASE)
+STOP_AUDIO_TRACK_RE = re.compile(
+    r"\[STOP AUDIO TRACK\] Track (\d+): encoded=(\d+) expected=(\d+) diff=([+-]?\d+) "
+    r"\(([+-]?[0-9.]+) ms\).*sources=\[([^\]]*)\]",
+    re.IGNORECASE,
+)
 EXTERNAL_OVERLAY_RE = re.compile(r"\b(Steam|Rockstar|RTSS|ReShade|SpecialK|Streamline|FFX)\b", re.IGNORECASE)
 
 TRIAGE_AUDIO_FAULT_EVENTS = {
@@ -153,6 +164,10 @@ TRIAGE_VISUAL_FAULT_EVENTS = {
     "wgc_stop_drain_aborted",
     "wgc_stop_hold_repeats",
     "wgc_drain_duplicate_summary",
+}
+
+TRIAGE_MUX_FAULT_EVENTS = {
+    "writer_finalize_timeout",
 }
 
 
@@ -939,6 +954,7 @@ def parse_media_triage(media_text):
     final_packet_timelines = []
     final_metadata = []
     post_mux_audio_mismatches = []
+    stop_audio_tracks = []
     packet_mismatch_warnings = 0
     for line in media_text.splitlines():
         source_match = WGC_SOURCE_STARVED_RE.search(line)
@@ -1037,6 +1053,24 @@ def parse_media_triage(media_text):
         post_mux_match = POST_MUX_AUDIO_MISMATCH_RE.search(line)
         if post_mux_match:
             post_mux_audio_mismatches.append(parse_int(post_mux_match.group(1)))
+        stop_track_match = STOP_AUDIO_TRACK_RE.search(line)
+        if stop_track_match:
+            sources = [
+                parse_int(part.strip())
+                for part in stop_track_match.group(6).split(",")
+                if part.strip()
+            ]
+            stop_audio_tracks.append(
+                {
+                    "track": parse_int(stop_track_match.group(1)),
+                    "encoded_samples": parse_int(stop_track_match.group(2)),
+                    "expected_samples": parse_int(stop_track_match.group(3)),
+                    "diff_samples": parse_int(stop_track_match.group(4)),
+                    "diff_ms": parse_float(stop_track_match.group(5)),
+                    "sources": sources,
+                    "line": line,
+                }
+            )
         if PACKET_MISMATCH_RE.search(line):
             packet_mismatch_warnings += 1
     return {
@@ -1050,6 +1084,7 @@ def parse_media_triage(media_text):
         "final_packet_timelines": final_packet_timelines,
         "final_metadata": final_metadata,
         "post_mux_audio_mismatch_delta_us": post_mux_audio_mismatches,
+        "stop_audio_tracks": stop_audio_tracks,
         "packet_mismatch_warnings": packet_mismatch_warnings,
     }
 
@@ -1222,6 +1257,20 @@ def has_encoder_or_mux_backpressure(media_evidence, perf_summaries):
     return False
 
 
+def summarize_stop_audio_shortfalls(media_evidence):
+    short_tracks = [
+        item for item in media_evidence["stop_audio_tracks"]
+        if item["diff_samples"] < -48000 or item["diff_ms"] < -1000.0
+    ]
+    multi_source_short_tracks = [item for item in short_tracks if len(item["sources"]) > 1]
+    return {
+        "short_count": len(short_tracks),
+        "multi_source_short_count": len(multi_source_short_tracks),
+        "worst_shortfall_ms": min((item["diff_ms"] for item in short_tracks), default=0.0),
+        "tracks": short_tracks,
+    }
+
+
 def classify_session_triage(session_dir, capture_path=None):
     media_log = session_dir / "media.log"
     media_text = read_text_if_exists(media_log)
@@ -1232,6 +1281,7 @@ def classify_session_triage(session_dir, capture_path=None):
     manifest = parse_session_manifest(session_dir)
     wgc_source_limits = summarize_wgc_source_limits(media_evidence)
     inject_pacing = summarize_inject_pacing(media_evidence)
+    stop_audio_shortfalls = summarize_stop_audio_shortfalls(media_evidence)
 
     verdicts = []
     max_present_gap_ms = max((item["gap_ms"] for item in hook_evidence["present_gaps"]), default=0.0)
@@ -1239,16 +1289,27 @@ def classify_session_triage(session_dir, capture_path=None):
         verdicts.append("source_present_gap")
     if has_source_starvation(media_evidence):
         verdicts.append("wgc_source_starvation")
-    if has_encoder_or_mux_backpressure(media_evidence, perf_summaries):
-        verdicts.append("ce_encoder_or_mux_backpressure")
     if has_inject_capture_pacer_limit(inject_pacing):
         verdicts.append("ce_capture_pacer_limited")
 
     audio_fault_counts = {}
     visual_fault_counts = {}
+    mux_fault_counts = {}
     if log_summary:
         audio_fault_counts = {name: log_summary["counts"].get(name, 0) for name in TRIAGE_AUDIO_FAULT_EVENTS}
         visual_fault_counts = {name: log_summary["counts"].get(name, 0) for name in TRIAGE_VISUAL_FAULT_EVENTS}
+        mux_fault_counts = {name: log_summary["counts"].get(name, 0) for name in TRIAGE_MUX_FAULT_EVENTS}
+    writer_sync_after_timeout = (
+        log_summary is not None
+        and log_summary["counts"].get("writer_finalize_timeout", 0) > 0
+        and log_summary["counts"].get("writer_sync_finalize", 0) > 0
+    )
+    if (
+        has_encoder_or_mux_backpressure(media_evidence, perf_summaries)
+        or any(mux_fault_counts.values())
+        or writer_sync_after_timeout
+    ):
+        verdicts.append("ce_encoder_or_mux_backpressure")
     post_mux_strict_mismatches = [
         delta for delta in media_evidence["post_mux_audio_mismatch_delta_us"] if delta > 1
     ]
@@ -1256,7 +1317,14 @@ def classify_session_triage(session_dir, capture_path=None):
         item for item in media_evidence["final_packet_timelines"]
         if item["max_packet_delta_us"] > 1000 or item["audio_past_target"] > 0
     ]
-    if any(audio_fault_counts.values()) or post_mux_strict_mismatches or final_packet_strict:
+    if stop_audio_shortfalls["multi_source_short_count"] > 0:
+        verdicts.append("multi_app_audio_track_stall")
+    if (
+        any(audio_fault_counts.values())
+        or post_mux_strict_mismatches
+        or final_packet_strict
+        or stop_audio_shortfalls["short_count"] > 0
+    ):
         verdicts.append("ce_audio_timeline_fault")
     if any(visual_fault_counts.values()) or "ce_capture_pacer_limited" in verdicts:
         verdicts.append("ce_visual_timeline_fault")
@@ -1309,6 +1377,10 @@ def classify_session_triage(session_dir, capture_path=None):
             "perf_csv": perf_summaries,
             "audio_fault_counts": audio_fault_counts,
             "visual_fault_counts": visual_fault_counts,
+            "mux_fault_counts": mux_fault_counts,
+            "writer_sync_after_timeout": writer_sync_after_timeout,
+            "stop_audio_tracks": media_evidence["stop_audio_tracks"],
+            "stop_audio_shortfalls": stop_audio_shortfalls,
             "final_packet_timelines": media_evidence["final_packet_timelines"],
             "final_metadata": media_evidence["final_metadata"],
             "rounding_evidence": rounding_evidence,
@@ -1343,6 +1415,21 @@ def print_triage_report(report):
             perf_count=len(evidence["perf_csv"]),
         )
     )
+    stop_shortfalls = evidence["stop_audio_shortfalls"]
+    if stop_shortfalls["short_count"]:
+        print(
+            "  stop_audio_shortfalls={count} multi_source={multi} worst_ms={worst:.3f}".format(
+                count=stop_shortfalls["short_count"],
+                multi=stop_shortfalls["multi_source_short_count"],
+                worst=stop_shortfalls["worst_shortfall_ms"],
+            )
+        )
+    if evidence["mux_fault_counts"]:
+        mux_faults = ",".join(
+            f"{name}={count}" for name, count in sorted(evidence["mux_fault_counts"].items()) if count
+        )
+        if mux_faults:
+            print(f"  mux_faults={mux_faults}")
     inject_pacing = evidence["inject_pacing"]
     if inject_pacing["perf_rows"] or inject_pacing["summary_duplicate"]:
         print(
@@ -1590,6 +1677,33 @@ def self_test():
         )
         report = classify_session_triage(mux_overload)
         assert "ce_encoder_or_mux_backpressure" in report["verdicts"]
+
+        writer_timeout = make_session(
+            "writer_timeout",
+            media=(
+                "[VideoEncoder] Stop: WARNING - Writer thread did not finish in 5s (result=258), detaching.\n"
+                "[VideoEncoder] Sync Stop: Finalizing file...\n"
+            ),
+        )
+        report = classify_session_triage(writer_timeout)
+        assert "ce_encoder_or_mux_backpressure" in report["verdicts"]
+        assert report["evidence"]["mux_fault_counts"]["writer_finalize_timeout"] == 1
+        assert report["evidence"]["writer_sync_after_timeout"]
+
+        multi_app_stall = make_session(
+            "multi_app_stall",
+            media=(
+                "[STOP AUDIO TRACK] Track 1: encoded=1360000 expected=12490400 "
+                "diff=-11130400 (-231883.333 ms) sources=[1,3,5,7,9]\n"
+                "[STOP AUDIO TRACK] Track 2: encoded=1360000 expected=12490400 "
+                "diff=-11130400 (-231883.333 ms) sources=[4,6,8,10]\n"
+                "[STOP AUDIO TRACK] Track 3: encoded=12490400 expected=12490400 diff=0 (0.000 ms) sources=[2]\n"
+            ),
+        )
+        report = classify_session_triage(multi_app_stall)
+        assert "multi_app_audio_track_stall" in report["verdicts"]
+        assert "ce_audio_timeline_fault" in report["verdicts"]
+        assert report["evidence"]["stop_audio_shortfalls"]["multi_source_short_count"] == 2
 
         audio_fault = make_session("audio_fault", media="[PullAudio] WARNING: Source underrun track=1\n")
         report = classify_session_triage(audio_fault)

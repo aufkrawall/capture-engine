@@ -2294,6 +2294,7 @@ int VideoEncoder::GetAudioStreamIndex(int track) const {
 
 void VideoEncoder::BeginDeferredRecording() {
     codecOpenFailed = false;
+    writerFinalizeTimedOut.store(false, std::memory_order_relaxed);
     encodedDurationUs.store(0, std::memory_order_relaxed);
     lastAssignedVideoPts = -1;
     lastFrameDeferred.store(false, std::memory_order_relaxed);
@@ -2334,8 +2335,23 @@ bool VideoEncoder::Start() {
     // finish.
     Stop();
     if (writerThread.joinable()) {
-        DLL_Log("[VideoEncoder] Start: Waiting for previous recording to finalize...");
-        writerThread.join();
+        if (writerFinalizeTimedOut.load(std::memory_order_acquire)) {
+            HANDLE hThread = writerThread.native_handle();
+            DWORD waitResult = WaitForSingleObject(hThread, 0);
+            if (waitResult != WAIT_OBJECT_0) {
+                DLL_Log(
+                    "[VideoEncoder] Start: ERROR previous writer finalize is still running (result=%lu); refusing "
+                    "new recording to preserve muxer ownership",
+                    waitResult);
+                return false;
+            }
+            DLL_Log("[VideoEncoder] Start: Previous timed-out writer completed before restart; joining now.");
+            writerThread.join();
+            writerFinalizeTimedOut.store(false, std::memory_order_release);
+        } else {
+            DLL_Log("[VideoEncoder] Start: Waiting for previous recording to finalize...");
+            writerThread.join();
+        }
     }
 
     // If fmtCtx was freed by Stop(), recreate it for the new recording
@@ -4504,6 +4520,7 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
 void VideoEncoder::Stop() {
     bool wasRecording = recordingRequested;
     recordingRequested = false;
+    bool writerStillOwnsMuxer = false;
 
     if (wasRecording) {
         const uint32_t phase = pSharedMem ? pSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed)
@@ -4552,16 +4569,27 @@ void VideoEncoder::Stop() {
         DWORD waitResult = WaitForSingleObject(hThread, 5000);
         if (waitResult == WAIT_OBJECT_0) {
             writerThread.join();
+            if (writerFinalizeTimedOut.exchange(false, std::memory_order_acq_rel)) {
+                DLL_Log("[VideoEncoder] Stop: Timed-out writer completed on a later stop; muxer ownership recovered.");
+            }
             DLL_Log("[VideoEncoder] Stop: Writer thread joined.");
         } else {
-            DLL_Log("[VideoEncoder] Stop: WARNING - Writer thread did not finish in 5s (result=%lu), detaching.",
-                    waitResult);
-            writerThread.detach();
+            writerFinalizeTimedOut.store(true, std::memory_order_release);
+            writerStillOwnsMuxer = true;
+            DLL_Log(
+                "[VideoEncoder] Stop: ERROR writer_finalize_timeout result=%lu queueBytes=%zu queuePackets=%u; "
+                "async writer retains FFmpeg context, skipping synchronous finalize",
+                waitResult, currentQueueBytes.load(std::memory_order_relaxed),
+                currentQueuePackets.load(std::memory_order_relaxed));
         }
     }
 
+    if (writerStillOwnsMuxer) {
+        return;
+    }
+
     // Fallback: if thread wasn't running and file is still open, close it now
-    if (fileOpened) {
+    if (fileOpened && !writerRunning.load(std::memory_order_acquire)) {
         DLL_Log("[VideoEncoder] Sync Stop: Finalizing file...");
         if (fmtCtx) {
             int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);

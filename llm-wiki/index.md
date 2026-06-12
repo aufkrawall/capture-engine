@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-12 (updated: full A/V codec matrix, app-audio startup race fix, self-contained runner evidence)
+Last cross-checked: 2026-06-12 (updated: multi-app audio stall fix, writer finalization ownership, real-session triage)
 
 Primary sources:
 - `AGENTS.md`
@@ -57,11 +57,11 @@ Primary sources:
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, useful test files, logging expectations, and the deterministic `dx12_av_sync_test.exe`/stimulus analyzer/runner workflow for risky runtime changes, including fullscreen/topmost tear-free stimulus capture, source-stall validation, real-session stutter triage, scenario-local CE log snapshots, and strict system/app A/V checks.
 - `multi-audio-capture.md`
-  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture. Config inheritance for codec/quality/layout fields, per-track channel layout resolution, PCM/Opus codec policy, multichannel bitrate scaling, timeline-valid startup, pre-start app-audio bootstrap strictness, per-track audio cursors, encoded-silence handling, AAC/Opus finalization, CFR audio-continuity rules, tiny source-clock-only drift compensation, process-loopback half-packet timestamp bias, WASAPI latency telemetry/compensation, strict decode/waveform-tail/WGC stop-tail validation, and the A/V sync stimulus matrix for strict system/app tracks plus opportunistic mixed/microphone evidence. Last verified 2026-06-12. Stale-risk: medium.
+  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture. Config inheritance for codec/quality/layout fields, per-track channel layout resolution, PCM/Opus codec policy, multichannel bitrate scaling, timeline-valid startup, pre-start app-audio bootstrap strictness, per-track audio cursors, duplicate source routing, sparse started app-source silence padding, encoded-silence handling, AAC/Opus finalization, CFR audio-continuity rules, tiny source-clock-only drift compensation, process-loopback half-packet timestamp bias, WASAPI latency telemetry/compensation, strict decode/waveform-tail/WGC stop-tail validation, and the A/V sync stimulus matrix for strict system/app tracks plus opportunistic mixed/microphone evidence. Last verified 2026-06-12. Stale-risk: medium.
 - `wgc-capture.md`
   - Windows Graphics Capture device/copy path, explicit 10-bit high-precision policy, CFR startup sync barrier, adaptive overcapture, WGC CFR bounded live scheduler/source-selection policy, audio-continuity/exact-stop drain guard, callback locking model, and `[WGC Perf]` telemetry. Last verified 2026-06-05. Stale-risk: medium.
 - `cfr-capture-sync.md`
-  - Shared WGC/inject CFR timeline and audio sync invariants, packet-level and deterministic content-marker diagnostics, track startup/cursor rules, stop-drain rules, codec-padding finalization, WGC live scheduler rebase with bounded source-selection clamping/fresh-catchup rejection, inject timer-rebase debt handling, fullscreen/topmost tear-free `dx12_av_sync_test.exe` stimulus captures, planned source-stall classification, real-session stutter triage, and the `run_av_sync_matrix.py` workflow. Last verified 2026-06-12. Stale-risk: medium.
+  - Shared WGC/inject CFR timeline and audio sync invariants, packet-level and deterministic content-marker diagnostics, track startup/cursor rules, sparse app-source silence padding, iterative stop drain, codec-padding finalization, writer-finalization ownership, WGC live scheduler rebase with bounded source-selection clamping/fresh-catchup rejection, inject timer-rebase debt handling, fullscreen/topmost tear-free `dx12_av_sync_test.exe` stimulus captures, planned source-stall classification, real-session stutter triage, and the `run_av_sync_matrix.py` workflow. Last verified 2026-06-12. Stale-risk: medium.
 - `performance-priority.md`
   - `[Performance]` config section: `process_priority` (CPU), `gpu_priority` (encoder GPU thread), `copy_queue_priority` (D3D12 overlay queue). Defaults, data flow, source anchors, and open questions.
 - `log.md`
