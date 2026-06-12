@@ -1517,6 +1517,74 @@ TEST(DXGISharedTest, LiveNoCallbackNativeFSRSuspensionToggleRequiresExactShape) 
                                                            true, true, true));
 }
 
+TEST(DXGISharedTest, LiveNoCallbackNativeFSRToggleAcceptsStreamlineNoFGAsNonFSRSide) {
+    using ce::dx12_overlay_policy::IsLiveNoCallbackNativeFSRSuspensionToggle;
+    using ce::fg_runtime::RuntimeMode;
+
+    // Session 20260612_215439: with Streamline DLLs merely loaded (no SL FG
+    // signal) the classifier labels the non-FG state STREAMLINE_NO_FG. The
+    // finalized no-callback FFX takeover had already rebuilt the overlay on
+    // the runtime queue, but the STREAMLINE_NO_FG->FSR_FG classification one
+    // frame later re-armed the 60-frame draw cooldown (60-present blank)
+    // because the exemption only matched kOff. Both directions must qualify
+    // with the full proof shape.
+    EXPECT_TRUE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kStreamlineNoFG, RuntimeMode::kFSRFG, false,
+                                                          true, true, true, true, true));
+    EXPECT_TRUE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kFSRFG, RuntimeMode::kStreamlineNoFG, false,
+                                                          true, true, true, true, true));
+
+    // The hard requirements are unchanged: no SL FG signal, enabled-configure
+    // no-callback latch, runtime ownership, live queue, and the backend bound
+    // to that exact queue. The early enable edge (backend still on the game
+    // queue) keeps the protected cooldown path.
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kStreamlineNoFG, RuntimeMode::kFSRFG, true,
+                                                           true, true, true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kStreamlineNoFG, RuntimeMode::kFSRFG, false,
+                                                           false, true, true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kStreamlineNoFG, RuntimeMode::kFSRFG, false,
+                                                           true, false, true, true, true));
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kStreamlineNoFG, RuntimeMode::kFSRFG, false,
+                                                           true, true, true, true, false));
+
+    // STREAMLINE_NO_FG <-> Off label changes are not FSR toggles.
+    EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kStreamlineNoFG, RuntimeMode::kOff, false,
+                                                           true, true, true, true, true));
+}
+
+TEST(DXGISharedTest, HeuristicOnlyRuntimeModeFlipSkipsDrawCooldown) {
+    using ce::dx12_overlay_policy::IsHeuristicOnlyRuntimeModeFlip;
+    using ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown;
+    using ce::fg_runtime::RuntimeMode;
+
+    // Session 20260612_215439: stale ECL-pattern evidence latched phantom
+    // FSR_FG right after FSR->OFF swapchain recovery; the double flip
+    // (STREAMLINE_NO_FG->FSR_FG->STREAMLINE_NO_FG, ownership=0,
+    // sl_signal=0->0) armed two 60-frame cooldowns blanking a healthy,
+    // freshly initialized overlay for 61 presents. A label-only flip — no SL
+    // signal, no ownership, no authoritative FSR, backend live on the current
+    // queue — must not arm the draw cooldown.
+    EXPECT_TRUE(IsHeuristicOnlyRuntimeModeFlip(false, false, false, false, true, true, true));
+
+    // Any transport-relevant signal keeps the protected cooldown path: SL FG
+    // signal on either side, runtime ownership, authoritative FSR API state,
+    // missing live queue, uninitialized backend, or a backend on a different
+    // queue.
+    EXPECT_FALSE(IsHeuristicOnlyRuntimeModeFlip(true, false, false, false, true, true, true));
+    EXPECT_FALSE(IsHeuristicOnlyRuntimeModeFlip(false, true, false, false, true, true, true));
+    EXPECT_FALSE(IsHeuristicOnlyRuntimeModeFlip(false, false, true, false, true, true, true));
+    EXPECT_FALSE(IsHeuristicOnlyRuntimeModeFlip(false, false, false, true, true, true, true));
+    EXPECT_FALSE(IsHeuristicOnlyRuntimeModeFlip(false, false, false, false, false, true, true));
+    EXPECT_FALSE(IsHeuristicOnlyRuntimeModeFlip(false, false, false, false, true, false, true));
+    EXPECT_FALSE(IsHeuristicOnlyRuntimeModeFlip(false, false, false, false, true, true, false));
+
+    // Plumbed through the cooldown decision: the phantom flip shape skips the
+    // cooldown, while the same mode change without the exemption keeps it.
+    EXPECT_FALSE(ShouldStartFrameGenerationTransitionCooldown(RuntimeMode::kStreamlineNoFG, RuntimeMode::kFSRFG, false,
+                                                              true, false, false, true));
+    EXPECT_TRUE(ShouldStartFrameGenerationTransitionCooldown(RuntimeMode::kStreamlineNoFG, RuntimeMode::kFSRFG, false,
+                                                             true, false, false, false));
+}
+
 TEST(DXGISharedTest, NativeFSRNoCallbackCompositionRetainedAcrossSuspension) {
     using ce::dx12_overlay_policy::ShouldRetainNativeFSRInternalNoCallbackCompositionForDisabledConfigure;
 

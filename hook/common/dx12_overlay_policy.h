@@ -582,14 +582,24 @@ inline bool ShouldStartFrameGenerationTransitionCooldown(fg_runtime::RuntimeMode
     return false;
 }
 
-// Native-FSR suspend/resume toggles (menu/loading style ffxConfigure
-// frameGenerationEnabled flips) on AMD's internal no-callback composition
-// route do not move presentation: the runtime-owned swapchain and its queue
-// stay live, and the overlay backend is already initialized on that queue.
-// Only that exact shape may skip the FG transition draw cooldown. Requiring
-// the backend queue to match the swapchain queue keeps the early enable edge
-// (backend still on the original game queue before the FFX swapchain goes
-// live) on the protected cooldown path.
+// Native-FSR suspend/resume/enable toggles (menu/loading style ffxConfigure
+// frameGenerationEnabled flips and the post-takeover enable classification)
+// on AMD's internal no-callback composition route do not move presentation:
+// the runtime-owned swapchain and its queue stay live, and the overlay
+// backend is already initialized on that queue. Only that exact shape may
+// skip the FG transition draw cooldown. Requiring the backend queue to match
+// the swapchain queue keeps the early enable edge (backend still on the
+// original game queue before the FFX swapchain goes live) on the protected
+// cooldown path.
+//
+// The non-FSR side accepts kStreamlineNoFG in addition to kOff: with
+// Streamline DLLs merely loaded (no SL FG signal — enforced above), the
+// classifier labels the non-FG state STREAMLINE_NO_FG. Session
+// 20260612_215439 proved the gap: the finalized no-callback FFX takeover
+// rebuilt the overlay on the runtime queue (`immediate overlay reinit ...
+// prevCooldown=0`), then one frame later the STREAMLINE_NO_FG->FSR_FG
+// classification re-armed the 60-frame draw cooldown and blanked the healthy
+// overlay for 60 presents because this exemption only matched kOff.
 inline bool IsLiveNoCallbackNativeFSRSuspensionToggle(
     fg_runtime::RuntimeMode previousRuntimeMode, fg_runtime::RuntimeMode nextRuntimeMode, bool streamlineFGRunning,
     bool nativeFSRInternalNoCallbackComposition, bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
@@ -601,9 +611,32 @@ inline bool IsLiveNoCallbackNativeFSRSuspensionToggle(
 
     const bool previousIsFSR = previousRuntimeMode == fg_runtime::RuntimeMode::kFSRFG;
     const bool nextIsFSR = nextRuntimeMode == fg_runtime::RuntimeMode::kFSRFG;
-    const bool previousIsOff = previousRuntimeMode == fg_runtime::RuntimeMode::kOff;
-    const bool nextIsOff = nextRuntimeMode == fg_runtime::RuntimeMode::kOff;
-    return (previousIsFSR && nextIsOff) || (previousIsOff && nextIsFSR);
+    const bool previousIsNonFG = previousRuntimeMode == fg_runtime::RuntimeMode::kOff ||
+                                 previousRuntimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
+    const bool nextIsNonFG = nextRuntimeMode == fg_runtime::RuntimeMode::kOff ||
+                             nextRuntimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
+    return (previousIsFSR && nextIsNonFG) || (previousIsNonFG && nextIsFSR);
+}
+
+// A runtime-mode flip that changes only the heuristic FG label, not the
+// transport: no Streamline FG signal on either side, FG swapchain ownership
+// and the live swapchain queue unchanged, no authoritative FSR API state, and
+// the overlay backend initialized on the exact live queue. Such flips come
+// from detection heuristics (ECL-count pattern, queue-change) re-evaluating —
+// nothing about presentation moved, so arming the 60-frame draw cooldown only
+// blanks a healthy overlay. Session 20260612_215439: stale ECL-pattern
+// evidence latched phantom FSR_FG right after FSR->OFF swapchain recovery and
+// the double flip (STREAMLINE_NO_FG->FSR_FG->STREAMLINE_NO_FG, ownership=0,
+// sl_signal=0->0) armed two 60-frame cooldowns for a 61-present blank.
+// Real transport changes always alter at least one of: SL signal, runtime
+// ownership, the live queue, or authoritative FSR state — they keep the
+// cooldown.
+inline bool IsHeuristicOnlyRuntimeModeFlip(bool previousStreamlineFGSignal, bool nextStreamlineFGSignal,
+                                           bool runtimeOwnsSwapchain, bool fsrFGApiActive,
+                                           bool hasSwapchainQueue, bool overlayBackendInitialized,
+                                           bool overlayBackendQueueIsSwapchainQueue) {
+    return !previousStreamlineFGSignal && !nextStreamlineFGSignal && !runtimeOwnsSwapchain && !fsrFGApiActive &&
+           hasSwapchainQueue && overlayBackendInitialized && overlayBackendQueueIsSwapchainQueue;
 }
 
 // A disabled native-FSR configure with no callback route is a suspension

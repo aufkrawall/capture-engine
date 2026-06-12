@@ -542,6 +542,21 @@ int HookGetPostSLGetStateOffWarmupProtectionLastFrame() {
 // detection → wrong queue selection → DEVICE_HUNG.
 static std::atomic<bool> g_ResetQueueChangeHeuristic{false};
 
+// Companion reset for the ECL-count-pattern FG heuristic in
+// DX12_ProcessFrameExternal. Interpolated/real frame counts accumulated during
+// a finished FG phase are stale evidence after any FG transition or swapchain
+// recovery: session 20260612_215439 showed `FG detected via ECL count pattern
+// (real=5, interp=70)` re-latching phantom FSR_FG on the game's fresh native
+// swapchain right after FSR->OFF, and the resulting double mode flip armed two
+// 60-frame draw cooldowns that blanked a healthy overlay for 61 presents.
+// Set at every site that resets the queue-change heuristic.
+static std::atomic<bool> g_ResetECLPatternHeuristic{false};
+
+static void RequestFGDetectionHeuristicReset() {
+    g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+    g_ResetECLPatternHeuristic.store(true, std::memory_order_release);
+}
+
 // Grace counter after SL FG turns OFF.  Set by the outer block, decremented each
 // frame in CanUseFSRFGHeuristics().  While active, the queue-change heuristic is
 // suppressed — the queue naturally switches from SL's internal queue back to
@@ -6268,7 +6283,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
             ForceClearNativeFSRInternalNoCallbackComposition(
                 "game-created swapchain after explicit native FSR OFF/destroy");
             g_FGCompat.SetHeuristicFSRFGActive(false);
-            g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+            RequestFGDetectionHeuristicReset();
             ResetAuthoritativeFSRRealFrameOnlyStreak();
             SetNativeFSRStartupConfigureArmingPending(false,
                                                       "game-created swapchain after explicit native FSR OFF/destroy");
@@ -7013,7 +7028,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
         }
         if (cleanup.resetQueueChangeHeuristic) {
-            g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+            RequestFGDetectionHeuristicReset();
         }
         if (cleanup.clearHeuristicFSR && g_FGCompat.IsHeuristicFSRFGActive()) {
             g_FGCompat.SetHeuristicFSRFGActive(false);
@@ -7244,7 +7259,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             "(churn suppression, epoch=%u)",
             g_PostSLLifecycleEpoch.load(std::memory_order_acquire));
         g_SLOffHeuristicGrace.store(600, std::memory_order_release);
-        g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+        RequestFGDetectionHeuristicReset();
         g_FGCompat.SetHeuristicFSRFGActive(false);
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
             const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
@@ -7273,7 +7288,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         MarkPostSLRecentTeardownActivity("DX12: Streamline FG OFF seeded recent PostSL teardown activity",
                                          g_PostSLLastWorkingQueue);
     }
-    g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+    RequestFGDetectionHeuristicReset();
     g_FGCompat.SetHeuristicFSRFGActive(false);
     g_FGCompat.ClearNvidiaSMState();
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
@@ -13500,7 +13515,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     }
                     if (ce::dx12_overlay_policy::ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(
                             endingPostFSRNonFGRecovery)) {
-                        g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+                        RequestFGDetectionHeuristicReset();
                         if (g_FGCompat.IsHeuristicFSRFGActive()) {
                             g_FGCompat.SetHeuristicFSRFGActive(false);
                         }
@@ -15056,7 +15071,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // keep the existing proven queue/routing state instead of forcing a
             // fresh startup-style re-capture that can starve confirmed PostSL.
             if (!preserveActivePostSLOnLateOuterOn) {
-                g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+                RequestFGDetectionHeuristicReset();
             }
 
             // Bump epoch so the inner transition handler resyncs its local
@@ -15427,23 +15442,32 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         s_lastRuntimeMode_saved, currentRuntimeMode, currentSLFGRunning,
                                         transitionSwapchainQueue != nullptr &&
                                             postNativeFSROffRecoveryQueue == transitionSwapchainQueue);
+            const bool heuristicOnlyRuntimeModeFlip =
+                !slSignalChanged && ce::dx12_overlay_policy::IsHeuristicOnlyRuntimeModeFlip(
+                                        s_lastSLFGRunning, currentSLFGRunning, g_FGRuntimeOwnsSwapchain,
+                                        g_FGCompat.IsFSRFGApiActive(), transitionSwapchainQueue != nullptr,
+                                        g_State.overlayInit,
+                                        transitionSwapchainQueue != nullptr &&
+                                            transitionOverlayBackendQueue == transitionSwapchainQueue);
             const bool shouldStartFGTransitionCooldown =
                 ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
                     s_lastRuntimeMode_saved, currentRuntimeMode, s_lastFGActive, currentFGActive,
                     s_lastSLFGRunning, currentSLFGRunning,
-                    liveNoCallbackNativeFSRSuspensionToggle || gameSwapchainRecoveryToggleAfterNativeFSROff);
+                    liveNoCallbackNativeFSRSuspensionToggle || gameSwapchainRecoveryToggleAfterNativeFSROff ||
+                        heuristicOnlyRuntimeModeFlip);
             if (!shouldStartFGTransitionCooldown) {
                 HookLogImportant(
                     "DX12: Runtime state changed without generated-frame transition "
                     "(prev_mode=%s next_mode=%s active=%d->%d sl_signal=%d->%d "
-                    "liveNoCallbackNativeFSRSuspensionToggle=%d gameSwapchainRecoveryToggle=%d backendQ=%p "
+                    "liveNoCallbackNativeFSRSuspensionToggle=%d gameSwapchainRecoveryToggle=%d "
+                    "heuristicOnlyFlip=%d backendQ=%p "
                     "scQueue=%p recoveryQ=%p) — overlay remains live",
                     ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
                     ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), s_lastFGActive ? 1 : 0,
                     currentFGActive ? 1 : 0, s_lastSLFGRunning ? 1 : 0, currentSLFGRunning ? 1 : 0,
                     liveNoCallbackNativeFSRSuspensionToggle ? 1 : 0,
-                    gameSwapchainRecoveryToggleAfterNativeFSROff ? 1 : 0, transitionOverlayBackendQueue,
-                    transitionSwapchainQueue, postNativeFSROffRecoveryQueue);
+                    gameSwapchainRecoveryToggleAfterNativeFSROff ? 1 : 0, heuristicOnlyRuntimeModeFlip ? 1 : 0,
+                    transitionOverlayBackendQueue, transitionSwapchainQueue, postNativeFSROffRecoveryQueue);
                 LogOverlayCoverageSummary("FG transition edge (overlay remains live)");
                 s_lastFGActive = currentFGActive;
                 s_lastRuntimeMode = currentRuntimeMode;
@@ -15509,7 +15533,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // the "initial queue" after the transition.  SL's leftover queue would
             // otherwise persist as s_initialQueue/s_currentFGQueue and immediately
             // re-trigger false FSR FG detection.
-            g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+            RequestFGDetectionHeuristicReset();
 
             // Drain in-flight overlay GPU work on ANY FG transition.
             // When FG activates (especially FSR FG), it may use the same queue
@@ -17861,6 +17885,26 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         static int s_eclRealFrames = 0;
         static int s_eclInterpFrames = 0;
         static bool s_eclFGDetected = false;
+        // FG transitions, SL on/off handlers, and game-swapchain recovery edges
+        // request a full reset: interpolated/real counts accumulated during a
+        // finished FG phase are stale evidence and must not re-latch phantom
+        // FSR_FG on the fresh post-transition swapchain (which arms 60-frame
+        // draw cooldowns that visibly blank a healthy overlay).
+        if (g_ResetECLPatternHeuristic.exchange(false, std::memory_order_acq_rel)) {
+            if (s_eclRealFrames > 0 || s_eclInterpFrames > 0 || s_eclFGDetected) {
+                static std::atomic<int> s_eclPatternTransitionResetLogCount{0};
+                const int logCount = s_eclPatternTransitionResetLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 20 || (logCount % 100) == 0) {
+                    HookLogImportant(
+                        "DX12: Resetting ECL-pattern FG heuristic evidence at FG transition/recovery edge "
+                        "(real=%d interp=%d detected=%d log=%d)",
+                        s_eclRealFrames, s_eclInterpFrames, s_eclFGDetected ? 1 : 0, logCount + 1);
+                }
+            }
+            s_eclFGDetected = false;
+            s_eclRealFrames = 0;
+            s_eclInterpFrames = 0;
+        }
         if (s_eclFGDetected && !g_FGCompat.IsHeuristicFSRFGActive()) {
             s_eclFGDetected = false;
             s_eclRealFrames = 0;
