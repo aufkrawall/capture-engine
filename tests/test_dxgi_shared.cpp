@@ -4631,3 +4631,21 @@ TEST(DXGISharedTest, OverlayPresentCoverageFGComposedInheritance) {
     EXPECT_EQ(r.endedStreakLength, 2u);
     EXPECT_EQ(tracker.LongestUncoveredStreak(), 2u);
 }
+
+TEST(DXGISharedTest, WarmDX12OverlayBackendReuseIsDeviceAndFormatScoped) {
+    using ce::dx12_overlay_policy::CanReuseWarmDX12OverlayBackend;
+
+    // The backend never uses its bound queue (resources are device-scoped;
+    // submission happens through the hook's own command list), so a queue
+    // change — which every FG transition causes — must not force a rebuild.
+    // Device+format match with an initialized adapter and a preserve request
+    // is the complete reuse condition.
+    EXPECT_TRUE(CanReuseWarmDX12OverlayBackend(true, true, true, true));
+
+    // No preserve request (ordinary first init), uninitialized adapter,
+    // device change, or RTV format change all require the full rebuild.
+    EXPECT_FALSE(CanReuseWarmDX12OverlayBackend(false, true, true, true));
+    EXPECT_FALSE(CanReuseWarmDX12OverlayBackend(true, false, true, true));
+    EXPECT_FALSE(CanReuseWarmDX12OverlayBackend(true, true, false, true));
+    EXPECT_FALSE(CanReuseWarmDX12OverlayBackend(true, true, true, false));
+}

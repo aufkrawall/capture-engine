@@ -1412,7 +1412,18 @@ static OverlayAdapter g_FFXPresentOverlayAdapter;
 static ID3D12Device* g_FFXPresentOverlayDevice = nullptr;
 static DXGI_FORMAT g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
 
+// Device/format the descriptor-free backend was built for. The backend is
+// DEVICE-scoped (PSOs, root signature, font buffer, vb/ib upload pool; the
+// backbuffer is fetched per frame) and intentionally survives swapchain
+// teardown so the first present of a new swapchain can draw without a backend
+// rebuild. These trackers gate the only rebuild triggers: device or RTV
+// format change.
+static ID3D12Device* g_DescFreeBackendDevice = nullptr;
+static DXGI_FORMAT g_DescFreeBackendFormat = DXGI_FORMAT_UNKNOWN;
+
 static void ShutdownDescFreeBackend(const char* reason, bool shutdownMode = false) {
+    g_DescFreeBackendDevice = nullptr;
+    g_DescFreeBackendFormat = DXGI_FORMAT_UNKNOWN;
     DX12DescFreeBackend* backend = g_DescFreeBackend;
     const bool adapterInitialized = g_D3D11On12Adapter.IsInitialized();
     if (!backend && !adapterInitialized) {
@@ -1458,6 +1469,40 @@ static void ShutdownDescFreeBackend(const char* reason, bool shutdownMode = fals
             g_DescFreeBackend = nullptr;
         }
     }
+}
+
+// Lazily (re)builds the device-scoped descriptor-free overlay backend for the
+// requested device/format pair. A live backend is reused as-is when both
+// match (the warm path that closes the first-present blank after FG
+// transitions); a device or format change is the only rebuild trigger.
+// Returns true when a ready backend is bound to (device, format).
+static bool EnsureDescFreeBackendForDeviceAndFormat(ID3D12Device* dev, DXGI_FORMAT format, const char* context) {
+    if (!dev) {
+        return g_DescFreeBackend != nullptr && g_D3D11On12Adapter.IsInitialized();
+    }
+    if (g_DescFreeBackend && (g_DescFreeBackendDevice != dev || g_DescFreeBackendFormat != format)) {
+        HookLogImportant(
+            "DX12: DescFree backend stale (device %p->%p fmt %d->%d) — rebuilding (%s)",
+            g_DescFreeBackendDevice, dev, static_cast<int>(g_DescFreeBackendFormat), static_cast<int>(format),
+            context ? context : "unknown");
+        ShutdownDescFreeBackend(context);
+    }
+    if (!g_DescFreeBackend) {
+        auto* backend = new DX12DescFreeBackend();
+        if (backend->InitDevice(dev, format)) {
+            g_DescFreeBackend = backend;
+            g_DescFreeBackendDevice = dev;
+            g_DescFreeBackendFormat = format;
+            g_D3D11On12Adapter.InitCustom(g_DescFreeBackend, OverlayBackendType::DX12);
+            HookLogImportant("DX12: Descriptor-free overlay backend ready (%s, device=%p fmt=%d)",
+                             context ? context : "unknown", dev, static_cast<int>(format));
+        } else {
+            delete backend;
+            HookLogImportant("DX12: Descriptor-free backend init FAILED (%s, fmt=%d)", context ? context : "unknown",
+                             static_cast<int>(format));
+        }
+    }
+    return g_DescFreeBackend != nullptr && g_D3D11On12Adapter.IsInitialized();
 }
 
 // CRITICAL FIX: Use atomic pointers for thread-safe access
@@ -8643,11 +8688,13 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0, g_FGTransitionCooldown);
 
     const bool preserveAcrossResize = g_PreserveOverlayAdapterAcrossResize.exchange(false, std::memory_order_acq_rel);
-    const bool canReuseWarmResizeBackend =
-        preserveAcrossResize && g_OverlayAdapter.IsInitialized() &&
-        g_OverlayAdapterBackendDevice.load(std::memory_order_acquire) == device &&
-        g_OverlayAdapterBackendQueue.load(std::memory_order_acquire) == queueForBackend &&
-        g_OverlayAdapterBackendFormat.load(std::memory_order_acquire) == static_cast<int>(format);
+    // Warm reuse is device+format scoped: the backend never uses its bound
+    // queue (see CanReuseWarmDX12OverlayBackend), so FG transitions that move
+    // the swapchain to a different queue still reuse the warm PSOs/font atlas.
+    const bool canReuseWarmResizeBackend = ce::dx12_overlay_policy::CanReuseWarmDX12OverlayBackend(
+        preserveAcrossResize, g_OverlayAdapter.IsInitialized(),
+        g_OverlayAdapterBackendDevice.load(std::memory_order_acquire) == device,
+        g_OverlayAdapterBackendFormat.load(std::memory_order_acquire) == static_cast<int>(format));
     if (g_OverlayAdapter.IsInitialized() && !canReuseWarmResizeBackend) {
         HookLogImportant(
             "InitImGui: OverlayAdapter already initialized, shutting down for re-init "
@@ -8661,9 +8708,10 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         g_OverlayAdapterBackendFormat.store(static_cast<int>(DXGI_FORMAT_UNKNOWN), std::memory_order_release);
     } else if (canReuseWarmResizeBackend) {
         HookLogImportant(
-            "InitImGui: Reusing warm DX12 overlay backend across swapchain resize "
-            "(device=%p queue=%p fmt=%d)",
-            device, queueForBackend, static_cast<int>(format));
+            "InitImGui: Reusing warm DX12 overlay backend across swapchain/queue transition "
+            "(device=%p queue old=%p new=%p fmt=%d)",
+            device, g_OverlayAdapterBackendQueue.load(std::memory_order_acquire), queueForBackend,
+            static_cast<int>(format));
     }
 
     g_OverlayAdapter.SetHwnd(hwnd);
@@ -9034,8 +9082,16 @@ static bool RenderOverlayViaD3D11On12(int bufferIdx, bool isRealFrame) {
 }
 
 static void CleanupD3D11On12() {
-    // Clean up descriptor-free adapter (primary DX12 rendering path)
-    ShutdownDescFreeBackend("CleanupD3D11On12", true);
+    // Warm-backend: the x64 descriptor-free adapter is DEVICE-scoped (PSOs,
+    // font buffer, vb/ib pool; backbuffer fetched per frame) and survives
+    // swapchain teardown so the first present of the next swapchain can draw
+    // without a backend rebuild. It is rebuilt only on device/format change
+    // (EnsureDescFreeBackendForDeviceAndFormat), x86 Texture2D selection, and
+    // DX12Hook::Shutdown. The x86 Texture2D adapter (no DescFree backend
+    // tracked) keeps its original swapchain-scoped teardown.
+    if (!g_DescFreeBackend) {
+        ShutdownDescFreeBackend("CleanupD3D11On12", true);
+    }
     // Clean up SL FG D3D11On12 adapter
     if (g_SLFGAdapter.IsInitialized()) {
         g_SLFGAdapter.SetShutdownMode(true);
@@ -11190,23 +11246,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // that work on any queue. Format mismatch is handled below (~line 4325).
     // No need to force-destroy — just reuse the existing backend.
 
-    // Lazy-init DescFree backend if needed (same logic as pre-SL path at ~5479).
-    // After overlay reinit during FG transitions, g_DescFreeBackend is destroyed
-    // but the pre-SL draw is suppressed (can't recreate it there during SL FG).
-    // PostSL must create it itself.
-    if (!g_DescFreeBackend) {
-        if (dev) {
-            auto* backend = new DX12DescFreeBackend();
-            if (backend->InitDevice(dev, g_State.format)) {
-                g_DescFreeBackend = backend;
-                g_D3D11On12Adapter.InitCustom(g_DescFreeBackend, OverlayBackendType::DX12);
-                HookLogImportant("DX12: PostSL created descriptor-free overlay backend (fmt=%d)", g_State.format);
-            } else {
-                delete backend;
-                HookLogImportant("DX12: PostSL descriptor-free backend init FAILED (fmt=%d)", g_State.format);
-            }
-        }
-    }
+    // Lazy-init DescFree backend if needed (same logic as pre-SL path).
+    // The backend normally survives FG transitions warm (device-scoped); this
+    // also rebuilds it after a device change.
+    EnsureDescFreeBackendForDeviceAndFormat(dev, g_State.format, "PostSL lazy init");
 
     bool willRender = g_DescFreeBackend && g_D3D11On12Adapter.IsInitialized();
 
@@ -11227,20 +11270,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             // Recreate DescFree backend with correct format
             HookLogImportant("DX12: PostSL format MISMATCH (bb=%d pso=%d) — recreating DescFree backend", (int)bbFmt,
                              (int)psoFmt);
-            ShutdownDescFreeBackend("PostSL format mismatch");
             g_State.format = bbFmt;
-
-            auto* backend = new DX12DescFreeBackend();
-            if (backend->InitDevice(dev, bbFmt)) {
-                g_DescFreeBackend = backend;
-                g_D3D11On12Adapter.InitCustom(g_DescFreeBackend, OverlayBackendType::DX12);
-                HookLogImportant("DX12: PostSL recreated DescFree backend (fmt=%d)", (int)bbFmt);
-            } else {
-                delete backend;
-                HookLogImportant("DX12: PostSL DescFree backend recreate FAILED (fmt=%d)", (int)bbFmt);
-                willRender = false;
-            }
-            willRender = willRender && g_DescFreeBackend && g_D3D11On12Adapter.IsInitialized();
+            willRender = EnsureDescFreeBackendForDeviceAndFormat(dev, bbFmt, "PostSL format mismatch");
         }
     }
 
@@ -14319,7 +14350,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             const bool preserveNativeFSRPresentCallbackBackend =
                 ce::dx12_overlay_policy::ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(
                     g_FFXPresentOverlayAdapter.IsInitialized(), HookHasRuntimeOwnedNativeFGPresentPath());
-            HookLog("DX12: ProcessFrame - cleaning up stale OverlayAdapter (mutex held)");
+            HookLog("DX12: ProcessFrame - releasing swapchain/queue-bound overlay state (mutex held)");
             if (preserveNativeFSRPresentCallbackBackend) {
                 HookLogImportant(
                     "DX12: ProcessFrame - preserving native FSR present-callback overlay backend during normal "
@@ -14329,14 +14360,16 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     g_OriginalGameQueue,
                     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0);
             }
-            g_OverlayAdapter.Shutdown();
-            g_OverlayAdapterBackendDevice.store(nullptr, std::memory_order_release);
-            g_OverlayAdapterBackendQueue.store(nullptr, std::memory_order_release);
-            g_OverlayAdapterBackendFormat.store(static_cast<int>(DXGI_FORMAT_UNKNOWN), std::memory_order_release);
-            g_PreserveOverlayAdapterAcrossResize.store(false, std::memory_order_release);
+            // Warm-backend: keep the adapter's device-scoped resources (PSOs,
+            // font atlas, upload pools) alive across the FG transition; only
+            // swapchain/queue-bound state (RTVs, allocators, fence) is released
+            // here, after the transition GPU drains already ran. InitImGui
+            // below reuses the warm backend when device+format still match and
+            // shuts it down for a full rebuild otherwise.
+            g_PreserveOverlayAdapterAcrossResize.store(true, std::memory_order_release);
             CleanupOverlay(preserveNativeFSRPresentCallbackBackend);
             CleanupRTVs();
-            HookLog("DX12: ProcessFrame - cleanup complete, proceeding with init");
+            HookLog("DX12: ProcessFrame - swapchain-scoped cleanup complete, proceeding with init (warm backend kept)");
         }
 
         DXGI_SWAP_CHAIN_DESC desc;
@@ -16696,19 +16729,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     "(device=%p queue=%p fmt=%d)",
                                                     dev, backendQueue, (int)g_State.format);
                                             }
-                                        } else if (dev && !useTextureDx12Backend && !g_DescFreeBackend) {
-                                            auto* backend = new DX12DescFreeBackend();
-                                            if (backend->InitDevice(dev, g_State.format)) {
-                                                g_DescFreeBackend = backend;
-                                                g_D3D11On12Adapter.InitCustom(g_DescFreeBackend,
-                                                                              OverlayBackendType::DX12);
-                                                HookLogImportant("DX12: Descriptor-free overlay backend ready");
-                                            } else {
-                                                delete backend;
-                                                HookLogImportant(
-                                                    "DX12: Descriptor-free backend init failed, "
-                                                    "falling back to standard DX12");
-                                            }
+                                        } else if (dev && !useTextureDx12Backend) {
+                                            // Reuses the warm device-scoped backend when device and
+                                            // format still match; rebuilds it otherwise.
+                                            EnsureDescFreeBackendForDeviceAndFormat(dev, g_State.format,
+                                                                                    "normal route");
                                         }
                                         const bool primaryOverlayReady =
                                             useTextureDx12Backend

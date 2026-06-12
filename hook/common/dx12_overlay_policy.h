@@ -618,6 +618,21 @@ inline bool IsLiveNoCallbackNativeFSRSuspensionToggle(
     return (previousIsFSR && nextIsNonFG) || (previousIsNonFG && nextIsFSR);
 }
 
+// The DX12 overlay adapter backend (root signature, PSOs, font atlas,
+// vertex/index upload pools) is DEVICE+FORMAT scoped; its bound command queue
+// is stored but never used for resource creation or submission (the hook
+// records into its own command list and submits explicitly). A warm backend
+// may therefore be reused across a QUEUE change — FG transitions hand the
+// swapchain to a different queue every time — as long as device and RTV
+// format still match. Queue-bound sync objects (allocators/fence) are rebuilt
+// separately by InitOverlaySync after the transition GPU drains. Session
+// 20260612_215439: requiring queue equality forced a full backend rebuild on
+// every FG transition (2-4 uncovered presents each).
+inline bool CanReuseWarmDX12OverlayBackend(bool preserveRequested, bool adapterInitialized, bool deviceMatches,
+                                           bool formatMatches) {
+    return preserveRequested && adapterInitialized && deviceMatches && formatMatches;
+}
+
 // A runtime-mode flip that changes only the heuristic FG label, not the
 // transport: no Streamline FG signal on either side, FG swapchain ownership
 // and the live swapchain queue unchanged, no authoritative FSR API state, and
