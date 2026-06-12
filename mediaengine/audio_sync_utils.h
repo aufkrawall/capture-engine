@@ -39,6 +39,35 @@ inline bool ShouldDeferAudioPullUntilQuantum(int64_t pendingSamples, bool trackS
     return pendingSamples < std::max<int64_t>(1, quantumSamples);
 }
 
+inline bool ShouldUseSampleExactCfrAudioPull(bool isCfrRecording, bool trackStartupSettled, bool forceDrain) {
+    return isCfrRecording && trackStartupSettled && !forceDrain;
+}
+
+inline int64_t ComputeAudioSamplesToEncode(int64_t pendingSamples, bool isCfrRecording, bool trackStartupSettled,
+                                           bool forceDrain, bool initialTrackCatchup, bool overloadPullQuantum,
+                                           int64_t defaultQuantumSamples = kDefaultAudioPullQuantumSamples,
+                                           int64_t overloadQuantumSamples = kDefaultAudioPullQuantumSamples) {
+    if (pendingSamples <= 0) {
+        return 0;
+    }
+
+    if (ShouldUseSampleExactCfrAudioPull(isCfrRecording, trackStartupSettled, forceDrain)) {
+        return pendingSamples;
+    }
+
+    const int64_t quantumSamples = overloadPullQuantum ? overloadQuantumSamples : defaultQuantumSamples;
+    if (ShouldDeferAudioPullUntilQuantum(pendingSamples, trackStartupSettled, forceDrain, quantumSamples)) {
+        return 0;
+    }
+
+    if (trackStartupSettled && !forceDrain && !initialTrackCatchup) {
+        const int64_t boundedQuantum = std::max<int64_t>(1, quantumSamples);
+        return (pendingSamples / boundedQuantum) * boundedQuantum;
+    }
+
+    return pendingSamples;
+}
+
 inline bool ShouldUseCfrAudioContinuityPolicy(bool useVfr) {
     return !useVfr;
 }
@@ -292,6 +321,20 @@ inline int64_t ComputeDurationUsToSamples(int64_t durationUs, int sampleRate) {
 
     constexpr int64_t kMicrosecondsPerSecond = 1000000;
     return ((durationUs * static_cast<int64_t>(sampleRate)) + (kMicrosecondsPerSecond / 2)) / kMicrosecondsPerSecond;
+}
+
+inline int64_t ComputeSamplesToDurationUs(int64_t samples, int sampleRate) {
+    if (sampleRate <= 0 || samples == 0) {
+        return 0;
+    }
+
+    constexpr int64_t kMicrosecondsPerSecond = 1000000;
+    const bool negative = samples < 0;
+    const int64_t absSamples = negative ? -samples : samples;
+    const int64_t durationUs =
+        ((absSamples * kMicrosecondsPerSecond) + (static_cast<int64_t>(sampleRate) / 2)) /
+        static_cast<int64_t>(sampleRate);
+    return negative ? -durationUs : durationUs;
 }
 
 inline size_t ComputeAudioSampleBufferBytes(int64_t samples, int bytesPerSample, int channels) {

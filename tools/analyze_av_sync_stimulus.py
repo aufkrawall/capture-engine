@@ -31,6 +31,7 @@ STRICT_CE_PATTERNS = {
     ),
     "audio_overflow": re.compile(r"\[PullAudio\] WARNING: Ring buffer overflow", re.IGNORECASE),
     "audio_extreme_drift": re.compile(r"\[PullAudio\] WARNING: Extreme drift detected", re.IGNORECASE),
+    "audio_zero_drift_residual": re.compile(r"\[A/V ZERO DRIFT WARNING\]", re.IGNORECASE),
     "wgc_stop_hold": re.compile(r"WGC CFR stop drain using held pre-stop frame", re.IGNORECASE),
     "wgc_drain_duplicate": re.compile(r"\[WGC CFR SUMMARY\].*drain=[1-9]", re.IGNORECASE),
 }
@@ -1207,8 +1208,8 @@ def audio_refinement_is_plausible(coarse_time, refined_time):
     return math.isfinite(refined_time) and abs(refined_time - coarse_time) <= MAX_AUDIO_REFINEMENT_DELTA_SECONDS
 
 
-def match_transition_offsets(reference, candidate, max_window):
-    offsets = []
+def match_transition_offset_points(reference, candidate, max_window):
+    points = []
     missing = 0
     used = set()
     for ref in reference:
@@ -1222,7 +1223,20 @@ def match_transition_offsets(reference, candidate, max_window):
             continue
         _, index, item = min(choices, key=lambda value: value[0])
         used.add(index)
-        offsets.append(transition_signed_offset(item, ref))
+        points.append(
+            {
+                "reference_time": parse_float(ref.get("time"), 0.0),
+                "candidate_time": parse_float(item.get("time"), 0.0),
+                "offset_seconds": transition_signed_offset(item, ref),
+                "to": ref.get("to"),
+            }
+        )
+    return points, missing
+
+
+def match_transition_offsets(reference, candidate, max_window):
+    points, missing = match_transition_offset_points(reference, candidate, max_window)
+    offsets = [point["offset_seconds"] for point in points]
     return offsets, missing
 
 
@@ -1256,15 +1270,44 @@ def summarize_offsets_ms(offsets):
             "median_signed": 0.0,
             "min_signed": 0.0,
             "max_signed": 0.0,
+            "span": 0.0,
         }
+    min_signed = min(values)
+    max_signed = max(values)
     return {
         "matched": len(values),
         "max_abs": max(abs(value) for value in values),
         "mean_signed": statistics.fmean(values),
         "median_signed": statistics.median(values),
-        "min_signed": min(values),
-        "max_signed": max(values),
+        "min_signed": min_signed,
+        "max_signed": max_signed,
+        "span": max_signed - min_signed,
     }
+
+
+def compute_offset_slope_ms_per_minute(points):
+    usable = [
+        (parse_float(point.get("reference_time"), float("nan")), parse_float(point.get("offset_seconds"), float("nan")) * 1000.0)
+        for point in points
+    ]
+    usable = [(time_value, offset_ms) for time_value, offset_ms in usable if math.isfinite(time_value) and math.isfinite(offset_ms)]
+    if len(usable) < 2:
+        return 0.0
+    mean_time = statistics.fmean(time_value for time_value, _ in usable)
+    mean_offset = statistics.fmean(offset_ms for _, offset_ms in usable)
+    denom = sum((time_value - mean_time) ** 2 for time_value, _ in usable)
+    if denom <= 0.0:
+        return 0.0
+    slope_ms_per_second = sum((time_value - mean_time) * (offset_ms - mean_offset) for time_value, offset_ms in usable) / denom
+    return slope_ms_per_second * 60.0
+
+
+def offset_slope_is_acceptable(offsets, offset_stats, slope_ms_per_minute, max_slope_ms_per_minute, min_excursion_ms):
+    if not offsets:
+        return False
+    if abs(slope_ms_per_minute) <= max_slope_ms_per_minute:
+        return True
+    return parse_float(offset_stats.get("span"), 0.0) <= min_excursion_ms
 
 
 def analyze_ce_log_text(text):
@@ -1410,13 +1453,16 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
                 "audio_marker_missing" if is_strict_audio else "opportunistic_audio_marker",
             )
         )
-        offsets, missing = match_transition_offsets(
+        offset_points, missing = match_transition_offset_points(
             video_audio_reference_transitions, transitions_for_matching, args.transition_match_window_ms / 1000.0
         )
+        offsets = [point["offset_seconds"] for point in offset_points]
         offset_stats = summarize_offsets_ms(offsets)
+        offset_slope_ms_per_minute = compute_offset_slope_ms_per_minute(offset_points)
         if transitions and not offsets:
             offset_stats["max_abs"] = 999999.0
         offset_stats["missing"] = missing
+        offset_stats["slope_ms_per_minute"] = offset_slope_ms_per_minute
         offset_stats["target_signed_ms"] = 0.0
         result["av_offset_stats_ms"] = {
             key: round(value, 3) if isinstance(value, float) else value for key, value in offset_stats.items()
@@ -1448,6 +1494,28 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
                 "audio_video_event_offset" if is_strict_audio else "opportunistic_audio_video_event_offset",
             )
         )
+        checks.append(
+            make_check(
+                f"audio.a:{result['ordinal']}.offset_slope_ms_per_min"
+                if is_strict_audio
+                else f"audio.a:{result['ordinal']}.opportunistic_offset_slope_ms_per_min",
+                offset_slope_is_acceptable(
+                    offsets,
+                    offset_stats,
+                    offset_slope_ms_per_minute,
+                    args.max_offset_slope_ms_per_min,
+                    args.min_offset_slope_excursion_ms,
+                )
+                if is_strict_audio
+                else True,
+                {
+                    "slope_ms_per_minute": round(offset_slope_ms_per_minute, 3),
+                    "span_ms": round(offset_stats["span"], 3),
+                },
+                f"0 +/- {args.max_offset_slope_ms_per_min} ms/min, or span <= {args.min_offset_slope_excursion_ms} ms",
+                "audio_video_offset_slope" if is_strict_audio else "opportunistic_audio_video_offset_slope",
+            )
+        )
 
     if len(audio_transition_sets) >= 2:
         reference_ordinal, reference = audio_transition_sets[0]
@@ -1467,8 +1535,29 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
             )
         )
 
+    strict_audio_content_failure_classes = {
+        "audio_marker_missing",
+        "audio_video_event_offset",
+        "audio_video_offset_slope",
+        "decode_error",
+        "inter_track_spread",
+    }
+    strict_audio_content_ok = not any(
+        (not check["passed"]) and check["failure_class"] in strict_audio_content_failure_classes for check in checks
+    )
     for name, count in sorted(ce_counts.items()):
-        checks.append(make_check(f"ce_log.{name}", count == 0, count, "0", "ce_strict_log_event"))
+        if name == "audio_strict_source_padding":
+            checks.append(
+                make_check(
+                    f"ce_log.{name}",
+                    count == 0 or strict_audio_content_ok,
+                    count,
+                    "0, or decoded strict audio markers/spread remain clean",
+                    "ce_strict_log_event",
+                )
+            )
+        else:
+            checks.append(make_check(f"ce_log.{name}", count == 0, count, "0", "ce_strict_log_event"))
     for name, count in sorted(app_counts.items()):
         if name == "frame_pacing_spike":
             visible_video_ok = (
@@ -1521,7 +1610,7 @@ def print_report(report):
         stats = audio.get("av_offset_stats_ms", {})
         print(
             "  audio a:{ordinal} codec={codec} rate={rate} transitions={transitions} decode_error={decode_error} "
-            "offset_mean={mean}ms offset_max_abs={max_abs}ms".format(
+            "offset_mean={mean}ms offset_max_abs={max_abs}ms offset_span={span}ms offset_slope={slope}ms/min".format(
                 ordinal=audio["ordinal"],
                 codec=audio["codec"],
                 rate=audio["sample_rate"],
@@ -1529,6 +1618,8 @@ def print_report(report):
                 decode_error="yes" if audio.get("decode_error") else "no",
                 mean=stats.get("mean_signed", "n/a"),
                 max_abs=stats.get("max_abs", "n/a"),
+                span=stats.get("span", "n/a"),
+                slope=stats.get("slope_ms_per_minute", "n/a"),
             )
         )
     print("checks:")
@@ -1547,6 +1638,9 @@ def self_test():
     offsets, missing = match_transition_offsets(reference, candidate, 0.1)
     assert missing == 0
     assert round(max(abs(offset) for offset in offsets), 3) == 0.015
+    points, missing = match_transition_offset_points(reference, candidate, 0.1)
+    assert missing == 0
+    assert round(compute_offset_slope_ms_per_minute(points), 3) == -660.0
     extra_candidate = candidate + [{"to": 3, "time": 3.4}]
     offsets, missing = match_transition_offsets(reference, extra_candidate, 0.1)
     assert missing == 0
@@ -1557,6 +1651,9 @@ def self_test():
     assert stats["matched"] == 2
     assert round(stats["mean_signed"], 3) == 13.5
     assert round(stats["max_abs"], 3) == 15.0
+    assert round(stats["span"], 3) == 3.0
+    assert offset_slope_is_acceptable(offsets, stats, 120.0, 30.0, 5.0)
+    assert not offset_slope_is_acceptable([0.0, 0.020], {"span": 20.0}, 120.0, 30.0, 5.0)
     segments, transitions = compress_states([(0.0, 1), (0.1, 1), (0.2, 2), (0.3, 2)], min_duration=0.05)
     assert len(segments) == 2
     assert transitions[0]["to"] == 2
@@ -1577,16 +1674,19 @@ def self_test():
     assert not audio_refinement_is_plausible(1.0, 1.014)
     clean_counts = analyze_ce_log_text(
         "[PullAudio] Track 1 bootstrap complete - target=3ms samples=160 forced=0 trimmed=0 protected=1029\n"
-        "[A/V SYNC CHECK] Track 1: RetainTrim=0, CoverageTrim=0, Tier2Trim=0, BootstrapTrim=0\n"
+        "[A/V SYNC CHECK] Track 1: RetainTrim=0, CoverageTrim=0, Tier2Trim=0, BootstrapTrim=0 residual_samples=+0\n"
     )
     assert clean_counts["audio_trim"] == 0
+    assert clean_counts["audio_zero_drift_residual"] == 0
     bad_counts = analyze_ce_log_text(
         "[PullAudio] Track 1 bootstrap complete - target=3ms samples=160 forced=0 trimmed=4 protected=1029\n"
         "[PullAudio] Audio latency cap: src 0 ahead by 1200 samples - trimming 240\n"
         "[STOP AUDIO] Source 3: track=2 encoded=1000 trim=cov:0 latTotal:0 liveUncat:0 pad:42 qgap:0\n"
+        "[A/V ZERO DRIFT WARNING] Track 1 residual_samples=+1 residual_us=+21\n"
     )
     assert bad_counts["audio_trim"] == 2
     assert bad_counts["audio_strict_source_padding"] == 1
+    assert bad_counts["audio_zero_drift_residual"] == 1
     clean_app_counts = analyze_app_log_text(
         "AVSYNC FRAME_TIMING planned_source_gap frameId=10 deltaMs=305.0 thresholdMs=33.3\n"
         "AVSYNC SUMMARY frame_timing targetFps=60 spikes=0\n"
@@ -1838,6 +1938,13 @@ def main():
     parser.add_argument("--max-av-offset-ms", type=float, default=25.0)
     parser.add_argument("--max-mean-av-offset-ms", type=float, default=15.0)
     parser.add_argument("--max-track-spread-ms", type=float, default=10.0)
+    parser.add_argument("--max-offset-slope-ms-per-min", type=float, default=30.0)
+    parser.add_argument(
+        "--min-offset-slope-excursion-ms",
+        type=float,
+        default=12.0,
+        help="Only fail short-run offset slope when matched offsets span more than this many milliseconds.",
+    )
     parser.add_argument("--transition-match-window-ms", type=float, default=300.0)
     parser.add_argument("--min-video-transitions", type=int, default=4)
     parser.add_argument("--min-audio-transitions", type=int, default=4)

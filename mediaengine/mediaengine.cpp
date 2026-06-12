@@ -2220,28 +2220,16 @@ public:
             if (pendingSamples <= 0)
                 continue;
 
-            if (ce::audio::ShouldDeferAudioPullUntilQuantum(pendingSamples, trackStartupSettled, forceDrain)) {
-                continue;
-            }
-
-            int64_t samplesToEncode = pendingSamples;
             const bool initialTrackCatchup =
                 trackFirstPullAfterBootstrap.count(track) && trackFirstPullAfterBootstrap[track];
-            if (trackStartupSettled && !forceDrain) {
-                // After bootstrap, the pull quantum rounding can leave a residual (up to 960
-                // samples = 20ms) that accumulates into a constant audio-video offset. Skip
-                // quantum rounding on the first pull after bootstrap to achieve exact alignment.
-                if (!initialTrackCatchup) {
-                    const bool overloadPullQuantum =
-                        (isWgcCfrRecording && (wgcOverloadFlags & 0x1u) != 0) ||
-                        (isCfrRecording && !isWgcCfrRecording && timelineShortfallMs > 100);
-                    const int64_t quantumSamples = overloadPullQuantum ? kOverloadAudioPullQuantumSamples
-                                                                       : ce::audio::kDefaultAudioPullQuantumSamples;
-                    samplesToEncode = (samplesToEncode / quantumSamples) * quantumSamples;
-                }
-                if (samplesToEncode <= 0) {
-                    continue;
-                }
+            const bool overloadPullQuantum =
+                (isWgcCfrRecording && (wgcOverloadFlags & 0x1u) != 0) ||
+                (isCfrRecording && !isWgcCfrRecording && timelineShortfallMs > 100);
+            int64_t samplesToEncode = ce::audio::ComputeAudioSamplesToEncode(
+                pendingSamples, isCfrRecording, trackStartupSettled, forceDrain, initialTrackCatchup,
+                overloadPullQuantum, ce::audio::kDefaultAudioPullQuantumSamples, kOverloadAudioPullQuantumSamples);
+            if (samplesToEncode <= 0) {
+                continue;
             }
             if (initialTrackCatchup) {
                 trackFirstPullAfterBootstrap[track] = false;
@@ -3179,21 +3167,36 @@ public:
                 int64_t wallVideoMs = videoElapsedMs.load();
                 int64_t videoMs = wallVideoMs;
                 int64_t encodedVideoMs = wallVideoMs;
+                int64_t encodedVideoUsForSummary = wallVideoMs * 1000;
+                int64_t scheduledVideoUsForSummary = trackAudioTargetUs;
                 if (videoEnc) {
                     int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
                     if (encodedVideoUs > 0) {
+                        encodedVideoUsForSummary = encodedVideoUs;
                         encodedVideoMs = encodedVideoUs / 1000;
                         if (!isCfrRecording) {
                             videoMs = encodedVideoMs;
                         }
                     }
+                    if (isCfrRecording) {
+                        const int64_t expectedVideoUs = videoEnc->GetExpectedFinalDurationUs();
+                        if (expectedVideoUs > 0) {
+                            scheduledVideoUsForSummary = expectedVideoUs;
+                        }
+                    }
                 }
                 int64_t audioSamples = trackTimelineSamples[track];
-                int64_t audioMs = (audioSamples * 1000) / SAMPLE_RATE;
+                int64_t audioUs = ce::audio::ComputeSamplesToDurationUs(audioSamples, SAMPLE_RATE);
+                int64_t audioMs = audioUs / 1000;
                 int64_t avDrift = audioMs - videoMs;
                 int64_t latencyAdjustedAvDrift =
                     ce::audio::ComputeLatencyAdjustedAvDriftMs(avDrift, trackAudioPullLatencyMs);
                 int64_t pipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
+                const int64_t residualSamples = audioSamples - targetSamples;
+                const int64_t residualUs = ce::audio::ComputeSamplesToDurationUs(residualSamples, SAMPLE_RATE);
+                const int64_t audioVsEncodedUs = audioUs - encodedVideoUsForSummary;
+                const int64_t audioVsTargetUs = audioUs - trackAudioTargetUs;
+                const int64_t audioVsScheduledUs = audioUs - scheduledVideoUsForSummary;
 
                 // Summarize all sources contributing to this track so issues on a
                 // secondary app/system source are visible in the periodic sync log.
@@ -3354,6 +3357,9 @@ public:
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
                     "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, VideoEnc=%lld ms, "
+                    "audio_vs_encoded_us=%+lld audio_vs_target_us=%+lld audio_vs_scheduled_us=%+lld "
+                    "residual_samples=%+lld residual_us=%+lld target_samples=%lld cursor_samples=%lld "
+                    "target_us=%lld cursor_us=%lld encoded_video_us=%lld scheduled_video_us=%lld "
                     "PipelineLag=%lld ms, "
                     "ContentLag=%lld ms, CovMode=%d, EncBottleneck=%d, Delivered=%u/%u, Over=0x%x, "
                     "TargetBuf=%lld ms, WgcFrameLead=%lld ms, WgcFrameLag=%lld ms, WgcSelBias=%lld us, Overflow=%llu, "
@@ -3361,7 +3367,10 @@ public:
                     "LatencyTrimTotal=%llu, UncategorizedLiveTrim=%llu, PostTrim=%llu, Pad=%llu, QpcGap=%llu, "
                     "QpcOverlap=%llu, Sources=%s",
                     track, videoMs, audioMs, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs, wallVideoMs,
-                    encodedVideoMs, pipelineLagMs, isWgcCfrRecording ? wgcBufferedVideoContentLagMs : pipelineLagMs,
+                    encodedVideoMs, audioVsEncodedUs, audioVsTargetUs, audioVsScheduledUs, residualSamples, residualUs,
+                    targetSamples, audioSamples, trackAudioTargetUs, audioUs, encodedVideoUsForSummary,
+                    scheduledVideoUsForSummary, pipelineLagMs,
+                    isWgcCfrRecording ? wgcBufferedVideoContentLagMs : pipelineLagMs,
                     wgcCoverageLossActive ? 1 : 0, wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps,
                     wgcOverloadFlags, (targetBufferedSamples * 1000) / SAMPLE_RATE, wgcSelectedContentLeadMs,
                     wgcVisualContentLagMs, wgcSelectionBiasUs, (unsigned long long)overflowDropped,
@@ -3374,11 +3383,24 @@ public:
 
                 DLL_Log(
                     "[A/V SYNC SUMMARY] Track %d: Wall=%lldms EncV=%lldms Audio=%lldms Drift=%+lldms "
+                    "audio_vs_encoded_us=%+lld audio_vs_target_us=%+lld audio_vs_scheduled_us=%+lld "
+                    "residual_samples=%+lld residual_us=%+lld target_samples=%lld cursor_samples=%lld "
                     "PipelineLag=%lldms PullLatency=%lldms WgcFrameLead=%lldms WgcFrameLag=%lldms EncBot=%d "
                     "Delivered=%u/%u",
-                    track, wallVideoMs, encodedVideoMs, audioMs, avDrift, pipelineLagMs, trackAudioPullLatencyMs,
+                    track, wallVideoMs, encodedVideoMs, audioMs, avDrift, audioVsEncodedUs, audioVsTargetUs,
+                    audioVsScheduledUs, residualSamples, residualUs, targetSamples, audioSamples, pipelineLagMs,
+                    trackAudioPullLatencyMs,
                     wgcSelectedContentLeadMs, wgcVisualContentLagMs, wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps,
                     wgcTargetFps);
+
+                if (isCfrRecording && trackStartupSettled && residualSamples != 0) {
+                    DLL_Log(
+                        "[A/V ZERO DRIFT WARNING] Track %d residual_samples=%+lld residual_us=%+lld "
+                        "target_samples=%lld cursor_samples=%lld target_us=%lld cursor_us=%lld "
+                        "audio_vs_encoded_us=%+lld audio_vs_target_us=%+lld",
+                        track, residualSamples, residualUs, targetSamples, audioSamples, trackAudioTargetUs, audioUs,
+                        audioVsEncodedUs, audioVsTargetUs);
+                }
 
                 if (std::abs(latencyAdjustedAvDrift) > 100) {
                     DLL_Log(

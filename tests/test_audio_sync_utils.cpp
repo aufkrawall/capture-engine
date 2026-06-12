@@ -51,6 +51,20 @@ TEST(AudioSyncUtilsTest, AudioPullQuantumDefersOnlySmallSteadyStatePulls) {
     EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(120, true, true));
 }
 
+TEST(AudioSyncUtilsTest, SettledCfrAudioPullIsSampleExact) {
+    EXPECT_TRUE(ce::audio::ShouldUseSampleExactCfrAudioPull(true, true, false));
+    EXPECT_FALSE(ce::audio::ShouldUseSampleExactCfrAudioPull(true, false, false));
+    EXPECT_FALSE(ce::audio::ShouldUseSampleExactCfrAudioPull(true, true, true));
+    EXPECT_FALSE(ce::audio::ShouldUseSampleExactCfrAudioPull(false, true, false));
+
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesToEncode(1, true, true, false, false, false), 1);
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesToEncode(239, true, true, false, false, false), 239);
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesToEncode(239, false, true, false, false, false), 0);
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesToEncode(1000, false, true, false, false, true, 240, 960), 960);
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesToEncode(239, false, true, false, true, false), 0);
+    EXPECT_EQ(ce::audio::ComputeAudioSamplesToEncode(239, false, false, false, false, false), 239);
+}
+
 TEST(AudioSyncUtilsTest, CfrAudioContinuityPolicyFollowsVfrMode) {
     EXPECT_TRUE(ce::audio::ShouldUseCfrAudioContinuityPolicy(false));
     EXPECT_FALSE(ce::audio::ShouldUseCfrAudioContinuityPolicy(true));
@@ -76,6 +90,31 @@ TEST(AudioSyncUtilsTest, DurationUsToSamplesRoundsToNearestSample) {
     EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(0, 48000), 0);
     EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(-1, 48000), 0);
     EXPECT_EQ(ce::audio::ComputeDurationUsToSamples(1000, 0), 0);
+}
+
+TEST(AudioSyncUtilsTest, SamplesToDurationUsRoundsToNearestMicrosecond) {
+    EXPECT_EQ(ce::audio::ComputeSamplesToDurationUs(400, 48000), 8333);
+    EXPECT_EQ(ce::audio::ComputeSamplesToDurationUs(800, 48000), 16667);
+    EXPECT_EQ(ce::audio::ComputeSamplesToDurationUs(-400, 48000), -8333);
+    EXPECT_EQ(ce::audio::ComputeSamplesToDurationUs(0, 48000), 0);
+    EXPECT_EQ(ce::audio::ComputeSamplesToDurationUs(100, 0), 0);
+}
+
+TEST(AudioSyncUtilsTest, SampleExactCfrAudioCursorHasNoLongDurationResidual) {
+    constexpr int64_t kSampleRate = 48000;
+    constexpr int64_t kFps = 120;
+    constexpr int64_t kFrames = 36 * 60 * kFps;
+    int64_t cursorSamples = 0;
+
+    for (int64_t frame = 1; frame <= kFrames; ++frame) {
+        const int64_t targetUs = ((frame * 1000000ll) + (kFps / 2)) / kFps;
+        const int64_t targetSamples = ce::audio::ComputeDurationUsToSamples(targetUs, kSampleRate);
+        const int64_t pendingSamples = targetSamples - cursorSamples;
+        const int64_t samplesToEncode =
+            ce::audio::ComputeAudioSamplesToEncode(pendingSamples, true, true, false, false, false);
+        cursorSamples += samplesToEncode;
+        ASSERT_EQ(cursorSamples, targetSamples) << "frame=" << frame;
+    }
 }
 
 TEST(AudioSyncUtilsTest, LeadTrimExcessUsesHysteresisBand) {

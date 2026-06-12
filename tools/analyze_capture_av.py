@@ -38,6 +38,7 @@ LOG_PATTERNS = {
     "audio_forced_bootstrap": re.compile(r"\[PullAudio\] Track \d+ bootstrap complete .* forced=1"),
     "audio_bootstrap_trim": re.compile(r"\[PullAudio\] Track \d+ bootstrap complete .* trimmed=[1-9]"),
     "audio_late_source_cursor": re.compile(r"\[AudioLoop\] Late source cursor advance"),
+    "audio_zero_drift_residual": re.compile(r"\[A/V ZERO DRIFT WARNING\]", re.IGNORECASE),
     "wgc_output_limited": re.compile(r"\[WGC CFR\] (?:Output limited|Encoder cannot sustain target)"),
     "wgc_stop_drain_aborted": re.compile(r"\[EncoderThread\] CFR stop drain aborted"),
     "wgc_fresh_catchup": re.compile(r"\[EncoderThread\] CFR Catchup applied using fresh frame"),
@@ -76,6 +77,7 @@ STRICT_SYNC_LOG_EVENTS = (
     "audio_overflow",
     "audio_forced_bootstrap",
     "audio_bootstrap_trim",
+    "audio_zero_drift_residual",
     "audio_extreme_drift",
     "wgc_fresh_catchup",
     "wgc_stop_drain_aborted",
@@ -139,6 +141,11 @@ STOP_AUDIO_TRACK_RE = re.compile(
     r"\(([+-]?[0-9.]+) ms\).*sources=\[([^\]]*)\]",
     re.IGNORECASE,
 )
+ZERO_DRIFT_WARNING_RE = re.compile(
+    r"\[A/V ZERO DRIFT WARNING\] Track (\d+) residual_samples=([+-]?\d+) residual_us=([+-]?\d+) "
+    r"target_samples=(\d+) cursor_samples=(\d+)",
+    re.IGNORECASE,
+)
 EXTERNAL_OVERLAY_RE = re.compile(r"\b(Steam|Rockstar|RTSS|ReShade|SpecialK|Streamline|FFX)\b", re.IGNORECASE)
 
 TRIAGE_AUDIO_FAULT_EVENTS = {
@@ -156,6 +163,7 @@ TRIAGE_AUDIO_FAULT_EVENTS = {
     "audio_overflow",
     "audio_forced_bootstrap",
     "audio_bootstrap_trim",
+    "audio_zero_drift_residual",
     "audio_extreme_drift",
 }
 
@@ -955,6 +963,7 @@ def parse_media_triage(media_text):
     final_metadata = []
     post_mux_audio_mismatches = []
     stop_audio_tracks = []
+    zero_drift_warnings = []
     packet_mismatch_warnings = 0
     for line in media_text.splitlines():
         source_match = WGC_SOURCE_STARVED_RE.search(line)
@@ -1071,6 +1080,18 @@ def parse_media_triage(media_text):
                     "line": line,
                 }
             )
+        zero_drift_match = ZERO_DRIFT_WARNING_RE.search(line)
+        if zero_drift_match:
+            zero_drift_warnings.append(
+                {
+                    "track": parse_int(zero_drift_match.group(1)),
+                    "residual_samples": parse_int(zero_drift_match.group(2)),
+                    "residual_us": parse_int(zero_drift_match.group(3)),
+                    "target_samples": parse_int(zero_drift_match.group(4)),
+                    "cursor_samples": parse_int(zero_drift_match.group(5)),
+                    "line": line,
+                }
+            )
         if PACKET_MISMATCH_RE.search(line):
             packet_mismatch_warnings += 1
     return {
@@ -1085,6 +1106,7 @@ def parse_media_triage(media_text):
         "final_metadata": final_metadata,
         "post_mux_audio_mismatch_delta_us": post_mux_audio_mismatches,
         "stop_audio_tracks": stop_audio_tracks,
+        "zero_drift_warnings": zero_drift_warnings,
         "packet_mismatch_warnings": packet_mismatch_warnings,
     }
 
@@ -1323,6 +1345,7 @@ def classify_session_triage(session_dir, capture_path=None):
         any(audio_fault_counts.values())
         or post_mux_strict_mismatches
         or final_packet_strict
+        or media_evidence["zero_drift_warnings"]
         or stop_audio_shortfalls["short_count"] > 0
     ):
         verdicts.append("ce_audio_timeline_fault")
@@ -1380,6 +1403,7 @@ def classify_session_triage(session_dir, capture_path=None):
             "mux_fault_counts": mux_fault_counts,
             "writer_sync_after_timeout": writer_sync_after_timeout,
             "stop_audio_tracks": media_evidence["stop_audio_tracks"],
+            "zero_drift_warnings": media_evidence["zero_drift_warnings"],
             "stop_audio_shortfalls": stop_audio_shortfalls,
             "final_packet_timelines": media_evidence["final_packet_timelines"],
             "final_metadata": media_evidence["final_metadata"],
@@ -1424,6 +1448,9 @@ def print_triage_report(report):
                 worst=stop_shortfalls["worst_shortfall_ms"],
             )
         )
+    if evidence["zero_drift_warnings"]:
+        worst_residual = max(abs(item["residual_samples"]) for item in evidence["zero_drift_warnings"])
+        print(f"  zero_drift_warnings={len(evidence['zero_drift_warnings'])} worst_residual_samples={worst_residual}")
     if evidence["mux_fault_counts"]:
         mux_faults = ",".join(
             f"{name}={count}" for name, count in sorted(evidence["mux_fault_counts"].items()) if count
@@ -1708,6 +1735,17 @@ def self_test():
         audio_fault = make_session("audio_fault", media="[PullAudio] WARNING: Source underrun track=1\n")
         report = classify_session_triage(audio_fault)
         assert "ce_audio_timeline_fault" in report["verdicts"]
+
+        zero_drift = make_session(
+            "zero_drift",
+            media=(
+                "[A/V ZERO DRIFT WARNING] Track 1 residual_samples=+1 residual_us=+21 "
+                "target_samples=96000 cursor_samples=96001 target_us=2000000 cursor_us=2000021\n"
+            ),
+        )
+        report = classify_session_triage(zero_drift)
+        assert "ce_audio_timeline_fault" in report["verdicts"]
+        assert report["evidence"]["zero_drift_warnings"][0]["residual_samples"] == 1
 
         one_us = make_session(
             "one_us",

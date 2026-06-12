@@ -3517,6 +3517,7 @@ def run_python_tool_self_tests(env):
     tool_tests = [
         ("analyze_av_sync_stimulus", os.path.join(PROJECT_ROOT, "tools", "analyze_av_sync_stimulus.py")),
         ("analyze_capture_av", os.path.join(PROJECT_ROOT, "tools", "analyze_capture_av.py")),
+        ("run_av_sync_matrix", os.path.join(PROJECT_ROOT, "tools", "run_av_sync_matrix.py")),
     ]
     ok = True
     for name, script in tool_tests:

@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Union
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -29,10 +30,22 @@ class Scenario:
     capture_method: str
     audio_codec: str
     fps: int
+    label: str = ""
+    duration_sec: Optional[int] = None
+    app_fps: Optional[Union[str, int]] = None
+    gpu_load: Optional[int] = None
+    include_source_stall: bool = False
+    source_stall: Optional[str] = None
+    audio_layout: str = ""
+    width: Optional[int] = None
+    height: Optional[int] = None
 
     @property
     def name(self):
-        return f"{self.capture_method}_{self.audio_codec}_{self.fps}fps"
+        parts = [self.capture_method, self.audio_codec, f"{self.fps}fps"]
+        if self.label:
+            parts.append(re.sub(r"[^A-Za-z0-9_.-]+", "_", self.label.strip().lower()))
+        return "_".join(parts)
 
 
 def resolve_app_fps(app_fps_arg, capture_method, output_fps):
@@ -176,8 +189,16 @@ def write_scenario_config(scenario, output_dir, include_microphone, include_mixe
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     mic_enabled = "true" if include_microphone else "false"
-    system_tracks = "1,3" if include_mixed_track else "1"
-    app_tracks = "2,3" if include_mixed_track else "2"
+    audio_layout = resolve_audio_layout(scenario, include_mixed_track)
+    if audio_layout == "mixed":
+        system_tracks = "1,3"
+        app_tracks = "2,3"
+    elif audio_layout == "duplicate_app":
+        system_tracks = "3"
+        app_tracks = "1,2"
+    else:
+        system_tracks = "1"
+        app_tracks = "2"
     text = f"""[General]
 log_level=trace
 capture_method={scenario.capture_method}
@@ -247,6 +268,10 @@ general_enabled=false
 enabled=false
 """
     CAPTURE_CONFIG.write_text(text, encoding="utf-8")
+
+
+def resolve_audio_layout(scenario, include_mixed_track):
+    return scenario.audio_layout or ("mixed" if include_mixed_track else "strict")
 
 
 def generated_app_paths(file_name):
@@ -421,9 +446,15 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     write_scenario_config(scenario, captures_dir, args.include_microphone, args.include_mixed_track, args.video_encoder)
 
     delay_ms = args.delay_ms
-    duration_ms = args.duration_sec * 1000
-    app_duration = args.duration_sec + max(4, delay_ms // 1000 + 2)
-    app_fps = resolve_app_fps(args.app_fps, scenario.capture_method, scenario.fps)
+    scenario_duration_sec = scenario.duration_sec if scenario.duration_sec is not None else args.duration_sec
+    scenario_app_fps_arg = scenario.app_fps if scenario.app_fps is not None else args.app_fps
+    scenario_gpu_load = scenario.gpu_load if scenario.gpu_load is not None else args.gpu_load
+    scenario_width = scenario.width if scenario.width is not None else args.width
+    scenario_height = scenario.height if scenario.height is not None else args.height
+    audio_layout = resolve_audio_layout(scenario, args.include_mixed_track)
+    duration_ms = scenario_duration_sec * 1000
+    app_duration = scenario_duration_sec + max(4, delay_ms // 1000 + 2)
+    app_fps = resolve_app_fps(scenario_app_fps_arg, scenario.capture_method, scenario.fps)
     app_audio_lead_ms = resolve_app_audio_lead_ms(args.app_audio_lead_ms, scenario.capture_method, scenario.fps, app_fps)
     launch = [
         ce_exe,
@@ -431,15 +462,15 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         "--launch",
         app_exe,
         "--width",
-        args.width,
+        scenario_width,
         "--height",
-        args.height,
+        scenario_height,
         "--fps",
         app_fps,
         "--duration",
         app_duration,
         "--gpu-load",
-        args.gpu_load,
+        scenario_gpu_load,
         "--vsync",
         0,
         "--fullscreen",
@@ -461,12 +492,14 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     if args.allow_tearing:
         launch.remove("--no-allow-tearing")
         launch.append("--allow-tearing")
-    if args.include_source_stall:
-        for source_stall in split_csv(args.source_stall):
+    include_source_stall = args.include_source_stall or scenario.include_source_stall
+    source_stall_text = scenario.source_stall or args.source_stall
+    if include_source_stall:
+        for source_stall in split_csv(source_stall_text):
             launch.extend(["--source-stall", source_stall])
 
     start_unix = time.time()
-    return_code, elapsed, timed_out = run_process(launch, timeout=args.duration_sec + delay_ms / 1000.0 + 30.0)
+    return_code, elapsed, timed_out = run_process(launch, timeout=scenario_duration_sec + delay_ms / 1000.0 + 30.0)
     app_exited = wait_for_process_exit(PROCESS_NAME, args.app_exit_timeout_sec)
     if not app_exited:
         taskkill_processes()
@@ -490,7 +523,14 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "capture_method": scenario.capture_method,
             "audio_codec": scenario.audio_codec,
             "fps": scenario.fps,
+            "label": scenario.label,
+            "profile": args.profile,
+            "duration_sec": scenario_duration_sec,
             "app_fps": app_fps,
+            "audio_layout": audio_layout,
+            "gpu_load": scenario_gpu_load,
+            "width": scenario_width,
+            "height": scenario_height,
             "app_audio_clock_scheduling": args.app_audio_clock_scheduling,
             "app_audio_buffer_ms": args.app_audio_buffer_ms,
             "app_audio_lead_ms": app_audio_lead_ms,
@@ -499,6 +539,7 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "mixed_track_enabled": args.include_mixed_track,
             "external_system_audio": args.external_system_audio,
             "allow_tearing": args.allow_tearing,
+            "source_stall": source_stall_text if include_source_stall else None,
         },
         "process": {
             "return_code": return_code,
@@ -546,11 +587,16 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         # a:2=Track 4 microphone. With --include-mixed-track, a:2=Track 3 mixed and a:3=Track 4 mic.
         # Mixed and mic streams are diagnostic evidence; pure system/app are strict timing gates by default.
         # When unrelated desktop audio is known to be playing, system loopback can be downgraded for that run only.
-        non_strict_ordinals = [2]
-        if args.external_system_audio:
+        if audio_layout == "duplicate_app":
+            non_strict_ordinals = [3] if args.include_microphone else []
+            if args.external_system_audio:
+                non_strict_ordinals.append(2)
+        else:
+            non_strict_ordinals = [2]
+            if args.include_microphone and audio_layout == "mixed":
+                non_strict_ordinals.append(3)
+        if args.external_system_audio and audio_layout != "duplicate_app":
             non_strict_ordinals.append(0)
-        if args.include_microphone and args.include_mixed_track:
-            non_strict_ordinals.append(3)
         non_strict_audio = ",".join(str(value) for value in sorted(set(non_strict_ordinals)))
         analyzer_cmd = [
             sys.executable,
@@ -578,6 +624,10 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             args.max_mean_av_offset_ms,
             "--max-track-spread-ms",
             args.max_track_spread_ms,
+            "--max-offset-slope-ms-per-min",
+            args.max_offset_slope_ms_per_min,
+            "--min-offset-slope-excursion-ms",
+            args.min_offset_slope_excursion_ms,
             "--max-longest-repeat",
             args.max_longest_repeat,
             "--max-motion-stall",
@@ -612,15 +662,71 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     return result
 
 
+def build_matrix_scenarios(capture_methods, codecs, fps_values):
+    return [Scenario(method, codec, fps) for method in capture_methods for codec in codecs for fps in fps_values]
+
+
 def build_scenarios(args):
+    if args.profile == "quick":
+        return [
+            Scenario("wgc", "alac", 60, label="quick_lossless_60", duration_sec=12),
+            Scenario("wgc", "aac", 120, label="quick_lossy_120", duration_sec=12),
+            Scenario("inject", "alac", 120, label="quick_lossless_120", duration_sec=12),
+            Scenario("inject", "aac", 60, label="quick_lossy_60", duration_sec=12),
+        ]
+    if args.profile == "codec-pass":
+        return [Scenario("wgc", codec, 60, label="codec_finalize", duration_sec=10) for codec in SUPPORTED_CODECS]
+    if args.profile == "stress":
+        return [
+            Scenario("wgc", "alac", 60, label="duplicate_app_fanout", duration_sec=20, audio_layout="duplicate_app"),
+            Scenario("wgc", "alac", 120, label="source_fps_below_target", duration_sec=20, app_fps=45),
+            Scenario("inject", "aac", 60, label="source_fps_above_target", duration_sec=20, app_fps=240),
+            Scenario("wgc", "alac", 60, label="planned_source_stall", duration_sec=20,
+                     include_source_stall=True, source_stall="8.0:300"),
+            Scenario("wgc", "alac", 120, label="render_frame_pressure", duration_sec=20, gpu_load=200),
+            Scenario("inject", "aac", 120, label="mild_encoder_pressure", duration_sec=20, width=1920, height=1080,
+                     gpu_load=150),
+        ]
+    if args.profile == "full":
+        return build_matrix_scenarios(SUPPORTED_METHODS, SUPPORTED_CODECS, [60, 120])
+    if args.profile == "long-soak":
+        duration_sec = int(round(args.long_soak_minutes * 60.0))
+        return [
+            Scenario("wgc", "alac", 60, label="long_soak", duration_sec=duration_sec),
+            Scenario("inject", "alac", 60, label="long_soak", duration_sec=duration_sec),
+        ]
     methods = split_csv(args.capture_methods, SUPPORTED_METHODS)
     codecs = split_csv(args.codecs, SUPPORTED_CODECS)
     fps_values = split_int_csv(args.fps)
-    return [Scenario(method, codec, fps) for method in methods for codec in codecs for fps in fps_values]
+    return build_matrix_scenarios(methods, codecs, fps_values)
 
 
-def main():
+MATRIX_SELECTION_OPTIONS = ("--capture-methods", "--codecs", "--fps")
+
+
+def explicit_matrix_selection(argv):
+    if argv is None:
+        argv = sys.argv[1:]
+    for item in argv:
+        if any(item == option or item.startswith(f"{option}=") for option in MATRIX_SELECTION_OPTIONS):
+            return True
+    return False
+
+
+def build_parser():
     parser = argparse.ArgumentParser(description="Run deterministic A/V sync capture scenarios and analyze them.")
+    parser.add_argument(
+        "--profile",
+        choices=["quick", "codec-pass", "stress", "full", "long-soak", "custom"],
+        default="quick",
+        help="Scenario profile. Bare runner defaults to the fast zero-drift quick gate.",
+    )
+    parser.add_argument("--fast-zero-drift", dest="profile_aliases", action="append_const", const="quick")
+    parser.add_argument("--codec-finalization-pass", dest="profile_aliases", action="append_const", const="codec-pass")
+    parser.add_argument("--short-stress", dest="profile_aliases", action="append_const", const="stress")
+    parser.add_argument("--full-matrix", dest="profile_aliases", action="append_const", const="full")
+    parser.add_argument("--long-soak", dest="profile_aliases", action="append_const", const="long-soak")
+    parser.add_argument("--long-soak-minutes", type=float, default=40.0)
     parser.add_argument("--capture-methods", default="wgc,inject")
     parser.add_argument("--codecs", default="aac,alac,flac,opus,pcm")
     parser.add_argument("--fps", default="60,120")
@@ -650,6 +756,8 @@ def main():
     parser.add_argument("--max-av-offset-ms", type=float, default=25.0)
     parser.add_argument("--max-mean-av-offset-ms", type=float, default=15.0)
     parser.add_argument("--max-track-spread-ms", type=float, default=10.0)
+    parser.add_argument("--max-offset-slope-ms-per-min", type=float, default=30.0)
+    parser.add_argument("--min-offset-slope-excursion-ms", type=float, default=12.0)
     parser.add_argument("--max-longest-repeat", type=int, default=2)
     parser.add_argument("--max-motion-stall", type=int, default=3)
     parser.add_argument("--include-source-stall", action="store_true")
@@ -675,8 +783,72 @@ def main():
     parser.add_argument("--no-microphone", dest="include_microphone", action="store_false")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
     parser.set_defaults(include_microphone=True, app_audio_clock_scheduling=True)
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    aliases = args.profile_aliases or []
+    if len(set(aliases)) > 1:
+        fail(f"conflicting scenario profiles requested: {', '.join(aliases)}")
+    if aliases:
+        args.profile = aliases[-1]
+    elif args.profile == "quick" and explicit_matrix_selection(argv):
+        args.profile = "custom"
+    if args.long_soak_minutes < 30.0 or args.long_soak_minutes > 45.0:
+        fail("--long-soak-minutes must be between 30 and 45")
+    return args
+
+
+def self_test():
+    quick = parse_args(["--fast-zero-drift", "--dry-run"])
+    quick_names = [scenario.name for scenario in build_scenarios(quick)]
+    assert len(quick_names) == 4
+    assert quick_names == [
+        "wgc_alac_60fps_quick_lossless_60",
+        "wgc_aac_120fps_quick_lossy_120",
+        "inject_alac_120fps_quick_lossless_120",
+        "inject_aac_60fps_quick_lossy_60",
+    ]
+
+    codec_pass = parse_args(["--codec-finalization-pass", "--dry-run"])
+    codec_scenarios = build_scenarios(codec_pass)
+    assert [scenario.audio_codec for scenario in codec_scenarios] == SUPPORTED_CODECS
+    assert all(scenario.capture_method == "wgc" and scenario.fps == 60 for scenario in codec_scenarios)
+
+    stress = parse_args(["--short-stress", "--dry-run"])
+    stress_scenarios = build_scenarios(stress)
+    assert len(stress_scenarios) == 6
+    assert any(resolve_audio_layout(scenario, False) == "duplicate_app" for scenario in stress_scenarios)
+    assert any(scenario.include_source_stall for scenario in stress_scenarios)
+    assert any(str(scenario.app_fps) == "45" for scenario in stress_scenarios)
+    assert any(str(scenario.app_fps) == "240" for scenario in stress_scenarios)
+
+    full = parse_args(["--full-matrix", "--dry-run"])
+    assert len(build_scenarios(full)) == len(SUPPORTED_METHODS) * len(SUPPORTED_CODECS) * 2
+
+    custom = parse_args(["--capture-methods", "wgc", "--codecs", "pcm", "--fps", "60", "--dry-run"])
+    assert custom.profile == "custom"
+    custom_scenarios = build_scenarios(custom)
+    assert len(custom_scenarios) == 1
+    assert custom_scenarios[0].name == "wgc_pcm_60fps"
+
+    soak = parse_args(["--long-soak", "--long-soak-minutes", "30", "--dry-run"])
+    soak_scenarios = build_scenarios(soak)
+    assert len(soak_scenarios) == 2
+    assert all(scenario.duration_sec == 1800 for scenario in soak_scenarios)
+    print("self-test: PASS")
+
+
+def main(argv=None):
+    args = parse_args(argv)
+
+    if args.self_test:
+        self_test()
+        return
 
     ce_exe, app_exe = ensure_inputs()
     scenarios = build_scenarios(args)
