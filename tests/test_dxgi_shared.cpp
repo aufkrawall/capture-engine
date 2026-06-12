@@ -4485,3 +4485,81 @@ TEST(DXGISharedTest, SteamDX12InitVtableRehookFailureSafety) {
 
     VirtualFree(alloc, 0, MEM_RELEASE);
 }
+
+// ---------------------------------------------------------------------------
+// [OVERLAY COVERAGE] per-present overlay-coverage accounting (Pillar 0 of the
+// 100%-overlay-visibility work). The tracker is the regression gate for the
+// FG-transition matrix: any uncovered streak > 1 present during a scripted
+// transition run is a failure.
+// ---------------------------------------------------------------------------
+
+TEST(DXGISharedTest, OverlayPresentCoverageStreakAccounting) {
+    ce::dx12_overlay_policy::OverlayPresentCoverageTracker tracker;
+
+    // Covered presents accumulate no uncovered state.
+    auto r = tracker.NotePresent(true, false);
+    EXPECT_TRUE(r.covered);
+    EXPECT_FALSE(r.uncoveredStreakStarted);
+    EXPECT_FALSE(r.uncoveredStreakEnded);
+    EXPECT_EQ(tracker.TotalPresents(), 1u);
+    EXPECT_EQ(tracker.UncoveredPresents(), 0u);
+
+    // First uncovered present starts a streak.
+    r = tracker.NotePresent(false, false);
+    EXPECT_FALSE(r.covered);
+    EXPECT_TRUE(r.uncoveredStreakStarted);
+    EXPECT_TRUE(r.newLongestStreak);
+    EXPECT_EQ(tracker.CurrentUncoveredStreak(), 1u);
+
+    // Streak grows; longest follows.
+    r = tracker.NotePresent(false, false);
+    EXPECT_FALSE(r.uncoveredStreakStarted);
+    EXPECT_TRUE(r.newLongestStreak);
+    EXPECT_EQ(tracker.CurrentUncoveredStreak(), 2u);
+    EXPECT_EQ(tracker.LongestUncoveredStreak(), 2u);
+
+    // A covered present ends the streak and reports its length.
+    r = tracker.NotePresent(true, false);
+    EXPECT_TRUE(r.covered);
+    EXPECT_TRUE(r.uncoveredStreakEnded);
+    EXPECT_EQ(r.endedStreakLength, 2u);
+    EXPECT_EQ(tracker.CurrentUncoveredStreak(), 0u);
+
+    // A shorter later streak does not advance the longest streak.
+    r = tracker.NotePresent(false, false);
+    EXPECT_TRUE(r.uncoveredStreakStarted);
+    EXPECT_FALSE(r.newLongestStreak);
+    r = tracker.NotePresent(true, false);
+    EXPECT_TRUE(r.uncoveredStreakEnded);
+    EXPECT_EQ(r.endedStreakLength, 1u);
+
+    EXPECT_EQ(tracker.TotalPresents(), 6u);
+    EXPECT_EQ(tracker.UncoveredPresents(), 3u);
+    EXPECT_EQ(tracker.LongestUncoveredStreak(), 2u);
+}
+
+TEST(DXGISharedTest, OverlayPresentCoverageFGComposedInheritance) {
+    ce::dx12_overlay_policy::OverlayPresentCoverageTracker tracker;
+
+    // Healthy FG cadence: real present draws, interpolated present inherits the
+    // coverage of the previous covered present — no false 1-present streaks.
+    EXPECT_TRUE(tracker.NotePresent(true, false).covered);
+    auto r = tracker.NotePresent(false, true);
+    EXPECT_TRUE(r.covered);
+    EXPECT_FALSE(r.uncoveredStreakStarted);
+    EXPECT_EQ(tracker.UncoveredPresents(), 0u);
+
+    // Once a real blank starts, inheritance must NOT mask it: interpolated
+    // presents extend the active uncovered streak.
+    r = tracker.NotePresent(false, false);
+    EXPECT_TRUE(r.uncoveredStreakStarted);
+    r = tracker.NotePresent(false, true);
+    EXPECT_FALSE(r.covered);
+    EXPECT_EQ(tracker.CurrentUncoveredStreak(), 2u);
+
+    // Recovery: a real draw ends the whole streak including inherited misses.
+    r = tracker.NotePresent(true, true);
+    EXPECT_TRUE(r.uncoveredStreakEnded);
+    EXPECT_EQ(r.endedStreakLength, 2u);
+    EXPECT_EQ(tracker.LongestUncoveredStreak(), 2u);
+}

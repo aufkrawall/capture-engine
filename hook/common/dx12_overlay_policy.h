@@ -2935,4 +2935,74 @@ inline bool ShouldForwardAppCommandListsToDriver(bool deviceRemoved) {
     return !deviceRemoved;
 }
 
+// ---------------------------------------------------------------------------
+// [OVERLAY COVERAGE] per-present overlay-coverage accounting.
+// ---------------------------------------------------------------------------
+// Goal: zero presented-frames-without-overlay across all FG transitions. Each
+// accounted present is either covered (an overlay draw of any route — normal,
+// PostSL, FFX present callback — was observed for it) or uncovered; uncovered
+// presents form streaks that are the direct measure of visible overlay blanks.
+//
+// `drawObserved` is the caller's draw-counter delta since the previous
+// accounted present. `inheritCoverageIfNoDraw` handles presents whose overlay
+// content is composed by the FG runtime from a previous covered present
+// (zero-ECL interpolated frames, SL-owned top-level transport presents): they
+// count as covered while the current uncovered streak is zero, and extend the
+// streak otherwise. That keeps healthy FG sessions free of false 1-present
+// streak noise while real blank windows still grow one continuous streak.
+//
+// Thread-safety is the caller's job (the hook serializes calls with a tiny
+// spin lock); this type stays plain so it is unit-testable.
+struct OverlayPresentCoverageResult {
+    bool covered = false;
+    bool uncoveredStreakStarted = false;
+    bool uncoveredStreakEnded = false;
+    uint64_t endedStreakLength = 0;
+    bool newLongestStreak = false;
+};
+
+class OverlayPresentCoverageTracker {
+public:
+    OverlayPresentCoverageResult NotePresent(bool drawObserved, bool inheritCoverageIfNoDraw) {
+        OverlayPresentCoverageResult result;
+        ++totalPresents_;
+        result.covered = drawObserved || (inheritCoverageIfNoDraw && currentUncoveredStreak_ == 0);
+        if (result.covered) {
+            if (currentUncoveredStreak_ > 0) {
+                result.uncoveredStreakEnded = true;
+                result.endedStreakLength = currentUncoveredStreak_;
+                currentUncoveredStreak_ = 0;
+            }
+            return result;
+        }
+        ++uncoveredPresents_;
+        result.uncoveredStreakStarted = (currentUncoveredStreak_ == 0);
+        ++currentUncoveredStreak_;
+        if (currentUncoveredStreak_ > longestUncoveredStreak_) {
+            longestUncoveredStreak_ = currentUncoveredStreak_;
+            result.newLongestStreak = true;
+        }
+        return result;
+    }
+
+    uint64_t TotalPresents() const {
+        return totalPresents_;
+    }
+    uint64_t UncoveredPresents() const {
+        return uncoveredPresents_;
+    }
+    uint64_t CurrentUncoveredStreak() const {
+        return currentUncoveredStreak_;
+    }
+    uint64_t LongestUncoveredStreak() const {
+        return longestUncoveredStreak_;
+    }
+
+private:
+    uint64_t totalPresents_ = 0;
+    uint64_t uncoveredPresents_ = 0;
+    uint64_t currentUncoveredStreak_ = 0;
+    uint64_t longestUncoveredStreak_ = 0;
+};
+
 }  // namespace ce::dx12_overlay_policy

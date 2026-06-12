@@ -312,7 +312,117 @@ static const char* DX12OverlayRenderRouteName(uint32_t route) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// [OVERLAY COVERAGE] per-present overlay-coverage telemetry (regression gate).
+// ---------------------------------------------------------------------------
+// Every overlay draw of any route (normal, PostSL, FFX present callback) bumps
+// g_OverlayCoverageDrawCount via NoteDX12OverlayRendered. Two accounting event
+// streams consume that counter and classify each present as covered/uncovered:
+//   1. DX12_ProcessFrameExternal — top-level processed presents (normal, FSR
+//      no-callback, FFX-callback and post-FG recovery transports).
+//   2. PostSLOverlayRenderGated — SL-routed presents (synthetic re-entrant /
+//      startup normal-route callbacks), which bypass ProcessFrameExternal.
+// Presents whose visible overlay is composed by the FG runtime from a previous
+// covered present (zero-ECL interpolated frames; SL-owned top-level transport
+// presents) inherit coverage while no uncovered streak is active, so healthy FG
+// sessions stay noise-free and real blanks form one continuous streak.
+// Gate attribution: skip sites record a static reason string; the gate captured
+// at streak start is reported when the streak ends. Atomics + a tiny spin lock
+// only; logging happens at streak boundaries and FG transition edges, never per
+// frame.
+static std::atomic<uint64_t> g_OverlayCoverageDrawCount{0};
+static std::atomic<uint64_t> g_OverlayCoverageLastSeenDrawCount{0};
+static std::atomic<const char*> g_OverlayCoverageLastGate{nullptr};
+static std::atomic<const char*> g_OverlayCoverageStreakGate{nullptr};
+static ce::dx12_overlay_policy::OverlayPresentCoverageTracker g_OverlayCoverageTracker;
+static std::atomic_flag g_OverlayCoverageLock = ATOMIC_FLAG_INIT;
+
+static void NoteDX12OverlayCoverageGate(const char* gate) {
+    g_OverlayCoverageLastGate.store(gate, std::memory_order_relaxed);
+}
+
+struct DX12OverlayCoverageSnapshot {
+    uint64_t totalPresents = 0;
+    uint64_t uncoveredPresents = 0;
+    uint64_t currentStreak = 0;
+    uint64_t longestStreak = 0;
+};
+
+static DX12OverlayCoverageSnapshot GetOverlayCoverageSnapshot() {
+    DX12OverlayCoverageSnapshot snapshot;
+    while (g_OverlayCoverageLock.test_and_set(std::memory_order_acquire)) {
+        YieldProcessor();
+    }
+    snapshot.totalPresents = g_OverlayCoverageTracker.TotalPresents();
+    snapshot.uncoveredPresents = g_OverlayCoverageTracker.UncoveredPresents();
+    snapshot.currentStreak = g_OverlayCoverageTracker.CurrentUncoveredStreak();
+    snapshot.longestStreak = g_OverlayCoverageTracker.LongestUncoveredStreak();
+    g_OverlayCoverageLock.clear(std::memory_order_release);
+    return snapshot;
+}
+
+static const char* DX12OverlayRenderRouteName(uint32_t route);
+
+// Accounts one presented frame. covered = draw-counter delta since the previous
+// accounted present (any route), with FG-composed inheritance (see block comment).
+static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const char* source) {
+    const uint64_t draws = g_OverlayCoverageDrawCount.load(std::memory_order_acquire);
+    const uint64_t lastSeen = g_OverlayCoverageLastSeenDrawCount.exchange(draws, std::memory_order_acq_rel);
+    const bool drawObserved = draws != lastSeen;
+
+    ce::dx12_overlay_policy::OverlayPresentCoverageResult result;
+    DX12OverlayCoverageSnapshot snapshot;
+    while (g_OverlayCoverageLock.test_and_set(std::memory_order_acquire)) {
+        YieldProcessor();
+    }
+    result = g_OverlayCoverageTracker.NotePresent(drawObserved, inheritCoverageIfNoDraw);
+    snapshot.totalPresents = g_OverlayCoverageTracker.TotalPresents();
+    snapshot.uncoveredPresents = g_OverlayCoverageTracker.UncoveredPresents();
+    snapshot.currentStreak = g_OverlayCoverageTracker.CurrentUncoveredStreak();
+    snapshot.longestStreak = g_OverlayCoverageTracker.LongestUncoveredStreak();
+    g_OverlayCoverageLock.clear(std::memory_order_release);
+
+    if (result.uncoveredStreakStarted) {
+        g_OverlayCoverageStreakGate.store(g_OverlayCoverageLastGate.load(std::memory_order_relaxed),
+                                          std::memory_order_relaxed);
+    }
+    if (result.uncoveredStreakEnded) {
+        static std::atomic<int> s_streakEndLogCount{0};
+        const int logCount = s_streakEndLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 100 || (logCount % 20) == 0) {
+            const char* streakGate = g_OverlayCoverageStreakGate.load(std::memory_order_relaxed);
+            const char* lastGate = g_OverlayCoverageLastGate.load(std::memory_order_relaxed);
+            const uint32_t route = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+            HookLogImportant(
+                "[OVERLAY COVERAGE] uncovered streak ended: missed=%llu longestStreak=%llu gate=%s lastGate=%s "
+                "route=%s source=%s totals: presents=%llu uncovered=%llu",
+                static_cast<unsigned long long>(result.endedStreakLength),
+                static_cast<unsigned long long>(snapshot.longestStreak), streakGate ? streakGate : "unknown",
+                lastGate ? lastGate : "unknown", DX12OverlayRenderRouteName(route), source ? source : "unknown",
+                static_cast<unsigned long long>(snapshot.totalPresents),
+                static_cast<unsigned long long>(snapshot.uncoveredPresents));
+        }
+    }
+}
+
+// Logs a coverage summary line. Called at FG transition edges and shutdown so
+// the scripted transition matrix can gate on "no uncovered streak > 1 present".
+static void LogOverlayCoverageSummary(const char* edge) {
+    const DX12OverlayCoverageSnapshot snapshot = GetOverlayCoverageSnapshot();
+    const char* lastGate = g_OverlayCoverageLastGate.load(std::memory_order_relaxed);
+    const uint32_t route = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+    HookLogImportant(
+        "[OVERLAY COVERAGE] %s: presents=%llu uncovered=%llu currentStreak=%llu longestStreak=%llu lastGate=%s "
+        "lastRoute=%s",
+        edge ? edge : "summary", static_cast<unsigned long long>(snapshot.totalPresents),
+        static_cast<unsigned long long>(snapshot.uncoveredPresents),
+        static_cast<unsigned long long>(snapshot.currentStreak),
+        static_cast<unsigned long long>(snapshot.longestStreak), lastGate ? lastGate : "none",
+        DX12OverlayRenderRouteName(route));
+}
+
 static void NoteDX12OverlayRendered(DX12OverlayRenderRoute route) {
+    g_OverlayCoverageDrawCount.fetch_add(1, std::memory_order_acq_rel);
     g_LastDX12OverlayRenderRoute.store(static_cast<uint32_t>(route), std::memory_order_release);
     g_LastDX12OverlayRenderTickMs.store(GetTickCount64(), std::memory_order_release);
 }
@@ -9678,6 +9788,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     bool expected = false;
     if (!s_renderLock.compare_exchange_strong(expected, true, std::memory_order_acquire)) {
         s_postSLSkipLock.fetch_add(1, std::memory_order_relaxed);
+        NoteDX12OverlayCoverageGate("postsl-render-lock");
         static int s_lockSkip = 0;
         if (s_lockSkip++ < 10)
             HookLogImportant("DX12: PostSL SKIP — another thread already rendering (tid=0x%04X)", GetCurrentThreadId());
@@ -9757,6 +9868,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
     if (!cachedSLFGActive || s_postSLFGSuspended) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+        NoteDX12OverlayCoverageGate("postsl-sl-signal-inactive");
         static int s_suspendLog = 0;
         if (s_suspendLog < 5 || (s_suspendLog % 500 == 0)) {
             HookLog("DX12: PostSL SKIP — Streamline FG signal inactive (latched=%d frame=%d)",
@@ -9786,6 +9898,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                     g_PostSLCooldownRemaining.store(cooldownLeft - 1, std::memory_order_release);
                     if (cooldownLeft > 1) {
                         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+                        NoteDX12OverlayCoverageGate("postsl-startup-countdown");
                         return;
                     }
                 } else if (safePostFSRBootstrapPathForPostSL) {
@@ -9829,6 +9942,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                     s_pureDLSSCooldownLogCount++;
                     if (clamped > 1) {
                         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+                        NoteDX12OverlayCoverageGate("postsl-startup-countdown");
                         return;
                     }
                 }
@@ -9865,6 +9979,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 }
                 s_waitForSafePathLog++;
                 s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+                NoteDX12OverlayCoverageGate("postsl-wait-safe-bootstrap");
                 return;
             }
 
@@ -9969,6 +10084,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Gate: only render when explicitly enabled (not during cooldown / resize).
     if (!active) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+        NoteDX12OverlayCoverageGate("postsl-inactive");
         static int s_gateSkip = 0;
         if (s_gateSkip++ < 5)
             HookLog("DX12: PostSL SKIP — g_PostSLOverlayActive=false");
@@ -9980,6 +10096,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
     if (cooldownLeft > 0) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+        NoteDX12OverlayCoverageGate("postsl-fg-transition-cooldown");
         static int s_cooldownSkip = 0;
         if (s_cooldownSkip++ < 5)
             HookLog("DX12: PostSL SKIP — FG transition cooldown active (%d frames left)", cooldownLeft);
@@ -10018,6 +10135,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             confirmedPureStreamlineResumeWarmupProof);
     if (s_callsSinceReactivation <= warmupThreshold && !bypassReactivationWarmup) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
+        NoteDX12OverlayCoverageGate("postsl-reactivation-warmup");
         if (s_callsSinceReactivation <= 5 || s_callsSinceReactivation == warmupThreshold) {
             HookLogImportant("DX12: PostSL warm-up after reactivation epoch=%d frame=%d/%d (coldStart=%d)",
                              s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold,
@@ -11955,7 +12073,21 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 }
 
 static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
+    // [OVERLAY COVERAGE] every SL-routed callback invocation with a real
+    // swapchain is one presented frame reaching the screen through Streamline's
+    // pipeline (synthetic re-entrant, startup normal-route, retained startup
+    // activation service). These presents bypass DX12_ProcessFrameExternal, so
+    // they are accounted here on every exit path. Null-swapchain invocations
+    // (ECL-hook direct triggers) are not presents and are excluded.
+    const bool accountCoverage = pSwapChain != nullptr && !HookOverlayObserverOnlyEnabled();
+    auto overlayCoverageGuard = ce::make_scope_guard([accountCoverage]() {
+        if (accountCoverage) {
+            AccountPresentForOverlayCoverage(false, "PostSL");
+        }
+    });
+
     if (!g_PostSLCallbackExecutionEnabled.load(std::memory_order_acquire)) {
+        NoteDX12OverlayCoverageGate("postsl-execution-disabled");
         return;
     }
 
@@ -11976,6 +12108,7 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
     }
 
     if (g_DeviceRemoved.load(std::memory_order_relaxed)) {
+        NoteDX12OverlayCoverageGate("device-removed");
         static std::atomic<int> s_deviceRemovedSkipLogCount{0};
         const int logCount = s_deviceRemovedSkipLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 100) == 0) {
@@ -12031,6 +12164,7 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
             startupTransitionWindowActive, postSLConfirmedRendering, g_HadFSRFGPhase, startupTopLevelPresentConsumed,
             wrapperProgressObserved, explicitSetOptionsActivation, activeDLSSFGRuntimeSignalObserved,
             startupActivationPending, postSLActive)) {
+        NoteDX12OverlayCoverageGate("postsl-startup-window-deferral");
         static std::atomic<int> s_postSLStartupWindowCallbackDeferralLogCount{0};
         const int logCount = s_postSLStartupWindowCallbackDeferralLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 200) == 0) {
@@ -15115,6 +15249,20 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         }
     }
 
+    // [OVERLAY COVERAGE] attribute the responsible gate when this present cannot
+    // reach the overlay draw section below (condition mirrors the if that follows).
+    if (!(allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
+          !delayOverlayRenderAfterResume && !delayOverlayRenderAfterSyncInit &&
+          !suppressOverlayRenderForLoadedStartupOverlay && !delayOverlayRenderAfterResourcePrime &&
+          !delayOverlayRenderAfterFirstDrawProbe)) {
+        NoteDX12OverlayCoverageGate(!allowOverlayRender    ? "overlay-render-suppressed"
+                                    : suspendOverlayRender ? "swapchain-not-drawable"
+                                    : s_insideECL          ? "inside-ecl-reentry"
+                                    : !g_State.overlayInit ? "overlay-backend-uninitialized"
+                                    : !g_State.syncInit    ? "overlay-sync-uninitialized"
+                                                           : "startup-render-delay");
+    }
+
     if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
         !delayOverlayRenderAfterResume && !delayOverlayRenderAfterSyncInit &&
         !suppressOverlayRenderForLoadedStartupOverlay && !delayOverlayRenderAfterResourcePrime &&
@@ -15296,6 +15444,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     liveNoCallbackNativeFSRSuspensionToggle ? 1 : 0,
                     gameSwapchainRecoveryToggleAfterNativeFSROff ? 1 : 0, transitionOverlayBackendQueue,
                     transitionSwapchainQueue, postNativeFSROffRecoveryQueue);
+                LogOverlayCoverageSummary("FG transition edge (overlay remains live)");
                 s_lastFGActive = currentFGActive;
                 s_lastRuntimeMode = currentRuntimeMode;
                 s_lastSLFGRunning = currentSLFGRunning;
@@ -15320,6 +15469,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 s_transitionState.snapshot.shouldInstallPostSLCallback ? 1 : 0,
                 s_transitionState.snapshot.publishFGActive ? 1 : 0, s_lastSLFGRunning ? 1 : 0,
                 currentSLFGRunning ? 1 : 0, transitionCooldownFrames, s_transitionState.snapshot.epoch);
+            LogOverlayCoverageSummary("FG transition edge");
             s_lastFGActive = currentFGActive;
             s_lastRuntimeMode = currentRuntimeMode;
             s_lastSLFGRunning = currentSLFGRunning;
@@ -15643,6 +15793,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         bool skipOverlayDraw = false;
         if (holdFocusLossBackbufferWork) {
             skipOverlayDraw = true;
+            NoteDX12OverlayCoverageGate("focus-loss-hold");
         }
         if (g_FGTransitionCooldown > 0) {
             const bool bypassProtectedOfficialFFXStartupDrawCooldown =
@@ -15707,6 +15858,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     }
                 }
 
+                NoteDX12OverlayCoverageGate("fg-transition-cooldown");
                 if (g_FGTransitionCooldown == 0) {
                     auto fgType = g_FGCompat.GetActiveFGType();
                     bool slFG = currentFGActive && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
@@ -17476,6 +17628,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                 "overlay/capture side effects (sc=%p processFrameSkips=%u)",
                 pSwapChain, progressCount);
         } else if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+            NoteDX12OverlayCoverageGate("protected-ffx-startup-quiesce");
             const int logCount =
                 s_protectedOfficialFFXProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
@@ -17622,6 +17775,20 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     UINT currentBackBufferIdx = sc3->GetCurrentBackBufferIndex();
 
     bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+
+    // [OVERLAY COVERAGE] account this top-level processed present on every exit
+    // path (function-scope guard so all skip returns below are included).
+    // SL-owned transport presents (SL FG running with the PostSL callback
+    // installed) and zero-ECL interpolated frames inherit coverage from the
+    // previous covered present — their visible overlay is composed by the FG
+    // runtime / drawn per re-entrant present, not by this ProcessFrame call.
+    const bool coverageInheritsFGComposedOverlay =
+        isInterpolatedFrame ||
+        (streamlineFGRunning && DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr);
+    auto overlayCoverageGuard = ce::make_scope_guard([coverageInheritsFGComposedOverlay]() {
+        AccountPresentForOverlayCoverage(coverageInheritsFGComposedOverlay, "ProcessFrameExternal");
+    });
+
     ID3D12CommandQueue* currentSwapchainQueue = nullptr;
     {
         std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
@@ -17647,6 +17814,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             if (ce::dx12_overlay_policy::ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(
                     g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, presentCount,
                     kRuntimeOwnedStreamlineNoFGSettlePresents)) {
+                NoteDX12OverlayCoverageGate("fresh-streamline-no-fg-settle");
                 static std::atomic<int> s_freshStreamlineNoFGProcessFrameSkipLogCount{0};
                 const int logCount =
                     s_freshStreamlineNoFGProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -17851,6 +18019,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                 g_PostNativeFSROffGameSwapchainRecoveryQueue.load(std::memory_order_acquire) ==
                     currentSwapchainQueue,
             g_FGTransitionCooldown > 0)) {
+        NoteDX12OverlayCoverageGate("zero-ecl-skip");
         sc3->Release();
         return;
     }
@@ -17858,6 +18027,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         ce::dx12_overlay_policy::ShouldSuppressLikelyDuplicateTopLevelPresent(g_FGRuntimeOwnsSwapchain,
                                                                               streamlineFGRunning) &&
         ShouldSuppressLikelyDuplicateTopLevelPresent(sc3, currentBackBufferIdx)) {
+        NoteDX12OverlayCoverageGate("duplicate-top-level-present");
         sc3->Release();
         return;
     }
@@ -19418,6 +19588,7 @@ HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queu
 }
 
 void DX12Hook::Shutdown() {
+    LogOverlayCoverageSummary("shutdown summary");
     HookLogImportant("DX12: Shutdown — cleaning up FFX state (runtime=%s overlayInit=%d syncInit=%d "
                      "fgOwned=%d nativeFGPath=%d progressResolved=%d callbackBridges=%zu)",
                      ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
