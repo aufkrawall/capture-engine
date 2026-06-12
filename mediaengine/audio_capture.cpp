@@ -418,7 +418,7 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
     return true;
 }
 
-void AudioCapture::Stop() {
+void AudioCapture::Stop(bool discardPendingPackets) {
     isCapturing = false;
     if (captureEvent_) {
         SetEvent(captureEvent_);
@@ -426,7 +426,9 @@ void AudioCapture::Stop() {
     if (captureThread.joinable())
         captureThread.join();
 
-    DiscardPendingPackets();
+    if (discardPendingPackets) {
+        DiscardPendingPackets();
+    }
     activeStreamFlags = 0;
     streamLatency100ns_ = 0;
     isLoopback_ = false;
@@ -490,6 +492,8 @@ void AudioCapture::CaptureLoop() {
     uint64_t queueDropPackets = 0;
     uint64_t queueDropFrames = 0;
     uint64_t lastQueueDropLogTick = 0;
+    uint64_t finalDrainPackets = 0;
+    uint64_t finalDrainFrames = 0;
 
     while (isCapturing) {
         if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
@@ -514,10 +518,15 @@ void AudioCapture::CaptureLoop() {
             DLL_Log("[AudioCapture] Got packetLength=%u", packetLength);
         }
 
+        const bool drainingAfterStop = !isCapturing.load(std::memory_order_acquire);
         while (packetLength != 0) {
             hr = pCaptureClient->GetBuffer(&pData, &numFramesAvailable, &flags, &devicePosition, &qpcPosition);
             if (FAILED(hr))
                 break;
+            if (drainingAfterStop) {
+                ++finalDrainPackets;
+                finalDrainFrames += numFramesAvailable;
+            }
 
             // Debug: Check drift between Device Position (samples) and QPC time.
             // WASAPI already converts qpcPosition to 100-ns units.
@@ -618,6 +627,11 @@ void AudioCapture::CaptureLoop() {
     }
 
     DLL_Log("[AudioCapture] CaptureLoop exited");
+    if (finalDrainPackets > 0 || finalDrainFrames > 0) {
+        DLL_Log("[AudioCapture] Final stop drain queued %llu packet(s) / %llu frame(s)",
+                static_cast<unsigned long long>(finalDrainPackets),
+                static_cast<unsigned long long>(finalDrainFrames));
+    }
     if (queueDropPackets > 0 || queueDropFrames > 0) {
         DLL_Log("[AudioCapture] Final queue overrun summary: dropped %llu packet(s) / %llu frame(s)",
                 static_cast<unsigned long long>(queueDropPackets), static_cast<unsigned long long>(queueDropFrames));
@@ -644,4 +658,9 @@ void AudioCapture::DiscardPendingPackets() {
         DLL_Log("[AudioCapture] Discarding %zu queued packets", packetQueue.size());
         packetQueue.clear();
     }
+}
+
+size_t AudioCapture::PendingPacketCount() {
+    std::lock_guard<std::mutex> lock(queueMutex);
+    return packetQueue.size();
 }

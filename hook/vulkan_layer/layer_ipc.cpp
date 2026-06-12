@@ -242,15 +242,15 @@ void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint3
     if (!mem)
         return;
 
-    g_PublishedTextureCount = (count > 0 && count <= 8) ? count : 2;
+    g_PublishedTextureCount = (count > 0 && count <= SHARED_TEXTURE_SLOT_COUNT) ? count : 2;
 
     // Write metadata
     mem->SetWidth(width);
     mem->SetHeight(height);
     mem->SetFormat(format);
 
-    // Write handles (up to 8 supported by layout)
-    uint32_t maxHandles = 8;
+    // Write handles up to the shared-memory layout limit.
+    uint32_t maxHandles = SHARED_TEXTURE_SLOT_COUNT;
     for (uint32_t i = 0; i < count && i < maxHandles; i++) {
         mem->SetSharedHandle(i, (uint64_t)handles[i]);
         LayerLog("Layer IPC: Wrote handle %d = %p to shared memory", i, handles[i]);

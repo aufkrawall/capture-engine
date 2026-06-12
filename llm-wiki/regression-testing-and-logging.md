@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-06-11 (A/V sync stimulus app, analyzer, matrix runner, and live WGC/inject smoke)
+Last cross-checked: 2026-06-12 (full A/V codec matrix, self-contained runner logs, app-audio startup race)
 
 Primary sources:
 - `AGENTS.md`
@@ -118,7 +118,7 @@ Primary sources:
 - `tools/analyze_av_sync_stimulus.py`
   - Stimulus-aware MKV analyzer. Failure classes intentionally distinguish `planned_source_stall`, `unplanned_repeat_cluster`, `corrupted_video_frame`, `visual_judder`, `video_content_drift`, `missing_marker`, `audio_marker_missing`, `audio_video_event_offset`, `inter_track_spread`, `decode_error`, and `ce_strict_log_event`. It auto-scales video decode for marker readability, uses Goertzel refinement around audio transition edges, and keeps benign `trimmed=0` bootstrap logs out of strict audio-trim failures. Mixed and microphone streams should be passed as non-strict ordinals when used as opportunistic evidence.
 - `tools/run_av_sync_matrix.py`
-  - Automated CE runner for WGC/inject, AAC/ALAC/FLAC/Opus/PCM, and target FPS cases. It snapshots/restores `installed/captureengine/config.ini`, kills stale stimulus/CE processes, launches CE with `--auto-record=... --launch ...`, passes `--fullscreen 0 --window-chrome 0` by default, and writes reports under `installed/captureengine/avsync_runs/<timestamp>/`. Each scenario report must link the capture file, CE session dir, media/hook logs, app log, app manifest, analyzer JSON, and analyzer stdout. Pure system/app tracks are strict; mixed system+app and microphone tracks are diagnostic/non-strict by default.
+  - Automated CE runner for WGC/inject, AAC/ALAC/FLAC/Opus/PCM, and target FPS cases. It snapshots/restores `installed/captureengine/config.ini`, kills stale stimulus/CE processes, launches CE with `--auto-record=... --launch ...`, passes fullscreen/topmost tear-free stimulus defaults (`--fullscreen 1`, `--window-chrome 0`, `--no-allow-tearing`), hides the hardware cursor over the stimulus window, and writes reports under `installed/captureengine/avsync_runs/<timestamp>/`. Each scenario snapshots CE logs into `ce_logs` and reports the capture file, scenario-local CE session dir, original CE session dir, media/hook logs, app log, app manifest, analyzer JSON/stdout, and triage JSON/stdout. Pure system/app tracks are strict; mixed system+app and microphone tracks are diagnostic/non-strict by default. Auto source FPS and audio lead are method-aware: inject defaults to a stable high-refresh tear-free source cadence with 45 ms lead below 100 fps and 50 ms at 100+ fps; WGC uses high source cadence by default and adds extra lead for intentionally below-target source FPS.
 - `hook/apis/dx12_hook.cpp`
   - Logs when observer-only suppresses early PostSL registration, PostSL callback execution, and DX12 overlay/PostSL transition management.
   - Fresh runtime-owned Streamline startup handoffs now log retained startup activation swapchain capture/release and DX12 startup activation service success/failure. A startup activation callback must use a retained or fresh non-null swapchain; a `nullptr` callback from Streamline flush/ECL-expiry paths is a regression.
@@ -250,7 +250,7 @@ Primary sources:
 - After build/test workflow changes, verify the focused iteration path too: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=...` should stop before the expensive product builds and should show live compile/test progress instead of going silent for long periods.
 - If `ProcessIPCTest.*` fails at the initial `Connect(1000)` assertion, first distinguish a real IPC regression from environment leakage: tests should be using unique override pipe names, and the override pipe security descriptor should allow the test process to open the client side for both read and write. A plain production pipe name can collide with running helpers and make the test result meaningless.
 - If you touch perf CSV durability, verify that `perf_metrics_*.csv` gains rows during long-running and hang/crash sessions instead of relying on a clean-process shutdown to flush buffered data.
-- If you touch A/V sync, CFR smoothness, WGC source-starvation, or mux duration logging, run the deterministic stimulus workflow: `tools/run_av_sync_matrix.py --include-source-stall` for synthetic evidence and `tools/analyze_capture_av.py --session-dir <logs> --json-out <report.json>` for real-session attribution. The triage report should separate source Present gaps / WGC source starvation from CE encoder/mux backpressure and audio/visual timeline faults.
+- If you touch A/V sync, CFR smoothness, WGC source-starvation, or mux duration logging, run the deterministic stimulus workflow: `tools/run_av_sync_matrix.py --include-source-stall` for synthetic evidence and `tools/analyze_capture_av.py --session-dir <logs> --json-out <report.json>` for real-session attribution. The triage report should separate source Present gaps / WGC source starvation from CE encoder/mux backpressure and audio/visual timeline faults. Use scenario-local `ce_logs` snapshots from the matrix runner for durable evidence; global `installed/captureengine/logs/<session>` folders can rotate away.
 - `perf_metrics_*.csv` now has an appended `qpc_delta_us` column. Existing readers should ignore unknown trailing columns; new stutter triage should prefer `qpc_delta_us` over recomputing gaps when present.
 - Post-mux audio deltas at or below one audio sample or one mux timebase tick are informational rounding evidence, not strict warnings. Larger `Post-mux audio duration mismatch` lines remain strict.
 
@@ -274,6 +274,8 @@ python .\testapp\run_tests.py --api all --arch both --tests 1 --duration 5 --min
 
 python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs alac --fps 60 --duration-sec 7
 python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs aac,alac,flac,opus,pcm --fps 60,120 --include-source-stall --keep-going
+python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs pcm --fps 60 --app-fps 45 --include-source-stall --keep-going
+python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs opus,pcm --fps 60 --gpu-load 80 --include-source-stall --keep-going
 python .\tools\analyze_capture_av.py --session-dir .\installed\captureengine\logs\<session> --json-out .\installed\captureengine\logs\<session>\av_triage_report.json
 
 powershell -ExecutionPolicy Bypass -File .\analysis\analyze_dump.ps1 .\installed\captureengine\logs\<session>\<dump>.dmp

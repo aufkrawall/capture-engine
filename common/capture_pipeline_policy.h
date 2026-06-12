@@ -12,6 +12,9 @@ constexpr size_t kInjectWarmupCommitFloorFrames = 3;
 constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
 constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
 constexpr uint32_t kMaxInjectDeferredFrameRetries = 3;
+constexpr uint32_t kInjectCfrPublicationHeadroomPermille = 4000;
+constexpr int64_t kInjectCfrPublicationEarlySlackMinUs = 250;
+constexpr int64_t kInjectCfrPublicationEarlySlackMaxUs = 1500;
 constexpr uint32_t kInjectLiveHealthyMaxFrameAgeTicks = 3;
 constexpr uint32_t kInjectLivePressureMaxFrameAgeTicks = 12;
 constexpr uint64_t kEncoderStartupWindowMs = 1500;
@@ -51,7 +54,10 @@ constexpr uint32_t kWgcRecoveryEnterShortfallTicks = 3;
 constexpr uint32_t kWgcRecoveryEnterHoldMs = 120;
 constexpr uint32_t kWgcRecoveryExitHoldMs = 450;
 constexpr double kWgcAudioLeadCatchupThresholdMs = 40.0;
-constexpr uint32_t kWgcCfrOvercaptureHeadroomPermille = 1250;
+// 0 means "uncapped": WGC CFR needs source candidates on both sides of the
+// output grid for zero-latency selection. A modest 1.25x cap leaves too little
+// phase margin and can turn normal callback jitter into visible CFR repeats.
+constexpr uint32_t kWgcCfrOvercaptureHeadroomPermille = 0;
 constexpr uint32_t kWgcCfrOvercaptureStableRestoreMs = 2000;
 constexpr double kEncoderGpuPriorityRaiseBudgetRatio = 0.75;
 constexpr double kEncoderGpuPriorityRestoreBudgetRatio = 0.50;
@@ -117,6 +123,50 @@ inline bool ShouldUseWgcCaptureForAutoTarget(bool explicitWgcCapture, bool autoC
 
 inline bool ShouldAcceptFrameForActiveCapturePath(bool activeScreenGrab, bool frameIsInjectMode) {
     return activeScreenGrab ? !frameIsInjectMode : frameIsInjectMode;
+}
+
+inline uint32_t GetInjectCfrSourcePublicationFps(uint32_t outputFps,
+                                                 uint32_t headroomPermille = kInjectCfrPublicationHeadroomPermille) {
+    if (outputFps == 0 || headroomPermille <= 1000u) {
+        return outputFps;
+    }
+
+    return static_cast<uint32_t>((static_cast<uint64_t>(outputFps) * headroomPermille + 999ull) / 1000ull);
+}
+
+inline int64_t GetInjectCfrSourcePublicationIntervalUs(
+    uint32_t outputFps, uint32_t headroomPermille = kInjectCfrPublicationHeadroomPermille) {
+    const uint32_t publicationFps = GetInjectCfrSourcePublicationFps(outputFps, headroomPermille);
+    return publicationFps > 0 ? 1000000LL / static_cast<int64_t>(publicationFps) : 0;
+}
+
+inline int64_t GetInjectCfrSourcePublicationIntervalQpc(
+    uint32_t outputFps, int64_t qpcTicksPerSecond,
+    uint32_t headroomPermille = kInjectCfrPublicationHeadroomPermille) {
+    if (qpcTicksPerSecond <= 0) {
+        return 0;
+    }
+
+    const uint32_t publicationFps = GetInjectCfrSourcePublicationFps(outputFps, headroomPermille);
+    return publicationFps > 0 ? std::max<int64_t>(1, qpcTicksPerSecond / static_cast<int64_t>(publicationFps)) : 0;
+}
+
+inline int64_t GetInjectCfrPublicationEarlySlackUs(int64_t publicationIntervalUs) {
+    if (publicationIntervalUs <= 0) {
+        return 0;
+    }
+
+    const int64_t jitterSlackUs = std::clamp(publicationIntervalUs / 8, kInjectCfrPublicationEarlySlackMinUs,
+                                             kInjectCfrPublicationEarlySlackMaxUs);
+    return std::min(publicationIntervalUs / 2, jitterSlackUs);
+}
+
+inline int64_t GetInjectCfrPublicationMinSpacingUs(int64_t publicationIntervalUs) {
+    if (publicationIntervalUs <= 0) {
+        return 0;
+    }
+
+    return std::max<int64_t>(1, publicationIntervalUs - GetInjectCfrPublicationEarlySlackUs(publicationIntervalUs));
 }
 
 inline uint32_t GetCfrTimerRebaseThresholdTicks(bool useScreenGrab, bool useVFR, bool recordingOutputLive) {
@@ -188,11 +238,14 @@ inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks, bool e
 
 inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outputShortfallTicks,
                                          bool encoderBottlenecked, bool reserveAvailableAtTickStart) {
-    if (!recordingOutputLive || kWgcSelectionDelayTicks == 0) {
-        return false;
-    }
-
-    return true;
+    (void)recordingOutputLive;
+    (void)outputShortfallTicks;
+    (void)encoderBottlenecked;
+    (void)reserveAvailableAtTickStart;
+    // Live CFR must preserve the visual timeline instead of carrying an
+    // intentional one-frame WGC delay. Source misses are represented as repeats
+    // and attributed by the analyzer/triage path.
+    return false;
 }
 
 inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t bufferedWgcFrames,
@@ -439,6 +492,10 @@ inline bool ShouldUseFreshInjectCatchup(bool useVFR, bool encoderBottlenecked, b
     return true;
 }
 
+inline bool IsInjectFrameFreshAfterLastEmission(int64_t frameTimestampQpc, int64_t lastEmittedSourceQpc) {
+    return frameTimestampQpc > 0 && (lastEmittedSourceQpc <= 0 || frameTimestampQpc > lastEmittedSourceQpc);
+}
+
 inline bool ShouldAllowBgra8WgcFallback(bool explicitTenBitVideo, bool hdrCapture) {
     return !explicitTenBitVideo && !hdrCapture;
 }
@@ -465,6 +522,10 @@ inline bool IsWgcFramePastStartupBarrier(int64_t frameQpc, int64_t startupBarrie
 
 inline uint32_t GetWgcCfrOvercaptureTargetFps(uint32_t outputFps,
                                               uint32_t headroomPermille = kWgcCfrOvercaptureHeadroomPermille) {
+    if (headroomPermille == 0u) {
+        return 0u;
+    }
+
     if (outputFps == 0 || headroomPermille <= 1000u) {
         return outputFps;
     }
@@ -752,7 +813,7 @@ inline size_t GetWarmupInjectKeepCount(double smoothedInjectFenceMs, double fram
 
 inline size_t GetMinBufferedInjectFrames(size_t injectReserveFrames, bool recordingOutputLive) {
     if (recordingOutputLive && injectReserveFrames > 0) {
-        return injectReserveFrames - 1;
+        return std::max<size_t>(1, injectReserveFrames - 1);
     }
     return injectReserveFrames;
 }

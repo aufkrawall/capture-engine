@@ -57,7 +57,7 @@ public:
     /**
      * Stop capturing and monitoring.
      */
-    void Stop();
+    void Stop(bool discardPendingPackets = true);
 
     /**
      * Get next available audio packet.
@@ -68,6 +68,8 @@ public:
 
     // Drop any queued packets without stopping capture.
     void DiscardPendingPackets();
+
+    size_t PendingPacketCount();
 
     void SetRequestedFormat(int sampleRate, int channels, uint32_t channelMask);
 

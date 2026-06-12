@@ -218,6 +218,20 @@ TEST(CaptureBaseTest, PublishToSharedMemoryCopiesCaptureMetadata) {
     }
 }
 
+TEST(CaptureBaseTest, SharedTextureSlotCountRejectsOutOfRangeIndex) {
+    SharedMemoryLayout sharedMem;
+
+    EXPECT_EQ(CAPTURE_TEXTURE_COUNT, SHARED_TEXTURE_SLOT_COUNT);
+    EXPECT_TRUE(IsValidTextureIndex(SHARED_TEXTURE_SLOT_COUNT - 1));
+    EXPECT_FALSE(IsValidTextureIndex(SHARED_TEXTURE_SLOT_COUNT));
+
+    sharedMem.SetSharedHandle(SHARED_TEXTURE_SLOT_COUNT - 1, 0xABCDEFu);
+    sharedMem.SetSharedHandle(SHARED_TEXTURE_SLOT_COUNT, 0x123456u);
+
+    EXPECT_EQ(sharedMem.GetSharedHandle(SHARED_TEXTURE_SLOT_COUNT - 1), 0xABCDEFu);
+    EXPECT_EQ(sharedMem.GetSharedHandle(SHARED_TEXTURE_SLOT_COUNT), 0u);
+}
+
 TEST(CaptureBaseTest, SignalFrameReadyWritesRingAndDropsWhenFull) {
     TestCapture capture;
     SharedMemoryLayout sharedMem;

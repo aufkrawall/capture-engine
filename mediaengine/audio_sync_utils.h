@@ -516,30 +516,38 @@ inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSour
     return trackBootstrapComplete || allSourcesPrimed;
 }
 
-inline bool IsOptionalUnstartedAppAudioSource(bool isAppAudioSource, bool sourceTimelineValid) {
-    return isAppAudioSource && !sourceTimelineValid;
+inline bool IsOptionalUnstartedAppAudioSource(bool isAppAudioSource, bool sourceTimelineValid,
+                                              bool sawPreStartPackets = false) {
+    return isAppAudioSource && !sourceTimelineValid && !sawPreStartPackets;
 }
 
-inline bool IsSourceStartupPrimed(bool sourceIsPrimed, bool sourceTimelineValid, bool isAppAudioSource) {
-    return sourceIsPrimed || IsOptionalUnstartedAppAudioSource(isAppAudioSource, sourceTimelineValid);
+inline bool IsSourceStartupPrimed(bool sourceIsPrimed, bool sourceTimelineValid, bool isAppAudioSource,
+                                  bool sawPreStartPackets = false) {
+    return sourceIsPrimed ||
+           IsOptionalUnstartedAppAudioSource(isAppAudioSource, sourceTimelineValid, sawPreStartPackets);
 }
 
 inline bool IsSourceBootstrapReady(bool sourceBootstrapComplete, bool sourceTimelineValid, bool sourceIsPrimed,
-                                   bool isAppAudioSource, size_t bufferedRealSamples, size_t requiredRealSamples) {
-    (void)sourceIsPrimed;
-    (void)bufferedRealSamples;
-    (void)requiredRealSamples;
-
-    if (sourceBootstrapComplete || IsOptionalUnstartedAppAudioSource(isAppAudioSource, sourceTimelineValid)) {
+                                   bool isAppAudioSource, size_t bufferedRealSamples, size_t requiredRealSamples,
+                                   bool sawPreStartPackets = false) {
+    if (sourceBootstrapComplete) {
         return true;
     }
 
-    return sourceTimelineValid;
+    if (IsOptionalUnstartedAppAudioSource(isAppAudioSource, sourceTimelineValid, sawPreStartPackets)) {
+        return true;
+    }
+
+    if (!sourceTimelineValid) {
+        return false;
+    }
+
+    return sourceIsPrimed || bufferedRealSamples >= requiredRealSamples;
 }
 
 inline size_t ComputeRequiredBootstrapRealSamples(int64_t targetTimelineSamples, size_t minimumRealSamples) {
-    return static_cast<size_t>(
-        std::max<int64_t>(std::max<int64_t>(0, targetTimelineSamples), static_cast<int64_t>(minimumRealSamples)));
+    (void)targetTimelineSamples;
+    return minimumRealSamples;
 }
 
 inline size_t ComputeBufferedRealAudioSamples(size_t bufferedSamples, uint64_t syntheticBufferedSamples) {
@@ -558,6 +566,35 @@ inline uint64_t ConsumeSyntheticBufferedSamples(uint64_t& syntheticBufferedSampl
 inline int64_t ResolveSourceTimelineWriteCursor(uint64_t qpcAlignedWrittenSamples, int64_t encodedCursorSamples) {
     return std::max<int64_t>(static_cast<int64_t>(qpcAlignedWrittenSamples),
                              std::max<int64_t>(0, encodedCursorSamples));
+}
+
+inline bool ShouldAdvancePacketTimelineToEncodedCursor(bool isAppAudioSource) {
+    return !isAppAudioSource;
+}
+
+inline bool ShouldDrainStoppedCaptureQueuesBeforeFinalAudioPull(bool audioThreadRunning, bool audioOnlyRecording,
+                                                                int64_t videoTargetDurationUs) {
+    return audioThreadRunning && !audioOnlyRecording && videoTargetDurationUs > 0;
+}
+
+inline bool ShouldDeferCfrAudioPullForSourceBuffer(bool isCfrRecording, bool forceDrain,
+                                                   bool optionalUnstartedSource, int64_t requestedSamples,
+                                                   size_t bufferedTimelineSamples) {
+    if (!isCfrRecording || forceDrain || optionalUnstartedSource || requestedSamples <= 0) {
+        return false;
+    }
+
+    return bufferedTimelineSamples < static_cast<size_t>(requestedSamples);
+}
+
+inline bool ShouldWaitForFinalCfrSourceCatchup(bool isCfrRecording, bool strictSource,
+                                               bool optionalUnstartedSource, int64_t requestedSamples,
+                                               size_t bufferedTimelineSamples) {
+    if (!isCfrRecording || !strictSource || optionalUnstartedSource || requestedSamples <= 0) {
+        return false;
+    }
+
+    return bufferedTimelineSamples < static_cast<size_t>(requestedSamples);
 }
 
 inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples,
@@ -593,6 +630,13 @@ inline int64_t ComputeStartupFirstPacketRebaseOffset(int64_t packetStartSamples,
     }
 
     return clampedPacketStartSamples - clampedCappedGapSamples;
+}
+
+inline int64_t ComputeSharedStartupFirstPacketRebaseOffset(int64_t earliestPacketStartSamples,
+                                                           int64_t cappedStartupGapSamples,
+                                                           int64_t rebaseThresholdSamples) {
+    return ComputeStartupFirstPacketRebaseOffset(earliestPacketStartSamples, true, cappedStartupGapSamples,
+                                                rebaseThresholdSamples);
 }
 
 inline int64_t ApplyStartupPacketTimelineRebaseOffset(int64_t packetStartSamples, int64_t startupRebasedGapSamples) {

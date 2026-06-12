@@ -136,6 +136,7 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     int64_t maxAudioEndUs = 0;
     int64_t maxAudioDeltaUs = 0;
     int64_t maxAudioRoundingToleranceUs = 1;
+    int64_t maxAudioCodecPrimingToleranceUs = 0;
     uint32_t videoStreamCount = 0;
     uint32_t audioStreamCount = 0;
     std::vector<int64_t> firstPacketStartUs(probeCtx->nb_streams, INT64_MAX);
@@ -167,8 +168,11 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
         if (durationUs <= 0) {
             continue;
         }
-        const int64_t startUs =
-            firstPacketStartUs[i] != INT64_MAX ? firstPacketStartUs[i] : GetStreamStartUs(probedStream);
+        const bool hasStreamStart = HasValidStreamTimeBase(probedStream) && probedStream->start_time != AV_NOPTS_VALUE;
+        const bool hasFirstPacketStart = firstPacketStartUs[i] != INT64_MAX;
+        const int64_t startUs = ce::mux::ChoosePostMuxStreamStartUs(
+            hasStreamStart ? GetStreamStartUs(probedStream) : 0, hasStreamStart,
+            hasFirstPacketStart ? firstPacketStartUs[i] : 0, hasFirstPacketStart);
         const int64_t endUs = startUs + durationUs;
         if (probedStream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             ++videoStreamCount;
@@ -185,6 +189,11 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
                 ce::mux::ComputeAudioMuxRoundingToleranceUs(probedStream->codecpar->sample_rate,
                                                             probedStream->time_base.num,
                                                             probedStream->time_base.den));
+            maxAudioCodecPrimingToleranceUs = std::max(
+                maxAudioCodecPrimingToleranceUs,
+                ce::mux::ComputeAudioCodecPrimingToleranceUs(probedStream->codecpar->initial_padding,
+                                                             probedStream->codecpar->sample_rate,
+                                                             maxAudioRoundingToleranceUs));
         }
     }
 
@@ -199,6 +208,13 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             "[VideoEncoder] Post-mux audio duration rounding evidence (target=%lld audioMinEnd=%lld "
             "audioMaxEnd=%lld maxDelta=%lld tolerance=%lld)",
             finalDurationUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, maxAudioRoundingToleranceUs);
+    } else if (audioStreamCount > 0 && maxAudioDeltaUs > 0 &&
+               maxAudioDeltaUs <= maxAudioCodecPrimingToleranceUs) {
+        DLL_Log(
+            "[VideoEncoder] Post-mux audio codec priming evidence (target=%lld audioMinEnd=%lld "
+            "audioMaxEnd=%lld maxDelta=%lld primingTolerance=%lld roundingTolerance=%lld)",
+            finalDurationUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, maxAudioCodecPrimingToleranceUs,
+            maxAudioRoundingToleranceUs);
     } else if (audioStreamCount > 0 && maxAudioDeltaUs > maxAudioRoundingToleranceUs) {
         DLL_Log(
             "[VideoEncoder] WARNING: Post-mux audio duration mismatch (target=%lld audioMinEnd=%lld "
@@ -1275,7 +1291,7 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
         return;
     }
 
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
         if (cachedSharedTextures[i]) {
             cachedSharedTextures[i]->Release();
             cachedSharedTextures[i] = nullptr;
@@ -1511,7 +1527,7 @@ bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t 
         }
         // Format changed (e.g. DX9 BGRA→DX11 RGBA) — destroy and recreate
         DLL_Log("[VideoEncoder] KMT texture format changed %d -> %d, recreating", sharedCaptureTextureFormat, fmt);
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; i++) {
             if (sharedCaptureTextures[i]) {
                 sharedCaptureTextures[i]->Release();
                 sharedCaptureTextures[i] = nullptr;
@@ -1536,9 +1552,8 @@ bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t 
 
     DLL_Log("[VideoEncoder] Creating shared capture textures: %dx%d format=%d", w, h, fmt);
 
-    // Create 4 KMT-only shared textures (global WDDM handles for DXVK Vulkan import)
-    // AND 4 NT-handle shared textures (for non-DXVK Vulkan import)
-    for (int i = 0; i < 4; i++) {
+    // Create encoder-owned KMT shared textures (global WDDM handles for DXVK Vulkan import).
+    for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; i++) {
         // KMT-only texture (D3D11_RESOURCE_MISC_SHARED only)
         D3D11_TEXTURE2D_DESC kmtDesc = {};
         kmtDesc.Width = w;
@@ -1603,7 +1618,7 @@ bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t 
     // Publish to shared memory
     if (sharedMem) {
         this->pSharedMem = sharedMem;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; i++) {
             sharedMem->encoderTextures.SetKmtTextureHandle(i, (uint64_t)sharedCaptureKmtHandles[i]);
         }
         sharedMem->encoderTextures.SetFenceHandle((uint64_t)sharedCaptureFenceHandle);
@@ -3072,7 +3087,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
             // Search for cached texture by handle (works with or without fence)
             if (pidMatches) {
-                for (int i = 0; i < 8; i++) {
+                for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
                     if (cachedTextureHandles[i] == sharedHandle && cachedSharedTextures[i]) {
                         cacheSlot = i;
                         break;
@@ -3080,7 +3095,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 }
             } else if (sourcePid > 0) {
                 // New process -> Clear all cache
-                for (int i = 0; i < 8; i++) {
+                for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
                     if (cachedSharedTextures[i]) {
                         cachedSharedTextures[i]->Release();
                         cachedSharedTextures[i] = nullptr;
@@ -3357,14 +3372,14 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 }
 
                 // Cache Texture
-                // Find empty slot (0 to 7)
+                // Find empty cache slot.
                 int targetSlot = 0;
-                for (int i = 0; i < 8; i++) {
+                for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
                     if (cachedTextureHandles[i] == nullptr) {
                         targetSlot = i;
                         break;
                     }
-                    if (i == 7)
+                    if (i == SHARED_TEXTURE_SLOT_COUNT - 1)
                         targetSlot = 0;  // Fallback to 0 if all full
                 }
 
@@ -4321,7 +4336,7 @@ void VideoEncoder::CleanupResources() {
     if (hwFramesCtx)
         av_buffer_unref(&hwFramesCtx);
 
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
         if (cachedSharedTextures[i]) {
             cachedSharedTextures[i]->Release();
             cachedSharedTextures[i] = nullptr;
@@ -4341,7 +4356,7 @@ void VideoEncoder::CleanupResources() {
     cachedSourcePid = 0;
 
     if (!preserveEncoderTextures) {
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
             if (sharedCaptureTextures[i]) {
                 sharedCaptureTextures[i]->Release();
                 sharedCaptureTextures[i] = nullptr;
@@ -4436,7 +4451,7 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
     }
 
     // Release encoder-owned KMT textures (mirrors !preserveEncoderTextures path in CleanupResources)
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
         if (sharedCaptureTextures[i]) {
             sharedCaptureTextures[i]->Release();
             sharedCaptureTextures[i] = nullptr;

@@ -11,7 +11,7 @@
 #include "shared_defs.h"
 
 // Shared capture constants
-static constexpr int CAPTURE_TEXTURE_COUNT = 8;  // Ring buffer size for textures
+static constexpr int CAPTURE_TEXTURE_COUNT = SHARED_TEXTURE_SLOT_COUNT;  // Ring buffer size for textures
 static constexpr int CAPTURE_RING_SIZE = 8;      // Pending frame ring size
 
 // Pending frame metadata for async capture thread

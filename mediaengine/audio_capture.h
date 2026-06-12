@@ -37,13 +37,15 @@ public:
     bool Start(const std::string& deviceId, bool isLoopback);
     static bool ProbeMixFormat(const std::string& deviceId, bool isLoopback, AudioPacket* format);
 
-    void Stop();
+    void Stop(bool discardPendingPackets = true);
 
     // Read available packets
     bool GetNextPacket(AudioPacket& packet);
 
     // Drop any queued packets without stopping capture.
     void DiscardPendingPackets();
+
+    size_t PendingPacketCount();
 
 private:
     // Allow a couple of seconds of capture jitter before we have to drop the

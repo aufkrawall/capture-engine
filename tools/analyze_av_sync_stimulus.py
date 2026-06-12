@@ -9,6 +9,7 @@ import re
 import statistics
 import subprocess
 import sys
+import bisect
 from pathlib import Path
 
 
@@ -25,11 +26,37 @@ STRICT_CE_PATTERNS = {
         re.IGNORECASE,
     ),
     "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun", re.IGNORECASE),
+    "audio_strict_source_padding": re.compile(
+        r"\[STOP AUDIO\] Source \d+: track=(?:1|2)\b.* pad:[1-9]\d*", re.IGNORECASE
+    ),
     "audio_overflow": re.compile(r"\[PullAudio\] WARNING: Ring buffer overflow", re.IGNORECASE),
     "audio_extreme_drift": re.compile(r"\[PullAudio\] WARNING: Extreme drift detected", re.IGNORECASE),
     "wgc_stop_hold": re.compile(r"WGC CFR stop drain using held pre-stop frame", re.IGNORECASE),
     "wgc_drain_duplicate": re.compile(r"\[WGC CFR SUMMARY\].*drain=[1-9]", re.IGNORECASE),
 }
+
+STRICT_APP_PATTERNS = {
+    "frame_pacing_spike": re.compile(r"AVSYNC WARNING frame pacing spike", re.IGNORECASE),
+    "audio_event_timeout": re.compile(r"AVSYNC WARNING audio event timeout", re.IGNORECASE),
+    "audio_renderer_failed": re.compile(r"AVSYNC WARNING audio renderer failed", re.IGNORECASE),
+    "present_failed": re.compile(r"AVSYNC WARNING Present failed", re.IGNORECASE),
+}
+
+APP_FRAME_RE = re.compile(
+    r"\bAVSYNC FRAME frameId=(?P<frame_id>\d+) marker=(?P<marker>\d+) "
+    r"event=(?P<event>-?\d+) palette=(?P<palette>-?\d+) "
+    r"stimulusSeconds=(?P<stimulus>-?\d+(?:\.\d+)?)"
+)
+APP_STALL_BEGIN_RE = re.compile(
+    r"\bAVSYNC SOURCE_STALL_BEGIN .*stimulusSeconds=(?P<stimulus>-?\d+(?:\.\d+)?) "
+    r"frameId=(?P<frame_id>\d+)"
+)
+APP_STALL_END_RE = re.compile(
+    r"\bAVSYNC SOURCE_STALL_END .*stimulusSeconds=(?P<stimulus>-?\d+(?:\.\d+)?) "
+    r".*frameId=(?P<frame_id>\d+)"
+)
+
+MAX_AUDIO_REFINEMENT_DELTA_SECONDS = 0.012
 
 
 def fail(message):
@@ -126,6 +153,114 @@ def parse_ordinal_set(text):
     return values
 
 
+def load_app_frame_anchors(path):
+    if not path:
+        return []
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    anchors = []
+    for line in text.splitlines():
+        match = APP_FRAME_RE.search(line)
+        if match:
+            anchors.append(
+                {
+                    "frame_id": parse_int(match.group("frame_id")),
+                    "stimulus_seconds": parse_float(match.group("stimulus")),
+                    "kind": "frame",
+                    "order": 0,
+                }
+            )
+            continue
+        match = APP_STALL_BEGIN_RE.search(line)
+        if match:
+            anchors.append(
+                {
+                    "frame_id": parse_int(match.group("frame_id")),
+                    "stimulus_seconds": parse_float(match.group("stimulus")),
+                    "kind": "source_stall_begin",
+                    "order": 1,
+                }
+            )
+            continue
+        match = APP_STALL_END_RE.search(line)
+        if match:
+            anchors.append(
+                {
+                    "frame_id": parse_int(match.group("frame_id")),
+                    "stimulus_seconds": parse_float(match.group("stimulus")),
+                    "kind": "source_stall_end",
+                    "order": 2,
+                }
+            )
+
+    anchors = [item for item in anchors if item["frame_id"] >= 0 and math.isfinite(item["stimulus_seconds"])]
+    anchors.sort(key=lambda item: (item["frame_id"], item["order"], item["stimulus_seconds"]))
+    deduped = []
+    seen = set()
+    for item in anchors:
+        key = (item["frame_id"], item["kind"], round(item["stimulus_seconds"], 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def annotate_video_frames_from_app_anchors(frames, anchors, manifest):
+    if not frames or not anchors:
+        return False
+
+    previous_marker = None
+    unwrapped = 0
+    for frame in frames:
+        marker = parse_int(frame.get("marker"), 0) & 0xFFFF
+        if previous_marker is None:
+            unwrapped = marker
+        else:
+            delta = (marker - previous_marker) & 0xFFFF
+            if delta > 0x8000:
+                delta -= 0x10000
+            unwrapped += delta
+        previous_marker = marker
+        frame["source_frame_id"] = unwrapped
+
+    anchor_ids = [item["frame_id"] for item in anchors]
+    target_fps = parse_float(manifest.get("target_fps"), 0.0)
+    if target_fps <= 0.0:
+        target_fps = 240.0
+
+    for frame in frames:
+        marker_id = frame.get("source_frame_id")
+        pos = bisect.bisect_right(anchor_ids, marker_id)
+        if pos <= 0:
+            anchor = anchors[0]
+            stimulus = anchor["stimulus_seconds"] + (marker_id - anchor["frame_id"]) / target_fps
+            mode = "extrapolated_before"
+        elif pos >= len(anchors):
+            anchor = anchors[-1]
+            stimulus = anchor["stimulus_seconds"] + (marker_id - anchor["frame_id"]) / target_fps
+            mode = "extrapolated_after"
+        else:
+            prev_anchor = anchors[pos - 1]
+            next_anchor = anchors[pos]
+            span_frames = next_anchor["frame_id"] - prev_anchor["frame_id"]
+            if span_frames <= 0:
+                stimulus = prev_anchor["stimulus_seconds"]
+                mode = "duplicate_anchor"
+            else:
+                ratio = (marker_id - prev_anchor["frame_id"]) / span_frames
+                stimulus = prev_anchor["stimulus_seconds"] + ratio * (
+                    next_anchor["stimulus_seconds"] - prev_anchor["stimulus_seconds"]
+                )
+                mode = "interpolated"
+        frame["stimulus_seconds_marker"] = stimulus
+        frame["stimulus_seconds_marker_mode"] = mode
+    return True
+
+
 def read_video_pts(ffprobe, capture):
     data = run_ffprobe_json(
         ffprobe,
@@ -142,6 +277,25 @@ def read_video_pts(ffprobe, capture):
     pts = [parse_float(frame.get("best_effort_timestamp_time")) for frame in frames]
     durations = [parse_float(frame.get("pkt_duration_time")) for frame in frames]
     return pts, durations
+
+
+def infer_pts_delta(pts):
+    deltas = [
+        pts[index] - pts[index - 1]
+        for index in range(1, len(pts))
+        if pts[index] > pts[index - 1]
+    ]
+    if deltas:
+        return statistics.median(deltas)
+    return 1.0 / 60.0
+
+
+def frame_pts_for_index(pts, frame_index, fallback_delta):
+    if frame_index < len(pts):
+        return pts[frame_index]
+    if pts:
+        return pts[-1] + fallback_delta * float(frame_index - len(pts) + 1)
+    return fallback_delta * float(frame_index)
 
 
 def pixel(frame, width, height, x, y):
@@ -287,6 +441,7 @@ def decode_video(ffmpeg, capture, manifest, video_stream, pts, scale_width):
     frame_size = scaled_w * scaled_h * 3
     frames = []
     frame_index = 0
+    fallback_pts_delta = infer_pts_delta(pts)
     while True:
         payload = process.stdout.read(frame_size)
         if not payload:
@@ -311,7 +466,7 @@ def decode_video(ffmpeg, capture, manifest, video_stream, pts, scale_width):
         frames.append(
             {
                 "index": frame_index,
-                "pts": pts[frame_index] if frame_index < len(pts) else frame_index,
+                "pts": frame_pts_for_index(pts, frame_index, fallback_pts_delta),
                 "palette": palette_index,
                 "color_dist": color_dist,
                 "event_color_confidence": event_color_confidence,
@@ -361,6 +516,25 @@ def expected_motion_from_stimulus(stimulus_seconds, manifest):
     return (margin + pos * usable + bar_width / 2.0) / float(src_w)
 
 
+def infer_nominal_video_fps(frames):
+    deltas = [
+        frames[index]["pts"] - frames[index - 1]["pts"]
+        for index in range(1, len(frames))
+        if frames[index]["pts"] > frames[index - 1]["pts"]
+    ]
+    if not deltas:
+        return 0.0
+    median_delta = statistics.median(deltas)
+    return 1.0 / median_delta if median_delta > 0.0 else 0.0
+
+
+def expected_source_repeat_run(manifest, nominal_output_fps):
+    source_fps = parse_float(manifest.get("target_fps"), 0.0)
+    if source_fps <= 0.0 or nominal_output_fps <= 0.0 or source_fps >= nominal_output_fps * 0.98:
+        return 1
+    return max(2, int(math.ceil(nominal_output_fps / source_fps)) + 1)
+
+
 def expected_transition_events(manifest, max_stimulus_seconds):
     period = parse_float(manifest.get("event_period_seconds"), 1.0)
     events = manifest.get("events", [])
@@ -381,7 +555,11 @@ def infer_capture_timing(frames, manifest):
             "anchor_error_seconds": 0.0,
             "anchor_transition_matches": 0,
         }
-    _, transitions = compress_states([(frame["pts"], frame["palette"]) for frame in frames], min_duration=0.12)
+    _, transitions = compress_states(
+        [(frame["pts"], frame["palette"]) for frame in frames],
+        min_duration=0.12,
+        transition_time_mode="first_new_sample",
+    )
     if not transitions:
         return {
             "capture_to_stimulus_offset_seconds": 0.0,
@@ -488,41 +666,70 @@ def cluster_overlaps_stall(cluster, stall):
     return cluster["end_pts"] >= stall["start"] - stall["tolerance"] and cluster["start_pts"] <= stall["end"] + stall["tolerance"]
 
 
-def classify_repeat_clusters(clusters, manifest, stalls=None):
+def classify_repeat_clusters(clusters, manifest, stalls=None, nominal_output_fps=0.0):
     if stalls is None:
         stalls = load_source_stalls(manifest)
+    source_repeat_run = expected_source_repeat_run(manifest, nominal_output_fps)
     planned = []
+    source_fps_limited = []
     unplanned = []
     matched_stalls = set()
     for cluster in clusters:
         matches = [stall for stall in stalls if cluster_overlaps_stall(cluster, stall)]
-        if not matches:
+        if matches:
+            cluster_mid = (cluster["start_pts"] + cluster["end_pts"]) / 2.0
+            stall = min(matches, key=lambda item: abs(cluster_mid - ((item["start"] + item["end"]) / 2.0)))
+            duration = max(0.0, cluster["end_pts"] - cluster["start_pts"])
+            expected = max(0.0, stall["expected_repeat_span_seconds"])
+            within_duration = expected <= 0.0 or abs(duration - expected) <= stall["tolerance"] + (1.0 / 15.0)
             item = dict(cluster)
-            item["classification"] = "unplanned_repeat_cluster"
-            unplanned.append(item)
+            item["source_stall_index"] = stall["index"]
+            item["expected_span_seconds"] = expected
+            item["duration_within_tolerance"] = within_duration
+            if within_duration:
+                matched_stalls.add(stall["index"])
+                item["classification"] = "planned_source_stall"
+                planned.append(item)
+            elif cluster["frames"] <= 2 or duration <= 0.025:
+                item["classification"] = "planned_source_stall_boundary_repeat"
+                if cluster["frames"] <= 2:
+                    item["expected_max_frames"] = 2
+                item["expected_max_duration_seconds"] = 0.025
+                source_fps_limited.append(item)
+            elif source_repeat_run > 1 and cluster["frames"] <= source_repeat_run:
+                item["classification"] = "source_fps_limited_repeat"
+                item["expected_max_frames"] = source_repeat_run
+                source_fps_limited.append(item)
+            else:
+                item["classification"] = "unplanned_repeat_cluster"
+                if source_repeat_run > 1:
+                    item["expected_max_frames"] = source_repeat_run
+                unplanned.append(item)
             continue
-        cluster_mid = (cluster["start_pts"] + cluster["end_pts"]) / 2.0
-        stall = min(matches, key=lambda item: abs(cluster_mid - ((item["start"] + item["end"]) / 2.0)))
-        matched_stalls.add(stall["index"])
-        duration = max(0.0, cluster["end_pts"] - cluster["start_pts"])
-        expected = max(0.0, stall["expected_repeat_span_seconds"])
-        within_duration = expected <= 0.0 or abs(duration - expected) <= stall["tolerance"] + (1.0 / 15.0)
         item = dict(cluster)
-        item["classification"] = "planned_source_stall" if within_duration else "unplanned_repeat_cluster"
-        item["source_stall_index"] = stall["index"]
-        item["expected_span_seconds"] = expected
-        item["duration_within_tolerance"] = within_duration
-        if within_duration:
-            planned.append(item)
+        if source_repeat_run > 1 and cluster["frames"] <= source_repeat_run:
+            item["classification"] = "source_fps_limited_repeat"
+            item["expected_max_frames"] = source_repeat_run
+            source_fps_limited.append(item)
         else:
+            item["classification"] = "unplanned_repeat_cluster"
+            if source_repeat_run > 1:
+                item["expected_max_frames"] = source_repeat_run
             unplanned.append(item)
     missing = [stall for stall in stalls if stall["suppressed_present_count"] > 0 and stall["index"] not in matched_stalls]
-    return planned, unplanned, missing
+    return planned, source_fps_limited, unplanned, missing
 
 
 def time_in_source_stall(time_value, stalls):
     for stall in stalls:
         if stall["start"] - stall["tolerance"] <= time_value <= stall["end"] + stall["tolerance"]:
+            return True
+    return False
+
+
+def stimulus_time_in_source_stall(stimulus_time, stalls):
+    for stall in stalls:
+        if stall["stimulus_start"] - stall["tolerance"] <= stimulus_time <= stall["stimulus_end"] + stall["tolerance"]:
             return True
     return False
 
@@ -533,7 +740,49 @@ def filter_transitions_outside_source_stalls(transitions, stalls):
     return [item for item in transitions if not time_in_source_stall(item["time"], stalls)]
 
 
-def compress_states(samples, min_duration=0.08):
+def filter_transitions_for_analysis(transitions, video_summary, stimulus_time_adjust=0.0):
+    timing = video_summary.get("timing", {})
+    capture_to_stimulus_offset = parse_float(timing.get("capture_to_stimulus_offset_seconds"), 0.0)
+    analysis_start = parse_float(video_summary.get("analysis_start_seconds"), 0.0)
+    stalls = video_summary.get("source_stalls", [])
+    filtered = []
+    for item in transitions:
+        stimulus_time = item["time"] + capture_to_stimulus_offset + stimulus_time_adjust
+        if stimulus_time + 1e-6 < analysis_start:
+            continue
+        if stimulus_time_in_source_stall(stimulus_time, stalls):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def dedupe_transitions_by_target_state(transitions):
+    deduped = []
+    seen = set()
+    for item in transitions:
+        target = item.get("to")
+        if target in seen:
+            continue
+        seen.add(target)
+        deduped.append(item)
+    return deduped
+
+
+def use_video_transition_uncertainty_intervals(transitions):
+    interval_transitions = []
+    for item in transitions:
+        updated = dict(item)
+        display_time = parse_float(item.get("display_time"), float("nan"))
+        if math.isfinite(display_time):
+            source_time = parse_float(item.get("time"), display_time)
+            updated["time_min"] = min(source_time, display_time)
+            updated["time_max"] = max(source_time, display_time)
+            updated["time_mode_for_audio"] = "source_to_visible_interval"
+        interval_transitions.append(updated)
+    return interval_transitions
+
+
+def compress_states(samples, min_duration=0.08, transition_time_mode="midpoint"):
     segments = []
     active = None
     for time_value, state in samples:
@@ -553,27 +802,139 @@ def compress_states(samples, min_duration=0.08):
 
     transitions = []
     for prev, cur in zip(segments, segments[1:]):
+        transition_time = cur["start"] if transition_time_mode == "first_new_sample" else (prev["end"] + cur["start"]) / 2.0
         transitions.append(
             {
                 "from": prev["state"],
                 "to": cur["state"],
-                "time": (prev["end"] + cur["start"]) / 2.0,
+                "time": transition_time,
             }
         )
     return segments, transitions
 
 
-def summarize_video(frames, manifest, timing):
+def build_video_transition_segments(frames, min_duration=0.08):
+    segments = []
+    active = None
+    for frame in frames:
+        state = frame.get("palette")
+        if state is None or state < 0:
+            continue
+        if active is None:
+            active = {
+                "state": state,
+                "start": frame["pts"],
+                "end": frame["pts"],
+                "count": 1,
+                "first_frame": frame,
+                "last_frame": frame,
+                "last_distinct_frame": frame,
+            }
+        elif active["state"] == state:
+            if frame.get("marker") != active["last_distinct_frame"].get("marker"):
+                active["last_distinct_frame"] = frame
+            active["end"] = frame["pts"]
+            active["count"] += 1
+            active["last_frame"] = frame
+        else:
+            if active["end"] - active["start"] >= min_duration:
+                segments.append(active)
+            active = {
+                "state": state,
+                "start": frame["pts"],
+                "end": frame["pts"],
+                "count": 1,
+                "first_frame": frame,
+                "last_frame": frame,
+                "last_distinct_frame": frame,
+            }
+    if active and active["end"] - active["start"] >= min_duration:
+        segments.append(active)
+    return segments
+
+
+def interpolate_source_transition_time(prev_frame, cur_frame, from_state, to_state, manifest):
+    prev_stimulus = prev_frame.get("stimulus_seconds_marker")
+    cur_stimulus = cur_frame.get("stimulus_seconds_marker")
+    if prev_stimulus is None or cur_stimulus is None:
+        return None
+    if not math.isfinite(prev_stimulus) or not math.isfinite(cur_stimulus) or cur_stimulus <= prev_stimulus:
+        return None
+
+    expected = expected_transition_events(manifest, cur_stimulus + 2.0)
+    tolerance = max(0.002, (cur_stimulus - prev_stimulus) * 0.25)
+    choices = [
+        item
+        for item in expected
+        if item["from"] == from_state
+        and item["to"] == to_state
+        and prev_stimulus - tolerance <= item["time"] <= cur_stimulus + tolerance
+    ]
+    if not choices:
+        return None
+
+    event = min(choices, key=lambda item: abs(item["time"] - ((prev_stimulus + cur_stimulus) * 0.5)))
+    span = cur_stimulus - prev_stimulus
+    ratio = min(1.0, max(0.0, (event["time"] - prev_stimulus) / span))
+    display_span = cur_frame["pts"] - prev_frame["pts"]
+    if display_span <= 0.0:
+        return None
+    return {
+        "time": prev_frame["pts"] + ratio * display_span,
+        "stimulus_time": event["time"],
+        "mode": "source_marker_interpolated",
+        "previous_stimulus_time": prev_stimulus,
+        "current_stimulus_time": cur_stimulus,
+        "previous_marker": prev_frame.get("marker"),
+        "current_marker": cur_frame.get("marker"),
+    }
+
+
+def build_video_transitions(frames, manifest):
+    segments = build_video_transition_segments(frames, min_duration=0.12)
+    transitions = []
+    for prev, cur in zip(segments, segments[1:]):
+        prev_frame = prev.get("last_distinct_frame", prev["last_frame"])
+        cur_frame = cur["first_frame"]
+        display_time = cur_frame["pts"]
+        refined = interpolate_source_transition_time(prev_frame, cur_frame, prev["state"], cur["state"], manifest)
+        transition = {
+            "from": prev["state"],
+            "to": cur["state"],
+            "time": refined["time"] if refined else display_time,
+            "display_time": display_time,
+            "time_mode": refined["mode"] if refined else "first_new_sample",
+        }
+        if refined:
+            transition.update(
+                {
+                    "stimulus_time": refined["stimulus_time"],
+                    "previous_stimulus_time": refined["previous_stimulus_time"],
+                    "current_stimulus_time": refined["current_stimulus_time"],
+                    "previous_marker": refined["previous_marker"],
+                    "current_marker": refined["current_marker"],
+                }
+            )
+        transitions.append(transition)
+    return transitions
+
+
+def summarize_video(frames, manifest, timing, app_frame_anchors=None):
     if not frames:
         return {"error": "no decoded video frames"}
+    marker_timing_available = annotate_video_frames_from_app_anchors(frames, app_frame_anchors or [], manifest)
     capture_to_stimulus_offset = parse_float(timing.get("capture_to_stimulus_offset_seconds"), 0.0)
+    analysis_start = parse_float(manifest.get("analysis_start_seconds"), 0.0)
     source_stalls = load_source_stalls(manifest, capture_to_stimulus_offset)
+    nominal_output_fps = infer_nominal_video_fps(frames)
+    source_repeat_run = expected_source_repeat_run(manifest, nominal_output_fps)
     repeated = 0
     longest_repeat = 1
     current_repeat = 1
     repeat_clusters = []
     current_repeat_start = None
     out_of_order = 0
+    out_of_order_details = []
     corrupt = 0
     motion_missing = 0
     motion_stalls = 0
@@ -584,6 +945,20 @@ def summarize_video(frames, manifest, timing):
     previous = None
     previous_motion = None
     for frame in frames:
+        stimulus_time = frame["pts"] + capture_to_stimulus_offset
+        if stimulus_time + 1e-6 < analysis_start:
+            previous = None
+            previous_motion = None
+            current_repeat = 1
+            current_repeat_start = None
+            motion_stall_run = 1
+            continue
+        expected_source_duplicate = (
+            previous is not None
+            and source_repeat_run > 1
+            and frame["marker"] == previous["marker"]
+            and current_repeat < source_repeat_run
+        )
         if (
             frame["marker_bad_tiles"] > 0
             or not frame["marker_inverse_ok"]
@@ -601,7 +976,7 @@ def summarize_video(frames, manifest, timing):
             error = circular_distance(frame["motion"], expected_motion)
             frame["motion_error"] = error
             motion_error_max = max(motion_error_max, error)
-            if error > 0.035 and not in_planned_stall:
+            if error > 0.035 and not in_planned_stall and not expected_source_duplicate:
                 motion_error_frames += 1
         if previous is not None:
             if frame["marker"] == previous["marker"]:
@@ -628,10 +1003,24 @@ def summarize_video(frames, manifest, timing):
                 delta = (frame["marker"] - previous["marker"]) & 0xFFFF
                 if delta == 0 or delta > 0x8000:
                     out_of_order += 1
+                    if len(out_of_order_details) < 16:
+                        out_of_order_details.append(
+                            {
+                                "previous_index": previous["index"],
+                                "index": frame["index"],
+                                "previous_pts": previous["pts"],
+                                "pts": frame["pts"],
+                                "previous_marker": previous["marker"],
+                                "marker": frame["marker"],
+                                "delta": delta,
+                                "previous_bad_tiles": previous.get("marker_bad_tiles", 0),
+                                "bad_tiles": frame.get("marker_bad_tiles", 0),
+                            }
+                        )
             previous_in_planned_stall = time_in_source_stall(previous["pts"], source_stalls)
             if frame["motion"] is not None and previous_motion is not None:
                 if abs(frame["motion"] - previous_motion) < 0.0005:
-                    if in_planned_stall or previous_in_planned_stall:
+                    if in_planned_stall or previous_in_planned_stall or expected_source_duplicate:
                         longest_motion_stall = max(longest_motion_stall, motion_stall_run)
                         motion_stall_run = 1
                     else:
@@ -657,23 +1046,26 @@ def summarize_video(frames, manifest, timing):
             }
         )
     longest_motion_stall = max(longest_motion_stall, motion_stall_run)
-    planned_clusters, unplanned_clusters, missing_planned_stalls = classify_repeat_clusters(
-        repeat_clusters, manifest, source_stalls
+    planned_clusters, source_fps_limited_clusters, unplanned_clusters, missing_planned_stalls = classify_repeat_clusters(
+        repeat_clusters, manifest, source_stalls, nominal_output_fps
     )
-    _, transitions = compress_states([(frame["pts"], frame["palette"]) for frame in frames], min_duration=0.12)
+    transitions = build_video_transitions(frames, manifest)
     return {
         "timing": timing,
+        "marker_timing_available": marker_timing_available,
         "frames": len(frames),
         "corrupt_frames": corrupt,
         "repeated_marker_frames": repeated,
         "longest_marker_repeat": longest_repeat,
         "repeat_clusters": repeat_clusters,
         "planned_source_stall_clusters": planned_clusters,
+        "source_fps_limited_repeat_clusters": source_fps_limited_clusters,
         "unplanned_repeat_clusters": unplanned_clusters,
         "missing_planned_source_stalls": missing_planned_stalls,
         "longest_unplanned_marker_repeat": max((item["frames"] for item in unplanned_clusters), default=1),
         "unplanned_repeated_marker_frames": sum(item["repeated_frames"] for item in unplanned_clusters),
         "out_of_order_markers": out_of_order,
+        "out_of_order_marker_details": out_of_order_details,
         "motion_missing_frames": motion_missing,
         "motion_stall_frames": motion_stalls,
         "longest_motion_stall": longest_motion_stall,
@@ -681,6 +1073,10 @@ def summarize_video(frames, manifest, timing):
         "motion_error_max": motion_error_max,
         "transitions": transitions,
         "source_stalls": source_stalls,
+        "analysis_start_seconds": analysis_start,
+        "audio_stimulus_lead_seconds": parse_float(manifest.get("audio_stimulus_lead_ms"), 0.0) / 1000.0,
+        "nominal_output_fps": nominal_output_fps,
+        "expected_source_repeat_run": source_repeat_run,
     }
 
 
@@ -733,7 +1129,7 @@ def detect_audio_states(samples, sample_rate, frequencies):
     if not samples or sample_rate <= 0:
         return [], []
     window = max(1024, int(sample_rate * 0.045))
-    step = max(256, int(sample_rate * 0.0125))
+    step = max(128, int(sample_rate * 0.005))
     states = []
     for start in range(0, max(0, len(samples) - window), step):
         chunk = samples[start : start + window]
@@ -798,28 +1194,77 @@ def refine_audio_transitions(samples, sample_rate, frequencies, transitions):
 
         updated = dict(transition)
         updated["coarse_time"] = coarse_time
-        updated["time"] = crossing
+        if audio_refinement_is_plausible(coarse_time, crossing):
+            updated["time"] = crossing
+        else:
+            updated["time"] = coarse_time
+            updated["rejected_refined_time"] = crossing
         refined.append(updated)
     return refined
+
+
+def audio_refinement_is_plausible(coarse_time, refined_time):
+    return math.isfinite(refined_time) and abs(refined_time - coarse_time) <= MAX_AUDIO_REFINEMENT_DELTA_SECONDS
 
 
 def match_transition_offsets(reference, candidate, max_window):
     offsets = []
     missing = 0
     used = set()
-    for item in candidate:
+    for ref in reference:
         choices = [
-            (abs(item["time"] - ref["time"]), index, ref)
-            for index, ref in enumerate(reference)
-            if index not in used and ref["to"] == item["to"] and abs(item["time"] - ref["time"]) <= max_window
+            (abs(transition_signed_offset(item, ref)), index, item)
+            for index, item in enumerate(candidate)
+            if index not in used and ref["to"] == item["to"] and abs(transition_signed_offset(item, ref)) <= max_window
         ]
         if not choices:
             missing += 1
             continue
-        _, index, ref = min(choices, key=lambda value: value[0])
+        _, index, item = min(choices, key=lambda value: value[0])
         used.add(index)
-        offsets.append(item["time"] - ref["time"])
+        offsets.append(transition_signed_offset(item, ref))
     return offsets, missing
+
+
+def transition_signed_offset(candidate, reference):
+    candidate_time = parse_float(candidate.get("time"), float("nan"))
+    reference_time = parse_float(reference.get("time"), float("nan"))
+    if not math.isfinite(candidate_time) or not math.isfinite(reference_time):
+        return float("inf")
+    lo = parse_float(reference.get("time_min"), reference_time)
+    hi = parse_float(reference.get("time_max"), reference_time)
+    if not math.isfinite(lo):
+        lo = reference_time
+    if not math.isfinite(hi):
+        hi = reference_time
+    if lo > hi:
+        lo, hi = hi, lo
+    if candidate_time < lo:
+        return candidate_time - lo
+    if candidate_time > hi:
+        return candidate_time - hi
+    return 0.0
+
+
+def summarize_offsets_ms(offsets):
+    values = [offset * 1000.0 for offset in offsets]
+    if not values:
+        return {
+            "matched": 0,
+            "max_abs": 0.0,
+            "mean_signed": 0.0,
+            "median_signed": 0.0,
+            "min_signed": 0.0,
+            "max_signed": 0.0,
+        }
+    return {
+        "matched": len(values),
+        "max_abs": max(abs(value) for value in values),
+        "mean_signed": statistics.fmean(values),
+        "median_signed": statistics.median(values),
+        "min_signed": min(values),
+        "max_signed": max(values),
+    }
 
 
 def analyze_ce_log_text(text):
@@ -832,6 +1277,16 @@ def analyze_ce_log(path):
     return analyze_ce_log_text(path.read_text(encoding="utf-8", errors="replace"))
 
 
+def analyze_app_log_text(text):
+    return {name: len(pattern.findall(text)) for name, pattern in STRICT_APP_PATTERNS.items()}
+
+
+def analyze_app_log(path):
+    if not path:
+        return {}
+    return analyze_app_log_text(path.read_text(encoding="utf-8", errors="replace"))
+
+
 def make_check(name, passed, actual, expected, failure_class):
     return {
         "name": name,
@@ -842,7 +1297,7 @@ def make_check(name, passed, actual, expected, failure_class):
     }
 
 
-def evaluate(args, video_summary, audio_results, ce_counts):
+def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
     checks = []
     non_strict_audio = getattr(args, "non_strict_audio_ordinals_set", set())
     checks.append(
@@ -919,8 +1374,9 @@ def evaluate(args, video_summary, audio_results, ce_counts):
         )
     )
 
-    source_stalls = video_summary.get("source_stalls", [])
-    video_transitions = filter_transitions_outside_source_stalls(video_summary["transitions"], source_stalls)
+    audio_lead_seconds = parse_float(video_summary.get("audio_stimulus_lead_seconds"), 0.0)
+    video_transitions = filter_transitions_for_analysis(video_summary["transitions"], video_summary)
+    video_audio_reference_transitions = use_video_transition_uncertainty_intervals(video_transitions)
     audio_transition_sets = []
     for result in audio_results:
         is_strict_audio = result["ordinal"] not in non_strict_audio
@@ -937,9 +1393,12 @@ def evaluate(args, video_summary, audio_results, ce_counts):
                 )
             )
             continue
-        transitions = filter_transitions_outside_source_stalls(result["transitions"], source_stalls)
+        transitions = filter_transitions_for_analysis(
+            result["transitions"], video_summary, stimulus_time_adjust=audio_lead_seconds
+        )
+        transitions_for_matching = dedupe_transitions_by_target_state(transitions)
         if is_strict_audio:
-            audio_transition_sets.append((result["ordinal"], transitions))
+            audio_transition_sets.append((result["ordinal"], transitions_for_matching))
         checks.append(
             make_check(
                 f"audio.a:{result['ordinal']}.markers"
@@ -951,8 +1410,18 @@ def evaluate(args, video_summary, audio_results, ce_counts):
                 "audio_marker_missing" if is_strict_audio else "opportunistic_audio_marker",
             )
         )
-        offsets, missing = match_transition_offsets(video_transitions, transitions, args.transition_match_window_ms / 1000.0)
-        max_offset_ms = max((abs(offset) * 1000.0 for offset in offsets), default=999999.0 if transitions else 0.0)
+        offsets, missing = match_transition_offsets(
+            video_audio_reference_transitions, transitions_for_matching, args.transition_match_window_ms / 1000.0
+        )
+        offset_stats = summarize_offsets_ms(offsets)
+        if transitions and not offsets:
+            offset_stats["max_abs"] = 999999.0
+        offset_stats["missing"] = missing
+        offset_stats["target_signed_ms"] = 0.0
+        result["av_offset_stats_ms"] = {
+            key: round(value, 3) if isinstance(value, float) else value for key, value in offset_stats.items()
+        }
+        max_offset_ms = offset_stats["max_abs"]
         checks.append(
             make_check(
                 f"audio.a:{result['ordinal']}.av_offset_ms"
@@ -963,6 +1432,19 @@ def evaluate(args, video_summary, audio_results, ce_counts):
                 else True,
                 round(max_offset_ms, 3),
                 f"<= {args.max_av_offset_ms} ms",
+                "audio_video_event_offset" if is_strict_audio else "opportunistic_audio_video_event_offset",
+            )
+        )
+        checks.append(
+            make_check(
+                f"audio.a:{result['ordinal']}.av_mean_offset_ms"
+                if is_strict_audio
+                else f"audio.a:{result['ordinal']}.opportunistic_av_mean_offset_ms",
+                (offsets and abs(offset_stats["mean_signed"]) <= args.max_mean_av_offset_ms)
+                if is_strict_audio
+                else True,
+                round(offset_stats["mean_signed"], 3),
+                f"0 +/- {args.max_mean_av_offset_ms} ms",
                 "audio_video_event_offset" if is_strict_audio else "opportunistic_audio_video_event_offset",
             )
         )
@@ -987,6 +1469,24 @@ def evaluate(args, video_summary, audio_results, ce_counts):
 
     for name, count in sorted(ce_counts.items()):
         checks.append(make_check(f"ce_log.{name}", count == 0, count, "0", "ce_strict_log_event"))
+    for name, count in sorted(app_counts.items()):
+        if name == "frame_pacing_spike":
+            visible_video_ok = (
+                video_summary["longest_unplanned_marker_repeat"] <= args.max_longest_repeat
+                and video_summary["longest_motion_stall"] <= args.max_motion_stall
+                and video_summary["motion_error_frames"] <= args.max_motion_error_frames
+            )
+            checks.append(
+                make_check(
+                    f"app_log.{name}",
+                    count == 0 or visible_video_ok,
+                    count,
+                    "0, or source-only when decoded video remains smooth",
+                    "stimulus_app_pacing_spike",
+                )
+            )
+        else:
+            checks.append(make_check(f"app_log.{name}", count == 0, count, "0", "stimulus_app_fault"))
 
     return checks
 
@@ -1005,24 +1505,30 @@ def print_report(report):
     )
     print(
         "  video frames={frames} corrupt={corrupt} repeats={repeat} longest_unplanned_repeat={longest} "
-        "planned_stalls={planned} unplanned_clusters={unplanned} motion_stall={motion}".format(
+        "planned_stalls={planned} source_fps_clusters={source_fps} unplanned_clusters={unplanned} "
+        "motion_stall={motion}".format(
             frames=report["video"]["frames"],
             corrupt=report["video"]["corrupt_frames"],
             repeat=report["video"]["repeated_marker_frames"],
             longest=report["video"]["longest_unplanned_marker_repeat"],
             planned=len(report["video"].get("planned_source_stall_clusters", [])),
+            source_fps=len(report["video"].get("source_fps_limited_repeat_clusters", [])),
             unplanned=len(report["video"].get("unplanned_repeat_clusters", [])),
             motion=report["video"]["longest_motion_stall"],
         )
     )
     for audio in report["audio"]:
+        stats = audio.get("av_offset_stats_ms", {})
         print(
-            "  audio a:{ordinal} codec={codec} rate={rate} transitions={transitions} decode_error={decode_error}".format(
+            "  audio a:{ordinal} codec={codec} rate={rate} transitions={transitions} decode_error={decode_error} "
+            "offset_mean={mean}ms offset_max_abs={max_abs}ms".format(
                 ordinal=audio["ordinal"],
                 codec=audio["codec"],
                 rate=audio["sample_rate"],
                 transitions=len(audio.get("transitions", [])),
                 decode_error="yes" if audio.get("decode_error") else "no",
+                mean=stats.get("mean_signed", "n/a"),
+                max_abs=stats.get("max_abs", "n/a"),
             )
         )
     print("checks:")
@@ -1041,6 +1547,16 @@ def self_test():
     offsets, missing = match_transition_offsets(reference, candidate, 0.1)
     assert missing == 0
     assert round(max(abs(offset) for offset in offsets), 3) == 0.015
+    extra_candidate = candidate + [{"to": 3, "time": 3.4}]
+    offsets, missing = match_transition_offsets(reference, extra_candidate, 0.1)
+    assert missing == 0
+    missing_candidate = candidate[:2]
+    offsets, missing = match_transition_offsets(reference, missing_candidate, 0.1)
+    assert missing == 1
+    stats = summarize_offsets_ms(offsets)
+    assert stats["matched"] == 2
+    assert round(stats["mean_signed"], 3) == 13.5
+    assert round(stats["max_abs"], 3) == 15.0
     segments, transitions = compress_states([(0.0, 1), (0.1, 1), (0.2, 2), (0.3, 2)], min_duration=0.05)
     assert len(segments) == 2
     assert transitions[0]["to"] == 2
@@ -1057,6 +1573,8 @@ def self_test():
     _, audio_transitions = detect_audio_states(audio, rate, freqs)
     assert audio_transitions and abs(audio_transitions[0]["time"] - 1.0) < 0.01
     assert "coarse_time" in audio_transitions[0]
+    assert audio_refinement_is_plausible(1.0, 1.011)
+    assert not audio_refinement_is_plausible(1.0, 1.014)
     clean_counts = analyze_ce_log_text(
         "[PullAudio] Track 1 bootstrap complete - target=3ms samples=160 forced=0 trimmed=0 protected=1029\n"
         "[A/V SYNC CHECK] Track 1: RetainTrim=0, CoverageTrim=0, Tier2Trim=0, BootstrapTrim=0\n"
@@ -1065,8 +1583,21 @@ def self_test():
     bad_counts = analyze_ce_log_text(
         "[PullAudio] Track 1 bootstrap complete - target=3ms samples=160 forced=0 trimmed=4 protected=1029\n"
         "[PullAudio] Audio latency cap: src 0 ahead by 1200 samples - trimming 240\n"
+        "[STOP AUDIO] Source 3: track=2 encoded=1000 trim=cov:0 latTotal:0 liveUncat:0 pad:42 qgap:0\n"
     )
     assert bad_counts["audio_trim"] == 2
+    assert bad_counts["audio_strict_source_padding"] == 1
+    clean_app_counts = analyze_app_log_text(
+        "AVSYNC FRAME_TIMING planned_source_gap frameId=10 deltaMs=305.0 thresholdMs=33.3\n"
+        "AVSYNC SUMMARY frame_timing targetFps=60 spikes=0\n"
+    )
+    assert clean_app_counts["frame_pacing_spike"] == 0
+    bad_app_counts = analyze_app_log_text(
+        "AVSYNC WARNING frame pacing spike frameId=42 deltaMs=50.000 thresholdMs=33.333\n"
+        "AVSYNC WARNING audio event timeout count=1\n"
+    )
+    assert bad_app_counts["frame_pacing_spike"] == 1
+    assert bad_app_counts["audio_event_timeout"] == 1
     manifest = {
         "source_stalls": [
             {
@@ -1080,14 +1611,77 @@ def self_test():
         ]
     }
     clusters = [{"start_pts": 8.02, "end_pts": 8.30, "frames": 18, "repeated_frames": 17, "marker": 99}]
-    planned, unplanned, missing = classify_repeat_clusters(clusters, manifest)
+    planned, source_fps_limited, unplanned, missing = classify_repeat_clusters(clusters, manifest)
     assert len(planned) == 1
+    assert not source_fps_limited
     assert not unplanned
     assert not missing
     clusters = [{"start_pts": 4.0, "end_pts": 4.2, "frames": 12, "repeated_frames": 11, "marker": 100}]
-    planned, unplanned, missing = classify_repeat_clusters(clusters, manifest)
+    planned, source_fps_limited, unplanned, missing = classify_repeat_clusters(clusters, manifest)
     assert not planned
+    assert not source_fps_limited
     assert len(unplanned) == 1
+    low_fps_manifest = {"target_fps": 45}
+    low_fps_clusters = [{"start_pts": 1.0, "end_pts": 1.016, "frames": 2, "repeated_frames": 1, "marker": 100}]
+    planned, source_fps_limited, unplanned, missing = classify_repeat_clusters(
+        low_fps_clusters, low_fps_manifest, stalls=[], nominal_output_fps=60.0
+    )
+    assert not planned
+    assert len(source_fps_limited) == 1
+    assert not unplanned
+    low_fps_stall_manifest = dict(manifest)
+    low_fps_stall_manifest["target_fps"] = 45
+    low_fps_near_stall = [{"start_pts": 8.32, "end_pts": 8.34, "frames": 2, "repeated_frames": 1, "marker": 101}]
+    planned, source_fps_limited, unplanned, missing = classify_repeat_clusters(
+        low_fps_near_stall, low_fps_stall_manifest, nominal_output_fps=60.0
+    )
+    assert not planned
+    assert len(source_fps_limited) == 1
+    assert source_fps_limited[0]["classification"] == "planned_source_stall_boundary_repeat"
+    assert not unplanned
+    assert len(missing) == 1
+    stall_tail_120fps = [{"start_pts": 8.32, "end_pts": 8.336, "frames": 3, "repeated_frames": 2, "marker": 102}]
+    planned, source_fps_limited, unplanned, missing = classify_repeat_clusters(
+        stall_tail_120fps, manifest, nominal_output_fps=120.0
+    )
+    assert not planned
+    assert len(source_fps_limited) == 1
+    assert source_fps_limited[0]["classification"] == "planned_source_stall_boundary_repeat"
+    assert not unplanned
+    assert len(missing) == 1
+    filter_summary = {
+        "timing": {"capture_to_stimulus_offset_seconds": 0.75},
+        "analysis_start_seconds": 2.0,
+        "source_stalls": [
+            {
+                "stimulus_start": 8.0,
+                "stimulus_end": 8.3,
+                "tolerance": 0.05,
+            }
+        ],
+    }
+    audio_filter_input = [
+        {"to": 1, "time": 0.15},
+        {"to": 2, "time": 1.19},
+        {"to": 8, "time": 7.19},
+        {"to": 9, "time": 8.19},
+    ]
+    filtered = filter_transitions_for_analysis(audio_filter_input, filter_summary, stimulus_time_adjust=0.075)
+    assert [item["to"] for item in filtered] == [2, 9]
+    deduped = dedupe_transitions_by_target_state(
+        [{"to": 7, "time": 7.0}, {"to": 7, "time": 7.8}, {"to": 8, "time": 8.0}]
+    )
+    assert [(item["to"], item["time"]) for item in deduped] == [(7, 7.0), (8, 8.0)]
+    interval_reference = use_video_transition_uncertainty_intervals(
+        [{"to": 2, "time": 2.055, "display_time": 2.067, "time_mode": "source_marker_interpolated"}]
+    )
+    assert interval_reference[0]["time"] == 2.055
+    assert interval_reference[0]["time_min"] == 2.055
+    assert interval_reference[0]["time_max"] == 2.067
+    assert interval_reference[0]["time_mode_for_audio"] == "source_to_visible_interval"
+    assert transition_signed_offset({"time": 2.060}, interval_reference[0]) == 0.0
+    assert round(transition_signed_offset({"time": 2.077}, interval_reference[0]), 3) == 0.010
+    assert round(transition_signed_offset({"time": 2.050}, interval_reference[0]), 3) == -0.005
     frames = [
         {"pts": 0.00, "palette": 1},
         {"pts": 0.20, "palette": 1},
@@ -1103,7 +1697,10 @@ def self_test():
     ]
     timing_manifest = {"events": [{"palette": index} for index in range(16)], "duration_seconds": 10, "event_period_seconds": 1.0}
     timing = infer_capture_timing(frames, timing_manifest)
-    assert abs(timing["capture_to_stimulus_offset_seconds"] - 1.47) < 0.01
+    assert abs(timing["capture_to_stimulus_offset_seconds"] - 1.46) < 0.01
+    truncated_pts = [index / 60.0 for index in range(578)]
+    assert abs(infer_pts_delta(truncated_pts) - (1.0 / 60.0)) < 0.0001
+    assert abs(frame_pts_for_index(truncated_pts, 578, infer_pts_delta(truncated_pts)) - (578.0 / 60.0)) < 0.0001
     wrap_frames = [
         {"pts": 0.00, "palette": 0},
         {"pts": 0.20, "palette": 0},
@@ -1118,6 +1715,105 @@ def self_test():
     wrap_timing = infer_capture_timing(wrap_frames, wrap_manifest)
     assert 0.0 <= wrap_timing["capture_to_stimulus_offset_seconds"] < 2.0
     assert wrap_timing["anchor_error_seconds"] < 0.01
+    warmup_frames = []
+    for index, marker in enumerate([9, 8, 20, 21, 22]):
+        warmup_frames.append(
+            {
+                "index": index,
+                "pts": index * 0.1,
+                "palette": index % 4,
+                "marker": marker,
+                "marker_bad_tiles": 0,
+                "marker_inverse_ok": True,
+                "checksum_ok": True,
+                "parity_ok": True,
+                "event_color_confidence": 1.0,
+                "motion": None,
+            }
+        )
+    warmup_summary = summarize_video(
+        warmup_frames,
+        {
+            "events": [{"palette": index} for index in range(16)],
+            "duration_seconds": 2.0,
+            "event_period_seconds": 1.0,
+            "analysis_start_seconds": 0.2,
+        },
+        {"capture_to_stimulus_offset_seconds": 0.0},
+    )
+    assert warmup_summary["out_of_order_markers"] == 0
+    marker_frames = []
+    marker_values = [244, 252, 260, 268, 274, 278, 286, 294, 302, 310]
+    for index, marker in enumerate(marker_values):
+        marker_frames.append(
+            {
+                "index": index,
+                "pts": [0.14, 0.18, 0.22, 0.26, 0.283333, 0.300000, 0.34, 0.38, 0.42, 0.46][index],
+                "palette": 0 if index < 5 else 1,
+                "marker": marker,
+                "marker_bad_tiles": 0,
+                "marker_inverse_ok": True,
+                "checksum_ok": True,
+                "parity_ok": True,
+                "event_color_confidence": 1.0,
+                "motion": None,
+            }
+        )
+    marker_summary = summarize_video(
+        marker_frames,
+        {
+            "events": [{"palette": index} for index in range(16)],
+            "duration_seconds": 2.0,
+            "event_period_seconds": 1.0,
+            "analysis_start_seconds": 0.0,
+            "target_fps": 240,
+        },
+        {"capture_to_stimulus_offset_seconds": 0.7},
+        [
+            {"frame_id": 240, "stimulus_seconds": 0.857231, "kind": "frame", "order": 0},
+            {"frame_id": 480, "stimulus_seconds": 1.857231, "kind": "frame", "order": 0},
+        ],
+    )
+    assert marker_summary["marker_timing_available"]
+    assert marker_summary["transitions"][0]["time_mode"] == "source_marker_interpolated"
+    assert abs(marker_summary["transitions"][0]["time"] - 0.2845) < 0.002
+    assert abs(marker_summary["transitions"][0]["display_time"] - 0.3000) < 0.0001
+    low_source_frames = []
+    low_source_pts = [0.00, 0.04, 0.08, 0.10, 0.12, 0.14, 0.16, 0.20, 0.24, 0.28, 0.32]
+    low_source_markers = [126, 129, 132, 132, 132, 132, 135, 135, 138, 138, 141]
+    for index, marker in enumerate(low_source_markers):
+        low_source_frames.append(
+            {
+                "index": index,
+                "pts": low_source_pts[index],
+                "palette": 1 if index < 6 else 2,
+                "marker": marker,
+                "marker_bad_tiles": 0,
+                "marker_inverse_ok": True,
+                "checksum_ok": True,
+                "parity_ok": True,
+                "event_color_confidence": 1.0,
+                "motion": None,
+            }
+        )
+    low_source_summary = summarize_video(
+        low_source_frames,
+        {
+            "events": [{"palette": index} for index in range(16)],
+            "duration_seconds": 3.0,
+            "event_period_seconds": 1.0,
+            "analysis_start_seconds": 0.0,
+            "target_fps": 45,
+        },
+        {"capture_to_stimulus_offset_seconds": 0.0},
+        [
+            {"frame_id": 90, "stimulus_seconds": 1.054, "kind": "frame", "order": 0},
+            {"frame_id": 135, "stimulus_seconds": 2.054, "kind": "frame", "order": 0},
+        ],
+    )
+    assert low_source_summary["transitions"][0]["time_mode"] == "source_marker_interpolated"
+    assert low_source_summary["transitions"][0]["time"] < 0.11
+    assert abs(low_source_summary["transitions"][0]["display_time"] - 0.16) < 0.0001
     motion_manifest = {"width": 1280, "marker_margin": 24, "motion_lane_bar_width": 96, "motion_lane_speed_cycles_per_second": 0.25}
     expected_center = expected_motion_from_stimulus(0.0, motion_manifest)
     assert abs(expected_center - ((24 + 48) / 1280.0)) < 0.001
@@ -1131,6 +1827,7 @@ def main():
     parser.add_argument("--ffmpeg", type=Path, default=Path("ffmpeg"))
     parser.add_argument("--ffprobe", type=Path, default=Path("ffprobe"))
     parser.add_argument("--ce-log", type=Path)
+    parser.add_argument("--app-log", type=Path)
     parser.add_argument("--json-out", type=Path)
     parser.add_argument(
         "--video-scale-width",
@@ -1138,8 +1835,9 @@ def main():
         default=0,
         help="Decoded video width for marker analysis; 0 auto-scales so marker tiles remain readable.",
     )
-    parser.add_argument("--max-av-offset-ms", type=float, default=80.0)
-    parser.add_argument("--max-track-spread-ms", type=float, default=30.0)
+    parser.add_argument("--max-av-offset-ms", type=float, default=25.0)
+    parser.add_argument("--max-mean-av-offset-ms", type=float, default=15.0)
+    parser.add_argument("--max-track-spread-ms", type=float, default=10.0)
     parser.add_argument("--transition-match-window-ms", type=float, default=300.0)
     parser.add_argument("--min-video-transitions", type=int, default=4)
     parser.add_argument("--min-audio-transitions", type=int, default=4)
@@ -1169,7 +1867,8 @@ def main():
     pts, _ = read_video_pts(args.ffprobe, args.capture)
     frames = decode_video(args.ffmpeg, args.capture, manifest, video_stream, pts, args.video_scale_width)
     timing = infer_capture_timing(frames, manifest)
-    video_summary = summarize_video(frames, manifest, timing)
+    app_frame_anchors = load_app_frame_anchors(args.app_log) if args.app_log else []
+    video_summary = summarize_video(frames, manifest, timing, app_frame_anchors)
     if "error" in video_summary:
         fail(video_summary["error"])
 
@@ -1178,8 +1877,14 @@ def main():
     for ordinal, stream in enumerate(audio_streams):
         samples, decode_error = decode_audio_track(args.ffmpeg, args.capture, ordinal)
         sample_rate = parse_int(stream.get("sample_rate"))
+        stream_start_seconds = parse_float(stream.get("start_time"), 0.0)
+        initial_padding = parse_int(stream.get("initial_padding"), 0)
         transitions = []
         if samples is not None:
+            # FFmpeg raw PCM decode is the presentation-content timeline; AAC
+            # priming and Opus pre-skip are already handled by the decoder.
+            # Keep stream start/padding metadata in the report for diagnostics,
+            # but do not add it here or codec pre-roll gets counted twice.
             _, transitions = detect_audio_states(samples, sample_rate, frequencies)
         audio_results.append(
             {
@@ -1187,6 +1892,8 @@ def main():
                 "stream_index": parse_int(stream.get("index")),
                 "codec": stream.get("codec_name", ""),
                 "sample_rate": sample_rate,
+                "stream_start_seconds": stream_start_seconds,
+                "initial_padding_samples": initial_padding,
                 "transitions": transitions,
                 "decode_error": decode_error,
                 "strict": ordinal not in args.non_strict_audio_ordinals_set,
@@ -1194,13 +1901,15 @@ def main():
         )
 
     ce_counts = analyze_ce_log(args.ce_log) if args.ce_log else {}
-    checks = evaluate(args, video_summary, audio_results, ce_counts)
+    app_counts = analyze_app_log(args.app_log) if args.app_log else {}
+    checks = evaluate(args, video_summary, audio_results, ce_counts, app_counts)
     report = {
         "capture": str(args.capture),
         "manifest": str(args.manifest),
         "video": video_summary,
         "audio": audio_results,
         "ce_log_counts": ce_counts,
+        "app_log_counts": app_counts,
         "checks": checks,
         "passed": all(check["passed"] for check in checks),
     }

@@ -85,6 +85,9 @@ class AudioRenderer {
     LARGE_INTEGER audioStartQpc_ = {};
     DWORD lastSummaryTick_ = 0;
     uint64_t underruns_ = 0;
+    double lastFillFirstStimulusSeconds_ = 0.0;
+    double lastFillLastStimulusSeconds_ = 0.0;
+    double lastFillBaseOffsetSeconds_ = 0.0;
     bool coInitialized_ = false;
     int requestedBufferMs_ = kDefaultAudioBufferMs;
 };
@@ -333,11 +336,15 @@ inline void AudioRenderer::ThreadMain() {
             lastSummaryTick_ = nowTick;
             testapp::Log(
                 "AVSYNC AUDIO_BUFFER sampleCursor=%llu padding=%u available=%u underruns=%llu "
-                "renderLatencyUs=%llu audioClockScheduling=%d stimulusSeconds=%.6f\n",
+                "renderLatencyUs=%llu audioClockScheduling=%d stimulusSeconds=%.6f "
+                "fillFirstStimulusSeconds=%.6f fillLastStimulusSeconds=%.6f fillBaseOffsetSeconds=%.6f "
+                "audioLeadMs=%.3f\n",
                 static_cast<unsigned long long>(sampleCursor_), padding, available,
                 static_cast<unsigned long long>(underruns_),
                 static_cast<unsigned long long>(streamLatency100ns_ / 10),
-                usedClockScheduling_.load(std::memory_order_acquire) ? 1 : 0, SecondsSinceStimulusStart());
+                usedClockScheduling_.load(std::memory_order_acquire) ? 1 : 0, SecondsSinceStimulusStart(),
+                lastFillFirstStimulusSeconds_, lastFillLastStimulusSeconds_, lastFillBaseOffsetSeconds_,
+                AudioLeadMs());
         }
     }
 
@@ -396,6 +403,12 @@ inline void AudioRenderer::FillAudio(BYTE* data, UINT32 frames, UINT32 queuedFra
         }
     }
     usedClockScheduling_.store(usedClock, std::memory_order_release);
+    lastFillBaseOffsetSeconds_ = baseOffsetSeconds;
+    lastFillFirstStimulusSeconds_ = baseOffsetSeconds + audioLeadSeconds_;
+    lastFillLastStimulusSeconds_ =
+        frames == 0
+            ? lastFillFirstStimulusSeconds_
+            : lastFillFirstStimulusSeconds_ + static_cast<double>(frames - 1) / static_cast<double>(sampleRate);
 
     for (UINT32 frame = 0; frame < frames; ++frame) {
         BYTE* frameData = data + frame * blockAlign;

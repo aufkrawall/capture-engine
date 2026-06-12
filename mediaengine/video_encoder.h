@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 #include "../common/config.h"
+#include "../common/shared_defs.h"
 #include "mux_invariants.h"
 
 extern "C" {
@@ -199,17 +200,17 @@ private:
 
     // Cached shared textures (avoid reopening every frame)
     // Octo-buffered support (8 textures to prevent overwrite race)
-    ID3D11Texture2D* cachedSharedTextures[8] = {};
-    HANDLE cachedTextureHandles[8] = {};
+    ID3D11Texture2D* cachedSharedTextures[SHARED_TEXTURE_SLOT_COUNT] = {};
+    HANDLE cachedTextureHandles[SHARED_TEXTURE_SLOT_COUNT] = {};
     HANDLE cachedFenceHandle = nullptr;
     ID3D11Fence* cachedD3D11Fence = nullptr;
     uint32_t cachedSourcePid = 0;
 
     // Encoder-owned shared textures (for Vulkan interop)
     // Vulkan games import these textures instead of creating their own
-    ID3D11Texture2D* sharedCaptureTextures[8] = {};
-    HANDLE sharedCaptureHandles[8] = {};     // NT handles
-    HANDLE sharedCaptureKmtHandles[8] = {};  // KMT handles (global WDDM, for DXVK Vulkan import)
+    ID3D11Texture2D* sharedCaptureTextures[SHARED_TEXTURE_SLOT_COUNT] = {};
+    HANDLE sharedCaptureHandles[SHARED_TEXTURE_SLOT_COUNT] = {};     // NT handles
+    HANDLE sharedCaptureKmtHandles[SHARED_TEXTURE_SLOT_COUNT] = {};  // KMT handles (global WDDM, for DXVK Vulkan import)
     ID3D11Fence* sharedCaptureFence = nullptr;
     HANDLE sharedCaptureFenceHandle = nullptr;
     bool sharedCaptureTexturesCreated = false;

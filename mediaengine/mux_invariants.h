@@ -69,6 +69,31 @@ inline int64_t ComputeAudioMuxRoundingToleranceUs(int sampleRate, int timeBaseNu
     return toleranceUs;
 }
 
+inline int64_t ComputeAudioCodecPrimingToleranceUs(int initialPaddingSamples, int sampleRate,
+                                                   int64_t roundingToleranceUs) {
+    if (initialPaddingSamples <= 0 || sampleRate <= 0) {
+        return 0;
+    }
+    const int64_t primingUs =
+        (static_cast<int64_t>(initialPaddingSamples) * 1000000LL + static_cast<int64_t>(sampleRate) - 1LL) /
+        static_cast<int64_t>(sampleRate);
+    return primingUs + std::max<int64_t>(0, roundingToleranceUs);
+}
+
+inline int64_t ChoosePostMuxStreamStartUs(int64_t streamStartUs, bool hasStreamStart, int64_t firstPacketStartUs,
+                                          bool hasFirstPacketStart) {
+    if (hasStreamStart && hasFirstPacketStart) {
+        return std::min(streamStartUs, firstPacketStartUs);
+    }
+    if (hasStreamStart) {
+        return streamStartUs;
+    }
+    if (hasFirstPacketStart) {
+        return firstPacketStartUs;
+    }
+    return 0;
+}
+
 struct PacketTimelineStats {
     bool seen = false;
     uint32_t packetCount = 0;

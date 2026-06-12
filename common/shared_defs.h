@@ -40,7 +40,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 26: Added WGC capture health flags for source-starvation diagnostics
 // Version 27: Added WGC-specific selection-bias telemetry separate from output schedule bias
 // Version 28: Added OverlayConfig::dx12FocusAnalysis (config-gated DX12 focus/mode-switch analysis)
-static constexpr uint32_t SHARED_MEMORY_VERSION = 28;
+// Version 29: Expanded hook->host shared texture slots from 8 to 16 for high-rate CFR inject selection
+static constexpr uint32_t SHARED_MEMORY_VERSION = 29;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -55,6 +56,8 @@ static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
 static constexpr int FRAME_RING_SIZE = 32;
+static constexpr int SHARED_TEXTURE_SLOT_COUNT = 16;
+static constexpr int ENCODER_TEXTURE_SLOT_COUNT = 4;
 
 inline bool HasBackbufferCountOverride(int32_t backbufferCount) {
     return backbufferCount >= 2 && backbufferCount <= 6;
@@ -112,7 +115,7 @@ inline void GenerateShutdownEventName(wchar_t* outName, size_t maxLen, uint32_t 
 
 // Bounds checking helpers for safe shared memory access
 inline bool IsValidTextureIndex(int32_t idx) {
-    return idx >= 0 && idx < 8;
+    return idx >= 0 && idx < SHARED_TEXTURE_SLOT_COUNT;
 }
 
 inline bool IsValidFrameRingIndex(uint32_t idx) {
@@ -447,7 +450,7 @@ struct alignas(8) FrameSlot {
     uint64_t fenceValue;             // GPU fence value for synchronization
     int64_t timestamp;               // QPC timestamp (ticks, not ms - use QPCToMs for conversion)
     uint32_t frameIndex;             // Sequential frame number from hook
-    int32_t textureIndex;            // Index of shared texture (0-7)
+    int32_t textureIndex;            // Index of shared texture (0..SHARED_TEXTURE_SLOT_COUNT-1)
     uint32_t sourcePid;              // Source process ID (required for OpenProcess/DuplicateHandle)
     std::atomic<uint32_t> valid{0};  // 1 if slot has unread data, 0 if empty/consumed
     uint32_t padding;                // Explicit padding to reach 32 bytes (8+8+4+4+4+4=32)
@@ -799,11 +802,11 @@ public:
         std::atomic<int64_t> targetTimeTicks{0};
     } fpsLimiter;
 
-    // Hook -> Host - Octo-buffered shared textures (8 to prevent overwrite race)
+    // Hook -> Host - shared texture ring.
     // Textures swap roles: hook writes to one while encoder reads from another
     // Hook writes, Host reads - use atomic accessors for thread safety
 private:
-    std::atomic<uint64_t> sharedHandles_[8]{};  // HANDLE cast to uint64_t (eight textures)
+    std::atomic<uint64_t> sharedHandles_[SHARED_TEXTURE_SLOT_COUNT]{};  // HANDLE cast to uint64_t
     std::atomic<uint64_t> fenceShareHandle_{0};
     std::atomic<uint64_t> fenceValue_{0};
     std::atomic<int32_t> currentReadIndex_{0};
@@ -819,12 +822,12 @@ private:
 public:
     // Atomic accessors for shared texture handles
     uint64_t GetSharedHandle(int index) const {
-        if (index < 0 || index >= 8)
+        if (index < 0 || index >= SHARED_TEXTURE_SLOT_COUNT)
             return 0;
         return sharedHandles_[index].load(std::memory_order_acquire);
     }
     void SetSharedHandle(int index, uint64_t val) {
-        if (index < 0 || index >= 8)
+        if (index < 0 || index >= SHARED_TEXTURE_SLOT_COUNT)
             return;
         sharedHandles_[index].store(val, std::memory_order_release);
     }
@@ -947,7 +950,7 @@ public:
     struct EncoderTextures {
     private:
         std::atomic<uint64_t> textureHandles_[4]{};     // NT handles from D3D11 CreateSharedHandle
-        std::atomic<uint64_t> kmtTextureHandles_[4]{};  // KMT handles from IDXGIResource::GetSharedHandle
+        std::atomic<uint64_t> kmtTextureHandles_[ENCODER_TEXTURE_SLOT_COUNT]{};  // KMT handles from IDXGIResource::GetSharedHandle
         std::atomic<uint64_t> fenceHandle_{0};
         std::atomic<uint32_t> width_{0};
         std::atomic<uint32_t> height_{0};

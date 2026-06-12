@@ -78,6 +78,19 @@ TEST(AvSyncStimulusTest, AudioLeadClampKeepsStimulusCompensationBounded) {
     EXPECT_DOUBLE_EQ(avs::ClampAudioLeadMs(1000.0), avs::kMaxAudioLeadMs);
 }
 
+TEST(AvSyncStimulusTest, AnalysisStartClampStaysInsideRunDuration) {
+    EXPECT_DOUBLE_EQ(avs::ClampAnalysisStartSeconds(-1.0, 10.0), 0.0);
+    EXPECT_DOUBLE_EQ(avs::ClampAnalysisStartSeconds(2.0, 10.0), 2.0);
+    EXPECT_DOUBLE_EQ(avs::ClampAnalysisStartSeconds(30.0, 10.0), 10.0);
+}
+
+TEST(AvSyncStimulusTest, DxgiTearingRequiresExplicitRequestSupportAndNoVsync) {
+    EXPECT_FALSE(avs::ShouldUseDxgiTearing(false, true, false));
+    EXPECT_FALSE(avs::ShouldUseDxgiTearing(true, false, false));
+    EXPECT_FALSE(avs::ShouldUseDxgiTearing(true, true, true));
+    EXPECT_TRUE(avs::ShouldUseDxgiTearing(true, true, false));
+}
+
 TEST(AvSyncStimulusTest, PaletteNearestRecoversNoisyMarkerColors) {
     for (size_t index = 0; index < avs::kPalette.size(); ++index) {
         const auto color = avs::kPalette[index];

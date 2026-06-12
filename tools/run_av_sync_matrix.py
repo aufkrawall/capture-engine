@@ -35,9 +35,15 @@ class Scenario:
         return f"{self.capture_method}_{self.audio_codec}_{self.fps}fps"
 
 
-def resolve_app_fps(app_fps_arg, output_fps):
+def resolve_app_fps(app_fps_arg, capture_method, output_fps):
     text = str(app_fps_arg).strip().lower()
     if text in ("", "auto"):
+        # Tear-free inject capture is usually composed near the desktop refresh
+        # rate. A stable 144 fps source remains above 60/120 fps targets on
+        # common high-refresh desktops without asking DWM for an impossible
+        # nominal 240 fps tear-free cadence.
+        if capture_method == "inject":
+            return max(int(output_fps), 144)
         return max(240, int(output_fps) * 2)
     try:
         value = int(text)
@@ -45,7 +51,29 @@ def resolve_app_fps(app_fps_arg, output_fps):
         fail(f"invalid app fps: {app_fps_arg}")
     if value <= 0:
         fail(f"app fps must be positive: {app_fps_arg}")
-    return max(value, int(output_fps))
+    return value
+
+
+def resolve_app_audio_lead_ms(app_audio_lead_arg, capture_method, output_fps, app_fps):
+    text = str(app_audio_lead_arg).strip().lower()
+    if text in ("", "auto"):
+        # Stimulus-side calibration for the default tear-free oracle path.
+        # WGC sees DWM-composed video timing; inject sees app Present timing but still
+        # gains the same tear-free presentation offset when the app avoids DXGI tearing.
+        if capture_method == "inject":
+            if int(output_fps) >= 100:
+                return 50.0
+            return 45.0
+        if int(app_fps) < int(output_fps):
+            return 56.0 + 2.0 * (1000.0 / max(1, int(output_fps)))
+        return 56.0
+    try:
+        value = float(text)
+    except ValueError:
+        fail(f"invalid app audio lead: {app_audio_lead_arg}")
+    if value < -500.0 or value > 500.0:
+        fail(f"app audio lead must be between -500 and 500 ms: {app_audio_lead_arg}")
+    return value
 
 
 def fail(message):
@@ -144,10 +172,12 @@ def restore_config(snapshot):
     CAPTURE_CONFIG.write_text(snapshot, encoding="utf-8")
 
 
-def write_scenario_config(scenario, output_dir, include_microphone, video_encoder):
+def write_scenario_config(scenario, output_dir, include_microphone, include_mixed_track, video_encoder):
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     mic_enabled = "true" if include_microphone else "false"
+    system_tracks = "1,3" if include_mixed_track else "1"
+    app_tracks = "2,3" if include_mixed_track else "2"
     text = f"""[General]
 log_level=trace
 capture_method={scenario.capture_method}
@@ -192,7 +222,7 @@ aq=false
 [Audio]
 enabled=true
 device=
-track=1,3
+track={system_tracks}
 codec={scenario.audio_codec}
 bitrate=192
 sample_rate=default
@@ -202,7 +232,7 @@ downmix=false
 [AppAudio.1]
 enabled=true
 process={PROCESS_NAME}
-track=2,3
+track={app_tracks}
 
 [Microphone]
 enabled={mic_enabled}
@@ -300,6 +330,45 @@ def list_hook_logs(session_dir):
     return sorted(logs)
 
 
+def snapshot_session_logs(session_dir, destination_dir):
+    if not session_dir or not session_dir.exists():
+        return None, None, [], [], None
+    media_log = None
+    hook_logs = []
+    perf_csvs = []
+    session_manifest = None
+    copied_any = False
+    for path in sorted(session_dir.iterdir()):
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        lower_name = path.name.lower()
+        should_copy = (
+            lower_name.endswith(".log")
+            or lower_name == "session_manifest.txt"
+            or (lower_name.startswith("perf_metrics_") and lower_name.endswith(".csv"))
+        )
+        if not should_copy:
+            continue
+        snapshot = snapshot_artifact(path, destination_dir / path.name)
+        if not snapshot:
+            continue
+        copied_any = True
+        if lower_name == "media.log":
+            media_log = snapshot
+        elif lower_name.endswith(".log"):
+            hook_logs.append(str(snapshot))
+        elif lower_name.startswith("perf_metrics_") and lower_name.endswith(".csv"):
+            perf_csvs.append(str(snapshot))
+        elif lower_name == "session_manifest.txt":
+            session_manifest = snapshot
+    if not copied_any:
+        return None, None, [], [], None
+    return destination_dir, media_log, hook_logs, perf_csvs, session_manifest
+
+
 def run_process(command, timeout):
     start = time.monotonic()
     proc = subprocess.Popen(
@@ -349,12 +418,13 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     print(f"running {scenario.name}")
     taskkill_processes()
     remove_stale_app_artifacts()
-    write_scenario_config(scenario, captures_dir, args.include_microphone, args.video_encoder)
+    write_scenario_config(scenario, captures_dir, args.include_microphone, args.include_mixed_track, args.video_encoder)
 
     delay_ms = args.delay_ms
     duration_ms = args.duration_sec * 1000
     app_duration = args.duration_sec + max(4, delay_ms // 1000 + 2)
-    app_fps = resolve_app_fps(args.app_fps, scenario.fps)
+    app_fps = resolve_app_fps(args.app_fps, scenario.capture_method, scenario.fps)
+    app_audio_lead_ms = resolve_app_audio_lead_ms(args.app_audio_lead_ms, scenario.capture_method, scenario.fps, app_fps)
     launch = [
         ce_exe,
         f"--auto-record={delay_ms},{duration_ms}",
@@ -378,15 +448,22 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         args.window_chrome,
         "--topmost",
         1,
+        "--no-allow-tearing",
         "--audio-buffer-ms",
         args.app_audio_buffer_ms,
         "--audio-lead-ms",
-        args.app_audio_lead_ms,
+        app_audio_lead_ms,
+        "--analysis-start-sec",
+        args.analysis_start_sec,
     ]
     if args.app_audio_clock_scheduling:
         launch.append("--audio-clock-scheduling")
+    if args.allow_tearing:
+        launch.remove("--no-allow-tearing")
+        launch.append("--allow-tearing")
     if args.include_source_stall:
-        launch.extend(["--source-stall", args.source_stall])
+        for source_stall in split_csv(args.source_stall):
+            launch.extend(["--source-stall", source_stall])
 
     start_unix = time.time()
     return_code, elapsed, timed_out = run_process(launch, timeout=args.duration_sec + delay_ms / 1000.0 + 30.0)
@@ -402,6 +479,11 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     capture = find_latest_capture(captures_dir, start_unix)
     session_dir = find_latest_run_log_dir(start_unix)
     media_log = (session_dir / "media.log") if session_dir else CAPTURE_BIN / "logs" / "media.log"
+    log_snapshot_dir, media_log_snapshot, hook_log_snapshots, perf_csv_snapshots, session_manifest_snapshot = (
+        snapshot_session_logs(session_dir, scenario_dir / "ce_logs")
+    )
+    analysis_session_dir = log_snapshot_dir if media_log_snapshot else session_dir
+    analysis_media_log = media_log_snapshot if media_log_snapshot else media_log
 
     result = {
         "scenario": {
@@ -411,9 +493,12 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "app_fps": app_fps,
             "app_audio_clock_scheduling": args.app_audio_clock_scheduling,
             "app_audio_buffer_ms": args.app_audio_buffer_ms,
-            "app_audio_lead_ms": args.app_audio_lead_ms,
+            "app_audio_lead_ms": app_audio_lead_ms,
+            "analysis_start_sec": args.analysis_start_sec,
             "microphone_enabled": args.include_microphone,
+            "mixed_track_enabled": args.include_mixed_track,
             "external_system_audio": args.external_system_audio,
+            "allow_tearing": args.allow_tearing,
         },
         "process": {
             "return_code": return_code,
@@ -423,9 +508,12 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         },
         "paths": {
             "capture_file": str(capture) if capture else None,
-            "ce_session_dir": str(session_dir) if session_dir else None,
-            "media_log": str(media_log) if media_log and media_log.exists() else None,
-            "hook_logs": list_hook_logs(session_dir),
+            "ce_session_dir": str(analysis_session_dir) if analysis_session_dir else None,
+            "ce_session_dir_original": str(session_dir) if session_dir else None,
+            "media_log": str(analysis_media_log) if analysis_media_log and analysis_media_log.exists() else None,
+            "hook_logs": hook_log_snapshots if hook_log_snapshots else list_hook_logs(session_dir),
+            "perf_csv": perf_csv_snapshots,
+            "session_manifest": str(session_manifest_snapshot) if session_manifest_snapshot else None,
             "app_log": str(app_log_snapshot) if app_log_snapshot else (str(app_log) if app_log else None),
             "manifest": str(manifest_snapshot) if manifest_snapshot else (str(manifest) if manifest else None),
             "analyzer_json": str(analyzer_json),
@@ -449,17 +537,19 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         result["failure"] = "capture file not found"
     elif not manifest_snapshot:
         result["failure"] = "stimulus manifest not found"
-    elif not media_log.exists():
+    elif not app_log_snapshot:
+        result["failure"] = "stimulus app log not found"
+    elif not analysis_media_log.exists():
         result["failure"] = "CE media log not found"
     else:
-        # 0-based ffmpeg audio ordinals: a:0=Track 1 system, a:1=Track 2 app,
-        # a:2=Track 3 mixed system+app, a:3=Track 4 microphone.
-        # The mixed and mic streams are diagnostic evidence, while pure system/app are strict timing gates by default.
+        # 0-based ffmpeg audio ordinals in strict default: a:0=Track 1 system, a:1=Track 2 app,
+        # a:2=Track 4 microphone. With --include-mixed-track, a:2=Track 3 mixed and a:3=Track 4 mic.
+        # Mixed and mic streams are diagnostic evidence; pure system/app are strict timing gates by default.
         # When unrelated desktop audio is known to be playing, system loopback can be downgraded for that run only.
         non_strict_ordinals = [2]
         if args.external_system_audio:
             non_strict_ordinals.append(0)
-        if args.include_microphone:
+        if args.include_microphone and args.include_mixed_track:
             non_strict_ordinals.append(3)
         non_strict_audio = ",".join(str(value) for value in sorted(set(non_strict_ordinals)))
         analyzer_cmd = [
@@ -473,7 +563,9 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "--ffprobe",
             args.ffprobe,
             "--ce-log",
-            media_log,
+            analysis_media_log,
+            "--app-log",
+            app_log_snapshot,
             "--json-out",
             analyzer_json,
             "--min-video-transitions",
@@ -482,6 +574,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             args.min_transitions,
             "--max-av-offset-ms",
             args.max_av_offset_ms,
+            "--max-mean-av-offset-ms",
+            args.max_mean_av_offset_ms,
             "--max-track-spread-ms",
             args.max_track_spread_ms,
             "--max-longest-repeat",
@@ -493,12 +587,12 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         ]
         analyzer_rc = run_analyzer(analyzer_cmd, analyzer_stdout)
         result["analyzer_exit_code"] = analyzer_rc
-        if session_dir:
+        if analysis_session_dir:
             triage_cmd = [
                 sys.executable,
                 SCRIPT_DIR / "analyze_capture_av.py",
                 "--session-dir",
-                session_dir,
+                analysis_session_dir,
                 "--capture",
                 capture,
                 "--json-out",
@@ -533,39 +627,50 @@ def main():
     parser.add_argument(
         "--app-fps",
         default="auto",
-        help="Stimulus render FPS. 'auto' uses at least 240 fps so capture has fresh source frames.",
+        help="Stimulus render FPS. 'auto' chooses a method-specific cadence; explicit values may be below output FPS.",
     )
     parser.add_argument("--duration-sec", type=int, default=20)
     parser.add_argument("--delay-ms", type=int, default=1200)
     parser.add_argument("--app-exit-timeout-sec", type=float, default=10.0)
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
-    parser.add_argument("--fullscreen", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--fullscreen", type=int, choices=[0, 1], default=1)
     parser.add_argument("--window-chrome", type=int, choices=[0, 1], default=0)
     parser.add_argument("--gpu-load", type=int, default=0)
+    parser.add_argument(
+        "--allow-tearing",
+        action="store_true",
+        help="Opt into DXGI tearing in the stimulus app for stress experiments. Default keeps visual evidence tear-free.",
+    )
     parser.add_argument("--video-encoder", default="av1_nvenc")
     parser.add_argument("--ffmpeg", type=Path, default=default_tool_path("ffmpeg"))
     parser.add_argument("--ffprobe", type=Path, default=default_tool_path("ffprobe"))
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--min-transitions", type=int, default=4)
-    parser.add_argument("--max-av-offset-ms", type=float, default=80.0)
-    parser.add_argument("--max-track-spread-ms", type=float, default=30.0)
+    parser.add_argument("--max-av-offset-ms", type=float, default=25.0)
+    parser.add_argument("--max-mean-av-offset-ms", type=float, default=15.0)
+    parser.add_argument("--max-track-spread-ms", type=float, default=10.0)
     parser.add_argument("--max-longest-repeat", type=int, default=2)
     parser.add_argument("--max-motion-stall", type=int, default=3)
     parser.add_argument("--include-source-stall", action="store_true")
-    parser.add_argument("--source-stall", default="8.0:300")
+    parser.add_argument("--source-stall", default="8.35:300")
     parser.add_argument("--app-audio-buffer-ms", type=int, default=20)
+    parser.add_argument("--analysis-start-sec", type=float, default=2.0)
     parser.add_argument(
         "--app-audio-lead-ms",
-        type=float,
-        default=75.0,
-        help="Stimulus audio lead used to neutralize local render/loopback path latency in content checks.",
+        default="auto",
+        help="Stimulus audio lead in ms, or 'auto' for method-aware WGC/inject calibration.",
     )
     parser.add_argument("--no-app-audio-clock-scheduling", dest="app_audio_clock_scheduling", action="store_false")
     parser.add_argument(
         "--external-system-audio",
         action="store_true",
         help="Treat system loopback as opportunistic evidence when unrelated desktop audio is playing.",
+    )
+    parser.add_argument(
+        "--include-mixed-track",
+        action="store_true",
+        help="Enable opportunistic system+app mixed track 3; strict default keeps one system and one app capture.",
     )
     parser.add_argument("--no-microphone", dest="include_microphone", action="store_false")
     parser.add_argument("--dry-run", action="store_true")

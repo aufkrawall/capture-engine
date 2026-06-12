@@ -249,8 +249,11 @@ bool AppAudioCapture::StartByName(const std::string& processName) {
     return true;
 }
 
-void AppAudioCapture::Stop() {
+void AppAudioCapture::Stop(bool discardPendingPackets) {
     shouldStop.store(true);
+    if (captureEvent_) {
+        SetEvent(captureEvent_);
+    }
 
     {
         std::lock_guard<std::mutex> lock(startMutex);
@@ -270,11 +273,16 @@ void AppAudioCapture::Stop() {
 
     // Stop capturing
     isCapturing.store(false);
+    if (captureEvent_) {
+        SetEvent(captureEvent_);
+    }
     if (captureThread.joinable()) {
         captureThread.join();
     }
 
-    DiscardPendingPackets();
+    if (discardPendingPackets) {
+        DiscardPendingPackets();
+    }
     CleanupCapture();
     targetPID.store(0);
     targetProcessName.clear();
@@ -300,6 +308,11 @@ void AppAudioCapture::DiscardPendingPackets() {
         DLL_Log("[AppAudioCapture] Discarding %zu queued packets for PID %lu", packetQueue.size(), targetPID.load());
         packetQueue.clear();
     }
+}
+
+size_t AppAudioCapture::PendingPacketCount() {
+    std::lock_guard<std::mutex> lock(queueMutex);
+    return packetQueue.size();
 }
 
 void AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
@@ -593,6 +606,8 @@ void AppAudioCapture::CaptureLoop() {
     uint64_t queueDropPackets = 0;
     uint64_t queueDropFrames = 0;
     uint64_t lastQueueDropLogTick = 0;
+    uint64_t finalDrainPackets = 0;
+    uint64_t finalDrainFrames = 0;
 
     while (isCapturing.load() && !shouldStop.load()) {
         const uint64_t nowTick = GetTickCount64();
@@ -630,10 +645,16 @@ void AppAudioCapture::CaptureLoop() {
             continue;
         }
 
-        while (packetLength != 0 && isCapturing.load()) {
+        const bool drainingAfterStop =
+            !isCapturing.load(std::memory_order_acquire) || shouldStop.load(std::memory_order_acquire);
+        while (packetLength != 0) {
             hr = pCaptureClient->GetBuffer(&pData, &numFramesAvailable, &flags, &devicePosition, &qpcPosition);
             if (FAILED(hr))
                 break;
+            if (drainingAfterStop) {
+                ++finalDrainPackets;
+                finalDrainFrames += numFramesAvailable;
+            }
 
             const uint64_t logicalFramePos = devicePosition > 0 ? devicePosition : logicalFrameCursor;
 
@@ -643,13 +664,19 @@ void AppAudioCapture::CaptureLoop() {
                 firstLogicalFramePos = logicalFramePos;
                 firstQpcPos = qpcPosition;
                 firstSet = true;
+                const uint64_t packetDuration100ns =
+                    ce::audio::AudioFramesToHundredNanoseconds(numFramesAvailable, pwfx->nSamplesPerSec);
+                const uint64_t packetStartQpc =
+                    ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(firstQpcPos, numFramesAvailable,
+                                                                                pwfx->nSamplesPerSec);
                 const uint64_t adjustedFirstQpc =
-                    ce::audio::ApplyCaptureLatencyCompensation(firstQpcPos, streamLatency100ns, true);
+                    ce::audio::ApplyCaptureLatencyCompensation(packetStartQpc, streamLatency100ns, true);
                 DLL_Log(
                     "[AppAudioCapture] Source Sync Start (%lu): Frames=%llu QPC=%llu AdjustedQPC=%llu "
-                    "Latency=%lluus",
+                    "Latency=%lluus packetFrames=%u packetDuration=%lluus processLoopbackPacketBias=half_period",
                     targetPID.load(), firstLogicalFramePos, firstQpcPos, adjustedFirstQpc,
-                    static_cast<unsigned long long>(streamLatency100ns / 10));
+                    static_cast<unsigned long long>(streamLatency100ns / 10), numFramesAvailable,
+                    static_cast<unsigned long long>(packetDuration100ns / 10));
             } else if (firstSet && qpcPosition > firstQpcPos && logCounter++ % 500 == 0) {  // ~5 seconds
                 double samplesDuration = (double)(logicalFramePos - firstLogicalFramePos) / pwfx->nSamplesPerSec;
                 double qpcDuration = ce::audio::HundredNanosecondsToSeconds(qpcPosition - firstQpcPos);
@@ -673,7 +700,9 @@ void AppAudioCapture::CaptureLoop() {
             packet.devicePosition = devicePosition;  // Store for debug drift analysis
             packet.rawQpcPosition = qpcPosition;     // Store raw WASAPI timestamp for debug drift analysis
             packet.streamLatency = streamLatency100ns;
-            packet.qpcPosition = ce::audio::ApplyCaptureLatencyCompensation(qpcPosition, streamLatency100ns, true);
+            const uint64_t packetStartQpc = ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(
+                qpcPosition, numFramesAvailable, pwfx->nSamplesPerSec);
+            packet.qpcPosition = ce::audio::ApplyCaptureLatencyCompensation(packetStartQpc, streamLatency100ns, true);
 
             // Check for float format
             packet.isFloat = false;
@@ -746,6 +775,11 @@ void AppAudioCapture::CaptureLoop() {
     }
 
     DLL_Log("[AppAudioCapture] Capture loop exited");
+    if (finalDrainPackets > 0 || finalDrainFrames > 0) {
+        DLL_Log("[AppAudioCapture] Final stop drain queued %llu packet(s) / %llu frame(s) for PID %lu",
+                static_cast<unsigned long long>(finalDrainPackets),
+                static_cast<unsigned long long>(finalDrainFrames), targetPID.load());
+    }
     if (queueDropPackets > 0 || queueDropFrames > 0) {
         DLL_Log("[AppAudioCapture] Final queue overrun summary for PID %lu: dropped %llu packet(s) / %llu frame(s)",
                 targetPID.load(), static_cast<unsigned long long>(queueDropPackets),

@@ -103,7 +103,7 @@ void StopRecording();
 void StartRecording(const AppConfig& config);
 
 namespace {
-constexpr int kInjectTextureSlotCount = 8;
+constexpr int kInjectTextureSlotCount = SHARED_TEXTURE_SLOT_COUNT;
 
 // Encoder-bottleneck EMA parameters.  The smoothing factor (alpha) controls
 // how quickly the EMA reacts to encode-time changes.  Hysteresis avoids
@@ -713,9 +713,9 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
     const uint32_t initialWgcTargetFps = GetInitialWgcCfrTargetFps(config.video);
     g_WgcAdaptiveTargetFps.store(initialWgcTargetFps, std::memory_order_relaxed);
-    // CFR WGC captures a modest over-target cadence by default. This preserves
-    // temporal headroom for source rates above the output FPS without letting
-    // WGC run unbounded during healthy periods.
+    // CFR WGC keeps source capture uncapped by default. The encoder thread
+    // down-samples to CFR ticks, and extra candidates are important for
+    // zero-latency phase selection under compositor/callback jitter.
     g_WgcCap->SetTargetFps(initialWgcTargetFps);
 
     // For CFR recording, disable the encoder-bottleneck throttle at the WGC
@@ -1029,8 +1029,13 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     LARGE_INTEGER qpcFreq;
     QueryPerformanceFrequency(&qpcFreq);
     // Target interval in ticks (e.g. 1/120s)
-    int64_t targetIntervalTicks =
+    const int64_t targetIntervalTicks =
         (config.video.fps > 0) ? (qpcFreq.QuadPart / config.video.fps) : (qpcFreq.QuadPart / 60);
+    const uint32_t injectPublicationFps =
+        ce::capture_policy::GetInjectCfrSourcePublicationFps(static_cast<uint32_t>(std::max(config.video.fps, 1)));
+    const int64_t injectPublicationIntervalTicks = std::max<int64_t>(
+        1, ce::capture_policy::GetInjectCfrSourcePublicationIntervalQpc(
+               static_cast<uint32_t>(std::max(config.video.fps, 1)), qpcFreq.QuadPart));
     int64_t nextPushTime = 0;
 
     DWORD lastLog = GetTickCount();
@@ -1092,9 +1097,10 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 std::atomic_thread_fence(std::memory_order_acquire);
 
                 // PACING CHECK:
-                // If this frame is too early relative to the configured output grid,
-                // drop it. This acts as a smart decimator for inputs running above the
-                // requested capture FPS.
+                // The media thread owns CFR source selection.  In normal shallow-queue
+                // operation, keep a high-rate publication stream so the selector has
+                // before/after candidates for every output grid tick.  Only fall back to
+                // source-side target pacing under real queue pressure.
                 bool shouldProcess = false;
 
                 const uint32_t queueDepth = static_cast<uint32_t>(g_FrameQueue.Size());
@@ -1102,18 +1108,16 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     std::max<uint32_t>(24u, static_cast<uint32_t>(g_FrameQueue.Capacity() * 3 / 4));
                 const bool useSourceSidePacing = queueDepth >= queuePressureThreshold;
                 const int64_t pacingIntervalTicks =
-                    useSourceSidePacing ? targetIntervalTicks : std::max<int64_t>((targetIntervalTicks * 4) / 5, 1);
+                    useSourceSidePacing ? targetIntervalTicks : injectPublicationIntervalTicks;
 
                 if (nextPushTime == 0) {
                     // First frame or resync
                     nextPushTime = slot.timestamp;
                     shouldProcess = true;
                 } else {
-                    // Keep inject input slightly above the CFR target in the normal shallow-queue
-                    // case.  This gives the encoder a candidate reserve without letting live
-                    // frames trail the game by hundreds of milliseconds.
-                    int64_t jitterWindow =
-                        useSourceSidePacing ? (pacingIntervalTicks * 8) / 10 : 0;  // 80% only under backlog
+                    const int64_t jitterWindow =
+                        useSourceSidePacing ? (pacingIntervalTicks * 8) / 10
+                                            : std::max<int64_t>(1, pacingIntervalTicks / 8);
 
                     if (slot.timestamp >= nextPushTime - jitterWindow) {
                         shouldProcess = true;
@@ -1194,7 +1198,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     } else {
                         qf.isShmem = false;
                         qf.shmemSlot = 0;
-                        if (texIdx >= 0 && texIdx < 8) {
+                        if (IsValidTextureIndex(texIdx)) {
                             qf.sharedHandle = (HANDLE)g_pSharedMem->GetSharedHandle(texIdx);
                             LogDebug("[Inject Thread] Read handle for texIdx=%d: %p", texIdx, qf.sharedHandle);
                         } else {
@@ -1349,11 +1353,12 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             uint32_t inputFrames = pushedCount + droppedCount + pacingDroppedCount;
             g_pSharedMem->runtimeState.sourceFramesReceived.fetch_add(inputFrames, std::memory_order_relaxed);
             LogInfo(
-                "[Inject Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | HostQ: %u | EncQ: %u | Dup: %u "
-                "| Late: %u | Trim: %u | SelDrop: %u | Def: %u | Encode: %lldus | Fence: %lldus | Mux: %uKB | "
-                "Overload: 0x%X",
-                inputFrames, pushedCount, droppedCount, pacingDroppedCount, static_cast<uint32_t>(g_FrameQueue.Size()),
-                encoderQueueDepth, dupDelta, lateDelta, trimDelta, cadenceDropDelta, deferredDelta,
+                "[Inject Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | PubFps: %u | HostQ: %u | EncQ: "
+                "%u | Dup: %u | Late: %u | Trim: %u | SelDrop: %u | Def: %u | Encode: %lldus | Fence: %lldus | Mux: "
+                "%uKB | Overload: 0x%X",
+                inputFrames, pushedCount, droppedCount, pacingDroppedCount, injectPublicationFps,
+                static_cast<uint32_t>(g_FrameQueue.Size()), encoderQueueDepth, dupDelta, lateDelta, trimDelta,
+                cadenceDropDelta, deferredDelta,
                 MediaEngine_GetLastFrameEncodeTimeUs(), MediaEngine_GetLastFrameFenceWaitUs(),
                 (muxQueueBytes + 1023u) / 1024u, overloadFlags);
             pushedCount = 0;
@@ -1787,6 +1792,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     bool wgcSchedulerLimitedCurrent = false;
     bool wgcEncoderRecoveryLimitedCurrent = false;
     int64_t lastEmittedWgcSourceQpc = 0;
+    int64_t lastEmittedInjectSourceQpc = 0;
     int64_t lastWarmupWgcSourceQpc = 0;
     int64_t wgcStartupBarrierQpc = 0;
     uint32_t wgcStartupBarrierDroppedFrames = 0;
@@ -3473,9 +3479,36 @@ void EncoderThreadFunc(const AppConfig& config) {
                     // time.  This reduces temporal error and smooths the motion
                     // cadence compared to always taking the oldest frame (FIFO).
                     size_t availableCount = bufferedInjectFrames.size() - minBufferedInjectFrames;
+                    auto isFreshInjectCandidate = [&](const QueuedFrame& candidate) {
+                        return ce::capture_policy::IsInjectFrameFreshAfterLastEmission(candidate.timestamp,
+                                                                                       lastEmittedInjectSourceQpc);
+                    };
+                    auto discardStaleInjectFront = [&]() {
+                        size_t droppedStale = 0;
+                        while (bufferedInjectFrames.size() > minBufferedInjectFrames &&
+                               !isFreshInjectCandidate(bufferedInjectFrames.front())) {
+                            QueuedFrame stale = std::move(bufferedInjectFrames.front());
+                            bufferedInjectFrames.pop_front();
+                            DiscardQueuedFrame(stale);
+                            g_InjectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+                            if (g_pSharedMem) {
+                                g_pSharedMem->runtimeState.injectCadenceDrops.fetch_add(1, std::memory_order_relaxed);
+                            }
+                            ++droppedStale;
+                        }
+                        if (droppedStale > 0) {
+                            LogWarn(
+                                "[EncoderThread] Dropped %zu stale inject frame(s) behind emitted source timestamp "
+                                "%lld",
+                                droppedStale, static_cast<long long>(lastEmittedInjectSourceQpc));
+                        }
+                        return droppedStale;
+                    };
+                    bool canPopInjectFrame = true;
                     if (availableCount > 1 && encoderGridStartQpc > 0) {
                         auto isAllowedCandidate = [&](const QueuedFrame& candidate) {
-                            return !MatchesInjectFrameLineage(candidate, lastDeferredLineage);
+                            return isFreshInjectCandidate(candidate) &&
+                                   !MatchesInjectFrameLineage(candidate, lastDeferredLineage);
                         };
                         size_t bestIdx =
                             SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount, encoderGridStartQpc,
@@ -3483,11 +3516,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                         bool usedDeferredFallback = false;
                         if (bestIdx >= availableCount) {
                             bestIdx =
-                                SelectFrameClosestToGrid(bufferedInjectFrames, availableCount, encoderGridStartQpc,
-                                                         selectionGridTick, targetIntervalTicks);
+                                SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount, encoderGridStartQpc,
+                                                           selectionGridTick, targetIntervalTicks,
+                                                           isFreshInjectCandidate);
                             usedDeferredFallback = lastDeferredLineage.IsValid();
                         }
-                        if (bestIdx > 0) {
+                        if (bestIdx >= availableCount) {
+                            canPopInjectFrame = false;
+                            discardStaleInjectFront();
+                        } else if (bestIdx > 0) {
                             selectionLogCounter++;
                             if (selectionLogCounter <= 12 || (selectionLogCounter % 240) == 0) {
                                 const int64_t idealQpc =
@@ -3537,18 +3574,38 @@ void EncoderThreadFunc(const AppConfig& config) {
                             lastDeferredLineage = {};
                         }
                     }
-                    frame = std::move(bufferedInjectFrames.front());
-                    bufferedInjectFrames.pop_front();
-                    popped = true;
-                    frameCreditAccumulator -= 1.0;
-                    lastDeferredLineage = {};
+                    if (canPopInjectFrame) {
+                        discardStaleInjectFront();
+                        if (!bufferedInjectFrames.empty() && isFreshInjectCandidate(bufferedInjectFrames.front())) {
+                            frame = std::move(bufferedInjectFrames.front());
+                            bufferedInjectFrames.pop_front();
+                            popped = true;
+                            frameCreditAccumulator -= 1.0;
+                            lastDeferredLineage = {};
+                        }
+                    }
                 } else if (bufferedInjectFrames.size() > injectReserveFrames + 6) {
                     // Buffer pressure: pop to prevent unnecessary trimming
-                    frame = std::move(bufferedInjectFrames.front());
-                    bufferedInjectFrames.pop_front();
-                    popped = true;
-                    frameCreditAccumulator = std::fmod(frameCreditAccumulator, 1.0);
-                    lastDeferredLineage = {};
+                    while (bufferedInjectFrames.size() > minBufferedInjectFrames &&
+                           !ce::capture_policy::IsInjectFrameFreshAfterLastEmission(
+                               bufferedInjectFrames.front().timestamp, lastEmittedInjectSourceQpc)) {
+                        QueuedFrame stale = std::move(bufferedInjectFrames.front());
+                        bufferedInjectFrames.pop_front();
+                        DiscardQueuedFrame(stale);
+                        g_InjectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+                        if (g_pSharedMem) {
+                            g_pSharedMem->runtimeState.injectCadenceDrops.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                    if (!bufferedInjectFrames.empty() &&
+                        ce::capture_policy::IsInjectFrameFreshAfterLastEmission(bufferedInjectFrames.front().timestamp,
+                                                                                lastEmittedInjectSourceQpc)) {
+                        frame = std::move(bufferedInjectFrames.front());
+                        bufferedInjectFrames.pop_front();
+                        popped = true;
+                        frameCreditAccumulator = std::fmod(frameCreditAccumulator, 1.0);
+                        lastDeferredLineage = {};
+                    }
                 }
             } else {
                 // VFR: keep the existing newest-frame sampling for the lowest latency.
@@ -3840,6 +3897,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcDropObsoleteCount = 0;
                 wgcCoverageRepeatAccumulator = 0.0;
                 lastEmittedWgcSourceQpc = 0;
+                lastEmittedInjectSourceQpc = 0;
                 pendingLiveInjectReadyFrames = useScreenGrab ? 0
                                                              : ce::capture_policy::GetWarmupInjectKeepCount(
                                                                    smoothedInjectFenceMs, frameIntervalMs);
@@ -4204,21 +4262,27 @@ void EncoderThreadFunc(const AppConfig& config) {
                         size_t availableCount = bufferedInjectFrames.size() - catchupMinBufferedInjectFrames;
                         const int64_t catchupGridTick = encoderGridTickCount + 1;
                         size_t bestIdx = 0;
+                        auto isFreshInjectCandidate = [&](const QueuedFrame& candidate) {
+                            return ce::capture_policy::IsInjectFrameFreshAfterLastEmission(
+                                candidate.timestamp, lastEmittedInjectSourceQpc);
+                        };
                         if (availableCount > 1 && encoderGridStartQpc > 0) {
                             auto isAllowedCandidate = [&](const QueuedFrame& candidate) {
-                                return !MatchesInjectFrameLineage(candidate, lastDeferredLineage);
+                                return isFreshInjectCandidate(candidate) &&
+                                       !MatchesInjectFrameLineage(candidate, lastDeferredLineage);
                             };
                             bestIdx =
                                 SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount, encoderGridStartQpc,
                                                            catchupGridTick, targetIntervalTicks, isAllowedCandidate);
                             if (bestIdx >= availableCount) {
                                 bestIdx =
-                                    SelectFrameClosestToGrid(bufferedInjectFrames, availableCount, encoderGridStartQpc,
-                                                             catchupGridTick, targetIntervalTicks);
+                                    SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount, encoderGridStartQpc,
+                                                               catchupGridTick, targetIntervalTicks,
+                                                               isFreshInjectCandidate);
                             }
                         }
 
-                        if (bestIdx < availableCount) {
+                        if (bestIdx < availableCount && isFreshInjectCandidate(bufferedInjectFrames[bestIdx])) {
                             for (size_t i = 0; i < bestIdx; ++i) {
                                 QueuedFrame stale = std::move(bufferedInjectFrames.front());
                                 bufferedInjectFrames.pop_front();
@@ -4354,6 +4418,9 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                                 g_LastFrame = std::move(catchupFrame);
                                 g_HasLastFrame = true;
+                                if (g_LastFrame.timestamp > 0) {
+                                    lastEmittedInjectSourceQpc = g_LastFrame.timestamp;
+                                }
                                 lastDeferredLineage = {};
                                 frameCreditAccumulator -= 1.0;
                                 cadenceCounters.consecutiveDeferredFrames = 0;
@@ -4898,6 +4965,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     lastTextureFrame = frameToProcess->frameIndex;
                 }
                 lastDeferredLineage = {};
+
+                if (encodeSucceeded && !isDuplicate && frameToProcess && frameToProcess->timestamp > 0) {
+                    lastEmittedInjectSourceQpc = frameToProcess->timestamp;
+                }
 
                 if (g_pSharedMem) {
                     g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);

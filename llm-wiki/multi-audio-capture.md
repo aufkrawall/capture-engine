@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-11 (A/V sync stimulus matrix, strict system/app tracks, opportunistic mixed/mic, latency telemetry)
+Last cross-checked: 2026-06-12 (strict system/app matrix, app-audio startup race fix, process-loopback timestamp bias)
 Stale-risk: medium
 
 Primary sources:
@@ -31,13 +31,13 @@ The audio pipeline supports separate system audio, microphone, and process/app a
 
 The CFR media clock remains authoritative for normal recordings. Final audio is padded by sample accounting to the final video/CFR endpoint, stream duration metadata is written from that final video duration, and per-track final deltas are logged. Enabled tracks are materialized through the encoder even when the contributing source is silent or inactive; do not rely on sparse container gaps to represent silence.
 
-Each exported track owns an independent audio timeline cursor. Per-source counters are diagnostics and source-local stitching aids only; they must not decide the muxed stream timestamp. At the shared A/V anchor, system and microphone sources become timeline-valid immediately and contribute encoded silence until timestamped real packets arrive. App-audio sources remain optional until their first packet, then late packets are placed by QPC/source timestamp and overlap/drop already-encoded silence instead of delaying the whole track. This replaced the old 500 ms forced-bootstrap/backlog-trim behavior that made non-ALAC Track 3 content appear shorter even when container packet durations matched.
+Each exported track owns an independent audio timeline cursor. Per-source counters are diagnostics and source-local stitching aids only; they must not decide the muxed stream timestamp. At the shared A/V anchor, system and microphone sources become timeline-valid immediately and contribute encoded silence until timestamped real packets arrive. App-audio sources remain optional only when CE has not seen evidence that the process is already producing audio. If process-loopback packets arrived while sync was pending, the app source must wait for the first post-anchor packet and enough real buffered samples before bootstrap; otherwise the app track can encode a one-chunk silent head and appear shifted against system loopback. Late app packets are still placed by QPC/source timestamp and overlap/drop already-encoded silence instead of delaying the whole track. This replaced the old 500 ms forced-bootstrap/backlog-trim behavior that made non-ALAC Track 3 content appear shorter even when container packet durations matched.
 
 For CFR capture, audio is not a recovery mechanism for WGC/inject video pressure. Live trim, source drop, overflow-protection skip, post-resample backlog trim, and broad pitch correction are validation failures rather than acceptable sync repair. A tiny source-clock-only resampler compensation lane remains for real device-clock drift after startup has settled and the timeline is healthy; it is currently capped at `0.05%`, and is disabled during force drain, startup protection, encoder-bottleneck shortfall, timeline shortfall, or WGC coverage loss.
 
 `tools/run_av_sync_matrix.py` now provides deterministic multi-track runtime coverage for the common regression shape: Track 1 is system loopback, Track 2 is process/app loopback for `dx12_av_sync_test.exe`, Track 3 mixes system+app overlap, and Track 4 is microphone when available. Tracks 1 and 2 are strict stimulus-aware checks. Track 3 is diagnostic/opportunistic because system loopback may already include the same app audio that process loopback captures, so its mixed marker phase can legitimately differ from either pure source. Track 4 is opportunistic because physical mic capture is not deterministic, but it is still recorded and reported if it hears usable marker evidence.
 
-WASAPI capture now records device-reported stream latency where available. Loopback packets keep both raw QPC and latency-compensated QPC positions in diagnostics/packet metadata, using the compensated timestamp for alignment. On the initial ALAC smoke system loopback reported `streamLatency=0us`; process loopback returned `GetStreamLatency` failure on the tested machine, so this is primarily better telemetry unless a device reports nonzero latency.
+WASAPI capture now records device-reported stream latency where available. Loopback packets keep both raw QPC and latency-compensated QPC positions in diagnostics/packet metadata, using the compensated timestamp for alignment. Process loopback also applies a half-packet timestamp bias so the packet is aligned near its temporal center rather than treated as if the whole packet started at the WASAPI QPC edge; logs identify this as `processLoopbackPacketBias=half_period`. On the tested machine, system loopback often reported `streamLatency=0us` and process loopback returned `GetStreamLatency` failure, so explicit stream latency remains mostly telemetry unless a device reports nonzero latency.
 
 ## Config Semantics
 
@@ -72,13 +72,13 @@ The bundled Windows FFmpeg build must include `libopus` plus the concrete PCM en
 Useful logs for this area:
 
 - `[AudioCapture] ProbeMixFormat ...`: endpoint sample rate, channels, and channel mask.
-- `[AudioCapture] Started ... streamLatency=... compensate=...` and `[AppAudioCapture] Started ... streamLatency=... compensate=1`: WASAPI latency evidence. Loopback packets also carry raw and latency-adjusted QPC positions so future reports can separate capture-device latency from mux scheduling.
+- `[AudioCapture] Started ... streamLatency=... compensate=...` and `[AppAudioCapture] Started ... streamLatency=... compensate=1`: WASAPI latency evidence. Loopback packets also carry raw and latency-adjusted QPC positions so future reports can separate capture-device latency from mux scheduling. App-audio packet logs should show `processLoopbackPacketBias=half_period`.
 - `[AudioResampler] Initialized ...`: input/output sample rate, channels, and masks.
 - `[AudioEncoder] Using codec: requested=... resolved=... channels=... mask=...`: final codec/layout policy.
 - `[AudioEncoder] Opus requires 48000 Hz ...`: explicit Opus sample-rate adjustment.
 - `[AudioEncoder] Silence queue ...`: tail or all-track silence is being encoded through the selected codec instead of represented as a container gap.
 - `[AudioEncoder] Clamping final packet duration ...` and `Added packet end-skip side data ...`: AAC/Opus padded final frames are being exposed sample-exactly.
-- `[A/V START] Audio source reset ... timelineValid=...`: confirms non-app sources are valid at the shared anchor and app sources are optional until first packet.
+- `[A/V START] Audio source reset ... timelineValid=...`: confirms non-app sources are valid at the shared anchor. App sources are optional only until first packet evidence; if pre-start process-loopback packets were seen, bootstrap should wait for post-start real samples instead of encoding a leading silent chunk.
 - `[PullAudio] Track ... bootstrap complete ... forced=0 trimmed=0`: startup settled without the old forced-bootstrap/content-trim path. Any `forced=1` or nonzero `trimmed` is a validation failure.
 - `[AudioLoop] Late source cursor advance ...`: a late packet arrived after the track cursor already encoded silence; this is explicit placement diagnostics, not a reason to move the exported track.
 - `[PullAudio] WARNING: CFR audio ring near capacity ...`: pressure diagnostic. The code preserves audio; an actual overflow/drop is a validation failure.
@@ -103,7 +103,7 @@ Focused regression coverage lives in:
 - `tests/test_audio_resampler.cpp`
   - Channel-mask preservation for stereo and 5.1 resampling paths.
 - `tests/test_audio_sync_utils.cpp`
-  - Packed/interleaved silence buffer sizing includes every channel, final packet durations clamp to the video sample target, timeline-valid startup no longer waits for buffered real audio, app audio stays optional until first packet, source write cursors never trail the encoded track cursor, and late first packets overlap already-encoded silence.
+  - Packed/interleaved silence buffer sizing includes every channel, final packet durations clamp to the video sample target, timeline-valid startup no longer waits for buffered real audio, app audio stays optional until first packet, pre-start app-audio packets make the app source strict for bootstrap, source write cursors never trail the encoded track cursor, and late first packets overlap already-encoded silence.
 - `tests/test_audio_time_utils.cpp`
   - Loopback capture-latency compensation clamps safely and leaves non-loopback timestamps unchanged.
 - `tools/analyze_capture_av.py`
@@ -111,7 +111,7 @@ Focused regression coverage lives in:
 - `testapp/av_sync_stimulus.h` and `tests/test_av_sync_stimulus.cpp`
   - Shared deterministic event schedule, frame-marker, palette, smooth-lane, and zero-crossing audio boundary coverage used by both the app and analyzer expectations.
 - `tools/run_av_sync_matrix.py`
-  - Runtime matrix for WGC/inject, AAC/ALAC/FLAC/Opus/PCM, and 60/120 fps cases. It rewrites/restores `installed/captureengine/config.ini` per run, records system/app/mixed/mic tracks, and stores one analyzer report per scenario.
+  - Runtime matrix for WGC/inject, AAC/ALAC/FLAC/Opus/PCM, and 60/120 fps cases. It rewrites/restores `installed/captureengine/config.ini` per run, records system/app/mixed/mic tracks, snapshots CE logs into each scenario folder, and stores analyzer plus triage reports per scenario.
 
 Verified on 2026-06-04:
 
@@ -133,7 +133,13 @@ Updated on 2026-06-11:
 - Deterministic multi-track stimulus validation now covers strict pure system/app loopback plus opportunistic mixed/microphone evidence. The analyzer Python syntax check, `--self-test`, and matrix dry-run passed; focused stimulus tests passed on build `0.1.3869`; required `python build.py --skip-updates` passed on build `0.1.3870`; required no-build full unit tests passed 946/946 with displayed metadata `0.1.3871`.
 - Live ALAC 60 fps smokes passed for WGC and inject. WGC `installed/captureengine/avsync_runs/20260611_173528/wgc_alac_60fps` reported strict system/app offsets around 70/74 ms and spread around 4 ms; inject `installed/captureengine/avsync_runs/20260611_173609/inject_alac_60fps` reported strict system/app offsets around 30/56 ms and spread around 27 ms. Both had corrupt markers at zero and exact CE audio durations. Mixed/microphone streams remained non-strict diagnostic evidence.
 
+Updated on 2026-06-12:
+
+- Full strict system/app matrix `installed/captureengine/avsync_runs/20260612_200944` passed WGC and inject across AAC, ALAC, FLAC, Opus, PCM and 60/120 fps with planned source-stall evidence. Worst strict values were max A/V event offset `20.285 ms`, max absolute mean offset `12.907 ms`, and max inter-track spread `5.99 ms`.
+- The matrix exposed a real inject app-audio startup race in an Opus 60 run (`Track 2 fullSilence=800`, about 16.7 ms). The fix makes app-audio with pre-start process-loopback packets non-optional for bootstrap until post-start real samples are buffered. Focused regression tests passed in `AudioSyncUtilsTest.OptionalUnstartedAppAudioDoesNotBlockStartupPriming` and `AudioSyncUtilsTest.AppAudioRemainsOptionalUntilTimelineValid`.
+- Additional runtime checks passed for WGC 45 fps source into 60 fps CFR (`20260612_202629`), GPU-load Opus/PCM at 60 fps (`20260612_202716`), and 1080p/120 PCM WGC+inject (`20260612_203000`). Microphone evidence remains opportunistic; if the system mic is disabled, system/app tracks still provide deterministic coverage.
+
 ## Open Questions / Stale-Risk
 
-- Full runtime validation is still required across AAC, FLAC, Opus, PCM, 120 fps, longer runs, and stress cases; only ALAC 60 fps WGC/inject smokes have passed so far. Run `tools/run_av_sync_matrix.py` first for content-level system/app alignment and opportunistic mixed/mic evidence; also run `tools/analyze_capture_av.py --full-scan --decode-check --waveform-tail-scan --strict-sync-events --max-audio-spread-ms 0 --max-video-audio-delta-ms 0 --max-audio-tail-marker-spread-ms 0 --max-log-event audio_extreme_drift=0` for packet/log-level invariants.
+- Future audio changes still need the full `tools/run_av_sync_matrix.py --include-source-stall` matrix plus focused low-source-FPS and load checks. Run packet/log-level validation with `tools/analyze_capture_av.py --full-scan --decode-check --waveform-tail-scan --strict-sync-events --max-audio-spread-ms 0 --max-video-audio-delta-ms 0 --max-audio-tail-marker-spread-ms 0 --max-log-event audio_extreme_drift=0` when checking non-synthetic captures.
 - Synthetic tests cover the codec/config/layout policy, but they do not prove every real device's channel mask maps losslessly. Logs should call out unknown masks so those devices can be handled explicitly.

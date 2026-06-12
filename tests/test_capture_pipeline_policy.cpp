@@ -30,6 +30,35 @@ TEST(CapturePipelinePolicyTest, InjectReserveFramesScaleWithFenceLeadTime) {
     EXPECT_EQ(policy::GetInjectReserveFrames(true, 19.0, 8.0), 0u);
 }
 
+TEST(CapturePipelinePolicyTest, InjectCfrSourcePublicationUsesFourTimesOutputCadence) {
+    EXPECT_EQ(policy::GetInjectCfrSourcePublicationFps(0), 0u);
+    EXPECT_EQ(policy::GetInjectCfrSourcePublicationFps(60), 240u);
+    EXPECT_EQ(policy::GetInjectCfrSourcePublicationFps(120), 480u);
+    EXPECT_EQ(policy::GetInjectCfrSourcePublicationIntervalUs(60), 4166);
+    EXPECT_EQ(policy::GetInjectCfrSourcePublicationIntervalUs(120), 2083);
+    EXPECT_EQ(policy::GetInjectCfrSourcePublicationIntervalQpc(60, 10000000), 41666);
+    EXPECT_EQ(policy::GetInjectCfrSourcePublicationIntervalQpc(120, 10000000), 20833);
+    EXPECT_EQ(policy::GetInjectCfrSourcePublicationIntervalQpc(60, 0), 0);
+}
+
+TEST(CapturePipelinePolicyTest, InjectPublicationSpacingAllowsSourceJitterWithoutGridStarvation) {
+    EXPECT_EQ(policy::GetInjectCfrPublicationEarlySlackUs(4166), 520);
+    EXPECT_EQ(policy::GetInjectCfrPublicationMinSpacingUs(4166), 3646);
+    EXPECT_EQ(policy::GetInjectCfrPublicationEarlySlackUs(2083), 260);
+    EXPECT_EQ(policy::GetInjectCfrPublicationMinSpacingUs(2083), 1823);
+    EXPECT_EQ(policy::GetInjectCfrPublicationEarlySlackUs(8333), 1041);
+    EXPECT_EQ(policy::GetInjectCfrPublicationMinSpacingUs(8333), 7292);
+    EXPECT_EQ(policy::GetInjectCfrPublicationMinSpacingUs(0), 0);
+}
+
+TEST(CapturePipelinePolicyTest, InjectFrameFreshnessRequiresMonotonicSourceTime) {
+    EXPECT_TRUE(policy::IsInjectFrameFreshAfterLastEmission(1000, 0));
+    EXPECT_TRUE(policy::IsInjectFrameFreshAfterLastEmission(1001, 1000));
+    EXPECT_FALSE(policy::IsInjectFrameFreshAfterLastEmission(1000, 1000));
+    EXPECT_FALSE(policy::IsInjectFrameFreshAfterLastEmission(999, 1000));
+    EXPECT_FALSE(policy::IsInjectFrameFreshAfterLastEmission(0, 1000));
+}
+
 TEST(CapturePipelinePolicyTest, WgcStopDrainIsDisabledForExactStop) {
     EXPECT_FALSE(policy::ShouldDrainOutstandingCfrTicksAtStop(true, false));
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, true, false));
@@ -109,6 +138,7 @@ TEST(CapturePipelinePolicyTest, WarmupKeepCountAndMinimumBufferedFramesFollowRes
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(0.0, 8.333), 3u);
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(19.0, 8.0), 5u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(0, false), 0u);
+    EXPECT_EQ(policy::GetMinBufferedInjectFrames(1, true), 1u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(3, false), 3u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(3, true), 2u);
 }
@@ -374,11 +404,14 @@ TEST(CapturePipelinePolicyTest, WgcStartupBarrierDelaysUntilFutureFreshFrame) {
     EXPECT_TRUE(policy::IsWgcFramePastStartupBarrier(1200, 1100));
 }
 
-TEST(CapturePipelinePolicyTest, WgcCfrOvercaptureCapUsesTwentyFivePercentHeadroom) {
+TEST(CapturePipelinePolicyTest, WgcCfrSourceCaptureDefaultsToUncapped) {
     EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(0), 0u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(60), 75u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(120), 150u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(143), 179u);
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(60), 0u);
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(120), 0u);
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(143), 0u);
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(60, 1250), 75u);
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(120, 1250), 150u);
+    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(143, 1250), 179u);
 }
 
 TEST(CapturePipelinePolicyTest, WgcOvercaptureSwitchesToMaxRateDuringRecovery) {
@@ -582,11 +615,11 @@ TEST(CapturePipelinePolicyTest, WgcLiveRecoveryStateClassificationIsExplicit) {
                  "encoder-limited");
 }
 
-TEST(CapturePipelinePolicyTest, WgcSelectionDelayIsUnconditional) {
-    EXPECT_TRUE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, true));
-    EXPECT_TRUE(policy::ShouldApplyWgcSelectionDelay(true, 1, false, true));
-    EXPECT_TRUE(policy::ShouldApplyWgcSelectionDelay(true, 0, true, true));
-    EXPECT_TRUE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, false));
+TEST(CapturePipelinePolicyTest, WgcSelectionDelayStaysDisabledForZeroLatencyCfr) {
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, true));
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 1, false, true));
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 0, true, true));
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, false));
     EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(false, 0, false, true));
 }
 

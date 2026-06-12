@@ -32,6 +32,7 @@ LOG_PATTERNS = {
     "wgc_coverage_mode_active": re.compile(r"CovMode=1"),
     "audio_large_gap": re.compile(r"\[PullAudio\] Large A/V gap"),
     "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun"),
+    "audio_source_padding_summary": re.compile(r"\[STOP AUDIO\] Source \d+: .* pad:[1-9]\d*"),
     "audio_overflow": re.compile(r"\[PullAudio\] WARNING: Ring buffer overflow"),
     "audio_silence_fill": re.compile(r"\[PullAudio\] Track \d+ silent - generating"),
     "audio_forced_bootstrap": re.compile(r"\[PullAudio\] Track \d+ bootstrap complete .* forced=1"),
@@ -66,6 +67,7 @@ STRICT_SYNC_LOG_EVENTS = (
     "audio_post_resample_trim",
     "audio_large_gap",
     "audio_underrun",
+    "audio_source_padding_summary",
     "audio_overflow",
     "audio_forced_bootstrap",
     "audio_bootstrap_trim",
@@ -103,6 +105,17 @@ WGC_SUMMARY_RE = re.compile(
     re.IGNORECASE,
 )
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
+INJECT_PERF_RE = re.compile(r"\[Inject Perf\].*", re.IGNORECASE)
+INJECT_CFR_SUMMARY_RE = re.compile(
+    r"\[Inject CFR SUMMARY\].*Live=(\d+) Dup=(\d+) DupPct=([0-9.]+)% "
+    r"DupReason\(src=(\d+) def=(\d+) timer=(\d+) drain=(\d+)\).*"
+    r"FreshCatchup=(\d+) RepeatCatchup=(\d+) StaleTrim=(\d+)",
+    re.IGNORECASE,
+)
+INJECT_CFR_SOURCE_RE = re.compile(
+    r"\[Inject CFR SUMMARY\] SourceFps=([0-9.]+)\.\.([0-9.]+) JitterMax=(\d+)us SelMax=(\d+)us",
+    re.IGNORECASE,
+)
 FINAL_PACKET_TIMELINE_RE = re.compile(
     r"Final packet timeline: target=(\d+) us videoEnd=(\d+) us audioMinEnd=(\d+) us audioMaxEnd=(\d+) us "
     r"maxPacketDelta=(\d+) us.*audioPastTarget=(\d+)",
@@ -880,6 +893,34 @@ def parse_wgc_perf_line(line):
     }
 
 
+def parse_inject_perf_line(line):
+    def find_int(pattern, default=0):
+        match = re.search(pattern, line)
+        return parse_int(match.group(1), default) if match else default
+
+    return {
+        "input": find_int(r"Input:\s*(\d+)"),
+        "queued": find_int(r"Queued:\s*(\d+)"),
+        "drop_full": find_int(r"DropFull:\s*(\d+)"),
+        "drop_pace": find_int(r"DropPace:\s*(\d+)"),
+        "publication_fps": find_int(r"PubFps:\s*(\d+)"),
+        "host_queue": find_int(r"HostQ:\s*(\d+)"),
+        "encoder_queue": find_int(r"EncQ:\s*(\d+)"),
+        "duplicate": find_int(r"Dup:\s*(\d+)"),
+        "late": find_int(r"Late:\s*(\d+)"),
+        "trim": find_int(r"Trim:\s*(\d+)"),
+        "selection_drop": find_int(r"SelDrop:\s*(\d+)"),
+        "deferred": find_int(r"Def:\s*(\d+)"),
+        "encode_us": find_int(r"Encode:\s*(-?\d+)us"),
+        "fence_us": find_int(r"Fence:\s*(-?\d+)us"),
+        "mux_kb": find_int(r"Mux:\s*(\d+)KB"),
+        "overload_flags": int(re.search(r"Overload:\s*0x([0-9A-Fa-f]+)", line).group(1), 16)
+        if re.search(r"Overload:\s*0x([0-9A-Fa-f]+)", line)
+        else 0,
+        "line": line,
+    }
+
+
 def parse_attribution_payload(payload):
     values = {}
     for key, value in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)=([^|\s]+)", payload):
@@ -892,6 +933,9 @@ def parse_media_triage(media_text):
     attribution = []
     wgc_perf = []
     wgc_summary = []
+    inject_perf = []
+    inject_summary = []
+    inject_source_summary = []
     final_packet_timelines = []
     final_metadata = []
     post_mux_audio_mismatches = []
@@ -916,6 +960,8 @@ def parse_media_triage(media_text):
             attribution.append(parse_attribution_payload(attribution_match.group(1)))
         if WGC_PERF_RE.search(line):
             wgc_perf.append(parse_wgc_perf_line(line))
+        if INJECT_PERF_RE.search(line):
+            inject_perf.append(parse_inject_perf_line(line))
         summary_match = WGC_SUMMARY_RE.search(line)
         if summary_match:
             wgc_summary.append(
@@ -929,6 +975,34 @@ def parse_media_triage(media_text):
                     "source_limited_repeats": parse_int(summary_match.group(7)),
                     "starved_episodes": parse_int(summary_match.group(8)),
                     "longest_ms": parse_int(summary_match.group(9)),
+                    "line": line,
+                }
+            )
+        inject_summary_match = INJECT_CFR_SUMMARY_RE.search(line)
+        if inject_summary_match:
+            inject_summary.append(
+                {
+                    "live": parse_int(inject_summary_match.group(1)),
+                    "duplicate": parse_int(inject_summary_match.group(2)),
+                    "duplicate_pct": parse_float(inject_summary_match.group(3)),
+                    "dup_src": parse_int(inject_summary_match.group(4)),
+                    "dup_def": parse_int(inject_summary_match.group(5)),
+                    "dup_timer": parse_int(inject_summary_match.group(6)),
+                    "dup_drain": parse_int(inject_summary_match.group(7)),
+                    "fresh_catchup": parse_int(inject_summary_match.group(8)),
+                    "repeat_catchup": parse_int(inject_summary_match.group(9)),
+                    "stale_trim": parse_int(inject_summary_match.group(10)),
+                    "line": line,
+                }
+            )
+        inject_source_match = INJECT_CFR_SOURCE_RE.search(line)
+        if inject_source_match:
+            inject_source_summary.append(
+                {
+                    "source_fps_min": parse_float(inject_source_match.group(1)),
+                    "source_fps_max": parse_float(inject_source_match.group(2)),
+                    "jitter_max_us": parse_int(inject_source_match.group(3)),
+                    "selection_max_us": parse_int(inject_source_match.group(4)),
                     "line": line,
                 }
             )
@@ -970,6 +1044,9 @@ def parse_media_triage(media_text):
         "wgc_attribution": attribution,
         "wgc_perf": wgc_perf,
         "wgc_summary": wgc_summary,
+        "inject_perf": inject_perf,
+        "inject_summary": inject_summary,
+        "inject_source_summary": inject_source_summary,
         "final_packet_timelines": final_packet_timelines,
         "final_metadata": final_metadata,
         "post_mux_audio_mismatch_delta_us": post_mux_audio_mismatches,
@@ -1083,6 +1160,56 @@ def summarize_wgc_source_limits(media_evidence):
     }
 
 
+def summarize_inject_pacing(media_evidence):
+    perf_rows = media_evidence["inject_perf"]
+    summary_rows = media_evidence["inject_summary"]
+    source_rows = media_evidence["inject_source_summary"]
+    return {
+        "perf_rows": len(perf_rows),
+        "input": sum(row["input"] for row in perf_rows),
+        "queued": sum(row["queued"] for row in perf_rows),
+        "drop_full": sum(row["drop_full"] for row in perf_rows),
+        "drop_pace": sum(row["drop_pace"] for row in perf_rows),
+        "publication_fps": max((row["publication_fps"] for row in perf_rows), default=0),
+        "selection_drop": sum(row["selection_drop"] for row in perf_rows),
+        "duplicate": sum(row["duplicate"] for row in perf_rows),
+        "summary_live": sum(row["live"] for row in summary_rows),
+        "summary_duplicate": sum(row["duplicate"] for row in summary_rows),
+        "summary_dup_src": sum(row["dup_src"] for row in summary_rows),
+        "summary_dup_def": sum(row["dup_def"] for row in summary_rows),
+        "summary_dup_timer": sum(row["dup_timer"] for row in summary_rows),
+        "summary_dup_drain": sum(row["dup_drain"] for row in summary_rows),
+        "source_fps_min": min((row["source_fps_min"] for row in source_rows), default=0.0),
+        "source_fps_max": max((row["source_fps_max"] for row in source_rows), default=0.0),
+        "jitter_max_us": max((row["jitter_max_us"] for row in source_rows), default=0),
+        "selection_max_us": max((row["selection_max_us"] for row in source_rows), default=0),
+    }
+
+
+def has_inject_capture_pacer_limit(inject_pacing):
+    if (
+        inject_pacing["summary_dup_src"] <= 0
+        or inject_pacing["drop_pace"] <= 0
+        or inject_pacing["summary_dup_def"] != 0
+        or inject_pacing["summary_dup_timer"] != 0
+        or inject_pacing["summary_dup_drain"] != 0
+    ):
+        return False
+
+    input_frames = max(inject_pacing["input"], inject_pacing["queued"] + inject_pacing["drop_pace"], 1)
+    meaningful_drop_floor = max(3, math.ceil(input_frames * 0.02))
+    if inject_pacing["drop_pace"] < meaningful_drop_floor:
+        return False
+
+    publication_fps = inject_pacing["publication_fps"]
+    if publication_fps > 0 and inject_pacing["source_fps_max"] >= publication_fps * 0.75:
+        drop_ratio = inject_pacing["drop_pace"] / input_frames
+        if drop_ratio < 0.10:
+            return False
+
+    return True
+
+
 def has_encoder_or_mux_backpressure(media_evidence, perf_summaries):
     if any(item.get("encoder_overload") or item.get("mux_overload") or item.get("backpressure")
            for item in media_evidence["final_metadata"]):
@@ -1104,6 +1231,7 @@ def classify_session_triage(session_dir, capture_path=None):
     perf_summaries = parse_perf_csvs(session_dir)
     manifest = parse_session_manifest(session_dir)
     wgc_source_limits = summarize_wgc_source_limits(media_evidence)
+    inject_pacing = summarize_inject_pacing(media_evidence)
 
     verdicts = []
     max_present_gap_ms = max((item["gap_ms"] for item in hook_evidence["present_gaps"]), default=0.0)
@@ -1113,6 +1241,8 @@ def classify_session_triage(session_dir, capture_path=None):
         verdicts.append("wgc_source_starvation")
     if has_encoder_or_mux_backpressure(media_evidence, perf_summaries):
         verdicts.append("ce_encoder_or_mux_backpressure")
+    if has_inject_capture_pacer_limit(inject_pacing):
+        verdicts.append("ce_capture_pacer_limited")
 
     audio_fault_counts = {}
     visual_fault_counts = {}
@@ -1128,7 +1258,7 @@ def classify_session_triage(session_dir, capture_path=None):
     ]
     if any(audio_fault_counts.values()) or post_mux_strict_mismatches or final_packet_strict:
         verdicts.append("ce_audio_timeline_fault")
-    if any(visual_fault_counts.values()):
+    if any(visual_fault_counts.values()) or "ce_capture_pacer_limited" in verdicts:
         verdicts.append("ce_visual_timeline_fault")
     if hook_evidence["external_overlay_lines"]:
         verdicts.append("external_overlay_context")
@@ -1165,6 +1295,7 @@ def classify_session_triage(session_dir, capture_path=None):
             "external_overlay_lines": hook_evidence["external_overlay_lines"],
             "wgc_source_starved_episodes": media_evidence["source_starved_episodes"],
             "wgc_source_limits": wgc_source_limits,
+            "inject_pacing": inject_pacing,
             "wgc_attribution": media_evidence["wgc_attribution"],
             "wgc_summary": media_evidence["wgc_summary"],
             "wgc_perf_worst": {
@@ -1212,6 +1343,17 @@ def print_triage_report(report):
             perf_count=len(evidence["perf_csv"]),
         )
     )
+    inject_pacing = evidence["inject_pacing"]
+    if inject_pacing["perf_rows"] or inject_pacing["summary_duplicate"]:
+        print(
+            "  inject_drop_pace={drop_pace} inject_dup_src={dup_src} "
+            "inject_source_fps={fps_min:.2f}..{fps_max:.2f}".format(
+                drop_pace=inject_pacing["drop_pace"],
+                dup_src=inject_pacing["summary_dup_src"],
+                fps_min=inject_pacing["source_fps_min"],
+                fps_max=inject_pacing["source_fps_max"],
+            )
+        )
     rounding = evidence["rounding_evidence"]
     if rounding["post_mux_audio_mismatch_delta_us"]:
         print(
@@ -1405,6 +1547,42 @@ def self_test():
         assert report["evidence"]["wgc_source_limits"]["detail_episode_count"] == 1
         assert report["evidence"]["wgc_source_limits"]["summary_starved_episodes"] == 319
         assert report["evidence"]["wgc_source_limits"]["summary_source_limited_repeats"] == 151
+
+        inject_pacer = make_session(
+            "inject_pacer",
+            media=(
+                "[Inject Perf] Input: 160 | Queued: 75 | DropFull: 0 | DropPace: 85 | PubFps: 240 | HostQ: 0 | "
+                "EncQ: 0 | Dup: 5 | Late: 0 | Trim: 0 | SelDrop: 20 | Def: 0 | Encode: 308us | Fence: 2us | "
+                "Mux: 0KB | Overload: 0x0\n"
+                "[Inject CFR SUMMARY] Live=582 Dup=48 DupPct=8.2% DupReason(src=48 def=0 timer=0 drain=0) "
+                "FreshCatchup=0 RepeatCatchup=0 StaleTrim=7 PathMismatch=0/0 DefRequeued=0 DefDropped=0\n"
+                "[Inject CFR SUMMARY] SourceFps=71.13..79.26 JitterMax=1373us SelMax=67148us EncEmaMax=0.55ms "
+                "SustainMin=1818.8fps\n"
+            ),
+        )
+        report = classify_session_triage(inject_pacer)
+        assert "ce_capture_pacer_limited" in report["verdicts"]
+        assert "ce_visual_timeline_fault" in report["verdicts"]
+        assert report["faults"]["visual_timeline"]
+        assert report["evidence"]["inject_pacing"]["drop_pace"] == 85
+        assert report["evidence"]["inject_pacing"]["publication_fps"] == 240
+        assert report["evidence"]["inject_pacing"]["summary_dup_src"] == 48
+
+        inject_planned_source_stall = make_session(
+            "inject_planned_source_stall",
+            media=(
+                "[Inject Perf] Input: 2005 | Queued: 2004 | DropFull: 0 | DropPace: 1 | PubFps: 240 | HostQ: 0 | "
+                "EncQ: 1 | Dup: 16 | Late: 0 | Trim: 1 | SelDrop: 1500 | Def: 0 | Encode: 308us | Fence: 2us | "
+                "Mux: 0KB | Overload: 0x0\n"
+                "[Inject CFR SUMMARY] Live=574 Dup=16 DupPct=2.7% DupReason(src=16 def=0 timer=0 drain=0) "
+                "FreshCatchup=0 RepeatCatchup=0 StaleTrim=4 PathMismatch=0/0 DefRequeued=0 DefDropped=0\n"
+                "[Inject CFR SUMMARY] SourceFps=24.00..240.83 JitterMax=22684us SelMax=528us EncEmaMax=0.59ms "
+                "SustainMin=1701.7fps\n"
+            ),
+        )
+        report = classify_session_triage(inject_planned_source_stall)
+        assert "ce_capture_pacer_limited" not in report["verdicts"]
+        assert "ce_visual_timeline_fault" not in report["verdicts"]
 
         mux_overload = make_session(
             "mux_overload",

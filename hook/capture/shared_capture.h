@@ -17,6 +17,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include "../../common/shared_defs.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -107,7 +108,7 @@ private:
 
 class SharedCaptureD3D12 : public ISharedCaptureTarget {
 public:
-    static constexpr UINT kSharedTextureCount = 8;
+    static constexpr UINT kSharedTextureCount = SHARED_TEXTURE_SLOT_COUNT;
 
     SharedCaptureD3D12();
     ~SharedCaptureD3D12() override;

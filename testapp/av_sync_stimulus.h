@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 namespace testapp::avsync {
@@ -24,6 +25,7 @@ constexpr int kMaxAudioBufferMs = 500;
 constexpr double kDefaultAudioLeadMs = 75.0;
 constexpr double kMinAudioLeadMs = -500.0;
 constexpr double kMaxAudioLeadMs = 500.0;
+constexpr double kDefaultAnalysisStartSeconds = 2.0;
 constexpr double kDefaultSourceStallToleranceSeconds = 0.050;
 
 struct Rgb8 {
@@ -159,6 +161,27 @@ inline int ClampAudioBufferMs(int value) {
 
 inline double ClampAudioLeadMs(double value) {
     return std::clamp(value, kMinAudioLeadMs, kMaxAudioLeadMs);
+}
+
+inline bool IsFiniteDoubleBits(double value) {
+    uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return (bits & 0x7ff0000000000000ull) != 0x7ff0000000000000ull;
+}
+
+inline double ClampAnalysisStartSeconds(double value, double durationSeconds) {
+    if (!IsFiniteDoubleBits(value)) {
+        return kDefaultAnalysisStartSeconds;
+    }
+    if (value < 0.0) {
+        return 0.0;
+    }
+    const double maxDuration = IsFiniteDoubleBits(durationSeconds) ? std::max(0.0, durationSeconds) : 0.0;
+    return value > maxDuration ? maxDuration : value;
+}
+
+inline bool ShouldUseDxgiTearing(bool requested, bool supported, bool vsyncEnabled) {
+    return requested && supported && !vsyncEnabled;
 }
 
 inline bool ParseSourceStallSpec(const std::string& text, SourceStallSpec* out) {
