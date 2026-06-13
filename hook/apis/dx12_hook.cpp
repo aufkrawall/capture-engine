@@ -16065,6 +16065,19 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     protectedOfficialFFXStartupOverlayOnly,
                     protectedOfficialFFXStartupQueueRef != nullptr &&
                         gameQueue == protectedOfficialFFXStartupQueueRef);
+            // PRINCIPLE: never blank a live overlay. When the backend is live and
+            // the normal route is its transport (OFF / no-callback FSR), the
+            // transition only retargets the submit queue (auto-resolved per
+            // frame on device-level sync resources) — the draw cooldown is pure
+            // gratuitous suppression, so keep drawing this very frame.
+            const bool appCallbackBridgeFSRActive =
+                g_FGCompat.IsFSRFGApiActive() &&
+                !g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
+            const bool keepDrawingLiveOverlayThroughCooldown =
+                !bypassProtectedOfficialFFXStartupDrawCooldown &&
+                ce::dx12_overlay_policy::ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(
+                    g_State.overlayInit, g_State.syncInit, protectedOfficialFFXStartupOverlayOnly, currentSLFGRunning,
+                    appCallbackBridgeFSRActive);
             if (bypassProtectedOfficialFFXStartupDrawCooldown) {
                 static std::atomic<int> s_protectedFFXDrawCooldownBypassLogCount{0};
                 const int logCount =
@@ -16078,6 +16091,24 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 g_FGTransitionCooldown = 0;
                 g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
+            } else if (keepDrawingLiveOverlayThroughCooldown) {
+                static std::atomic<int> s_keepDrawingLiveOverlayLogCount{0};
+                const int logCount = s_keepDrawingLiveOverlayLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 20 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: Keeping live overlay drawing through FG transition cooldown — no blank "
+                        "(oldCooldown=%d queue=%p scQueue=%p fsrApi=%d noCallback=%d log=%d)",
+                        g_FGTransitionCooldown, gameQueue, transitionSwapchainQueue,
+                        g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
+                        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) ? 1 : 0,
+                        logCount + 1);
+                }
+                // The transition bookkeeping (GPU drain, queue/heuristic resets)
+                // already ran in the arming block; only the multi-frame draw
+                // suppression is removed. PostSL is not the transport here, so
+                // leave its state untouched.
+                g_FGTransitionCooldown = 0;
+                NoteDX12OverlayCoverageGate("live-overlay-kept-drawing");
             } else {
                 --g_FGTransitionCooldown;
                 const bool preserveActivePostSLDuringCooldown =
@@ -16384,8 +16415,20 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     }
                 }
             } else {
-                // SL FG not active (FSR FG, no FG, etc.): disable post-SL callback, render pre-SL.
-                if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr) {
+                // SL FG not active (FSR FG, no FG, suspension, etc.): render pre-SL.
+                // Make-before-break: while a CONFIRMED-PostSL suspension keep-alive
+                // is active (DLSS SetOptions(off) churn / menu suspend), keep the
+                // callback installed and the confirmed flag set. The normal route
+                // still draws this frame (the overlay stays visible during the
+                // suspension), and the rapid re-ON then takes the warm-resume path
+                // instead of a fresh reactivation epoch — eliminating the 1-present
+                // PostSL reactivation/probe gap on every SL-signal churn cycle
+                // (session 20260613_041204). PostSLOverlayRenderGated retires the
+                // keep-alive on genuine teardown (Streamline unload / swapchain
+                // invalidation), and SetPostSLCallbackInstalled(false) on any
+                // authoritative disable still clears it.
+                if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr &&
+                    !g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire)) {
                     SetPostSLCallbackInstalled(false, "DX12: pre-SL fallback");
                     g_PostSLOverlayActive.store(false, std::memory_order_release);
                     // Reset PostSL confirmed flag so pre-SL rendering resumes immediately
@@ -16395,6 +16438,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
                     HookLogImportant("DX12: Disabled post-SL callback — rendering pre-SL in ProcessFrame (fgType=%s)",
                                      g_FGCompat.GetFGTypeName(g_FGCompat.GetActiveFGType()));
+                } else if (g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire)) {
+                    static std::atomic<int> s_preSLFallbackKeepAliveLogCount{0};
+                    const int logCount = s_preSLFallbackKeepAliveLogCount.fetch_add(1, std::memory_order_relaxed);
+                    if (logCount < 10 || (logCount % 300) == 0) {
+                        HookLogImportant(
+                            "DX12: pre-SL fallback rendering normal route during confirmed-PostSL suspension "
+                            "keep-alive — callback stays installed for warm re-ON (log=%d)",
+                            logCount + 1);
+                    }
                 }
             }
         }

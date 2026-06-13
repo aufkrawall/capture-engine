@@ -633,6 +633,36 @@ inline bool CanReuseWarmDX12OverlayBackend(bool preserveRequested, bool adapterI
     return preserveRequested && adapterInitialized && deviceMatches && formatMatches;
 }
 
+// PRINCIPLE: a live overlay is never blanked by an FG transition. The
+// FG-transition draw cooldown suppresses the normal-route overlay draw for ~60
+// frames "to let the runtime stabilize", but when the overlay backend is
+// already live its sync resources (allocators/fence/cmdList) are device-level
+// and work on ANY DIRECT queue, the per-frame submit-queue resolution already
+// retargets to the live present queue, and (when the swapchain is reused) the
+// RTVs are still valid — nothing needs rebuilding, so the cooldown is pure
+// gratuitous draw suppression. Session 20260613_041204: an OFF->FSR no-callback
+// takeover (swapchain reused, syncInit kept) blanked a fully-live overlay for
+// 60 presents, then the normal route drew fine on that exact FSR queue when the
+// cooldown expired.
+//
+// The normal route is the overlay's transport (so keep-drawing applies) only
+// when: the backend is initialized AND sync-ready, we are NOT in the pre-enable
+// protected official-FFX startup window (the one proven no-draw window —
+// drawing there wedges AMD's presenter), Streamline FG is NOT running (DLSS
+// routes the overlay through PostSL, which owns its own stabilization), and the
+// app-callback FFX bridge is NOT the active FSR route (there the bridge renders
+// the overlay and a separate normal ECL is the documented 0x887A002B
+// device-removal). AMD's internal no-callback FSR composition explicitly allows
+// the normal overlay route, so the no-callback takeover/suspend/resume edges all
+// keep drawing.
+inline bool ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(bool overlayInit, bool syncInit,
+                                                                    bool protectedOfficialFFXStartupActive,
+                                                                    bool streamlineFGRunning,
+                                                                    bool appCallbackBridgeFSRActive) {
+    return overlayInit && syncInit && !protectedOfficialFFXStartupActive && !streamlineFGRunning &&
+           !appCallbackBridgeFSRActive;
+}
+
 // A runtime-mode flip that changes only the heuristic FG label, not the
 // transport: no Streamline FG signal on either side, FG swapchain ownership
 // and the live swapchain queue unchanged, no authoritative FSR API state, and

@@ -4792,3 +4792,59 @@ TEST(DXGISharedTest, FastPostFSRDLSSProbeRequiresSafeBootstrapAndSwapchainQueue)
     EXPECT_FALSE(ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(true, true, false, true));
     EXPECT_FALSE(ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(true, true, true, false));
 }
+
+TEST(DXGISharedTest, LiveOverlayKeepsDrawingThroughFGTransitionCooldown) {
+    using ce::dx12_overlay_policy::ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown;
+
+    // PRINCIPLE: a live overlay is never blanked by an FG transition. Session
+    // 20260613_041204: an OFF->FSR no-callback takeover (swapchain reused,
+    // syncInit kept, sync resources work on any DIRECT queue) blanked a fully
+    // live overlay for 60 presents on a gratuitous cooldown; the normal route
+    // drew fine on that exact FSR queue once the cooldown expired. A live
+    // backend on the normal route keeps drawing through the transition.
+    EXPECT_TRUE(ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(true, true, false, false, false));
+
+    // The cooldown's draw suppression is retained only where drawing is the
+    // overlay's transport AND unsafe/owned-elsewhere: uninitialized backend or
+    // sync, the pre-enable protected official-FFX startup window (wedges AMD's
+    // presenter), Streamline FG running (PostSL owns the overlay), or the
+    // app-callback FFX bridge route (the bridge renders it; a separate ECL is
+    // the documented 0x887A002B device removal).
+    EXPECT_FALSE(ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(false, true, false, false, false));
+    EXPECT_FALSE(ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(true, false, false, false, false));
+    EXPECT_FALSE(ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(true, true, true, false, false));
+    EXPECT_FALSE(ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(true, true, false, true, false));
+    EXPECT_FALSE(ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(true, true, false, false, true));
+}
+
+// Source invariant (session 20260613_041204): the pre-SL fallback (SL-FG-not-
+// active branch) must NOT uninstall the PostSL callback while a confirmed-
+// PostSL suspension keep-alive is active. Uninstalling it during the brief
+// SL-signal OFF window made every rapid re-ON a cold-start reactivation epoch
+// (warmup + probe) with a 1-present overlay gap. Keeping it installed lets the
+// re-ON warm-resume; the normal route still draws during the suspension.
+TEST(DXGISharedSourceTest, PreSLFallbackRespectsConfirmedPostSLSuspensionKeepAlive) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    // The pre-SL fallback uninstall must be guarded by the keep-alive latch,
+    // and the keep-alive branch keeps the callback installed for warm re-ON.
+    const size_t fallbackGuard =
+        text.find("g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr &&");
+    ASSERT_NE(fallbackGuard, std::string::npos);
+    const size_t guardLatch =
+        text.find("!g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire)) {", fallbackGuard);
+    ASSERT_NE(guardLatch, std::string::npos);
+    const size_t fallbackUninstall =
+        text.find("SetPostSLCallbackInstalled(false, \"DX12: pre-SL fallback\")", guardLatch);
+    ASSERT_NE(fallbackUninstall, std::string::npos);
+    // The latch guard immediately precedes the uninstall.
+    EXPECT_LT(fallbackUninstall - guardLatch, static_cast<size_t>(120));
+    EXPECT_NE(text.find("callback stays installed for warm re-ON"), std::string::npos);
+}
