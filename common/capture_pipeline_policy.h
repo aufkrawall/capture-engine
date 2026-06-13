@@ -42,6 +42,9 @@ constexpr uint32_t kWgcCfrSelectionMaxLeadTicks = 3;
 constexpr uint32_t kWgcMaxLiveVisualDebtMs = 250;
 constexpr uint32_t kWgcMaxLiveVisualDebtFrames = 32;
 constexpr uint32_t kWgcMaxLiveSchedulerRebaseTicksPerLoop = 1;
+constexpr uint32_t kWgcEncoderLimitedLiveVisualDebtMs = 50;
+constexpr uint32_t kWgcEncoderLimitedLiveVisualDebtFrames = 3;
+constexpr uint32_t kWgcEncoderLimitedLiveSchedulerRebaseTicksPerLoop = 4;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
 constexpr double kWgcSevereShortfallDurationMs = 500.0;
@@ -1095,6 +1098,23 @@ inline uint32_t GetWgcLiveVisualDebtLimitTicks(int64_t targetIntervalTicks, int6
                               static_cast<uint32_t>((debtLimitQpc + targetIntervalTicks - 1) / targetIntervalTicks));
 }
 
+inline bool IsWgcEncoderLimitedSmoothnessMode(bool encoderBottlenecked, bool encoderActivelyTooSlow,
+                                              uint32_t overloadFlags) {
+    return encoderBottlenecked || encoderActivelyTooSlow ||
+           (overloadFlags & (kEncoderOverloadFlagEncoder | kEncoderOverloadFlagMux)) != 0;
+}
+
+inline uint32_t GetWgcLiveVisualDebtLimitTicksForMode(int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
+                                                      bool encoderLimitedSmoothnessMode) {
+    if (!encoderLimitedSmoothnessMode) {
+        return GetWgcLiveVisualDebtLimitTicks(targetIntervalTicks, qpcTicksPerSecond);
+    }
+
+    return GetWgcLiveVisualDebtLimitTicks(targetIntervalTicks, qpcTicksPerSecond,
+                                          kWgcEncoderLimitedLiveVisualDebtMs,
+                                          kWgcEncoderLimitedLiveVisualDebtFrames);
+}
+
 inline uint32_t GetWgcLiveVisualDebtExcessTicks(uint32_t outputShortfallTicks, int64_t targetIntervalTicks,
                                                 int64_t qpcTicksPerSecond, uint32_t maxDebtMs = kWgcMaxLiveVisualDebtMs,
                                                 uint32_t maxDebtFrames = kWgcMaxLiveVisualDebtFrames) {
@@ -1107,6 +1127,18 @@ inline uint32_t GetWgcLiveVisualDebtExcessTicks(uint32_t outputShortfallTicks, i
     return outputShortfallTicks - debtLimitTicks;
 }
 
+inline uint32_t GetWgcLiveVisualDebtExcessTicksForMode(uint32_t outputShortfallTicks, int64_t targetIntervalTicks,
+                                                       int64_t qpcTicksPerSecond,
+                                                       bool encoderLimitedSmoothnessMode) {
+    if (!encoderLimitedSmoothnessMode) {
+        return GetWgcLiveVisualDebtExcessTicks(outputShortfallTicks, targetIntervalTicks, qpcTicksPerSecond);
+    }
+
+    return GetWgcLiveVisualDebtExcessTicks(outputShortfallTicks, targetIntervalTicks, qpcTicksPerSecond,
+                                           kWgcEncoderLimitedLiveVisualDebtMs,
+                                           kWgcEncoderLimitedLiveVisualDebtFrames);
+}
+
 inline uint32_t GetWgcLiveSchedulerRebaseTicksThisLoop(
     uint32_t requestedTicks, uint32_t outputShortfallTicks, uint32_t excessTicks,
     uint32_t maxTicksPerLoop = kWgcMaxLiveSchedulerRebaseTicksPerLoop) {
@@ -1115,6 +1147,15 @@ inline uint32_t GetWgcLiveSchedulerRebaseTicksThisLoop(
     }
 
     return std::min(std::min(requestedTicks, outputShortfallTicks), std::min(excessTicks, maxTicksPerLoop));
+}
+
+inline uint32_t GetWgcLiveSchedulerRebaseTicksThisLoopForMode(uint32_t requestedTicks, uint32_t outputShortfallTicks,
+                                                              uint32_t excessTicks,
+                                                              bool encoderLimitedSmoothnessMode) {
+    return GetWgcLiveSchedulerRebaseTicksThisLoop(
+        requestedTicks, outputShortfallTicks, excessTicks,
+        encoderLimitedSmoothnessMode ? kWgcEncoderLimitedLiveSchedulerRebaseTicksPerLoop
+                                     : kWgcMaxLiveSchedulerRebaseTicksPerLoop);
 }
 
 inline int64_t GetWgcLiveVisualDebtFloorQpc(int64_t liveNowQpc, int64_t targetIntervalTicks,
@@ -1127,10 +1168,27 @@ inline int64_t GetWgcLiveVisualDebtFloorQpc(int64_t liveNowQpc, int64_t targetIn
     return liveNowQpc > debtLimitQpc ? (liveNowQpc - debtLimitQpc) : 0;
 }
 
+inline int64_t GetWgcLiveVisualDebtFloorQpcForMode(int64_t liveNowQpc, int64_t targetIntervalTicks,
+                                                   int64_t qpcTicksPerSecond,
+                                                   bool encoderLimitedSmoothnessMode) {
+    const int64_t debtLimitQpc =
+        encoderLimitedSmoothnessMode
+            ? GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond,
+                                           kWgcEncoderLimitedLiveVisualDebtMs,
+                                           kWgcEncoderLimitedLiveVisualDebtFrames)
+            : GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
+    if (liveNowQpc <= 0 || debtLimitQpc <= 0) {
+        return 0;
+    }
+
+    return liveNowQpc > debtLimitQpc ? (liveNowQpc - debtLimitQpc) : 0;
+}
+
 inline int64_t ClampWgcSelectionTargetToLiveQpc(
     int64_t selectionTargetQpc, int64_t liveNowQpc, int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
     bool lowSourceMode, bool liveRecoveryMode, uint32_t outputShortfallTicks, bool encoderBottlenecked,
-    uint32_t severeShortfallThresholdTicks = kCfrShortfallCatchupThresholdTicks) {
+    uint32_t severeShortfallThresholdTicks = kCfrShortfallCatchupThresholdTicks,
+    bool encoderLimitedSmoothnessMode = false) {
     (void)lowSourceMode;
     (void)liveRecoveryMode;
     (void)encoderBottlenecked;
@@ -1141,11 +1199,13 @@ inline int64_t ClampWgcSelectionTargetToLiveQpc(
         return selectionTargetQpc;
     }
 
-    if (GetWgcLiveVisualDebtExcessTicks(outputShortfallTicks, targetIntervalTicks, qpcTicksPerSecond) == 0) {
+    if (GetWgcLiveVisualDebtExcessTicksForMode(outputShortfallTicks, targetIntervalTicks, qpcTicksPerSecond,
+                                               encoderLimitedSmoothnessMode) == 0) {
         return selectionTargetQpc;
     }
 
-    const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpc(liveNowQpc, targetIntervalTicks, qpcTicksPerSecond);
+    const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpcForMode(
+        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode);
     if (visualDebtFloorQpc <= 0 || selectionTargetQpc >= visualDebtFloorQpc) {
         return selectionTargetQpc;
     }
@@ -1171,12 +1231,14 @@ inline bool IsWgcFrameTooNewForCfrSlot(int64_t frameSelectionQpc, int64_t select
 }
 
 inline bool IsWgcFrameWithinLiveVisualDebtWindow(int64_t frameSelectionQpc, int64_t liveNowQpc,
-                                                 int64_t targetIntervalTicks, int64_t qpcTicksPerSecond) {
+                                                 int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
+                                                 bool encoderLimitedSmoothnessMode = false) {
     if (frameSelectionQpc <= 0) {
         return true;
     }
 
-    const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpc(liveNowQpc, targetIntervalTicks, qpcTicksPerSecond);
+    const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpcForMode(
+        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode);
     return visualDebtFloorQpc <= 0 || frameSelectionQpc >= visualDebtFloorQpc;
 }
 

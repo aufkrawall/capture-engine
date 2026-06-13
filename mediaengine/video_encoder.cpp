@@ -51,6 +51,37 @@ static void TrimD3D11Residency(ID3D11Device* device, ID3D11DeviceContext* contex
 
 namespace {
 
+enum WriterFinalizePhase : uint32_t {
+    kWriterPhaseRunning = 0,
+    kWriterPhaseFinalizeStarting = 1,
+    kWriterPhaseFlushingEncoder = 2,
+    kWriterPhaseWritingTrailer = 3,
+    kWriterPhasePostMuxProbe = 4,
+    kWriterPhaseCleanup = 5,
+    kWriterPhaseComplete = 6,
+};
+
+const char* WriterFinalizePhaseName(uint32_t phase) {
+    switch (phase) {
+        case kWriterPhaseRunning:
+            return "running";
+        case kWriterPhaseFinalizeStarting:
+            return "finalize_starting";
+        case kWriterPhaseFlushingEncoder:
+            return "flushing_encoder";
+        case kWriterPhaseWritingTrailer:
+            return "writing_trailer";
+        case kWriterPhasePostMuxProbe:
+            return "post_mux_probe";
+        case kWriterPhaseCleanup:
+            return "cleanup";
+        case kWriterPhaseComplete:
+            return "complete";
+        default:
+            return "unknown";
+    }
+}
+
 bool HasValidStreamTimeBase(const AVStream* stream) {
     return stream && stream->time_base.num > 0 && stream->time_base.den > 0;
 }
@@ -2295,6 +2326,8 @@ int VideoEncoder::GetAudioStreamIndex(int track) const {
 void VideoEncoder::BeginDeferredRecording() {
     codecOpenFailed = false;
     writerFinalizeTimedOut.store(false, std::memory_order_relaxed);
+    writerFinalizeSlowWarningLogged.store(false, std::memory_order_relaxed);
+    writerFinalizePhase.store(kWriterPhaseRunning, std::memory_order_relaxed);
     encodedDurationUs.store(0, std::memory_order_relaxed);
     lastAssignedVideoPts = -1;
     lastFrameDeferred.store(false, std::memory_order_relaxed);
@@ -2324,6 +2357,7 @@ void VideoEncoder::BeginDeferredRecording() {
 
     if (!writerRunning) {
         writerRunning = true;
+        writerFinalizePhase.store(kWriterPhaseRunning, std::memory_order_relaxed);
         writerThread = std::thread(&VideoEncoder::AsyncWriteLoop, this);
         DLL_Log("[VideoEncoder] Started Writer Thread");
     }
@@ -4561,25 +4595,60 @@ void VideoEncoder::Stop() {
         // Fall through to join — ensures file is fully closed before returning
     }
 
-    // Always wait for writer thread to finish (writes trailer + closes file)
-    // Use a timeout to prevent hanging on I/O when the output path is inaccessible
+    // Always wait for writer thread to finish (writes trailer + closes file).
+    // Use phase-aware bounded waits: trailer/probe finalization can be slower
+    // than packet drain on busy disks, but the async writer must remain the
+    // only owner of the muxer until it either completes or definitively times out.
     if (writerThread.joinable()) {
-        DLL_Log("[VideoEncoder] Stop: Waiting for writer thread to finish (5s timeout)...");
         HANDLE hThread = writerThread.native_handle();
-        DWORD waitResult = WaitForSingleObject(hThread, 5000);
+        const uint64_t waitStartMs = GetTickCount64();
+        constexpr uint64_t kSlowFinalizeWarnMs = 5000;
+        constexpr uint64_t kWriterFinalizeTimeoutMs = 30000;
+        DLL_Log("[VideoEncoder] Stop: Waiting for writer thread to finish (phase=%s timeout=%llums)...",
+                WriterFinalizePhaseName(writerFinalizePhase.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(kWriterFinalizeTimeoutMs));
+
+        DWORD waitResult = WAIT_TIMEOUT;
+        while (true) {
+            waitResult = WaitForSingleObject(hThread, 250);
+            if (waitResult == WAIT_OBJECT_0) {
+                break;
+            }
+            const uint64_t elapsedMs = GetTickCount64() - waitStartMs;
+            const uint32_t phase = writerFinalizePhase.load(std::memory_order_relaxed);
+            if (elapsedMs >= kSlowFinalizeWarnMs &&
+                !writerFinalizeSlowWarningLogged.exchange(true, std::memory_order_acq_rel)) {
+                DLL_Log(
+                    "[VideoEncoder] Stop: WARNING writer_finalize_slow phase=%s elapsed=%llums queueBytes=%zu "
+                    "queuePackets=%u; async writer still owns FFmpeg context",
+                    WriterFinalizePhaseName(phase), static_cast<unsigned long long>(elapsedMs),
+                    currentQueueBytes.load(std::memory_order_relaxed),
+                    currentQueuePackets.load(std::memory_order_relaxed));
+            }
+            if (elapsedMs >= kWriterFinalizeTimeoutMs || waitResult == WAIT_FAILED) {
+                break;
+            }
+        }
+
         if (waitResult == WAIT_OBJECT_0) {
             writerThread.join();
             if (writerFinalizeTimedOut.exchange(false, std::memory_order_acq_rel)) {
                 DLL_Log("[VideoEncoder] Stop: Timed-out writer completed on a later stop; muxer ownership recovered.");
             }
-            DLL_Log("[VideoEncoder] Stop: Writer thread joined.");
+            const uint64_t elapsedMs = GetTickCount64() - waitStartMs;
+            DLL_Log("[VideoEncoder] Stop: Writer thread joined phase=%s elapsed=%llums.",
+                    WriterFinalizePhaseName(writerFinalizePhase.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(elapsedMs));
         } else {
             writerFinalizeTimedOut.store(true, std::memory_order_release);
             writerStillOwnsMuxer = true;
             DLL_Log(
-                "[VideoEncoder] Stop: ERROR writer_finalize_timeout result=%lu queueBytes=%zu queuePackets=%u; "
+                "[VideoEncoder] Stop: ERROR writer_finalize_timeout result=%lu phase=%s elapsed=%llums "
+                "queueBytes=%zu queuePackets=%u; "
                 "async writer retains FFmpeg context, skipping synchronous finalize",
-                waitResult, currentQueueBytes.load(std::memory_order_relaxed),
+                waitResult, WriterFinalizePhaseName(writerFinalizePhase.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(GetTickCount64() - waitStartMs),
+                currentQueueBytes.load(std::memory_order_relaxed),
                 currentQueuePackets.load(std::memory_order_relaxed));
         }
     }
@@ -6292,10 +6361,12 @@ void VideoEncoder::AsyncWriteLoop() {
 
         // Handle Stop/Flush signal
         if (isStopping) {
+            writerFinalizePhase.store(kWriterPhaseFinalizeStarting, std::memory_order_release);
             DLL_Log("[VideoEncoder] Async Finalize: Starting...");
 
             // 1. Flush Encoder if valid
             if (initDone && codecCtx && fileOpened) {
+                writerFinalizePhase.store(kWriterPhaseFlushingEncoder, std::memory_order_release);
                 DLL_Log("[VideoEncoder] Async Finalize: Flushing encoder...");
                 avcodec_send_frame(codecCtx, nullptr);
 
@@ -6368,6 +6439,7 @@ void VideoEncoder::AsyncWriteLoop() {
 
             // 2. Write Trailer and Close File
             if (fmtCtx && fileOpened) {
+                writerFinalizePhase.store(kWriterPhaseWritingTrailer, std::memory_order_release);
                 DLL_Log("[VideoEncoder] Async Finalize: Writing Trailer...");
                 int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
                 if (finalDurationUs > 0) {
@@ -6402,6 +6474,7 @@ void VideoEncoder::AsyncWriteLoop() {
                     avio_closep(&fmtCtx->pb);
                 }
                 if (finalDurationUs > 0) {
+                    writerFinalizePhase.store(kWriterPhasePostMuxProbe, std::memory_order_release);
                     LogPostMuxDurationProbe(outputFilename, finalDurationUs);
                 }
                 fileOpened = false;
@@ -6413,10 +6486,12 @@ void VideoEncoder::AsyncWriteLoop() {
             // Unlock first to avoid self-deadlock during finalize.
             lock.unlock();
 
+            writerFinalizePhase.store(kWriterPhaseCleanup, std::memory_order_release);
             CleanupResources();
 
             isStopping = false;
             writerRunning = false;
+            writerFinalizePhase.store(kWriterPhaseComplete, std::memory_order_release);
             DLL_Log("[VideoEncoder] Async Finalize: Complete.");
             break;  // Exit thread
         }

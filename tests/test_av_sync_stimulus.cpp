@@ -117,3 +117,12 @@ TEST(AvSyncStimulusTest, SmoothLanePositionWrapsDeterministically) {
     EXPECT_NEAR(avs::SmoothLanePosition(5.0), 0.25, 0.000001);
     EXPECT_NEAR(avs::ExpectedMotionPosition(5.0), avs::SmoothLanePosition(5.0), 0.000001);
 }
+
+TEST(AvSyncStimulusTest, FastLanePositionWrapsEverySecond) {
+    EXPECT_DOUBLE_EQ(avs::FastLanePosition(-0.1), 0.0);
+    EXPECT_NEAR(avs::FastLanePosition(0.0), 0.0, 0.000001);
+    EXPECT_NEAR(avs::FastLanePosition(0.25), 0.25, 0.000001);
+    EXPECT_NEAR(avs::FastLanePosition(0.75), 0.75, 0.000001);
+    EXPECT_NEAR(avs::FastLanePosition(1.0), 0.0, 0.000001);
+    EXPECT_NEAR(avs::FastLanePosition(1.25), 0.25, 0.000001);
+}

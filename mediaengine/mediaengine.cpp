@@ -2573,11 +2573,14 @@ public:
                                                 startupTimelineProtected, wgcEncoderBottlenecked, timelineShortfallMs,
                                                 wgcCoverageLossActive);
                                         if (allowCfrSourceClockCorrection) {
-                                            tier1Delta = ce::audio::ComputeTier1CompensationDelta(
+                                            tier1Delta = ce::audio::ComputeTier1CompensationDeltaWithDeadband(
                                                 trueDrift, static_cast<int64_t>(SAMPLE_RATE) * 10,
-                                                kTier1MaxPitchPercent);
+                                                kTier1MaxPitchPercent, SAMPLE_RATE / 12);
+                                            const int32_t maxCompensationDelta =
+                                                src.syncResampler->GetMaxCompensationDelta();
                                             src.targetRateSaturated =
-                                                std::abs(trueDrift) > src.syncResampler->GetMaxCompensationDelta();
+                                                tier1Delta != 0 && std::abs(tier1Delta) >= maxCompensationDelta &&
+                                                std::abs(trueDrift) > maxCompensationDelta;
                                             if (isWgcCfrRecording && tier1Delta > 0) {
                                                 const int64_t positiveCompensationHysteresisSamples =
                                                     ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
@@ -2972,8 +2975,8 @@ public:
                         dropLogCounter++ % 100 == 0) {
                         DLL_Log(
                             "[PullAudio] WARNING: Source underrun - src %d padding %zu samples with silence "
-                            "(available=%zu needed=%zu)",
-                            (int)srcIdx, padSamples, available / CHANNELS, totalFloats / CHANNELS);
+                            "(available=%zu needed=%zu forceDrain=%d)",
+                            (int)srcIdx, padSamples, available / CHANNELS, totalFloats / CHANNELS, forceDrain ? 1 : 0);
                     } else if (startupPadding && padSamples >= (size_t)(SAMPLE_RATE / 50) &&
                                dropLogCounter++ % 200 == 0) {
                         DLL_Log(

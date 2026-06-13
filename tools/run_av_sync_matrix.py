@@ -39,6 +39,10 @@ class Scenario:
     audio_layout: str = ""
     width: Optional[int] = None
     height: Optional[int] = None
+    nvenc_preset: str = "p1"
+    rate_control: str = "VBR"
+    bitrate: str = "125Mbps"
+    max_bitrate: str = "200Mbps"
 
     @property
     def name(self):
@@ -227,14 +231,14 @@ bit_depth=8
 color_space=bt709
 color_range=limited
 chroma_subsampling=420
-rate_control=VBR
-bitrate=125Mbps
-max_bitrate=200Mbps
+rate_control={scenario.rate_control}
+bitrate={scenario.bitrate}
+max_bitrate={scenario.max_bitrate}
 keyframe_interval=2
 b_frames=0
 
 [NVENC]
-preset=p1
+preset={scenario.nvenc_preset}
 tuning=hq
 multipass=disabled
 lookahead=false
@@ -531,6 +535,10 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "gpu_load": scenario_gpu_load,
             "width": scenario_width,
             "height": scenario_height,
+            "nvenc_preset": scenario.nvenc_preset,
+            "rate_control": scenario.rate_control,
+            "bitrate": scenario.bitrate,
+            "max_bitrate": scenario.max_bitrate,
             "app_audio_clock_scheduling": args.app_audio_clock_scheduling,
             "app_audio_buffer_ms": args.app_audio_buffer_ms,
             "app_audio_lead_ms": app_audio_lead_ms,
@@ -684,6 +692,9 @@ def build_scenarios(args):
             Scenario("wgc", "alac", 60, label="planned_source_stall", duration_sec=20,
                      include_source_stall=True, source_stall="8.0:300"),
             Scenario("wgc", "alac", 120, label="render_frame_pressure", duration_sec=20, gpu_load=200),
+            Scenario("wgc", "alac", 120, label="wgc_p5_encoder_overload", duration_sec=25, app_fps=240,
+                     width=1920, height=1080, gpu_load=200, nvenc_preset="p5", bitrate="160Mbps",
+                     max_bitrate="240Mbps"),
             Scenario("inject", "aac", 120, label="mild_encoder_pressure", duration_sec=20, width=1920, height=1080,
                      gpu_load=150),
         ]
@@ -698,7 +709,20 @@ def build_scenarios(args):
     methods = split_csv(args.capture_methods, SUPPORTED_METHODS)
     codecs = split_csv(args.codecs, SUPPORTED_CODECS)
     fps_values = split_int_csv(args.fps)
-    return build_matrix_scenarios(methods, codecs, fps_values)
+    return [
+        Scenario(
+            method,
+            codec,
+            fps,
+            nvenc_preset=args.nvenc_preset,
+            rate_control=args.rate_control,
+            bitrate=args.bitrate,
+            max_bitrate=args.max_bitrate,
+        )
+        for method in methods
+        for codec in codecs
+        for fps in fps_values
+    ]
 
 
 MATRIX_SELECTION_OPTIONS = ("--capture-methods", "--codecs", "--fps")
@@ -743,6 +767,10 @@ def build_parser():
     parser.add_argument("--fullscreen", type=int, choices=[0, 1], default=1)
     parser.add_argument("--window-chrome", type=int, choices=[0, 1], default=0)
     parser.add_argument("--gpu-load", type=int, default=0)
+    parser.add_argument("--nvenc-preset", default="p1")
+    parser.add_argument("--rate-control", default="VBR")
+    parser.add_argument("--bitrate", default="125Mbps")
+    parser.add_argument("--max-bitrate", default="200Mbps")
     parser.add_argument(
         "--allow-tearing",
         action="store_true",
@@ -821,11 +849,12 @@ def self_test():
 
     stress = parse_args(["--short-stress", "--dry-run"])
     stress_scenarios = build_scenarios(stress)
-    assert len(stress_scenarios) == 6
+    assert len(stress_scenarios) == 7
     assert any(resolve_audio_layout(scenario, False) == "duplicate_app" for scenario in stress_scenarios)
     assert any(scenario.include_source_stall for scenario in stress_scenarios)
     assert any(str(scenario.app_fps) == "45" for scenario in stress_scenarios)
     assert any(str(scenario.app_fps) == "240" for scenario in stress_scenarios)
+    assert any(scenario.capture_method == "wgc" and scenario.nvenc_preset == "p5" for scenario in stress_scenarios)
 
     full = parse_args(["--full-matrix", "--dry-run"])
     assert len(build_scenarios(full)) == len(SUPPORTED_METHODS) * len(SUPPORTED_CODECS) * 2
@@ -835,6 +864,30 @@ def self_test():
     custom_scenarios = build_scenarios(custom)
     assert len(custom_scenarios) == 1
     assert custom_scenarios[0].name == "wgc_pcm_60fps"
+
+    custom_p5 = parse_args(
+        [
+            "--profile",
+            "custom",
+            "--capture-methods",
+            "wgc",
+            "--codecs",
+            "alac",
+            "--fps",
+            "120",
+            "--nvenc-preset",
+            "p5",
+            "--bitrate",
+            "160Mbps",
+            "--max-bitrate",
+            "240Mbps",
+            "--dry-run",
+        ]
+    )
+    custom_p5_scenarios = build_scenarios(custom_p5)
+    assert custom_p5_scenarios[0].nvenc_preset == "p5"
+    assert custom_p5_scenarios[0].bitrate == "160Mbps"
+    assert custom_p5_scenarios[0].max_bitrate == "240Mbps"
 
     soak = parse_args(["--long-soak", "--long-soak-minutes", "30", "--dry-run"])
     soak_scenarios = build_scenarios(soak)

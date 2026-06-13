@@ -31,7 +31,8 @@ LOG_PATTERNS = {
     "wgc_cfr_lead_warning": re.compile(r"\[PullAudio\] WGC CFR lead warning:"),
     "wgc_coverage_mode_active": re.compile(r"CovMode=1"),
     "audio_large_gap": re.compile(r"\[PullAudio\] Large A/V gap"),
-    "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun"),
+    "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun(?!.*forceDrain=1)"),
+    "audio_stop_tail_padding": re.compile(r"\[PullAudio\] WARNING: Source underrun.*forceDrain=1"),
     "audio_source_padding_summary": re.compile(r"\[STOP AUDIO\] Source \d+: .* pad:[1-9]\d*"),
     "audio_overflow": re.compile(r"\[PullAudio\] WARNING: Ring buffer overflow"),
     "audio_silence_fill": re.compile(r"\[PullAudio\] Track \d+ silent - generating"),
@@ -47,6 +48,11 @@ LOG_PATTERNS = {
     "wgc_stale_fresh_catchup_blocked": re.compile(r"\[EncoderThread\] WGC CFR stale fresh-catchup blocked"),
     "wgc_visual_timeline_debt_drop": re.compile(r"\[EncoderThread\] WGC CFR visual timeline debt drop"),
     "wgc_live_scheduler_rebase": re.compile(r"\[EncoderThread\] WGC CFR live scheduler rebase"),
+    "wgc_encoder_limited_source_drop": re.compile(
+        r"\[EncoderThread\] WGC CFR encoder-limited source drop", re.IGNORECASE
+    ),
+    "wgc_cadence_event": re.compile(r"\[WGC CFR CADENCE EVENT\]", re.IGNORECASE),
+    "wgc_smoothness_summary": re.compile(r"\[WGC CFR SMOOTHNESS SUMMARY\]", re.IGNORECASE),
     "wgc_stop_frozen_tail_drop": re.compile(r"\[EncoderThread\] WGC CFR stop drain discarded frozen-tail debt"),
     "wgc_stop_hold_repeats": re.compile(r"\[EncoderThread\] WGC CFR stop drain using held pre-stop frame"),
     "wgc_drain_duplicate_summary": re.compile(
@@ -58,6 +64,7 @@ LOG_PATTERNS = {
         r"\[VideoEncoder\] Stop: (?:ERROR writer_finalize_timeout|WARNING - Writer thread did not finish)",
         re.IGNORECASE,
     ),
+    "writer_finalize_slow": re.compile(r"\[VideoEncoder\] Stop: WARNING writer_finalize_slow", re.IGNORECASE),
     "writer_sync_finalize": re.compile(r"\[VideoEncoder\] Sync Stop: Finalizing file", re.IGNORECASE),
 }
 
@@ -107,9 +114,16 @@ WGC_SOURCE_STARVED_RE = re.compile(
     re.IGNORECASE,
 )
 WGC_ATTRIBUTION_RE = re.compile(r"\[WGC CFR ATTRIBUTION\]\s*(.*)", re.IGNORECASE)
+WGC_CADENCE_EVENT_RE = re.compile(r"\[WGC CFR CADENCE EVENT\]\s*mode=([A-Za-z_]+)\s*(.*)", re.IGNORECASE)
 WGC_SUMMARY_RE = re.compile(
     r"\[WGC CFR SUMMARY\].*Live=(\d+) Dup=(\d+).*DupReason\(src=(\d+) def=(\d+) timer=(\d+) drain=(\d+)\).*"
     r"SourceLimitedRepeats=(\d+) StarvedEpisodes=(\d+) longest=(\d+)ms",
+    re.IGNORECASE,
+)
+WGC_SMOOTHNESS_SUMMARY_RE = re.compile(
+    r"\[WGC CFR SMOOTHNESS SUMMARY\].*encoderLimitedDrops=(\d+) maxDropTicks=(\d+) cadenceEvents=(\d+) "
+    r"phaseErrorMax=(\d+)us shortfallMax=([0-9.]+)ms staleDebtDrops=(\d+) liveRebase=(\d+)/(\d+) "
+    r"tooNewRepeats=(\d+)",
     re.IGNORECASE,
 )
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
@@ -397,6 +411,8 @@ def evaluate_thresholds(args, nominal_fps, video_timing, duplicate_runs, audio_d
         "wgc_buffered_frames": 0 if log_summary is None else log_summary["max_wgc_buffered_frames"],
         "wgc_live_rebase_max_ticks": 0 if log_summary is None else log_summary["max_wgc_live_rebase_ticks"],
         "wgc_startup_frame_age_us": 0 if log_summary is None else log_summary["max_wgc_startup_frame_age_us"],
+        "wgc_encoder_limited_drops": 0 if log_summary is None else log_summary["max_wgc_encoder_limited_drops"],
+        "wgc_phase_error_us": 0 if log_summary is None else log_summary["max_wgc_phase_error_us"],
     }
     cadence_metric_thresholds = parse_named_int_thresholds(
         args.max_cadence_metric, cadence_metric_values.keys(), "--max-cadence-metric"
@@ -781,8 +797,14 @@ def analyze_log(log_path):
         "wgc_buffered_frames": [],
         "wgc_live_rebase_max_ticks": [],
         "wgc_startup_frame_age_us": [],
+        "wgc_encoder_limited_drops": [],
+        "wgc_phase_error_us": [],
     }
     for line in lines:
+        smoothness_match = WGC_SMOOTHNESS_SUMMARY_RE.search(line)
+        if smoothness_match:
+            cadence_metrics["wgc_encoder_limited_drops"].append(parse_int(smoothness_match.group(1)))
+            cadence_metrics["wgc_phase_error_us"].append(parse_int(smoothness_match.group(4)))
         startup_frame_age_match = WGC_STARTUP_FRAME_AGE_RE.search(line)
         if startup_frame_age_match:
             cadence_metrics["wgc_startup_frame_age_us"].append(parse_int(startup_frame_age_match.group(1)))
@@ -855,6 +877,12 @@ def analyze_log(log_path):
         else 0,
         "max_wgc_startup_frame_age_us": max(cadence_metrics["wgc_startup_frame_age_us"])
         if cadence_metrics["wgc_startup_frame_age_us"]
+        else 0,
+        "max_wgc_encoder_limited_drops": max(cadence_metrics["wgc_encoder_limited_drops"])
+        if cadence_metrics["wgc_encoder_limited_drops"]
+        else 0,
+        "max_wgc_phase_error_us": max(cadence_metrics["wgc_phase_error_us"])
+        if cadence_metrics["wgc_phase_error_us"]
         else 0,
         "saw_encoder_overload": any(flags & 0x1 for flags in cadence_metrics["overload_flags"]),
         "saw_mux_overload": any(flags & 0x2 for flags in cadence_metrics["overload_flags"]),
@@ -956,6 +984,8 @@ def parse_media_triage(media_text):
     attribution = []
     wgc_perf = []
     wgc_summary = []
+    wgc_cadence_events = []
+    wgc_smoothness_summary = []
     inject_perf = []
     inject_summary = []
     inject_source_summary = []
@@ -985,6 +1015,12 @@ def parse_media_triage(media_text):
             attribution.append(parse_attribution_payload(attribution_match.group(1)))
         if WGC_PERF_RE.search(line):
             wgc_perf.append(parse_wgc_perf_line(line))
+        cadence_event_match = WGC_CADENCE_EVENT_RE.search(line)
+        if cadence_event_match:
+            event = parse_attribution_payload(cadence_event_match.group(2))
+            event["mode"] = cadence_event_match.group(1)
+            event["line"] = line
+            wgc_cadence_events.append(event)
         if INJECT_PERF_RE.search(line):
             inject_perf.append(parse_inject_perf_line(line))
         summary_match = WGC_SUMMARY_RE.search(line)
@@ -1000,6 +1036,22 @@ def parse_media_triage(media_text):
                     "source_limited_repeats": parse_int(summary_match.group(7)),
                     "starved_episodes": parse_int(summary_match.group(8)),
                     "longest_ms": parse_int(summary_match.group(9)),
+                    "line": line,
+                }
+            )
+        smoothness_match = WGC_SMOOTHNESS_SUMMARY_RE.search(line)
+        if smoothness_match:
+            wgc_smoothness_summary.append(
+                {
+                    "encoder_limited_drops": parse_int(smoothness_match.group(1)),
+                    "max_drop_ticks": parse_int(smoothness_match.group(2)),
+                    "cadence_events": parse_int(smoothness_match.group(3)),
+                    "phase_error_max_us": parse_int(smoothness_match.group(4)),
+                    "shortfall_max_ms": parse_float(smoothness_match.group(5)),
+                    "stale_debt_drops": parse_int(smoothness_match.group(6)),
+                    "live_rebase_total": parse_int(smoothness_match.group(7)),
+                    "live_rebase_max_ticks": parse_int(smoothness_match.group(8)),
+                    "too_new_repeats": parse_int(smoothness_match.group(9)),
                     "line": line,
                 }
             )
@@ -1099,6 +1151,8 @@ def parse_media_triage(media_text):
         "wgc_attribution": attribution,
         "wgc_perf": wgc_perf,
         "wgc_summary": wgc_summary,
+        "wgc_cadence_events": wgc_cadence_events,
+        "wgc_smoothness_summary": wgc_smoothness_summary,
         "inject_perf": inject_perf,
         "inject_summary": inject_summary,
         "inject_source_summary": inject_source_summary,
@@ -1279,6 +1333,61 @@ def has_encoder_or_mux_backpressure(media_evidence, perf_summaries):
     return False
 
 
+def has_exact_final_mux_evidence(media_evidence):
+    final_packets_clean = bool(media_evidence["final_packet_timelines"]) and all(
+        item["max_packet_delta_us"] <= 1 and item["audio_past_target"] == 0
+        for item in media_evidence["final_packet_timelines"]
+    )
+    final_metadata_clean = bool(media_evidence["final_metadata"]) and all(
+        item["max_delta_us"] <= 1 for item in media_evidence["final_metadata"]
+    )
+    no_post_mux_strict_mismatch = all(delta <= 1 for delta in media_evidence["post_mux_audio_mismatch_delta_us"])
+    return (final_packets_clean or final_metadata_clean) and no_post_mux_strict_mismatch
+
+
+def has_wgc_encoder_limited_judder(media_evidence, log_summary):
+    if not log_summary:
+        return False
+
+    counts = log_summary["counts"]
+    overload_seen = log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
+    overload_seen = overload_seen or any(item["overload_flags"] != 0 for item in media_evidence["wgc_perf"])
+    overload_seen = overload_seen or any(
+        item.get("fault_hint") == "ce_capacity_pressure" for item in media_evidence["wgc_attribution"]
+    )
+    overload_seen = overload_seen or any(item.get("encoder_limited_drops", 0) > 0
+                                         for item in media_evidence["wgc_smoothness_summary"])
+    if not overload_seen:
+        return False
+
+    encoder_limited_cadence = any(
+        item.get("mode", "").lower() == "encoder_limited" for item in media_evidence["wgc_cadence_events"]
+    )
+    smoothness_pressure = any(
+        item["too_new_repeats"] > 0
+        or item["stale_debt_drops"] > 0
+        or item["live_rebase_total"] > 0
+        or item["encoder_limited_drops"] > 0
+        for item in media_evidence["wgc_smoothness_summary"]
+    )
+    if not encoder_limited_cadence and not smoothness_pressure:
+        return False
+
+    cadence_pressure_events = (
+        counts.get("wgc_too_new_slot_repeat", 0)
+        + counts.get("wgc_stale_visual_debt_drop", 0)
+        + counts.get("wgc_live_scheduler_rebase", 0)
+        + counts.get("wgc_encoder_limited_source_drop", 0)
+    )
+    if cadence_pressure_events >= 3:
+        return True
+
+    if counts.get("wgc_smoothness_summary", 0) > 0:
+        return smoothness_pressure
+
+    return log_summary["max_wgc_shortfall_ms"] >= 100 and log_summary["max_wgc_oldest_ms"] >= 100
+
+
 def summarize_stop_audio_shortfalls(media_evidence):
     short_tracks = [
         item for item in media_evidence["stop_audio_tracks"]
@@ -1326,12 +1435,24 @@ def classify_session_triage(session_dir, capture_path=None):
         and log_summary["counts"].get("writer_finalize_timeout", 0) > 0
         and log_summary["counts"].get("writer_sync_finalize", 0) > 0
     )
+    late_writer_finalize_recovered = (
+        log_summary is not None
+        and log_summary["counts"].get("writer_finalize_timeout", 0) > 0
+        and not writer_sync_after_timeout
+        and has_exact_final_mux_evidence(media_evidence)
+    )
+    strict_mux_fault_counts = dict(mux_fault_counts)
+    if late_writer_finalize_recovered:
+        strict_mux_fault_counts["writer_finalize_timeout"] = 0
     if (
         has_encoder_or_mux_backpressure(media_evidence, perf_summaries)
-        or any(mux_fault_counts.values())
+        or any(strict_mux_fault_counts.values())
         or writer_sync_after_timeout
     ):
         verdicts.append("ce_encoder_or_mux_backpressure")
+    wgc_encoder_limited_judder = has_wgc_encoder_limited_judder(media_evidence, log_summary)
+    if wgc_encoder_limited_judder:
+        verdicts.append("wgc_encoder_limited_judder")
     post_mux_strict_mismatches = [
         delta for delta in media_evidence["post_mux_audio_mismatch_delta_us"] if delta > 1
     ]
@@ -1349,7 +1470,7 @@ def classify_session_triage(session_dir, capture_path=None):
         or stop_audio_shortfalls["short_count"] > 0
     ):
         verdicts.append("ce_audio_timeline_fault")
-    if any(visual_fault_counts.values()) or "ce_capture_pacer_limited" in verdicts:
+    if any(visual_fault_counts.values()) or "ce_capture_pacer_limited" in verdicts or wgc_encoder_limited_judder:
         verdicts.append("ce_visual_timeline_fault")
     if hook_evidence["external_overlay_lines"]:
         verdicts.append("external_overlay_context")
@@ -1389,6 +1510,8 @@ def classify_session_triage(session_dir, capture_path=None):
             "inject_pacing": inject_pacing,
             "wgc_attribution": media_evidence["wgc_attribution"],
             "wgc_summary": media_evidence["wgc_summary"],
+            "wgc_cadence_events": media_evidence["wgc_cadence_events"][:20],
+            "wgc_smoothness_summary": media_evidence["wgc_smoothness_summary"],
             "wgc_perf_worst": {
                 "max_fresh_miss_pm": max((item["fresh_miss_pm"] for item in media_evidence["wgc_perf"]), default=0),
                 "min_input_250_fps": min((item["min_in_250"] for item in media_evidence["wgc_perf"] if item["min_in_250"] > 0), default=0),
@@ -1401,7 +1524,10 @@ def classify_session_triage(session_dir, capture_path=None):
             "audio_fault_counts": audio_fault_counts,
             "visual_fault_counts": visual_fault_counts,
             "mux_fault_counts": mux_fault_counts,
+            "strict_mux_fault_counts": strict_mux_fault_counts,
+            "log_counts": log_summary["counts"],
             "writer_sync_after_timeout": writer_sync_after_timeout,
+            "late_writer_finalize_recovered": late_writer_finalize_recovered,
             "stop_audio_tracks": media_evidence["stop_audio_tracks"],
             "zero_drift_warnings": media_evidence["zero_drift_warnings"],
             "stop_audio_shortfalls": stop_audio_shortfalls,
@@ -1717,6 +1843,58 @@ def self_test():
         assert report["evidence"]["mux_fault_counts"]["writer_finalize_timeout"] == 1
         assert report["evidence"]["writer_sync_after_timeout"]
 
+        writer_late_recovered = make_session(
+            "writer_late_recovered",
+            media=(
+                "[VideoEncoder] Stop: ERROR writer_finalize_timeout result=258 phase=post_mux_probe elapsed=30000ms "
+                "queueBytes=0 queuePackets=0; async writer retains FFmpeg context, skipping synchronous finalize\n"
+                "[VideoEncoder] Final packet timeline: target=1000 us videoEnd=1000 us audioMinEnd=1000 us "
+                "audioMaxEnd=1000 us maxPacketDelta=0 us audioPastTarget=0\n"
+            ),
+        )
+        report = classify_session_triage(writer_late_recovered)
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+        assert report["evidence"]["late_writer_finalize_recovered"]
+        assert report["evidence"]["strict_mux_fault_counts"]["writer_finalize_timeout"] == 0
+
+        wgc_encoder_judder = make_session(
+            "wgc_encoder_judder",
+            media=(
+                "[Cadence Health] Phase=Live | WgcSelBias=260000us | Shortfall=32/266.7ms "
+                "LeadExcess=116.0ms | Oldest=250.0ms BufNow=30 | WgcLiveRebase=1/120/1 | Over=0x1\n"
+                "[WGC CFR CADENCE EVENT] mode=encoder_limited shortfall=32/266.7ms phaseErrorAvg=260000us "
+                "phaseErrorMax=260000us rebaseWindow=1 encoderDropWindow=1 encoderDropTotal=4 "
+                "tooNewRepeat=1 staleDrop=4 freshMiss=0pm bufNow=30 oldest=250.0ms enc=10.0ms "
+                "sustain=80.0fps overload=0x1 cause=S0/D0/E1\n"
+                "[EncoderThread] WGC CFR slot repeat: buffered frame is too new for scheduled slot "
+                "(lead=28000us targetQpc=1000 firstQpc=1280 buffered=30 shortfall=32)\n"
+                "[EncoderThread] WGC CFR stale visual debt drop: reason=live-buffer mode=encoder_limited dropped=4 "
+                "floorQpc=1200 liveNowQpc=1600 maxDebt=1000us remaining=20 shortfall=32\n"
+                "[EncoderThread] WGC CFR live scheduler rebase: mode=encoder_limited skippedTicks=1 excessTicks=2 "
+                "requestedTicks=32 shortfallBefore=32 nextQpc=1000 nextAfterQpc=1100 liveNowQpc=1600 "
+                "timelineCovered=42\n"
+            ),
+        )
+        report = classify_session_triage(wgc_encoder_judder)
+        assert "wgc_encoder_limited_judder" in report["verdicts"]
+        assert "ce_visual_timeline_fault" in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+
+        source_starved_with_overload = make_session(
+            "source_starved_with_overload",
+            media=(
+                "[WGC CFR] Source-starved episode: duration=240ms out=29 dup=29 minIn=0 minDel=120 "
+                "freshMiss=1000pm minBuf=0\n"
+                "[Cadence Health] Phase=Live | WgcSelBias=260000us | Shortfall=32/266.7ms "
+                "LeadExcess=116.0ms | Oldest=250.0ms BufNow=0 | WgcLiveRebase=1/120/1 | Over=0x1\n"
+                "[EncoderThread] WGC CFR slot repeat: buffered frame is too new for scheduled slot "
+                "(lead=28000us targetQpc=1000 firstQpc=1280 buffered=0 shortfall=32)\n"
+            ),
+        )
+        report = classify_session_triage(source_starved_with_overload)
+        assert "wgc_source_starvation" in report["verdicts"]
+        assert "wgc_encoder_limited_judder" not in report["verdicts"]
+
         multi_app_stall = make_session(
             "multi_app_stall",
             media=(
@@ -1735,6 +1913,17 @@ def self_test():
         audio_fault = make_session("audio_fault", media="[PullAudio] WARNING: Source underrun track=1\n")
         report = classify_session_triage(audio_fault)
         assert "ce_audio_timeline_fault" in report["verdicts"]
+
+        stop_tail_padding = make_session(
+            "stop_tail_padding",
+            media=(
+                "[PullAudio] WARNING: Source underrun - src 2 padding 800 samples with silence "
+                "(available=0 needed=800 forceDrain=1)\n"
+            ),
+        )
+        report = classify_session_triage(stop_tail_padding)
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert report["evidence"]["log_counts"]["audio_stop_tail_padding"] == 1
 
         zero_drift = make_session(
             "zero_drift",
@@ -2091,7 +2280,8 @@ def main():
                 "max_rep_no_fresh={rep_no_fresh} max_wgc_sel_bias_abs_us={wgc_bias} "
                 "max_wgc_shortfall_ms={shortfall} max_wgc_lead_excess_ms={lead_excess} "
                 "max_wgc_oldest_ms={oldest} max_wgc_buffered_frames={buffered} "
-                "max_wgc_live_rebase_ticks={live_rebase} max_wgc_startup_frame_age_us={startup_age}"
+                "max_wgc_live_rebase_ticks={live_rebase} max_wgc_startup_frame_age_us={startup_age} "
+                "max_wgc_encoder_limited_drops={encoder_drops} max_wgc_phase_error_us={phase_error}"
             ).format(
                 windows=log_summary["cadence_windows"],
                 age_max=log_summary["max_age_max_us"],
@@ -2106,6 +2296,8 @@ def main():
                 buffered=log_summary["max_wgc_buffered_frames"],
                 live_rebase=log_summary["max_wgc_live_rebase_ticks"],
                 startup_age=log_summary["max_wgc_startup_frame_age_us"],
+                encoder_drops=log_summary["max_wgc_encoder_limited_drops"],
+                phase_error=log_summary["max_wgc_phase_error_us"],
             ),
         )
         print(

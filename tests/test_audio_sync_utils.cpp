@@ -223,6 +223,28 @@ TEST(AudioSyncUtilsTest, WgcPositiveDriftCorrectionClampsAwayNearTargetSpendDown
     EXPECT_EQ(ce::audio::ClampWgcPositiveDriftCorrection(-240, 960), -240);
 }
 
+TEST(AudioSyncUtilsTest, CfrTier1CompensationDeadbandIgnoresSmallBufferWobble) {
+    constexpr int64_t kTenSecondWindowSamples = 48000 * 10;
+    constexpr double kCfrMaxPitchPercent = 0.05;
+    constexpr int64_t kDeadbandSamples = 48000 / 12;
+
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
+                  -240, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+              0);
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
+                  240, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+              0);
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
+                  -3098, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+              0);
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
+                  -4800, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+              -240);
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
+                  4800, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+              240);
+}
+
 TEST(AudioSyncUtilsTest, Tier2TrimOnlyActivatesForPositiveLead) {
     EXPECT_TRUE(ce::audio::ShouldActivateTier2Trim(1200, 48000, 20));
     EXPECT_FALSE(ce::audio::ShouldActivateTier2Trim(-1200, 48000, 20));

@@ -86,6 +86,22 @@ TEST(CapturePipelinePolicyTest, WgcLiveSchedulerRebaseIsBoundedToSingleTick) {
     EXPECT_EQ(policy::GetWgcLiveSchedulerRebaseTicksThisLoop(1, 32, 8, 2), 1u);
 }
 
+TEST(CapturePipelinePolicyTest, WgcEncoderLimitedModeUsesNearLiveDebtWindow) {
+    EXPECT_TRUE(policy::IsWgcEncoderLimitedSmoothnessMode(true, false, 0));
+    EXPECT_TRUE(policy::IsWgcEncoderLimitedSmoothnessMode(false, true, 0));
+    EXPECT_TRUE(policy::IsWgcEncoderLimitedSmoothnessMode(false, false, policy::kEncoderOverloadFlagEncoder));
+    EXPECT_FALSE(policy::IsWgcEncoderLimitedSmoothnessMode(false, false, 0));
+
+    EXPECT_EQ(policy::GetWgcLiveVisualDebtLimitTicksForMode(100, 1000, false), 3u);
+    EXPECT_EQ(policy::GetWgcLiveVisualDebtLimitTicksForMode(100, 1000, true), 1u);
+    EXPECT_EQ(policy::GetWgcLiveVisualDebtExcessTicksForMode(2, 100, 1000, true), 1u);
+    EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpcForMode(1600, 100, 1000, true), 1550);
+
+    EXPECT_EQ(policy::GetWgcLiveSchedulerRebaseTicksThisLoopForMode(20, 32, 8, false), 1u);
+    EXPECT_EQ(policy::GetWgcLiveSchedulerRebaseTicksThisLoopForMode(20, 32, 8, true),
+              policy::kWgcEncoderLimitedLiveSchedulerRebaseTicksPerLoop);
+}
+
 TEST(CapturePipelinePolicyTest, InjectStopDrainMayUseCachedRepeatToCloseCfrDebt) {
     EXPECT_FALSE(policy::CanDrainOutstandingCfrTicks(false, false, false, false, false));
     EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(false, true, false, false, false));
@@ -727,6 +743,9 @@ TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetClampsOnlyBeyondVisualDebt
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, false, 3, false), 1000);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, false, 4, false), 1350);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true), 1350);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true,
+                                                       policy::kCfrShortfallCatchupThresholdTicks, true),
+              1550);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1360, 1600, 100, 1000, true, true, 20, true), 1360);
     EXPECT_FALSE(
         policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true, true));

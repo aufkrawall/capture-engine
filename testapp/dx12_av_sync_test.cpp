@@ -540,18 +540,33 @@ void DrawMarkerTiles(D3D12_CPU_DESCRIPTOR_HANDLE rtv, uint16_t marker, bool inve
     }
 }
 
-void DrawMotionLane(D3D12_CPU_DESCRIPTOR_HANDLE rtv, double stimulusSeconds) {
+void DrawMotionRuler(D3D12_CPU_DESCRIPTOR_HANDLE rtv, LONG laneLeft, LONG laneTop, LONG laneRight, LONG laneBottom) {
+    const float tickColor[] = {0.24f, 0.24f, 0.24f, 1.0f};
+    const LONG usable = std::max<LONG>(1, laneRight - laneLeft);
+    for (int tick = 1; tick < 8; ++tick) {
+        const LONG x = laneLeft + static_cast<LONG>((static_cast<double>(usable) * tick) / 8.0);
+        ClearRect(rtv, x, laneTop + 3, x + 2, laneBottom - 3, tickColor);
+    }
+}
+
+void DrawMotionLaneAt(D3D12_CPU_DESCRIPTOR_HANDLE rtv, double position, double topRatio, LONG barWidth,
+                      LONG laneHeight) {
     const LONG laneLeft = kMarkerMargin;
     const LONG laneRight = g_WindowWidth - kMarkerMargin;
-    const LONG laneTop = static_cast<LONG>(g_WindowHeight * 0.72);
-    const LONG laneBottom = laneTop + 42;
+    const LONG laneTop = static_cast<LONG>(g_WindowHeight * topRatio);
+    const LONG laneBottom = laneTop + laneHeight;
     const float laneColor[] = {0.015f, 0.015f, 0.015f, 1.0f};
     const float barColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
     ClearRect(rtv, laneLeft, laneTop, laneRight, laneBottom, laneColor);
-    const double pos = testapp::avsync::SmoothLanePosition(stimulusSeconds);
-    const LONG usable = std::max<LONG>(1, laneRight - laneLeft - 96);
-    const LONG x = laneLeft + static_cast<LONG>(pos * static_cast<double>(usable));
-    ClearRect(rtv, x, laneTop + 7, x + 96, laneBottom - 7, barColor);
+    DrawMotionRuler(rtv, laneLeft, laneTop, laneRight, laneBottom);
+    const LONG usable = std::max<LONG>(1, laneRight - laneLeft - barWidth);
+    const LONG x = laneLeft + static_cast<LONG>(position * static_cast<double>(usable));
+    ClearRect(rtv, x, laneTop + 7, x + barWidth, laneBottom - 7, barColor);
+}
+
+void DrawMotionLane(D3D12_CPU_DESCRIPTOR_HANDLE rtv, double stimulusSeconds) {
+    DrawMotionLaneAt(rtv, testapp::avsync::SmoothLanePosition(stimulusSeconds), 0.72, 96, 42);
+    DrawMotionLaneAt(rtv, testapp::avsync::FastLanePosition(stimulusSeconds), 0.82, 48, 42);
 }
 
 void DrawCorruptionSentinels(D3D12_CPU_DESCRIPTOR_HANDLE rtv, const testapp::avsync::StimulusState& state,
@@ -630,11 +645,12 @@ void RenderFrame() {
     if (g_LogEveryFrame || (g_FrameId % static_cast<uint64_t>(std::max(1, g_TargetFps)) == 0)) {
         testapp::Log(
             "AVSYNC FRAME frameId=%llu marker=%u event=%d palette=%d stimulusSeconds=%.6f "
-            "motion=%.6f expectedMotion=%.6f frameIndex=%u presentDeltaMs=%.3f maxPresentDeltaMs=%.3f\n",
+            "motion=%.6f expectedMotion=%.6f fastMotion=%.6f frameIndex=%u presentDeltaMs=%.3f "
+            "maxPresentDeltaMs=%.3f\n",
             static_cast<unsigned long long>(g_FrameId), marker, state.eventIndex, state.paletteIndex, stimulusSeconds,
             testapp::avsync::SmoothLanePosition(stimulusSeconds),
-            testapp::avsync::ExpectedMotionPosition(stimulusSeconds), frameIndex, g_LastPresentDeltaMs,
-            g_MaxPresentDeltaMs);
+            testapp::avsync::ExpectedMotionPosition(stimulusSeconds),
+            testapp::avsync::FastLanePosition(stimulusSeconds), frameIndex, g_LastPresentDeltaMs, g_MaxPresentDeltaMs);
     }
     ++g_FrameId;
 }
@@ -807,9 +823,16 @@ void WriteManifest() {
     fprintf(out, "  \"marker_margin\": %ld,\n", static_cast<long>(kMarkerMargin));
     fprintf(out, "  \"marker_gap\": %ld,\n", static_cast<long>(kMarkerGap));
     fprintf(out, "  \"motion_lane_margin\": %ld,\n", static_cast<long>(kMarkerMargin));
+    fprintf(out, "  \"motion_lane_count\": %d,\n", 2);
+    fprintf(out, "  \"motion_lane_top_ratio\": %.6f,\n", 0.72);
+    fprintf(out, "  \"motion_lane_height\": %d,\n", 42);
     fprintf(out, "  \"motion_lane_bar_width\": %d,\n", 96);
     fprintf(out, "  \"motion_lane_speed_cycles_per_second\": %.6f,\n", 0.25);
     fprintf(out, "  \"motion_lane_expected_function\": \"fmod(stimulus_seconds*0.25,1.0)\",\n");
+    fprintf(out, "  \"fast_motion_lane_top_ratio\": %.6f,\n", 0.82);
+    fprintf(out, "  \"fast_motion_lane_bar_width\": %d,\n", 48);
+    fprintf(out, "  \"fast_motion_lane_speed_cycles_per_second\": %.6f,\n", 1.0);
+    fprintf(out, "  \"fast_motion_lane_expected_function\": \"fmod(stimulus_seconds*1.0,1.0)\",\n");
     fprintf(out, "  \"audio_requested_buffer_ms\": %d,\n", g_AudioBufferMs);
     fprintf(out, "  \"audio_stimulus_lead_ms\": %.3f,\n", g_Audio.AudioLeadMs());
     fprintf(out, "  \"audio_render_latency_us\": %llu,\n",

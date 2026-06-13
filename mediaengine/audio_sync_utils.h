@@ -460,6 +460,19 @@ inline int32_t ComputeTier1CompensationDelta(int64_t trueDriftSamples, int64_t c
         std::clamp(trueDriftSamples, static_cast<int64_t>(-maxDelta), static_cast<int64_t>(maxDelta)));
 }
 
+inline int32_t ComputeTier1CompensationDeltaWithDeadband(
+    int64_t trueDriftSamples, int64_t compensationWindowSamples, double maxPitchPercent = 0.5,
+    int64_t deadbandSamples = kDefaultAudioPullQuantumSamples) {
+    const int64_t boundedDeadband = std::max<int64_t>(0, deadbandSamples);
+    if (std::abs(trueDriftSamples) <= boundedDeadband) {
+        return 0;
+    }
+
+    const int64_t adjustedDrift =
+        trueDriftSamples > 0 ? trueDriftSamples - boundedDeadband : trueDriftSamples + boundedDeadband;
+    return ComputeTier1CompensationDelta(adjustedDrift, compensationWindowSamples, maxPitchPercent);
+}
+
 inline bool ShouldActivateTier2Trim(int64_t trueDriftSamples, int sampleRate, int64_t thresholdMs = 20) {
     if (sampleRate <= 0) {
         return false;

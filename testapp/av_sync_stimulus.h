@@ -151,6 +151,14 @@ inline double SmoothLanePosition(double stimulusSeconds) {
     return cycle < 0.0 ? cycle + 1.0 : cycle;
 }
 
+inline double FastLanePosition(double stimulusSeconds) {
+    if (stimulusSeconds < 0.0) {
+        return 0.0;
+    }
+    const double cycle = std::fmod(stimulusSeconds * 1.0, 1.0);
+    return cycle < 0.0 ? cycle + 1.0 : cycle;
+}
+
 inline double ExpectedMotionPosition(double stimulusSeconds) {
     return SmoothLanePosition(stimulusSeconds);
 }

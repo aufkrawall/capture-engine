@@ -418,6 +418,8 @@ private:
     std::condition_variable queueCV;
     std::atomic<bool> writerRunning = false;
     std::atomic<bool> writerFinalizeTimedOut = false;
+    std::atomic<uint32_t> writerFinalizePhase = 0;
+    std::atomic<bool> writerFinalizeSlowWarningLogged = false;
     std::atomic<size_t> currentQueueBytes = 0;
 
     // Max queue size before dropping frames (512MB)

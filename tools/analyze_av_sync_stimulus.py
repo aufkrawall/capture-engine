@@ -25,7 +25,8 @@ STRICT_CE_PATTERNS = {
         r")",
         re.IGNORECASE,
     ),
-    "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun", re.IGNORECASE),
+    "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun(?!.*forceDrain=1)", re.IGNORECASE),
+    "audio_stop_tail_padding": re.compile(r"\[PullAudio\] WARNING: Source underrun.*forceDrain=1", re.IGNORECASE),
     "audio_strict_source_padding": re.compile(
         r"\[STOP AUDIO\] Source \d+: track=(?:1|2)\b.* pad:[1-9]\d*", re.IGNORECASE
     ),
@@ -210,6 +211,24 @@ def load_app_frame_anchors(path):
     return deduped
 
 
+def effective_marker_fps_for_extrapolation(manifest):
+    target_fps = parse_float(manifest.get("target_fps"), 0.0)
+    if target_fps <= 0.0:
+        target_fps = 240.0
+
+    frame_pacing = manifest.get("frame_pacing")
+    if isinstance(frame_pacing, dict):
+        avg_delta_ms = parse_float(frame_pacing.get("average_present_delta_ms"), 0.0)
+        present_count = parse_int(frame_pacing.get("present_delta_count"), 0)
+        planned_gaps = parse_int(frame_pacing.get("planned_source_gap_count"), 0)
+        if avg_delta_ms > 0.0 and present_count > 10 and planned_gaps == 0:
+            measured_fps = 1000.0 / avg_delta_ms
+            if math.isfinite(measured_fps) and measured_fps > 1.0:
+                return measured_fps
+
+    return target_fps
+
+
 def annotate_video_frames_from_app_anchors(frames, anchors, manifest):
     if not frames or not anchors:
         return False
@@ -229,9 +248,7 @@ def annotate_video_frames_from_app_anchors(frames, anchors, manifest):
         frame["source_frame_id"] = unwrapped
 
     anchor_ids = [item["frame_id"] for item in anchors]
-    target_fps = parse_float(manifest.get("target_fps"), 0.0)
-    if target_fps <= 0.0:
-        target_fps = 240.0
+    target_fps = effective_marker_fps_for_extrapolation(manifest)
 
     for frame in frames:
         marker_id = frame.get("source_frame_id")
@@ -385,10 +402,11 @@ def decode_parity(frame, scaled_w, scaled_h, manifest, marker, palette_index):
     return observed == expected, bad, int(observed), int(expected)
 
 
-def decode_motion(frame, scaled_w, scaled_h, manifest):
+def decode_motion_at(frame, scaled_w, scaled_h, manifest, top_ratio, bar_width):
     src_w = max(1, int(manifest["width"]))
     src_h = max(1, int(manifest["height"]))
-    y = int(round(0.72 * src_h + 21.0))
+    lane_height = parse_float(manifest.get("motion_lane_height"), 42.0)
+    y = int(round(float(top_ratio) * src_h + lane_height / 2.0))
     scaled_y = max(0, min(scaled_h - 1, int(round(y / src_h * scaled_h))))
     xs = []
     for x in range(int(0.02 * scaled_w), int(0.98 * scaled_w)):
@@ -397,6 +415,20 @@ def decode_motion(frame, scaled_w, scaled_h, manifest):
     if not xs:
         return None
     return statistics.mean(xs) / float(scaled_w)
+
+
+def decode_motion(frame, scaled_w, scaled_h, manifest):
+    top_ratio = parse_float(manifest.get("motion_lane_top_ratio"), 0.72)
+    bar_width = parse_float(manifest.get("motion_lane_bar_width"), 96.0)
+    return decode_motion_at(frame, scaled_w, scaled_h, manifest, top_ratio, bar_width)
+
+
+def decode_fast_motion(frame, scaled_w, scaled_h, manifest):
+    if parse_int(manifest.get("motion_lane_count"), 1) < 2:
+        return None
+    top_ratio = parse_float(manifest.get("fast_motion_lane_top_ratio"), 0.82)
+    bar_width = parse_float(manifest.get("fast_motion_lane_bar_width"), 48.0)
+    return decode_motion_at(frame, scaled_w, scaled_h, manifest, top_ratio, bar_width)
 
 
 def decode_video(ffmpeg, capture, manifest, video_stream, pts, scale_width):
@@ -464,6 +496,7 @@ def decode_video(ffmpeg, capture, manifest, video_stream, pts, scale_width):
         else:
             parity_ok, parity_bad, parity_observed, parity_expected = True, 0, 0, 0
         motion = decode_motion(payload, scaled_w, scaled_h, manifest)
+        fast_motion = decode_fast_motion(payload, scaled_w, scaled_h, manifest)
         frames.append(
             {
                 "index": frame_index,
@@ -482,6 +515,7 @@ def decode_video(ffmpeg, capture, manifest, video_stream, pts, scale_width):
                 "parity_observed": parity_observed,
                 "parity_expected": parity_expected,
                 "motion": motion,
+                "fast_motion": fast_motion,
             }
         )
         frame_index += 1
@@ -513,6 +547,16 @@ def expected_motion_from_stimulus(stimulus_seconds, manifest):
     src_w = max(1, int(manifest["width"]))
     margin = parse_float(manifest.get("motion_lane_margin", manifest.get("marker_margin", 24)))
     bar_width = parse_float(manifest.get("motion_lane_bar_width", 96))
+    usable = max(1.0, float(src_w) - 2.0 * margin - bar_width)
+    return (margin + pos * usable + bar_width / 2.0) / float(src_w)
+
+
+def expected_fast_motion_from_stimulus(stimulus_seconds, manifest):
+    speed = parse_float(manifest.get("fast_motion_lane_speed_cycles_per_second"), 1.0)
+    pos = (stimulus_seconds * speed) % 1.0
+    src_w = max(1, int(manifest["width"]))
+    margin = parse_float(manifest.get("motion_lane_margin", manifest.get("marker_margin", 24)))
+    bar_width = parse_float(manifest.get("fast_motion_lane_bar_width"), 48)
     usable = max(1.0, float(src_w) - 2.0 * margin - bar_width)
     return (margin + pos * usable + bar_width / 2.0) / float(src_w)
 
@@ -943,16 +987,26 @@ def summarize_video(frames, manifest, timing, app_frame_anchors=None):
     longest_motion_stall = 1
     motion_error_frames = 0
     motion_error_max = 0.0
+    fast_motion_available = parse_int(manifest.get("motion_lane_count"), 1) >= 2
+    fast_motion_missing = 0
+    fast_motion_stalls = 0
+    fast_motion_stall_run = 1
+    longest_fast_motion_stall = 1
+    fast_motion_error_frames = 0
+    fast_motion_error_max = 0.0
     previous = None
     previous_motion = None
+    previous_fast_motion = None
     for frame in frames:
         stimulus_time = frame["pts"] + capture_to_stimulus_offset
         if stimulus_time + 1e-6 < analysis_start:
             previous = None
             previous_motion = None
+            previous_fast_motion = None
             current_repeat = 1
             current_repeat_start = None
             motion_stall_run = 1
+            fast_motion_stall_run = 1
             continue
         expected_source_duplicate = (
             previous is not None
@@ -979,6 +1033,20 @@ def summarize_video(frames, manifest, timing, app_frame_anchors=None):
             motion_error_max = max(motion_error_max, error)
             if error > 0.035 and not in_planned_stall and not expected_source_duplicate:
                 motion_error_frames += 1
+        fast_motion = frame.get("fast_motion")
+        if fast_motion_available:
+            if fast_motion is None:
+                fast_motion_missing += 1
+            else:
+                expected_fast_motion = expected_fast_motion_from_stimulus(
+                    frame["pts"] + capture_to_stimulus_offset, manifest
+                )
+                frame["fast_motion_expected"] = expected_fast_motion
+                fast_error = circular_distance(fast_motion, expected_fast_motion)
+                frame["fast_motion_error"] = fast_error
+                fast_motion_error_max = max(fast_motion_error_max, fast_error)
+                if fast_error > 0.045 and not in_planned_stall and not expected_source_duplicate:
+                    fast_motion_error_frames += 1
         if previous is not None:
             if frame["marker"] == previous["marker"]:
                 repeated += 1
@@ -1030,9 +1098,22 @@ def summarize_video(frames, manifest, timing, app_frame_anchors=None):
                 else:
                     longest_motion_stall = max(longest_motion_stall, motion_stall_run)
                     motion_stall_run = 1
+            if fast_motion_available and fast_motion is not None and previous_fast_motion is not None:
+                if abs(fast_motion - previous_fast_motion) < 0.0005:
+                    if in_planned_stall or previous_in_planned_stall or expected_source_duplicate:
+                        longest_fast_motion_stall = max(longest_fast_motion_stall, fast_motion_stall_run)
+                        fast_motion_stall_run = 1
+                    else:
+                        fast_motion_stalls += 1
+                        fast_motion_stall_run += 1
+                else:
+                    longest_fast_motion_stall = max(longest_fast_motion_stall, fast_motion_stall_run)
+                    fast_motion_stall_run = 1
         previous = frame
         if frame["motion"] is not None:
             previous_motion = frame["motion"]
+        if fast_motion is not None:
+            previous_fast_motion = fast_motion
     longest_repeat = max(longest_repeat, current_repeat)
     if current_repeat > 1 and current_repeat_start is not None:
         repeat_clusters.append(
@@ -1047,6 +1128,7 @@ def summarize_video(frames, manifest, timing, app_frame_anchors=None):
             }
         )
     longest_motion_stall = max(longest_motion_stall, motion_stall_run)
+    longest_fast_motion_stall = max(longest_fast_motion_stall, fast_motion_stall_run)
     planned_clusters, source_fps_limited_clusters, unplanned_clusters, missing_planned_stalls = classify_repeat_clusters(
         repeat_clusters, manifest, source_stalls, nominal_output_fps
     )
@@ -1072,6 +1154,12 @@ def summarize_video(frames, manifest, timing, app_frame_anchors=None):
         "longest_motion_stall": longest_motion_stall,
         "motion_error_frames": motion_error_frames,
         "motion_error_max": motion_error_max,
+        "fast_motion_available": fast_motion_available,
+        "fast_motion_missing_frames": fast_motion_missing,
+        "fast_motion_stall_frames": fast_motion_stalls,
+        "longest_fast_motion_stall": longest_fast_motion_stall if fast_motion_available else 1,
+        "fast_motion_error_frames": fast_motion_error_frames,
+        "fast_motion_error_max": fast_motion_error_max,
         "transitions": transitions,
         "source_stalls": source_stalls,
         "analysis_start_seconds": analysis_start,
@@ -1208,6 +1296,56 @@ def audio_refinement_is_plausible(coarse_time, refined_time):
     return math.isfinite(refined_time) and abs(refined_time - coarse_time) <= MAX_AUDIO_REFINEMENT_DELTA_SECONDS
 
 
+def synthesize_local_frequency_transition(sample_rate, from_frequency, to_frequency, boundary_seconds):
+    duration_seconds = boundary_seconds + 0.20
+    total_samples = int(math.ceil(duration_seconds * sample_rate))
+    samples = array.array("f")
+    for index in range(total_samples):
+        t = index / sample_rate
+        relative = t - boundary_seconds
+        frequency = from_frequency if relative < 0.0 else to_frequency
+        samples.append(float(math.sin(2.0 * math.pi * frequency * relative) * 0.20))
+    return samples
+
+
+def calibrate_audio_detector_biases(sample_rate, frequencies):
+    if sample_rate <= 0 or not frequencies:
+        return {}
+    boundary_seconds = 0.30
+    biases = {}
+    for to_index in range(len(frequencies)):
+        from_index = (to_index - 1) % len(frequencies)
+        samples = synthesize_local_frequency_transition(
+            sample_rate, frequencies[from_index], frequencies[to_index], boundary_seconds
+        )
+        refined = refine_audio_transitions(
+            samples,
+            sample_rate,
+            frequencies,
+            [{"from": from_index, "to": to_index, "time": boundary_seconds}],
+        )
+        if not refined:
+            continue
+        bias = parse_float(refined[0].get("time"), boundary_seconds) - boundary_seconds
+        if math.isfinite(bias) and abs(bias) <= MAX_AUDIO_REFINEMENT_DELTA_SECONDS:
+            biases[(from_index, to_index)] = bias
+    return biases
+
+
+def apply_audio_detector_bias_correction(transitions, biases):
+    corrected = []
+    for transition in transitions:
+        updated = dict(transition)
+        key = (updated.get("from"), updated.get("to"))
+        bias = parse_float(biases.get(key), 0.0)
+        if bias:
+            updated["raw_time"] = updated.get("time")
+            updated["detector_bias_seconds"] = bias
+            updated["time"] = parse_float(updated.get("time"), 0.0) - bias
+        corrected.append(updated)
+    return corrected
+
+
 def match_transition_offset_points(reference, candidate, max_window):
     points = []
     missing = 0
@@ -1340,6 +1478,12 @@ def make_check(name, passed, actual, expected, failure_class):
     }
 
 
+def fast_motion_missing_limit(video_summary, max_motion_error_frames):
+    if not video_summary.get("fast_motion_available", False):
+        return 0
+    return max(max_motion_error_frames, math.ceil(video_summary.get("frames", 0) * 0.01))
+
+
 def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
     checks = []
     non_strict_audio = getattr(args, "non_strict_audio_ordinals_set", set())
@@ -1398,6 +1542,35 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
             "visual_judder",
         )
     )
+    fast_missing_limit = fast_motion_missing_limit(video_summary, args.max_motion_error_frames)
+    checks.append(
+        make_check(
+            "video.fast_motion_decode",
+            (not video_summary.get("fast_motion_available", False))
+            or video_summary.get("fast_motion_missing_frames", 0) <= fast_missing_limit,
+            video_summary.get("fast_motion_missing_frames", 0),
+            f"<= {fast_missing_limit} isolated missing fast motion frames",
+            "visual_judder",
+        )
+    )
+    checks.append(
+        make_check(
+            "video.longest_fast_motion_stall",
+            video_summary.get("longest_fast_motion_stall", 1) <= args.max_motion_stall,
+            video_summary.get("longest_fast_motion_stall", 1),
+            f"<= {args.max_motion_stall}",
+            "visual_judder",
+        )
+    )
+    checks.append(
+        make_check(
+            "video.fast_motion_expected_position",
+            video_summary.get("fast_motion_error_frames", 0) <= args.max_motion_error_frames,
+            video_summary.get("fast_motion_error_frames", 0),
+            f"<= {args.max_motion_error_frames}",
+            "visual_judder",
+        )
+    )
     checks.append(
         make_check(
             "video.out_of_order_markers",
@@ -1439,7 +1612,7 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
         transitions = filter_transitions_for_analysis(
             result["transitions"], video_summary, stimulus_time_adjust=audio_lead_seconds
         )
-        transitions_for_matching = dedupe_transitions_by_target_state(transitions)
+        transitions_for_matching = transitions
         if is_strict_audio:
             audio_transition_sets.append((result["ordinal"], transitions_for_matching))
         checks.append(
@@ -1546,7 +1719,7 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
         (not check["passed"]) and check["failure_class"] in strict_audio_content_failure_classes for check in checks
     )
     for name, count in sorted(ce_counts.items()):
-        if name == "audio_strict_source_padding":
+        if name in {"audio_strict_source_padding", "audio_stop_tail_padding"}:
             checks.append(
                 make_check(
                     f"ce_log.{name}",
@@ -1564,6 +1737,8 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
                 video_summary["longest_unplanned_marker_repeat"] <= args.max_longest_repeat
                 and video_summary["longest_motion_stall"] <= args.max_motion_stall
                 and video_summary["motion_error_frames"] <= args.max_motion_error_frames
+                and video_summary.get("longest_fast_motion_stall", 1) <= args.max_motion_stall
+                and video_summary.get("fast_motion_error_frames", 0) <= args.max_motion_error_frames
             )
             checks.append(
                 make_check(
@@ -1595,7 +1770,7 @@ def print_report(report):
     print(
         "  video frames={frames} corrupt={corrupt} repeats={repeat} longest_unplanned_repeat={longest} "
         "planned_stalls={planned} source_fps_clusters={source_fps} unplanned_clusters={unplanned} "
-        "motion_stall={motion}".format(
+        "motion_stall={motion} fast_motion_stall={fast_motion}".format(
             frames=report["video"]["frames"],
             corrupt=report["video"]["corrupt_frames"],
             repeat=report["video"]["repeated_marker_frames"],
@@ -1604,6 +1779,7 @@ def print_report(report):
             source_fps=len(report["video"].get("source_fps_limited_repeat_clusters", [])),
             unplanned=len(report["video"].get("unplanned_repeat_clusters", [])),
             motion=report["video"]["longest_motion_stall"],
+            fast_motion=report["video"].get("longest_fast_motion_stall", 1),
         )
     )
     for audio in report["audio"]:
@@ -1654,6 +1830,21 @@ def self_test():
     assert round(stats["span"], 3) == 3.0
     assert offset_slope_is_acceptable(offsets, stats, 120.0, 30.0, 5.0)
     assert not offset_slope_is_acceptable([0.0, 0.020], {"span": 20.0}, 120.0, 30.0, 5.0)
+    repeated_reference = [
+        {"to": 1, "time": 1.0},
+        {"to": 2, "time": 2.0},
+        {"to": 1, "time": 17.0},
+        {"to": 2, "time": 18.0},
+    ]
+    repeated_candidate = [
+        {"to": 1, "time": 1.004},
+        {"to": 2, "time": 2.004},
+        {"to": 1, "time": 17.004},
+        {"to": 2, "time": 18.004},
+    ]
+    points, missing = match_transition_offset_points(repeated_reference, repeated_candidate, 0.1)
+    assert missing == 0
+    assert len(points) == 4
     segments, transitions = compress_states([(0.0, 1), (0.1, 1), (0.2, 2), (0.3, 2)], min_duration=0.05)
     assert len(segments) == 2
     assert transitions[0]["to"] == 2
@@ -1672,6 +1863,20 @@ def self_test():
     assert "coarse_time" in audio_transitions[0]
     assert audio_refinement_is_plausible(1.0, 1.011)
     assert not audio_refinement_is_plausible(1.0, 1.014)
+    detector_biases = calibrate_audio_detector_biases(48000, [440.0, 550.0, 660.0, 770.0])
+    assert detector_biases
+    biased_transitions = []
+    reference_transitions = []
+    for event_index in range(1, 9):
+        to_index = event_index % 4
+        from_index = (to_index - 1) % 4
+        bias = detector_biases[(from_index, to_index)]
+        biased_transitions.append({"from": from_index, "to": to_index, "time": event_index + bias})
+        reference_transitions.append({"from": from_index, "to": to_index, "time": float(event_index)})
+    corrected_transitions = apply_audio_detector_bias_correction(biased_transitions, detector_biases)
+    corrected_offsets, corrected_missing = match_transition_offsets(reference_transitions, corrected_transitions, 0.05)
+    assert corrected_missing == 0
+    assert max(abs(offset) for offset in corrected_offsets) < 0.000001
     clean_counts = analyze_ce_log_text(
         "[PullAudio] Track 1 bootstrap complete - target=3ms samples=160 forced=0 trimmed=0 protected=1029\n"
         "[A/V SYNC CHECK] Track 1: RetainTrim=0, CoverageTrim=0, Tier2Trim=0, BootstrapTrim=0 residual_samples=+0\n"
@@ -1681,10 +1886,16 @@ def self_test():
     bad_counts = analyze_ce_log_text(
         "[PullAudio] Track 1 bootstrap complete - target=3ms samples=160 forced=0 trimmed=4 protected=1029\n"
         "[PullAudio] Audio latency cap: src 0 ahead by 1200 samples - trimming 240\n"
+        "[PullAudio] WARNING: Source underrun - src 1 padding 480 samples with silence "
+        "(available=0 needed=480 forceDrain=0)\n"
+        "[PullAudio] WARNING: Source underrun - src 2 padding 800 samples with silence "
+        "(available=0 needed=800 forceDrain=1)\n"
         "[STOP AUDIO] Source 3: track=2 encoded=1000 trim=cov:0 latTotal:0 liveUncat:0 pad:42 qgap:0\n"
         "[A/V ZERO DRIFT WARNING] Track 1 residual_samples=+1 residual_us=+21\n"
     )
     assert bad_counts["audio_trim"] == 2
+    assert bad_counts["audio_underrun"] == 1
+    assert bad_counts["audio_stop_tail_padding"] == 1
     assert bad_counts["audio_strict_source_padding"] == 1
     assert bad_counts["audio_zero_drift_residual"] == 1
     clean_app_counts = analyze_app_log_text(
@@ -1878,6 +2089,29 @@ def self_test():
     assert marker_summary["transitions"][0]["time_mode"] == "source_marker_interpolated"
     assert abs(marker_summary["transitions"][0]["time"] - 0.2845) < 0.002
     assert abs(marker_summary["transitions"][0]["display_time"] - 0.3000) < 0.0001
+    assert abs(
+        effective_marker_fps_for_extrapolation(
+            {
+                "target_fps": 240,
+                "frame_pacing": {
+                    "average_present_delta_ms": 6.944444,
+                    "present_delta_count": 100,
+                    "planned_source_gap_count": 0,
+                },
+            }
+        )
+        - 144.0
+    ) < 0.01
+    assert effective_marker_fps_for_extrapolation(
+        {
+            "target_fps": 240,
+            "frame_pacing": {
+                "average_present_delta_ms": 12.0,
+                "present_delta_count": 100,
+                "planned_source_gap_count": 1,
+            },
+        }
+    ) == 240
     low_source_frames = []
     low_source_pts = [0.00, 0.04, 0.08, 0.10, 0.12, 0.14, 0.16, 0.20, 0.24, 0.28, 0.32]
     low_source_markers = [126, 129, 132, 132, 132, 132, 135, 135, 138, 138, 141]
@@ -1917,6 +2151,18 @@ def self_test():
     motion_manifest = {"width": 1280, "marker_margin": 24, "motion_lane_bar_width": 96, "motion_lane_speed_cycles_per_second": 0.25}
     expected_center = expected_motion_from_stimulus(0.0, motion_manifest)
     assert abs(expected_center - ((24 + 48) / 1280.0)) < 0.001
+    fast_manifest = {
+        "width": 1280,
+        "marker_margin": 24,
+        "motion_lane_count": 2,
+        "fast_motion_lane_bar_width": 48,
+        "fast_motion_lane_speed_cycles_per_second": 1.0,
+    }
+    expected_fast_center = expected_fast_motion_from_stimulus(0.5, fast_manifest)
+    assert abs(expected_fast_center - ((24 + 0.5 * (1280 - 48 - 48) + 24) / 1280.0)) < 0.001
+    assert fast_motion_missing_limit({"fast_motion_available": False, "frames": 1200}, 3) == 0
+    assert fast_motion_missing_limit({"fast_motion_available": True, "frames": 1343}, 3) == 14
+    assert fast_motion_missing_limit({"fast_motion_available": True, "frames": 120}, 3) == 3
     print("self-test: PASS")
 
 
@@ -1981,18 +2227,25 @@ def main():
 
     frequencies = [float(event["frequency_hz"]) for event in manifest["events"]]
     audio_results = []
+    detector_bias_cache = {}
     for ordinal, stream in enumerate(audio_streams):
         samples, decode_error = decode_audio_track(args.ffmpeg, args.capture, ordinal)
         sample_rate = parse_int(stream.get("sample_rate"))
         stream_start_seconds = parse_float(stream.get("start_time"), 0.0)
         initial_padding = parse_int(stream.get("initial_padding"), 0)
         transitions = []
+        detector_biases = {}
         if samples is not None:
             # FFmpeg raw PCM decode is the presentation-content timeline; AAC
             # priming and Opus pre-skip are already handled by the decoder.
             # Keep stream start/padding metadata in the report for diagnostics,
             # but do not add it here or codec pre-roll gets counted twice.
             _, transitions = detect_audio_states(samples, sample_rate, frequencies)
+            detector_biases = detector_bias_cache.get(sample_rate)
+            if detector_biases is None:
+                detector_biases = calibrate_audio_detector_biases(sample_rate, frequencies)
+                detector_bias_cache[sample_rate] = detector_biases
+            transitions = apply_audio_detector_bias_correction(transitions, detector_biases)
         audio_results.append(
             {
                 "ordinal": ordinal,
@@ -2001,6 +2254,14 @@ def main():
                 "sample_rate": sample_rate,
                 "stream_start_seconds": stream_start_seconds,
                 "initial_padding_samples": initial_padding,
+                "detector_bias_corrections_ms": [
+                    {
+                        "from": from_index,
+                        "to": to_index,
+                        "bias_ms": round(bias * 1000.0, 3),
+                    }
+                    for (from_index, to_index), bias in sorted(detector_biases.items())
+                ],
                 "transitions": transitions,
                 "decode_error": decode_error,
                 "strict": ordinal not in args.non_strict_audio_ordinals_set,
