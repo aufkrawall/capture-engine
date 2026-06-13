@@ -700,11 +700,20 @@ inline bool ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(bool ga
            (explicitNativeFSROffPending || nativeFSRContextsDestroyedPending);
 }
 
-// FSR_FG -> Off classification flip right after the game-created swapchain
+// FSR_FG -> non-FG classification flip right after the game-created swapchain
 // recovery ended the runtime-owned native-FSR teardown. The live swapchain
 // queue IS the recovery queue the game just created, so there is no
 // present-path movement left for the draw cooldown to protect; arming it
 // only blanks the overlay for ~60 frames after every real FSR FG -> off.
+//
+// The non-FSR side accepts kStreamlineNoFG in addition to kOff: after a prior
+// DLSS phase the Streamline DLLs stay loaded (no SL FG signal — enforced
+// here), so the recovered non-FG state classifies as STREAMLINE_NO_FG. Session
+// 20260613_035221 proved the gap: the second FSR->OFF (after a DLSS phase)
+// ran the recovery edge correctly but the `FSR_FG -> STREAMLINE_NO_FG`
+// classification armed the 60-frame cooldown anyway because this exemption
+// only matched kOff (same blind spot fixed for the no-callback suspension
+// toggle in the 2026-06-12 round).
 inline bool IsGameSwapchainRecoveryToggleAfterNativeFSROff(fg_runtime::RuntimeMode previousRuntimeMode,
                                                            fg_runtime::RuntimeMode nextRuntimeMode,
                                                            bool streamlineFGRunning,
@@ -712,8 +721,9 @@ inline bool IsGameSwapchainRecoveryToggleAfterNativeFSROff(fg_runtime::RuntimeMo
     if (streamlineFGRunning || !recoveryQueueMatchesLiveSwapchainQueue) {
         return false;
     }
-    return previousRuntimeMode == fg_runtime::RuntimeMode::kFSRFG &&
-           nextRuntimeMode == fg_runtime::RuntimeMode::kOff;
+    const bool nextIsNonFG = nextRuntimeMode == fg_runtime::RuntimeMode::kOff ||
+                             nextRuntimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
+    return previousRuntimeMode == fg_runtime::RuntimeMode::kFSRFG && nextIsNonFG;
 }
 
 // Swapchain change onto the game-created recovery swapchain after explicit

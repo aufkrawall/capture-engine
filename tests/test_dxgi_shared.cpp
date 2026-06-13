@@ -1635,11 +1635,24 @@ TEST(DXGISharedTest, GameSwapchainRecoveryToggleSkipsFSROffTransitionCooldown) {
     using ce::fg_runtime::RuntimeMode;
 
     EXPECT_TRUE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, true));
+    // Session 20260613_035221: after a prior DLSS phase the Streamline DLLs
+    // stay loaded, so the recovered non-FG state classifies as
+    // STREAMLINE_NO_FG (not kOff). The second FSR->OFF ran the recovery edge
+    // correctly but the FSR_FG->STREAMLINE_NO_FG classification armed the
+    // 60-frame cooldown anyway; that side must qualify with the recovery-queue
+    // match and no SL FG signal.
+    EXPECT_TRUE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kFSRFG, RuntimeMode::kStreamlineNoFG, false,
+                                                              true));
 
     EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kFSRFG, RuntimeMode::kOff, true, true));
     EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kFSRFG, RuntimeMode::kOff, false, false));
     EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kOff, RuntimeMode::kFSRFG, false, true));
     EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kDLSSFG, RuntimeMode::kOff, false, true));
+    // STREAMLINE_NO_FG next side still needs the recovery-queue match and no SL FG signal.
+    EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kFSRFG, RuntimeMode::kStreamlineNoFG, true,
+                                                               true));
+    EXPECT_FALSE(IsGameSwapchainRecoveryToggleAfterNativeFSROff(RuntimeMode::kFSRFG, RuntimeMode::kStreamlineNoFG,
+                                                               false, false));
 
     // The exemption feeds the same transition-cooldown gate as the suspension
     // toggle: FSR_FG -> Off with the recovery proof must not arm the cooldown.
