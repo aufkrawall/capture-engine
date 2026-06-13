@@ -4704,6 +4704,33 @@ TEST(DXGISharedTest, ExplicitEnableColdStartProofBypassesReactivationWarmup) {
     EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(true, false, false, false, true));
 }
 
+TEST(DXGISharedTest, ConfirmedRenderThisEpochBypassesRemainingReactivationWarmup) {
+    using ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup;
+
+    // Regression for session 20260613_044046: the explicit-enable proof bypassed
+    // the warmup on reactivation frame 1 and PostSL rendered one confirmed frame,
+    // but that confirmed render RELEASES the retained startup-activation swapchain
+    // (the "never pin a swapchain" invariant), which drops
+    // HasExplicitEnablePureDLSSColdStartProof to false. Frames 2..15 then fell back
+    // into the 15-frame cold-start warmup and blanked a LIVE overlay for 14 presents
+    // (~118 ms). A confirmed render means the first ECL already landed safely, so the
+    // warmup's hazard is past and the remaining warmup must not re-blank.
+    //
+    // Pre-fix this returned false (all the older proofs are false once the retained
+    // swapchain is gone); with the confirmed-this-epoch leg it stays bypassed.
+    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(false, false, false, false, false, /*confirmedThisEpoch=*/true));
+
+    // Route-agnostic: a confirmed render is equally authoritative on the post-FSR
+    // path (hadFSR=true) once its first ECL has landed, even without safeBootstrap.
+    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(true, false, false, false, false, /*confirmedThisEpoch=*/true));
+
+    // The GTA GetState-only cold-start hang family stays protected: it gets no
+    // frame-1 bypass, so it produces NO confirmed render during the warmup, and with
+    // confirmedThisEpoch=false (and all other proofs false) the full warmup is kept.
+    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(false, false, false, false, false, /*confirmedThisEpoch=*/false));
+    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(true, false, false, false, false, /*confirmedThisEpoch=*/false));
+}
+
 // Source invariant (session 20260613_032326): the retained Streamline
 // startup-activation swapchain is an AddRef'd swapchain reference. While CE
 // pins it, DXGI refuses to create a new swapchain on the same HWND, so the

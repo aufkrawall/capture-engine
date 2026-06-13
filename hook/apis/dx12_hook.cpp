@@ -251,6 +251,14 @@ static std::atomic<uint32_t> g_PostSLLifecycleEpoch{0};
 // vtable hook for interpolated frames, so PostSL never fires.  When this is false,
 // pre-SL rendering is NOT suppressed, allowing the overlay to render before SL.
 static std::atomic<bool> g_PostSLConfirmedRendering{false};
+// True once PostSL has performed at least one CONFIRMED render (devRemoved=0) in the
+// CURRENT reactivation epoch. The reactivation warmup exists only to protect the FIRST
+// ECL submit on DLSS-FG's fragile init state; once a confirmed render lands, that first
+// ECL already succeeded, so the remaining warmup must not re-blank a live overlay (the
+// no-blank principle). Strictly epoch-scoped: reset where s_callsSinceReactivation=0 in
+// the genuine-reactivation block, set at the confirmed-render edge. The preserve/keep-alive
+// warm-resume paths do not bump the epoch, so the flag correctly persists through them.
+static std::atomic<bool> g_PostSLConfirmedRenderInCurrentReactivationEpoch{false};
 static std::atomic<bool> g_PostSLSyntheticStartupActivatedButUnconfirmed{false};
 static std::atomic<bool> g_PostSLRuntimeStateStabilizationLogged{false};
 // A reactivated PostSL startup that had already confirmed a few frames but had
@@ -345,6 +353,11 @@ static std::atomic<uint64_t> g_OverlayCoverageDrawCount{0};
 static std::atomic<uint64_t> g_OverlayCoverageLastSeenDrawCount{0};
 static std::atomic<const char*> g_OverlayCoverageLastGate{nullptr};
 static std::atomic<const char*> g_OverlayCoverageStreakGate{nullptr};
+// Streak-onset markers so a blank window is bracketed start+end in the log: wall-clock
+// tick (ms) and whether PostSL was already CONFIRMED rendering when the streak began
+// (confirmed=1 at start means a live overlay got blanked — a no-blank-principle violation).
+static std::atomic<uint64_t> g_OverlayCoverageStreakStartTickMs{0};
+static std::atomic<bool> g_OverlayCoverageStreakStartConfirmed{false};
 static ce::dx12_overlay_policy::OverlayPresentCoverageTracker g_OverlayCoverageTracker;
 static std::atomic_flag g_OverlayCoverageLock = ATOMIC_FLAG_INIT;
 
@@ -394,8 +407,26 @@ static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const
     g_OverlayCoverageLock.clear(std::memory_order_release);
 
     if (result.uncoveredStreakStarted) {
-        g_OverlayCoverageStreakGate.store(g_OverlayCoverageLastGate.load(std::memory_order_relaxed),
-                                          std::memory_order_relaxed);
+        const char* streakGate = g_OverlayCoverageLastGate.load(std::memory_order_relaxed);
+        g_OverlayCoverageStreakGate.store(streakGate, std::memory_order_relaxed);
+        const uint64_t startTick = GetTickCount64();
+        g_OverlayCoverageStreakStartTickMs.store(startTick, std::memory_order_relaxed);
+        const bool startConfirmed = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+        g_OverlayCoverageStreakStartConfirmed.store(startConfirmed, std::memory_order_relaxed);
+        // Bracket the onset of every blank window with a timestamped marker so even a
+        // single-present gap is fully attributable from the log alone.
+        static std::atomic<int> s_streakStartLogCount{0};
+        const int startLogCount = s_streakStartLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (startLogCount < 100 || (startLogCount % 20) == 0) {
+            const uint32_t route = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+            HookLogImportant(
+                "[OVERLAY COVERAGE] uncovered streak STARTED: gate=%s route=%s source=%s confirmed=%d "
+                "present=%llu uncovered=%llu",
+                streakGate ? streakGate : "unknown", DX12OverlayRenderRouteName(route),
+                source ? source : "unknown", startConfirmed ? 1 : 0,
+                static_cast<unsigned long long>(snapshot.totalPresents),
+                static_cast<unsigned long long>(snapshot.uncoveredPresents));
+        }
     }
     if (result.uncoveredStreakEnded) {
         static std::atomic<int> s_streakEndLogCount{0};
@@ -404,10 +435,14 @@ static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const
             const char* streakGate = g_OverlayCoverageStreakGate.load(std::memory_order_relaxed);
             const char* lastGate = g_OverlayCoverageLastGate.load(std::memory_order_relaxed);
             const uint32_t route = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+            const uint64_t startTick = g_OverlayCoverageStreakStartTickMs.load(std::memory_order_relaxed);
+            const uint64_t durationMs = startTick ? (GetTickCount64() - startTick) : 0;
+            const bool confirmedDuringStreak = g_OverlayCoverageStreakStartConfirmed.load(std::memory_order_relaxed);
             HookLogImportant(
-                "[OVERLAY COVERAGE] uncovered streak ended: missed=%llu longestStreak=%llu gate=%s lastGate=%s "
-                "route=%s source=%s totals: presents=%llu uncovered=%llu",
+                "[OVERLAY COVERAGE] uncovered streak ended: missed=%llu durationMs=%llu confirmedDuringStreak=%d "
+                "longestStreak=%llu gate=%s lastGate=%s route=%s source=%s totals: presents=%llu uncovered=%llu",
                 static_cast<unsigned long long>(result.endedStreakLength),
+                static_cast<unsigned long long>(durationMs), confirmedDuringStreak ? 1 : 0,
                 static_cast<unsigned long long>(snapshot.longestStreak), streakGate ? streakGate : "unknown",
                 lastGate ? lastGate : "unknown", DX12OverlayRenderRouteName(route), source ? source : "unknown",
                 static_cast<unsigned long long>(snapshot.totalPresents),
@@ -10240,6 +10275,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         s_reactivationEpoch++;
         s_callsSinceReactivation = 0;
         s_postSLProbeFrames = 0;  // Reset probe counter for new reactivation
+        // Epoch-scoped: a genuine reactivation must re-prove the first ECL is safe before
+        // the warmup can be confirmed-bypassed. Cleared here so a confirmed render from a
+        // previous epoch can never bypass a real cold-start warmup.
+        g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(false, std::memory_order_release);
         const bool previouslyConfirmed = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
         const int previousStableFrameCount = g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
         const int previousStallCount = g_PostSLStallCounter.exchange(0, std::memory_order_acq_rel);
@@ -10340,18 +10379,31 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             warmupSwapchainQueue != nullptr,
             warmupLastWorkingQueue != nullptr && warmupSwapchainQueue != nullptr &&
                 warmupLastWorkingQueue == warmupSwapchainQueue);
+    const bool postSLConfirmedRenderThisEpoch =
+        g_PostSLConfirmedRenderInCurrentReactivationEpoch.load(std::memory_order_acquire);
     const bool bypassReactivationWarmup =
         ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(
             g_HadFSRFGPhase, useTopLevelHandoffWrapperProgress, safePostFSRBootstrapPathForPostSL,
-            confirmedPureStreamlineResumeWarmupProof, explicitEnablePureDLSSColdStartProof);
+            confirmedPureStreamlineResumeWarmupProof, explicitEnablePureDLSSColdStartProof,
+            postSLConfirmedRenderThisEpoch);
     if (s_callsSinceReactivation <= warmupThreshold && !bypassReactivationWarmup &&
         !keepAliveRenderAfterExplicitOff) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         NoteDX12OverlayCoverageGate("postsl-reactivation-warmup");
         if (s_callsSinceReactivation <= 5 || s_callsSinceReactivation == warmupThreshold) {
-            HookLogImportant("DX12: PostSL warm-up after reactivation epoch=%d frame=%d/%d (coldStart=%d)",
-                             s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold,
-                             s_reactivationEpoch <= 1 ? 1 : 0);
+            // Log the proof inputs that resolved bypassReactivationWarmup=false so a
+            // true->false flip (e.g. the explicit-enable proof dropping when the retained
+            // startup swapchain is released after frame 1) is visible inline on the first
+            // skipped frame, without cross-referencing the SUBMIT/release lines.
+            HookLogImportant(
+                "DX12: PostSL warm-up after reactivation epoch=%d frame=%d/%d (coldStart=%d hadFSR=%d "
+                "safeBootstrap=%d confirmedResume=%d explicitEnableColdStart=%d confirmedThisEpoch=%d "
+                "retainedSwapchain=%d)",
+                s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold, s_reactivationEpoch <= 1 ? 1 : 0,
+                g_HadFSRFGPhase ? 1 : 0, safePostFSRBootstrapPathForPostSL ? 1 : 0,
+                confirmedPureStreamlineResumeWarmupProof ? 1 : 0, explicitEnablePureDLSSColdStartProof ? 1 : 0,
+                postSLConfirmedRenderThisEpoch ? 1 : 0,
+                HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0);
         }
         return;
     }
@@ -10361,11 +10413,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             HookLogImportant(
                 "DX12: PostSL bypassing reactivation warm-up after safe startup proof "
                 "(epoch=%d frame=%d/%d hadFSR=%d wrapperProgress=%d safeBootstrap=%d confirmedResume=%d "
-                "explicitEnableColdStart=%d scQ=%p lastWorkingQ=%p)",
+                "explicitEnableColdStart=%d confirmedThisEpoch=%d scQ=%p lastWorkingQ=%p)",
                 s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold, g_HadFSRFGPhase ? 1 : 0,
                 useTopLevelHandoffWrapperProgress ? 1 : 0, safePostFSRBootstrapPathForPostSL ? 1 : 0,
                 confirmedPureStreamlineResumeWarmupProof ? 1 : 0, explicitEnablePureDLSSColdStartProof ? 1 : 0,
-                warmupSwapchainQueue, warmupLastWorkingQueue);
+                postSLConfirmedRenderThisEpoch ? 1 : 0, warmupSwapchainQueue, warmupLastWorkingQueue);
         }
         s_bypassWarmupLogCount++;
     }
@@ -12200,6 +12252,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     HRESULT postDevReason = dev->GetDeviceRemovedReason();
 
     // Mark PostSL as confirmed rendering — pre-SL draw can now be suppressed.
+    // The first ECL just landed safely (devRemoved checked below): record it for this
+    // reactivation epoch so the remaining reactivation warmup is confirmed-bypassed and a
+    // live overlay is never re-blanked after the retained startup swapchain is released.
+    g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(true, std::memory_order_release);
     if (!g_PostSLConfirmedRendering.load(std::memory_order_relaxed)) {
         g_PostSLConfirmedRendering.store(true, std::memory_order_release);
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);

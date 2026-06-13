@@ -2431,7 +2431,8 @@ inline bool HasExplicitEnablePureDLSSColdStartProof(bool hadFSRFGPhase, bool exp
 inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTopLevelHandoffWrapperProgress,
                                                  bool safePostFSRBootstrapPath,
                                                  bool confirmedPureStreamlineResumeProof = false,
-                                                 bool explicitEnablePureDLSSColdStartProof = false) {
+                                                 bool explicitEnablePureDLSSColdStartProof = false,
+                                                 bool postSLConfirmedRenderInCurrentEpoch = false) {
     // Do not bypass warm-up for an UNPROVEN pure DLSS cold start. DLSS FG's
     // multi-device initialization is fragile: submitting overlay ECL on the FG
     // queue during the first few callbacks can corrupt DLSS FG's internal
@@ -2448,8 +2449,19 @@ inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTop
     // is the proof-gated no-blank engage path: explicit slDLSSGSetOptions(ON)
     // provenance + retained startup activation swapchain. GetState-only
     // enables never reach it and keep the warmup.
+    //
+    // STRONGEST proof: a CONFIRMED render already happened in THIS reactivation
+    // epoch. The warm-up only exists to protect the FIRST ECL submit; once a
+    // confirmed render landed (devRemoved=0) the first ECL already succeeded, so
+    // the hazard is past and continuing the warm-up would only re-blank a live
+    // overlay (the no-blank principle). This is route-agnostic and survives the
+    // release of the retained startup-activation swapchain (which drops the
+    // explicit-enable proof after frame 1). It cannot widen the GTA GetState-only
+    // cold-start hang family: that family gets no frame-1 bypass, so it produces
+    // no confirmed render during the warm-up and this leg stays false until the
+    // warm-up has naturally completed.
     (void)useTopLevelHandoffWrapperProgress;
-    return (hadFSRFGPhase && safePostFSRBootstrapPath) ||
+    return postSLConfirmedRenderInCurrentEpoch || (hadFSRFGPhase && safePostFSRBootstrapPath) ||
            (!hadFSRFGPhase && (confirmedPureStreamlineResumeProof || explicitEnablePureDLSSColdStartProof));
 }
 
