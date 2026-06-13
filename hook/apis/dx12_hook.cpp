@@ -9889,6 +9889,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         ce::dx12_overlay_policy::ShouldUseTopLevelHandoffWrapperProgressForSyntheticPostSLActivation(
             g_HadFSRFGPhase, startupTopLevelPresentConsumed, startupWrapperProgressCount > 0);
     const bool safePostFSRBootstrapPathForPostSL = HookHasSafePostFSRBootstrapPath();
+    // Pure-DLSS engage proof: explicit slDLSSGSetOptions(ON) provenance for the
+    // CURRENT comeback + retained startup activation swapchain + installed
+    // callback (we are inside one — SL's present pipeline is live). Gates the
+    // no-blank engage path for the synthetic-startup countdown and cold-start
+    // warmup; GetState-only enables keep both protections.
+    const bool explicitEnablePureDLSSColdStartProof =
+        ce::dx12_overlay_policy::HasExplicitEnablePureDLSSColdStartProof(
+            g_HadFSRFGPhase, HookHasExplicitStreamlineSetOptionsActivation(),
+            HasRetainedStreamlineStartupActivationSwapchain(),
+            DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr);
 
     // --- PostSL periodic stats logging ---
     int callNum = s_postSLCalls.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -9992,13 +10002,33 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                     }
                     s_wrapperProgressActivationLogCount++;
                     g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+                } else if (explicitEnablePureDLSSColdStartProof) {
+                    // Proof-gated no-blank engage: the current comeback was
+                    // activated by an explicit slDLSSGSetOptions(ON) edge and
+                    // CE retains the runtime-owned startup activation
+                    // swapchain, so this callback is a real Streamline-routed
+                    // present of the live proxy. Activate from callback #1
+                    // instead of blanking through the 8-callback countdown.
+                    // GetState-only enables (the historical GTA startup-churn
+                    // family) never reach this branch.
+                    static int s_explicitEnableCountdownBypassLogCount = 0;
+                    if (s_explicitEnableCountdownBypassLogCount < 10) {
+                        HookLogImportant(
+                            "DX12: PostSL synthetic startup bypassing pure-DLSS countdown after explicit "
+                            "slDLSSGSetOptions(ON) proof (cooldown=%d retainedStartupSwapchain=1)",
+                            cooldownLeft);
+                    }
+                    s_explicitEnableCountdownBypassLogCount++;
+                    g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 } else {
-                    // Pure DLSS cold start: use a shorter stabilization period
-                    // instead of bypassing entirely.  DLSS FG needs a few callbacks
-                    // to initialize its internal pipeline (queue setup, mutex state,
-                    // fence tracking) before our ECL can safely land on its queue.
-                    // Without this, the very first PostSL render can corrupt DLSS FG
-                    // state and cause a hang (observed in GTA V Enhanced).
+                    // Pure DLSS cold start without explicit-enable proof: use a
+                    // shorter stabilization period instead of bypassing
+                    // entirely.  DLSS FG needs a few callbacks to initialize
+                    // its internal pipeline (queue setup, mutex state, fence
+                    // tracking) before our ECL can safely land on its queue.
+                    // Without this, the very first PostSL render can corrupt
+                    // DLSS FG state and cause a hang (observed in GTA V
+                    // Enhanced with GetState-only activation evidence).
                     constexpr int kPureDLSSMinCooldown = 8;
                     int clamped = std::min(cooldownLeft, kPureDLSSMinCooldown);
                     int remaining = clamped > 0 ? clamped - 1 : 0;
@@ -10203,7 +10233,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     const bool bypassReactivationWarmup =
         ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(
             g_HadFSRFGPhase, useTopLevelHandoffWrapperProgress, safePostFSRBootstrapPathForPostSL,
-            confirmedPureStreamlineResumeWarmupProof);
+            confirmedPureStreamlineResumeWarmupProof, explicitEnablePureDLSSColdStartProof);
     if (s_callsSinceReactivation <= warmupThreshold && !bypassReactivationWarmup) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         NoteDX12OverlayCoverageGate("postsl-reactivation-warmup");
@@ -10220,10 +10250,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             HookLogImportant(
                 "DX12: PostSL bypassing reactivation warm-up after safe startup proof "
                 "(epoch=%d frame=%d/%d hadFSR=%d wrapperProgress=%d safeBootstrap=%d confirmedResume=%d "
-                "scQ=%p lastWorkingQ=%p)",
+                "explicitEnableColdStart=%d scQ=%p lastWorkingQ=%p)",
                 s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold, g_HadFSRFGPhase ? 1 : 0,
                 useTopLevelHandoffWrapperProgress ? 1 : 0, safePostFSRBootstrapPathForPostSL ? 1 : 0,
-                confirmedPureStreamlineResumeWarmupProof ? 1 : 0, warmupSwapchainQueue, warmupLastWorkingQueue);
+                confirmedPureStreamlineResumeWarmupProof ? 1 : 0, explicitEnablePureDLSSColdStartProof ? 1 : 0,
+                warmupSwapchainQueue, warmupLastWorkingQueue);
         }
         s_bypassWarmupLogCount++;
     }

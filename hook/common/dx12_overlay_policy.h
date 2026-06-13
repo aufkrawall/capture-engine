@@ -2345,23 +2345,49 @@ inline bool HasConfirmedPureStreamlinePostSLResumeProof(bool hadFSRFGPhase, bool
            hasSwapchainQueue && swapchainQueueMatchesPostSLLastWorkingQueue;
 }
 
+// Pure-DLSS engage proof for the synthetic-startup countdown and the
+// cold-start reactivation warmup. The strongest available evidence for a
+// pure-DLSS enable: the CURRENT comeback was activated by an explicit
+// slDLSSGSetOptions(ON) edge (per-comeback provenance, not a sticky session
+// latch), the runtime-owned startup activation swapchain is retained (CE saw
+// the live Streamline present and holds it), and the PostSL callback is
+// installed — by construction the gates consuming this proof run inside a
+// PostSL callback, i.e. Streamline's present pipeline is already presenting.
+// GetState-only enables (weaker evidence; the historical GTA startup-churn
+// family) keep the full countdown + warmup. Session 20260612_215439: without
+// this proof the 8-callback countdown plus the 15-callback cold-start warmup
+// ran back-to-back and blanked the overlay for 22 presents (~150 ms) on every
+// OFF->DLSS engage.
+inline bool HasExplicitEnablePureDLSSColdStartProof(bool hadFSRFGPhase, bool explicitSetOptionsActivation,
+                                                    bool hasRetainedStartupActivationSwapchain,
+                                                    bool postSLCallbackInstalled) {
+    return !hadFSRFGPhase && explicitSetOptionsActivation && hasRetainedStartupActivationSwapchain &&
+           postSLCallbackInstalled;
+}
+
 inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTopLevelHandoffWrapperProgress,
                                                  bool safePostFSRBootstrapPath,
-                                                 bool confirmedPureStreamlineResumeProof = false) {
-    // Do not bypass warm-up for pure DLSS cold start. DLSS FG's multi-device
-    // initialization is fragile: submitting overlay ECL on the FG queue during
-    // the first few callbacks can corrupt DLSS FG's internal mutex/fence state.
-    // The warm-up period lets DLSS FG stabilize before our first GPU work lands
-    // on its queue. PostSL still activates and logs progress during warm-up -
-    // only the ECL submit is deferred.
+                                                 bool confirmedPureStreamlineResumeProof = false,
+                                                 bool explicitEnablePureDLSSColdStartProof = false) {
+    // Do not bypass warm-up for an UNPROVEN pure DLSS cold start. DLSS FG's
+    // multi-device initialization is fragile: submitting overlay ECL on the FG
+    // queue during the first few callbacks can corrupt DLSS FG's internal
+    // mutex/fence state. The warm-up period lets DLSS FG stabilize before our
+    // first GPU work lands on its queue. PostSL still activates and logs
+    // progress during warm-up - only the ECL submit is deferred.
     //
     // A confirmed pure-DLSS resume is different from a cold start: the same
     // live swapchain queue has already submitted visible PostSL work before the
     // suspend/resume edge, so forcing another 30-frame warm-up creates a visible
     // overlay blink without adding real safety.
+    //
+    // An explicit-enable cold start (HasExplicitEnablePureDLSSColdStartProof)
+    // is the proof-gated no-blank engage path: explicit slDLSSGSetOptions(ON)
+    // provenance + retained startup activation swapchain. GetState-only
+    // enables never reach it and keep the warmup.
     (void)useTopLevelHandoffWrapperProgress;
     return (hadFSRFGPhase && safePostFSRBootstrapPath) ||
-           (!hadFSRFGPhase && confirmedPureStreamlineResumeProof);
+           (!hadFSRFGPhase && (confirmedPureStreamlineResumeProof || explicitEnablePureDLSSColdStartProof));
 }
 
 inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(

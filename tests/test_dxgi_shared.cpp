@@ -4649,3 +4649,39 @@ TEST(DXGISharedTest, WarmDX12OverlayBackendReuseIsDeviceAndFormatScoped) {
     EXPECT_FALSE(CanReuseWarmDX12OverlayBackend(true, true, false, true));
     EXPECT_FALSE(CanReuseWarmDX12OverlayBackend(true, true, true, false));
 }
+
+TEST(DXGISharedTest, ExplicitEnablePureDLSSColdStartProofShape) {
+    using ce::dx12_overlay_policy::HasExplicitEnablePureDLSSColdStartProof;
+
+    // Full proof: pure-DLSS (no FSR history), the CURRENT comeback was
+    // activated by an explicit slDLSSGSetOptions(ON) edge, the runtime-owned
+    // startup activation swapchain is retained, and the PostSL callback is
+    // installed (the consuming gates run inside one, so SL is presenting).
+    EXPECT_TRUE(HasExplicitEnablePureDLSSColdStartProof(false, true, true, true));
+
+    // Post-FSR handoffs use their own validated proofs; GetState-only enables
+    // (the historical GTA startup-churn family), a missing retained startup
+    // swapchain, or no installed callback keep the countdown + warmup.
+    EXPECT_FALSE(HasExplicitEnablePureDLSSColdStartProof(true, true, true, true));
+    EXPECT_FALSE(HasExplicitEnablePureDLSSColdStartProof(false, false, true, true));
+    EXPECT_FALSE(HasExplicitEnablePureDLSSColdStartProof(false, true, false, true));
+    EXPECT_FALSE(HasExplicitEnablePureDLSSColdStartProof(false, true, true, false));
+}
+
+TEST(DXGISharedTest, ExplicitEnableColdStartProofBypassesReactivationWarmup) {
+    using ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup;
+
+    // Session 20260612_215439: the 8-callback countdown plus the 15-callback
+    // cold-start warmup ran back-to-back and blanked the OFF->DLSS engage for
+    // 22 presents (~150 ms). With the explicit-enable proof the warmup no
+    // longer gates the first render after activation.
+    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(false, false, false, false, true));
+
+    // Unproven pure-DLSS cold starts keep the warmup (first-render ECL on the
+    // half-initialized FG queue was the GTA hang family), and the existing
+    // post-FSR / confirmed-resume proofs are unchanged.
+    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(false, false, false, false, false));
+    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(false, false, false, true, false));
+    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(true, false, true, false, false));
+    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(true, false, false, false, true));
+}
