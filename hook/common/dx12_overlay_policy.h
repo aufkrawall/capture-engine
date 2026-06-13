@@ -766,6 +766,30 @@ inline bool ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFS
     return recoveryQueueMatchesCurrentSwapchainQueue && !fsrFGApiActive && !streamlineFGRunning;
 }
 
+// A DLSS-FG SUSPEND (slDLSSGSetOptions(off) while the DLSS-G proxy swapchain
+// stays alive and keeps presenting) can surface a fresh swapchain POINTER on
+// the SAME live runtime-owned queue. The active-FG preserve path
+// (ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange) does NOT
+// fire because streamlineFGRunning is already false at the suspend edge, so the
+// change fell into the generic 90-frame swapchain-change cooldown and blanked a
+// LIVE overlay for ~800ms (session 20260613_145008) — masked from the coverage
+// gate only because zero-ECL proxy presents inherited coverage while overlayInit
+// was false. The make-before-break keep-alive latch (g_PostSLExplicitOffKeepAlive)
+// marks a CONFIRMED PostSL path that is merely SUSPENDED — it is never set while
+// an FSR/native-FG takeover owns (or is about to own) presentation — so the warm
+// device-scoped backend can be reinitialized IMMEDIATELY on its live queue instead
+// of blanking through the cooldown. The immediate-reinit branch performs the exact
+// same flag resets as the 90-frame cooldown branch it replaces; only the timing
+// changes. The suspend has no Streamline teardown to wait for (the proxy is alive),
+// so the documented post-teardown first-ECL DEVICE_REMOVED hazard does not apply.
+inline bool ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+    bool postSLExplicitOffKeepAlive, bool streamlineFGRunning, bool fsrFGApiActive,
+    bool nativeFSRInternalNoCallbackComposition, bool runtimeOwnsSwapchain,
+    bool swapchainQueueIsLiveCommandQueue) {
+    return postSLExplicitOffKeepAlive && !streamlineFGRunning && !fsrFGApiActive &&
+           !nativeFSRInternalNoCallbackComposition && runtimeOwnsSwapchain && swapchainQueueIsLiveCommandQueue;
+}
+
 // Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown
 // leaves GPU resources in an indeterminate state; the overlay's first GPU
 // submit (offscreen compositing on the original game queue) can trigger
@@ -1927,15 +1951,27 @@ inline bool ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandof
 
 inline bool ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(bool hadFSRFGPhase, bool hasSwapchainQueue,
                                                                        bool swapchainQueueDiffersFromOriginalGameQueue,
-                                                                       bool streamlineStartupHandoffPending) {
+                                                                       bool streamlineStartupHandoffPending,
+                                                                       bool warmPostSLResumeFromKeepAlive = false) {
     // After an FSR phase, a non-origGame swapchain queue often does need to be
     // cleared before DLSS/Streamline PostSL re-establishes its own topology.
     // But if the queue was just re-captured as the fresh authoritative
     // Streamline runtime handoff for the new DLSS activation, clearing it
     // immediately destroys the very proof the handoff logic needs and forces the
     // riskier post-FSR wrapper-bootstrap path.
+    //
+    // A WARM PostSL resume (make-before-break keep-alive: a DLSS-FG suspend ->
+    // resume where PostSL stayed confirmed-and-rendering the whole time) is NOT an
+    // FSR->DLSS transition: the non-origGame swapchain queue is the LIVE DLSS-G
+    // proxy queue PostSL has been submitting on (proven by the confirmed-rendering
+    // keep-alive), and the proxy persists across the suspend. Clearing it strands
+    // the warm resume — it skips the synthetic-startup re-arm, so with scQueue=null
+    // and FSR history PostSL refuses the wrapper bootstrap and drops every frame
+    // forever (session 20260613_151646). Preserve the queue so PostSL resumes on
+    // the proven scQueue path. The cold FSR->DLSS transition (no warm resume) still
+    // clears, preventing the documented DEVICE_REMOVED.
     return hadFSRFGPhase && hasSwapchainQueue && swapchainQueueDiffersFromOriginalGameQueue &&
-           !streamlineStartupHandoffPending;
+           !streamlineStartupHandoffPending && !warmPostSLResumeFromKeepAlive;
 }
 
 inline bool ShouldTreatPostSLSelectedQueueAsWrapper(bool queueMatchesOriginalGameQueue, bool queueMatchesDedicatedQueue,
@@ -2835,6 +2871,29 @@ inline bool ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(bool streamline
     // history/native ownership, because those paths still need teardown proof.
     return streamlineTurnedOff && !hadFSRFGPhase && !fsrFGApiActive && !runtimeOwnedNativeFGPresentPath &&
            hasOverlayBackend && hasSyncBackend && hasSwapchainQueue && hasOriginalGameQueue && !deviceRemoved;
+}
+
+// A DLSS-FG SUSPEND (slDLSSGSetOptions(off), proxy stays live) where PostSL was
+// CONFIRMED rendering this epoch and the make-before-break keep-alive is covering
+// the proxy presents is safe to rebuild immediately even WITH FSR history. The
+// sticky hadFSRFGPhase gate on the pure-DLSS bypass above is too strict here: by
+// the time DLSS is being suspended the FSR phase ended long ago, DLSS-G has been
+// presenting stably, and PostSL confirmed rendering means the overlay ECL on the
+// runtime-owned SL queue ALREADY succeeded many times this epoch (the device is
+// demonstrably healthy on that exact path). The generic 60-frame FG-off reinit
+// cooldown therefore blanks a provably-live overlay for ~672 ms with nothing to
+// wait for (session 20260613_150750: post-FSR DLSS suspend, gate=overlay-backend-
+// uninitialized, confirmedDuringStreak=1). The confirmed-PostSL-this-epoch +
+// keep-alive proof replaces the hadFSRFGPhase exclusion; the FSR/native-FG and
+// device-health guards are unchanged so a genuine FSR/AMD takeover still keeps the
+// stricter cooldown.
+inline bool ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+    bool streamlineTurnedOff, bool postSLExplicitOffKeepAlive, bool postSLConfirmedRendering, bool fsrFGApiActive,
+    bool runtimeOwnedNativeFGPresentPath, bool hasOverlayBackend, bool hasSyncBackend, bool hasSwapchainQueue,
+    bool hasOriginalGameQueue, bool deviceRemoved) {
+    return streamlineTurnedOff && postSLExplicitOffKeepAlive && postSLConfirmedRendering && !fsrFGApiActive &&
+           !runtimeOwnedNativeFGPresentPath && hasOverlayBackend && hasSyncBackend && hasSwapchainQueue &&
+           hasOriginalGameQueue && !deviceRemoved;
 }
 
 inline bool ShouldEnterSyntheticPostSLStartupActivation(bool startupActivationPending, bool postSLActiveButUnconfirmed,

@@ -1712,6 +1712,37 @@ TEST(DXGISharedTest, FinalizedNoCallbackFFXTakeoverReinitsOverlayImmediately) {
                                                                                          true));
 }
 
+TEST(DXGISharedTest, ConfirmedPostSLSuspensionReinitsOverlayImmediatelyInsteadOfBlanking) {
+    using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange;
+
+    // Session 20260613_145008: slDLSSGSetOptions(off) suspend surfaced a fresh proxy
+    // swapchain on the same live runtime-owned queue. The active-FG preserve path can't
+    // fire (streamlineFGRunning already false), so the change took the 90-frame cooldown
+    // and blanked the live overlay ~800ms. With the make-before-break keep-alive latch set
+    // (a CONFIRMED PostSL path that is merely suspended), reinit the warm backend
+    // immediately on its live queue.
+    EXPECT_TRUE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        /*keepAlive=*/true, /*streamlineFGRunning=*/false, /*fsrFGApiActive=*/false,
+        /*nativeFSRNoCallback=*/false, /*runtimeOwnsSwapchain=*/true, /*scQueueIsLiveCmdQueue=*/true));
+
+    // Without the keep-alive latch this is not a confirmed-PostSL suspension — keep the cooldown.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        false, false, false, false, true, true));
+    // Streamline FG still running is the ACTIVE-FG preserve path's job, not this one.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        true, true, false, false, true, true));
+    // An FSR / native-FG no-callback takeover must keep the quiesce cooldown (device-removal hazard).
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        true, false, true, false, true, true));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        true, false, false, true, true, true));
+    // Must be the live runtime-owned queue (cross-queue / non-owned change keeps the cooldown).
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        true, false, false, false, false, true));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        true, false, false, false, true, false));
+}
+
 TEST(DXGISharedTest, ReusesValidatedLastWorkingQueueForResumedDLSSDuringPostFSRInactiveRecovery) {
     EXPECT_TRUE(ce::dx12_overlay_policy::
                     ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
@@ -3724,6 +3755,24 @@ TEST(DXGISharedTest, FreshStreamlineHandoffAfterFSRDoesNotClearTheRecapturedSwap
         ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(true, true, false, false));
 }
 
+TEST(DXGISharedTest, StaleFSRQueueClearSkippedForWarmPostSLResume) {
+    using ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn;
+
+    // Cold FSR->DLSS transition (no warm resume): the non-origGame queue is stale
+    // FSR ownership and MUST be cleared to prevent DEVICE_REMOVED.
+    EXPECT_TRUE(ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
+        /*hadFSR=*/true, /*hasScQueue=*/true, /*scQueueDiffersFromOrig=*/true,
+        /*handoffPending=*/false, /*warmPostSLResume=*/false));
+
+    // Session 20260613_151646: a DLSS-FG suspend->resume bridged by the make-before-break
+    // keep-alive (warm PostSL resume) is NOT an FSR->DLSS transition — the non-origGame queue
+    // is the LIVE DLSS-G proxy PostSL has been submitting on. Clearing it strands the warm
+    // resume (scQueue=null + FSR history => "refusing SL wrapper bootstrap" forever). Preserve it.
+    EXPECT_FALSE(ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
+        /*hadFSR=*/true, /*hasScQueue=*/true, /*scQueueDiffersFromOrig=*/true,
+        /*handoffPending=*/false, /*warmPostSLResume=*/true));
+}
+
 TEST(DXGISharedTest, ConfirmedPostSLStartupRoutingProtectsThroughFirstEightFrames) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 0));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(true, 1));
@@ -4263,6 +4312,41 @@ TEST(DXGISharedTest, PureStreamlineFGOffBypassesReinitCooldownOnlyForNonFSRHealt
         true, false, false, false, true, true, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldBypassPureStreamlineFGOffOverlayReinitCooldown(
         true, false, false, false, true, true, true, true, true));
+}
+
+TEST(DXGISharedTest, ConfirmedPostSLSuspensionBypassesReinitCooldownEvenWithFSRHistory) {
+    using ce::dx12_overlay_policy::ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown;
+
+    // Session 20260613_150750: a DLSS-FG suspend AFTER an FSR phase (sticky
+    // hadFSRFGPhase=1) fell through the pure-DLSS bypass and blanked the live
+    // overlay 60 presents / 672 ms via the generic FG-off reinit cooldown. With the
+    // make-before-break keep-alive latched AND PostSL confirmed rendering this epoch
+    // (the overlay ECL on the SL queue already succeeded), the cooldown is unneeded
+    // regardless of FSR history.
+    EXPECT_TRUE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+        /*slTurnedOff=*/true, /*keepAlive=*/true, /*confirmed=*/true, /*fsrFGApiActive=*/false,
+        /*runtimeOwnedNativeFG=*/false, /*overlayInit=*/true, /*syncInit=*/true, /*scQueue=*/true,
+        /*origGameQueue=*/true, /*deviceRemoved=*/false));
+
+    // Not a Streamline-off edge, no keep-alive latch, or PostSL never confirmed -> keep the cooldown.
+    EXPECT_FALSE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+        false, true, true, false, false, true, true, true, true, false));
+    EXPECT_FALSE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+        true, false, true, false, false, true, true, true, true, false));
+    EXPECT_FALSE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+        true, true, false, false, false, true, true, true, true, false));
+    // A current FSR / native-FG takeover or a removed device keeps the stricter cooldown.
+    EXPECT_FALSE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+        true, true, true, true, false, true, true, true, true, false));
+    EXPECT_FALSE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+        true, true, true, false, true, true, true, true, true, false));
+    EXPECT_FALSE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+        true, true, true, false, false, true, true, true, true, true));
+    // Backend/queue not ready -> keep the cooldown (reinit needs them).
+    EXPECT_FALSE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+        true, true, true, false, false, false, true, true, true, false));
+    EXPECT_FALSE(ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+        true, true, true, false, false, true, false, true, true, false));
 }
 
 TEST(DXGISharedTest, PostSLSyntheticStartupActivationPendingTracksStartupleHandoffBypassState) {
@@ -4874,4 +4958,30 @@ TEST(DXGISharedSourceTest, PreSLFallbackRespectsConfirmedPostSLSuspensionKeepAli
     // The latch guard immediately precedes the uninstall.
     EXPECT_LT(fallbackUninstall - guardLatch, static_cast<size_t>(120));
     EXPECT_NE(text.find("callback stays installed for warm re-ON"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Warm-resume queue preservation (session 20260613_151646: overlay disappeared
+// FOREVER after a DLSS-FG resume). The warm PostSL resume and the post-FSR
+// stale-FSR-queue clear are contradictory; the clear MUST receive the warm-resume
+// flag so it preserves the live proxy queue instead of stranding PostSL.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedSourceTest, StaleFSRQueueClearReceivesWarmResumeFlag) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    // The stale-FSR-queue clear call must pass resumeConfirmedPostSLFromKeepAlive so a warm
+    // DLSS suspend->resume does not clear the live proxy queue PostSL is confirmed on.
+    const size_t clearCall = text.find("ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(");
+    ASSERT_NE(clearCall, std::string::npos);
+    const size_t clearCallEnd = text.find(")) {", clearCall);
+    ASSERT_NE(clearCallEnd, std::string::npos);
+    EXPECT_NE(text.find("resumeConfirmedPostSLFromKeepAlive", clearCall), std::string::npos);
+    EXPECT_LT(text.find("resumeConfirmedPostSLFromKeepAlive", clearCall), clearCallEnd);
 }

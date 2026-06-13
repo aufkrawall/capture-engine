@@ -7295,7 +7295,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 if (ce::dx12_overlay_policy::ShouldClearSwapchainQueueAsStaleFSROwnershipOnStreamlineOn(
                         g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
                         g_SwapchainQueue != nullptr && g_SwapchainQueue != g_OriginalGameQueue,
-                        streamlineStartupHandoffPending)) {
+                        streamlineStartupHandoffPending, resumeConfirmedPostSLFromKeepAlive)) {
                     staleScQueue = g_SwapchainQueue;
                     g_SwapchainQueue = nullptr;
                     g_SwapchainQueueCaptureTime = 0;
@@ -13697,8 +13697,24 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                 currentSwapchainQueue,
                         g_FGCompat.IsFSRFGApiActive(),
                         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
+                // DLSS-FG SUSPEND (slDLSSGSetOptions(off), proxy stays live): the active-FG
+                // preserve path can't fire (streamlineFGRunning already false), so a fresh
+                // proxy swapchain pointer on the same live queue used to blank the live overlay
+                // for the full 90-frame cooldown. The make-before-break keep-alive latch marks
+                // a CONFIRMED PostSL path that is merely suspended (never set during an FSR/
+                // native-FG takeover), so reinit the warm backend immediately on its live queue.
+                const bool immediateReinitAfterConfirmedPostSLSuspension =
+                    ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+                        g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire),
+                        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+                        g_FGCompat.IsFSRFGApiActive(),
+                        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+                        g_FGRuntimeOwnsSwapchain,
+                        currentSwapchainQueue != nullptr && currentCommandQueue != nullptr &&
+                            currentSwapchainQueue == currentCommandQueue);
                 if (guardSwapchainReinit &&
-                    (immediateReinitAfterNoCallbackFFXTakeover || immediateReinitAfterGameSwapchainRecovery)) {
+                    (immediateReinitAfterNoCallbackFFXTakeover || immediateReinitAfterGameSwapchainRecovery ||
+                     immediateReinitAfterConfirmedPostSLSuspension)) {
                     // Enable direction: the enabled ffxConfigure already finalized
                     // the official FFX takeover, applied the staged runtime queue,
                     // and drained CE's overlay GPU work; normal overlay rendering on
@@ -13724,6 +13740,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         "(scQueue=%p origGame=%p cmdQ=%p prevCooldown=%d)",
                         immediateReinitAfterNoCallbackFFXTakeover
                             ? "finalized no-callback official FFX takeover"
+                        : immediateReinitAfterConfirmedPostSLSuspension
+                            ? "confirmed-PostSL DLSS-FG suspension (proxy stays live, no blank)"
                             : "game-created swapchain recovery after explicit native FSR OFF/destroy",
                         currentSwapchainQueue, currentOriginalGameQueue, currentCommandQueue, previousCooldown);
                 } else if (guardSwapchainReinit) {
@@ -15292,6 +15310,18 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // remaining presents.
             const bool keepConfirmedPostSLAliveAcrossOuterOff =
                 slTurnedOff && g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire);
+            // A confirmed-PostSL DLSS-FG SUSPEND (proxy stays live) is safe to rebuild
+            // immediately even WITH FSR history: PostSL confirmed rendering means the
+            // overlay ECL on the runtime-owned SL queue already succeeded this epoch, so
+            // the generic 60-frame reinit cooldown only blanks a provably-live overlay
+            // (session 20260613_150750: 60-present / 672 ms blank). The stricter cooldown
+            // is kept for any current FSR/native-FG ownership or device-removal.
+            const bool bypassConfirmedPostSLSuspensionCooldown =
+                ce::dx12_overlay_policy::ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
+                    slTurnedOff, g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire),
+                    g_PostSLConfirmedRendering.load(std::memory_order_acquire), g_FGCompat.IsFSRFGApiActive(),
+                    HookHasRuntimeOwnedNativeFGPresentPath(), g_State.overlayInit, g_State.syncInit,
+                    g_SwapchainQueue != nullptr, g_OriginalGameQueue != nullptr, FAILED(transitionDeviceHr));
 
             HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d keepAlive=%d)", slTurnedOn ? "ON" : "OFF",
                              allowOverlayRender ? 1 : 0, keepConfirmedPostSLAliveAcrossOuterOff ? 1 : 0);
@@ -15301,12 +15331,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 HookLogImportant(
                     "DX12: [outer] SL FG ON after active PostSL — preserving active PostSL path "
                     "instead of re-entering transition cooldown");
-            } else if (bypassPureStreamlineOffCooldown) {
+            } else if (bypassPureStreamlineOffCooldown || bypassConfirmedPostSLSuspensionCooldown) {
                 g_FGTransitionCooldown = 0;
                 g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 HookLogImportant(
-                    "DX12: [outer] pure Streamline FG OFF — bypassing generic reinit cooldown "
+                    "DX12: [outer] %s — bypassing generic reinit cooldown "
                     "(scQueue=%p origGame=%p devHr=0x%08X)",
+                    bypassPureStreamlineOffCooldown ? "pure Streamline FG OFF"
+                                                    : "confirmed-PostSL DLSS-FG suspension (proxy stays live)",
                     g_SwapchainQueue, g_OriginalGameQueue, (unsigned)transitionDeviceHr);
             } else {
                 g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
@@ -18146,9 +18178,21 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // installed) and zero-ECL interpolated frames inherit coverage from the
     // previous covered present — their visible overlay is composed by the FG
     // runtime / drawn per re-entrant present, not by this ProcessFrame call.
+    //
+    // Inheritance is ONLY valid while the overlay backend is bound to the CURRENT
+    // swapchain (g_State.overlayInit): the runtime can only carry forward a real
+    // overlay-composed frame if one exists on the live chain. During a swapchain
+    // change / suspend where overlayInit was invalidated and reinit is deferred,
+    // the new swapchain presents fresh frames WITHOUT CE's overlay, so inheriting
+    // would falsely mask a real blank (session 20260613_145008: a ~800ms DLSS-FG
+    // suspend blank counted as covered because zero-ECL proxy presents inherited
+    // while overlayInit was false). Gate inheritance on overlayInit so that window
+    // counts as uncovered and the blank is measured.
+    const bool overlayBackendBoundToCurrentSwapchain = g_State.overlayInit;
     const bool coverageInheritsFGComposedOverlay =
-        isInterpolatedFrame ||
-        (streamlineFGRunning && DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr);
+        overlayBackendBoundToCurrentSwapchain &&
+        (isInterpolatedFrame ||
+         (streamlineFGRunning && DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr));
     auto overlayCoverageGuard = ce::make_scope_guard([coverageInheritsFGComposedOverlay]() {
         AccountPresentForOverlayCoverage(coverageInheritsFGComposedOverlay, "ProcessFrameExternal");
     });
