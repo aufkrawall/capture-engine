@@ -11424,6 +11424,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     int probesNeeded = 1;
     bool isPostTransitionProbe = (s_reactivationEpoch > 1 && s_postSLProbeFrames < probesNeeded);
     if (isPostTransitionProbe) {
+        // Probe frames present without an overlay draw — tag the coverage gate
+        // so engage-seam streaks attribute to the probes instead of "unknown".
+        NoteDX12OverlayCoverageGate("postsl-transition-probe");
         s_postSLProbeFrames++;
         ID3D12CommandList* probeList[] = {list};
 
