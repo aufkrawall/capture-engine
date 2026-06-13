@@ -1,5 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
+
 #include "../hook/common/dx12_overlay_policy.h"
 #include "../hook/common/dxgi_factory_policy.h"
 #include "../hook/common/dxgi_shared.h"
@@ -4684,4 +4689,28 @@ TEST(DXGISharedTest, ExplicitEnableColdStartProofBypassesReactivationWarmup) {
     EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(false, false, false, true, false));
     EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(true, false, true, false, false));
     EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(true, false, false, false, true));
+}
+
+// Source invariant (session 20260613_032326): the retained Streamline
+// startup-activation swapchain is an AddRef'd swapchain reference. While CE
+// pins it, DXGI refuses to create a new swapchain on the same HWND, so the
+// game's native swapchain recreation after DLSS->OFF fails E_ACCESSDENIED
+// through every retry and the app aborts its render loop. The churn-
+// suppression OFF path must release the retention (a quick re-ON re-retains
+// per startup-route present), and both CreateSwapChainForHwnd E_ACCESSDENIED
+// recovery paths must release it before retrying.
+TEST(DXGISharedSourceTest, RetainedStartupActivationSwapchainReleasedOnChurnOffAndAccessDeniedRecovery) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    EXPECT_NE(text.find("ReleaseStreamlineStartupActivationSwapchain(\"DX12: Streamline FG OFF (startup churn)\")"),
+              std::string::npos);
+    EXPECT_NE(text.find("DeepHook: CreateSwapChainForHwnd E_ACCESSDENIED recovery"), std::string::npos);
+    EXPECT_NE(text.find("CreateSwapChainForHwnd INLINE: E_ACCESSDENIED recovery"), std::string::npos);
 }

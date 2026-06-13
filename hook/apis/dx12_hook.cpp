@@ -7303,6 +7303,14 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             "DX12: Streamline FG OFF during startup transition — keeping PostSL callback dormant "
             "(churn suppression, epoch=%u)",
             g_PostSLLifecycleEpoch.load(std::memory_order_acquire));
+        // Drop the AddRef'd startup-activation swapchain even on the churn
+        // path: pinning it costs nothing on a quick re-ON (every startup-route
+        // present re-retains it), but if the game proceeds to a full native
+        // teardown instead, CE's reference makes the app's
+        // CreateSwapChainForHwnd on the same HWND fail E_ACCESSDENIED through
+        // all retries (session 20260613_032326: DLSS->OFF stopped the app's
+        // main loop with "no swapchain after OFF request").
+        ReleaseStreamlineStartupActivationSwapchain("DX12: Streamline FG OFF (startup churn)");
         g_SLOffHeuristicGrace.store(600, std::memory_order_release);
         RequestFGDetectionHeuristicReset();
         g_FGCompat.SetHeuristicFSRFGActive(false);
@@ -7647,6 +7655,12 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
                 CleanupRTVs();
                 g_State.overlayInit = false;
             }
+            // The retained Streamline startup-activation swapchain is an
+            // AddRef'd swapchain reference; while CE pins it, DXGI refuses a
+            // new swapchain on the same HWND (session 20260613_032326: the
+            // app's native recreate after DLSS->OFF failed E_ACCESSDENIED
+            // through all retries and stopped its main loop).
+            ReleaseStreamlineStartupActivationSwapchain("DeepHook: CreateSwapChainForHwnd E_ACCESSDENIED recovery");
             HookLogImportant("DeepHook: Released overlay + RTV refs for HWND=%p", hWnd);
 
             // Clear our tracking entries (raw pointers, no Release needed)
@@ -7850,6 +7864,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
                 CleanupRTVs();
                 g_State.overlayInit = false;
             }
+            // See the deep-hook recovery above: a retained startup-activation
+            // swapchain pins the HWND association and makes every retry fail.
+            ReleaseStreamlineStartupActivationSwapchain(
+                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED recovery");
             HookLogImportant("CreateSwapChainForHwnd INLINE: Released overlay + RTV refs for HWND=%p", hWnd);
             {
                 std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
