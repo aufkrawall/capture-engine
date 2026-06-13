@@ -718,6 +718,23 @@ TEST(DXGISharedTest, StablePostSLGapDoesNotForceSceneCooldown) {
                                                                                                   false, true));
 }
 
+TEST(DXGISharedTest, SceneTransitionCooldownSuppressedForRuntimeOwnedOverlayRoute) {
+    using ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute;
+
+    // Any non-normal overlay route makes the scene-gap delta a cadence artifact, so arming
+    // is suppressed (session 20260613_202646: phantom gap=1001ms during FSR → 14-present blank).
+    EXPECT_TRUE(ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(
+        /*runtimeOwnsSwapchain=*/true, /*fsrFGApiActive=*/false, /*runtimeOwnedNativeFGPresentPath=*/false,
+        /*protectedOfficialFFXStartupActive=*/false));
+    EXPECT_TRUE(ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(false, true, false, false));
+    EXPECT_TRUE(ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(false, false, true, false));
+    EXPECT_TRUE(ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(false, false, false, true));
+
+    // Plain normal route (all-FG-off, CE owns the present path): the scene-gap heuristic is
+    // valid here, so it is NOT suppressed.
+    EXPECT_FALSE(ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(false, false, false, false));
+}
+
 TEST(DXGISharedTest, SLPresentRoutingStaysDisabledAcrossNativeFGTeardownAndActiveOwnership) {
     EXPECT_TRUE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForNativeFG(true, false));
     EXPECT_TRUE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForNativeFG(false, true));
@@ -1723,24 +1740,50 @@ TEST(DXGISharedTest, ConfirmedPostSLSuspensionReinitsOverlayImmediatelyInsteadOf
     // immediately on its live queue.
     EXPECT_TRUE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
         /*keepAlive=*/true, /*streamlineFGRunning=*/false, /*fsrFGApiActive=*/false,
-        /*nativeFSRNoCallback=*/false, /*runtimeOwnsSwapchain=*/true, /*scQueueIsLiveCmdQueue=*/true));
+        /*nativeFSRNoCallback=*/false, /*runtimeOwnsSwapchain=*/true, /*scQueueIsLiveCmdQueue=*/true,
+        /*scQueueIsConfirmedPostSLRenderQueue=*/false));
 
     // Without the keep-alive latch this is not a confirmed-PostSL suspension — keep the cooldown.
     EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
-        false, false, false, false, true, true));
+        false, false, false, false, true, true, false));
     // Streamline FG still running is the ACTIVE-FG preserve path's job, not this one.
     EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
-        true, true, false, false, true, true));
+        true, true, false, false, true, true, false));
     // An FSR / native-FG no-callback takeover must keep the quiesce cooldown (device-removal hazard).
     EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
-        true, false, true, false, true, true));
+        true, false, true, false, true, true, false));
     EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
-        true, false, false, true, true, true));
+        true, false, false, true, true, true, false));
     // Must be the live runtime-owned queue (cross-queue / non-owned change keeps the cooldown).
     EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
-        true, false, false, false, false, true));
+        true, false, false, false, false, true, false));
+    // scQueue matches NEITHER the live cmdQueue NOR the confirmed PostSL render queue → keep cooldown.
     EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
-        true, false, false, false, true, false));
+        true, false, false, false, true, false, false));
+}
+
+TEST(DXGISharedTest, ConfirmedPostSLSuspensionReinitsImmediatelyWhenSwapchainQueueIsConfirmedPostSLQueue) {
+    using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange;
+
+    // Session 20260613_202646 (90-present blank): at the DLSS-suspend edge the live
+    // confirmed-PostSL queue is the DLSS-G proxy queue (== scQueue == g_PostSLLastWorkingQueue,
+    // 180+ confirmed submits), while the live wrapper cmdQueue is a SEPARATE object. The strict
+    // scQueue==cmdQueue test wrongly rejected this safe suspend and dropped it into the 90-frame
+    // cooldown. The confirmed PostSL render queue alone now satisfies the queue proof.
+    EXPECT_TRUE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        /*keepAlive=*/true, /*streamlineFGRunning=*/false, /*fsrFGApiActive=*/false,
+        /*nativeFSRNoCallback=*/false, /*runtimeOwnsSwapchain=*/true, /*scQueueIsLiveCmdQueue=*/false,
+        /*scQueueIsConfirmedPostSLRenderQueue=*/true));
+
+    // The relaxed queue proof does NOT loosen any of the hard suspension guards.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        false, false, false, false, true, false, true));  // no keep-alive
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        true, true, false, false, true, false, true));  // SL FG running
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        true, false, true, false, true, false, true));  // FSR API active
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+        true, false, false, false, false, false, true));  // not runtime-owned
 }
 
 TEST(DXGISharedTest, ReusesValidatedLastWorkingQueueForResumedDLSSDuringPostFSRInactiveRecovery) {
@@ -1798,6 +1841,31 @@ TEST(DXGISharedTest, TransitionCooldownOverrideReplacesStaleLongCooldownForSettl
     EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(0, 15, true), 15);
     EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(10, 60, false), 60);
     EXPECT_EQ(ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(90, 15, false), 90);
+}
+
+// Fix 2 contract (session 20260613_202646, 60-present after-FSR-history DLSS-suspend blank):
+// when the make-before-break keep-alive is armed for a confirmed-PostSL suspension, the
+// "after FSR history" reinit deferral must collapse to 0 frames (immediate warm reinit)
+// regardless of any stale cooldown, while a non-suspension keeps the protective 60.
+TEST(DXGISharedTest, ConfirmedPostSLSuspensionAfterFSRHistoryResolvesReinitCooldownToZero) {
+    using ce::dx12_overlay_policy::ResolveTransitionCooldownFrames;
+    using ce::dx12_overlay_policy::ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff;
+
+    // Confirmed PostSL, no FSR/native-FG takeover, not protected-FFX startup → keep-alive armed.
+    const bool keepAlive = ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(
+        /*postSLConfirmedRendering=*/true, /*fsrFGApiActive=*/false, /*runtimeOwnedNativeFGPresentPath=*/false,
+        /*protectedOfficialFFXStartupPending=*/false);
+    EXPECT_TRUE(keepAlive);
+    const bool immediate = keepAlive && /*!deviceRemoved=*/true;
+    const int cooldownFrames = immediate ? 0 : 60;
+    // override == immediate || useShort; here useShort is false, so override == immediate.
+    EXPECT_EQ(ResolveTransitionCooldownFrames(/*existing=*/90, cooldownFrames, /*override=*/immediate), 0);
+
+    // No confirmed PostSL (e.g. a real teardown) keeps the protective 60-frame cooldown.
+    const bool noKeepAlive =
+        ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(false, false, false, false);
+    EXPECT_FALSE(noKeepAlive);
+    EXPECT_EQ(ResolveTransitionCooldownFrames(/*existing=*/0, 60, /*override=*/false), 60);
 }
 
 TEST(DXGISharedTest, InactiveStreamlineRuntimeStateDoesNotStartFGCooldown) {

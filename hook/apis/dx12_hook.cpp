@@ -7539,20 +7539,43 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             const ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
             const bool commandQueueSettledToPrimary =
                 currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue;
-            const int cooldownFrames = ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
-                                           commandQueueSettledToPrimary, g_HadFSRFGPhase, true)
-                                           ? 15
-                                           : 60;
+            // DLSS-FG SUSPEND with FSR history (slDLSSGSetOptions(off), proxy stays live):
+            // when the make-before-break keep-alive is armed this is a CONFIRMED PostSL
+            // suspension, not a teardown. PostSL confirmed rendering means the overlay ECL on
+            // the runtime-owned SL queue already succeeded many times this epoch (device
+            // demonstrably healthy on that exact path) and the proxy keeps presenting, so
+            // there is no Streamline teardown for the 60-frame deferral to wait for — it only
+            // blanks a provably-live overlay (session 20260613_202646: 60-present /
+            // confirmedDuringStreak=1 blank, gate=overlay-backend-uninitialized). The bypass
+            // mirrors ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown but is gated on
+            // keepConfirmedPostSLAliveAcrossOff (captured at function entry, BEFORE the teardown
+            // above nulled the swapchain queue / cleared overlayInit) plus a device-health guard;
+            // a real FSR/native-FG takeover or removed device keeps the strict cooldown.
+            auto* suspendDevice = g_Device.load(std::memory_order_acquire);
+            const bool suspendDeviceRemoved =
+                suspendDevice != nullptr && FAILED(suspendDevice->GetDeviceRemovedReason());
+            const bool confirmedPostSLSuspensionImmediateReinit =
+                keepConfirmedPostSLAliveAcrossOff && !suspendDeviceRemoved;
+            const bool useShortPostFSRCooldown = ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
+                commandQueueSettledToPrimary, g_HadFSRFGPhase, true);
+            const int cooldownFrames =
+                confirmedPostSLSuspensionImmediateReinit ? 0 : (useShortPostFSRCooldown ? 15 : 60);
             g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
                 g_FGTransitionCooldown, cooldownFrames,
-                ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(commandQueueSettledToPrimary,
-                                                                               g_HadFSRFGPhase, true));
+                confirmedPostSLSuspensionImmediateReinit || useShortPostFSRCooldown);
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
             g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
-            HookLogImportant(
-                "DX12: Streamline FG OFF after FSR history — deferring non-FG overlay reinit for %d frames so "
-                "Talos/Streamline teardown can settle before pre-SL resources are rebuilt",
-                g_FGTransitionCooldown);
+            if (confirmedPostSLSuspensionImmediateReinit) {
+                HookLogImportant(
+                    "DX12: Streamline FG OFF after FSR history — confirmed-PostSL suspension (proxy stays live, "
+                    "keep-alive armed), immediate warm overlay reinit instead of 60-frame blank (cooldown=%d)",
+                    g_FGTransitionCooldown);
+            } else {
+                HookLogImportant(
+                    "DX12: Streamline FG OFF after FSR history — deferring non-FG overlay reinit for %d frames so "
+                    "Talos/Streamline teardown can settle before pre-SL resources are rebuilt",
+                    g_FGTransitionCooldown);
+            }
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — invalidated sync resources for delayed reinit");
             if (ce::dx12_overlay_policy::ShouldPreserveRealECLForDelayedPostFSRNonFGRecovery(
@@ -13711,7 +13734,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
                         g_FGRuntimeOwnsSwapchain,
                         currentSwapchainQueue != nullptr && currentCommandQueue != nullptr &&
-                            currentSwapchainQueue == currentCommandQueue);
+                            currentSwapchainQueue == currentCommandQueue,
+                        // The DLSS-G proxy renders the overlay on g_PostSLLastWorkingQueue
+                        // (== scQueue), which persists across a suspend even when the live
+                        // wrapper cmdQueue differs. Accept it as the confirmed PostSL queue.
+                        currentSwapchainQueue != nullptr && g_PostSLLastWorkingQueue != nullptr &&
+                            currentSwapchainQueue == g_PostSLLastWorkingQueue);
                 if (guardSwapchainReinit &&
                     (immediateReinitAfterNoCallbackFFXTakeover || immediateReinitAfterGameSwapchainRecovery ||
                      immediateReinitAfterConfirmedPostSLSuspension)) {
@@ -16196,6 +16224,16 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // suppression is removed. PostSL is not the transport here, so
                 // leave its state untouched.
                 g_FGTransitionCooldown = 0;
+                // A stale scene-transition cooldown (e.g. armed during the prior FSR
+                // phase) must never blank the live overlay C1 just decided to keep
+                // drawing — clearing it here is the safety net for the phantom-arming
+                // path (session 20260613_202646, 14-present FSR->OFF blank).
+                if (g_SceneTransitionCooldown.load(std::memory_order_acquire) > 0) {
+                    g_SceneTransitionCooldown.store(0, std::memory_order_release);
+                    HookLogImportant(
+                        "DX12: Cleared stale scene-transition cooldown at FG transition keep-drawing edge — "
+                        "live overlay is never blanked");
+                }
                 NoteDX12OverlayCoverageGate("live-overlay-kept-drawing");
             } else {
                 --g_FGTransitionCooldown;
@@ -16564,10 +16602,23 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         // post-SL (SL FG) overlay paths.
         {
             static LARGE_INTEGER s_lastProcessFrameTime = {};
+            static bool s_lastSceneBlockSuppressedRoute = false;
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
 
-            if (s_lastProcessFrameTime.QuadPart != 0) {
+            // While the overlay is presented via a runtime-owned / FSR-callback / PostSL
+            // route, this scene block runs at a reduced cadence, so its delta is a
+            // measurement artifact, not a real stall. Do not arm on such a route, and
+            // discard any gap that SPANS such a route (previous run was suppressed) so the
+            // first normal-route frame after the route change can't false-arm either.
+            const bool runtimeOwnedOverlayRoute =
+                ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(
+                    g_FGRuntimeOwnsSwapchain, g_FGCompat.IsFSRFGApiActive(),
+                    HookHasRuntimeOwnedNativeFGPresentPath(),
+                    ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup());
+
+            if (s_lastProcessFrameTime.QuadPart != 0 && !runtimeOwnedOverlayRoute &&
+                !s_lastSceneBlockSuppressedRoute) {
                 LARGE_INTEGER freq;
                 QueryPerformanceFrequency(&freq);
                 double deltaMs =
@@ -16619,8 +16670,19 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             deltaMs, cooldown);
                     }
                 }
+            } else if (runtimeOwnedOverlayRoute && s_lastProcessFrameTime.QuadPart != 0) {
+                static std::atomic<int> s_runtimeRouteSceneCooldownSuppressLogCount{0};
+                const int logCount =
+                    s_runtimeRouteSceneCooldownSuppressLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: Suppressing scene transition cooldown arming on runtime-owned/FSR-callback overlay "
+                        "route (cadence artifact, not a stall) — fsrApi=%d runtimeOwns=%d log=%d",
+                        g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0, logCount + 1);
+                }
             }
             s_lastProcessFrameTime = now;
+            s_lastSceneBlockSuppressedRoute = runtimeOwnedOverlayRoute;
         }
 
         if (captureBeforeOverlay) {
@@ -16714,6 +16776,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     g_SceneTransitionCooldown.store(cd - 1, std::memory_order_release);
                     if (cd == 1)
                         HookLogImportant("DX12: Scene transition cooldown complete — resuming overlay");
+                    NoteDX12OverlayCoverageGate("scene-transition-cooldown");
                     goto skip_overlay_draw;
                 }
             }

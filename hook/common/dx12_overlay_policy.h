@@ -782,12 +782,23 @@ inline bool ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFS
 // same flag resets as the 90-frame cooldown branch it replaces; only the timing
 // changes. The suspend has no Streamline teardown to wait for (the proxy is alive),
 // so the documented post-teardown first-ECL DEVICE_REMOVED hazard does not apply.
+//
+// QUEUE PROOF (relaxed 2026-06-13, session 20260613_202646 90-present blank): the live
+// confirmed-PostSL queue is satisfied by EITHER the live command queue OR the confirmed
+// PostSL render queue (g_PostSLLastWorkingQueue). A DLSS-G proxy renders the overlay on
+// its proxy queue (== scQueue == lastWorkingQueue, 180+ confirmed submits) which persists
+// across a suspend, while the SL wrapper cmdQueue is a SEPARATE valid object. The original
+// strict `scQueue==cmdQueue` test wrongly rejected the safe suspend when scQueue equalled
+// the proxy/lastWorkingQueue but not the wrapper cmdQueue, dropping it into the 90-frame
+// cooldown. Accepting the confirmed PostSL render queue closes that gap; the keep-alive +
+// runtime-ownership + no-FSR/native-FG guards keep the strict cooldown for real takeovers.
 inline bool ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
     bool postSLExplicitOffKeepAlive, bool streamlineFGRunning, bool fsrFGApiActive,
     bool nativeFSRInternalNoCallbackComposition, bool runtimeOwnsSwapchain,
-    bool swapchainQueueIsLiveCommandQueue) {
+    bool swapchainQueueIsLiveCommandQueue, bool swapchainQueueIsConfirmedPostSLRenderQueue) {
     return postSLExplicitOffKeepAlive && !streamlineFGRunning && !fsrFGApiActive &&
-           !nativeFSRInternalNoCallbackComposition && runtimeOwnsSwapchain && swapchainQueueIsLiveCommandQueue;
+           !nativeFSRInternalNoCallbackComposition && runtimeOwnsSwapchain &&
+           (swapchainQueueIsLiveCommandQueue || swapchainQueueIsConfirmedPostSLRenderQueue);
 }
 
 // Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown
@@ -2040,6 +2051,26 @@ inline bool ShouldSuppressSceneTransitionCooldownForStablePostSLGap(bool streaml
     // the swapchain/device has actually entered a reset path.
     return streamlineFGRunning && postSLConfirmedRendering && hasPostSLLastWorkingQueue && !swapchainInvalid &&
            !deviceRemoved;
+}
+
+// The scene-transition cooldown measures the frame-to-frame delta of the scene
+// block inside DX12_ProcessFrameExternal. That block only runs when CE renders
+// the overlay through its NORMAL separate-GPU route. While the overlay is
+// presented via a runtime-owned / FSR-callback / PostSL route (the runtime owns
+// the swapchain, authoritative FSR is active, a runtime-owned native-FG present
+// path is live, or protected official-FFX startup is in progress), CE's normal
+// scene block is reached at a reduced cadence (≈1 Hz on the FSR callback route),
+// so its delta is a MEASUREMENT ARTIFACT, not a real loading-screen stall. Arming
+// the cooldown there produces a phantom (observed: repeated `gap=1001ms` every
+// ~1.2 s during FSR, session 20260613_202646) that never ticks during the
+// non-normal route and then blanks the NORMAL-route overlay for ~14 presents on
+// the next FG transition. Suppress arming on these routes; a gap that spans such
+// a route must also be discarded by the caller (track the previous run's route).
+inline bool ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(
+    bool runtimeOwnsSwapchain, bool fsrFGApiActive, bool runtimeOwnedNativeFGPresentPath,
+    bool protectedOfficialFFXStartupActive) {
+    return runtimeOwnsSwapchain || fsrFGApiActive || runtimeOwnedNativeFGPresentPath ||
+           protectedOfficialFFXStartupActive;
 }
 
 inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
