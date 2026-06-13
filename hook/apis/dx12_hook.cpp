@@ -10552,6 +10552,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                         "(fmt=%d buffers=%u hwnd=%p scQueue=%p cmdQueue=%p origQueue=%p)",
                         (int)bootstrapDesc.BufferDesc.Format, bootstrapDesc.BufferCount, bootstrapDesc.OutputWindow,
                         bootstrapScQueue, bootstrapCmdQueue, bootstrapOrigQueue);
+                    // Attribution for the FSR->DLSS-comeback floor gap: when this reactivation
+                    // present rebuilds the backend before the first confirmed PostSL draw lands
+                    // (the draw covers the NEXT present), the present is uncovered. Label the
+                    // coverage gate here so that documented 1-present floor reports
+                    // `postsl-bootstrap-reactivation` instead of `unknown` (session
+                    // 20260613_211048: the sole gate=unknown streak). Read only if uncovered.
+                    NoteDX12OverlayCoverageGate("postsl-bootstrap-reactivation");
 
                     if (InitImGui(dev, (int)bootstrapDesc.BufferCount, bootstrapDesc.BufferDesc.Format,
                                   bootstrapDesc.OutputWindow)) {
