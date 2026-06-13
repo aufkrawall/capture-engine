@@ -132,6 +132,21 @@ inline bool FrameMarkerBit(uint16_t marker, int bitIndex) {
     return ((marker >> bitIndex) & 1u) != 0;
 }
 
+inline uint32_t EncoderStressTileHash(uint32_t tileX, uint32_t tileY, uint64_t frameId, int paletteIndex) {
+    uint32_t value = 0x9e3779b9u;
+    value ^= tileX + 0x85ebca6bu + (value << 6) + (value >> 2);
+    value ^= tileY + 0xc2b2ae35u + (value << 6) + (value >> 2);
+    value ^= static_cast<uint32_t>(frameId) + 0x27d4eb2fu + (value << 6) + (value >> 2);
+    value ^= static_cast<uint32_t>(frameId >> 32) + 0x165667b1u + (value << 6) + (value >> 2);
+    value ^= static_cast<uint32_t>(paletteIndex < 0 ? 0 : paletteIndex) * 0x7feb352du;
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return value;
+}
+
 inline uint16_t DecodeFrameMarkerBits(const bool* bits, int bitCount) {
     uint16_t marker = 0;
     const int count = std::min(bitCount, kFrameMarkerBits);

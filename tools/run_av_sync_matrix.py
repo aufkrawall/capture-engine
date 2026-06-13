@@ -39,6 +39,7 @@ class Scenario:
     audio_layout: str = ""
     width: Optional[int] = None
     height: Optional[int] = None
+    encoder_stress_scene: bool = False
     nvenc_preset: str = "p1"
     rate_control: str = "VBR"
     bitrate: str = "125Mbps"
@@ -434,6 +435,72 @@ def run_analyzer(command, stdout_path):
     return result.returncode
 
 
+def load_json_file(path):
+    try:
+        if path and path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def parse_cadence_shortfall_ms(value):
+    text = str(value or "").strip()
+    if text.endswith("ms"):
+        text = text[:-2]
+    if "/" in text:
+        text = text.split("/", 1)[1]
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def overload_requirements(report, min_shortfall_ms):
+    evidence = (report or {}).get("evidence", {})
+    counts = evidence.get("log_counts", {})
+    perf_csv = evidence.get("perf_csv", [])
+    smoothness = evidence.get("wgc_smoothness_summary", [])
+    cadence_events = evidence.get("wgc_cadence_events", [])
+    encoder_limited_drops = counts.get("wgc_encoder_limited_source_drop", 0) + sum(
+        int(item.get("encoder_limited_drops", 0)) for item in smoothness
+    )
+    max_shortfall_ms = max(
+        [float(item.get("shortfall_max_ms", 0.0)) for item in smoothness]
+        + [parse_cadence_shortfall_ms(item.get("shortfall")) for item in cadence_events],
+        default=0.0,
+    )
+    encoder_pressure = (
+        counts.get("wgc_output_limited", 0) > 0
+        or any(item.get("overload_rows", 0) > 0 for item in perf_csv)
+        or max_shortfall_ms >= min_shortfall_ms
+        or encoder_limited_drops > 0
+    )
+    wgc_overload_flags = (
+        any(item.get("overload_rows", 0) > 0 for item in perf_csv)
+        or any(str(item.get("overload", "0")).lower() not in ("0", "0x0") for item in cadence_events)
+        or counts.get("wgc_output_limited", 0) > 0
+    )
+    encoder_limited_cadence = (
+        counts.get("wgc_encoder_limited_source_drop", 0) > 0
+        or any(str(item.get("mode", "")).lower() == "encoder_limited" for item in cadence_events)
+        or any(item.get("encoder_limited_drops", 0) > 0 for item in smoothness)
+    )
+    shortfall_or_drop_pressure = max_shortfall_ms >= min_shortfall_ms or encoder_limited_drops > 0
+    met = encoder_pressure and wgc_overload_flags and shortfall_or_drop_pressure and encoder_limited_cadence
+    return {
+        "required": True,
+        "met": met,
+        "encoder_pressure": encoder_pressure,
+        "wgc_overload_flags": wgc_overload_flags,
+        "max_shortfall_ms": max_shortfall_ms,
+        "min_shortfall_ms": min_shortfall_ms,
+        "encoder_limited_drops": encoder_limited_drops,
+        "shortfall_or_drop_pressure": shortfall_or_drop_pressure,
+        "encoder_limited_cadence": encoder_limited_cadence,
+    }
+
+
 def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     scenario_dir = run_root / scenario.name
     captures_dir = scenario_dir / "captures"
@@ -491,6 +558,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         "--analysis-start-sec",
         args.analysis_start_sec,
     ]
+    if scenario.encoder_stress_scene or args.encoder_stress_scene:
+        launch.append("--encoder-stress-scene")
     if args.app_audio_clock_scheduling:
         launch.append("--audio-clock-scheduling")
     if args.allow_tearing:
@@ -535,6 +604,7 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "gpu_load": scenario_gpu_load,
             "width": scenario_width,
             "height": scenario_height,
+            "encoder_stress_scene": scenario.encoder_stress_scene or args.encoder_stress_scene,
             "nvenc_preset": scenario.nvenc_preset,
             "rate_control": scenario.rate_control,
             "bitrate": scenario.bitrate,
@@ -573,6 +643,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         "analyzer_exit_code": None,
         "triage_exit_code": None,
         "passed": False,
+        "inconclusive": False,
+        "overload_requirements": None,
         "failure": None,
     }
 
@@ -662,6 +734,24 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             result["failure"] = "analyzer failed"
         elif result["triage_exit_code"] not in (None, 0):
             result["failure"] = "triage analyzer failed"
+        triage_report = load_json_file(triage_json) if result["triage_exit_code"] == 0 else None
+        if result["passed"] and triage_report:
+            faults = triage_report.get("faults", {})
+            strict_triage_faults = [
+                name
+                for name in ("audio_timeline", "visual_timeline", "wgc_encoder_overload_policy")
+                if faults.get(name)
+            ]
+            if strict_triage_faults:
+                result["passed"] = False
+                result["failure"] = "triage strict fault: " + ",".join(strict_triage_faults)
+        if args.require_overload:
+            requirement = overload_requirements(triage_report, args.min_overload_shortfall_ms)
+            result["overload_requirements"] = requirement
+            if not requirement["met"] and result["passed"]:
+                result["passed"] = False
+                result["inconclusive"] = True
+                result["failure"] = "required WGC encoder overload was not reached"
 
     scenario_report_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(f"  {'PASS' if result['passed'] else 'FAIL'} report={scenario_report_path}")
@@ -697,6 +787,13 @@ def build_scenarios(args):
                      max_bitrate="240Mbps"),
             Scenario("inject", "aac", 120, label="mild_encoder_pressure", duration_sec=20, width=1920, height=1080,
                      gpu_load=150),
+        ]
+    if args.profile == "wgc-overload":
+        return [
+            Scenario("wgc", "alac", 120, label=f"wgc_overload_{preset}_4k120_entropy", duration_sec=25,
+                     app_fps=240, width=3840, height=2160, gpu_load=150, encoder_stress_scene=True,
+                     nvenc_preset=preset, bitrate="180Mbps", max_bitrate="260Mbps")
+            for preset in ("p5", "p6", "p7")
         ]
     if args.profile == "full":
         return build_matrix_scenarios(SUPPORTED_METHODS, SUPPORTED_CODECS, [60, 120])
@@ -741,13 +838,14 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Run deterministic A/V sync capture scenarios and analyze them.")
     parser.add_argument(
         "--profile",
-        choices=["quick", "codec-pass", "stress", "full", "long-soak", "custom"],
+        choices=["quick", "codec-pass", "stress", "wgc-overload", "full", "long-soak", "custom"],
         default="quick",
         help="Scenario profile. Bare runner defaults to the fast zero-drift quick gate.",
     )
     parser.add_argument("--fast-zero-drift", dest="profile_aliases", action="append_const", const="quick")
     parser.add_argument("--codec-finalization-pass", dest="profile_aliases", action="append_const", const="codec-pass")
     parser.add_argument("--short-stress", dest="profile_aliases", action="append_const", const="stress")
+    parser.add_argument("--wgc-overload-gate", dest="profile_aliases", action="append_const", const="wgc-overload")
     parser.add_argument("--full-matrix", dest="profile_aliases", action="append_const", const="full")
     parser.add_argument("--long-soak", dest="profile_aliases", action="append_const", const="long-soak")
     parser.add_argument("--long-soak-minutes", type=float, default=40.0)
@@ -767,6 +865,7 @@ def build_parser():
     parser.add_argument("--fullscreen", type=int, choices=[0, 1], default=1)
     parser.add_argument("--window-chrome", type=int, choices=[0, 1], default=0)
     parser.add_argument("--gpu-load", type=int, default=0)
+    parser.add_argument("--encoder-stress-scene", action="store_true")
     parser.add_argument("--nvenc-preset", default="p1")
     parser.add_argument("--rate-control", default="VBR")
     parser.add_argument("--bitrate", default="125Mbps")
@@ -811,6 +910,8 @@ def build_parser():
     parser.add_argument("--no-microphone", dest="include_microphone", action="store_false")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
+    parser.add_argument("--require-overload", action="store_true")
+    parser.add_argument("--min-overload-shortfall-ms", type=float, default=80.0)
     parser.add_argument("--self-test", action="store_true")
     parser.set_defaults(include_microphone=True, app_audio_clock_scheduling=True)
     return parser
@@ -826,6 +927,8 @@ def parse_args(argv=None):
         args.profile = aliases[-1]
     elif args.profile == "quick" and explicit_matrix_selection(argv):
         args.profile = "custom"
+    if args.profile == "wgc-overload":
+        args.require_overload = True
     if args.long_soak_minutes < 30.0 or args.long_soak_minutes > 45.0:
         fail("--long-soak-minutes must be between 30 and 45")
     return args
@@ -855,6 +958,41 @@ def self_test():
     assert any(str(scenario.app_fps) == "45" for scenario in stress_scenarios)
     assert any(str(scenario.app_fps) == "240" for scenario in stress_scenarios)
     assert any(scenario.capture_method == "wgc" and scenario.nvenc_preset == "p5" for scenario in stress_scenarios)
+
+    overload = parse_args(["--wgc-overload-gate", "--dry-run"])
+    overload_scenarios = build_scenarios(overload)
+    assert overload.require_overload
+    assert len(overload_scenarios) == 3
+    assert [scenario.nvenc_preset for scenario in overload_scenarios] == ["p5", "p6", "p7"]
+    assert all(scenario.capture_method == "wgc" for scenario in overload_scenarios)
+    assert all(scenario.encoder_stress_scene for scenario in overload_scenarios)
+    assert all(scenario.width == 3840 and scenario.height == 2160 for scenario in overload_scenarios)
+    assert not overload_requirements({"evidence": {"log_counts": {}}}, 80.0)["met"]
+    assert overload_requirements(
+        {
+            "evidence": {
+                "log_counts": {"wgc_output_limited": 1, "wgc_encoder_limited_source_drop": 2},
+                "perf_csv": [{"overload_rows": 5}],
+                "wgc_smoothness_summary": [{"shortfall_max_ms": 120.0, "encoder_limited_drops": 2}],
+                "wgc_cadence_events": [{"mode": "encoder_limited", "shortfall": "15/125.0ms", "overload": "0x1"}],
+            }
+        },
+        80.0,
+    )["met"]
+    bounded_overload = overload_requirements(
+        {
+            "evidence": {
+                "log_counts": {"wgc_output_limited": 1},
+                "perf_csv": [{"overload_rows": 3}],
+                "wgc_smoothness_summary": [{"shortfall_max_ms": 30.0, "encoder_limited_drops": 4}],
+                "wgc_cadence_events": [{"mode": "encoder_limited", "shortfall": "4/30.0ms", "overload": "0x1"}],
+            }
+        },
+        80.0,
+    )
+    assert bounded_overload["met"]
+    assert bounded_overload["shortfall_or_drop_pressure"]
+    assert bounded_overload["encoder_limited_drops"] == 4
 
     full = parse_args(["--full-matrix", "--dry-run"])
     assert len(build_scenarios(full)) == len(SUPPORTED_METHODS) * len(SUPPORTED_CODECS) * 2
@@ -917,11 +1055,16 @@ def main(argv=None):
 
     snapshot = read_config_snapshot()
     results = []
+    adaptive_overload = args.profile == "wgc-overload"
     try:
         for scenario in scenarios:
             result = run_scenario(args, scenario, run_root, ce_exe, app_exe)
             results.append(result)
+            if adaptive_overload and result["passed"]:
+                break
             if not result["passed"] and not args.keep_going:
+                if adaptive_overload and result.get("inconclusive"):
+                    continue
                 break
     finally:
         restore_config(snapshot)
@@ -931,7 +1074,8 @@ def main(argv=None):
         "schema": "ce-avsync-matrix-report-v1",
         "run_root": str(run_root),
         "results": results,
-        "passed": bool(results) and all(result["passed"] for result in results),
+        "passed": bool(results) and (any(result["passed"] for result in results)
+                                     if adaptive_overload else all(result["passed"] for result in results)),
     }
     run_root.mkdir(parents=True, exist_ok=True)
     matrix_report_path = run_root / "matrix_report.json"

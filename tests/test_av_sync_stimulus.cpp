@@ -53,6 +53,14 @@ TEST(AvSyncStimulusTest, FrameMarkerRedundancyDetectsChecksumAndParity) {
     EXPECT_NE(avs::FrameMarkerChecksum(marker, 5), avs::FrameMarkerChecksum(marker ^ 0x0001u, 5));
 }
 
+TEST(AvSyncStimulusTest, EncoderStressTileHashIsDeterministicAndFrameVariant) {
+    const uint32_t base = avs::EncoderStressTileHash(3, 7, 100, 2);
+    EXPECT_EQ(base, avs::EncoderStressTileHash(3, 7, 100, 2));
+    EXPECT_NE(base, avs::EncoderStressTileHash(4, 7, 100, 2));
+    EXPECT_NE(base, avs::EncoderStressTileHash(3, 7, 101, 2));
+    EXPECT_NE(base, avs::EncoderStressTileHash(3, 7, 100, 3));
+}
+
 TEST(AvSyncStimulusTest, SourceStallSpecParsesStartAndDuration) {
     avs::SourceStallSpec spec;
     EXPECT_TRUE(avs::ParseSourceStallSpec("8.0:300", &spec));

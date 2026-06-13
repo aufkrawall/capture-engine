@@ -44,6 +44,7 @@ constexpr uint32_t kWgcMaxLiveVisualDebtFrames = 32;
 constexpr uint32_t kWgcMaxLiveSchedulerRebaseTicksPerLoop = 1;
 constexpr uint32_t kWgcEncoderLimitedLiveVisualDebtMs = 50;
 constexpr uint32_t kWgcEncoderLimitedLiveVisualDebtFrames = 3;
+constexpr uint32_t kWgcEncoderLimitedSourceBufferFloorFrames = 4;
 constexpr uint32_t kWgcEncoderLimitedLiveSchedulerRebaseTicksPerLoop = 4;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
@@ -284,13 +285,54 @@ inline bool IsWgcSourceHealthyForLiveCatchup(uint32_t outputFps, uint32_t recent
            noFreshTickPermille < kWgcLowSourceEmptyTickPermille;
 }
 
-inline bool IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(uint32_t outputFps, uint32_t recentInputMin250Fps,
-                                                                    uint32_t noFreshTickPermille, bool lowSourceMode) {
-    if (lowSourceMode || outputFps == 0) {
+inline bool IsWgcInputBelowTarget(uint32_t outputFps, uint32_t recentInputMin250Fps, uint32_t recentInputMin500Fps,
+                                  uint32_t fpsMargin = kWgcRecoverySourceMarginFps) {
+    if (outputFps == 0) {
         return false;
     }
 
-    return recentInputMin250Fps >= outputFps && noFreshTickPermille < kWgcLowSourceEmptyTickPermille;
+    return recentInputMin250Fps + fpsMargin < outputFps || recentInputMin500Fps + fpsMargin < outputFps;
+}
+
+inline bool IsWgcTrueSourceStarvedForRecovery(uint32_t outputFps, uint32_t recentInputMin250Fps,
+                                              uint32_t recentInputMin500Fps, uint32_t noFreshTickPermille,
+                                              uint32_t bufferedWgcFrames, bool capacityPressure) {
+    if (!IsWgcInputBelowTarget(outputFps, recentInputMin250Fps, recentInputMin500Fps)) {
+        return false;
+    }
+
+    if (capacityPressure && bufferedWgcFrames >= kWgcEncoderLimitedSourceBufferFloorFrames &&
+        noFreshTickPermille < kWgcDeepUnderfeedEmptyTickPermille) {
+        return false;
+    }
+
+    return true;
+}
+
+inline bool IsWgcSourceHealthyEnoughForEncoderLimitedSmoothness(uint32_t outputFps, uint32_t recentInputMin250Fps,
+                                                               uint32_t recentInputMin500Fps,
+                                                               uint32_t noFreshTickPermille,
+                                                               uint32_t bufferedWgcFrames) {
+    if (outputFps == 0 || (recentInputMin250Fps == 0 && recentInputMin500Fps == 0)) {
+        return false;
+    }
+
+    if (noFreshTickPermille >= kWgcDeepUnderfeedEmptyTickPermille) {
+        return false;
+    }
+
+    if (!IsWgcInputBelowTarget(outputFps, recentInputMin250Fps, recentInputMin500Fps)) {
+        return true;
+    }
+
+    return bufferedWgcFrames >= kWgcEncoderLimitedSourceBufferFloorFrames;
+}
+
+inline bool IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(uint32_t outputFps, uint32_t recentInputMin250Fps,
+                                                                    uint32_t noFreshTickPermille, bool lowSourceMode) {
+    (void)lowSourceMode;
+    return IsWgcSourceHealthyEnoughForEncoderLimitedSmoothness(outputFps, recentInputMin250Fps, recentInputMin250Fps,
+                                                              noFreshTickPermille, 0);
 }
 
 inline bool IsWgcSourceDegradedForLiveCatchup(uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
@@ -926,8 +968,8 @@ inline bool IsWgcSourceStarved(const WgcAdaptiveTelemetry& telemetry,
         return false;
     }
 
-    return telemetry.recentInputMin250Fps + fpsMargin < telemetry.outputFps ||
-           telemetry.recentInputMin500Fps + fpsMargin < telemetry.outputFps;
+    return IsWgcInputBelowTarget(telemetry.outputFps, telemetry.recentInputMin250Fps,
+                                 telemetry.recentInputMin500Fps, fpsMargin);
 }
 
 inline bool IsWgcSchedulerDeliveryLimited(const WgcAdaptiveTelemetry& telemetry,
@@ -948,8 +990,18 @@ inline WgcLiveRecoveryState ClassifyWgcLiveRecoveryState(const WgcAdaptiveTeleme
         return WgcLiveRecoveryState::kHealthy;
     }
 
-    if (IsWgcSourceStarved(telemetry)) {
+    if (IsWgcTrueSourceStarvedForRecovery(telemetry.outputFps, telemetry.recentInputMin250Fps,
+                                          telemetry.recentInputMin500Fps, telemetry.emptyTickPermille,
+                                          telemetry.bufferedWgcFrames, encoderBottlenecked)) {
         return WgcLiveRecoveryState::kSourceStarved;
+    }
+
+    if (encoderBottlenecked && outputShortfallTicks >= kWgcRecoveryEnterShortfallTicks &&
+        IsWgcSourceHealthyEnoughForEncoderLimitedSmoothness(telemetry.outputFps, telemetry.recentInputMin250Fps,
+                                                            telemetry.recentInputMin500Fps,
+                                                            telemetry.emptyTickPermille,
+                                                            telemetry.bufferedWgcFrames)) {
+        return WgcLiveRecoveryState::kEncoderLimited;
     }
 
     if (IsWgcSchedulerDeliveryLimited(telemetry)) {

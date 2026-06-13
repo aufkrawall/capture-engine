@@ -631,6 +631,51 @@ TEST(CapturePipelinePolicyTest, WgcLiveRecoveryStateClassificationIsExplicit) {
                  "encoder-limited");
 }
 
+TEST(CapturePipelinePolicyTest, WgcEncoderPressureOverridesDeliveryLimitedLowSourceWhenInputIsHealthy) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 90;
+    telemetry.recentDeliveredMin250Fps = 90;
+    telemetry.recentDeliveredMin500Fps = 90;
+    telemetry.recentInputMin250Fps = 120;
+    telemetry.recentInputMin500Fps = 124;
+    telemetry.emptyTickPermille = 20;
+    telemetry.bufferedWgcFrames = 24;
+
+    EXPECT_EQ(policy::ClassifyWgcLiveRecoveryState(telemetry, policy::kWgcRecoveryEnterShortfallTicks, true),
+              policy::WgcLiveRecoveryState::kEncoderLimited);
+    EXPECT_TRUE(policy::IsWgcSourceHealthyEnoughForEncoderLimitedSmoothness(
+        telemetry.outputFps, telemetry.recentInputMin250Fps, telemetry.recentInputMin500Fps,
+        telemetry.emptyTickPermille, telemetry.bufferedWgcFrames));
+
+    telemetry.recentInputMin250Fps = 90;
+    telemetry.recentInputMin500Fps = 92;
+    telemetry.emptyTickPermille = 1000;
+    telemetry.bufferedWgcFrames = 0;
+    EXPECT_EQ(policy::ClassifyWgcLiveRecoveryState(telemetry, policy::kWgcRecoveryEnterShortfallTicks, true),
+              policy::WgcLiveRecoveryState::kSourceStarved);
+}
+
+TEST(CapturePipelinePolicyTest, WgcBufferedInputBelowTargetCanStillUseEncoderLimitedSmoothnessUnderPressure) {
+    EXPECT_FALSE(policy::IsWgcTrueSourceStarvedForRecovery(120, 100, 104, 70, 30, true));
+    EXPECT_TRUE(policy::IsWgcSourceHealthyEnoughForEncoderLimitedSmoothness(120, 100, 104, 70, 30));
+
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 80;
+    telemetry.recentDeliveredMin250Fps = 80;
+    telemetry.recentDeliveredMin500Fps = 80;
+    telemetry.recentInputMin250Fps = 100;
+    telemetry.recentInputMin500Fps = 104;
+    telemetry.emptyTickPermille = 70;
+    telemetry.bufferedWgcFrames = 30;
+
+    EXPECT_EQ(policy::ClassifyWgcLiveRecoveryState(telemetry, policy::kWgcRecoveryEnterShortfallTicks, true),
+              policy::WgcLiveRecoveryState::kEncoderLimited);
+    EXPECT_TRUE(policy::IsWgcTrueSourceStarvedForRecovery(120, 100, 104, 70, 2, true));
+    EXPECT_TRUE(policy::IsWgcTrueSourceStarvedForRecovery(120, 100, 104, 400, 30, true));
+}
+
 TEST(CapturePipelinePolicyTest, WgcSelectionDelayStaysDisabledForZeroLatencyCfr) {
     EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, true));
     EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 1, false, true));
@@ -715,9 +760,11 @@ TEST(CapturePipelinePolicyTest, WgcHealthySourcePrefersSmoothnessOverLiveCatchup
 
     EXPECT_TRUE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 120, 0, false));
     EXPECT_TRUE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 124, 40, false));
-    EXPECT_FALSE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 119, 0, false));
-    EXPECT_FALSE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 124, 100, false));
-    EXPECT_FALSE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 124, 0, true));
+    EXPECT_TRUE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 119, 0, false));
+    EXPECT_TRUE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 124, 100, false));
+    EXPECT_TRUE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 124, 0, true));
+    EXPECT_FALSE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 115, 0, false));
+    EXPECT_FALSE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 124, 400, false));
 }
 
 TEST(CapturePipelinePolicyTest, WgcCoverageCatchupClampRelaxesAtSevereShortfall) {

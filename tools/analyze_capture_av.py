@@ -51,6 +51,12 @@ LOG_PATTERNS = {
     "wgc_encoder_limited_source_drop": re.compile(
         r"\[EncoderThread\] WGC CFR encoder-limited source drop", re.IGNORECASE
     ),
+    "wgc_encoder_limited_mode_mismatch": re.compile(
+        r"\[WGC CFR\] encoder-limited mode mismatch", re.IGNORECASE
+    ),
+    "wgc_selected_source_backtrack": re.compile(
+        r"\[EncoderThread\] WGC CFR selected source backtrack blocked", re.IGNORECASE
+    ),
     "wgc_cadence_event": re.compile(r"\[WGC CFR CADENCE EVENT\]", re.IGNORECASE),
     "wgc_smoothness_summary": re.compile(r"\[WGC CFR SMOOTHNESS SUMMARY\]", re.IGNORECASE),
     "wgc_stop_frozen_tail_drop": re.compile(r"\[EncoderThread\] WGC CFR stop drain discarded frozen-tail debt"),
@@ -105,6 +111,9 @@ CADENCE_LEAD_EXCESS_RE = re.compile(r"LeadExcess=([0-9.]+)ms")
 CADENCE_OLDEST_RE = re.compile(r"Oldest=([0-9.]+)ms")
 CADENCE_BUFNOW_RE = re.compile(r"BufNow=(\d+)")
 CADENCE_WGC_LIVE_REBASE_RE = re.compile(r"WgcLiveRebase=\d+/\d+/(\d+)")
+CADENCE_ENC_LOW_BYPASS_RE = re.compile(r"EncLowBypass=(\d+)/(\d+)")
+CADENCE_MODE_MISMATCH_RE = re.compile(r"ModeMis=(\d+)/(\d+)")
+CADENCE_SOURCE_BACKTRACK_RE = re.compile(r"SrcBack=(\d+)/(\d+)")
 WGC_SUMMARY_LIVE_REBASE_RE = re.compile(r"\bLiveRebase=\d+/(\d+)")
 WGC_STARTUP_FRAME_AGE_RE = re.compile(r"WGC startup sync post-delay barrier satisfied:.*frameAge=(\d+)us")
 PRESENT_HEARTBEAT_GAP_RE = re.compile(r"DetourPresent: heartbeat #\d+ gap=([0-9.]+)ms", re.IGNORECASE)
@@ -123,7 +132,7 @@ WGC_SUMMARY_RE = re.compile(
 WGC_SMOOTHNESS_SUMMARY_RE = re.compile(
     r"\[WGC CFR SMOOTHNESS SUMMARY\].*encoderLimitedDrops=(\d+) maxDropTicks=(\d+) cadenceEvents=(\d+) "
     r"phaseErrorMax=(\d+)us shortfallMax=([0-9.]+)ms staleDebtDrops=(\d+) liveRebase=(\d+)/(\d+) "
-    r"tooNewRepeats=(\d+)",
+    r"tooNewRepeats=(\d+)(?: lowSourceBypass=(\d+) modeMismatch=(\d+) sourceBacktrack=(\d+))?",
     re.IGNORECASE,
 )
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
@@ -799,12 +808,18 @@ def analyze_log(log_path):
         "wgc_startup_frame_age_us": [],
         "wgc_encoder_limited_drops": [],
         "wgc_phase_error_us": [],
+        "wgc_low_source_bypass": [],
+        "wgc_mode_mismatch": [],
+        "wgc_source_backtrack": [],
     }
     for line in lines:
         smoothness_match = WGC_SMOOTHNESS_SUMMARY_RE.search(line)
         if smoothness_match:
             cadence_metrics["wgc_encoder_limited_drops"].append(parse_int(smoothness_match.group(1)))
             cadence_metrics["wgc_phase_error_us"].append(parse_int(smoothness_match.group(4)))
+            cadence_metrics["wgc_low_source_bypass"].append(parse_int(smoothness_match.group(10)))
+            cadence_metrics["wgc_mode_mismatch"].append(parse_int(smoothness_match.group(11)))
+            cadence_metrics["wgc_source_backtrack"].append(parse_int(smoothness_match.group(12)))
         startup_frame_age_match = WGC_STARTUP_FRAME_AGE_RE.search(line)
         if startup_frame_age_match:
             cadence_metrics["wgc_startup_frame_age_us"].append(parse_int(startup_frame_age_match.group(1)))
@@ -850,6 +865,15 @@ def analyze_log(log_path):
         live_rebase_match = CADENCE_WGC_LIVE_REBASE_RE.search(line)
         if live_rebase_match:
             cadence_metrics["wgc_live_rebase_max_ticks"].append(parse_int(live_rebase_match.group(1)))
+        low_source_bypass_match = CADENCE_ENC_LOW_BYPASS_RE.search(line)
+        if low_source_bypass_match:
+            cadence_metrics["wgc_low_source_bypass"].append(parse_int(low_source_bypass_match.group(2)))
+        mode_mismatch_match = CADENCE_MODE_MISMATCH_RE.search(line)
+        if mode_mismatch_match:
+            cadence_metrics["wgc_mode_mismatch"].append(parse_int(mode_mismatch_match.group(2)))
+        source_backtrack_match = CADENCE_SOURCE_BACKTRACK_RE.search(line)
+        if source_backtrack_match:
+            cadence_metrics["wgc_source_backtrack"].append(parse_int(source_backtrack_match.group(2)))
 
     return {
         "counts": counts,
@@ -883,6 +907,15 @@ def analyze_log(log_path):
         else 0,
         "max_wgc_phase_error_us": max(cadence_metrics["wgc_phase_error_us"])
         if cadence_metrics["wgc_phase_error_us"]
+        else 0,
+        "max_wgc_low_source_bypass": max(cadence_metrics["wgc_low_source_bypass"])
+        if cadence_metrics["wgc_low_source_bypass"]
+        else 0,
+        "max_wgc_mode_mismatch": max(cadence_metrics["wgc_mode_mismatch"])
+        if cadence_metrics["wgc_mode_mismatch"]
+        else 0,
+        "max_wgc_source_backtrack": max(cadence_metrics["wgc_source_backtrack"])
+        if cadence_metrics["wgc_source_backtrack"]
         else 0,
         "saw_encoder_overload": any(flags & 0x1 for flags in cadence_metrics["overload_flags"]),
         "saw_mux_overload": any(flags & 0x2 for flags in cadence_metrics["overload_flags"]),
@@ -1052,6 +1085,9 @@ def parse_media_triage(media_text):
                     "live_rebase_total": parse_int(smoothness_match.group(7)),
                     "live_rebase_max_ticks": parse_int(smoothness_match.group(8)),
                     "too_new_repeats": parse_int(smoothness_match.group(9)),
+                    "low_source_bypass": parse_int(smoothness_match.group(10)),
+                    "mode_mismatch": parse_int(smoothness_match.group(11)),
+                    "source_backtrack": parse_int(smoothness_match.group(12)),
                     "line": line,
                 }
             )
@@ -1345,6 +1381,81 @@ def has_exact_final_mux_evidence(media_evidence):
     return (final_packets_clean or final_metadata_clean) and no_post_mux_strict_mismatch
 
 
+def parse_hex_flags(value):
+    try:
+        return int(str(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def parse_ms_ratio_value(value):
+    text = str(value or "").strip().rstrip(",")
+    if text.endswith("ms"):
+        text = text[:-2]
+    if "/" in text:
+        text = text.split("/", 1)[1]
+    return parse_float(text)
+
+
+def has_wgc_encoder_overload_policy_fault(media_evidence, log_summary):
+    if not log_summary:
+        return False
+
+    counts = log_summary["counts"]
+    overload_seen = log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
+    overload_seen = overload_seen or any(item["overload_flags"] != 0 for item in media_evidence["wgc_perf"])
+    overload_seen = overload_seen or any(
+        item.get("fault_hint") == "ce_capacity_pressure" for item in media_evidence["wgc_attribution"]
+    )
+    overload_seen = overload_seen or any(item.get("encoder_limited_drops", 0) > 0
+                                         for item in media_evidence["wgc_smoothness_summary"])
+    if not overload_seen:
+        return False
+
+    if counts.get("wgc_encoder_limited_mode_mismatch", 0) > 0:
+        return True
+    if counts.get("wgc_selected_source_backtrack", 0) > 0:
+        return True
+    if log_summary.get("max_wgc_mode_mismatch", 0) > 0 or log_summary.get("max_wgc_source_backtrack", 0) > 0:
+        return True
+    if any(item.get("mode_mismatch", 0) > 0 or item.get("source_backtrack", 0) > 0
+           for item in media_evidence["wgc_smoothness_summary"]):
+        return True
+
+    non_encoder_pressure_events = 0
+    for event in media_evidence["wgc_cadence_events"]:
+        mode = str(event.get("mode", "")).lower()
+        if mode not in ("normal_pressure", "scheduler_limited"):
+            continue
+        if (parse_hex_flags(event.get("overload")) & 0x3) == 0:
+            continue
+        if parse_ms_ratio_value(event.get("shortfall")) < 100.0:
+            continue
+        if parse_ms_ratio_value(event.get("oldest")) < 100.0 and parse_int(event.get("bufNow")) < 4:
+            continue
+        non_encoder_pressure_events += 1
+
+    cadence_pressure_events = (
+        counts.get("wgc_too_new_slot_repeat", 0)
+        + counts.get("wgc_stale_visual_debt_drop", 0)
+        + counts.get("wgc_live_scheduler_rebase", 0)
+    )
+    smoothness_policy_pressure = any(
+        item.get("shortfall_max_ms", 0.0) >= 100.0
+        and (item.get("stale_debt_drops", 0) > 0 or item.get("too_new_repeats", 0) > 0
+             or item.get("live_rebase_total", 0) > 0)
+        for item in media_evidence["wgc_smoothness_summary"]
+    )
+    if non_encoder_pressure_events > 0 and (smoothness_policy_pressure or cadence_pressure_events >= 3):
+        return True
+
+    return (
+        log_summary.get("max_wgc_shortfall_ms", 0) >= 150
+        and log_summary.get("max_wgc_oldest_ms", 0) >= 150
+        and cadence_pressure_events >= 10
+    )
+
+
 def has_wgc_encoder_limited_judder(media_evidence, log_summary):
     if not log_summary:
         return False
@@ -1363,27 +1474,23 @@ def has_wgc_encoder_limited_judder(media_evidence, log_summary):
     encoder_limited_cadence = any(
         item.get("mode", "").lower() == "encoder_limited" for item in media_evidence["wgc_cadence_events"]
     )
-    smoothness_pressure = any(
-        item["too_new_repeats"] > 0
-        or item["stale_debt_drops"] > 0
-        or item["live_rebase_total"] > 0
-        or item["encoder_limited_drops"] > 0
+    smoothness_fault = any(
+        item.get("too_new_repeats", 0) > 0
+        or item.get("mode_mismatch", 0) > 0
+        or item.get("source_backtrack", 0) > 0
+        or item.get("phase_error_max_us", 0) >= 100000
+        or item.get("shortfall_max_ms", 0.0) >= 100.0
+        or item.get("live_rebase_max_ticks", 0) > 3
         for item in media_evidence["wgc_smoothness_summary"]
     )
-    if not encoder_limited_cadence and not smoothness_pressure:
+    if not encoder_limited_cadence and not smoothness_fault:
         return False
 
-    cadence_pressure_events = (
-        counts.get("wgc_too_new_slot_repeat", 0)
-        + counts.get("wgc_stale_visual_debt_drop", 0)
-        + counts.get("wgc_live_scheduler_rebase", 0)
-        + counts.get("wgc_encoder_limited_source_drop", 0)
-    )
-    if cadence_pressure_events >= 3:
+    if counts.get("wgc_too_new_slot_repeat", 0) > 0:
         return True
 
     if counts.get("wgc_smoothness_summary", 0) > 0:
-        return smoothness_pressure
+        return smoothness_fault
 
     return log_summary["max_wgc_shortfall_ms"] >= 100 and log_summary["max_wgc_oldest_ms"] >= 100
 
@@ -1450,6 +1557,9 @@ def classify_session_triage(session_dir, capture_path=None):
         or writer_sync_after_timeout
     ):
         verdicts.append("ce_encoder_or_mux_backpressure")
+    wgc_encoder_overload_policy_fault = has_wgc_encoder_overload_policy_fault(media_evidence, log_summary)
+    if wgc_encoder_overload_policy_fault:
+        verdicts.append("wgc_encoder_overload_policy_fault")
     wgc_encoder_limited_judder = has_wgc_encoder_limited_judder(media_evidence, log_summary)
     if wgc_encoder_limited_judder:
         verdicts.append("wgc_encoder_limited_judder")
@@ -1470,7 +1580,12 @@ def classify_session_triage(session_dir, capture_path=None):
         or stop_audio_shortfalls["short_count"] > 0
     ):
         verdicts.append("ce_audio_timeline_fault")
-    if any(visual_fault_counts.values()) or "ce_capture_pacer_limited" in verdicts or wgc_encoder_limited_judder:
+    if (
+        any(visual_fault_counts.values())
+        or "ce_capture_pacer_limited" in verdicts
+        or wgc_encoder_limited_judder
+        or wgc_encoder_overload_policy_fault
+    ):
         verdicts.append("ce_visual_timeline_fault")
     if hook_evidence["external_overlay_lines"]:
         verdicts.append("external_overlay_context")
@@ -1499,6 +1614,7 @@ def classify_session_triage(session_dir, capture_path=None):
             "encoder_or_mux_backpressure": "ce_encoder_or_mux_backpressure" in verdicts,
             "audio_timeline": "ce_audio_timeline_fault" in verdicts,
             "visual_timeline": "ce_visual_timeline_fault" in verdicts,
+            "wgc_encoder_overload_policy": wgc_encoder_overload_policy_fault,
         },
         "evidence": {
             "max_present_gap_ms": max_present_gap_ms,
@@ -1877,6 +1993,33 @@ def self_test():
         )
         report = classify_session_triage(wgc_encoder_judder)
         assert "wgc_encoder_limited_judder" in report["verdicts"]
+        assert "wgc_encoder_overload_policy_fault" not in report["verdicts"]
+        assert "ce_visual_timeline_fault" in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+
+        wgc_overload_policy_fault = make_session(
+            "wgc_overload_policy_fault",
+            media=(
+                "[Cadence Health] Phase=Live | WgcSelBias=260000us | Shortfall=32/266.7ms "
+                "LeadExcess=116.0ms | Oldest=250.0ms BufNow=30 | WgcLiveRebase=1/120/1 | Over=0x1\n"
+                "[WGC CFR CADENCE EVENT] mode=normal_pressure shortfall=32/266.7ms phaseErrorAvg=260000us "
+                "phaseErrorMax=260000us rebaseWindow=1 encoderDropWindow=0 encoderDropTotal=0 "
+                "tooNewRepeat=1 staleDrop=4 freshMiss=0pm bufNow=30 oldest=250.0ms enc=10.0ms "
+                "sustain=80.0fps overload=0x1 cause=S0/D0/E1\n"
+                "[EncoderThread] WGC CFR slot repeat: buffered frame is too new for scheduled slot "
+                "(lead=28000us targetQpc=1000 firstQpc=1280 buffered=30 shortfall=32)\n"
+                "[EncoderThread] WGC CFR stale visual debt drop: reason=live-buffer mode=normal dropped=4 "
+                "floorQpc=1200 liveNowQpc=1600 maxDebt=1000us remaining=20 shortfall=32\n"
+                "[EncoderThread] WGC CFR live scheduler rebase: mode=normal skippedTicks=1 excessTicks=2 "
+                "requestedTicks=32 shortfallBefore=32 nextQpc=1000 nextAfterQpc=1100 liveNowQpc=1600 "
+                "timelineCovered=42\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=1 "
+                "phaseErrorMax=260000us shortfallMax=266.7ms staleDebtDrops=4 liveRebase=1/1 "
+                "tooNewRepeats=1\n"
+            ),
+        )
+        report = classify_session_triage(wgc_overload_policy_fault)
+        assert "wgc_encoder_overload_policy_fault" in report["verdicts"]
         assert "ce_visual_timeline_fault" in report["verdicts"]
         assert "ce_audio_timeline_fault" not in report["verdicts"]
 

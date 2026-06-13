@@ -35,6 +35,9 @@ STRICT_CE_PATTERNS = {
     "audio_zero_drift_residual": re.compile(r"\[A/V ZERO DRIFT WARNING\]", re.IGNORECASE),
     "wgc_stop_hold": re.compile(r"WGC CFR stop drain using held pre-stop frame", re.IGNORECASE),
     "wgc_drain_duplicate": re.compile(r"\[WGC CFR SUMMARY\].*drain=[1-9]", re.IGNORECASE),
+    "wgc_encoder_overload_policy": re.compile(
+        r"encoder-limited mode mismatch|selected source backtrack blocked", re.IGNORECASE
+    ),
 }
 
 STRICT_APP_PATTERNS = {
@@ -308,6 +311,27 @@ def infer_pts_delta(pts):
     return 1.0 / 60.0
 
 
+def parse_frame_rate_ratio(value):
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    if "/" in text:
+        numerator, denominator = text.split("/", 1)
+        den = parse_float(denominator, 0.0)
+        if den <= 0.0:
+            return 0.0
+        return parse_float(numerator, 0.0) / den
+    return parse_float(text, 0.0)
+
+
+def declared_video_frame_delta(video_stream):
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        fps = parse_frame_rate_ratio(video_stream.get(key) if isinstance(video_stream, dict) else "")
+        if math.isfinite(fps) and fps > 1.0:
+            return 1.0 / fps
+    return 0.0
+
+
 def frame_pts_for_index(pts, frame_index, fallback_delta):
     if frame_index < len(pts):
         return pts[frame_index]
@@ -474,7 +498,10 @@ def decode_video(ffmpeg, capture, manifest, video_stream, pts, scale_width):
     frame_size = scaled_w * scaled_h * 3
     frames = []
     frame_index = 0
-    fallback_pts_delta = infer_pts_delta(pts)
+    stream_start = parse_float(video_stream.get("start_time"), 0.0)
+    declared_delta = declared_video_frame_delta(video_stream)
+    fallback_pts_delta = declared_delta if declared_delta > 0.0 else infer_pts_delta(pts)
+    use_declared_cfr_timeline = declared_delta > 0.0
     while True:
         payload = process.stdout.read(frame_size)
         if not payload:
@@ -500,7 +527,9 @@ def decode_video(ffmpeg, capture, manifest, video_stream, pts, scale_width):
         frames.append(
             {
                 "index": frame_index,
-                "pts": frame_pts_for_index(pts, frame_index, fallback_pts_delta),
+                "pts": stream_start + frame_index * fallback_pts_delta
+                if use_declared_cfr_timeline
+                else frame_pts_for_index(pts, frame_index, fallback_pts_delta),
                 "palette": palette_index,
                 "color_dist": color_dist,
                 "event_color_confidence": event_color_confidence,
@@ -2012,6 +2041,10 @@ def self_test():
     truncated_pts = [index / 60.0 for index in range(578)]
     assert abs(infer_pts_delta(truncated_pts) - (1.0 / 60.0)) < 0.0001
     assert abs(frame_pts_for_index(truncated_pts, 578, infer_pts_delta(truncated_pts)) - (578.0 / 60.0)) < 0.0001
+    assert abs(parse_frame_rate_ratio("120/1") - 120.0) < 0.001
+    assert abs(parse_frame_rate_ratio("60000/1001") - 59.94005994) < 0.001
+    assert abs(declared_video_frame_delta({"avg_frame_rate": "120/1"}) - (1.0 / 120.0)) < 0.000001
+    assert declared_video_frame_delta({"avg_frame_rate": "0/0", "r_frame_rate": ""}) == 0.0
     wrap_frames = [
         {"pts": 0.00, "palette": 0},
         {"pts": 0.20, "palette": 0},
