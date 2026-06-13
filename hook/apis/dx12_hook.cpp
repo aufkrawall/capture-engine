@@ -11062,6 +11062,14 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     const bool selectedQueueIsSwapchainQueue = (queue == scQueue);
+    // Fast post-FSR DLSS probe: when the safe-bootstrap proof holds and the
+    // overlay submits on the runtime-owned swapchain queue (not the documented
+    // origGame first-ECL crash case), one scratch-barrier health frame replaces
+    // the full ~4-frame graduated probe so the DLSS-engage overlay seam drops
+    // to a single present. Unproven/off-swapchain-queue paths keep the full probe.
+    const bool fastPostFSRDLSSProbe = ce::dx12_overlay_policy::ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(
+        g_HadFSRFGPhase, safePostFSRBootstrapPathForPostSL, selectedQueueIsSwapchainQueue, cachedSLFGActive);
+    const int postFSRProbeFramesPerLevel = fastPostFSRDLSSProbe ? 1 : kPostFSRProbeFramesPerLevel;
     ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
     ID3D12CommandQueue* realQ = g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
     ExecuteCommandListsPtr selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
@@ -11350,9 +11358,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             g_PostFSRProbeFrames++;
             const char* probeNames[] = {"scratch-barrier", "SLwrapper-bb-barrier", "offscreen-copy-only"};
             const char* probeName = g_PostFSRProbeLevel < 3 ? probeNames[g_PostFSRProbeLevel] : "unknown";
-            HookLogImportant("DX12: PostSL post-FSR PROBE level=%d (%s) frame=%d/%d queue=%p devRemoved=0x%08X %s",
-                             g_PostFSRProbeLevel, probeName, g_PostFSRProbeFrames, kPostFSRProbeFramesPerLevel,
-                             probeQueue, probeHr, FAILED(probeHr) ? "FAILED" : "OK");
+            HookLogImportant(
+                "DX12: PostSL post-FSR PROBE level=%d (%s) frame=%d/%d queue=%p devRemoved=0x%08X %s (fast=%d)",
+                g_PostFSRProbeLevel, probeName, g_PostFSRProbeFrames, postFSRProbeFramesPerLevel, probeQueue, probeHr,
+                FAILED(probeHr) ? "FAILED" : "OK", fastPostFSRDLSSProbe ? 1 : 0);
 
             if (FAILED(probeHr)) {
                 // DEVICE_REMOVED from BB barrier is FATAL — skip to barrier-free.
@@ -11365,7 +11374,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 return;
             }
 
-            if (g_PostFSRProbeFrames >= kPostFSRProbeFramesPerLevel) {
+            if (g_PostFSRProbeFrames >= postFSRProbeFramesPerLevel) {
                 // Skip level 1 (BB barrier): go directly from level 0 to level 2.
                 // BB barriers cause FATAL DEVICE_REMOVED on queues that don't own the
                 // swapchain's resource state. Level 2 only validates copy traffic on
@@ -11421,7 +11430,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Only do Probe 1 (empty ECL). Probe 2 (ClearRTV+barriers) is unsafe during PostSL
     // because the backbuffer state on origGame's timeline is unknown — SL manages
     // backbuffer state transitions internally, and cross-queue barrier assumptions fail.
-    int probesNeeded = 1;
+    // The graduated post-FSR scratch-barrier probe above already validated the
+    // runtime-owned swapchain queue under the fast-path proof, so the separate
+    // empty-ECL probe is redundant there — skipping it removes the last probe
+    // present from the DLSS-engage seam.
+    int probesNeeded = fastPostFSRDLSSProbe ? 0 : 1;
     bool isPostTransitionProbe = (s_reactivationEpoch > 1 && s_postSLProbeFrames < probesNeeded);
     if (isPostTransitionProbe) {
         // Probe frames present without an overlay draw — tag the coverage gate

@@ -2322,6 +2322,29 @@ inline bool ShouldUsePostSLOffscreenCopyOnlyProbeAfterFSR(bool hadFSRFGPhase, in
     return hadFSRFGPhase && usePostSLOffscreenComposite && postFSRProbeLevel == 2 && !selectedQueueIsSwapchainQueue;
 }
 
+// Fast post-FSR DLSS GPU-health probe under safe-bootstrap proof. The graduated
+// post-FSR probe (scratch-barrier ×N frames + a separate empty-ECL probe)
+// exists because the first overlay ECL on the post-FSR DLSS path could
+// DEVICE_REMOVED (FSR->DLSS crash family). But session 20260613_035221 showed
+// every FSR->DLSS engage burning ~4 presents on probes that always pass — a
+// ~25ms overlay seam on each DLSS engage.
+//
+// When the safe post-FSR bootstrap proof holds AND the overlay submits on the
+// runtime-owned swapchain queue itself (selectedQueueIsSwapchainQueue: SL owns
+// that queue's backbuffer state — NOT the documented origGame first-ECL crash
+// case) while Streamline FG is running, one scratch-barrier health frame is
+// enough: collapse the level-0 dwell to a single frame and skip the redundant
+// empty-ECL probe, so the first confirmed overlay draw lands one present after
+// the single probe instead of four. Any path lacking the proof, or submitting
+// off the swapchain queue, keeps the full graduated probe. This only changes
+// HOW FAST a proven-safe route reaches its first draw, not whether a route is
+// allowed to draw.
+inline bool ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(bool hadFSRFGPhase, bool safePostFSRBootstrapPath,
+                                                          bool selectedQueueIsSwapchainQueue,
+                                                          bool streamlineFGRunning) {
+    return hadFSRFGPhase && safePostFSRBootstrapPath && selectedQueueIsSwapchainQueue && streamlineFGRunning;
+}
+
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
     return streamlineFGRunning && !processFrameRecentlySeen;
 }

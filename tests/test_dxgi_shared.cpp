@@ -4773,3 +4773,22 @@ TEST(DXGISharedTest, PostSLKeepAliveRenderRequiresLiveStreamlineStack) {
     EXPECT_FALSE(ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(true, true, true));
     EXPECT_FALSE(ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(true, false, false));
 }
+
+TEST(DXGISharedTest, FastPostFSRDLSSProbeRequiresSafeBootstrapAndSwapchainQueue) {
+    using ce::dx12_overlay_policy::ShouldUseFastPostFSRDLSSProbeForSafeBootstrap;
+
+    // Session 20260613_035221: every FSR->DLSS engage burned ~4 presents on
+    // post-FSR GPU-health probes that always passed (~25ms overlay seam). The
+    // fast path (1 scratch-barrier frame, skip the empty-ECL probe) requires
+    // the safe-bootstrap proof AND submission on the runtime-owned swapchain
+    // queue (SL owns its backbuffer state — not the documented origGame
+    // first-ECL crash case) while Streamline FG is running.
+    EXPECT_TRUE(ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(true, true, true, true));
+
+    // Missing FSR history, missing safe-bootstrap proof, submission off the
+    // swapchain queue, or no SL FG signal all keep the full graduated probe.
+    EXPECT_FALSE(ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(false, true, true, true));
+    EXPECT_FALSE(ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(true, false, true, true));
+    EXPECT_FALSE(ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(true, true, false, true));
+    EXPECT_FALSE(ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(true, true, true, false));
+}
