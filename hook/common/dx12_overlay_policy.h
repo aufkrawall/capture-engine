@@ -2390,6 +2390,39 @@ inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTop
            (!hadFSRFGPhase && (confirmedPureStreamlineResumeProof || explicitEnablePureDLSSColdStartProof));
 }
 
+// Make-before-break for explicit Streamline FG OFF. slDLSSGSetOptions(off)
+// leaves the DLSS-G proxy swapchain and its pacer alive (DRED-proven Reflex
+// invariant) and real games keep presenting it through menus; tearing PostSL
+// down at the off edge blanks those presents until the normal route's first
+// confirmed draw. A CONFIRMED PostSL path may stay armed-and-rendering across
+// the off edge — it renders exactly what it rendered one present earlier on
+// the same proven queue/swapchain. Never while an FSR/native-FG takeover owns
+// or is about to own presentation (the quiesce invariant wins: stale DLSS
+// callbacks must not submit into an AMD takeover).
+inline bool ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(bool postSLConfirmedRendering, bool fsrFGApiActive,
+                                                              bool runtimeOwnedNativeFGPresentPath,
+                                                              bool protectedOfficialFFXStartupPending) {
+    return postSLConfirmedRendering && !fsrFGApiActive && !runtimeOwnedNativeFGPresentPath &&
+           !protectedOfficialFFXStartupPending;
+}
+
+// Streamline FG ON while the keep-alive latch is set and PostSL is still
+// confirmed is a RESUME of a continuously-live path (suspend -> resume cycle),
+// not a cold start: skip the synthetic-startup pending dance, countdown
+// re-arm, and lifecycle reset so the resume seam has no uncovered presents.
+inline bool ShouldResumeConfirmedPostSLFromKeepAliveOnStreamlineOn(bool keepAliveLatched,
+                                                                   bool postSLConfirmedRendering) {
+    return keepAliveLatched && postSLConfirmedRendering;
+}
+
+// Render permission during keep-alive. Requires the SL stack to still be
+// loaded: once the modules unload, the proxy queue is gone and any late
+// callback invocation must retire the latch instead of rendering.
+inline bool ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(bool keepAliveLatched, bool streamlineFGRunning,
+                                                             bool streamlineModulesLoaded) {
+    return keepAliveLatched && !streamlineFGRunning && streamlineModulesLoaded;
+}
+
 inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(
     bool streamlineStartupTransitionWindowActive, int stablePostSLFrameCount) {
     // Keep the startup churn window alive until the freshly activated PostSL path

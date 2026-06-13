@@ -216,6 +216,17 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain);
 // callback should actually render or skip (e.g. during FG cooldown / resize).
 static std::atomic<bool> g_PostSLOverlayActive{false};
 static std::atomic<int> g_PostSLCooldownRemaining{0};
+
+// Make-before-break across explicit Streamline FG OFF (suspend/menu): while
+// the DLSS-G proxy keeps presenting after slDLSSGSetOptions(off), confirmed
+// PostSL stays armed-and-rendering on the same proven queue/swapchain until
+// the incoming normal route lands its first confirmed draw (or the proxy/SL
+// stack dies). Cleared on: normal-route recovery, Streamline FG ON (warm
+// resume), protected-FFX-startup quiesce, FFX takeover, swapchain
+// invalidation/resize, Streamline modules gone, shutdown. Session
+// 20260613_032326: the suspend/resume handoff seams were the last visible
+// 3-4-present DLSS blanks.
+static std::atomic<bool> g_PostSLExplicitOffKeepAlive{false};
 static std::atomic<ULONGLONG> g_LastProcessFrameTickMs{0};
 static std::atomic<ULONGLONG> g_LastFFXPresentCallbackTickMs{0};
 static std::atomic<bool> g_FFXPresentCallbackBridgeExpected{false};
@@ -2289,6 +2300,11 @@ static void SetPostSLCallbackInstalled(bool installed, const char* reason) {
         return;
     }
 
+    // Any authoritative disable (protected FFX quiesce, FFX takeover, resize,
+    // shutdown, retirement itself) ends the make-before-break keep-alive: the
+    // keep-alive paths deliberately skip calling this, so a call here means a
+    // stronger teardown authority owns the transition now.
+    g_PostSLExplicitOffKeepAlive.store(false, std::memory_order_release);
     g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
     if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr) {
         DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
@@ -5939,6 +5955,9 @@ void DX12_InvalidateSwapchain() {
     DXGIShared::g_SharedState.swapchainInvalid.store(true, std::memory_order_release);
     HookLog("DX12: Swapchain marked INVALID (FSR/FG transition detected)");
     ReleaseStreamlineStartupActivationSwapchain("DX12_InvalidateSwapchain");
+    // The make-before-break keep-alive is bound to the live proxy swapchain;
+    // a swapchain invalidation ends it.
+    g_PostSLExplicitOffKeepAlive.store(false, std::memory_order_release);
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kSwapchainInvalidation, "DX12_InvalidateSwapchain");
     // Log current state for debugging
     HookLog("DX12: Invalidating - overlayInit=%d, syncInit=%d, device=%p, queue=%p", g_State.overlayInit,
@@ -7142,8 +7161,30 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
 
         const bool callbackAlreadyInstalled =
             DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr;
+        const bool resumeConfirmedPostSLFromKeepAlive =
+            ce::dx12_overlay_policy::ShouldResumeConfirmedPostSLFromKeepAliveOnStreamlineOn(
+                g_PostSLExplicitOffKeepAlive.exchange(false, std::memory_order_acq_rel),
+                g_PostSLConfirmedRendering.load(std::memory_order_acquire));
 
-        if (callbackAlreadyInstalled) {
+        if (callbackAlreadyInstalled && resumeConfirmedPostSLFromKeepAlive) {
+            // Suspend -> resume cycle bridged by the make-before-break
+            // keep-alive: PostSL stayed confirmed-and-renderable the whole
+            // time, so this is a RESUME of a continuously-live path, not a
+            // cold start. No synthetic-startup pending dance, no countdown
+            // re-arm, no lifecycle reset — the first re-entrant present after
+            // the resume renders immediately.
+            g_PostSLCallbackExecutionEnabled.store(true, std::memory_order_release);
+            g_PostSLOverlayActive.store(true, std::memory_order_release);
+            g_PostSLStallCounter.store(0, std::memory_order_release);
+            DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+            DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
+            // Keep churn protection armed: a quick OFF right after this resume
+            // must take the churn path, not a full teardown.
+            DXGIShared::ArmStreamlineStartupTransitionWindow();
+            HookLogImportant(
+                "DX12: Streamline FG ON — warm PostSL resume from make-before-break keep-alive "
+                "(confirmed rendering preserved, no countdown/warm-up re-arm)");
+        } else if (callbackAlreadyInstalled) {
             g_PostSLCallbackExecutionEnabled.store(true, std::memory_order_release);
             g_PostSLOverlayActive.store(false, std::memory_order_release);
             g_PostSLConfirmedRendering.store(false, std::memory_order_release);
@@ -7293,16 +7334,36 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         return;
     }
 
-    g_PostSLOverlayActive.store(false, std::memory_order_release);
+    // Make-before-break: a CONFIRMED PostSL path stays armed-and-rendering
+    // across the explicit OFF edge — the proxy swapchain keeps presenting
+    // after slDLSSGSetOptions(off) (menus/suspension) and tearing PostSL down
+    // here is what blanks those presents until the normal route's first
+    // confirmed draw. Never while an FSR/native-FG takeover is in play (the
+    // quiesce invariant wins).
+    const bool keepConfirmedPostSLAliveAcrossOff =
+        ce::dx12_overlay_policy::ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(
+            g_PostSLConfirmedRendering.load(std::memory_order_acquire), g_FGCompat.IsFSRFGApiActive(),
+            HookHasRuntimeOwnedNativeFGPresentPath(), ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup());
+    if (keepConfirmedPostSLAliveAcrossOff) {
+        g_PostSLExplicitOffKeepAlive.store(true, std::memory_order_release);
+        HookLogImportant(
+            "DX12: Streamline FG OFF — keeping confirmed PostSL armed-and-rendering until the normal route's "
+            "first confirmed draw (make-before-break keep-alive)");
+    } else {
+        g_PostSLOverlayActive.store(false, std::memory_order_release);
+    }
 
     const bool inStartupChurnWindow = DXGIShared::IsStreamlineStartupTransitionWindowActive();
 
     if (inStartupChurnWindow) {
-        g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
+        if (!keepConfirmedPostSLAliveAcrossOff) {
+            g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
+        }
         HookLogImportant(
-            "DX12: Streamline FG OFF during startup transition — keeping PostSL callback dormant "
-            "(churn suppression, epoch=%u)",
-            g_PostSLLifecycleEpoch.load(std::memory_order_acquire));
+            "DX12: Streamline FG OFF during startup transition — keeping PostSL callback %s "
+            "(churn suppression, epoch=%u keepAlive=%d)",
+            keepConfirmedPostSLAliveAcrossOff ? "armed for keep-alive rendering" : "dormant",
+            g_PostSLLifecycleEpoch.load(std::memory_order_acquire), keepConfirmedPostSLAliveAcrossOff ? 1 : 0);
         // Drop the AddRef'd startup-activation swapchain even on the churn
         // path: pinning it costs nothing on a quick re-ON (every startup-route
         // present re-retains it), but if the game proceeds to a full native
@@ -7322,8 +7383,14 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     }
 
     DXGIShared::ResetStreamlineStartupTransitionState();
-    SetPostSLCallbackInstalled(false, "DX12: Streamline FG OFF");
-    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    if (!keepConfirmedPostSLAliveAcrossOff) {
+        SetPostSLCallbackInstalled(false, "DX12: Streamline FG OFF");
+        g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    } else {
+        HookLogImportant(
+            "DX12: Streamline FG OFF — PostSL callback stays installed for make-before-break keep-alive "
+            "(confirmed rendering preserved)");
+    }
     g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
     g_PostSLStallCounter.store(0, std::memory_order_release);
     g_PostSLStableFrameCount.store(0, std::memory_order_release);
@@ -7350,7 +7417,11 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     }
     InvalidateAllOverlayCachedFrames();
     g_SLOffSwapchainReinitGrace.store(300, std::memory_order_release);
-    ResetPostSLLifecycleForTransition("DX12: Streamline FG OFF transition", true, true);
+    if (!keepConfirmedPostSLAliveAcrossOff) {
+        // A lifecycle reset would force a fresh reactivation epoch/warm-up;
+        // keep-alive must keep the continuously-live path untouched.
+        ResetPostSLLifecycleForTransition("DX12: Streamline FG OFF transition", true, true);
+    }
 
     if (g_HadFSRFGPhase) {
         ID3D12CommandQueue* staleScQueue = nullptr;
@@ -9652,6 +9723,7 @@ void DX12_OnSwapchainResizeBegin() {
     // Disable post-SL overlay rendering IMMEDIATELY to prevent rendering
     // to invalidated backbuffers during the resize.
     g_PostSLOverlayActive.store(false, std::memory_order_release);
+    g_PostSLExplicitOffKeepAlive.store(false, std::memory_order_release);
     ReleaseStreamlineStartupActivationSwapchain("DX12: swapchain resize");
     ResetPostSLLifecycleForTransition("DX12: swapchain resize", true);
     SetPostSLLastWorkingQueue(nullptr);  // Swapchain resize — rendering setup changed
@@ -9965,7 +10037,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                                              : "treating as transient and waiting for signal recovery",
                          postSLActive ? 1 : 0, postSLConfirmedRendering ? 1 : 0, startupActivationPending ? 1 : 0);
     }
-    if (!cachedSLFGActive || s_postSLFGSuspended) {
+    // Make-before-break keep-alive: a confirmed PostSL path renders across the
+    // explicit OFF edge until the normal route recovers (gates below honor it).
+    // It renders exactly what it rendered one present earlier on the same
+    // proven queue/swapchain; PostSLOverlayRenderGated retires the latch on
+    // normal-route recovery or Streamline unload.
+    const bool keepAliveRenderAfterExplicitOff =
+        ce::dx12_overlay_policy::ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(
+            g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire), cachedSLFGActive, IsStreamlineLoaded());
+    if ((!cachedSLFGActive || s_postSLFGSuspended) && !keepAliveRenderAfterExplicitOff) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         NoteDX12OverlayCoverageGate("postsl-sl-signal-inactive");
         static int s_suspendLog = 0;
@@ -9975,6 +10055,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
         s_suspendLog++;
         return;
+    }
+    if (keepAliveRenderAfterExplicitOff) {
+        static std::atomic<int> s_keepAliveRenderLogCount{0};
+        const int logCount = s_keepAliveRenderLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 200) == 0) {
+            HookLogImportant(
+                "DX12: PostSL keep-alive render after explicit Streamline OFF #%d (confirmed=%d active=%d)",
+                logCount + 1, g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
+                g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0);
+        }
     }
 
     {
@@ -10201,7 +10291,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     s_callsSinceReactivation++;
 
     // Gate: only render when explicitly enabled (not during cooldown / resize).
-    if (!active) {
+    // The make-before-break keep-alive renders regardless: it is the same
+    // confirmed path that rendered one present earlier.
+    if (!active && !keepAliveRenderAfterExplicitOff) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         NoteDX12OverlayCoverageGate("postsl-inactive");
         static int s_gateSkip = 0;
@@ -10213,7 +10305,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Secondary gate: don't render during FG transition cooldown.
     // g_PostSLOverlayActive may be stale if set before ProcessFrame disables it.
     int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
-    if (cooldownLeft > 0) {
+    if (cooldownLeft > 0 && !keepAliveRenderAfterExplicitOff) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         NoteDX12OverlayCoverageGate("postsl-fg-transition-cooldown");
         static int s_cooldownSkip = 0;
@@ -10252,7 +10344,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(
             g_HadFSRFGPhase, useTopLevelHandoffWrapperProgress, safePostFSRBootstrapPathForPostSL,
             confirmedPureStreamlineResumeWarmupProof, explicitEnablePureDLSSColdStartProof);
-    if (s_callsSinceReactivation <= warmupThreshold && !bypassReactivationWarmup) {
+    if (s_callsSinceReactivation <= warmupThreshold && !bypassReactivationWarmup &&
+        !keepAliveRenderAfterExplicitOff) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         NoteDX12OverlayCoverageGate("postsl-reactivation-warmup");
         if (s_callsSinceReactivation <= 5 || s_callsSinceReactivation == warmupThreshold) {
@@ -12212,6 +12305,27 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
                 "Skipping callback to avoid crash during unstable FG transition.");
         }
         return;
+    }
+
+    // Make-before-break retirement: the keep-alive ends the moment the
+    // incoming normal route lands a real draw (g_LastDX12OverlayRenderRoute
+    // flips to kNormal only on an actual normal-route submit), or when the
+    // Streamline stack is gone (a late stray invocation must not render
+    // against dead proxy queues).
+    if (g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire) &&
+        !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        const bool normalRouteRecovered = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire) ==
+                                          static_cast<uint32_t>(DX12OverlayRenderRoute::kNormal);
+        const bool streamlineGone = !IsStreamlineLoaded();
+        if (normalRouteRecovered || streamlineGone) {
+            g_PostSLExplicitOffKeepAlive.store(false, std::memory_order_release);
+            g_PostSLOverlayActive.store(false, std::memory_order_release);
+            g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+            SetPostSLCallbackInstalled(false, normalRouteRecovered
+                                                  ? "DX12: PostSL keep-alive retired after normal-route recovery"
+                                                  : "DX12: PostSL keep-alive retired after Streamline unload");
+            return;
+        }
     }
 
     const bool startupTransitionWindowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
@@ -15100,9 +15214,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     slTurnedOff, g_HadFSRFGPhase, g_FGCompat.IsFSRFGApiActive(),
                     HookHasRuntimeOwnedNativeFGPresentPath(), g_State.overlayInit, g_State.syncInit,
                     g_SwapchainQueue != nullptr, g_OriginalGameQueue != nullptr, FAILED(transitionDeviceHr));
+            // Make-before-break: DX12_OnStreamlineFGStateChanged latched the
+            // keep-alive at the explicit OFF edge; the outer teardown must not
+            // disable the confirmed PostSL path that is covering the proxy's
+            // remaining presents.
+            const bool keepConfirmedPostSLAliveAcrossOuterOff =
+                slTurnedOff && g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire);
 
-            HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d)", slTurnedOn ? "ON" : "OFF",
-                             allowOverlayRender ? 1 : 0);
+            HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d keepAlive=%d)", slTurnedOn ? "ON" : "OFF",
+                             allowOverlayRender ? 1 : 0, keepConfirmedPostSLAliveAcrossOuterOff ? 1 : 0);
 
             // Set cooldown — prevents rendering during transition window
             if (preserveActivePostSLOnLateOuterOn) {
@@ -15124,14 +15244,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // Reset PostSL state for fresh start after transition.
             // Keep the callback installed on Streamline FG activation so
             // startup synthetic presents can immediately find it.
-            if (!preserveActivePostSLOnLateOuterOn) {
+            if (!preserveActivePostSLOnLateOuterOn && !keepConfirmedPostSLAliveAcrossOuterOff) {
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
             }
-            if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(outerSLFGRunning)) {
+            if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(outerSLFGRunning) &&
+                !keepConfirmedPostSLAliveAcrossOuterOff) {
                 SetPostSLCallbackInstalled(false, "DX12: [outer] SL transition");
             }
             g_PostSLStallCounter.store(0, std::memory_order_release);
-            if (!preserveActivePostSLOnLateOuterOn) {
+            if (!preserveActivePostSLOnLateOuterOn && !keepConfirmedPostSLAliveAcrossOuterOff) {
                 g_PostSLStableFrameCount.store(0, std::memory_order_release);
                 g_PostSLConfirmedRendering.store(false, std::memory_order_release);
                 g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
@@ -15190,9 +15311,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         g_SwapchainQueue, g_OriginalGameQueue);
                 }
 
-                // Disable PostSL immediately — SL is tearing down
-                g_PostSLOverlayActive.store(false, std::memory_order_release);
-                SetPostSLCallbackInstalled(false, "DX12: [outer] FG->off");
+                // Disable PostSL immediately — SL is tearing down — unless the
+                // make-before-break keep-alive is covering the proxy's
+                // remaining presents until the normal route confirms.
+                if (!keepConfirmedPostSLAliveAcrossOuterOff) {
+                    g_PostSLOverlayActive.store(false, std::memory_order_release);
+                    SetPostSLCallbackInstalled(false, "DX12: [outer] FG->off");
+                } else {
+                    HookLogImportant(
+                        "DX12: [outer] FG->off — PostSL keep-alive covers proxy presents until normal-route "
+                        "recovery");
+                }
                 InvalidateAllOverlayCachedFrames();
 
                 // Drain in-flight GPU work
@@ -15336,7 +15465,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 }
                 HookLogImportant("DX12: [outer] Registered PostSL callback (overlay blocked, SL FG active)");
             }
-        } else if (!outerSLFGRunning && g_FGTransitionCooldown == 0) {
+        } else if (!outerSLFGRunning && g_FGTransitionCooldown == 0 &&
+                   !g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire)) {
+            // Make-before-break: while the keep-alive latch is set, the
+            // installed callback IS the coverage for the proxy's remaining
+            // presents; PostSLOverlayRenderGated retires it on normal-route
+            // recovery or Streamline unload.
             if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr) {
                 SetPostSLCallbackInstalled(false, "DX12: [outer] cooldown complete");
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
@@ -15591,9 +15725,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // Keep the callback installed when Streamline is still running so
             // synthetic startup presents can route through PostSL safely while
             // the active gate and cooldown still suppress real rendering.
-            g_PostSLOverlayActive.store(false, std::memory_order_release);
-            if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(currentSLFGRunning)) {
-                SetPostSLCallbackInstalled(false, "DX12: inner FG transition");
+            // Make-before-break: the explicit-OFF keep-alive owns the PostSL
+            // path until the normal route recovers — do not disable it here.
+            const bool innerKeepConfirmedPostSLAliveAcrossOff =
+                !currentSLFGRunning && g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire);
+            if (!innerKeepConfirmedPostSLAliveAcrossOff) {
+                g_PostSLOverlayActive.store(false, std::memory_order_release);
+                if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(currentSLFGRunning)) {
+                    SetPostSLCallbackInstalled(false, "DX12: inner FG transition");
+                }
             }
             g_PostSLStallCounter.store(0, std::memory_order_release);      // Fresh start after transition
             g_PostSLStableFrameCount.store(0, std::memory_order_release);  // Reset warmup counter
@@ -15661,7 +15801,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                      ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), kept);
                 }
             }
-            g_PostSLConfirmedRendering.store(false, std::memory_order_release);  // Re-probe needed
+            if (!innerKeepConfirmedPostSLAliveAcrossOff) {
+                g_PostSLConfirmedRendering.store(false, std::memory_order_release);  // Re-probe needed
+            }
             if (!ce::dx12_overlay_policy::ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(
                     g_HadFSRFGPhase, previousWasFG, targetIsFGOff)) {
                 // Old SL queues may be destroyed after most FG mode switches

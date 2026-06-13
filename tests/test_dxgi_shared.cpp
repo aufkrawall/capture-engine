@@ -4714,3 +4714,49 @@ TEST(DXGISharedSourceTest, RetainedStartupActivationSwapchainReleasedOnChurnOffA
     EXPECT_NE(text.find("DeepHook: CreateSwapChainForHwnd E_ACCESSDENIED recovery"), std::string::npos);
     EXPECT_NE(text.find("CreateSwapChainForHwnd INLINE: E_ACCESSDENIED recovery"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Make-before-break keep-alive across explicit Streamline FG OFF (session
+// 20260613_032326: DLSS suspend/resume handoff seams were the last visible
+// 3-4-present blanks). Confirmed PostSL stays armed-and-rendering across the
+// off edge until the normal route's first confirmed draw; Streamline FG ON
+// while the latch is set is a warm resume of a continuously-live path.
+// ---------------------------------------------------------------------------
+
+TEST(DXGISharedTest, ConfirmedPostSLKeepsRenderingAcrossExplicitStreamlineOff) {
+    using ce::dx12_overlay_policy::ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff;
+
+    // Confirmed PostSL with no FSR/native-FG takeover in play stays alive.
+    EXPECT_TRUE(ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(true, false, false, false));
+
+    // Unconfirmed paths never keep-alive, and any FSR/native-FG takeover
+    // signal wins (the quiesce invariant: stale DLSS callbacks must not
+    // submit into an AMD takeover).
+    EXPECT_FALSE(ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(false, false, false, false));
+    EXPECT_FALSE(ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(true, true, false, false));
+    EXPECT_FALSE(ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(true, false, true, false));
+    EXPECT_FALSE(ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(true, false, false, true));
+}
+
+TEST(DXGISharedTest, StreamlineOnWithKeepAliveIsWarmResumeNotColdStart) {
+    using ce::dx12_overlay_policy::ShouldResumeConfirmedPostSLFromKeepAliveOnStreamlineOn;
+
+    EXPECT_TRUE(ShouldResumeConfirmedPostSLFromKeepAliveOnStreamlineOn(true, true));
+    // Without the latch (real cold start) or without preserved confirmation
+    // the existing synthetic-startup machinery runs unchanged.
+    EXPECT_FALSE(ShouldResumeConfirmedPostSLFromKeepAliveOnStreamlineOn(false, true));
+    EXPECT_FALSE(ShouldResumeConfirmedPostSLFromKeepAliveOnStreamlineOn(true, false));
+}
+
+TEST(DXGISharedTest, PostSLKeepAliveRenderRequiresLiveStreamlineStack) {
+    using ce::dx12_overlay_policy::ShouldAllowPostSLKeepAliveRenderAfterExplicitOff;
+
+    // Latched + FG signal off + SL modules still loaded = render permission.
+    EXPECT_TRUE(ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(true, false, true));
+
+    // No latch, FG actually running (normal gates own it), or SL stack gone
+    // (proxy queues dead — the gated callback retires the latch instead).
+    EXPECT_FALSE(ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(false, false, true));
+    EXPECT_FALSE(ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(true, true, true));
+    EXPECT_FALSE(ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(true, false, false));
+}
