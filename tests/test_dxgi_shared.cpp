@@ -735,37 +735,40 @@ TEST(DXGISharedTest, SceneTransitionCooldownSuppressedForRuntimeOwnedOverlayRout
     EXPECT_FALSE(ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(false, false, false, false));
 }
 
-TEST(DXGISharedTest, PreSLOverlayKeptDrawingDuringSameQueueDLSSStartup) {
-    using ce::dx12_overlay_policy::ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup;
+TEST(DXGISharedTest, DLSSOffOnConfirmedPostSLRuntimeOwnedQueueReinitsImmediately) {
+    using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue;
 
-    // Talos DLSS startup (session 20260613_212112): SL FG starting, PostSL not confirmed, but NO
-    // separate SL queue (scQueue==origGame==cmdQueue) and the present swapchain is the overlay-bound
-    // one — keep the live overlay on the pre-SL route (make-before-break) instead of a 28-present blank.
-    EXPECT_TRUE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(
-        /*streamlineFGStarting=*/true, /*postSLConfirmedRendering=*/false, /*runtimeOwnsSwapchain=*/false,
-        /*overlayInit=*/true, /*syncInit=*/true, /*hasSwapchainQueue=*/true,
-        /*swapchainQueueIsOriginalGameQueue=*/true, /*commandQueueIsOriginalGameQueue=*/true,
-        /*presentSwapchainIsOverlayBoundSwapchain=*/true));
+    // Talos menu FG-switch (session 20260614_023730: 89 + 90 presents / 828 ms): slDLSSGSetOptions(OFF)
+    // over a runtime-owned swapchain whose FSR-ownership latch is STALE. DLSS-PostSL was the actual
+    // presenter (change queue == g_PostSLLastWorkingQueue), the keep-alive could not arm, FSR is not
+    // actually presenting (api inactive, callback quiet) -> reinit the warm backend immediately on the
+    // same queue instead of the 90-frame cooldown.
+    EXPECT_TRUE(ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+        /*streamlineFGRunning=*/false, /*fsrFGApiActive=*/false, /*nativeFSRInternalNoCallbackComposition=*/false,
+        /*ffxPresentCallbackActive=*/false, /*runtimeOwnsSwapchain=*/true,
+        /*swapchainQueueIsConfirmedPostSLRenderQueue=*/true, /*deviceRemoved=*/false));
 
-    // A SEPARATE SL queue (scQueue != origGame) → cross-queue DEVICE_HUNG hazard → keep suppressing.
-    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, true, true, true, false,
-                                                                        true, true));
-    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, true, true, true, true,
-                                                                        false, true));
-    // Swapchain pointer changed (backend not bound to the present swapchain) → suppress.
-    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, true, true, true, true,
-                                                                        true, false));
-    // Runtime owns the swapchain (the GTA pure-DLSS startup-churn family moves to a runtime queue) → suppress.
-    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, true, true, true, true, true,
-                                                                        true, true));
-    // PostSL already confirmed (steady-state DLSS FG: PostSL owns the overlay) → suppress pre-SL.
-    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, true, false, true, true, true, true,
-                                                                        true, true));
-    // Overlay/sync backend not live → nothing to keep drawing.
-    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, false, true, true, true,
-                                                                        true, true));
-    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, true, false, true, true,
-                                                                        true, true));
+    // A REAL FSR takeover keeps the strict cooldown (the documented GTA crash path).
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+        false, /*fsrFGApiActive=*/true, false, false, true, true, false));
+    // A live FFX present callback means FSR is actively presenting -> keep the cooldown.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+        false, false, false, /*ffxPresentCallbackActive=*/true, true, true, false));
+    // AMD internal no-callback composition is live -> keep the cooldown.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+        false, false, /*nativeFSRInternalNoCallbackComposition=*/true, false, true, true, false));
+    // The change queue is NOT the confirmed PostSL render queue -> not proven the DLSS presenter -> cooldown.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+        false, false, false, false, true, /*swapchainQueueIsConfirmedPostSLRenderQueue=*/false, false));
+    // Device removed -> keep the cooldown.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+        false, false, false, false, true, true, /*deviceRemoved=*/true));
+    // Streamline FG still running (not an OFF) -> the active-FG preserve path owns this, not us.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+        /*streamlineFGRunning=*/true, false, false, false, true, true, false));
+    // Not runtime-owned -> the generic non-FG reinit handles it.
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+        false, false, false, false, /*runtimeOwnsSwapchain=*/false, true, false));
 }
 
 TEST(DXGISharedTest, NormalOverlayAllowedDuringDormantProtectedFFXStartup) {

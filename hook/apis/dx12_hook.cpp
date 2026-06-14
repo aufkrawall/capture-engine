@@ -13797,9 +13797,31 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         // wrapper cmdQueue differs. Accept it as the confirmed PostSL queue.
                         currentSwapchainQueue != nullptr && g_PostSLLastWorkingQueue != nullptr &&
                             currentSwapchainQueue == g_PostSLLastWorkingQueue);
+                // DLSS-FG OFF over a runtime-owned (FSR-history) swapchain whose ownership latch is
+                // STALE: DLSS-PostSL was the actual presenter (change queue == g_PostSLLastWorkingQueue),
+                // but the keep-alive could not arm (blocked by runtimeOwnedNativeFGPresentPath), so the
+                // suspension predicate above misses it. FSR is not actually presenting (api inactive,
+                // present callback quiet), so reinit the warm backend immediately on the same queue
+                // instead of the 90-frame cooldown (session 20260614_023730: 89/90-present blanks).
+                const ULONGLONG lastFFXCallbackTickMs = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
+                const bool ffxPresentCallbackActiveForDLSSOff =
+                    lastFFXCallbackTickMs != 0 && (GetTickCount64() - lastFFXCallbackTickMs) < 1000;
+                auto* dlssOffDevice = g_Device.load(std::memory_order_acquire);
+                const bool dlssOffDeviceRemoved =
+                    dlssOffDevice != nullptr && FAILED(dlssOffDevice->GetDeviceRemovedReason());
+                const bool immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue =
+                    ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+                        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+                        g_FGCompat.IsFSRFGApiActive(),
+                        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+                        ffxPresentCallbackActiveForDLSSOff, g_FGRuntimeOwnsSwapchain,
+                        currentSwapchainQueue != nullptr && g_PostSLLastWorkingQueue != nullptr &&
+                            currentSwapchainQueue == g_PostSLLastWorkingQueue,
+                        dlssOffDeviceRemoved);
                 if (guardSwapchainReinit &&
                     (immediateReinitAfterNoCallbackFFXTakeover || immediateReinitAfterGameSwapchainRecovery ||
-                     immediateReinitAfterConfirmedPostSLSuspension)) {
+                     immediateReinitAfterConfirmedPostSLSuspension ||
+                     immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue)) {
                     // Enable direction: the enabled ffxConfigure already finalized
                     // the official FFX takeover, applied the staged runtime queue,
                     // and drained CE's overlay GPU work; normal overlay rendering on
@@ -13827,6 +13849,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             ? "finalized no-callback official FFX takeover"
                         : immediateReinitAfterConfirmedPostSLSuspension
                             ? "confirmed-PostSL DLSS-FG suspension (proxy stays live, no blank)"
+                        : immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue
+                            ? "DLSS-off over confirmed-PostSL runtime-owned queue (FSR latch stale, callback quiet)"
                             : "game-created swapchain recovery after explicit native FSR OFF/destroy",
                         currentSwapchainQueue, currentOriginalGameQueue, currentCommandQueue, previousCooldown);
                 } else if (guardSwapchainReinit) {
@@ -16812,52 +16836,22 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     // working but stopped firing — the game's backbuffer state is still valid
                     // on the game's queue because SL's FG pipeline is idle).
                     //
-                    // During startup, we simply wait for PostSL to confirm. The overlay will
-                    // be invisible for a few frames during FG initialization — acceptable —
-                    // UNLESS SL FG runs on the same queue/swapchain (no separate SL queue), in
-                    // which case the cross-queue hazard is absent and we keep the live overlay
-                    // drawing on the pre-SL route (make-before-break) until PostSL confirms.
-                    ID3D12CommandQueue* preSLSwapchainQueue = nullptr;
-                    ID3D12CommandQueue* preSLOriginalGameQueue = nullptr;
-                    ID3D12CommandQueue* preSLCommandQueue = nullptr;
-                    {
-                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-                        preSLSwapchainQueue = g_SwapchainQueue;
-                        preSLOriginalGameQueue = g_OriginalGameQueue;
-                        preSLCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+                    // During startup, we simply wait for PostSL to confirm. The overlay is
+                    // invisible for a few frames during FG initialization. A pre-SL make-before-
+                    // break here is NOT possible on the DLSS-startup path: the game's Present is
+                    // consumed by Streamline's proxy, so all startup presents are SL re-entrant
+                    // (PostSL) and ProcessFrameExternal is dormant — there is no pre-SL frame to
+                    // draw. The only overlay route is PostSL, gated by the cold-start warmup
+                    // (the documented GTA DLSS-init crash protection). See guardrails.md.
+                    static int s_preSLSuppressLog = 0;
+                    if (s_preSLSuppressLog++ < 10 || (s_preSLSuppressLog % 300) == 0) {
+                        HookLogImportant(
+                            "DX12: Suppressing pre-SL draw during SL FG startup — waiting for PostSL "
+                            "(postSLCallback=%d postSLActive=%d hadFSR=%d stallCount=%d) #%d",
+                            postSLCallback ? 1 : 0, postSLActive ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, stallCount,
+                            s_preSLSuppressLog);
                     }
-                    const bool keepDrawingPreSLSameQueueStartup =
-                        ce::dx12_overlay_policy::ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(
-                            /*streamlineFGStarting=*/true, postSLConfirmed, g_FGRuntimeOwnsSwapchain,
-                            g_State.overlayInit, g_State.syncInit, preSLSwapchainQueue != nullptr,
-                            preSLSwapchainQueue != nullptr && preSLOriginalGameQueue != nullptr &&
-                                preSLSwapchainQueue == preSLOriginalGameQueue,
-                            preSLCommandQueue != nullptr && preSLOriginalGameQueue != nullptr &&
-                                preSLCommandQueue == preSLOriginalGameQueue,
-                            pSwapChain != nullptr && pSwapChain == g_State.cachedSwapChain);
-                    if (keepDrawingPreSLSameQueueStartup) {
-                        static std::atomic<int> s_preSLSameQueueKeepDrawLog{0};
-                        const int logCount = s_preSLSameQueueKeepDrawLog.fetch_add(1, std::memory_order_relaxed);
-                        if (logCount < 10 || (logCount % 300) == 0) {
-                            HookLogImportant(
-                                "DX12: Keeping pre-SL overlay live through same-queue DLSS startup — no blank "
-                                "(scQueue=%p origGame=%p cmdQ=%p sc=%p log=%d)",
-                                preSLSwapchainQueue, preSLOriginalGameQueue, preSLCommandQueue, pSwapChain,
-                                logCount + 1);
-                        }
-                        NoteDX12OverlayCoverageGate("presl-same-queue-dlss-startup-keepalive");
-                        // Fall through to the normal pre-SL draw below.
-                    } else {
-                        static int s_preSLSuppressLog = 0;
-                        if (s_preSLSuppressLog++ < 10 || (s_preSLSuppressLog % 300) == 0) {
-                            HookLogImportant(
-                                "DX12: Suppressing pre-SL draw during SL FG startup — waiting for PostSL "
-                                "(postSLCallback=%d postSLActive=%d hadFSR=%d stallCount=%d) #%d",
-                                postSLCallback ? 1 : 0, postSLActive ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, stallCount,
-                                s_preSLSuppressLog);
-                        }
-                        goto skip_overlay_draw;
-                    }
+                    goto skip_overlay_draw;
                 }
             }
 

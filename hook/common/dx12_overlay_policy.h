@@ -663,33 +663,12 @@ inline bool ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(bool overlay
            !appCallbackBridgeFSRActive;
 }
 
-// During SL FG startup (PostSL armed but not yet confirmed) the pre-SL overlay route is
-// normally suppressed because SL usually creates its OWN swapchain/queue, so a pre-SL draw on
-// the original game queue would be a cross-queue access against SL's backbuffers (DEVICE_HUNG).
-// When SL FG runs on the SAME queue/swapchain as the game — no separate SL queue, observed in
-// Talos DLSS FG where scQueue == origGame == cmdQueue and the present swapchain is the one the
-// overlay backend is already bound to — that hazard is absent, so the ALREADY-LIVE overlay can
-// keep drawing on the normal pre-SL route through the cold-start window (make-before-break)
-// instead of blanking ~28 presents (session 20260613_212112). This deliberately does NOT touch
-// the PostSL first-ECL warmup (the documented GTA DLSS-init corruption/hang protection): PostSL
-// stays warming and submits nothing; only the separate pre-SL submission on the game's own
-// queue continues, exactly as it did the present before FG engaged, and SL interpolates it into
-// the generated frames. Any topology change (separate SL queue appears, swapchain pointer
-// changes, runtime takes ownership) fails the gate and restores the suppression, so the GTA
-// pure-DLSS startup-churn/hang family (which moves to a runtime-owned swapchain) is unaffected.
-// GTA RISK: pre-SL draw during DLSS-G init on the same queue is not yet GTA-validated; gated and
-// independently revertible. See guardrails.md.
-inline bool ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(bool streamlineFGStarting,
-                                                                    bool postSLConfirmedRendering,
-                                                                    bool runtimeOwnsSwapchain, bool overlayInit,
-                                                                    bool syncInit, bool hasSwapchainQueue,
-                                                                    bool swapchainQueueIsOriginalGameQueue,
-                                                                    bool commandQueueIsOriginalGameQueue,
-                                                                    bool presentSwapchainIsOverlayBoundSwapchain) {
-    return streamlineFGStarting && !postSLConfirmedRendering && !runtimeOwnsSwapchain && overlayInit && syncInit &&
-           hasSwapchainQueue && swapchainQueueIsOriginalGameQueue && commandQueueIsOriginalGameQueue &&
-           presentSwapchainIsOverlayBoundSwapchain;
-}
+// NOTE (round 3, 2026-06-14): the round-2 `ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup`
+// predicate was REMOVED. It never engaged: on the DLSS-startup path the game's Present is consumed
+// by Streamline's proxy, so every startup present is SL re-entrant (PostSL) and
+// DX12_ProcessFrameExternal is dormant — there is no pre-SL frame to draw. The startup overlay can
+// only come from PostSL, which is held off by the cold-start warmup (the documented GTA DLSS-init
+// crash protection). See guardrails.md (D-round Talos notes).
 
 // A runtime-mode flip that changes only the heuristic FG label, not the
 // transport: no Streamline FG signal on either side, FG swapchain ownership
@@ -827,6 +806,30 @@ inline bool ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchai
     return postSLExplicitOffKeepAlive && !streamlineFGRunning && !fsrFGApiActive &&
            !nativeFSRInternalNoCallbackComposition && runtimeOwnsSwapchain &&
            (swapchainQueueIsLiveCommandQueue || swapchainQueueIsConfirmedPostSLRenderQueue);
+}
+
+// DLSS-FG turned OFF over a runtime-owned (FSR-history) swapchain whose ownership latch is
+// STALE (Talos menu FG-switch, session 20260614_023730: 89 + 90 presents / 828 ms each). Here
+// DLSS-PostSL — not FSR — was the actual presenter (the swapchain-change queue equals the
+// confirmed PostSL render queue g_PostSLLastWorkingQueue), but the make-before-break keep-alive
+// could NOT arm because ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff requires
+// !runtimeOwnedNativeFGPresentPath and the stale FSR-ownership latch is set. So the suspension
+// swapchain-change predicate above (which needs the keep-alive) misses it and it falls into the
+// generic 90-frame cooldown — yet the warm reinit on the SAME persisting queue is safe
+// (devRemoved=0) and the native-FSR-fallback-proof + C1 both allow rendering right after.
+// Reinit immediately when DLSS is off, FSR is NOT actually presenting (api inactive, no internal
+// no-callback composition, present callback quiet/stalled), the runtime still owns the swapchain,
+// the change queue is the confirmed PostSL render queue, and the device is healthy. This is
+// strictly distinct from a REAL FSR takeover (fsrFGApiActive=1 or a live FFX present callback),
+// which keeps the strict cooldown. GTA RISK: not GTA-validated (FSR-ownership path); independently
+// revertible. See guardrails.md.
+inline bool ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+    bool streamlineFGRunning, bool fsrFGApiActive, bool nativeFSRInternalNoCallbackComposition,
+    bool ffxPresentCallbackActive, bool runtimeOwnsSwapchain, bool swapchainQueueIsConfirmedPostSLRenderQueue,
+    bool deviceRemoved) {
+    return !streamlineFGRunning && !fsrFGApiActive && !nativeFSRInternalNoCallbackComposition &&
+           !ffxPresentCallbackActive && runtimeOwnsSwapchain && swapchainQueueIsConfirmedPostSLRenderQueue &&
+           !deviceRemoved;
 }
 
 // Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown
