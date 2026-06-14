@@ -663,6 +663,34 @@ inline bool ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(bool overlay
            !appCallbackBridgeFSRActive;
 }
 
+// During SL FG startup (PostSL armed but not yet confirmed) the pre-SL overlay route is
+// normally suppressed because SL usually creates its OWN swapchain/queue, so a pre-SL draw on
+// the original game queue would be a cross-queue access against SL's backbuffers (DEVICE_HUNG).
+// When SL FG runs on the SAME queue/swapchain as the game — no separate SL queue, observed in
+// Talos DLSS FG where scQueue == origGame == cmdQueue and the present swapchain is the one the
+// overlay backend is already bound to — that hazard is absent, so the ALREADY-LIVE overlay can
+// keep drawing on the normal pre-SL route through the cold-start window (make-before-break)
+// instead of blanking ~28 presents (session 20260613_212112). This deliberately does NOT touch
+// the PostSL first-ECL warmup (the documented GTA DLSS-init corruption/hang protection): PostSL
+// stays warming and submits nothing; only the separate pre-SL submission on the game's own
+// queue continues, exactly as it did the present before FG engaged, and SL interpolates it into
+// the generated frames. Any topology change (separate SL queue appears, swapchain pointer
+// changes, runtime takes ownership) fails the gate and restores the suppression, so the GTA
+// pure-DLSS startup-churn/hang family (which moves to a runtime-owned swapchain) is unaffected.
+// GTA RISK: pre-SL draw during DLSS-G init on the same queue is not yet GTA-validated; gated and
+// independently revertible. See guardrails.md.
+inline bool ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(bool streamlineFGStarting,
+                                                                    bool postSLConfirmedRendering,
+                                                                    bool runtimeOwnsSwapchain, bool overlayInit,
+                                                                    bool syncInit, bool hasSwapchainQueue,
+                                                                    bool swapchainQueueIsOriginalGameQueue,
+                                                                    bool commandQueueIsOriginalGameQueue,
+                                                                    bool presentSwapchainIsOverlayBoundSwapchain) {
+    return streamlineFGStarting && !postSLConfirmedRendering && !runtimeOwnsSwapchain && overlayInit && syncInit &&
+           hasSwapchainQueue && swapchainQueueIsOriginalGameQueue && commandQueueIsOriginalGameQueue &&
+           presentSwapchainIsOverlayBoundSwapchain;
+}
+
 // A runtime-mode flip that changes only the heuristic FG label, not the
 // transport: no Streamline FG signal on either side, FG swapchain ownership
 // and the live swapchain queue unchanged, no authoritative FSR API state, and
@@ -3032,6 +3060,36 @@ inline bool ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(bool protect
     // showed that even "overlay-only" ECLs in this pre-enable window can leave
     // the AMD presenter/interpolation threads waiting inside ffxQuery.
     return false;
+}
+
+// 2D-MENU FSR-FG ARMING (Talos, session 20260613_212112): switching to FSR FG in a 2D menu
+// makes AMD create its FFX swapchain, arming protected official-FFX startup — but the game
+// keeps presenting MENU frames on its OWN original queue (`runtimeOwns=0`, `scQueue==origGame`)
+// while AMD's FFX runtime stays DORMANT (no enabled `ffxConfigure`, no present callback) until
+// 3D resumes, so the blanket quiesce blanks the overlay for the whole menu (8+ s observed).
+//
+// This is DISTINCT from the rejected staged-queue overlay above: it allows the overlay ONLY on
+// the ORIGINAL GAME queue that the game itself is actively presenting on (never the staged AMD
+// queue — `stagedQueueDiffersFromOriginalGameQueue` + caller must resolve the submit queue to
+// origGame), and ONLY while AMD is provably dormant. The instant the runtime takes over —
+// `runtimeOwnsSwapchain` flips, an enabled `ffxConfigure` lands (`directFFXApiConfirmation`),
+// an FFX present callback fires, or the live present queue leaves origGame — this returns false
+// and the full quiesce + FFX present-callback bridge route resume unchanged. `sustainedGame
+// ProgressOnOriginalQueue` requires a few stable origGame present frames first so the fragile
+// AMD swapchain-create instant stays quiesced.
+//
+// GTA RISK (untested here): if GTA presents its menu on the staged/runtime-owned queue, or AMD's
+// FFX worker runs pre-enable, this gate should evaluate false (runtimeOwns/scQueue), but it has
+// NOT been GTA-validated. It is independently revertible (drop this predicate) and the hard GTA
+// invariants are preserved (never ECL on the staged queue; full quiesce when the runtime owns or
+// is non-dormant). See guardrails.md.
+inline bool ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+    bool protectedOfficialFFXStartupPending, bool runtimeOwnsSwapchain, bool overlayInit, bool syncInit,
+    bool hasSwapchainQueue, bool swapchainQueueIsOriginalGameQueue, bool stagedQueueDiffersFromOriginalGameQueue,
+    bool hasDirectFFXApiConfirmation, bool ffxPresentCallbackActive, bool sustainedGameProgressOnOriginalQueue) {
+    return protectedOfficialFFXStartupPending && !runtimeOwnsSwapchain && overlayInit && syncInit &&
+           hasSwapchainQueue && swapchainQueueIsOriginalGameQueue && stagedQueueDiffersFromOriginalGameQueue &&
+           !hasDirectFFXApiConfirmation && !ffxPresentCallbackActive && sustainedGameProgressOnOriginalQueue;
 }
 
 inline bool ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(bool protectedOverlayOnlyEligible,

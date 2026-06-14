@@ -735,6 +735,78 @@ TEST(DXGISharedTest, SceneTransitionCooldownSuppressedForRuntimeOwnedOverlayRout
     EXPECT_FALSE(ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(false, false, false, false));
 }
 
+TEST(DXGISharedTest, PreSLOverlayKeptDrawingDuringSameQueueDLSSStartup) {
+    using ce::dx12_overlay_policy::ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup;
+
+    // Talos DLSS startup (session 20260613_212112): SL FG starting, PostSL not confirmed, but NO
+    // separate SL queue (scQueue==origGame==cmdQueue) and the present swapchain is the overlay-bound
+    // one — keep the live overlay on the pre-SL route (make-before-break) instead of a 28-present blank.
+    EXPECT_TRUE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(
+        /*streamlineFGStarting=*/true, /*postSLConfirmedRendering=*/false, /*runtimeOwnsSwapchain=*/false,
+        /*overlayInit=*/true, /*syncInit=*/true, /*hasSwapchainQueue=*/true,
+        /*swapchainQueueIsOriginalGameQueue=*/true, /*commandQueueIsOriginalGameQueue=*/true,
+        /*presentSwapchainIsOverlayBoundSwapchain=*/true));
+
+    // A SEPARATE SL queue (scQueue != origGame) → cross-queue DEVICE_HUNG hazard → keep suppressing.
+    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, true, true, true, false,
+                                                                        true, true));
+    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, true, true, true, true,
+                                                                        false, true));
+    // Swapchain pointer changed (backend not bound to the present swapchain) → suppress.
+    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, true, true, true, true,
+                                                                        true, false));
+    // Runtime owns the swapchain (the GTA pure-DLSS startup-churn family moves to a runtime queue) → suppress.
+    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, true, true, true, true, true,
+                                                                        true, true));
+    // PostSL already confirmed (steady-state DLSS FG: PostSL owns the overlay) → suppress pre-SL.
+    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, true, false, true, true, true, true,
+                                                                        true, true));
+    // Overlay/sync backend not live → nothing to keep drawing.
+    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, false, true, true, true,
+                                                                        true, true));
+    EXPECT_FALSE(ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(true, false, false, true, false, true, true,
+                                                                        true, true));
+}
+
+TEST(DXGISharedTest, NormalOverlayAllowedDuringDormantProtectedFFXStartup) {
+    using ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup;
+
+    // Talos 2D-menu FSR arming (session 20260613_212112): protected official-FFX startup pending,
+    // but the game still presents menu frames on its OWN queue (runtimeOwns=0, scQueue==origGame),
+    // the staged AMD queue differs, AMD is dormant (no enabled ffxConfigure / callback), and a few
+    // stable frames have elapsed → render the overlay on origGame instead of an 8 s menu blank.
+    EXPECT_TRUE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        /*protectedOfficialFFXStartupPending=*/true, /*runtimeOwnsSwapchain=*/false, /*overlayInit=*/true,
+        /*syncInit=*/true, /*hasSwapchainQueue=*/true, /*swapchainQueueIsOriginalGameQueue=*/true,
+        /*stagedQueueDiffersFromOriginalGameQueue=*/true, /*hasDirectFFXApiConfirmation=*/false,
+        /*ffxPresentCallbackActive=*/false, /*sustainedGameProgressOnOriginalQueue=*/true));
+
+    // Runtime took over presentation → full quiesce (the GTA staged-queue crash path).
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, true, true, true, true, true, true, false, false, true));
+    // Present queue is no longer origGame → quiesce.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, false, true, false, false, true));
+    // Staged queue == origGame (would mean rendering on the staged queue) → quiesce.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, true, false, false, false, true));
+    // Enabled ffxConfigure landed → AMD no longer dormant; hand to the FFX callback route.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, true, true, true, false, true));
+    // An FFX present callback is firing → AMD active; quiesce the normal route.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, true, true, false, true, true));
+    // Not yet enough stable frames (protects the fragile AMD swapchain-create instant) → quiesce.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, true, true, false, false, false));
+    // Overlay backend not live → nothing to draw.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, false, true, true, true, true, false, false, true));
+    // Not in a protected-FFX startup window → predicate is inert.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        false, false, true, true, true, true, true, false, false, true));
+}
+
 TEST(DXGISharedTest, SLPresentRoutingStaysDisabledAcrossNativeFGTeardownAndActiveOwnership) {
     EXPECT_TRUE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForNativeFG(true, false));
     EXPECT_TRUE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForNativeFG(false, true));

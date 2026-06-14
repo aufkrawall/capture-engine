@@ -3009,6 +3009,45 @@ static bool ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup() {
         HasResolvedOfficialFFXStartupPath());
 }
 
+// 2D-MENU FSR-FG ARMING (Talos): during protected official-FFX startup, allow ONLY the overlay
+// draw on the original game queue while AMD's FFX runtime is dormant and the game still presents
+// menu frames on its own queue (runtimeOwns=0, scQueue==origGame). All OTHER CE side effects
+// (capture, FFX retry/probe, queue registration, create-time mutation) stay quiesced via
+// ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup(). Never the staged AMD queue (the
+// documented GTA crash). See dx12_overlay_policy.h for the full rationale and GTA risk.
+static constexpr uint32_t kProtectedFFXDormantOverlayMinProgressFrames = 5;
+static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup() {
+    if (!g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire)) {
+        return false;
+    }
+    ID3D12CommandQueue* dormantSwapchainQueue = nullptr;
+    ID3D12CommandQueue* dormantOriginalGameQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+        dormantSwapchainQueue = g_SwapchainQueue;
+        dormantOriginalGameQueue = g_OriginalGameQueue;
+    }
+    bool stagedQueueDiffersFromOriginalGameQueue = false;
+    {
+        std::lock_guard<std::mutex> lock(g_DeferredOfficialFFXTakeoverMutex);
+        stagedQueueDiffersFromOriginalGameQueue =
+            g_DeferredOfficialFFXTakeoverQueue == nullptr ||
+            (dormantOriginalGameQueue != nullptr && g_DeferredOfficialFFXTakeoverQueue != dormantOriginalGameQueue);
+    }
+    const bool sustainedGameProgressOnOriginalQueue =
+        g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire) >=
+        kProtectedFFXDormantOverlayMinProgressFrames;
+    const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
+    const bool ffxPresentCallbackActive = lastCallback != 0 && (GetTickCount64() - lastCallback) < 1000;
+    return ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        /*protectedOfficialFFXStartupPending=*/true, g_FGRuntimeOwnsSwapchain, g_State.overlayInit, g_State.syncInit,
+        dormantSwapchainQueue != nullptr,
+        dormantSwapchainQueue != nullptr && dormantOriginalGameQueue != nullptr &&
+            dormantSwapchainQueue == dormantOriginalGameQueue,
+        stagedQueueDiffersFromOriginalGameQueue, g_FGCompat.HasDirectFFXApiConfirmation(), ffxPresentCallbackActive,
+        sustainedGameProgressOnOriginalQueue);
+}
+
 static bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
     IUnknown* pDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, ID3D12CommandQueue** queueOut) {
     if (queueOut) {
@@ -3990,6 +4029,17 @@ static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
 
 static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** reason = nullptr) {
     if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+        // 2D-MENU FSR-FG ARMING exception: while AMD's FFX runtime is dormant and the game still
+        // presents menu frames on its OWN original queue (runtimeOwns=0, scQueue==origGame), keep
+        // the overlay visible on the normal route on origGame instead of blanking the whole menu.
+        // Never the staged AMD queue (the documented GTA crash). All other CE side effects stay
+        // quiesced. See guardrails.md (GTA risk).
+        if (ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup()) {
+            if (reason) {
+                *reason = nullptr;
+            }
+            return false;
+        }
         if (reason) {
             *reason = "protected official FFX startup";
         }
@@ -16763,16 +16813,51 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     // on the game's queue because SL's FG pipeline is idle).
                     //
                     // During startup, we simply wait for PostSL to confirm. The overlay will
-                    // be invisible for a few frames during FG initialization — acceptable.
-                    static int s_preSLSuppressLog = 0;
-                    if (s_preSLSuppressLog++ < 10 || (s_preSLSuppressLog % 300) == 0) {
-                        HookLogImportant(
-                            "DX12: Suppressing pre-SL draw during SL FG startup — waiting for PostSL "
-                            "(postSLCallback=%d postSLActive=%d hadFSR=%d stallCount=%d) #%d",
-                            postSLCallback ? 1 : 0, postSLActive ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, stallCount,
-                            s_preSLSuppressLog);
+                    // be invisible for a few frames during FG initialization — acceptable —
+                    // UNLESS SL FG runs on the same queue/swapchain (no separate SL queue), in
+                    // which case the cross-queue hazard is absent and we keep the live overlay
+                    // drawing on the pre-SL route (make-before-break) until PostSL confirms.
+                    ID3D12CommandQueue* preSLSwapchainQueue = nullptr;
+                    ID3D12CommandQueue* preSLOriginalGameQueue = nullptr;
+                    ID3D12CommandQueue* preSLCommandQueue = nullptr;
+                    {
+                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                        preSLSwapchainQueue = g_SwapchainQueue;
+                        preSLOriginalGameQueue = g_OriginalGameQueue;
+                        preSLCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
                     }
-                    goto skip_overlay_draw;
+                    const bool keepDrawingPreSLSameQueueStartup =
+                        ce::dx12_overlay_policy::ShouldKeepDrawingPreSLOverlayDuringSameQueueDLSSStartup(
+                            /*streamlineFGStarting=*/true, postSLConfirmed, g_FGRuntimeOwnsSwapchain,
+                            g_State.overlayInit, g_State.syncInit, preSLSwapchainQueue != nullptr,
+                            preSLSwapchainQueue != nullptr && preSLOriginalGameQueue != nullptr &&
+                                preSLSwapchainQueue == preSLOriginalGameQueue,
+                            preSLCommandQueue != nullptr && preSLOriginalGameQueue != nullptr &&
+                                preSLCommandQueue == preSLOriginalGameQueue,
+                            pSwapChain != nullptr && pSwapChain == g_State.cachedSwapChain);
+                    if (keepDrawingPreSLSameQueueStartup) {
+                        static std::atomic<int> s_preSLSameQueueKeepDrawLog{0};
+                        const int logCount = s_preSLSameQueueKeepDrawLog.fetch_add(1, std::memory_order_relaxed);
+                        if (logCount < 10 || (logCount % 300) == 0) {
+                            HookLogImportant(
+                                "DX12: Keeping pre-SL overlay live through same-queue DLSS startup — no blank "
+                                "(scQueue=%p origGame=%p cmdQ=%p sc=%p log=%d)",
+                                preSLSwapchainQueue, preSLOriginalGameQueue, preSLCommandQueue, pSwapChain,
+                                logCount + 1);
+                        }
+                        NoteDX12OverlayCoverageGate("presl-same-queue-dlss-startup-keepalive");
+                        // Fall through to the normal pre-SL draw below.
+                    } else {
+                        static int s_preSLSuppressLog = 0;
+                        if (s_preSLSuppressLog++ < 10 || (s_preSLSuppressLog % 300) == 0) {
+                            HookLogImportant(
+                                "DX12: Suppressing pre-SL draw during SL FG startup — waiting for PostSL "
+                                "(postSLCallback=%d postSLActive=%d hadFSR=%d stallCount=%d) #%d",
+                                postSLCallback ? 1 : 0, postSLActive ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, stallCount,
+                                s_preSLSuppressLog);
+                        }
+                        goto skip_overlay_draw;
+                    }
                 }
             }
 
@@ -18093,6 +18178,22 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                 "DX12: Protected official FFX startup progress fallback completed on ProcessFrame; resuming CE "
                 "overlay/capture side effects (sc=%p processFrameSkips=%u)",
                 pSwapChain, progressCount);
+        } else if (ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup()) {
+            // 2D-menu FSR arming: AMD is dormant and the game still presents on its own queue,
+            // so the overlay keeps drawing on origGame below (capture/FFX-retry/probe side
+            // effects remain quiesced). Attribute this present accordingly instead of as a blank.
+            NoteDX12OverlayCoverageGate("protected-ffx-dormant-origgame-draw");
+            const int logCount =
+                s_protectedOfficialFFXProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: Rendering overlay on origGame during dormant protected official FFX startup — "
+                    "runtimeOwns=0 scQueue==origGame, AMD FFX dormant (sc=%p count=%d progress=%u eclProgress=%u "
+                    "directFFX=%d)",
+                    pSwapChain, logCount + 1, progressCount,
+                    g_ProtectedOfficialFFXStartupECLPassThroughs.load(std::memory_order_acquire),
+                    g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0);
+            }
         } else if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
             NoteDX12OverlayCoverageGate("protected-ffx-startup-quiesce");
             const int logCount =
