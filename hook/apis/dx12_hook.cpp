@@ -361,6 +361,16 @@ static std::atomic<bool> g_OverlayCoverageStreakStartConfirmed{false};
 static ce::dx12_overlay_policy::OverlayPresentCoverageTracker g_OverlayCoverageTracker;
 static std::atomic_flag g_OverlayCoverageLock = ATOMIC_FLAG_INIT;
 
+// Verbose overlay-handoff diagnostic window. The [OVERLAY COVERAGE] streak gate only reports a blank
+// when a present is UNCOVERED, but an off->DLSS engage flash can sit BELOW that: every present is
+// "covered" (real draw or FG-composed inheritance) yet a brand-new DLSS-G proxy can still show a
+// generated frame whose overlay history is empty. When a PostSL reactivation arms this window, the
+// next N presents log per-present coverage detail (real-draw vs inherited-if-no-draw vs uncovered,
+// route, source) so the exact handoff frame is attributable. prevRoute captured at arming separates
+// off->DLSS (prevRoute=normal, native->fresh-proxy) from FSR->DLSS (prevRoute=post-sl/ffx, warm proxy).
+static std::atomic<int> g_OverlayHandoffVerboseLogPresents{0};
+static std::atomic<uint32_t> g_OverlayHandoffVerbosePrevRoute{0};
+
 static void NoteDX12OverlayCoverageGate(const char* gate) {
     g_OverlayCoverageLastGate.store(gate, std::memory_order_relaxed);
 }
@@ -405,6 +415,27 @@ static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const
     snapshot.currentStreak = g_OverlayCoverageTracker.CurrentUncoveredStreak();
     snapshot.longestStreak = g_OverlayCoverageTracker.LongestUncoveredStreak();
     g_OverlayCoverageLock.clear(std::memory_order_release);
+
+    // Verbose overlay-handoff diagnostic: per-present detail for the first N presents after a PostSL
+    // reactivation. `drawObserved=0 inheritIfNoDraw=1` (covered ONLY by FG-composed inheritance) is the
+    // smoking gun for an off->DLSS fresh-proxy flash — DLSS-G presented a generated frame relying on a
+    // proxy whose overlay history is still empty. A real draw shows `drawObserved=1`.
+    {
+        int verboseRemaining = g_OverlayHandoffVerboseLogPresents.load(std::memory_order_relaxed);
+        if (verboseRemaining > 0) {
+            g_OverlayHandoffVerboseLogPresents.store(verboseRemaining - 1, std::memory_order_relaxed);
+            const uint32_t route = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+            const uint32_t prevRoute = g_OverlayHandoffVerbosePrevRoute.load(std::memory_order_relaxed);
+            HookLogImportant(
+                "[OVERLAY HANDOFF] present=%llu drawObserved=%d inheritIfNoDraw=%d covered=%d route=%s prevRoute=%s "
+                "source=%s currentStreak=%llu remaining=%d",
+                static_cast<unsigned long long>(snapshot.totalPresents), drawObserved ? 1 : 0,
+                inheritCoverageIfNoDraw ? 1 : 0, (drawObserved || inheritCoverageIfNoDraw) ? 1 : 0,
+                DX12OverlayRenderRouteName(route), DX12OverlayRenderRouteName(prevRoute),
+                source ? source : "unknown", static_cast<unsigned long long>(snapshot.currentStreak),
+                verboseRemaining - 1);
+        }
+    }
 
     if (result.uncoveredStreakStarted) {
         const char* streakGate = g_OverlayCoverageLastGate.load(std::memory_order_relaxed);
@@ -10392,6 +10423,18 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
         HookLogImportant("DX12: PostSL REACTIVATED (epoch=%d hadFSR=%d origGame=%p)", s_reactivationEpoch,
                          g_HadFSRFGPhase ? 1 : 0, g_OriginalGameQueue);
+        // Arm the verbose overlay-handoff diagnostic so the next presents log per-present coverage
+        // detail. prevRoute distinguishes off->DLSS (prevRoute=normal, native->fresh-proxy — the
+        // reported slight-flash case) from FSR->DLSS (prevRoute=post-sl/ffx, warm proxy).
+        {
+            const uint32_t prevRoute = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+            g_OverlayHandoffVerbosePrevRoute.store(prevRoute, std::memory_order_relaxed);
+            g_OverlayHandoffVerboseLogPresents.store(16, std::memory_order_relaxed);
+            HookLogImportant(
+                "[OVERLAY HANDOFF] PostSL reactivation armed verbose window (epoch=%d hadFSR=%d prevRoute=%s "
+                "swapchain=%p) — logging the next 16 presents to pinpoint an off->DLSS fresh-proxy overlay flash",
+                s_reactivationEpoch, g_HadFSRFGPhase ? 1 : 0, DX12OverlayRenderRouteName(prevRoute), (void*)pSwapChain);
+        }
         // Reset ECL diagnostic counter for fresh diagnostics after transition
         g_PostSLECLDiagCount.store(0, std::memory_order_relaxed);
         // Reset post-FSR probe state for fresh graduated probing
