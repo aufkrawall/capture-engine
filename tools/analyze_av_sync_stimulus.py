@@ -32,13 +32,24 @@ STRICT_CE_PATTERNS = {
     ),
     "audio_overflow": re.compile(r"\[PullAudio\] WARNING: Ring buffer overflow", re.IGNORECASE),
     "audio_extreme_drift": re.compile(r"\[PullAudio\] WARNING: Extreme drift detected", re.IGNORECASE),
+    "audio_late_app_source_backlog": re.compile(
+        r"\[PullAudio\] Source primed .*lateStart=(?:[1-9]\d{3,}|\d{5,})ms", re.IGNORECASE
+    ),
+    "audio_app_source_gap_silence": re.compile(r"\[PullAudio\] App source gap silence", re.IGNORECASE),
     "audio_zero_drift_residual": re.compile(r"\[A/V ZERO DRIFT WARNING\]", re.IGNORECASE),
+    "post_mux_probe_hang": re.compile(r"writer_finalize_timeout.*phase=post_mux_probe", re.IGNORECASE),
     "wgc_stop_hold": re.compile(r"WGC CFR stop drain using held pre-stop frame", re.IGNORECASE),
     "wgc_drain_duplicate": re.compile(r"\[WGC CFR SUMMARY\].*drain=[1-9]", re.IGNORECASE),
     "wgc_encoder_overload_policy": re.compile(
         r"encoder-limited mode mismatch|selected source backtrack blocked", re.IGNORECASE
     ),
 }
+
+LATE_APP_LIVE_JOIN_SRC_RE = re.compile(r"\[AudioLoop\] Late app source live join src=(\d+)", re.IGNORECASE)
+LATE_APP_PRIMED_SRC_RE = re.compile(
+    r"\[PullAudio\] Source primed\s+-\s+src=(\d+).*?lateStart=(\d+)ms",
+    re.IGNORECASE,
+)
 
 STRICT_APP_PATTERNS = {
     "frame_pacing_spike": re.compile(r"AVSYNC WARNING frame pacing spike", re.IGNORECASE),
@@ -1478,7 +1489,22 @@ def offset_slope_is_acceptable(offsets, offset_stats, slope_ms_per_minute, max_s
 
 
 def analyze_ce_log_text(text):
-    return {name: len(pattern.findall(text)) for name, pattern in STRICT_CE_PATTERNS.items()}
+    counts = {name: len(pattern.findall(text)) for name, pattern in STRICT_CE_PATTERNS.items()}
+    counts["audio_late_app_source_backlog"] = count_unjoined_late_app_source_backlog(text)
+    return counts
+
+
+def count_unjoined_late_app_source_backlog(text):
+    live_join_sources = {match.group(1) for match in LATE_APP_LIVE_JOIN_SRC_RE.finditer(text)}
+    count = 0
+    matched_structured_line = False
+    for match in LATE_APP_PRIMED_SRC_RE.finditer(text):
+        matched_structured_line = True
+        if int(match.group(2)) >= 1000 and match.group(1) not in live_join_sources:
+            count += 1
+    if matched_structured_line:
+        return count
+    return len(STRICT_CE_PATTERNS["audio_late_app_source_backlog"].findall(text))
 
 
 def analyze_ce_log(path):
@@ -1919,6 +1945,9 @@ def self_test():
         "(available=0 needed=480 forceDrain=0)\n"
         "[PullAudio] WARNING: Source underrun - src 2 padding 800 samples with silence "
         "(available=0 needed=800 forceDrain=1)\n"
+        "[PullAudio] Source primed - src=9 track=1 buffered=359086 realBuffered=358483 needed=1200 lateStart=7459ms\n"
+        "[PullAudio] App source gap silence - src 9 added 480 samples to track 1\n"
+        "[VideoEncoder] Stop: ERROR writer_finalize_timeout result=258 phase=post_mux_probe elapsed=30000ms\n"
         "[STOP AUDIO] Source 3: track=2 encoded=1000 trim=cov:0 latTotal:0 liveUncat:0 pad:42 qgap:0\n"
         "[A/V ZERO DRIFT WARNING] Track 1 residual_samples=+1 residual_us=+21\n"
     )
@@ -1926,7 +1955,17 @@ def self_test():
     assert bad_counts["audio_underrun"] == 1
     assert bad_counts["audio_stop_tail_padding"] == 1
     assert bad_counts["audio_strict_source_padding"] == 1
+    assert bad_counts["audio_late_app_source_backlog"] == 1
+    assert bad_counts["audio_app_source_gap_silence"] == 1
     assert bad_counts["audio_zero_drift_residual"] == 1
+    assert bad_counts["post_mux_probe_hang"] == 1
+    live_join_counts = analyze_ce_log_text(
+        "[AudioLoop] Late app source live join src=9 track=1 process=dx12_av_sync_late.exe "
+        "packetStart=358003 trackCursor=358483 joinCursor=358483 suppressedGap=358003 "
+        "preservedGap=0 qpcStart=123\n"
+        "[PullAudio] Source primed - src=9 track=1 buffered=1200 realBuffered=1200 needed=1200 lateStart=7459ms\n"
+    )
+    assert live_join_counts["audio_late_app_source_backlog"] == 0
     clean_app_counts = analyze_app_log_text(
         "AVSYNC FRAME_TIMING planned_source_gap frameId=10 deltaMs=305.0 thresholdMs=33.3\n"
         "AVSYNC SUMMARY frame_timing targetFps=60 spikes=0\n"

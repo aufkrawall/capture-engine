@@ -21,6 +21,7 @@ CAPTURE_CONFIG = CAPTURE_BIN / "config.ini"
 RUN_LOG_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
 
 PROCESS_NAME = "dx12_av_sync_test.exe"
+SECONDARY_PROCESS_NAME = "dx12_av_sync_late.exe"
 SUPPORTED_CODECS = ["aac", "alac", "flac", "opus", "pcm"]
 SUPPORTED_METHODS = ["wgc", "inject"]
 
@@ -44,6 +45,8 @@ class Scenario:
     rate_control: str = "VBR"
     bitrate: str = "125Mbps"
     max_bitrate: str = "200Mbps"
+    secondary_app_audio: bool = False
+    secondary_app_start_sec: float = 5.0
 
     @property
     def name(self):
@@ -147,8 +150,19 @@ def ensure_inputs():
     return ce, app if app.exists() else app_x86
 
 
+def prepare_secondary_app_alias(app_exe):
+    alias_dir = TESTAPP_BIN / "secondary_app_audio"
+    alias_dir.mkdir(parents=True, exist_ok=True)
+    alias = alias_dir / SECONDARY_PROCESS_NAME
+    try:
+        shutil.copy2(app_exe, alias)
+    except OSError as exc:
+        fail(f"failed to prepare secondary app-audio helper: {exc}")
+    return alias
+
+
 def taskkill_processes():
-    for proc in ["captureengine.exe", PROCESS_NAME]:
+    for proc in ["captureengine.exe", PROCESS_NAME, SECONDARY_PROCESS_NAME]:
         subprocess.run(["taskkill", "/F", "/IM", proc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.5)
 
@@ -192,6 +206,7 @@ def restore_config(snapshot):
 
 def write_scenario_config(scenario, output_dir, include_microphone, include_mixed_track, video_encoder):
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     mic_enabled = "true" if include_microphone else "false"
     audio_layout = resolve_audio_layout(scenario, include_mixed_track)
@@ -201,9 +216,20 @@ def write_scenario_config(scenario, output_dir, include_microphone, include_mixe
     elif audio_layout == "duplicate_app":
         system_tracks = "3"
         app_tracks = "1,2"
+    elif audio_layout == "late_secondary_app":
+        system_tracks = "3"
+        app_tracks = "1,2"
     else:
         system_tracks = "1"
         app_tracks = "2"
+    secondary_app_section = ""
+    if scenario.secondary_app_audio:
+        secondary_app_section = f"""
+[AppAudio.2]
+enabled=true
+process={SECONDARY_PROCESS_NAME}
+track=2
+"""
     text = f"""[General]
 log_level=trace
 capture_method={scenario.capture_method}
@@ -259,6 +285,7 @@ downmix=false
 enabled=true
 process={PROCESS_NAME}
 track={app_tracks}
+{secondary_app_section}
 
 [Microphone]
 enabled={mic_enabled}
@@ -283,8 +310,17 @@ def generated_app_paths(file_name):
     return [TESTAPP_BIN / file_name, TESTAPP_BIN / "x86" / file_name]
 
 
+def generated_secondary_app_paths(file_name):
+    return [TESTAPP_BIN / "secondary_app_audio" / file_name]
+
+
 def remove_stale_app_artifacts():
-    for path in generated_app_paths("dx12_av_sync_test_manifest.json") + generated_app_paths("dx12_av_sync_test.log"):
+    for path in (
+        generated_app_paths("dx12_av_sync_test_manifest.json")
+        + generated_app_paths("dx12_av_sync_test.log")
+        + generated_secondary_app_paths("dx12_av_sync_test_manifest.json")
+        + generated_secondary_app_paths("dx12_av_sync_test.log")
+    ):
         try:
             if path.exists():
                 path.unlink()
@@ -399,7 +435,7 @@ def snapshot_session_logs(session_dir, destination_dir):
     return destination_dir, media_log, hook_logs, perf_csvs, session_manifest
 
 
-def run_process(command, timeout):
+def run_process(command, timeout, secondary_command=None, secondary_delay_sec=0.0):
     start = time.monotonic()
     proc = subprocess.Popen(
         [str(part) for part in command],
@@ -407,8 +443,22 @@ def run_process(command, timeout):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    secondary_proc = None
+    secondary_started = False
     timed_out = False
     try:
+        if secondary_command:
+            secondary_deadline = start + max(0.0, float(secondary_delay_sec))
+            while time.monotonic() < secondary_deadline and proc.poll() is None:
+                time.sleep(min(0.1, max(0.0, secondary_deadline - time.monotonic())))
+            if proc.poll() is None:
+                secondary_proc = subprocess.Popen(
+                    [str(part) for part in secondary_command],
+                    cwd=str(Path(secondary_command[0]).parent),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                secondary_started = True
         return_code = proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
@@ -418,6 +468,16 @@ def run_process(command, timeout):
         except subprocess.TimeoutExpired:
             proc.kill()
             return_code = proc.wait(timeout=5)
+    finally:
+        if secondary_proc and secondary_proc.poll() is None:
+            secondary_proc.terminate()
+            try:
+                secondary_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                secondary_proc.kill()
+                secondary_proc.wait(timeout=5)
+    if secondary_started:
+        wait_for_process_exit(SECONDARY_PROCESS_NAME, 2.0)
     return return_code, time.monotonic() - start, timed_out
 
 
@@ -514,6 +574,7 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     print(f"running {scenario.name}")
     taskkill_processes()
     remove_stale_app_artifacts()
+    secondary_app_exe = prepare_secondary_app_alias(app_exe) if scenario.secondary_app_audio else None
     write_scenario_config(scenario, captures_dir, args.include_microphone, args.include_mixed_track, args.video_encoder)
 
     delay_ms = args.delay_ms
@@ -571,10 +632,54 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         for source_stall in split_csv(source_stall_text):
             launch.extend(["--source-stall", source_stall])
 
+    secondary_launch = None
+    secondary_launch_delay = 0.0
+    if secondary_app_exe:
+        secondary_duration = max(4, scenario_duration_sec - int(scenario.secondary_app_start_sec) + 3)
+        secondary_launch = [
+            secondary_app_exe,
+            "--width",
+            min(640, scenario_width),
+            "--height",
+            min(360, scenario_height),
+            "--fps",
+            app_fps,
+            "--duration",
+            secondary_duration,
+            "--gpu-load",
+            0,
+            "--vsync",
+            0,
+            "--fullscreen",
+            0,
+            "--window-chrome",
+            0,
+            "--topmost",
+            0,
+            "--no-allow-tearing",
+            "--audio-buffer-ms",
+            args.app_audio_buffer_ms,
+            "--audio-lead-ms",
+            app_audio_lead_ms,
+            "--analysis-start-sec",
+            args.analysis_start_sec,
+        ]
+        if args.app_audio_clock_scheduling:
+            secondary_launch.append("--audio-clock-scheduling")
+        secondary_launch_delay = delay_ms / 1000.0 + max(0.0, scenario.secondary_app_start_sec)
+
     start_unix = time.time()
-    return_code, elapsed, timed_out = run_process(launch, timeout=scenario_duration_sec + delay_ms / 1000.0 + 30.0)
+    return_code, elapsed, timed_out = run_process(
+        launch,
+        timeout=scenario_duration_sec + delay_ms / 1000.0 + 30.0,
+        secondary_command=secondary_launch,
+        secondary_delay_sec=secondary_launch_delay,
+    )
     app_exited = wait_for_process_exit(PROCESS_NAME, args.app_exit_timeout_sec)
-    if not app_exited:
+    secondary_app_exited = True
+    if scenario.secondary_app_audio:
+        secondary_app_exited = wait_for_process_exit(SECONDARY_PROCESS_NAME, args.app_exit_timeout_sec)
+    if not app_exited or not secondary_app_exited:
         taskkill_processes()
     time.sleep(0.5)
 
@@ -582,6 +687,12 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     app_log = newest_existing(generated_app_paths("dx12_av_sync_test.log"), start_unix)
     manifest_snapshot = snapshot_artifact(manifest, scenario_dir / "dx12_av_sync_test_manifest.json")
     app_log_snapshot = snapshot_artifact(app_log, scenario_dir / "dx12_av_sync_test.log")
+    secondary_manifest = newest_existing(generated_secondary_app_paths("dx12_av_sync_test_manifest.json"), start_unix)
+    secondary_app_log = newest_existing(generated_secondary_app_paths("dx12_av_sync_test.log"), start_unix)
+    secondary_manifest_snapshot = snapshot_artifact(
+        secondary_manifest, scenario_dir / "dx12_av_sync_late_manifest.json"
+    )
+    secondary_app_log_snapshot = snapshot_artifact(secondary_app_log, scenario_dir / "dx12_av_sync_late.log")
     capture = find_latest_capture(captures_dir, start_unix)
     session_dir = find_latest_run_log_dir(start_unix)
     media_log = (session_dir / "media.log") if session_dir else CAPTURE_BIN / "logs" / "media.log"
@@ -618,12 +729,15 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "external_system_audio": args.external_system_audio,
             "allow_tearing": args.allow_tearing,
             "source_stall": source_stall_text if include_source_stall else None,
+            "secondary_app_audio": scenario.secondary_app_audio,
+            "secondary_app_start_sec": scenario.secondary_app_start_sec if scenario.secondary_app_audio else None,
         },
         "process": {
             "return_code": return_code,
             "elapsed_seconds": round(elapsed, 3),
             "timed_out": timed_out,
             "stimulus_app_exited": app_exited,
+            "secondary_stimulus_app_exited": secondary_app_exited,
         },
         "paths": {
             "capture_file": str(capture) if capture else None,
@@ -635,6 +749,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "session_manifest": str(session_manifest_snapshot) if session_manifest_snapshot else None,
             "app_log": str(app_log_snapshot) if app_log_snapshot else (str(app_log) if app_log else None),
             "manifest": str(manifest_snapshot) if manifest_snapshot else (str(manifest) if manifest else None),
+            "secondary_app_log": str(secondary_app_log_snapshot) if secondary_app_log_snapshot else None,
+            "secondary_manifest": str(secondary_manifest_snapshot) if secondary_manifest_snapshot else None,
             "analyzer_json": str(analyzer_json),
             "analyzer_stdout": str(analyzer_stdout),
             "triage_json": str(triage_json),
@@ -654,6 +770,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         result["failure"] = f"captureengine exited with {return_code}"
     elif not app_exited:
         result["failure"] = "stimulus app did not exit before manifest snapshot"
+    elif scenario.secondary_app_audio and not secondary_app_exited:
+        result["failure"] = "secondary app-audio helper did not exit"
     elif not capture:
         result["failure"] = "capture file not found"
     elif not manifest_snapshot:
@@ -671,6 +789,10 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             non_strict_ordinals = [3] if args.include_microphone else []
             if args.external_system_audio:
                 non_strict_ordinals.append(2)
+        elif audio_layout == "late_secondary_app":
+            non_strict_ordinals = [1, 2]
+            if args.include_microphone:
+                non_strict_ordinals.append(3)
         else:
             non_strict_ordinals = [2]
             if args.include_microphone and audio_layout == "mixed":
@@ -739,7 +861,15 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             faults = triage_report.get("faults", {})
             strict_triage_faults = [
                 name
-                for name in ("audio_timeline", "visual_timeline", "wgc_encoder_overload_policy")
+                for name in (
+                    "audio_timeline",
+                    "visual_timeline",
+                    "wgc_encoder_overload_policy",
+                    "late_app_source_backlog",
+                    "started_app_source_underrun",
+                    "post_mux_probe_hang",
+                    "ce_process_crash",
+                )
                 if faults.get(name)
             ]
             if strict_triage_faults:
@@ -771,6 +901,17 @@ def build_scenarios(args):
             Scenario("wgc", "aac", 120, label="quick_lossy_120", duration_sec=12),
             Scenario("inject", "alac", 120, label="quick_lossless_120", duration_sec=12),
             Scenario("inject", "aac", 60, label="quick_lossy_60", duration_sec=12),
+            Scenario("wgc", "alac", 60, label="late_app_lossless", duration_sec=16,
+                     audio_layout="late_secondary_app", secondary_app_audio=True),
+            Scenario("inject", "aac", 60, label="late_app_lossy", duration_sec=16,
+                     audio_layout="late_secondary_app", secondary_app_audio=True),
+        ]
+    if args.profile == "late-app":
+        return [
+            Scenario("wgc", "alac", 60, label="late_app_lossless", duration_sec=16,
+                     audio_layout="late_secondary_app", secondary_app_audio=True),
+            Scenario("inject", "aac", 60, label="late_app_lossy", duration_sec=16,
+                     audio_layout="late_secondary_app", secondary_app_audio=True),
         ]
     if args.profile == "codec-pass":
         return [Scenario("wgc", codec, 60, label="codec_finalize", duration_sec=10) for codec in SUPPORTED_CODECS]
@@ -838,7 +979,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Run deterministic A/V sync capture scenarios and analyze them.")
     parser.add_argument(
         "--profile",
-        choices=["quick", "codec-pass", "stress", "wgc-overload", "full", "long-soak", "custom"],
+        choices=["quick", "codec-pass", "stress", "wgc-overload", "late-app", "full", "long-soak", "custom"],
         default="quick",
         help="Scenario profile. Bare runner defaults to the fast zero-drift quick gate.",
     )
@@ -846,6 +987,7 @@ def build_parser():
     parser.add_argument("--codec-finalization-pass", dest="profile_aliases", action="append_const", const="codec-pass")
     parser.add_argument("--short-stress", dest="profile_aliases", action="append_const", const="stress")
     parser.add_argument("--wgc-overload-gate", dest="profile_aliases", action="append_const", const="wgc-overload")
+    parser.add_argument("--late-app-source-gate", dest="profile_aliases", action="append_const", const="late-app")
     parser.add_argument("--full-matrix", dest="profile_aliases", action="append_const", const="full")
     parser.add_argument("--long-soak", dest="profile_aliases", action="append_const", const="long-soak")
     parser.add_argument("--long-soak-minutes", type=float, default=40.0)
@@ -937,13 +1079,23 @@ def parse_args(argv=None):
 def self_test():
     quick = parse_args(["--fast-zero-drift", "--dry-run"])
     quick_names = [scenario.name for scenario in build_scenarios(quick)]
-    assert len(quick_names) == 4
+    assert len(quick_names) == 6
     assert quick_names == [
         "wgc_alac_60fps_quick_lossless_60",
         "wgc_aac_120fps_quick_lossy_120",
         "inject_alac_120fps_quick_lossless_120",
         "inject_aac_60fps_quick_lossy_60",
+        "wgc_alac_60fps_late_app_lossless",
+        "inject_aac_60fps_late_app_lossy",
     ]
+    assert sum(1 for scenario in build_scenarios(quick) if scenario.secondary_app_audio) == 2
+
+    late_app = parse_args(["--late-app-source-gate", "--dry-run"])
+    late_app_scenarios = build_scenarios(late_app)
+    assert late_app.profile == "late-app"
+    assert len(late_app_scenarios) == 2
+    assert all(scenario.secondary_app_audio for scenario in late_app_scenarios)
+    assert {scenario.capture_method for scenario in late_app_scenarios} == {"wgc", "inject"}
 
     codec_pass = parse_args(["--codec-finalization-pass", "--dry-run"])
     codec_scenarios = build_scenarios(codec_pass)
@@ -1043,9 +1195,9 @@ def main(argv=None):
 
     ce_exe, app_exe = ensure_inputs()
     scenarios = build_scenarios(args)
-    run_root = args.output_root or (
+    run_root = (args.output_root or (
         CAPTURE_BIN / "avsync_runs" / datetime.now().strftime("%Y%m%d_%H%M%S")
-    )
+    )).resolve()
 
     if args.dry_run:
         print(f"run_root={run_root}")

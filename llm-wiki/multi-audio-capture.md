@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-12 (duplicate app-source routing stall and finalization crash fix)
+Last cross-checked: 2026-06-14 (late app-source live join and process-loopback teardown hardening)
 Stale-risk: medium
 
 Primary sources:
@@ -35,7 +35,11 @@ The CFR media clock remains authoritative for normal recordings. Final audio is 
 
 Each exported track owns an independent audio timeline cursor. Per-source counters are diagnostics and source-local stitching aids only; they must not decide the muxed stream timestamp. At the shared A/V anchor, system and microphone sources become timeline-valid immediately and contribute encoded silence until timestamped real packets arrive. App-audio sources remain optional only when CE has not seen evidence that the process is already producing audio. If process-loopback packets arrived while sync was pending, the app source must wait for the first post-anchor packet and enough real buffered samples before bootstrap; otherwise the app track can encode a one-chunk silent head and appear shifted against system loopback. Late app packets are still placed by QPC/source timestamp and overlap/drop already-encoded silence instead of delaying the whole track. This replaced the old 500 ms forced-bootstrap/backlog-trim behavior that made non-ALAC Track 3 content appear shorter even when container packet durations matched.
 
+A process-loopback source that first becomes active well after recording start joins live at the current track cursor, preserving only a tiny fade/cushion window. CE logs `[AudioLoop] Late app source live join ... suppressedGap=... preservedGap=... process=...` and stop summaries expose `qjoin` / `qjoinKeep`. A raw `Source primed ... lateStart=...` line is not a failure when the same source has live-join evidence; it is a failure when it means old source-local backlog was retained and later mixed into the live track. This distinction matters for duplicate process-loopback routing and late helper-process tests.
+
 After bootstrap, a sparse started app source contributes silence for the requested range when it lacks buffered samples. It must not block the entire exported track during live pulls or final drain. Stop-time force drain loops over bounded chunks until all exported track cursors reach the video endpoint or no progress is possible, so long recordings cannot end with only one extra 500 ms pull.
+
+Process-loopback teardown has a Windows AudioSes crash boundary. Dumps from duplicate/late app-audio runs showed `AudioSes!CLoopbackMixer::Cleanup` / `AudioLimiterAPO` crashes after app-capture shutdown. `AppAudioCapture` therefore logs `Abandoning process-loopback COM interfaces during cleanup ... to avoid AudioSes CLoopbackMixer teardown crash` and leaves those OS-backed interfaces to the short-lived media process teardown instead of calling the crash-prone `Stop()`/release path. Any `crash.log` / dump remains a strict run failure in triage; the abandon log is the expected healthy shutdown breadcrumb.
 
 For CFR capture, audio is not a recovery mechanism for WGC/inject video pressure. Live trim, source drop, overflow-protection skip, post-resample backlog trim, and broad pitch correction are validation failures rather than acceptable sync repair. A tiny source-clock-only resampler compensation lane remains for real device-clock drift after startup has settled and the timeline is healthy; it is currently capped at `0.05%`, and is disabled during force drain, startup protection, encoder-bottleneck shortfall, timeline shortfall, or WGC coverage loss.
 
@@ -87,6 +91,9 @@ Useful logs for this area:
 - `[PullAudio] Track ... bootstrap complete ... forced=0 trimmed=0`: startup settled without the old forced-bootstrap/content-trim path. Any `forced=1` or nonzero `trimmed` is a validation failure.
 - `[PullAudio] App source gap silence ...`: source-local sparse app padding. Expected for a started app source with no available packet for the current track range; not by itself a failure.
 - `[AudioLoop] Late source cursor advance ...`: a late packet arrived after the track cursor already encoded silence; this is explicit placement diagnostics, not a reason to move the exported track.
+- `[AudioLoop] Late app source live join ... suppressedGap=... preservedGap=... process=...`: a process-loopback source first became active late and CE trimmed stale source-local backlog instead of backfilling it into the live mix.
+- `[STOP AUDIO] Source ... qjoin:... qjoinKeep:... process=...`: stop-time proof that a late app source joined live; `qjoin>0` with clean decoded strict markers means a later `lateStart` prime line was handled intentionally.
+- `[AppAudioCapture] Abandoning process-loopback COM interfaces during cleanup ...`: expected process-loopback teardown protection for the AudioSes CLoopbackMixer crash family. A companion `crash.log` or dump is not expected and is a strict failure.
 - `[PullAudio] WARNING: CFR audio ring near capacity ...`: pressure diagnostic. The code preserves audio; an actual overflow/drop is a validation failure.
 - `[PullAudio] WARNING: CFR post-resample backlog exceeded guard ...`: pressure diagnostic. The code preserves audio; post-resample trimming is a validation failure.
 - `[STOP AUDIO TRACK] Track ... encoded=... expected=... realMixed=... fullSilence=... partialSilence=... sources=[...]`: exported-track cursor summary, including real/silence accounting.
@@ -114,7 +121,7 @@ Focused regression coverage lives in:
 - `tests/test_audio_time_utils.cpp`
   - Loopback capture-latency compensation clamps safely and leaves non-loopback timestamps unchanged.
 - `tools/analyze_capture_av.py`
-  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop/extreme-drift paths, WGC fresh catch-up, stop-drain abort, WGC held stop repeats, nonzero WGC drain duplicate summaries, writer finalize timeout, and multi-source stop-time audio shortfalls. Discarded post-stop WGC callbacks stay visible as endpoint-protection telemetry but are not audio failures by themselves.
+  - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop/extreme-drift paths, WGC fresh catch-up, stop-drain abort, WGC held stop repeats, nonzero WGC drain duplicate summaries, writer finalize timeout, post-mux probe hang/timeout, late app-source backlog without live join, CE crash-handler output, and multi-source stop-time audio shortfalls. Discarded post-stop WGC callbacks stay visible as endpoint-protection telemetry but are not audio failures by themselves.
 - `testapp/av_sync_stimulus.h` and `tests/test_av_sync_stimulus.cpp`
   - Shared deterministic event schedule, frame-marker, palette, smooth-lane, and zero-crossing audio boundary coverage used by both the app and analyzer expectations.
 - `tools/run_av_sync_matrix.py`
@@ -146,6 +153,12 @@ Updated on 2026-06-12:
 - The matrix exposed a real inject app-audio startup race in an Opus 60 run (`Track 2 fullSilence=800`, about 16.7 ms). The fix makes app-audio with pre-start process-loopback packets non-optional for bootstrap until post-start real samples are buffered. Focused regression tests passed in `AudioSyncUtilsTest.OptionalUnstartedAppAudioDoesNotBlockStartupPriming` and `AudioSyncUtilsTest.AppAudioRemainsOptionalUntilTimelineValid`.
 - Additional runtime checks passed for WGC 45 fps source into 60 fps CFR (`20260612_202629`), GPU-load Opus/PCM at 60 fps (`20260612_202716`), and 1080p/120 PCM WGC+inject (`20260612_203000`). Microphone evidence remains opportunistic; if the system mic is disabled, system/app tracks still provide deterministic coverage.
 - `installed/captureengine/logs/fortiappaudiodied` proved duplicate/mixed app-source routing must handle sparse sources after bootstrap. Tracks 1 and 2 were multi-source app tracks and stopped about `231883 ms` short while the system track reached the target; the fix silence-pads sparse started app sources and loops final force drain instead of blocking the whole track. The accompanying crash was a writer finalization ownership bug: after a 5 s async writer timeout, the old code detached and synchronously wrote the trailer on the same FFmpeg context. The current policy logs `writer_finalize_timeout` and leaves the async writer as the sole owner.
+
+Updated on 2026-06-14:
+
+- `installed/captureengine/logs/fortiaacdelayhangingprocess` showed a codec-independent app-audio content delay: Brave process-loopback sources joined about `7.46 s` late, retained source-local backlog, and then produced gap-silence/underrun evidence even though final stream lengths were exact. The fix makes a first-active late app source join at the current track cursor, trim stale first-packet backlog, and log `Late app source live join` plus `qjoin/qjoinKeep`.
+- `installed/captureengine/logs/fortisubsequentcapturedied` and the dump from `fortiaacdelayhangingprocess` showed media shutdown stuck in the post-mux probe path. Mux finalization now closes the trailer/file before optional post-mux validation starts, logs `mux_closed` / `post_mux_probe_start`, and bounds/cancels the probe so destructor shutdown cannot wait forever.
+- Late-app runtime validation passed at `installed/captureengine/avsync_runs/late_app_fix_20260614_0344`: WGC+ALAC and inject+AAC both live-joined the delayed helper source, ended all tracks sample-exactly, completed post-mux probes immediately, and produced no dumps or lingering CE/test processes. The earlier inject attempt exposed the AudioSes CLoopbackMixer teardown crash; `AppAudioCapture` now abandons process-loopback COM interfaces during cleanup and triage treats any crash log as `ce_process_crash`.
 
 ## Open Questions / Stale-Risk
 

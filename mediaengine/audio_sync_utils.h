@@ -15,6 +15,13 @@ struct PacketTimelineAdjustment {
     int64_t overlapSamples = 0;
 };
 
+struct LateAppSourceJoin {
+    bool joinLive = false;
+    int64_t joinCursorSamples = 0;
+    int64_t preservedGapSamples = 0;
+    int64_t suppressedGapSamples = 0;
+};
+
 struct PacketEndClamp {
     bool keep = true;
     bool clamped = false;
@@ -626,6 +633,31 @@ inline int64_t ResolveSourceTimelineWriteCursor(uint64_t qpcAlignedWrittenSample
 
 inline bool ShouldAdvancePacketTimelineToEncodedCursor(bool isAppAudioSource) {
     return !isAppAudioSource;
+}
+
+inline LateAppSourceJoin ComputeLateAppSourceJoin(bool isAppAudioSource, bool firstTimelinePacket,
+                                                  bool sawPreStartPackets, int64_t packetStartSamples,
+                                                  int64_t trackCursorSamples, int64_t lateJoinThresholdSamples,
+                                                  int64_t preservedCushionSamples) {
+    LateAppSourceJoin result{};
+    if (!isAppAudioSource || !firstTimelinePacket || sawPreStartPackets) {
+        return result;
+    }
+
+    const int64_t packetStart = std::max<int64_t>(0, packetStartSamples);
+    const int64_t trackCursor = std::max<int64_t>(0, trackCursorSamples);
+    const int64_t threshold = std::max<int64_t>(0, lateJoinThresholdSamples);
+    if (packetStart <= threshold || trackCursor <= threshold) {
+        return result;
+    }
+
+    const int64_t preservedCushion = std::clamp<int64_t>(preservedCushionSamples, 0, packetStart);
+    const int64_t liveCursor = std::max<int64_t>(trackCursor, packetStart - preservedCushion);
+    result.joinLive = liveCursor > 0;
+    result.joinCursorSamples = liveCursor;
+    result.preservedGapSamples = std::max<int64_t>(0, packetStart - liveCursor);
+    result.suppressedGapSamples = std::max<int64_t>(0, packetStart - result.preservedGapSamples);
+    return result;
 }
 
 inline bool ShouldDrainStoppedCaptureQueuesBeforeFinalAudioPull(bool audioThreadRunning, bool audioOnlyRecording,

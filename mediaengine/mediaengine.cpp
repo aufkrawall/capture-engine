@@ -83,6 +83,8 @@ public:
         uint64_t packetTimelineGapSamples = 0;     // Silence inserted to preserve packet-QPC continuity
         uint64_t packetTimelineOverlapSamples = 0;  // Packet-leading samples trimmed to avoid time overlap
         uint64_t startupRebasedGapSamples = 0;      // Persistent startup packet-QPC offset suppressed after sync reset
+        uint64_t lateAppJoinSuppressedGapSamples = 0;  // First app packet gap suppressed to join live timeline
+        uint64_t lateAppJoinPreservedGapSamples = 0;   // Small live-join cushion retained for click-free fade-in
         int64_t alignedStartMs = -1;                // First source packet offset relative to recording start
         int64_t observedLateStartMs = 0;            // Latest observed startup delay used for startup pull slack
         bool hasAlignedStart = false;               // True after first packet aligned to recording start
@@ -611,6 +613,8 @@ public:
             src.packetTimelineGapSamples = 0;
             src.packetTimelineOverlapSamples = 0;
             src.startupRebasedGapSamples = 0;
+            src.lateAppJoinSuppressedGapSamples = 0;
+            src.lateAppJoinPreservedGapSamples = 0;
             src.alignedStartMs = -1;
             src.observedLateStartMs = 0;
             src.hasAlignedStart = false;
@@ -1179,6 +1183,8 @@ public:
                 src.packetTimelineGapSamples = 0;
                 src.packetTimelineOverlapSamples = 0;
                 src.startupRebasedGapSamples = 0;
+                src.lateAppJoinSuppressedGapSamples = 0;
+                src.lateAppJoinPreservedGapSamples = 0;
                 src.alignedStartMs = -1;
                 src.observedLateStartMs = 0;
                 src.hasAlignedStart = false;
@@ -1567,13 +1573,16 @@ public:
                 const uint64_t uncategorizedLatencyTrim = src.latencyTrimSamples - categorizedLatencyTrim;
                 DLL_Log(
                     "[STOP AUDIO] Source %zu: track=%d encoded=%llu trim=cov:%llu latTotal:%llu liveUncat:%llu "
-                    "pad:%llu qgap:%llu "
-                    "ringPeak=%zu ringUnderruns=%u",
+                    "pad:%llu qgap:%llu qjoin:%llu qjoinKeep:%llu "
+                    "ringPeak=%zu ringUnderruns=%u process=%s",
                     i, src.track, (unsigned long long)encodedSamplesPerSource[i],
                     (unsigned long long)src.coverageLossTrimSamples, (unsigned long long)src.latencyTrimSamples,
                     (unsigned long long)uncategorizedLatencyTrim, (unsigned long long)src.underrunPadSamples,
-                    (unsigned long long)src.packetTimelineGapSamples, src.ringBufferPeakSamples,
-                    src.ringBufferUnderrunCount);
+                    (unsigned long long)src.packetTimelineGapSamples,
+                    (unsigned long long)src.lateAppJoinSuppressedGapSamples,
+                    (unsigned long long)src.lateAppJoinPreservedGapSamples, src.ringBufferPeakSamples,
+                    src.ringBufferUnderrunCount,
+                    src.config.processName.empty() ? "-" : src.config.processName.c_str());
                 DLL_Log(
                     "[STOP AUDIO DETAIL] Source %zu: ratePpm=%+.2f compDelta=%d sat=%d trimRate(latTotal=%.1f/min "
                     "boot=%.1f/min cov=%.1f/min tier2=%.1f/min retain=%.1f/min) totals(boot=%llu tier2=%llu "
@@ -1631,6 +1640,8 @@ public:
             src.packetTimelineGapSamples = 0;
             src.packetTimelineOverlapSamples = 0;
             src.startupRebasedGapSamples = 0;
+            src.lateAppJoinSuppressedGapSamples = 0;
+            src.lateAppJoinPreservedGapSamples = 0;
             src.alignedStartMs = -1;
             src.observedLateStartMs = 0;
             src.hasAlignedStart = false;
@@ -3786,6 +3797,8 @@ private:
                         src.packetTimelineGapSamples = 0;
                         src.packetTimelineOverlapSamples = 0;
                         src.startupRebasedGapSamples = 0;
+                        src.lateAppJoinSuppressedGapSamples = 0;
+                        src.lateAppJoinPreservedGapSamples = 0;
                         src.startupRealAudioSeen = false;
                         src.pendingStartupJoinFade = false;
                         src.bootstrapTrimSamples = 0;
@@ -3932,6 +3945,7 @@ private:
                                 }
 
                                 const bool firstTimelinePacket = (sourceTimestamps[srcIdx] == 0);
+                                const bool firstPacketSawSyncPending = src.sawSyncPendingPackets;
                                 sourceTimestamps[srcIdx] = packet.timestamp;
                                 float* writeFloats = (float*)resampledData[0];
                                 size_t writeSamples = static_cast<size_t>(outSamples);
@@ -3979,7 +3993,7 @@ private:
                                             usesSharedStartupRebase
                                                 ? sharedStartupRebaseOffsetSamples
                                                 : ce::audio::ComputeStartupFirstPacketRebaseOffset(
-                                                      packetStartSamples, src.sawSyncPendingPackets,
+                                                      packetStartSamples, firstPacketSawSyncPending,
                                                       kStartupFirstPacketGapCapSamples,
                                                       kStartupFirstPacketRebaseThresholdSamples);
                                         const int64_t rebaseOffset =
@@ -3996,6 +4010,36 @@ private:
                                                 usesSharedStartupRebase ? 1 : 0);
                                         }
                                         src.sawSyncPendingPackets = false;
+                                    }
+                                    const auto lateJoin = ce::audio::ComputeLateAppSourceJoin(
+                                        src.sourceType == AudioConfig::AppAudio, firstTimelinePacket,
+                                        firstPacketSawSyncPending, packetStartSamples, trackTimelineSamples[src.track],
+                                        targetFmt.sampleRate / 2, targetFmt.sampleRate / 100);
+                                    if (lateJoin.joinLive) {
+                                        if (lateJoin.joinCursorSamples >
+                                            static_cast<int64_t>(src.qpcAlignedWrittenSamples)) {
+                                            src.qpcAlignedWrittenSamples =
+                                                static_cast<uint64_t>(lateJoin.joinCursorSamples);
+                                        }
+                                        src.lateAppJoinSuppressedGapSamples +=
+                                            static_cast<uint64_t>(lateJoin.suppressedGapSamples);
+                                        src.lateAppJoinPreservedGapSamples +=
+                                            static_cast<uint64_t>(lateJoin.preservedGapSamples);
+                                        src.pendingStartupJoinFade = true;
+                                        src.packetBoundaryFadeInSamplesRemaining =
+                                            static_cast<int>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
+                                        DLL_Log(
+                                            "[AudioLoop] Late app source live join src=%d track=%d process=%s "
+                                            "packetStart=%lld trackCursor=%lld joinCursor=%lld "
+                                            "suppressedGap=%lld preservedGap=%lld qpcStart=%llu",
+                                            (int)srcIdx, src.track,
+                                            src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+                                            (long long)packetStartSamples,
+                                            (long long)trackTimelineSamples[src.track],
+                                            (long long)lateJoin.joinCursorSamples,
+                                            (long long)lateJoin.suppressedGapSamples,
+                                            (long long)lateJoin.preservedGapSamples,
+                                            (unsigned long long)packet.qpcPosition);
                                     }
                                     const auto timelineAdjustment =
                                         ce::audio::ComputeStartupAwarePacketTimelineAdjustment(

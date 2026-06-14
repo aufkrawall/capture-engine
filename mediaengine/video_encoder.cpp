@@ -20,12 +20,16 @@ extern "C" {
 #include <d3d11_4.h>
 #include <dxgi1_5.h>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <functional>
+#include <memory>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -86,6 +90,28 @@ bool HasValidStreamTimeBase(const AVStream* stream) {
     return stream && stream->time_base.num > 0 && stream->time_base.den > 0;
 }
 
+constexpr uint64_t kPostMuxProbeTimeoutMs = 5000;
+constexpr int kPostMuxProbeMaxPackets = 512;
+
+struct PostMuxProbeControl {
+    std::atomic<bool> cancel{false};
+    uint64_t deadlineTickMs = 0;
+};
+
+bool ShouldCancelPostMuxProbe(const PostMuxProbeControl* control) {
+    if (!control) {
+        return false;
+    }
+    if (control->cancel.load(std::memory_order_acquire)) {
+        return true;
+    }
+    return control->deadlineTickMs > 0 && GetTickCount64() >= control->deadlineTickMs;
+}
+
+int PostMuxProbeInterrupt(void* opaque) {
+    return ShouldCancelPostMuxProbe(static_cast<PostMuxProbeControl*>(opaque)) ? 1 : 0;
+}
+
 int64_t ParseDurationTagUs(const char* value) {
     if (!value || !*value) {
         return 0;
@@ -138,18 +164,29 @@ int64_t GetStreamDurationUs(const AVStream* stream) {
     return av_rescale_q(stream->duration, stream->time_base, AVRational{1, 1000000});
 }
 
-void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationUs) {
+bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationUs,
+                             const std::shared_ptr<PostMuxProbeControl>& control = nullptr) {
     if (filename.empty() || finalDurationUs <= 0) {
-        return;
+        return true;
     }
 
-    AVFormatContext* probeCtx = nullptr;
+    AVFormatContext* probeCtx = avformat_alloc_context();
+    if (!probeCtx) {
+        DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed to allocate context for '%s'",
+                filename.c_str());
+        return false;
+    }
+    if (control) {
+        probeCtx->interrupt_callback.callback = PostMuxProbeInterrupt;
+        probeCtx->interrupt_callback.opaque = control.get();
+    }
     int ret = avformat_open_input(&probeCtx, filename.c_str(), nullptr, nullptr);
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, sizeof(errbuf));
         DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed to open '%s': %s", filename.c_str(), errbuf);
-        return;
+        avformat_close_input(&probeCtx);
+        return false;
     }
 
     ret = avformat_find_stream_info(probeCtx, nullptr);
@@ -159,7 +196,7 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
         DLL_Log("[VideoEncoder] WARNING: Post-mux duration probe failed stream info for '%s': %s", filename.c_str(),
                 errbuf);
         avformat_close_input(&probeCtx);
-        return;
+        return false;
     }
 
     int64_t maxVideoEndUs = 0;
@@ -173,7 +210,13 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     std::vector<int64_t> firstPacketStartUs(probeCtx->nb_streams, INT64_MAX);
     av_seek_frame(probeCtx, -1, 0, AVSEEK_FLAG_BACKWARD);
     AVPacket* pkt = av_packet_alloc();
-    while (pkt && av_read_frame(probeCtx, pkt) >= 0) {
+    int packetsRead = 0;
+    while (pkt && packetsRead < kPostMuxProbeMaxPackets && !ShouldCancelPostMuxProbe(control.get())) {
+        ret = av_read_frame(probeCtx, pkt);
+        if (ret < 0) {
+            break;
+        }
+        ++packetsRead;
         if (pkt->stream_index >= 0 && static_cast<unsigned int>(pkt->stream_index) < probeCtx->nb_streams &&
             pkt->pts != AV_NOPTS_VALUE) {
             const AVStream* packetStream = probeCtx->streams[pkt->stream_index];
@@ -184,9 +227,32 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             }
         }
         av_packet_unref(pkt);
+        bool allStartsKnown = true;
+        for (unsigned int i = 0; i < probeCtx->nb_streams; ++i) {
+            const AVStream* stream = probeCtx->streams[i];
+            if (!stream || !stream->codecpar || stream->codecpar->codec_type == AVMEDIA_TYPE_UNKNOWN) {
+                continue;
+            }
+            const bool hasStreamStart = HasValidStreamTimeBase(stream) && stream->start_time != AV_NOPTS_VALUE;
+            if (!hasStreamStart && firstPacketStartUs[i] == INT64_MAX) {
+                allStartsKnown = false;
+                break;
+            }
+        }
+        if (allStartsKnown) {
+            break;
+        }
     }
     if (pkt) {
         av_packet_free(&pkt);
+    }
+    if (ShouldCancelPostMuxProbe(control.get())) {
+        DLL_Log("[VideoEncoder] post_mux_probe_cancelled file='%s' packets=%d", filename.c_str(), packetsRead);
+        avformat_close_input(&probeCtx);
+        return false;
+    }
+    if (packetsRead >= kPostMuxProbeMaxPackets) {
+        DLL_Log("[VideoEncoder] post_mux_probe_packet_limit file='%s' packets=%d", filename.c_str(), packetsRead);
     }
 
     for (unsigned int i = 0; i < probeCtx->nb_streams; ++i) {
@@ -254,6 +320,48 @@ void LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     }
 
     avformat_close_input(&probeCtx);
+    return true;
+}
+
+void RunPostMuxDurationProbeBounded(const std::string& filename, int64_t finalDurationUs,
+                                    uint64_t timeoutMs = kPostMuxProbeTimeoutMs) {
+    if (filename.empty() || finalDurationUs <= 0) {
+        return;
+    }
+
+    auto control = std::make_shared<PostMuxProbeControl>();
+    control->deadlineTickMs = GetTickCount64() + std::max<uint64_t>(1, timeoutMs);
+    std::promise<bool> probePromise;
+    std::future<bool> probeFuture = probePromise.get_future();
+    const uint64_t startMs = GetTickCount64();
+    DLL_Log("[VideoEncoder] post_mux_probe_start file='%s' target=%lld timeout=%llums", filename.c_str(),
+            (long long)finalDurationUs, (unsigned long long)timeoutMs);
+    std::thread probeThread([filename, finalDurationUs, control, promise = std::move(probePromise)]() mutable {
+        const bool ok = LogPostMuxDurationProbe(filename, finalDurationUs, control);
+        promise.set_value(ok);
+    });
+
+    const auto waitResult = probeFuture.wait_for(std::chrono::milliseconds(std::max<uint64_t>(1, timeoutMs)));
+    if (waitResult == std::future_status::ready) {
+        const bool ok = probeFuture.get();
+        probeThread.join();
+        DLL_Log("[VideoEncoder] post_mux_probe_complete ok=%d elapsed=%llums", ok ? 1 : 0,
+                (unsigned long long)(GetTickCount64() - startMs));
+        return;
+    }
+
+    control->cancel.store(true, std::memory_order_release);
+    DLL_Log("[VideoEncoder] post_mux_probe_timeout file='%s' elapsed=%llums; cancelling validation probe",
+            filename.c_str(), (unsigned long long)(GetTickCount64() - startMs));
+    if (probeFuture.wait_for(std::chrono::milliseconds(250)) == std::future_status::ready) {
+        (void)probeFuture.get();
+        probeThread.join();
+        DLL_Log("[VideoEncoder] post_mux_probe_cancelled file='%s' elapsed=%llums", filename.c_str(),
+                (unsigned long long)(GetTickCount64() - startMs));
+    } else {
+        probeThread.detach();
+        DLL_Log("[VideoEncoder] post_mux_probe_cancelled file='%s' detached=1", filename.c_str());
+    }
 }
 
 bool ValidateFormatContextForHeader(const AVFormatContext* fmtCtx) {
@@ -4641,15 +4749,16 @@ void VideoEncoder::Stop() {
                     static_cast<unsigned long long>(elapsedMs));
         } else {
             writerFinalizeTimedOut.store(true, std::memory_order_release);
-            writerStillOwnsMuxer = true;
+            const uint32_t timedOutPhase = writerFinalizePhase.load(std::memory_order_relaxed);
+            writerStillOwnsMuxer = fileOpened || timedOutPhase < kWriterPhasePostMuxProbe;
             DLL_Log(
                 "[VideoEncoder] Stop: ERROR writer_finalize_timeout result=%lu phase=%s elapsed=%llums "
-                "queueBytes=%zu queuePackets=%u; "
-                "async writer retains FFmpeg context, skipping synchronous finalize",
-                waitResult, WriterFinalizePhaseName(writerFinalizePhase.load(std::memory_order_relaxed)),
+                "queueBytes=%zu queuePackets=%u writerRetainsMuxer=%d; "
+                "skipping synchronous finalize",
+                waitResult, WriterFinalizePhaseName(timedOutPhase),
                 static_cast<unsigned long long>(GetTickCount64() - waitStartMs),
                 currentQueueBytes.load(std::memory_order_relaxed),
-                currentQueuePackets.load(std::memory_order_relaxed));
+                currentQueuePackets.load(std::memory_order_relaxed), writerStillOwnsMuxer ? 1 : 0);
         }
     }
 
@@ -4675,11 +4784,13 @@ void VideoEncoder::Stop() {
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
                 avio_closep(&fmtCtx->pb);
             }
+            fileOpened = false;
+            DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld", outputFilename.c_str(),
+                    (long long)finalDurationUs);
             if (finalDurationUs > 0) {
-                LogPostMuxDurationProbe(outputFilename, finalDurationUs);
+                RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs);
             }
         }
-        fileOpened = false;
     }
 
     CleanupResources();
@@ -6473,11 +6584,13 @@ void VideoEncoder::AsyncWriteLoop() {
                 if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
                     avio_closep(&fmtCtx->pb);
                 }
+                fileOpened = false;
+                DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld", outputFilename.c_str(),
+                        (long long)finalDurationUs);
                 if (finalDurationUs > 0) {
                     writerFinalizePhase.store(kWriterPhasePostMuxProbe, std::memory_order_release);
-                    LogPostMuxDurationProbe(outputFilename, finalDurationUs);
+                    RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs);
                 }
-                fileOpened = false;
                 DLL_Log("[VideoEncoder] Async Finalize: Output file closed.");
             }
 

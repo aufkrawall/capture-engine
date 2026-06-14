@@ -557,19 +557,18 @@ void AppAudioCapture::CleanupCapture() {
         ResetEvent(captureEvent_);
     }
 
-    // Match AudioCapture teardown: process loopback uses LOOPBACK streams too, and
-    // releasing the interfaces directly avoids the crash-sensitive Stop() path.
-    if (pAudioClient && (activeStreamFlags & AUDCLNT_STREAMFLAGS_LOOPBACK) == 0) {
-        pAudioClient->Stop();
-    }
-
-    if (pCaptureClient) {
-        pCaptureClient->Release();
+    // Process loopback is backed by AudioSes' CLoopbackMixer. On current Windows 11
+    // builds the mixer can crash in AudioLimiterAPO cleanup when the process-loopback
+    // COM interfaces are released during source shutdown, especially with duplicate
+    // process-loopback captures. The media process is short-lived per recording, so
+    // leave these OS-owned interfaces for process teardown instead of touching the
+    // crash-prone AudioSes cleanup path while CE is finalizing.
+    if (pCaptureClient || pAudioClient) {
+        DLL_Log(
+            "[AppAudioCapture] Abandoning process-loopback COM interfaces during cleanup "
+            "(audioClient=%p captureClient=%p flags=0x%lx) to avoid AudioSes CLoopbackMixer teardown crash",
+            pAudioClient, pCaptureClient, activeStreamFlags);
         pCaptureClient = nullptr;
-    }
-
-    if (pAudioClient) {
-        pAudioClient->Release();
         pAudioClient = nullptr;
     }
 
