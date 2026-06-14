@@ -29,6 +29,11 @@ struct AudioConfig {
     bool downmix = false;
     int outputChannels = 0;          // resolved internal track layout; 0 = stereo fallback
     uint32_t outputChannelMask = 0;  // WAVEFORMATEXTENSIBLE/FFmpeg-compatible channel mask
+    // Per-source capture latency in ms (this source's audio lands this late vs the video
+    // content clock). Defaults to the global [General] audio_capture_latency_ms; override per
+    // section with capture_latency_ms. Used to equalize sources and delay video to match.
+    // Loopback/app-loopback only in practice; measure with run_av_sync_matrix.py --raw-offset-gate.
+    float captureLatencyMs = 0.0f;
 };
 
 // GPU Scaling Configuration

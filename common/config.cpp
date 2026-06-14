@@ -1296,6 +1296,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     sysAudio.sampleRate = GetStr("Audio", "sample_rate", "default");
     sysAudio.bitDepth = GetStr("Audio", "bit_depth", "default");
     sysAudio.downmix = GetBool("Audio", "downmix", false);
+    sysAudio.captureLatencyMs = GetFloat("Audio", "capture_latency_ms", config.audioCaptureLatencyMs);
     sysAudio.sourceType = AudioConfig::SystemAudio;
 
     // Detect if any [Audio.N] sections exist
@@ -1328,6 +1329,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         cfg.sampleRate = sysAudio.sampleRate;
         cfg.bitDepth = sysAudio.bitDepth;
         cfg.downmix = sysAudio.downmix;
+        cfg.captureLatencyMs = GetFloat(section, "capture_latency_ms", sysAudio.captureLatencyMs);
         cfg.sourceType = AudioConfig::SystemAudio;
         if (cfg.enabled) config.audioSources.push_back(cfg);
     }
@@ -1342,6 +1344,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     micAudio.sampleRate = sysAudio.sampleRate;
     micAudio.bitDepth = sysAudio.bitDepth;
     micAudio.downmix = sysAudio.downmix;
+    micAudio.captureLatencyMs = GetFloat("Microphone", "capture_latency_ms", config.audioCaptureLatencyMs);
     micAudio.sourceType = AudioConfig::Microphone;
     if (micAudio.enabled) config.audioSources.push_back(micAudio);
 
@@ -1361,6 +1364,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         cfg.sampleRate = sysAudio.sampleRate;
         cfg.bitDepth = sysAudio.bitDepth;
         cfg.downmix = sysAudio.downmix;
+        cfg.captureLatencyMs = GetFloat(section, "capture_latency_ms", config.audioCaptureLatencyMs);
         cfg.sourceType = AudioConfig::Microphone;
         if (cfg.enabled) config.audioSources.push_back(cfg);
     }
@@ -1383,6 +1387,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         appAudio.sampleRate = GetStr(section, "sample_rate", sysAudio.sampleRate.c_str());
         appAudio.bitDepth = GetStr(section, "bit_depth", sysAudio.bitDepth.c_str());
         appAudio.downmix = GetBool(section, "downmix", sysAudio.downmix);
+        appAudio.captureLatencyMs = GetFloat(section, "capture_latency_ms", config.audioCaptureLatencyMs);
         appAudio.sourceType = AudioConfig::AppAudio;
 
         if (appAudio.enabled && (!appAudio.processName.empty() || appAudio.processId != 0)) {
