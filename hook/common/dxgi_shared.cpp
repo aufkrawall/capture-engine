@@ -1722,6 +1722,40 @@ static void RefreshLivePresentHooksForSwapchainIfNeeded(IDXGISwapChain* pSwapCha
 }
 }  // namespace
 
+// Opt-in kill-switch for the Round-4 RTSS-style eager overlay draw during a runtime DLSS-FG
+// toggle-ON. Default OFF; enable with CE_DLSS_TOGGLE_OVERLAY_EAGER=1 (Steam launch options or a
+// system env var). Evaluated once and cached.
+bool IsDlssToggleEagerOverlayEnabled() {
+    static const bool enabled = []() {
+        char b[8] = {};
+        DWORD n = GetEnvironmentVariableA("CE_DLSS_TOGGLE_OVERLAY_EAGER", b, sizeof(b));
+        return n > 0 && n < sizeof(b) && (b[0] == '1' || b[0] == 'y' || b[0] == 'Y' || b[0] == 't' || b[0] == 'T');
+    }();
+    return enabled;
+}
+
+// RTSS-style: draw the overlay present-time before a Streamline-startup bypass present so the
+// toggle-on / DLSS-G-init frozen frame carries the overlay. Opt-in + gated; HandleDX12ProcessFrame
+// resolves the submit queue and does the same-queue safety check internally (see the pre-SL un-gate
+// in dx12_hook.cpp). Gated so steady-state FG and the round-1..3 wins are untouched: D3D12 only,
+// DLSS FG turning on, PostSL not yet confirmed (once PostSL owns the overlay this bypass path is not
+// taken), and pure DLSS (no FSR history).
+static void MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapChain, bool isD3D12,
+                                                               bool streamlineFGRunning,
+                                                               bool postSLConfirmedRendering, bool hadFSRFGPhase,
+                                                               const char* site) {
+    if (!IsDlssToggleEagerOverlayEnabled() || !isD3D12 || !streamlineFGRunning || postSLConfirmedRendering ||
+        hadFSRFGPhase)
+        return;
+    static std::atomic<int> s_log{0};
+    const int n = s_log.fetch_add(1, std::memory_order_relaxed);
+    if (n < 10 || (n % 120) == 0)
+        HookLogImportant(
+            "DX12: Eager present-time overlay draw before Streamline-startup bypass (RTSS-style, site=%s sc=%p)",
+            site, (void*)pSwapChain);
+    HandleDX12ProcessFrame(pSwapChain, true);
+}
+
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
 
@@ -1997,6 +2031,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 }
                 DX12_RetainStreamlineStartupActivationSwapchain(
                     pSwapChain, "DetourPresent: startup-handoff normal-route bypass");
+                MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(
+                    pSwapChain, api == APIType::D3D12, streamlineFGRunning, postSLConfirmedRendering, hadFSRFGPhase,
+                    "startupHandoffNormalRoute");
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }
         } else if (runtimeOwnedSwapchainActive) {
@@ -2123,6 +2160,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 }
                 DX12_RetainStreamlineStartupActivationSwapchain(
                     pSwapChain, "DetourPresent: startup normal-route bypass");
+                MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(
+                    pSwapChain, api == APIType::D3D12, streamlineFGRunning, postSLConfirmedRendering, hadFSRFGPhase,
+                    "keepStartupNormalRoute");
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }
         } else if (runtimeOwnedSwapchainActive && callerFromStreamlineModule) {

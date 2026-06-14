@@ -832,6 +832,25 @@ inline bool ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOw
            !deviceRemoved;
 }
 
+// Round 4 (Talos DLSS-FG toggle-ON, session 20260614_030417: ~437 ms / 4 presents blank). When the
+// game toggles DLSS FG ON at runtime, Streamline starts intercepting presents and (with Steam loaded)
+// CE routes them through a Steam-safe bypass that returns BEFORE the overlay draw; DLSS-G then freezes
+// the present loop ~408 ms, holding that overlay-less frame on screen. RTSS keeps its overlay visible
+// by drawing present-time on the game's own present queue every present. CE can do the same: keep the
+// already-live pre-SL overlay drawing during the toggle-on window instead of suppressing it. Only safe
+// when there is NO separate Streamline queue — i.e. the present swapchain queue is the game's own
+// original queue (swapchainQueueIsOriginalGameQueue) — so the overlay ECL lands on the game's queue and
+// cannot cause a cross-queue DEVICE_HUNG. Gated to opt-in (eagerEnabled), pure DLSS (no FSR history),
+// the runtime not owning the swapchain, and the overlay backend already initialized. This is NOT the
+// PostSL re-entrant ECL submitted into DLSS-G's pipeline (the documented init-hang hazard) — it is the
+// same plain present-time ECL CE already submits on the no-FG normal route. See guardrails.md (Round 4).
+inline bool ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(bool eagerEnabled, bool hadFSRFGPhase,
+                                                            bool runtimeOwnsSwapchain, bool overlayInit, bool syncInit,
+                                                            bool swapchainQueueIsOriginalGameQueue) {
+    return eagerEnabled && !hadFSRFGPhase && !runtimeOwnsSwapchain && overlayInit && syncInit &&
+           swapchainQueueIsOriginalGameQueue;
+}
+
 // Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown
 // leaves GPU resources in an indeterminate state; the overlay's first GPU
 // submit (offscreen compositing on the original game queue) can trigger

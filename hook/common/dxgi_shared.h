@@ -174,6 +174,12 @@ void HandleDX12ResizeBegin();
 void HandleDX12ResizeEnd();
 void HandleDX11ResizeBegin();
 
+// Opt-in kill-switch (env var CE_DLSS_TOGGLE_OVERLAY_EAGER, default OFF): when set, CE draws the
+// overlay present-time (RTSS-style) right before the Streamline-startup Present bypass so the frame
+// that DLSS-G freezes on during a runtime DLSS-FG toggle-ON still carries the overlay. See Round 4
+// (llm-wiki/frame-generation/guardrails.md).
+bool IsDlssToggleEagerOverlayEnabled();
+
 // Remove Present/Present1 vtable hooks (called when COM wrapper takes over)
 void RemovePresentHooks();
 

@@ -16843,15 +16843,46 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     // (PostSL) and ProcessFrameExternal is dormant — there is no pre-SL frame to
                     // draw. The only overlay route is PostSL, gated by the cold-start warmup
                     // (the documented GTA DLSS-init crash protection). See guardrails.md.
-                    static int s_preSLSuppressLog = 0;
-                    if (s_preSLSuppressLog++ < 10 || (s_preSLSuppressLog % 300) == 0) {
-                        HookLogImportant(
-                            "DX12: Suppressing pre-SL draw during SL FG startup — waiting for PostSL "
-                            "(postSLCallback=%d postSLActive=%d hadFSR=%d stallCount=%d) #%d",
-                            postSLCallback ? 1 : 0, postSLActive ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, stallCount,
-                            s_preSLSuppressLog);
+                    // Round 4: RTSS-style exception. When DLSS FG is toggled ON at runtime with NO
+                    // separate Streamline queue (the present swapchain queue is still the game's own
+                    // original queue), keep the already-live pre-SL overlay drawing instead of
+                    // suppressing it, so the frame DLSS-G freezes on during init still carries the
+                    // overlay. The overlay ECL lands on the game's own queue (same as the no-FG normal
+                    // route) → no cross-queue DEVICE_HUNG, and it is NOT the PostSL re-entrant ECL the
+                    // cold-start warmup protects. Opt-in (default OFF) + pure-DLSS + same-queue gated.
+                    ID3D12CommandQueue* eagerSwapchainQueue = nullptr;
+                    ID3D12CommandQueue* eagerOriginalGameQueue = nullptr;
+                    {
+                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                        eagerSwapchainQueue = g_SwapchainQueue;
+                        eagerOriginalGameQueue = g_OriginalGameQueue;
                     }
-                    goto skip_overlay_draw;
+                    const bool eagerToggleOnDraw =
+                        ce::dx12_overlay_policy::ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+                            DXGIShared::IsDlssToggleEagerOverlayEnabled(), g_HadFSRFGPhase, g_FGRuntimeOwnsSwapchain,
+                            g_State.overlayInit, g_State.syncInit,
+                            eagerSwapchainQueue != nullptr && eagerSwapchainQueue == eagerOriginalGameQueue);
+                    if (eagerToggleOnDraw) {
+                        NoteDX12OverlayCoverageGate("dlss-toggle-on-eager-presl-draw");
+                        static int s_eagerToggleOnLog = 0;
+                        if (s_eagerToggleOnLog++ < 10 || (s_eagerToggleOnLog % 300) == 0) {
+                            HookLogImportant(
+                                "DX12: Keeping pre-SL overlay live during DLSS toggle-on (RTSS-style, "
+                                "scQueue==origGame=%p postSLActive=%d stallCount=%d) #%d",
+                                (void*)eagerSwapchainQueue, postSLActive ? 1 : 0, stallCount, s_eagerToggleOnLog);
+                        }
+                        // Fall through to the normal pre-SL draw below (do NOT goto skip_overlay_draw).
+                    } else {
+                        static int s_preSLSuppressLog = 0;
+                        if (s_preSLSuppressLog++ < 10 || (s_preSLSuppressLog % 300) == 0) {
+                            HookLogImportant(
+                                "DX12: Suppressing pre-SL draw during SL FG startup — waiting for PostSL "
+                                "(postSLCallback=%d postSLActive=%d hadFSR=%d stallCount=%d) #%d",
+                                postSLCallback ? 1 : 0, postSLActive ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, stallCount,
+                                s_preSLSuppressLog);
+                        }
+                        goto skip_overlay_draw;
+                    }
                 }
             }
 

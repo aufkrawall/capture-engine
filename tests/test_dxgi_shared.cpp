@@ -771,6 +771,38 @@ TEST(DXGISharedTest, DLSSOffOnConfirmedPostSLRuntimeOwnedQueueReinitsImmediately
         false, false, false, false, /*runtimeOwnsSwapchain=*/false, true, false));
 }
 
+TEST(DXGISharedTest, EagerlyDrawsPreSLOverlayDuringDLSSToggleOnWhenSameQueueAndOptedIn) {
+    using ce::dx12_overlay_policy::ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn;
+
+    // Round 4 (Talos DLSS-FG toggle-ON, session 20260614_030417): with the opt-in kill-switch ON,
+    // pure DLSS (no FSR history), the runtime not owning the swapchain, the overlay backend warm,
+    // and NO separate Streamline queue (present swapchain queue == the game's original queue), keep
+    // drawing the live pre-SL overlay so the DLSS-G-init frozen frame still carries the overlay.
+    EXPECT_TRUE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+        /*eagerEnabled=*/true, /*hadFSRFGPhase=*/false, /*runtimeOwnsSwapchain=*/false, /*overlayInit=*/true,
+        /*syncInit=*/true, /*swapchainQueueIsOriginalGameQueue=*/true));
+
+    // Kill-switch OFF (default) -> behave exactly as before (suppress).
+    EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+        /*eagerEnabled=*/false, false, false, true, true, true));
+    // FSR history present -> a separate SL/FSR queue topology is likely; keep the strict suppression.
+    EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+        true, /*hadFSRFGPhase=*/true, false, true, true, true));
+    // Runtime owns the swapchain -> not the same-queue case; keep suppression.
+    EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+        true, false, /*runtimeOwnsSwapchain=*/true, true, true, true));
+    // Overlay backend not initialized -> nothing to keep drawing.
+    EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+        true, false, false, /*overlayInit=*/false, true, true));
+    // Sync resources not initialized -> nothing to keep drawing.
+    EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+        true, false, false, true, /*syncInit=*/false, true));
+    // A SEPARATE Streamline queue exists (swapchain queue != original game queue) -> a pre-SL ECL
+    // on origGame against SL's backbuffers risks the cross-queue DEVICE_HUNG; keep suppression.
+    EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+        true, false, false, true, true, /*swapchainQueueIsOriginalGameQueue=*/false));
+}
+
 TEST(DXGISharedTest, NormalOverlayAllowedDuringDormantProtectedFFXStartup) {
     using ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup;
 
