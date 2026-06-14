@@ -2492,6 +2492,23 @@ inline bool ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(bool hadFSRFGPhase, bo
     return hadFSRFGPhase && safePostFSRBootstrapPath && selectedQueueIsSwapchainQueue && streamlineFGRunning;
 }
 
+// Zero-frame post-FSR DLSS reactivation (synthetic dx12_fg_switch_test session 20260615_010145 +
+// Talos FSR->DLSS). Even with the fast probe above, the FIRST post-FSR DLSS reactivation present
+// still spends itself on the single scratch-barrier health probe and renders the overlay only on the
+// NEXT present, leaving a documented 1-present `postsl-bootstrap-reactivation` flicker on every DLSS
+// engage (missed=1). But when the fast-bootstrap proof holds, the real overlay render is ITSELF a
+// sufficient device-health proof: the PostSL render path already does a pre-submit
+// GetDeviceRemovedReason() bail (so it never submits into an already-removed device) and re-checks
+// device-removed after the submit. On the SL-owned swapchain queue (the non-origGame, non-crash case
+// the fast proof requires) the separate scratch-barrier probe is therefore redundant and only costs
+// the frame. Render the overlay directly on the first reactivation present instead. Fires only on the
+// first present (probe level 0); after the caller advances to full-render level it is false. The
+// slower graduated probe is retained for the unproven / off-swapchain-queue (genuinely fragile) paths.
+inline bool ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(bool fastPostFSRDLSSProbe,
+                                                                      int postFSRProbeLevel) {
+    return fastPostFSRDLSSProbe && postFSRProbeLevel == 0;
+}
+
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
     return streamlineFGRunning && !processFrameRecentlySeen;
 }

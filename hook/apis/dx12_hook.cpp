@@ -11228,6 +11228,24 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, selectedQueueOrigECL != nullptr,
             selectedQueueOrigECLMatchesRealECL, realQ != nullptr);
 
+    // Zero-frame post-FSR DLSS reactivation: when the fast-bootstrap proof holds and we submit on the
+    // SL-owned swapchain queue, the real overlay render is itself the device-health proof (the
+    // pre-submit GetDeviceRemovedReason bail above + the post-submit device-removed check), so the
+    // separate scratch-barrier probe present is redundant and only costs the documented 1-present
+    // `postsl-bootstrap-reactivation` flicker on every DLSS engage. Skip straight to full-render level
+    // and draw the overlay directly on this first reactivation present. The slower graduated probe is
+    // retained for the unproven / off-swapchain-queue fragile paths (fastPostFSRDLSSProbe=false there).
+    if (ce::dx12_overlay_policy::ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(fastPostFSRDLSSProbe,
+                                                                                           g_PostFSRProbeLevel)) {
+        HookLogImportant(
+            "DX12: PostSL post-FSR fast bootstrap — rendering overlay directly on first reactivation present "
+            "(skipping redundant scratch-barrier probe; render's own pre/post devRemoved check is the health "
+            "proof) queue=%p scQueue=%p epoch=%d",
+            queue, scQueue, s_reactivationEpoch);
+        g_PostFSRProbeLevel = 3;
+        g_PostFSRProbeFrames = 0;
+    }
+
     // --- Post-FSR graduated probing ---
     // Level 0: Scratch resource barrier (confirms queue/device path works)
     // Level 1: Reserved for future backbuffer-specific probes

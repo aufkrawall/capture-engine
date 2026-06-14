@@ -5079,6 +5079,25 @@ TEST(DXGISharedTest, FastPostFSRDLSSProbeRequiresSafeBootstrapAndSwapchainQueue)
     EXPECT_FALSE(ShouldUseFastPostFSRDLSSProbeForSafeBootstrap(true, true, true, false));
 }
 
+TEST(DXGISharedTest, RendersOverlayDirectlyOnFirstPostFSRDLSSReactivationUnderFastBootstrap) {
+    using ce::dx12_overlay_policy::ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation;
+
+    // Synthetic dx12_fg_switch_test session 20260615_010145: even with the fast probe, every FSR->DLSS
+    // engage still spent its FIRST reactivation present on the single scratch-barrier probe and rendered
+    // the overlay only on the NEXT present (1-present `postsl-bootstrap-reactivation` flicker). Under the
+    // fast-bootstrap proof the real overlay render is itself the device-health proof (pre/post
+    // GetDeviceRemovedReason), so render directly on the first present (probe level 0).
+    EXPECT_TRUE(ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(/*fastPostFSRDLSSProbe=*/true,
+                                                                          /*postFSRProbeLevel=*/0));
+
+    // Without the fast-bootstrap proof the fragile graduated probe is retained (no direct render).
+    EXPECT_FALSE(ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(/*fastPostFSRDLSSProbe=*/false, 0));
+    // Only the FIRST present (level 0) renders directly; once advanced to full-render level it is the
+    // normal render path, not this fast-skip (so the predicate must not re-fire).
+    EXPECT_FALSE(ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(true, /*postFSRProbeLevel=*/3));
+    EXPECT_FALSE(ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(true, /*postFSRProbeLevel=*/2));
+}
+
 TEST(DXGISharedTest, LiveOverlayKeepsDrawingThroughFGTransitionCooldown) {
     using ce::dx12_overlay_policy::ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown;
 
