@@ -358,6 +358,16 @@ struct AppConfig {
 
     // Audio
     std::vector<AudioConfig> audioSources;  // System, Mic, etc.
+
+    // Signed A/V sync correction for loopback audio capture latency, in milliseconds.
+    // WASAPI GetStreamLatency() commonly returns 0 for render-loopback and process-loopback
+    // streams, so the real render->loopback path latency is never subtracted and audio lands
+    // late relative to the video content clock (constant "audio slightly delayed" offset).
+    // This is hardware/source dependent and not reliably derivable at runtime, so it is a
+    // user setting: positive advances loopback audio earlier (compensating audio-late);
+    // negative delays it. Applies to system + app loopback sources, not the microphone.
+    // Measure the value with tools/run_av_sync_matrix.py --raw-offset-gate. Default 0 = off.
+    float audioCaptureLatencyMs = 0.0f;
 };
 
 inline bool IsOverlayObserverOnly(const OverlayConfig& cfg) {

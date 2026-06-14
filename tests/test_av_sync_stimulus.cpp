@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -115,6 +116,30 @@ TEST(AvSyncStimulusTest, AudioTransitionsAreAtZeroCrossings) {
         EXPECT_NEAR(avs::AudioSampleAt(boundarySeconds, 0, 2), 0.0f, 0.0001f);
         EXPECT_NEAR(avs::AudioSampleAt(boundarySeconds, 1, 2), 0.0f, 0.0001f);
     }
+}
+
+TEST(AvSyncStimulusTest, AudioWaveformIsPhaseContinuousAcrossSegmentBoundaries) {
+    // The schedule must produce a phase-continuous tone: sample-to-sample steps stay bounded
+    // by the slope of the highest scheduled frequency, including across event boundaries where
+    // the frequency changes. A phase discontinuity here (or a per-fill re-anchor in the
+    // renderer) is what produced the audible crackle. Scan a window spanning several 1 s
+    // boundaries at 48 kHz and assert no step exceeds the continuous-sine bound.
+    constexpr int sampleRate = 48000;
+    const double maxFrequencyHz = *std::max_element(avs::kFrequenciesHz.begin(), avs::kFrequenciesHz.end());
+    // Continuous-sine bound: amplitude(0.2) * 2*pi*f/fs, with margin for the channel scale and
+    // float rounding. Anything near the full amplitude (~0.2) would be a click.
+    const double continuousBound = 0.2 * avs::kTwoPi * maxFrequencyHz / sampleRate;
+    const double clickThreshold = continuousBound * 2.0;
+    float previous = avs::AudioSampleAt(0.5, 0, 2);
+    double maxStep = 0.0;
+    for (int i = 1; i <= sampleRate * 5; ++i) {
+        const double t = 0.5 + static_cast<double>(i) / sampleRate;
+        const float current = avs::AudioSampleAt(t, 0, 2);
+        maxStep = std::max(maxStep, static_cast<double>(std::fabs(current - previous)));
+        previous = current;
+    }
+    EXPECT_LT(maxStep, clickThreshold) << "max sample step " << maxStep << " exceeds continuous bound "
+                                       << clickThreshold << " (phase discontinuity / click)";
 }
 
 TEST(AvSyncStimulusTest, SmoothLanePositionWrapsDeterministically) {

@@ -204,7 +204,8 @@ def restore_config(snapshot):
     CAPTURE_CONFIG.write_text(snapshot, encoding="utf-8")
 
 
-def write_scenario_config(scenario, output_dir, include_microphone, include_mixed_track, video_encoder):
+def write_scenario_config(scenario, output_dir, include_microphone, include_mixed_track, video_encoder,
+                          audio_capture_latency_ms=0.0):
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -233,6 +234,7 @@ track=2
     text = f"""[General]
 log_level=trace
 capture_method={scenario.capture_method}
+audio_capture_latency_ms={audio_capture_latency_ms}
 wgc_window_detection=(
 {PROCESS_NAME}
 )
@@ -575,7 +577,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     taskkill_processes()
     remove_stale_app_artifacts()
     secondary_app_exe = prepare_secondary_app_alias(app_exe) if scenario.secondary_app_audio else None
-    write_scenario_config(scenario, captures_dir, args.include_microphone, args.include_mixed_track, args.video_encoder)
+    write_scenario_config(scenario, captures_dir, args.include_microphone, args.include_mixed_track,
+                          args.video_encoder, args.audio_capture_latency_ms)
 
     delay_ms = args.delay_ms
     scenario_duration_sec = scenario.duration_sec if scenario.duration_sec is not None else args.duration_sec
@@ -723,6 +726,7 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "app_audio_clock_scheduling": args.app_audio_clock_scheduling,
             "app_audio_buffer_ms": args.app_audio_buffer_ms,
             "app_audio_lead_ms": app_audio_lead_ms,
+            "audio_capture_latency_ms": args.audio_capture_latency_ms,
             "analysis_start_sec": args.analysis_start_sec,
             "microphone_enabled": args.include_microphone,
             "mixed_track_enabled": args.include_mixed_track,
@@ -913,6 +917,19 @@ def build_scenarios(args):
             Scenario("inject", "aac", 60, label="late_app_lossy", duration_sec=16,
                      audio_layout="late_secondary_app", secondary_app_audio=True),
         ]
+    if args.profile == "raw-offset":
+        # Raw (uncalibrated) capture-path A/V offset gate. Runs with --app-audio-lead-ms 0
+        # (forced in parse_args unless explicitly overridden) so the measured event offset is
+        # the true capture differential Delta, not Delta minus the method-aware stimulus lead.
+        # This is the gate that catches a constant "audio late vs video" capture offset that the
+        # calibrated profiles deliberately cancel. Codec is timeline-irrelevant for the offset,
+        # but a lossless and a lossy codec are covered on both WGC and inject at 60/120.
+        return [
+            Scenario("wgc", "alac", 60, label="raw_offset_lossless_60", duration_sec=12),
+            Scenario("wgc", "aac", 120, label="raw_offset_lossy_120", duration_sec=12),
+            Scenario("inject", "alac", 120, label="raw_offset_lossless_120", duration_sec=12),
+            Scenario("inject", "aac", 60, label="raw_offset_lossy_60", duration_sec=12),
+        ]
     if args.profile == "codec-pass":
         return [Scenario("wgc", codec, 60, label="codec_finalize", duration_sec=10) for codec in SUPPORTED_CODECS]
     if args.profile == "stress":
@@ -975,11 +992,18 @@ def explicit_matrix_selection(argv):
     return False
 
 
+def explicit_app_audio_lead(argv):
+    if argv is None:
+        argv = sys.argv[1:]
+    return any(item == "--app-audio-lead-ms" or item.startswith("--app-audio-lead-ms=") for item in argv)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Run deterministic A/V sync capture scenarios and analyze them.")
     parser.add_argument(
         "--profile",
-        choices=["quick", "codec-pass", "stress", "wgc-overload", "late-app", "full", "long-soak", "custom"],
+        choices=["quick", "codec-pass", "stress", "wgc-overload", "late-app", "raw-offset", "full", "long-soak",
+                 "custom"],
         default="quick",
         help="Scenario profile. Bare runner defaults to the fast zero-drift quick gate.",
     )
@@ -988,6 +1012,7 @@ def build_parser():
     parser.add_argument("--short-stress", dest="profile_aliases", action="append_const", const="stress")
     parser.add_argument("--wgc-overload-gate", dest="profile_aliases", action="append_const", const="wgc-overload")
     parser.add_argument("--late-app-source-gate", dest="profile_aliases", action="append_const", const="late-app")
+    parser.add_argument("--raw-offset-gate", dest="profile_aliases", action="append_const", const="raw-offset")
     parser.add_argument("--full-matrix", dest="profile_aliases", action="append_const", const="full")
     parser.add_argument("--long-soak", dest="profile_aliases", action="append_const", const="long-soak")
     parser.add_argument("--long-soak-minutes", type=float, default=40.0)
@@ -1038,6 +1063,14 @@ def build_parser():
         default="auto",
         help="Stimulus audio lead in ms, or 'auto' for method-aware WGC/inject calibration.",
     )
+    parser.add_argument(
+        "--audio-capture-latency-ms",
+        type=float,
+        default=0.0,
+        help="CE-side loopback audio capture latency compensation written to the scenario config "
+        "(General/audio_capture_latency_ms). Use with --raw-offset-gate to validate the fix: 0 measures "
+        "the raw capture differential, the measured value drives it toward 0.",
+    )
     parser.add_argument("--no-app-audio-clock-scheduling", dest="app_audio_clock_scheduling", action="store_false")
     parser.add_argument(
         "--external-system-audio",
@@ -1071,6 +1104,10 @@ def parse_args(argv=None):
         args.profile = "custom"
     if args.profile == "wgc-overload":
         args.require_overload = True
+    if args.profile == "raw-offset" and not explicit_app_audio_lead(argv):
+        # The raw-offset gate measures the true uncalibrated capture differential, so it must
+        # not apply the method-aware stimulus lead that the other profiles use to cancel it.
+        args.app_audio_lead_ms = "0"
     if args.long_soak_minutes < 30.0 or args.long_soak_minutes > 45.0:
         fail("--long-soak-minutes must be between 30 and 45")
     return args
@@ -1096,6 +1133,31 @@ def self_test():
     assert len(late_app_scenarios) == 2
     assert all(scenario.secondary_app_audio for scenario in late_app_scenarios)
     assert {scenario.capture_method for scenario in late_app_scenarios} == {"wgc", "inject"}
+
+    raw_offset = parse_args(["--raw-offset-gate", "--dry-run"])
+    raw_offset_scenarios = build_scenarios(raw_offset)
+    assert raw_offset.profile == "raw-offset"
+    # The gate must force zero stimulus lead so it measures the true capture differential.
+    assert str(raw_offset.app_audio_lead_ms) == "0"
+    assert len(raw_offset_scenarios) == 4
+    assert {scenario.capture_method for scenario in raw_offset_scenarios} == {"wgc", "inject"}
+    assert all(
+        resolve_app_audio_lead_ms(
+            raw_offset.app_audio_lead_ms,
+            scenario.capture_method,
+            scenario.fps,
+            resolve_app_fps(
+                scenario.app_fps if scenario.app_fps is not None else raw_offset.app_fps,
+                scenario.capture_method,
+                scenario.fps,
+            ),
+        )
+        == 0.0
+        for scenario in raw_offset_scenarios
+    )
+    # An explicit override is still honored even under the raw-offset gate.
+    raw_offset_override = parse_args(["--raw-offset-gate", "--app-audio-lead-ms", "5", "--dry-run"])
+    assert str(raw_offset_override.app_audio_lead_ms) == "5"
 
     codec_pass = parse_args(["--codec-finalization-pass", "--dry-run"])
     codec_scenarios = build_scenarios(codec_pass)

@@ -1109,15 +1109,29 @@ inline int64_t GetWgcMaxSelectionLagQpc(int64_t targetIntervalTicks, bool lowSou
     return targetIntervalTicks * maxLagTicks;
 }
 
+// Selects which buffered source-frame content time a CFR tick should target. This is
+// intentionally separate from the PTS schedule (scheduledSampleQpc): biasing the selection
+// target backwards picks slightly older video content without changing the output PTS grid,
+// so track length, start/end, and cadence are unaffected. `extraSelectionDelayQpc` is the
+// configured A/V content delay in QPC ticks (audio_capture_latency_ms): it delays the video
+// content to match inherently-late loopback audio, leaving audio byte-exact. It is applied
+// only for live recording and clamped so the target stays positive.
 inline int64_t GetWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t fallbackTargetQpc,
-                                        int64_t targetIntervalTicks, bool recordingOutputLive) {
+                                        int64_t targetIntervalTicks, bool recordingOutputLive,
+                                        int64_t extraSelectionDelayQpc = 0) {
     int64_t selectionTargetQpc = scheduledSampleQpc > 0 ? scheduledSampleQpc : fallbackTargetQpc;
-    if (!recordingOutputLive || selectionTargetQpc <= 0 || targetIntervalTicks <= 0 || kWgcSelectionDelayTicks == 0) {
+    if (!recordingOutputLive || selectionTargetQpc <= 0 || targetIntervalTicks <= 0) {
         return selectionTargetQpc;
     }
-
-    const int64_t delayedSelectionTargetQpc =
-        selectionTargetQpc - (targetIntervalTicks * static_cast<int64_t>(kWgcSelectionDelayTicks));
+    if (extraSelectionDelayQpc < 0) {
+        extraSelectionDelayQpc = 0;
+    }
+    const int64_t totalDelayQpc =
+        (targetIntervalTicks * static_cast<int64_t>(kWgcSelectionDelayTicks)) + extraSelectionDelayQpc;
+    if (totalDelayQpc <= 0) {
+        return selectionTargetQpc;
+    }
+    const int64_t delayedSelectionTargetQpc = selectionTargetQpc - totalDelayQpc;
     return delayedSelectionTargetQpc > 0 ? delayedSelectionTargetQpc : selectionTargetQpc;
 }
 

@@ -381,6 +381,20 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
         streamLatency100ns_ = 0;
     }
 
+    // Capture the engine period and allocated buffer so A/V offset triage can see the
+    // real endpoint depth even when GetStreamLatency() reports 0 (common for loopback).
+    REFERENCE_TIME defaultPeriod = 0;
+    REFERENCE_TIME minPeriod = 0;
+    if (SUCCEEDED(pAudioClient->GetDevicePeriod(&defaultPeriod, &minPeriod))) {
+        defaultDevicePeriod100ns_ = static_cast<uint64_t>(std::max<REFERENCE_TIME>(0, defaultPeriod));
+        minDevicePeriod100ns_ = static_cast<uint64_t>(std::max<REFERENCE_TIME>(0, minPeriod));
+    } else {
+        defaultDevicePeriod100ns_ = 0;
+        minDevicePeriod100ns_ = 0;
+    }
+    UINT32 bufferFrames = 0;
+    bufferFrameCount_ = SUCCEEDED(pAudioClient->GetBufferSize(&bufferFrames)) ? bufferFrames : 0;
+
     if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
         ResetEvent(captureEvent_);
         hr = pAudioClient->SetEventHandle(captureEvent_);
@@ -406,9 +420,18 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
         return false;
     }
 
-    DLL_Log("[AudioCapture] Started: channels=%d rate=%d bits=%d streamLatency=%lluus compensate=%d",
-            pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
-            static_cast<unsigned long long>(streamLatency100ns_ / 10), isLoopback_ ? 1 : 0);
+    const uint64_t bufferDurationUs =
+        (pwfx->nSamplesPerSec > 0)
+            ? (static_cast<uint64_t>(bufferFrameCount_) * 1000000ull) / static_cast<uint64_t>(pwfx->nSamplesPerSec)
+            : 0;
+    DLL_Log(
+        "[AudioCapture] Started: channels=%d rate=%d bits=%d streamLatency=%lluus compensate=%d "
+        "devicePeriod=%lluus minPeriod=%lluus bufferFrames=%u bufferDur=%lluus",
+        pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
+        static_cast<unsigned long long>(streamLatency100ns_ / 10), isLoopback_ ? 1 : 0,
+        static_cast<unsigned long long>(defaultDevicePeriod100ns_ / 10),
+        static_cast<unsigned long long>(minDevicePeriod100ns_ / 10), bufferFrameCount_,
+        static_cast<unsigned long long>(bufferDurationUs));
     DLL_Log("[AudioCapture] Capture mode: %s",
             (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
 
@@ -431,6 +454,9 @@ void AudioCapture::Stop(bool discardPendingPackets) {
     }
     activeStreamFlags = 0;
     streamLatency100ns_ = 0;
+    defaultDevicePeriod100ns_ = 0;
+    minDevicePeriod100ns_ = 0;
+    bufferFrameCount_ = 0;
     isLoopback_ = false;
     if (captureEvent_) {
         ResetEvent(captureEvent_);

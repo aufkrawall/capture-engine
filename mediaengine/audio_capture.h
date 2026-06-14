@@ -61,6 +61,12 @@ private:
     DWORD activeStreamFlags = 0;
     bool isLoopback_ = false;
     uint64_t streamLatency100ns_ = 0;
+    // Endpoint timing reported by WASAPI at Start(), logged for A/V offset diagnosis.
+    // GetStreamLatency() frequently returns 0 for loopback, so these expose the real
+    // engine period/buffer depth that contributes to uncompensated capture latency.
+    uint64_t defaultDevicePeriod100ns_ = 0;
+    uint64_t minDevicePeriod100ns_ = 0;
+    uint32_t bufferFrameCount_ = 0;
 
     std::atomic<bool> isCapturing;
     std::thread captureThread;

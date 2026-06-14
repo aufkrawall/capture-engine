@@ -48,3 +48,4 @@ TEST(AudioTimeUtilsTest, ProcessLoopbackPacketTimestampCompensationUsesPacketCen
     EXPECT_EQ(ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(1230000, 960, 48000), 1130000u);
     EXPECT_EQ(ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(100000, 960, 48000), 0u);
 }
+

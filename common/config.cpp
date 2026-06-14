@@ -294,6 +294,14 @@ wgc_window_detection=(
 wgc_same_device_capture=true
 ;wgc_skip_split_device_flush=false
 
+; audio_capture_latency_ms - Signed A/V sync correction (milliseconds) for loopback audio.
+; Windows often reports 0 stream latency for render/process loopback, so the real audio
+; capture latency is not subtracted and audio can play slightly late vs video. A positive
+; value advances system + app loopback audio earlier; negative delays it (microphone is not
+; affected). The exact value is hardware/source dependent; measure it with
+; tools/run_av_sync_matrix.py --raw-offset-gate (use the reported offset_mean). Default 0.
+;audio_capture_latency_ms=0
+
 [Injection]
 ; Entry format: process:window:mode
 ;   process  - executable name (e.g., game.exe). Can be quoted to contain colons or spaces.
@@ -788,6 +796,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.wgcSkipSplitDeviceFlush = GetBool("General", "wgc_skip_split_device_flush", false);
     config.wgcSameDeviceCapture = GetBool("General", "wgc_same_device_capture", false);
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
+    config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);
 
     // Performance (Priority Settings)
     config.processPriority = GetStr("Performance", "process_priority", "above_normal");

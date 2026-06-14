@@ -564,6 +564,18 @@ TEST(CapturePipelinePolicyTest, WgcSelectionTargetDelaysLiveSelectionByOneTick) 
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(50, 40, 100, true), 50);
 }
 
+TEST(CapturePipelinePolicyTest, WgcSelectionTargetAppliesConfiguredContentDelay) {
+    // audio_capture_latency_ms maps to extraSelectionDelayQpc: video-content selection is
+    // biased back by (one tick + the configured delay) while the PTS schedule is untouched.
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(2000, 1900, 100, true, 400), 1500);
+    // Disabled / non-live: the configured delay is not applied.
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(2000, 1900, 100, false, 400), 2000);
+    // Negative configured delay is treated as zero (only the default one-tick delay applies).
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(2000, 1900, 100, true, -50), 1900);
+    // A delay larger than the target leaves the original target rather than going negative.
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(500, 400, 100, true, 100000), 500);
+}
+
 TEST(CapturePipelinePolicyTest, WgcLiveRecoveryModeTracksSourceSchedulerAndEncoderStress) {
     policy::WgcAdaptiveTelemetry telemetry{};
     telemetry.outputFps = 120;

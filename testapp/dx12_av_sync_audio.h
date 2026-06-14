@@ -82,6 +82,12 @@ class AudioRenderer {
     bool audioClockSchedulingEnabled_ = false;
     double audioLeadSeconds_ = kDefaultAudioLeadMs / 1000.0;
     uint64_t sampleCursor_ = 0;
+    // Phase anchor: the stimulus-time base is established once (from the audio clock / QPC)
+    // and the waveform phase then advances monotonically by sampleCursor_. Re-deriving the
+    // base from the device clock on every fill injected sub-ms phase jumps each engine period
+    // (audible crackle); anchoring once keeps the tone continuous while preserving alignment.
+    bool audioPhaseAnchorEstablished_ = false;
+    double audioPhaseAnchorBaseSeconds_ = 0.0;
     LARGE_INTEGER audioStartQpc_ = {};
     DWORD lastSummaryTick_ = 0;
     uint64_t underruns_ = 0;
@@ -387,22 +393,33 @@ inline void AudioRenderer::FillAudio(BYTE* data, UINT32 frames, UINT32 queuedFra
     const int blockAlign = std::max<int>(1, mixFormat_->nBlockAlign);
     const LONGLONG stimulusStart = stimulusStartQpc_ ? stimulusStartQpc_->QuadPart : 0;
     const double renderLatencySeconds = static_cast<double>(streamLatency100ns_) / 10000000.0;
-    double baseOffsetSeconds = QpcToSeconds(audioStartQpc_.QuadPart - stimulusStart) + renderLatencySeconds +
-                               static_cast<double>(sampleCursor_) / static_cast<double>(sampleRate);
-    bool usedClock = false;
-    if (audioClockSchedulingEnabled_ && audioClock_) {
-        UINT64 devicePosition = 0;
-        UINT64 qpcPosition100ns = 0;
-        if (SUCCEEDED(audioClock_->GetPosition(&devicePosition, &qpcPosition100ns)) && qpcPosition100ns > 0) {
-            const double clockSeconds = static_cast<double>(qpcPosition100ns) / 10000000.0;
-            const double stimulusStartSeconds = QpcTicksToSeconds(stimulusStart);
-            const double queuedSeconds =
-                static_cast<double>(queuedFramesBeforeWrite) / static_cast<double>(sampleRate);
-            baseOffsetSeconds = clockSeconds - stimulusStartSeconds + queuedSeconds + renderLatencySeconds;
-            usedClock = true;
+    // Establish the stimulus-time base ONCE, then advance the waveform phase monotonically by
+    // sampleCursor_. This keeps the generated tone perfectly phase-continuous (no per-fill
+    // jumps -> no crackle) while still aligning the first sample to real time via the audio
+    // clock (or QPC fallback). Re-reading the clock every fill is what produced the artifacts.
+    if (!audioPhaseAnchorEstablished_) {
+        double clockBaseOffsetSeconds = QpcToSeconds(audioStartQpc_.QuadPart - stimulusStart) + renderLatencySeconds;
+        bool usedClock = false;
+        if (audioClockSchedulingEnabled_ && audioClock_) {
+            UINT64 devicePosition = 0;
+            UINT64 qpcPosition100ns = 0;
+            if (SUCCEEDED(audioClock_->GetPosition(&devicePosition, &qpcPosition100ns)) && qpcPosition100ns > 0) {
+                const double clockSeconds = static_cast<double>(qpcPosition100ns) / 10000000.0;
+                const double stimulusStartSeconds = QpcTicksToSeconds(stimulusStart);
+                const double queuedSeconds =
+                    static_cast<double>(queuedFramesBeforeWrite) / static_cast<double>(sampleRate);
+                clockBaseOffsetSeconds = clockSeconds - stimulusStartSeconds + queuedSeconds + renderLatencySeconds;
+                usedClock = true;
+            }
         }
+        // anchorBase + sampleCursor/sr must equal the established base on this first fill.
+        audioPhaseAnchorBaseSeconds_ =
+            clockBaseOffsetSeconds - static_cast<double>(sampleCursor_) / static_cast<double>(sampleRate);
+        audioPhaseAnchorEstablished_ = true;
+        usedClockScheduling_.store(usedClock, std::memory_order_release);
     }
-    usedClockScheduling_.store(usedClock, std::memory_order_release);
+    const double baseOffsetSeconds =
+        audioPhaseAnchorBaseSeconds_ + static_cast<double>(sampleCursor_) / static_cast<double>(sampleRate);
     lastFillBaseOffsetSeconds_ = baseOffsetSeconds;
     lastFillFirstStimulusSeconds_ = baseOffsetSeconds + audioLeadSeconds_;
     lastFillLastStimulusSeconds_ =
