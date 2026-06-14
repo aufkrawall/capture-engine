@@ -5098,6 +5098,23 @@ TEST(DXGISharedTest, RendersOverlayDirectlyOnFirstPostFSRDLSSReactivationUnderFa
     EXPECT_FALSE(ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(true, /*postFSRProbeLevel=*/2));
 }
 
+TEST(DXGISharedTest, RendersOverlayDirectlyOnPureDLSSTransitionProbeWhenOnSwapchainQueue) {
+    using ce::dx12_overlay_policy::ShouldRenderOverlayDirectlyOnPostSLTransitionProbe;
+
+    // Synthetic dx12_fg_switch_test session 20260615_014832 (verbose handoff diagnostic): pure off->DLSS
+    // reactivations (hadFSR=0, epoch>1) blanked the overlay for 1 present on the empty-ECL
+    // `postsl-transition-probe` (coverage drawObserved=0 covered=0 currentStreak=1). On the SL-owned
+    // swapchain queue the real overlay render is itself the queue-health proof (pre/post
+    // GetDeviceRemovedReason), so render directly instead of probing.
+    EXPECT_TRUE(ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(/*selectedQueueIsSwapchainQueue=*/true,
+                                                                   /*deviceHealthy=*/true));
+
+    // Off the swapchain queue (e.g. origGame first-ECL fragile path) -> keep the empty-ECL probe.
+    EXPECT_FALSE(ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(/*selectedQueueIsSwapchainQueue=*/false, true));
+    // Device removed -> keep the probe (don't submit a real overlay ECL into a removed device).
+    EXPECT_FALSE(ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(true, /*deviceHealthy=*/false));
+}
+
 TEST(DXGISharedTest, LiveOverlayKeepsDrawingThroughFGTransitionCooldown) {
     using ce::dx12_overlay_policy::ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown;
 

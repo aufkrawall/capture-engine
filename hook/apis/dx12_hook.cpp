@@ -11627,8 +11627,27 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // runtime-owned swapchain queue under the fast-path proof, so the separate
     // empty-ECL probe is redundant there — skipping it removes the last probe
     // present from the DLSS-engage seam.
-    int probesNeeded = fastPostFSRDLSSProbe ? 0 : 1;
+    // Pure-DLSS off->DLSS (hadFSR=0) does NOT take the fast post-FSR probe, so without this it spends
+    // the first reactivation present on the empty-ECL probe and blanks the overlay for 1 present
+    // (gate=postsl-transition-probe; session 20260615_014832). On the SL-owned swapchain queue the
+    // real overlay render is itself the queue-health proof (pre-submit GetDeviceRemovedReason bail at
+    // ~:11174 + post-submit check), so render directly instead. Off-swapchain-queue paths keep the probe.
+    const bool transitionProbeDeviceHealthy = !FAILED(dev->GetDeviceRemovedReason());
+    const bool renderDirectlyOnTransitionProbe =
+        ce::dx12_overlay_policy::ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(selectedQueueIsSwapchainQueue,
+                                                                                    transitionProbeDeviceHealthy);
+    int probesNeeded = (fastPostFSRDLSSProbe || renderDirectlyOnTransitionProbe) ? 0 : 1;
     bool isPostTransitionProbe = (s_reactivationEpoch > 1 && s_postSLProbeFrames < probesNeeded);
+    if (renderDirectlyOnTransitionProbe && !fastPostFSRDLSSProbe && s_reactivationEpoch > 1 &&
+        s_postSLProbeFrames == 0) {
+        static int s_skipTransitionProbeLog = 0;
+        if (s_skipTransitionProbeLog++ < 20 || (s_skipTransitionProbeLog % 120) == 0)
+            HookLogImportant(
+                "DX12: PostSL rendering overlay directly on first reactivation present — skipping redundant "
+                "empty-ECL transition probe (swapchain queue, device healthy; render's pre/post devRemoved check "
+                "is the proof) epoch=%d queue=%p scQueue=%p hadFSR=%d",
+                s_reactivationEpoch, queue, scQueue, g_HadFSRFGPhase ? 1 : 0);
+    }
     if (isPostTransitionProbe) {
         // Probe frames present without an overlay draw — tag the coverage gate
         // so engage-seam streaks attribute to the probes instead of "unknown".

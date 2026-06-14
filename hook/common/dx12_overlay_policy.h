@@ -2509,6 +2509,21 @@ inline bool ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(bool fastP
     return fastPostFSRDLSSProbe && postFSRProbeLevel == 0;
 }
 
+// Zero-frame PURE-DLSS reactivation (off->DLSS, synthetic dx12_fg_switch_test session 20260615_014832).
+// On a pure-DLSS reactivation (hadFSR=0, so the fast post-FSR probe above does NOT apply), epoch>1 still
+// spends the first reactivation present on a single empty-ECL queue-health probe
+// (gate=postsl-transition-probe) and renders the overlay only on the NEXT present — a confirmed
+// 1-present off->DLSS overlay blank (coverage drawObserved=0 covered=0 currentStreak=1). The empty-ECL
+// probe is redundant when the overlay submits on the SL-owned swapchain queue (the non-origGame,
+// non-crash case): the PostSL render path already bails pre-submit on GetDeviceRemovedReason() and
+// re-checks device-removed after the submit, so the real overlay render is itself the queue-health
+// proof. Render directly on the first reactivation present instead. The empty-ECL probe is retained for
+// off-swapchain-queue (origGame first-ECL, genuinely fragile) reactivations.
+inline bool ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(bool selectedQueueIsSwapchainQueue,
+                                                               bool deviceHealthy) {
+    return selectedQueueIsSwapchainQueue && deviceHealthy;
+}
+
 inline bool ShouldSyntheticPostSLRefreshMetrics(bool streamlineFGRunning, bool processFrameRecentlySeen) {
     return streamlineFGRunning && !processFrameRecentlySeen;
 }
