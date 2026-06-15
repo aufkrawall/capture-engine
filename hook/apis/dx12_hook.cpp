@@ -3076,13 +3076,34 @@ static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(
         kProtectedFFXDormantOverlayMinProgressFrames;
     const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
     const bool ffxPresentCallbackActive = lastCallback != 0 && (GetTickCount64() - lastCallback) < 1000;
-    return ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+    const bool scQueueIsOrigGame = dormantSwapchainQueue != nullptr && dormantOriginalGameQueue != nullptr &&
+                                   dormantSwapchainQueue == dormantOriginalGameQueue;
+    const bool directFFX = g_FGCompat.HasDirectFFXApiConfirmation();
+    const bool allow = ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
         /*protectedOfficialFFXStartupPending=*/true, g_FGRuntimeOwnsSwapchain, g_State.overlayInit,
-        inSyncInitBootstrap || g_State.syncInit, dormantSwapchainQueue != nullptr,
-        dormantSwapchainQueue != nullptr && dormantOriginalGameQueue != nullptr &&
-            dormantSwapchainQueue == dormantOriginalGameQueue,
-        stagedQueueDiffersFromOriginalGameQueue, g_FGCompat.HasDirectFFXApiConfirmation(), ffxPresentCallbackActive,
+        inSyncInitBootstrap || g_State.syncInit, dormantSwapchainQueue != nullptr, scQueueIsOrigGame,
+        stagedQueueDiffersFromOriginalGameQueue, directFFX, ffxPresentCallbackActive,
         sustainedGameProgressOnOriginalQueue);
+    // Diagnostic: this predicate is fragile / toggles run-to-run (session 20260615_215657: true for 1
+    // frame then false forever, leaving the 2D-menu overlay blank). When protected-FFX is pending but we
+    // DENY the dormant draw, log every sub-condition so the flipping one is attributable in one run.
+    if (!allow) {
+        static std::atomic<int> s_dormantDenyLog{0};
+        const int n = s_dormantDenyLog.fetch_add(1, std::memory_order_relaxed);
+        if (n < 16 || (n % 300) == 0) {
+            HookLogImportant(
+                "DX12: [dormant-draw DENY] bootstrap=%d runtimeOwns=%d overlayInit=%d syncInit=%d hasScQueue=%d "
+                "scQueue==origGame=%d stagedDiffers=%d directFFX=%d callbackActive=%d sustainedProgress=%d "
+                "(progress=%u scQ=%p origGame=%p) #%d",
+                inSyncInitBootstrap ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0, g_State.overlayInit ? 1 : 0,
+                (inSyncInitBootstrap || g_State.syncInit) ? 1 : 0, dormantSwapchainQueue != nullptr ? 1 : 0,
+                scQueueIsOrigGame ? 1 : 0, stagedQueueDiffersFromOriginalGameQueue ? 1 : 0, directFFX ? 1 : 0,
+                ffxPresentCallbackActive ? 1 : 0, sustainedGameProgressOnOriginalQueue ? 1 : 0,
+                g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire), dormantSwapchainQueue,
+                dormantOriginalGameQueue, n + 1);
+        }
+    }
+    return allow;
 }
 
 // The staged sync-init path (overlayInit=true, syncInit=false) needs to know whether to bootstrap sync
