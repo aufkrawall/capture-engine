@@ -92,6 +92,7 @@ DWORD DX12_GetGamePresentThreadId();
 void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallback originalCallback,
                                       void* originalUserContext);
 bool DX12_HasFFXPresentCallbackBridge(void* bridgeKey);
+bool DX12_HasFFXPresentCallbackBridgeWithOriginal(void* bridgeKey);
 bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback);
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
 void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);

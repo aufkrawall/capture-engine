@@ -1207,6 +1207,25 @@ inline bool ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(bool recogn
            !disabledStartupArmingConfigure;
 }
 
+// FFX present-callback toggle wedge (synthetic dx12_fg_switch_test session 20260615_021242: ~1s
+// AMD ffxQuery freeze). The app provided a present callback (CE wrapped it with its bridge), then
+// re-enables FSR with a NULL callback (fsr_present_callback_toggle_stress / a game toggling its
+// callback). AMD RETAINS CE's bridge across this toggle — it does NOT revert to internal composition —
+// so CE's bridge keeps being called. The old code CLEARED the bridge's retained original here, leaving
+// CE's bridge with no delegate; it then self-composed currentBackBuffer->output via CopyResource on
+// AMD's command list, which wedges AMD's presenter (spin in ffxQuery / RtlQueryPerformanceCounter).
+// Instead, when an installed bridge still has a non-null original to delegate to, KEEP the bridge
+// delegating to that retained callback (the correct composition) across the enabled null-callback
+// toggle. Only the genuine no-original case falls back to clear/self-compose. This is distinct from the
+// disabled-configure retain above (that is for FG turning OFF; this is FG staying ENABLED with a
+// dropped app callback).
+inline bool ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle(
+    bool recognizedFrameGenerationConfigure, bool frameGenerationEnabled, bool appPresentCallbackProvided,
+    bool hasExistingBridgeWithOriginal) {
+    return recognizedFrameGenerationConfigure && frameGenerationEnabled && !appPresentCallbackProvided &&
+           hasExistingBridgeWithOriginal;
+}
+
 inline bool ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
     bool runtimeOwnedNativeFGPresentPath, bool nativeFSRActive, bool ffxPresentCallbackStalled,
     bool ffxPresentCallbackStallAllowsNormalOverlay) {

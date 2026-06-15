@@ -389,6 +389,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     bool retainedExistingBridgeForDisabledConfigure = false;
     bool retainedAlreadyBridgedPresentCallback = false;
     bool retainedBridgeForDisabledConfigure = false;
+    bool retainedBridgeForNullCallbackToggle = false;
     bool disabledStartupArmingConfigure = false;
     bool appPresentCallbackProvided = false;
     bool alreadyBridgedPresentCallbackProvided = false;
@@ -429,8 +430,24 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
             installedPresentCallbackBridge = !retainedAlreadyBridgedPresentCallback;
         } else {
             bridgeKey = GetPresentCallbackBridgeKey(context);
-            if (localConfig.frameGenerationEnabled && !appPresentCallbackProvided) {
+            // App->null-callback toggle while FG stays ENABLED: AMD retains CE's bridge and keeps
+            // calling it. Do NOT clear the bridge's retained original here — keep CE's bridge installed
+            // and delegating to that retained app callback, so the composition is done correctly
+            // instead of CE self-composing (which wedges AMD's presenter; session 20260615_021242).
+            const bool retainBridgeForNullCallbackToggle =
+                ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle(
+                    true, localConfig.frameGenerationEnabled != 0, appPresentCallbackProvided,
+                    HasTrackedPresentCallbackBridgeKey(bridgeKey) &&
+                        DX12_HasFFXPresentCallbackBridgeWithOriginal(bridgeKey));
+            if (localConfig.frameGenerationEnabled && !appPresentCallbackProvided &&
+                !retainBridgeForNullCallbackToggle) {
                 DX12_ClearFFXPresentCallbackBridge(bridgeKey);
+            }
+            if (retainBridgeForNullCallbackToggle) {
+                localConfig.presentCallback = &DX12_RenderOverlayViaFFXPresentCallback;
+                localConfig.presentCallbackUserContext = bridgeKey;
+                descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
+                retainedBridgeForNullCallbackToggle = true;
             }
             retainedExistingBridgeForDisabledConfigure =
                 HasTrackedPresentCallbackBridgeKey(bridgeKey) && DX12_HasFFXPresentCallbackBridge(bridgeKey);
@@ -493,6 +510,18 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
                 "(context=%p frameID=%llu originalPresent=%p bridgeUserCtx=%p log=%d)",
                 context, static_cast<unsigned long long>(originalDesc->frameID),
                 reinterpret_cast<void*>(originalDesc->presentCallback), localConfig.presentCallbackUserContext,
+                logCount + 1);
+        }
+    } else if (retainedBridgeForNullCallbackToggle) {
+        static std::atomic<int> s_retainedNullCallbackToggleBridgeLogCount{0};
+        const int logCount = s_retainedNullCallbackToggleBridgeLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
+            HookLogImportant(
+                "FFX Hook: Retained DX12 overlay present-callback bridge across enabled app->null-callback toggle "
+                "(AMD keeps calling CE's bridge; delegating to retained original instead of self-compose to avoid "
+                "the ffxQuery wedge) (context=%p frameID=%llu appNull=1 bridgeUserCtx=%p log=%d)",
+                context, static_cast<unsigned long long>(originalDesc->frameID), localConfig.presentCallbackUserContext,
                 logCount + 1);
         }
     } else if (disabledStartupArmingConfigure) {

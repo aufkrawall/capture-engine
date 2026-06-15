@@ -5115,6 +5115,33 @@ TEST(DXGISharedTest, RendersOverlayDirectlyOnPureDLSSTransitionProbeWhenOnSwapch
     EXPECT_FALSE(ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(true, /*deviceHealthy=*/false));
 }
 
+TEST(DXGISharedTest, RetainsFFXBridgeAcrossEnabledAppToNullCallbackToggle) {
+    using ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle;
+
+    // Session 20260615_021242 (~1s AMD ffxQuery freeze): the app provided a present callback (CE wrapped
+    // it), then re-enabled FSR with a NULL callback. AMD retains CE's bridge, so clearing its retained
+    // original made CE self-compose (CopyResource) and wedge AMD. Keep delegating to the retained
+    // original when FG stays ENABLED, the new configure has no app callback, and a bridge with a non-null
+    // original exists.
+    EXPECT_TRUE(ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle(
+        /*recognizedFrameGenerationConfigure=*/true, /*frameGenerationEnabled=*/true,
+        /*appPresentCallbackProvided=*/false, /*hasExistingBridgeWithOriginal=*/true));
+
+    // The app still provides a callback -> the install/already-bridged path handles it, not this retain.
+    EXPECT_FALSE(ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle(
+        true, true, /*appPresentCallbackProvided=*/true, true));
+    // FG disabled -> the disabled-configure retain path owns it, not this one.
+    EXPECT_FALSE(ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle(
+        true, /*frameGenerationEnabled=*/false, false, true));
+    // No existing bridge with a usable original (genuine null-callback startup) -> preserve AMD internal
+    // composition; do NOT synthesize a bridge.
+    EXPECT_FALSE(ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle(
+        true, true, false, /*hasExistingBridgeWithOriginal=*/false));
+    // Not a recognized FG configure.
+    EXPECT_FALSE(ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle(
+        /*recognizedFrameGenerationConfigure=*/false, true, false, true));
+}
+
 TEST(DXGISharedTest, KeepsOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
     using ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover;
 

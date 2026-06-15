@@ -4719,6 +4719,23 @@ bool DX12_HasFFXPresentCallbackBridge(void* bridgeKey) {
     return it != g_FFXPresentCallbackBridges.end() && it->second.installed;
 }
 
+// True only when an installed bridge ALSO has a non-null original callback to delegate to. This is the
+// signal that CE's bridge can do a CORRECT composition by calling the app/default callback instead of
+// the fallback self-CopyResource (which wedges AMD). Used to keep the bridge delegating across an
+// enabled app-callback->null-callback toggle, where AMD retains CE's bridge and would otherwise call it
+// with a cleared (null) original. See guardrails.md (FFX present-callback toggle wedge, 20260615_021242).
+bool DX12_HasFFXPresentCallbackBridgeWithOriginal(void* bridgeKey) {
+    if (!bridgeKey) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_FFXPresentCallbackBridgeMutex);
+    const auto it = g_FFXPresentCallbackBridges.find(bridgeKey);
+    return it != g_FFXPresentCallbackBridges.end() && it->second.installed &&
+           it->second.originalCallback != nullptr &&
+           it->second.originalCallback != &DX12_RenderOverlayViaFFXPresentCallback;
+}
+
 bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback) {
     return callback == &DX12_RenderOverlayViaFFXPresentCallback;
 }
@@ -4980,6 +4997,24 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                 static_cast<unsigned long long>(desc->frameID), desc->isGeneratedFrame ? 1 : 0,
                 ffxRuntimeOwnsNativeFSRPresentation ? 1 : 0,
                 ce::fg_runtime::GetRuntimeModeName(ffxCallbackRuntimeMode), composeLogCount + 1);
+        }
+        // WEDGE PRECURSOR DIAGNOSTIC: self-composing on AMD's command list while AMD owns the native-FSR
+        // presentation is the documented ffxQuery-wedge path (session 20260615_021242). With the
+        // app->null-callback toggle fix this should no longer be reached (CE's bridge keeps a delegate),
+        // so if it fires for a runtime-owned FSR it is the high-risk case — log the resource states once
+        // so the exact desc encoding (native vs FFX) is attributable from the log alone.
+        if (ffxRuntimeOwnsNativeFSRPresentation) {
+            static std::atomic<int> s_ffxComposeWedgeRiskLogCount{0};
+            const int wedgeLogCount = s_ffxComposeWedgeRiskLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (wedgeLogCount < 20 || (wedgeLogCount % 120) == 0) {
+                HookLogImportant(
+                    "DX12: WARNING FFX bridge self-composing on AMD's command list for runtime-owned FSR — "
+                    "ffxQuery-wedge risk (frameId=%llu generated=%d rawCurrentState=0x%X rawOutputState=0x%X "
+                    "outputDiffersFromCurrent=%d log=%d)",
+                    static_cast<unsigned long long>(desc->frameID), desc->isGeneratedFrame ? 1 : 0,
+                    (unsigned)desc->currentBackBuffer.state, (unsigned)desc->outputSwapChainBuffer.state,
+                    ffxCallbackOutputDiffersFromCurrent ? 1 : 0, wedgeLogCount + 1);
+            }
         }
         auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(desc->commandList);
         CopyFFXPresentSourceToOutput(cmdList, desc);
