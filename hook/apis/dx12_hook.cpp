@@ -14135,7 +14135,28 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             g_PostSLLastWorkingQueue != nullptr &&
             GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
-        if (protectedOfficialFFXStartupOverlayOnly) {
+        if (protectedOfficialFFXStartupOverlayOnly &&
+            ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(/*inSyncInitBootstrap=*/true)) {
+            // Dormant 2D-menu FSR arming: AMD is dormant and the game still presents on its OWN queue
+            // (scQueue==origGame). The unconditional quiesce return below is what blanked the overlay
+            // FOREVER in the menu (session 20260615_215017) — it preempted the dormant-draw relaxation
+            // (and the staged-sync / zero-ECL bypasses) every frame. Render the overlay on the game's own
+            // queue instead: resolve gameQueue to it and fall through to the normal render path. Capture /
+            // FFX retry / probe / create-time side effects stay quiesced via the unchanged broad
+            // ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup checks elsewhere; the moment the
+            // runtime takes over (enabled ffxConfigure / callback / ownership) this predicate is false and
+            // the full quiesce return resumes.
+            gameQueue = g_SwapchainQueue ? g_SwapchainQueue : g_OriginalGameQueue;
+            static std::atomic<int> s_dormantOrigGameQueueLogCount{0};
+            const int logCount = s_dormantOrigGameQueueLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: Protected official FFX startup DORMANT — rendering overlay on game's own queue instead of "
+                    "quiescing (gameQueue=%p origGame=%p sc=%p) #%d",
+                    gameQueue, g_OriginalGameQueue, pSwapChain, logCount + 1);
+            }
+            // fall through (no return) — render on gameQueue below
+        } else if (protectedOfficialFFXStartupOverlayOnly) {
             static std::atomic<int> s_protectedOfficialFFXStartupGpuQuietLogCount{0};
             const int logCount =
                 s_protectedOfficialFFXStartupGpuQuietLogCount.fetch_add(1, std::memory_order_relaxed);
