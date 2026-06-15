@@ -10241,6 +10241,31 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
     }
 
+    // Same-queue pure-DLSS cold start proof (Talos startup: scQueue==origGame, no separate command/SL
+    // wrapper queue). When DLSS FG runs on the game's own single queue there is no separate DLSS-G
+    // proxy-init pipeline for CE's overlay ECL to corrupt, so the synthetic-startup countdown and the
+    // cold-start warmup (the GTA separate-queue init protection) can be bypassed safely — the overlay
+    // ECL is the same no-FG-route submit on the game's queue. Re-evaluated every callback so a title
+    // that later creates a separate runtime queue (GTA) flips this false and the protections resume.
+    bool sameQueuePureDLSSColdStartSafe = false;
+    {
+        ID3D12CommandQueue* sqScQueue = nullptr;
+        ID3D12CommandQueue* sqOrigQueue = nullptr;
+        ID3D12CommandQueue* sqCmdQueue = nullptr;
+        {
+            std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+            sqScQueue = g_SwapchainQueue;
+            sqOrigQueue = g_OriginalGameQueue;
+            sqCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
+        }
+        ID3D12CommandQueue* sqSLWrapperQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
+        auto* sqDev = g_Device.load(std::memory_order_acquire);
+        const bool sqDeviceRemoved = sqDev && FAILED(sqDev->GetDeviceRemovedReason());
+        sameQueuePureDLSSColdStartSafe = ce::dx12_overlay_policy::ShouldTreatSameQueuePureDLSSColdStartAsSafe(
+            g_HadFSRFGPhase, sqScQueue != nullptr && sqScQueue == sqOrigQueue,
+            sqCmdQueue == nullptr || sqCmdQueue == sqOrigQueue, sqSLWrapperQueue != nullptr, sqDeviceRemoved);
+    }
+
     {
         if (ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
                 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
@@ -10301,6 +10326,23 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                             cooldownLeft);
                     }
                     s_explicitEnableCountdownBypassLogCount++;
+                    g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+                } else if (sameQueuePureDLSSColdStartSafe) {
+                    // Same-queue pure-DLSS cold start (Talos): DLSS FG runs on the game's OWN single
+                    // queue (scQueue==origGame, no separate command/SL-wrapper queue), so there is no
+                    // separate DLSS-G proxy-init pipeline for CE's ECL to corrupt — activate from
+                    // callback #1 instead of blanking through the countdown. The documented GTA hang
+                    // family creates a SEPARATE runtime-owned queue during init (this proof is re-checked
+                    // every callback and flips false the moment that happens, restoring the countdown).
+                    static int s_sameQueueColdStartCountdownBypassLogCount = 0;
+                    if (s_sameQueueColdStartCountdownBypassLogCount < 10) {
+                        HookLogImportant(
+                            "DX12: PostSL synthetic startup bypassing pure-DLSS countdown — same-queue topology "
+                            "(scQueue==origGame, no separate command/SL-wrapper queue): overlay ECL lands on the "
+                            "game's own queue, not a separate DLSS-G init pipeline (cooldown=%d)",
+                            cooldownLeft);
+                    }
+                    s_sameQueueColdStartCountdownBypassLogCount++;
                     g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 } else {
                     // Pure DLSS cold start without explicit-enable proof: use a
@@ -10536,7 +10578,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(
             g_HadFSRFGPhase, useTopLevelHandoffWrapperProgress, safePostFSRBootstrapPathForPostSL,
             confirmedPureStreamlineResumeWarmupProof, explicitEnablePureDLSSColdStartProof,
-            postSLConfirmedRenderThisEpoch);
+            postSLConfirmedRenderThisEpoch, sameQueuePureDLSSColdStartSafe);
     if (s_callsSinceReactivation <= warmupThreshold && !bypassReactivationWarmup &&
         !keepAliveRenderAfterExplicitOff) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
@@ -10564,11 +10606,12 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             HookLogImportant(
                 "DX12: PostSL bypassing reactivation warm-up after safe startup proof "
                 "(epoch=%d frame=%d/%d hadFSR=%d wrapperProgress=%d safeBootstrap=%d confirmedResume=%d "
-                "explicitEnableColdStart=%d confirmedThisEpoch=%d scQ=%p lastWorkingQ=%p)",
+                "explicitEnableColdStart=%d confirmedThisEpoch=%d sameQueueColdStart=%d scQ=%p lastWorkingQ=%p)",
                 s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold, g_HadFSRFGPhase ? 1 : 0,
                 useTopLevelHandoffWrapperProgress ? 1 : 0, safePostFSRBootstrapPathForPostSL ? 1 : 0,
                 confirmedPureStreamlineResumeWarmupProof ? 1 : 0, explicitEnablePureDLSSColdStartProof ? 1 : 0,
-                postSLConfirmedRenderThisEpoch ? 1 : 0, warmupSwapchainQueue, warmupLastWorkingQueue);
+                postSLConfirmedRenderThisEpoch ? 1 : 0, sameQueuePureDLSSColdStartSafe ? 1 : 0, warmupSwapchainQueue,
+                warmupLastWorkingQueue);
         }
         s_bypassWarmupLogCount++;
     }

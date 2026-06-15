@@ -2621,7 +2621,8 @@ inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTop
                                                  bool safePostFSRBootstrapPath,
                                                  bool confirmedPureStreamlineResumeProof = false,
                                                  bool explicitEnablePureDLSSColdStartProof = false,
-                                                 bool postSLConfirmedRenderInCurrentEpoch = false) {
+                                                 bool postSLConfirmedRenderInCurrentEpoch = false,
+                                                 bool sameQueuePureDLSSColdStartSafe = false) {
     // Do not bypass warm-up for an UNPROVEN pure DLSS cold start. DLSS FG's
     // multi-device initialization is fragile: submitting overlay ECL on the FG
     // queue during the first few callbacks can corrupt DLSS FG's internal
@@ -2651,7 +2652,31 @@ inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTop
     // warm-up has naturally completed.
     (void)useTopLevelHandoffWrapperProgress;
     return postSLConfirmedRenderInCurrentEpoch || (hadFSRFGPhase && safePostFSRBootstrapPath) ||
-           (!hadFSRFGPhase && (confirmedPureStreamlineResumeProof || explicitEnablePureDLSSColdStartProof));
+           (!hadFSRFGPhase &&
+            (confirmedPureStreamlineResumeProof || explicitEnablePureDLSSColdStartProof ||
+             sameQueuePureDLSSColdStartSafe));
+}
+
+// Same-queue pure-DLSS cold start (Talos startup, session 20260615_162947: 29-present/437ms blank,
+// gate=postsl-inactive->postsl-reactivation-warmup). The pure-DLSS cold-start countdown + 15-frame
+// warmup protect DLSS-G's fragile init against CE's first overlay ECL. The DOCUMENTED GTA hang family
+// (GetState-only) corrupts DLSS-G because GTA creates a SEPARATE runtime-owned swapchain/queue during
+// init and CE's ECL lands on that separate proxy-init pipeline (guardrails.md: GTA pure-DLSS startup
+// "moves to a runtime-owned swapchain"). When DLSS FG instead runs entirely on the GAME'S OWN single
+// queue (scQueue==origGame, no separate command/SL-wrapper queue — observed in Talos:
+// `PostSL locked to queue X (origGame=X scQueue=X cmdQueue=X slWrapper=0)`), there is NO separate
+// proxy-init pipeline for CE's ECL to corrupt: the overlay ECL is just another submit on the game's
+// own queue (the no-FG route, what RTSS does). Render from the first callback for this topology only.
+// Re-evaluated every callback, so if a title transiently looks same-queue and then creates a separate
+// runtime queue (GTA), this flips false and the countdown/warmup resume — no init-corruption window.
+// device-removed is still caught by the PostSL render's pre-submit GetDeviceRemovedReason bail; a pure
+// GPU hang is caught by the freeze watchdog. GTA-unvalidated; excludes the documented separate-queue
+// hang by construction.
+inline bool ShouldTreatSameQueuePureDLSSColdStartAsSafe(bool hadFSRFGPhase, bool swapchainQueueIsOriginalGameQueue,
+                                                        bool noSeparateCommandQueue, bool hasSeparateSLWrapperQueue,
+                                                        bool deviceRemoved) {
+    return !hadFSRFGPhase && swapchainQueueIsOriginalGameQueue && noSeparateCommandQueue &&
+           !hasSeparateSLWrapperQueue && !deviceRemoved;
 }
 
 // Make-before-break for explicit Streamline FG OFF. slDLSSGSetOptions(off)

@@ -5115,6 +5115,52 @@ TEST(DXGISharedTest, RendersOverlayDirectlyOnPureDLSSTransitionProbeWhenOnSwapch
     EXPECT_FALSE(ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(true, /*deviceHealthy=*/false));
 }
 
+TEST(DXGISharedTest, SameQueuePureDLSSColdStartIsSafeToRenderEarly) {
+    using ce::dx12_overlay_policy::ShouldTreatSameQueuePureDLSSColdStartAsSafe;
+
+    // Talos startup (session 20260615_162947): DLSS FG runs on the game's OWN single queue
+    // (scQueue==origGame==cmdQueue, no separate SL wrapper queue), so there is no separate DLSS-G
+    // proxy-init pipeline for CE's overlay ECL to corrupt -> render from the first callback instead of
+    // the 437ms countdown+warmup blank.
+    EXPECT_TRUE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(
+        /*hadFSRFGPhase=*/false, /*swapchainQueueIsOriginalGameQueue=*/true, /*noSeparateCommandQueue=*/true,
+        /*hasSeparateSLWrapperQueue=*/false, /*deviceRemoved=*/false));
+
+    // FSR history -> the post-FSR bootstrap proof path owns it, not this.
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(true, true, true, false, false));
+    // A SEPARATE swapchain/runtime queue (the documented GTA pure-DLSS startup) -> keep the countdown +
+    // warmup; CE's ECL on a separate proxy-init queue is the documented corruption/hang.
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(
+        false, /*swapchainQueueIsOriginalGameQueue=*/false, true, false, false));
+    // A separate command queue -> not the single-queue topology; keep protections.
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(
+        false, true, /*noSeparateCommandQueue=*/false, false, false));
+    // A separate SL wrapper queue exists -> there IS a separate runtime pipeline; keep protections.
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(
+        false, true, true, /*hasSeparateSLWrapperQueue=*/true, false));
+    // Device removed -> never render.
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, true, false, /*deviceRemoved=*/true));
+}
+
+TEST(DXGISharedTest, SameQueuePureDLSSColdStartBypassesReactivationWarmup) {
+    using ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup;
+
+    // The same-queue pure-DLSS cold-start proof is a new warmup-bypass leg (renders during the
+    // otherwise-blank 15-frame warmup). Pure DLSS, no FSR, none of the other proofs needed.
+    EXPECT_TRUE(ShouldBypassPostSLReactivationWarmup(
+        /*hadFSRFGPhase=*/false, /*useTopLevelHandoffWrapperProgress=*/false, /*safePostFSRBootstrapPath=*/false,
+        /*confirmedPureStreamlineResumeProof=*/false, /*explicitEnablePureDLSSColdStartProof=*/false,
+        /*postSLConfirmedRenderInCurrentEpoch=*/false, /*sameQueuePureDLSSColdStartSafe=*/true));
+
+    // Without the same-queue proof (and no other proof), a pure-DLSS cold start still keeps the warmup
+    // (the documented GTA separate-queue init protection).
+    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(false, false, false, false, false, false,
+                                                      /*sameQueuePureDLSSColdStartSafe=*/false));
+    // The same-queue leg is pure-DLSS only: with FSR history it does not apply (post-FSR path governs).
+    EXPECT_FALSE(ShouldBypassPostSLReactivationWarmup(/*hadFSRFGPhase=*/true, false, false, false, false, false,
+                                                      /*sameQueuePureDLSSColdStartSafe=*/true));
+}
+
 TEST(DXGISharedTest, RetainsFFXBridgeAcrossEnabledAppToNullCallbackToggle) {
     using ce::dx12_overlay_policy::ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle;
 
