@@ -3047,7 +3047,13 @@ static bool ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup() {
 // ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup(). Never the staged AMD queue (the
 // documented GTA crash). See dx12_overlay_policy.h for the full rationale and GTA risk.
 static constexpr uint32_t kProtectedFFXDormantOverlayMinProgressFrames = 5;
-static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup() {
+// inSyncInitBootstrap: the caller is the staged sync-init path (overlayInit=true, syncInit=false) and is
+// about to initialize sync. The dormant-draw policy requires syncInit, but that creates a chicken-and-egg
+// deadlock on a DLSS->FSR menu transition that clears syncInit (session 20260615_212947: overlay gone
+// FOREVER — the staged sync-init block defers because the relaxation needs the very syncInit it would
+// create). When bootstrapping sync, treat syncInit as satisfied so the relaxation can let sync-init +
+// RTV rebuild proceed; the actual draw next frame still requires the real syncInit.
+static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(bool inSyncInitBootstrap = false) {
     if (!g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire)) {
         return false;
     }
@@ -3071,12 +3077,19 @@ static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(
     const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
     const bool ffxPresentCallbackActive = lastCallback != 0 && (GetTickCount64() - lastCallback) < 1000;
     return ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        /*protectedOfficialFFXStartupPending=*/true, g_FGRuntimeOwnsSwapchain, g_State.overlayInit, g_State.syncInit,
-        dormantSwapchainQueue != nullptr,
+        /*protectedOfficialFFXStartupPending=*/true, g_FGRuntimeOwnsSwapchain, g_State.overlayInit,
+        inSyncInitBootstrap || g_State.syncInit, dormantSwapchainQueue != nullptr,
         dormantSwapchainQueue != nullptr && dormantOriginalGameQueue != nullptr &&
             dormantSwapchainQueue == dormantOriginalGameQueue,
         stagedQueueDiffersFromOriginalGameQueue, g_FGCompat.HasDirectFFXApiConfirmation(), ffxPresentCallbackActive,
         sustainedGameProgressOnOriginalQueue);
+}
+
+// The staged sync-init path (overlayInit=true, syncInit=false) needs to know whether to bootstrap sync
+// during a dormant protected-FFX startup instead of deferring forever. Same conditions as the dormant
+// draw, but syncInit is treated as satisfied (we are about to create it).
+static bool ShouldInitOverlaySyncDuringDormantProtectedOfficialFFXStartup() {
+    return ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(/*inSyncInitBootstrap=*/true);
 }
 
 static bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
@@ -15074,7 +15087,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && !deferOverlayWorkAfterResume &&
         g_State.overlayInit && !g_State.syncInit && g_FGTransitionCooldown <= 0) {
         const char* skipSeparateOverlayGpuReason = nullptr;
-        if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)) {
+        if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason) &&
+            !ShouldInitOverlaySyncDuringDormantProtectedOfficialFFXStartup()) {
             static std::atomic<int> s_runtimeOwnedSyncInitSkipLogCount{0};
             int logCount = s_runtimeOwnedSyncInitSkipLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
@@ -15102,6 +15116,18 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
             }
             return;
+        }
+
+        if (ShouldInitOverlaySyncDuringDormantProtectedOfficialFFXStartup()) {
+            static std::atomic<int> s_dormantSyncBootstrapLogCount{0};
+            const int n = s_dormantSyncBootstrapLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (n < 10 || (n % 300) == 0) {
+                HookLogImportant(
+                    "DX12: Bootstrapping overlay sync during dormant protected official FFX startup so the origGame "
+                    "draw can resume (overlayInit=1 syncInit=0 runtimeOwns=0 scQueue==origGame) — fixes the DLSS->FSR "
+                    "menu forever-blank chicken-and-egg #%d",
+                    n + 1);
+            }
         }
 
         if (s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit &&
