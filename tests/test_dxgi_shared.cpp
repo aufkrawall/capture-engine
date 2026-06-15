@@ -5115,6 +5115,33 @@ TEST(DXGISharedTest, RendersOverlayDirectlyOnPureDLSSTransitionProbeWhenOnSwapch
     EXPECT_FALSE(ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(true, /*deviceHealthy=*/false));
 }
 
+TEST(DXGISharedTest, KeepsOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
+    using ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover;
+
+    // Session 20260615_020100 (after many switches): a DLSS->FSR no-callback takeover warm-reinited the
+    // overlay on the runtime-owned FSR queue, then the [outer] SL-FG-OFF teardown force-cleared it + armed
+    // a 60-frame cooldown (missed=60 / 422 ms). When FSR is the active no-callback presenter on a
+    // runtime-owned path and the overlay backend is already init/sync with a healthy device, keep it live.
+    EXPECT_TRUE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(
+        /*slTurnedOff=*/true, /*fsrFGApiActive=*/true, /*nativeFSRInternalNoCallbackComposition=*/true,
+        /*runtimeOwnedNativeFGPresentPath=*/true, /*overlayInit=*/true, /*syncInit=*/true, /*deviceRemoved=*/false));
+
+    // Not an OFF edge -> not this path.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(false, true, true, true, true, true, false));
+    // FSR not active (pure DLSS->off) -> the existing pure-Streamline / confirmed-PostSL bypasses own it.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, false, true, true, true, true, false));
+    // App-callback FFX bridge route (internalNoCallback=false): a separate overlay ECL on the FSR queue is
+    // the documented 0x887A002B crash -> keep the teardown.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, true, false, true, true, true, false));
+    // Runtime does not own the native-FG present path -> not this takeover.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, true, true, false, true, true, false));
+    // Overlay backend not init/sync -> nothing live to keep (let the reinit run).
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, true, true, true, false, true, false));
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, true, true, true, true, false, false));
+    // Device removed -> don't keep rendering into a removed device.
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(true, true, true, true, true, true, true));
+}
+
 TEST(DXGISharedTest, LiveOverlayKeepsDrawingThroughFGTransitionCooldown) {
     using ce::dx12_overlay_policy::ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown;
 

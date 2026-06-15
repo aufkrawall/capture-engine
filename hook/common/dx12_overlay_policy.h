@@ -832,6 +832,27 @@ inline bool ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOw
            !deviceRemoved;
 }
 
+// DLSS-FG -> FSR-FG (no-callback internal composition) takeover after many switches (synthetic
+// dx12_fg_switch_test session 20260615_020100: missed=60 / 422 ms). The native-FSR no-callback takeover
+// path ALREADY warm-reinited the overlay on the runtime-owned FSR swapchain queue (the no-callback route
+// explicitly ALLOWS normal overlay rendering there — see ShouldRetainNativeFSRInternalNoCallbackComposition...),
+// but on the SAME frame the [outer] SL-FG-OFF teardown force-clears overlayInit + CleanupRTVs ("stale SL
+// backbuffers") and arms the generic 60-frame reinit cooldown, blanking the just-reinited overlay. The SL
+// backbuffers are NOT stale here: FSR took over the same swapchain and the overlay backend is already
+// init/sync on that queue with a healthy device, so keep it live (skip the teardown + cooldown). This is
+// strictly the no-callback route: the app-callback FFX bridge route (where a separate overlay ECL on the
+// FSR queue is the documented 0x887A002B crash) has nativeFSRInternalNoCallbackComposition=false and keeps
+// the teardown. The existing pure-Streamline / confirmed-PostSL bypasses deliberately EXCLUDE
+// fsrFGApiActive; this one is the FSR-active counterpart, narrowed to the safe no-callback composition.
+inline bool ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(bool slTurnedOff, bool fsrFGApiActive,
+                                                                   bool nativeFSRInternalNoCallbackComposition,
+                                                                   bool runtimeOwnedNativeFGPresentPath,
+                                                                   bool overlayInit, bool syncInit,
+                                                                   bool deviceRemoved) {
+    return slTurnedOff && fsrFGApiActive && nativeFSRInternalNoCallbackComposition &&
+           runtimeOwnedNativeFGPresentPath && overlayInit && syncInit && !deviceRemoved;
+}
+
 // Round 4 (Talos DLSS-FG toggle-ON, session 20260614_030417: ~437 ms / 4 presents blank). When the
 // game toggles DLSS FG ON at runtime, Streamline starts intercepting presents and (with Steam loaded)
 // CE routes them through a Steam-safe bypass that returns BEFORE the overlay draw; DLSS-G then freezes

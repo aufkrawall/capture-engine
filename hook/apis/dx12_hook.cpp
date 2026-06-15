@@ -15511,6 +15511,16 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     g_PostSLConfirmedRendering.load(std::memory_order_acquire), g_FGCompat.IsFSRFGApiActive(),
                     HookHasRuntimeOwnedNativeFGPresentPath(), g_State.overlayInit, g_State.syncInit,
                     g_SwapchainQueue != nullptr, g_OriginalGameQueue != nullptr, FAILED(transitionDeviceHr));
+            // DLSS-FG -> FSR-FG (no-callback) takeover: the native-FSR takeover path already warm-reinited
+            // the overlay on the runtime-owned FSR queue this frame; the [outer] teardown below would
+            // force-clear it + 60-frame cooldown (session 20260615_020100: missed=60). Keep it live —
+            // strictly the no-callback route (the app-callback bridge keeps the teardown for crash safety).
+            const bool keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover =
+                ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(
+                    slTurnedOff, g_FGCompat.IsFSRFGApiActive(),
+                    g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+                    HookHasRuntimeOwnedNativeFGPresentPath(), g_State.overlayInit, g_State.syncInit,
+                    FAILED(transitionDeviceHr));
 
             HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d keepAlive=%d)", slTurnedOn ? "ON" : "OFF",
                              allowOverlayRender ? 1 : 0, keepConfirmedPostSLAliveAcrossOuterOff ? 1 : 0);
@@ -15520,14 +15530,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 HookLogImportant(
                     "DX12: [outer] SL FG ON after active PostSL — preserving active PostSL path "
                     "instead of re-entering transition cooldown");
-            } else if (bypassPureStreamlineOffCooldown || bypassConfirmedPostSLSuspensionCooldown) {
+            } else if (bypassPureStreamlineOffCooldown || bypassConfirmedPostSLSuspensionCooldown ||
+                       keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
                 g_FGTransitionCooldown = 0;
                 g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 HookLogImportant(
                     "DX12: [outer] %s — bypassing generic reinit cooldown "
                     "(scQueue=%p origGame=%p devHr=0x%08X)",
-                    bypassPureStreamlineOffCooldown ? "pure Streamline FG OFF"
-                                                    : "confirmed-PostSL DLSS-FG suspension (proxy stays live)",
+                    keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover
+                        ? "DLSS->FSR no-callback takeover (overlay already reinited on FSR queue)"
+                        : (bypassPureStreamlineOffCooldown ? "pure Streamline FG OFF"
+                                                           : "confirmed-PostSL DLSS-FG suspension (proxy stays live)"),
                     g_SwapchainQueue, g_OriginalGameQueue, (unsigned)transitionDeviceHr);
             } else {
                 g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
@@ -15637,10 +15650,18 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // Force overlay reinit — PostSL's RTVs reference SL's swapchain
                 // backbuffers, which become invalid after SL tears down FG.  Without
                 // reinit, pre-SL rendering uses stale RTVs → DEVICE_HUNG.
-                if (g_State.overlayInit) {
+                // EXCEPTION (DLSS->FSR no-callback takeover): the native-FSR takeover path
+                // already warm-reinited the overlay on the runtime-owned FSR swapchain queue
+                // this same frame (its RTVs are valid for FSR's swapchain, not stale SL ones).
+                // Tearing it down here is what produced the 60-present blank — keep it live.
+                if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
                     HookLogImportant("DX12: [outer] FG→off — forcing overlay reinit (stale SL backbuffers)");
                     g_State.overlayInit = false;
                     CleanupRTVs();
+                } else if (g_State.overlayInit && keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
+                    HookLogImportant(
+                        "DX12: [outer] FG→off — DLSS->FSR no-callback takeover already reinited the overlay on the "
+                        "runtime-owned FSR queue; keeping it live (no teardown, no cooldown blank)");
                 }
                 g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
 
