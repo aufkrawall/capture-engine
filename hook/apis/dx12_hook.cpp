@@ -15800,7 +15800,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // already warm-reinited the overlay on the runtime-owned FSR swapchain queue
                 // this same frame (its RTVs are valid for FSR's swapchain, not stale SL ones).
                 // Tearing it down here is what produced the 60-present blank — keep it live.
-                if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
+                // EXCEPTION (DLSS->FSR 2D-menu dormant protected-FFX arming): the overlay is rendering
+                // on the game's OWN queue (scQueue==origGame, runtimeOwns=0) while AMD's FFX runtime is
+                // dormant — NOT on the stale SL proxy. Tearing down overlayInit here is what blanked the
+                // menu overlay FOREVER (session 20260615_220545: overlayInit flips 1->0 exactly when this
+                // fires, then every dormant relaxation denies because it requires overlayInit and the
+                // reinit never runs during the quiesce). Keep it live; it draws on origGame until the
+                // runtime actually takes over.
+                const bool keepOverlayLiveForDormantProtectedFFX =
+                    ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup();
+                if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover &&
+                    !keepOverlayLiveForDormantProtectedFFX) {
                     HookLogImportant("DX12: [outer] FG→off — forcing overlay reinit (stale SL backbuffers)");
                     g_State.overlayInit = false;
                     CleanupRTVs();
@@ -15808,6 +15818,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     HookLogImportant(
                         "DX12: [outer] FG→off — DLSS->FSR no-callback takeover already reinited the overlay on the "
                         "runtime-owned FSR queue; keeping it live (no teardown, no cooldown blank)");
+                } else if (g_State.overlayInit && keepOverlayLiveForDormantProtectedFFX) {
+                    HookLogImportant(
+                        "DX12: [outer] FG→off — dormant protected-FFX startup is drawing the overlay on origGame "
+                        "(scQueue==origGame, runtimeOwns=0); keeping it live (no stale-SL teardown, no menu blank)");
                 }
                 g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
 
