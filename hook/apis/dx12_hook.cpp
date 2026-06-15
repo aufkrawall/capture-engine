@@ -18863,7 +18863,14 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
     }
 
-    if (ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
+    // During a dormant protected-FFX startup (2D-menu DLSS->FSR arming) CE passes the game's ECLs
+    // through tracking-only, so the present looks like a zero-ECL/interpolated frame and would be
+    // skipped here — which means ProcessFrame is never called and the dormant-draw overlay never
+    // renders (session 20260615_213846: overlay gone forever in the menu). Keep calling ProcessFrame
+    // when the dormant-draw should run (syncInit-bootstrap variant so it also works before sync is
+    // re-initialized). The instant the runtime takes over, this predicate is false and the skip resumes.
+    if (!ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(/*inSyncInitBootstrap=*/true) &&
+        ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
             isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning,
             recentStreamlineTeardown, postFSRNonFGRecovery, g_FGCompat.GetRuntimeMode(),
             currentSwapchainQueue != nullptr &&
