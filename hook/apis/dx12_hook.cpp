@@ -16951,6 +16951,28 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
         }
 
+        // Diagnostic: the dormant protected-FFX origGame draw is meant to keep the overlay visible
+        // during a 2D-menu DLSS->FSR arming, but session 20260615_165803 showed it disappear FOREVER
+        // (the dormant-draw attribution breadcrumb fires in ProcessFrameExternal, yet no overlay SUBMIT
+        // happens — a silent skip in this render block, likely skipOverlayDraw set by the SL-teardown
+        // routing across the swapchain change). Log the exact skip state so the responsible gate is
+        // attributable from the log alone.
+        if (ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup()) {
+            static std::atomic<int> s_dormantDrawSkipDiagLog{0};
+            const int dormantDiagN = s_dormantDrawSkipDiagLog.fetch_add(1, std::memory_order_relaxed);
+            if (dormantDiagN < 12 || (dormantDiagN % 300) == 0) {
+                HookLogImportant(
+                    "DX12: [dormant-ffx-draw DIAG] render-block entry: skipOverlayDraw=%d overlayInit=%d syncInit=%d "
+                    "descFree=%d slFGRunning=%d postSLConfirmed=%d sceneCooldown=%d cachedSC=%p sc=%p lastSC=%p #%d",
+                    skipOverlayDraw ? 1 : 0, g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0,
+                    g_DescFreeBackend ? 1 : 0,
+                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0,
+                    g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
+                    g_SceneTransitionCooldown.load(std::memory_order_acquire), (void*)g_State.cachedSwapChain,
+                    (void*)pSwapChain, (void*)g_LastSwapChain, dormantDiagN + 1);
+            }
+        }
+
         if (!skipOverlayDraw) {
             const char* skipSeparateOverlayGpuReason = nullptr;
             if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)) {
