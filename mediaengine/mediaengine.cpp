@@ -3704,6 +3704,33 @@ private:
         int64_t sharedStartupRebaseOffsetSamples = -1;
         int64_t lastSeenStartQPC = 0;  // Detect recording session changes
 
+        // Per-source A/V equalization: delay each audio source so every source sits at the same
+        // (max) capture latency, matching the video content delay. Faster sources (e.g. a
+        // near-zero-latency microphone vs a high-latency loopback endpoint) get leading silence
+        // so they align with the delayed video AND with each other on mixed tracks. The slowest
+        // source(s) get delay 0, so the common all-equal-latency case is unchanged (no regression).
+        float maxAudioCaptureLatencyMs = 0.0f;
+        for (const auto& eqSrc : audioSources) {
+            if (eqSrc.config.captureLatencyMs > maxAudioCaptureLatencyMs) {
+                maxAudioCaptureLatencyMs = eqSrc.config.captureLatencyMs;
+            }
+        }
+        std::vector<int64_t> audioEqualizationDelaySamples(audioSources.size(), 0);
+        for (size_t i = 0; i < audioSources.size(); ++i) {
+            const double deltaMs = static_cast<double>(maxAudioCaptureLatencyMs) -
+                                   static_cast<double>(audioSources[i].config.captureLatencyMs);
+            audioEqualizationDelaySamples[i] =
+                deltaMs > 0.0 ? static_cast<int64_t>(std::llround(deltaMs / 1000.0 * 48000.0)) : 0;
+            if (audioEqualizationDelaySamples[i] > 0) {
+                DLL_Log("[AudioLoop] A/V equalization: src=%zu captureLatencyMs=%.3f delaySamples=%lld (%.1f ms) to "
+                        "match maxLatencyMs=%.3f",
+                        i, static_cast<double>(audioSources[i].config.captureLatencyMs),
+                        (long long)audioEqualizationDelaySamples[i],
+                        static_cast<double>(audioEqualizationDelaySamples[i]) * 1000.0 / 48000.0,
+                        static_cast<double>(maxAudioCaptureLatencyMs));
+            }
+        }
+
         auto sourceParticipatesInSharedStartupRebase = [this](size_t srcIdx) -> bool {
             if (srcIdx >= audioSources.size()) {
                 return false;
@@ -3859,7 +3886,8 @@ private:
                         const uint64_t packetStartDelta100ns =
                             packet.qpcPosition - static_cast<uint64_t>(startQpc100nsForFirstPacket);
                         deferredFirstTimelinePacketStartSamples[srcIdx] =
-                            static_cast<int64_t>(ce::audio::HundredNanosecondsToSamples(packetStartDelta100ns, 48000));
+                            static_cast<int64_t>(ce::audio::HundredNanosecondsToSamples(packetStartDelta100ns, 48000)) +
+                            audioEqualizationDelaySamples[srcIdx];
                         deferredFirstTimelinePackets[srcIdx] = std::move(packet);
                         deferredFirstTimelinePacketValid[srcIdx] = true;
                         gotAnyPacket = true;
@@ -3957,6 +3985,9 @@ private:
                                     int64_t packetStartSamples =
                                         static_cast<int64_t>(ce::audio::HundredNanosecondsToSamples(
                                             packetStartDelta100ns, targetFmt.sampleRate));
+                                    // A/V equalization: delay this source to the common max latency
+                                    // (leading silence inserted by the gap path below). 0 for the slowest.
+                                    packetStartSamples += audioEqualizationDelaySamples[srcIdx];
                                     packetStartSamples = ce::audio::ApplyStartupPacketTimelineRebaseOffset(
                                         packetStartSamples, static_cast<int64_t>(src.startupRebasedGapSamples));
                                     if (srcIdx < encodedSamplesPerSource.size() &&
@@ -3994,7 +4025,8 @@ private:
                                                 ? sharedStartupRebaseOffsetSamples
                                                 : ce::audio::ComputeStartupFirstPacketRebaseOffset(
                                                       packetStartSamples, firstPacketSawSyncPending,
-                                                      kStartupFirstPacketGapCapSamples,
+                                                      kStartupFirstPacketGapCapSamples +
+                                                          audioEqualizationDelaySamples[srcIdx],
                                                       kStartupFirstPacketRebaseThresholdSamples);
                                         const int64_t rebaseOffset =
                                             std::clamp<int64_t>(requestedRebaseOffset, 0, packetStartSamples);

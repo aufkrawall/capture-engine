@@ -205,10 +205,14 @@ def restore_config(snapshot):
 
 
 def write_scenario_config(scenario, output_dir, include_microphone, include_mixed_track, video_encoder,
-                          audio_capture_latency_ms=0.0):
+                          audio_capture_latency_ms=0.0, app_capture_latency_ms=None):
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    # App-source capture latency defaults to the global value (so the app inherits it and the
+    # equalization delay is 0); set it distinctly to exercise per-source equalization.
+    if app_capture_latency_ms is None:
+        app_capture_latency_ms = audio_capture_latency_ms
     mic_enabled = "true" if include_microphone else "false"
     audio_layout = resolve_audio_layout(scenario, include_mixed_track)
     if audio_layout == "mixed":
@@ -287,6 +291,7 @@ downmix=false
 enabled=true
 process={PROCESS_NAME}
 track={app_tracks}
+capture_latency_ms={app_capture_latency_ms}
 {secondary_app_section}
 
 [Microphone]
@@ -578,7 +583,7 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     remove_stale_app_artifacts()
     secondary_app_exe = prepare_secondary_app_alias(app_exe) if scenario.secondary_app_audio else None
     write_scenario_config(scenario, captures_dir, args.include_microphone, args.include_mixed_track,
-                          args.video_encoder, args.audio_capture_latency_ms)
+                          args.video_encoder, args.audio_capture_latency_ms, args.app_capture_latency_ms)
 
     delay_ms = args.delay_ms
     scenario_duration_sec = scenario.duration_sec if scenario.duration_sec is not None else args.duration_sec
@@ -1070,6 +1075,14 @@ def build_parser():
         help="CE-side loopback audio capture latency compensation written to the scenario config "
         "(General/audio_capture_latency_ms). Use with --raw-offset-gate to validate the fix: 0 measures "
         "the raw capture differential, the measured value drives it toward 0.",
+    )
+    parser.add_argument(
+        "--app-latency-ms",
+        dest="app_capture_latency_ms",
+        type=float,
+        default=None,
+        help="Override the app source's capture_latency_ms distinctly from the global value, to exercise "
+        "per-source A/V equalization (the app gets delayed by max_latency - this value).",
     )
     parser.add_argument("--no-app-audio-clock-scheduling", dest="app_audio_clock_scheduling", action="store_false")
     parser.add_argument(
