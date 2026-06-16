@@ -1717,12 +1717,19 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(bool f
 // current completed value.  The fence is the real synchronization; pacing the
 // CPU to the GPU here keeps the overlay visible every frame (never hidden) while
 // preventing the upload-ring data race.
-inline uint64_t DecideOverlayUploadSlotGuardValue(bool fgActive, bool hasOverlayFence, uint64_t currentFenceValue) {
+inline uint64_t DecideOverlayUploadSlotGuardValue(bool fgActive, bool hasOverlayFence, uint64_t currentFenceValue,
+                                                  bool submitQueueMayBeDiscarded = false) {
     // FG paths advance a separate completion fence (not the overlay fence) and
     // already synchronize per frame, so a guard keyed on the overlay fence would
     // never be reached there -> disable it.  Without an overlay fence there is
     // nothing to wait on.
-    if (fgActive || !hasOverlayFence) {
+    //
+    // submitQueueMayBeDiscarded: the dormant protected-FFX 2D-menu draw submits on the TRANSIENT staged
+    // takeover queue, whose pending overlay-fence Signal is discarded when the runtime takes over / the
+    // swapchain transitions (e.g. DLSS handoff). A guard published then would never be reached on the next
+    // phase's fence -> the present thread would block on it for the full kSlotWaitTimeoutMs (1 s) every
+    // frame (session 20260616_142044: ~1 fps after FSR->DLSS). Disable the guard so no stale value survives.
+    if (fgActive || !hasOverlayFence || submitQueueMayBeDiscarded) {
         return 0;
     }
     return currentFenceValue + 1;

@@ -413,6 +413,12 @@ TEST(DXGISharedTest, OverlayUploadSlotGuardDisabledForFGAndMissingFence) {
     EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(true, true, 41u), 0u);
     // No overlay fence -> nothing to wait on.
     EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, false, 41u), 0u);
+    // Dormant protected-FFX 2D-menu draw submits on the TRANSIENT staged takeover queue; its pending
+    // overlay-fence Signal is discarded on the runtime handoff, so a guard would block the present thread
+    // for the full 1 s timeout every frame (session 20260616_142044). Disable it (0) even on the non-FG
+    // path. The 4th arg defaults false, so the existing non-FG callers keep guarding normally.
+    EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, true, 41u, /*submitQueueMayBeDiscarded=*/true), 0u);
+    EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, true, 41u, /*submitQueueMayBeDiscarded=*/false), 42u);
 }
 
 TEST(DXGISharedTest, OverlayUploadSlotWaitsOnlyWhenGpuBehindActiveGuard) {

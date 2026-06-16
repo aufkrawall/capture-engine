@@ -9130,7 +9130,8 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
         g_State.fence,
         ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
             DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) || g_FGCompat.IsFGActive(),
-            g_State.fence != nullptr, g_State.currentFenceValue));
+            g_State.fence != nullptr, g_State.currentFenceValue,
+            /*submitQueueMayBeDiscarded=*/ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()));
 
     // Render overlay content
     g_OverlayAdapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
@@ -17770,7 +17771,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                             g_State.fence,
                                                             ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
                                                                 slFGActive || g_FGCompat.IsFGActive(),
-                                                                g_State.fence != nullptr, g_State.currentFenceValue));
+                                                                g_State.fence != nullptr, g_State.currentFenceValue,
+                                                                protectedOfficialFFXStartupOverlayOnly));
                                                     } else {
                                                         s_descFreeCmdList = list;
                                                         s_descFreeRtv = offRtv;
@@ -17784,7 +17786,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                         s_descFreeSlotGuardValue =
                                                             ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
                                                                 slFGActive || g_FGCompat.IsFGActive(),
-                                                                g_State.fence != nullptr, g_State.currentFenceValue);
+                                                                g_State.fence != nullptr, g_State.currentFenceValue,
+                                                                protectedOfficialFFXStartupOverlayOnly);
                                                     }
 
                                                     g_D3D11On12Adapter.SetIPCClient(g_IPC);
@@ -17884,7 +17887,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                         g_State.fence,
                                                         ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
                                                             slFGActive || g_FGCompat.IsFGActive(),
-                                                            g_State.fence != nullptr, g_State.currentFenceValue));
+                                                            g_State.fence != nullptr, g_State.currentFenceValue,
+                                                            protectedOfficialFFXStartupOverlayOnly));
                                                 } else {
                                                     s_descFreeCmdList = list;
                                                     s_descFreeRtv = rtvHandle;
@@ -17893,7 +17897,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     s_descFreeSlotGuardValue =
                                                         ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
                                                             slFGActive || g_FGCompat.IsFGActive(),
-                                                            g_State.fence != nullptr, g_State.currentFenceValue);
+                                                            g_State.fence != nullptr, g_State.currentFenceValue,
+                                                            protectedOfficialFFXStartupOverlayOnly);
                                                 }
 
                                                 g_D3D11On12Adapter.SetIPCClient(g_IPC);
