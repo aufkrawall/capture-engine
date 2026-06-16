@@ -2473,10 +2473,18 @@ TEST(DXGISharedTest, FFXPresentCallbackComposesOutputOnlyWithoutRuntimeCompositi
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(false, true, false));
 }
 
-TEST(DXGISharedTest, FFXPresentCallbackBridgeRequiresRealAppCallback) {
+TEST(DXGISharedTest, FFXPresentCallbackBridgeInstalledForAnyEnabledConfigure) {
+    // App provides a present callback -> install the bridge (wrap it).
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, false));
+    // No app present callback (GTA native FSR FG, internalNoCallback) -> STILL install the bridge so the
+    // overlay renders via AMD's present callback (self-compose into AMD's command list) instead of the
+    // deadlock-prone separate submit on AMD's FFX runtime queue (session fsrgtafreeze).
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, false));
+    // Disabled / startup-arming configure -> never install (GTA fail-fast on a synthetic callback before
+    // the enabled configure is accepted).
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, false, false));
+    // Not a recognized frame-generation configure -> inert.
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(false, true, true));
 }
 
