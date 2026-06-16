@@ -3053,7 +3053,17 @@ static constexpr uint32_t kProtectedFFXDormantOverlayMinProgressFrames = 5;
 // FOREVER — the staged sync-init block defers because the relaxation needs the very syncInit it would
 // create). When bootstrapping sync, treat syncInit as satisfied so the relaxation can let sync-init +
 // RTV rebuild proceed; the actual draw next frame still requires the real syncInit.
-static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(bool inSyncInitBootstrap = false) {
+//
+// inOverlayInitBootstrap: the caller is the FULL reinit path (overlayInit=false, RTV/ImGui/SRV about to
+// be rebuilt). A proper [outer] FG->off teardown clears overlayInit + CleanupRTVs to drop STALE Streamline
+// backbuffer RTVs (the crash-safety invariant — keeping them live and submitting on origGame removed the
+// device in session 20260615_221059 → UE TerminateProcess(3)). But the dormant-draw policy requires
+// overlayInit, so a freshly torn-down overlay can never rebuild during the quiesce → forever blank. When
+// bootstrapping overlay init, treat overlayInit as satisfied so the quiesce early-return is skipped and
+// the reinit block can rebuild a FRESH overlay against the menu's current swapchain on origGame; the
+// actual draw still requires the real overlayInit/syncInit set by that rebuild.
+static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(bool inSyncInitBootstrap = false,
+                                                                                bool inOverlayInitBootstrap = false) {
     if (!g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire)) {
         return false;
     }
@@ -3079,9 +3089,11 @@ static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(
     const bool scQueueIsOrigGame = dormantSwapchainQueue != nullptr && dormantOriginalGameQueue != nullptr &&
                                    dormantSwapchainQueue == dormantOriginalGameQueue;
     const bool directFFX = g_FGCompat.HasDirectFFXApiConfirmation();
+    const bool effectiveOverlayInit = inOverlayInitBootstrap || g_State.overlayInit;
+    const bool effectiveSyncInit = inSyncInitBootstrap || g_State.syncInit;
     const bool allow = ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        /*protectedOfficialFFXStartupPending=*/true, g_FGRuntimeOwnsSwapchain, g_State.overlayInit,
-        inSyncInitBootstrap || g_State.syncInit, dormantSwapchainQueue != nullptr, scQueueIsOrigGame,
+        /*protectedOfficialFFXStartupPending=*/true, g_FGRuntimeOwnsSwapchain, effectiveOverlayInit,
+        effectiveSyncInit, dormantSwapchainQueue != nullptr, scQueueIsOrigGame,
         stagedQueueDiffersFromOriginalGameQueue, directFFX, ffxPresentCallbackActive,
         sustainedGameProgressOnOriginalQueue);
     // Diagnostic: this predicate is fragile / toggles run-to-run (session 20260615_215657: true for 1
@@ -3092,11 +3104,11 @@ static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(
         const int n = s_dormantDenyLog.fetch_add(1, std::memory_order_relaxed);
         if (n < 16 || (n % 300) == 0) {
             HookLogImportant(
-                "DX12: [dormant-draw DENY] bootstrap=%d runtimeOwns=%d overlayInit=%d syncInit=%d hasScQueue=%d "
-                "scQueue==origGame=%d stagedDiffers=%d directFFX=%d callbackActive=%d sustainedProgress=%d "
-                "(progress=%u scQ=%p origGame=%p) #%d",
-                inSyncInitBootstrap ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0, g_State.overlayInit ? 1 : 0,
-                (inSyncInitBootstrap || g_State.syncInit) ? 1 : 0, dormantSwapchainQueue != nullptr ? 1 : 0,
+                "DX12: [dormant-draw DENY] syncBootstrap=%d overlayBootstrap=%d runtimeOwns=%d overlayInit=%d "
+                "syncInit=%d hasScQueue=%d scQueue==origGame=%d stagedDiffers=%d directFFX=%d callbackActive=%d "
+                "sustainedProgress=%d (progress=%u scQ=%p origGame=%p) #%d",
+                inSyncInitBootstrap ? 1 : 0, inOverlayInitBootstrap ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
+                effectiveOverlayInit ? 1 : 0, effectiveSyncInit ? 1 : 0, dormantSwapchainQueue != nullptr ? 1 : 0,
                 scQueueIsOrigGame ? 1 : 0, stagedQueueDiffersFromOriginalGameQueue ? 1 : 0, directFFX ? 1 : 0,
                 ffxPresentCallbackActive ? 1 : 0, sustainedGameProgressOnOriginalQueue ? 1 : 0,
                 g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire), dormantSwapchainQueue,
@@ -3111,6 +3123,19 @@ static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(
 // draw, but syncInit is treated as satisfied (we are about to create it).
 static bool ShouldInitOverlaySyncDuringDormantProtectedOfficialFFXStartup() {
     return ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(/*inSyncInitBootstrap=*/true);
+}
+
+// The FULL reinit path (overlayInit=false after a proper FG->off teardown that dropped stale SL RTVs)
+// needs to know whether to rebuild a FRESH overlay on origGame during a dormant protected-FFX startup
+// instead of deferring forever / staying blank. Same conditions as the dormant draw, but BOTH overlayInit
+// and syncInit are treated as satisfied (we are about to recreate them against the menu's current
+// swapchain). Used to (a) skip the protected-FFX quiesce early-return so the reinit block is reachable,
+// (b) skip the Streamline-teardown command-queue-settle defers (the dormant predicate already proves the
+// safe submit queue is origGame, not the departed wrapper), and (c) bypass the FG transition cooldown so
+// the menu does not blank. The actual draw still requires the real overlayInit/syncInit set by the rebuild.
+static bool ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup() {
+    return ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(/*inSyncInitBootstrap=*/true,
+                                                                               /*inOverlayInitBootstrap=*/true);
 }
 
 static bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
@@ -14157,7 +14182,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             g_PostSLLastWorkingQueue != nullptr &&
             GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
         if (protectedOfficialFFXStartupOverlayOnly &&
-            ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(/*inSyncInitBootstrap=*/true)) {
+            ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup()) {
             // Dormant 2D-menu FSR arming: AMD is dormant and the game still presents on its OWN queue
             // (scQueue==origGame). The unconditional quiesce return below is what blanked the overlay
             // FOREVER in the menu (session 20260615_215017) — it preempted the dormant-draw relaxation
@@ -14167,6 +14192,31 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup checks elsewhere; the moment the
             // runtime takes over (enabled ffxConfigure / callback / ownership) this predicate is false and
             // the full quiesce return resumes.
+            //
+            // Uses the BOTH-bootstrap reinit variant (overlayInit + syncInit treated as satisfied): after a
+            // proper FG->off teardown overlayInit/syncInit are FALSE (stale SL RTVs dropped — crash-safety),
+            // so the plain dormant-draw predicate would deny here and re-trigger the forever-blank. Falling
+            // through with overlayInit=false reaches the reinit block below, which rebuilds a FRESH overlay
+            // (ImGui + RTVs + SRV + sync) against the menu's current swapchain on origGame; the real
+            // overlayInit/syncInit it sets gate the actual draw, so no stale-descriptor submit can occur.
+            //
+            // Device-health guard: if the device is already lost (e.g. the runtime took over mid-frame),
+            // do not rebuild/submit — that would only stack a secondary fault on an already-fatal removal.
+            {
+                auto* dormantDev = g_Device.load(std::memory_order_acquire);
+                const HRESULT dormantDevHr = dormantDev ? dormantDev->GetDeviceRemovedReason() : S_OK;
+                if (FAILED(dormantDevHr)) {
+                    g_DeviceRemoved.store(true, std::memory_order_release);
+                    static std::atomic<int> s_dormantDevRemovedLogCount{0};
+                    if (s_dormantDevRemovedLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                        HookLogImportant(
+                            "DX12: Dormant protected-FFX overlay reinit aborted — device already removed (hr=0x%08X "
+                            "sc=%p)",
+                            (unsigned)dormantDevHr, pSwapChain);
+                    }
+                    return;
+                }
+            }
             gameQueue = g_SwapchainQueue ? g_SwapchainQueue : g_OriginalGameQueue;
             static std::atomic<int> s_dormantOrigGameQueueLogCount{0};
             const int logCount = s_dormantOrigGameQueueLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -14635,7 +14685,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(
                 protectedOfficialFFXStartupOverlayOnly,
                 protectedOfficialFFXStartupQueueRef != nullptr &&
-                    gameQueue == protectedOfficialFFXStartupQueueRef);
+                    gameQueue == protectedOfficialFFXStartupQueueRef) ||
+            // Dormant 2D-menu FSR arming: rebuild the fresh overlay on origGame immediately instead of
+            // blanking the menu for the generic 60-frame cooldown (defense-in-depth; the FG->off teardown
+            // also bypasses the cooldown for this case).
+            ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup();
         if (g_FGTransitionCooldown > 0 && bypassProtectedOfficialFFXStartupReinitCooldown) {
             static std::atomic<int> s_protectedFFXReinitCooldownBypassLogCount{0};
             const int logCount = s_protectedFFXReinitCooldownBypassLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -14775,7 +14829,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             if (ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
                     actualFGActive, streamlineFGRunning, g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr,
                     currentCommandQueue != nullptr,
-                    currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue)) {
+                    currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue) &&
+                !ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup()) {
                 static std::atomic<int> s_runtimeOwnedInactiveInitDeferLogCount{0};
                 int logCount = s_runtimeOwnedInactiveInitDeferLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 20 || (logCount % 120) == 0) {
@@ -14796,7 +14851,15 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr, currentCommandQueue != nullptr,
                     currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
                     currentCommandQueue != nullptr && currentCommandQueue == g_OriginalGameQueue,
-                    commandQueueMatchesPrimaryGameQueue)) {
+                    commandQueueMatchesPrimaryGameQueue) &&
+                !ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup()) {
+                // Dormant 2D-menu FSR arming exception: g_CommandQueue can stay stuck on the departed
+                // Streamline wrapper queue (session 20260615_221059: cmdQ=...B83F44860 ≠ origGame/primary/
+                // scQ) for the whole menu, so this settle-defer would strand the overlay blank forever. The
+                // dormant predicate already proves the SAFE submit queue is origGame (scQueue==origGame,
+                // runtimeOwns=0, FSR dormant); the overlay submits on origGame, not on g_CommandQueue, so a
+                // fresh rebuild here is safe. The moment the runtime takes over, the predicate is false and
+                // this defer resumes.
                 static std::atomic<int> s_recentSLTeardownInitDeferLogCount{0};
                 int logCount = s_recentSLTeardownInitDeferLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 20 || (logCount % 120) == 0) {
@@ -15667,6 +15730,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
                     HookHasRuntimeOwnedNativeFGPresentPath(), g_State.overlayInit, g_State.syncInit,
                     FAILED(transitionDeviceHr));
+            // DLSS->FSR 2D-menu dormant protected-FFX arming: do NOT keep the stale overlay live (that
+            // removed the device, session 20260615_221059). Instead tear down stale RTVs (below) but skip
+            // the generic 60-frame cooldown so the FRESH overlay rebuilds on origGame immediately and the
+            // menu does not blank. The reinit/quiesce/settle-defer skips are gated by the same predicate.
+            const bool reinitFreshOverlayForDormantProtectedFFXMenu =
+                slTurnedOff && ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup();
 
             HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d keepAlive=%d)", slTurnedOn ? "ON" : "OFF",
                              allowOverlayRender ? 1 : 0, keepConfirmedPostSLAliveAcrossOuterOff ? 1 : 0);
@@ -15677,7 +15746,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     "DX12: [outer] SL FG ON after active PostSL — preserving active PostSL path "
                     "instead of re-entering transition cooldown");
             } else if (bypassPureStreamlineOffCooldown || bypassConfirmedPostSLSuspensionCooldown ||
-                       keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
+                       keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover ||
+                       reinitFreshOverlayForDormantProtectedFFXMenu) {
                 g_FGTransitionCooldown = 0;
                 g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 HookLogImportant(
@@ -15685,6 +15755,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     "(scQueue=%p origGame=%p devHr=0x%08X)",
                     keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover
                         ? "DLSS->FSR no-callback takeover (overlay already reinited on FSR queue)"
+                    : reinitFreshOverlayForDormantProtectedFFXMenu
+                        ? "DLSS->FSR 2D-menu dormant protected-FFX (fresh overlay rebuilds on origGame)"
                         : (bypassPureStreamlineOffCooldown ? "pure Streamline FG OFF"
                                                            : "confirmed-PostSL DLSS-FG suspension (proxy stays live)"),
                     g_SwapchainQueue, g_OriginalGameQueue, (unsigned)transitionDeviceHr);
@@ -15800,17 +15872,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // already warm-reinited the overlay on the runtime-owned FSR swapchain queue
                 // this same frame (its RTVs are valid for FSR's swapchain, not stale SL ones).
                 // Tearing it down here is what produced the 60-present blank — keep it live.
-                // EXCEPTION (DLSS->FSR 2D-menu dormant protected-FFX arming): the overlay is rendering
-                // on the game's OWN queue (scQueue==origGame, runtimeOwns=0) while AMD's FFX runtime is
-                // dormant — NOT on the stale SL proxy. Tearing down overlayInit here is what blanked the
-                // menu overlay FOREVER (session 20260615_220545: overlayInit flips 1->0 exactly when this
-                // fires, then every dormant relaxation denies because it requires overlayInit and the
-                // reinit never runs during the quiesce). Keep it live; it draws on origGame until the
-                // runtime actually takes over.
-                const bool keepOverlayLiveForDormantProtectedFFX =
-                    ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup();
-                if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover &&
-                    !keepOverlayLiveForDormantProtectedFFX) {
+                //
+                // NOTE (DLSS->FSR 2D-menu dormant protected-FFX arming): we DO tear down here even for the
+                // dormant case. A previous attempt (commit 70869d5) kept overlayInit live to avoid the menu
+                // blank, but that preserved STALE SL backbuffer RTVs and the first submit on origGame at
+                // cooldown-complete removed the device (0x887A002B → UE TerminateProcess(3), session
+                // 20260615_221059). The blank is instead avoided by rebuilding a FRESH overlay on origGame
+                // during the dormant window: the cooldown is bypassed below, the protected-FFX quiesce
+                // early-return and the Streamline-teardown settle-defers are skipped via
+                // ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup(), so the reinit block runs
+                // immediately against the menu's current swapchain — valid RTVs, no stale-descriptor submit.
+                if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
                     HookLogImportant("DX12: [outer] FG→off — forcing overlay reinit (stale SL backbuffers)");
                     g_State.overlayInit = false;
                     CleanupRTVs();
@@ -15818,10 +15890,6 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     HookLogImportant(
                         "DX12: [outer] FG→off — DLSS->FSR no-callback takeover already reinited the overlay on the "
                         "runtime-owned FSR queue; keeping it live (no teardown, no cooldown blank)");
-                } else if (g_State.overlayInit && keepOverlayLiveForDormantProtectedFFX) {
-                    HookLogImportant(
-                        "DX12: [outer] FG→off — dormant protected-FFX startup is drawing the overlay on origGame "
-                        "(scQueue==origGame, runtimeOwns=0); keeping it live (no stale-SL teardown, no menu blank)");
                 }
                 g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
 
@@ -18923,9 +18991,11 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // through tracking-only, so the present looks like a zero-ECL/interpolated frame and would be
     // skipped here — which means ProcessFrame is never called and the dormant-draw overlay never
     // renders (session 20260615_213846: overlay gone forever in the menu). Keep calling ProcessFrame
-    // when the dormant-draw should run (syncInit-bootstrap variant so it also works before sync is
-    // re-initialized). The instant the runtime takes over, this predicate is false and the skip resumes.
-    if (!ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(/*inSyncInitBootstrap=*/true) &&
+    // when the dormant draw OR a fresh dormant reinit should run — the BOTH-bootstrap reinit variant so
+    // it also works while overlayInit/syncInit are FALSE right after the FG->off teardown dropped stale
+    // RTVs (otherwise the rebuild frames get skipped here and the menu stays blank, session
+    // 20260615_221059). The instant the runtime takes over, this predicate is false and the skip resumes.
+    if (!ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup() &&
         ce::dx12_overlay_policy::ShouldSkipProcessFrameForZeroECLPresent(
             isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning,
             recentStreamlineTeardown, postFSRNonFGRecovery, g_FGCompat.GetRuntimeMode(),

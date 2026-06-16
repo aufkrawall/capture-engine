@@ -842,6 +842,50 @@ TEST(DXGISharedTest, NormalOverlayAllowedDuringDormantProtectedFFXStartup) {
         false, false, true, true, true, true, true, false, false, true));
 }
 
+// The DX12 hook gates the dormant 2D-menu FRESH reinit on this same policy via two "bootstrap" wrappers:
+//   - ShouldInitOverlaySyncDuringDormantProtectedOfficialFFXStartup() passes (inSyncInitBootstrap) so the
+//     policy's syncInit arg is treated as satisfied while sync is about to be (re)created, and
+//   - ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup() ALSO passes (inOverlayInitBootstrap)
+//     so the policy's overlayInit arg is treated as satisfied while ImGui/RTVs/SRV are about to be rebuilt
+//     after the [outer] FG->off teardown dropped the STALE Streamline RTVs (crash fix, session
+//     20260615_221059). The bootstraps only substitute the overlayInit/syncInit inputs; they must NEVER
+//     weaken the GTA-critical guards (runtime ownership, scQueue==origGame, staged-queue, enabled
+//     ffxConfigure, live FFX present callback, sustained progress). This test pins that contract by feeding
+//     the policy the post-bootstrap input shape (overlayInit=syncInit=true) and proving the guards still
+//     deny — it would fail against a naive relaxation that returned true merely because a reinit is pending.
+TEST(DXGISharedTest, DormantProtectedFFXReinitBootstrapDoesNotWeakenStagedQueueOrOwnershipGuards) {
+    using ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup;
+
+    // Post-bootstrap input shape for the FRESH dormant reinit: overlayInit & syncInit substituted to true,
+    // and the menu is provably dormant on its own queue → the reinit is allowed on origGame.
+    EXPECT_TRUE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        /*protectedOfficialFFXStartupPending=*/true, /*runtimeOwnsSwapchain=*/false,
+        /*overlayInit=*/true /*bootstrap*/, /*syncInit=*/true /*bootstrap*/, /*hasSwapchainQueue=*/true,
+        /*swapchainQueueIsOriginalGameQueue=*/true, /*stagedQueueDiffersFromOriginalGameQueue=*/true,
+        /*hasDirectFFXApiConfirmation=*/false, /*ffxPresentCallbackActive=*/false,
+        /*sustainedGameProgressOnOriginalQueue=*/true));
+
+    // Even with both bootstraps active, the GTA guards must still deny:
+    // runtime owns the swapchain (the documented staged-queue crash path).
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, /*runtimeOwns=*/true, true, true, true, true, true, false, false, true));
+    // staged AMD queue == origGame → a draw would land on the staged queue.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, true, /*stagedDiffers=*/false, false, false, true));
+    // present queue left origGame (FSR took over presentation).
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, /*scQueueIsOrigGame=*/false, true, false, false, true));
+    // enabled ffxConfigure landed → AMD no longer dormant.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, true, true, /*directFFX=*/true, false, true));
+    // an FFX present callback is firing → AMD active.
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, true, true, false, /*callbackActive=*/true, true));
+    // not enough sustained progress yet (protects the fragile AMD swapchain-create instant).
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, false, true, true, true, true, true, false, false, /*sustainedProgress=*/false));
+}
+
 TEST(DXGISharedTest, SLPresentRoutingStaysDisabledAcrossNativeFGTeardownAndActiveOwnership) {
     EXPECT_TRUE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForNativeFG(true, false));
     EXPECT_TRUE(DXGIShared::ShouldKeepSLPresentRoutingDisabledForNativeFG(false, true));
