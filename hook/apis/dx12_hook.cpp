@@ -4119,12 +4119,17 @@ static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
 
 static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** reason = nullptr) {
     if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
-        // 2D-MENU FSR-FG ARMING exception: while AMD's FFX runtime is dormant and the game still
-        // presents menu frames on its OWN original queue (runtimeOwns=0, scQueue==origGame), keep
-        // the overlay visible on the normal route on origGame instead of blanking the whole menu.
-        // Never the staged AMD queue (the documented GTA crash). All other CE side effects stay
-        // quiesced. See guardrails.md (GTA risk).
-        if (ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup()) {
+        // 2D-MENU FSR-FG ARMING exception: while AMD's FFX runtime is dormant and the game presents
+        // real menu frames on the LIVE FSR swapchain, keep the overlay visible by rebuilding against
+        // that swapchain and drawing on its CREATION queue (the staged takeover queue) instead of
+        // blanking the whole menu. All other CE side effects stay quiesced. See guardrails.md (GTA risk).
+        //
+        // Uses the BOTH-bootstrap reinit variant: this predicate also gates the overlay-INIT reinit
+        // block, which runs with overlayInit=0/syncInit=0 (the stale-RTV rebuild just tore them down).
+        // The no-bootstrap dormant-draw predicate requires overlayInit=1, so it would defer the reinit
+        // forever — overlayInit stuck at 0 → 6.6 s blank until the FFX callback recovered (session
+        // 20260616_031050). The reinit variant lets the fresh rebuild proceed.
+        if (ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup()) {
             if (reason) {
                 *reason = nullptr;
             }
