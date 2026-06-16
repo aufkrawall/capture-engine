@@ -3181,34 +3181,34 @@ inline bool ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(bool protect
     return false;
 }
 
-// 2D-MENU FSR-FG ARMING (Talos, session 20260613_212112): switching to FSR FG in a 2D menu
-// makes AMD create its FFX swapchain, arming protected official-FFX startup — but the game
-// keeps presenting MENU frames on its OWN original queue (`runtimeOwns=0`, `scQueue==origGame`)
-// while AMD's FFX runtime stays DORMANT (no enabled `ffxConfigure`, no present callback) until
-// 3D resumes, so the blanket quiesce blanks the overlay for the whole menu (8+ s observed).
+// 2D-MENU FSR-FG ARMING (Talos): switching to FSR FG in a 2D menu makes AMD create its FFX
+// swapchain, arming protected official-FFX startup, while AMD's FFX runtime stays DORMANT (no
+// enabled `ffxConfigure`, no present callback) until 3D resumes — so the blanket quiesce blanks
+// the overlay for the whole menu (8+ s observed). The game is, however, presenting real menu
+// frames on the LIVE FSR swapchain, so CE keeps the overlay visible by rebuilding against that
+// swapchain and drawing on its CREATION queue (the staged takeover queue) — the only queue
+// authorized to touch its backbuffers (cross-queue = DEVICE_REMOVED). The caller resolves the
+// submit queue to that staged takeover queue and rebuilds the RTVs against the live swapchain.
 //
-// This is DISTINCT from the rejected staged-queue overlay above: it allows the overlay ONLY on
-// the ORIGINAL GAME queue that the game itself is actively presenting on (never the staged AMD
-// queue — `stagedQueueDiffersFromOriginalGameQueue` + caller must resolve the submit queue to
-// origGame), and ONLY while AMD is provably dormant. The instant the runtime takes over —
-// `runtimeOwnsSwapchain` flips, an enabled `ffxConfigure` lands (`directFFXApiConfirmation`),
-// an FFX present callback fires, or the live present queue leaves origGame — this returns false
-// and the full quiesce + FFX present-callback bridge route resume unchanged. `sustainedGame
-// ProgressOnOriginalQueue` requires a few stable origGame present frames first so the fragile
-// AMD swapchain-create instant stays quiesced.
+// Gated ONLY on: protected-FFX startup pending, the overlay backend live (overlayInit/syncInit,
+// bootstrappable during the fresh rebuild), a DISTINCT staged takeover queue existing (the live
+// swapchain's creation queue we submit on), AMD provably DORMANT (no `directFFXApiConfirmation`,
+// no live FFX present callback), and `sustainedGameProgress` (a few stable present frames so the
+// fragile AMD swapchain-create instant stays quiesced). The instant the runtime enables (enabled
+// `ffxConfigure` / FFX present callback fires) this returns false and the full quiesce + FFX
+// present-callback bridge resume unchanged.
 //
-// GTA RISK (untested here): if GTA presents its menu on the staged/runtime-owned queue, or AMD's
-// FFX worker runs pre-enable, this gate should evaluate false (runtimeOwns/scQueue), but it has
-// NOT been GTA-validated. It is independently revertible (drop this predicate) and the hard GTA
-// invariants are preserved (never ECL on the staged queue; full quiesce when the runtime owns or
-// is non-dormant). See guardrails.md.
+// GTA RISK (per user decision 2026-06-16, NOT GTA-validated): the earlier `!runtimeOwnsSwapchain
+// && swapchainQueueIsOriginalGameQueue` guardrail — which kept this false for GTA's runtime-owned/
+// staged-queue menu topology — has been DROPPED so the same Talos menu works after FG-switching
+// sequences (topology becomes runtimeOwns=1, scQueue!=origGame). This widens the documented
+// `20260525_195848_gtafreeze` ffxQuery-wedge risk surface; GTA must be re-validated. Independently
+// revertible (restore the two conjuncts). See guardrails.md.
 inline bool ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-    bool protectedOfficialFFXStartupPending, bool runtimeOwnsSwapchain, bool overlayInit, bool syncInit,
-    bool hasSwapchainQueue, bool swapchainQueueIsOriginalGameQueue, bool stagedQueueDiffersFromOriginalGameQueue,
-    bool hasDirectFFXApiConfirmation, bool ffxPresentCallbackActive, bool sustainedGameProgressOnOriginalQueue) {
-    return protectedOfficialFFXStartupPending && !runtimeOwnsSwapchain && overlayInit && syncInit &&
-           hasSwapchainQueue && swapchainQueueIsOriginalGameQueue && stagedQueueDiffersFromOriginalGameQueue &&
-           !hasDirectFFXApiConfirmation && !ffxPresentCallbackActive && sustainedGameProgressOnOriginalQueue;
+    bool protectedOfficialFFXStartupPending, bool overlayInit, bool syncInit, bool hasDistinctStagedTakeoverQueue,
+    bool hasDirectFFXApiConfirmation, bool ffxPresentCallbackActive, bool sustainedGameProgress) {
+    return protectedOfficialFFXStartupPending && overlayInit && syncInit && hasDistinctStagedTakeoverQueue &&
+           !hasDirectFFXApiConfirmation && !ffxPresentCallbackActive && sustainedGameProgress;
 }
 
 inline bool ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(bool protectedOverlayOnlyEligible,

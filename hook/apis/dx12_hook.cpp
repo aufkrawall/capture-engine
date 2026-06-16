@@ -3074,12 +3074,16 @@ static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(
         dormantSwapchainQueue = g_SwapchainQueue;
         dormantOriginalGameQueue = g_OriginalGameQueue;
     }
-    bool stagedQueueDiffersFromOriginalGameQueue = false;
+    // A DISTINCT staged takeover queue must EXIST — it is the live FSR swapchain's CREATION queue,
+    // the only one authorized to touch its backbuffers and what the dormant draw submits on. (The old
+    // "differs OR null" semantics were for the rejected origGame-draw approach; the staged-queue draw
+    // requires the queue to actually be present.)
+    bool hasDistinctStagedTakeoverQueue = false;
     {
         std::lock_guard<std::mutex> lock(g_DeferredOfficialFFXTakeoverMutex);
-        stagedQueueDiffersFromOriginalGameQueue =
-            g_DeferredOfficialFFXTakeoverQueue == nullptr ||
-            (dormantOriginalGameQueue != nullptr && g_DeferredOfficialFFXTakeoverQueue != dormantOriginalGameQueue);
+        hasDistinctStagedTakeoverQueue =
+            g_DeferredOfficialFFXTakeoverQueue != nullptr &&
+            (dormantOriginalGameQueue == nullptr || g_DeferredOfficialFFXTakeoverQueue != dormantOriginalGameQueue);
     }
     const bool sustainedGameProgressOnOriginalQueue =
         g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire) >=
@@ -3092,10 +3096,8 @@ static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(
     const bool effectiveOverlayInit = inOverlayInitBootstrap || g_State.overlayInit;
     const bool effectiveSyncInit = inSyncInitBootstrap || g_State.syncInit;
     const bool allow = ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        /*protectedOfficialFFXStartupPending=*/true, g_FGRuntimeOwnsSwapchain, effectiveOverlayInit,
-        effectiveSyncInit, dormantSwapchainQueue != nullptr, scQueueIsOrigGame,
-        stagedQueueDiffersFromOriginalGameQueue, directFFX, ffxPresentCallbackActive,
-        sustainedGameProgressOnOriginalQueue);
+        /*protectedOfficialFFXStartupPending=*/true, effectiveOverlayInit, effectiveSyncInit,
+        hasDistinctStagedTakeoverQueue, directFFX, ffxPresentCallbackActive, sustainedGameProgressOnOriginalQueue);
     // Diagnostic: this predicate is fragile / toggles run-to-run (session 20260615_215657: true for 1
     // frame then false forever, leaving the 2D-menu overlay blank). When protected-FFX is pending but we
     // DENY the dormant draw, log every sub-condition so the flipping one is attributable in one run.
@@ -3104,13 +3106,13 @@ static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(
         const int n = s_dormantDenyLog.fetch_add(1, std::memory_order_relaxed);
         if (n < 16 || (n % 300) == 0) {
             HookLogImportant(
-                "DX12: [dormant-draw DENY] syncBootstrap=%d overlayBootstrap=%d runtimeOwns=%d overlayInit=%d "
-                "syncInit=%d hasScQueue=%d scQueue==origGame=%d stagedDiffers=%d directFFX=%d callbackActive=%d "
+                "DX12: [dormant-draw DENY] syncBootstrap=%d overlayBootstrap=%d runtimeOwns=%d(ignored) overlayInit=%d "
+                "syncInit=%d scQueue==origGame=%d(ignored) hasStagedTakeoverQueue=%d directFFX=%d callbackActive=%d "
                 "sustainedProgress=%d (progress=%u scQ=%p origGame=%p) #%d",
                 inSyncInitBootstrap ? 1 : 0, inOverlayInitBootstrap ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
-                effectiveOverlayInit ? 1 : 0, effectiveSyncInit ? 1 : 0, dormantSwapchainQueue != nullptr ? 1 : 0,
-                scQueueIsOrigGame ? 1 : 0, stagedQueueDiffersFromOriginalGameQueue ? 1 : 0, directFFX ? 1 : 0,
-                ffxPresentCallbackActive ? 1 : 0, sustainedGameProgressOnOriginalQueue ? 1 : 0,
+                effectiveOverlayInit ? 1 : 0, effectiveSyncInit ? 1 : 0, scQueueIsOrigGame ? 1 : 0,
+                hasDistinctStagedTakeoverQueue ? 1 : 0, directFFX ? 1 : 0, ffxPresentCallbackActive ? 1 : 0,
+                sustainedGameProgressOnOriginalQueue ? 1 : 0,
                 g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire), dormantSwapchainQueue,
                 dormantOriginalGameQueue, n + 1);
         }

@@ -806,84 +806,70 @@ TEST(DXGISharedTest, EagerlyDrawsPreSLOverlayDuringDLSSToggleOnWhenSameQueueAndO
 TEST(DXGISharedTest, NormalOverlayAllowedDuringDormantProtectedFFXStartup) {
     using ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup;
 
-    // Talos 2D-menu FSR arming (session 20260613_212112): protected official-FFX startup pending,
-    // but the game still presents menu frames on its OWN queue (runtimeOwns=0, scQueue==origGame),
-    // the staged AMD queue differs, AMD is dormant (no enabled ffxConfigure / callback), and a few
-    // stable frames have elapsed → render the overlay on origGame instead of an 8 s menu blank.
+    // 2D-menu FSR arming (Talos): protected official-FFX startup pending, the overlay backend is live,
+    // a DISTINCT staged takeover queue exists (the live FSR swapchain's creation queue we submit on),
+    // AMD is dormant (no enabled ffxConfigure / callback), and a few stable frames have elapsed →
+    // rebuild against the live swapchain and draw on the staged queue instead of an 8 s menu blank.
+    // Signature: (protectedPending, overlayInit, syncInit, hasDistinctStagedTakeoverQueue, directFFX,
+    //             callbackActive, sustainedProgress).
     EXPECT_TRUE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        /*protectedOfficialFFXStartupPending=*/true, /*runtimeOwnsSwapchain=*/false, /*overlayInit=*/true,
-        /*syncInit=*/true, /*hasSwapchainQueue=*/true, /*swapchainQueueIsOriginalGameQueue=*/true,
-        /*stagedQueueDiffersFromOriginalGameQueue=*/true, /*hasDirectFFXApiConfirmation=*/false,
-        /*ffxPresentCallbackActive=*/false, /*sustainedGameProgressOnOriginalQueue=*/true));
+        /*protectedOfficialFFXStartupPending=*/true, /*overlayInit=*/true, /*syncInit=*/true,
+        /*hasDistinctStagedTakeoverQueue=*/true, /*hasDirectFFXApiConfirmation=*/false,
+        /*ffxPresentCallbackActive=*/false, /*sustainedGameProgress=*/true));
 
-    // Runtime took over presentation → full quiesce (the GTA staged-queue crash path).
+    // No distinct staged takeover queue → no live-swapchain creation queue to submit on → quiesce.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, true, true, true, true, true, true, false, false, true));
-    // Present queue is no longer origGame → quiesce.
-    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, false, true, false, false, true));
-    // Staged queue == origGame (would mean rendering on the staged queue) → quiesce.
-    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, true, false, false, false, true));
+        true, true, true, /*hasStaged=*/false, false, false, true));
     // Enabled ffxConfigure landed → AMD no longer dormant; hand to the FFX callback route.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, true, true, true, false, true));
+        true, true, true, true, /*directFFX=*/true, false, true));
     // An FFX present callback is firing → AMD active; quiesce the normal route.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, true, true, false, true, true));
+        true, true, true, true, false, /*callbackActive=*/true, true));
     // Not yet enough stable frames (protects the fragile AMD swapchain-create instant) → quiesce.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, true, true, false, false, false));
-    // Overlay backend not live → nothing to draw.
+        true, true, true, true, false, false, /*sustainedProgress=*/false));
+    // Overlay backend not live → nothing to draw (the bootstrap wrappers substitute this true).
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, false, true, true, true, true, false, false, true));
+        true, /*overlayInit=*/false, true, true, false, false, true));
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+        true, true, /*syncInit=*/false, true, false, false, true));
     // Not in a protected-FFX startup window → predicate is inert.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        false, false, true, true, true, true, true, false, false, true));
+        /*protectedPending=*/false, true, true, true, false, false, true));
 }
 
-// The DX12 hook gates the dormant 2D-menu FRESH reinit on this same policy via two "bootstrap" wrappers:
-//   - ShouldInitOverlaySyncDuringDormantProtectedOfficialFFXStartup() passes (inSyncInitBootstrap) so the
-//     policy's syncInit arg is treated as satisfied while sync is about to be (re)created, and
-//   - ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup() ALSO passes (inOverlayInitBootstrap)
-//     so the policy's overlayInit arg is treated as satisfied while ImGui/RTVs/SRV are about to be rebuilt
-//     after the [outer] FG->off teardown dropped the STALE Streamline RTVs (crash fix, session
-//     20260615_221059). The bootstraps only substitute the overlayInit/syncInit inputs; they must NEVER
-//     weaken the GTA-critical guards (runtime ownership, scQueue==origGame, staged-queue, enabled
-//     ffxConfigure, live FFX present callback, sustained progress). This test pins that contract by feeding
-//     the policy the post-bootstrap input shape (overlayInit=syncInit=true) and proving the guards still
-//     deny — it would fail against a naive relaxation that returned true merely because a reinit is pending.
-TEST(DXGISharedTest, DormantProtectedFFXReinitBootstrapDoesNotWeakenStagedQueueOrOwnershipGuards) {
+// POST-SWITCH topology (user decision 2026-06-16): after a sequence of DLSS<->FSR switches the Talos
+// menu re-arms FSR with runtimeOwns=1 and scQueue!=origGame (g_SwapchainQueue is a PRIOR FSR queue, the
+// live swapchain is on a NEW staged queue). The earlier !runtimeOwns/scQueue==origGame guardrail denied
+// this (it was the GTA-freeze guard) and left the menu blank. Those two conjuncts are now DROPPED — the
+// dormant draw rebuilds against the live swapchain and submits on its CREATION queue (the staged
+// takeover queue) regardless of ownership/origGame, gated only on a distinct staged queue existing + AMD
+// dormant + sustained progress. This pins the new contract (and would fail against the old guardrail).
+TEST(DXGISharedTest, DormantDrawAllowedAfterFGSwitchingWhenStagedQueueExistsAndAmdDormant) {
     using ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup;
 
-    // Post-bootstrap input shape for the FRESH dormant reinit: overlayInit & syncInit substituted to true,
-    // and the menu is provably dormant on its own queue → the reinit is allowed on origGame.
+    // The exact post-switch shape that used to deny (runtimeOwns=1, scQueue!=origGame): now ALLOWED
+    // because a distinct staged takeover queue exists and AMD is dormant. (runtimeOwns / scQueue are no
+    // longer inputs to the policy — the dormant draw is queue-correct on the staged creation queue.)
     EXPECT_TRUE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        /*protectedOfficialFFXStartupPending=*/true, /*runtimeOwnsSwapchain=*/false,
-        /*overlayInit=*/true /*bootstrap*/, /*syncInit=*/true /*bootstrap*/, /*hasSwapchainQueue=*/true,
-        /*swapchainQueueIsOriginalGameQueue=*/true, /*stagedQueueDiffersFromOriginalGameQueue=*/true,
-        /*hasDirectFFXApiConfirmation=*/false, /*ffxPresentCallbackActive=*/false,
-        /*sustainedGameProgressOnOriginalQueue=*/true));
+        /*protectedPending=*/true, /*overlayInit=*/true, /*syncInit=*/true,
+        /*hasDistinctStagedTakeoverQueue=*/true, /*directFFX=*/false, /*callbackActive=*/false,
+        /*sustainedProgress=*/true));
 
-    // Even with both bootstraps active, the GTA guards must still deny:
-    // runtime owns the swapchain (the documented staged-queue crash path).
+    // The non-negotiable guards still deny even in this topology:
+    // no staged queue to submit on.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, /*runtimeOwns=*/true, true, true, true, true, true, false, false, true));
-    // staged AMD queue == origGame → a draw would land on the staged queue.
+        true, true, true, /*hasStaged=*/false, false, false, true));
+    // AMD enabled (directFFX) → hand to the FFX callback route, do not self-submit.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, true, /*stagedDiffers=*/false, false, false, true));
-    // present queue left origGame (FSR took over presentation).
+        true, true, true, true, /*directFFX=*/true, false, true));
+    // live FFX present callback firing → AMD active.
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, /*scQueueIsOrigGame=*/false, true, false, false, true));
-    // enabled ffxConfigure landed → AMD no longer dormant.
+        true, true, true, true, false, /*callbackActive=*/true, true));
+    // still inside the fragile create instant (not enough sustained progress).
     EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, true, true, /*directFFX=*/true, false, true));
-    // an FFX present callback is firing → AMD active.
-    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, true, true, false, /*callbackActive=*/true, true));
-    // not enough sustained progress yet (protects the fragile AMD swapchain-create instant).
-    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, false, true, true, true, true, true, false, false, /*sustainedProgress=*/false));
+        true, true, true, true, false, false, /*sustainedProgress=*/false));
 }
 
 TEST(DXGISharedTest, SLPresentRoutingStaysDisabledAcrossNativeFGTeardownAndActiveOwnership) {
