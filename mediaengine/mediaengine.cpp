@@ -643,9 +643,9 @@ public:
             src.rateCompActive = false;
             src.targetRateSaturated = false;
             DLL_Log("[A/V START] Audio source reset to shared anchor: src=%zu track=%d type=%d startMs=%lld "
-                    "timelineValid=%d",
+                    "timelineValid=%d captureLatencyMs=%.3f",
                     static_cast<size_t>(&src - audioSources.data()), src.track, static_cast<int>(src.sourceType),
-                    startQpcMs, src.timelineValid ? 1 : 0);
+                    startQpcMs, src.timelineValid ? 1 : 0, static_cast<double>(src.config.captureLatencyMs));
         }
         audioSyncPending.store(false);
     }

@@ -565,15 +565,29 @@ TEST(CapturePipelinePolicyTest, WgcSelectionTargetDelaysLiveSelectionByOneTick) 
 }
 
 TEST(CapturePipelinePolicyTest, WgcSelectionTargetAppliesConfiguredContentDelay) {
-    // audio_capture_latency_ms maps to extraSelectionDelayQpc: video-content selection is
-    // biased back by (one tick + the configured delay) while the PTS schedule is untouched.
-    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(2000, 1900, 100, true, 400), 1500);
+    // audio_capture_latency_ms maps to extraSelectionDelayQpc and IS the selection lag (it
+    // replaces the dormant one-tick delay); the PTS schedule is untouched.
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(2000, 1900, 100, true, 400), 1600);
     // Disabled / non-live: the configured delay is not applied.
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(2000, 1900, 100, false, 400), 2000);
-    // Negative configured delay is treated as zero (only the default one-tick delay applies).
+    // No content delay: only the legacy one-tick delay path remains.
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(2000, 1900, 100, true, 0), 1900);
+    // Negative configured delay is treated as zero (legacy one-tick delay).
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(2000, 1900, 100, true, -50), 1900);
     // A delay larger than the target leaves the original target rather than going negative.
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(500, 400, 100, true, 100000), 500);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSelectionDelayAppliesOnlyForConfiguredContentDelay) {
+    // Without a content delay, live CFR keeps near-live selection (no intentional delay).
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, false, false));
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, true, false));
+    // With a content delay configured, the delay applies continuously for live recording
+    // (independent of the transient reserve), so the bounded delay buffer can build/hold.
+    EXPECT_TRUE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, false, true));
+    EXPECT_TRUE(policy::ShouldApplyWgcSelectionDelay(true, 5, true, false, true));
+    // Not live: never apply.
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(false, 0, false, false, true));
 }
 
 TEST(CapturePipelinePolicyTest, WgcLiveRecoveryModeTracksSourceSchedulerAndEncoderStress) {

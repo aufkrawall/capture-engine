@@ -241,14 +241,20 @@ inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks, bool e
 }
 
 inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outputShortfallTicks,
-                                         bool encoderBottlenecked, bool reserveAvailableAtTickStart) {
-    (void)recordingOutputLive;
+                                         bool encoderBottlenecked, bool reserveAvailableAtTickStart,
+                                         bool contentDelayActive = false) {
     (void)outputShortfallTicks;
     (void)encoderBottlenecked;
     (void)reserveAvailableAtTickStart;
-    // Live CFR must preserve the visual timeline instead of carrying an
-    // intentional one-frame WGC delay. Source misses are represented as repeats
-    // and attributed by the analyzer/triage path.
+    // A configured A/V content delay (audio_capture_latency_ms) intentionally biases WGC
+    // source selection back by the loopback capture latency so video content aligns with
+    // inherently-late loopback audio. It must apply continuously (independent of the transient
+    // reserve) so the bounded delay buffer builds and holds; the "too new for slot" path keeps
+    // newer frames buffered until they age into their slot. With no content delay configured,
+    // live CFR keeps its lowest-latency near-live selection (no intentional one-frame delay).
+    if (contentDelayActive) {
+        return recordingOutputLive;
+    }
     return false;
 }
 
@@ -1126,8 +1132,12 @@ inline int64_t GetWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t fall
     if (extraSelectionDelayQpc < 0) {
         extraSelectionDelayQpc = 0;
     }
-    const int64_t totalDelayQpc =
-        (targetIntervalTicks * static_cast<int64_t>(kWgcSelectionDelayTicks)) + extraSelectionDelayQpc;
+    // When a configured A/V content delay is present it IS the selection lag (it equals the
+    // measured loopback capture latency); the legacy one-tick delay only applies on its own
+    // when no content delay is configured. This keeps the video-content delay exactly L.
+    const int64_t totalDelayQpc = extraSelectionDelayQpc > 0
+                                      ? extraSelectionDelayQpc
+                                      : (targetIntervalTicks * static_cast<int64_t>(kWgcSelectionDelayTicks));
     if (totalDelayQpc <= 0) {
         return selectionTargetQpc;
     }

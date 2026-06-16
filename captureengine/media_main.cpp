@@ -2090,6 +2090,38 @@ void EncoderThreadFunc(const AppConfig& config) {
         return ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
     };
 
+    // A/V content delay: align video content with inherently-late loopback audio by biasing
+    // WGC source-frame selection back by the loopback capture latency (= the slowest audio
+    // source's latency, so faster sources can be equalized up to it). Audio samples and the
+    // CFR PTS grid are untouched, so track length/start/end and zero-drift are preserved.
+    // Video buffer self-builds/holds via the bounded "too new for slot" path. QPC ticks.
+    float maxAudioCaptureLatencyMs = 0.0f;
+    for (const auto& audioSrc : config.audioSources) {
+        if (audioSrc.captureLatencyMs > maxAudioCaptureLatencyMs) {
+            maxAudioCaptureLatencyMs = audioSrc.captureLatencyMs;
+        }
+    }
+    const int64_t avContentDelayQpc =
+        (maxAudioCaptureLatencyMs > 0.0f && qpcFreq.QuadPart > 0)
+            ? static_cast<int64_t>(std::llround(static_cast<double>(maxAudioCaptureLatencyMs) / 1000.0 *
+                                                static_cast<double>(qpcFreq.QuadPart)))
+            : 0;
+    const bool avContentDelayActive = avContentDelayQpc > 0;
+    // Inject path has no selection target; it pops the oldest buffered frame above a reserve,
+    // so delaying inject video content = retaining this many extra frames (the oldest popped
+    // frame becomes ~L old). Rounded up to whole frames.
+    const size_t injectContentDelayFrames =
+        (avContentDelayActive && frameIntervalMs > 0.0)
+            ? static_cast<size_t>(std::ceil(static_cast<double>(maxAudioCaptureLatencyMs) / frameIntervalMs))
+            : 0;
+    if (avContentDelayActive) {
+        LogInfo("[EncoderThread] A/V content delay armed: maxAudioCaptureLatencyMs=%.3f delayUs=%lld method=%s "
+                "injectDelayFrames=%zu (delays video content to match late loopback audio; audio/PTS unchanged)",
+                static_cast<double>(maxAudioCaptureLatencyMs),
+                (long long)((avContentDelayQpc * 1000000) / qpcFreq.QuadPart),
+                IsActiveScreenGrab() ? "wgc-selection-bias" : "inject-buffer-reserve", injectContentDelayFrames);
+    }
+
     while (g_EncoderRunning || g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) || g_FrameQueue.Size() > 0 ||
            !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         LARGE_INTEGER cycleStartQpc;
@@ -2638,7 +2670,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTickForTick, targetIntervalTicks);
             return ce::capture_policy::GetWgcSelectionTargetQpc(
                 scheduledQpcForTick, fallbackTargetQpc, targetIntervalTicks,
-                recordingOutputLive && applyLiveDelay && !wgcLiveRecoveryModeActive);
+                recordingOutputLive && applyLiveDelay && !wgcLiveRecoveryModeActive, avContentDelayQpc);
         };
         const auto computeWgcSelectionTargetQpc = [&](bool applyLiveDelay) {
             return computeWgcSelectionTargetForTick(scheduledSampleQpc, selectionGridTick, applyLiveDelay);
@@ -3408,7 +3440,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                         !wgcLiveRecoveryModeActive &&
                         ce::capture_policy::ShouldApplyWgcSelectionDelay(
                             recordingOutputLive, outputShortfallTicks,
-                            g_IsEncoderBottlenecked.load(std::memory_order_relaxed), wgcReserveAvailableAtTickStart);
+                            g_IsEncoderBottlenecked.load(std::memory_order_relaxed), wgcReserveAvailableAtTickStart,
+                            avContentDelayActive);
                     if (wgcSelectionDelayAppliedThisTick) {
                         ++wgcSelectionDelayTickCount;
                     }
@@ -3520,10 +3553,16 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 const size_t injectReserveFrames = ce::capture_policy::GetInjectReserveFrames(
                     config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs);
+                // A/V content delay (inject): retain injectContentDelayFrames extra frames so the
+                // oldest popped frame is ~L old, delaying video content to match late loopback
+                // audio. The cap and live-age bound are widened to admit the deeper buffer.
                 size_t minBufferedInjectFrames =
-                    ce::capture_policy::GetMinBufferedInjectFrames(injectReserveFrames, recordingOutputLive);
-                const size_t maxBufferedInjectFrames = ce::capture_policy::GetMaxBufferedInjectFrames(
-                    injectReserveFrames, recordingOutputLive, recordingLiveTick, GetTickCount64());
+                    ce::capture_policy::GetMinBufferedInjectFrames(injectReserveFrames, recordingOutputLive) +
+                    injectContentDelayFrames;
+                const size_t maxBufferedInjectFrames =
+                    std::max(ce::capture_policy::GetMaxBufferedInjectFrames(injectReserveFrames, recordingOutputLive,
+                                                                           recordingLiveTick, GetTickCount64()),
+                             minBufferedInjectFrames + 2);
                 maxBufferedInjectDepthSinceLog = std::max(maxBufferedInjectDepthSinceLog, bufferedInjectFrames.size());
                 uint32_t trimmedInjectFrames = 0;
                 uint32_t ageTrimmedInjectFrames = 0;
@@ -3536,9 +3575,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                 LARGE_INTEGER trimNowQpc;
                 QueryPerformanceCounter(&trimNowQpc);
                 const bool injectEncoderBottlenecked = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
-                const int64_t maxInjectLiveAgeQpc = ce::capture_policy::GetInjectLiveMaxFrameAgeQpc(
+                int64_t maxInjectLiveAgeQpc = ce::capture_policy::GetInjectLiveMaxFrameAgeQpc(
                     recordingOutputLive, injectEncoderBottlenecked, encoderTooSlowForTargetCurrent,
                     targetIntervalTicks);
+                if (avContentDelayActive) {
+                    // Don't age-trim the intentionally retained content-delay frames.
+                    maxInjectLiveAgeQpc =
+                        std::max(maxInjectLiveAgeQpc, avContentDelayQpc + 2 * std::max<int64_t>(targetIntervalTicks, 1));
+                }
                 while (!bufferedInjectFrames.empty() &&
                        ce::capture_policy::ShouldTrimStaleInjectLiveFrame(
                            bufferedInjectFrames.front().timestamp, trimNowQpc.QuadPart, maxInjectLiveAgeQpc,
