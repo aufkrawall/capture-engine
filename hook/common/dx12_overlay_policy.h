@@ -1094,14 +1094,12 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         return false;
     }
 
-    // FALLBACK ONLY. CE now installs its FFX present-callback bridge even when the game provides no
-    // present callback (see ShouldInstallFFXPresentCallbackBridgeForConfigure), so the overlay is recorded
-    // into AMD's own command list at present time instead of submitted as a separate command list on AMD's
-    // FFX runtime queue. That separate queue submit wedged `ffxQuery` after a few seconds (session
-    // fsrgtafreeze), so it must NOT be the default. This `nativeFSRInternalNoCallbackComposition` branch
-    // only fires when the bridge is genuinely NOT active (e.g. before the enabled configure, or if the
-    // bridge install is reverted); in that narrow window allow the normal DX12 route on the runtime-owned
-    // queue rather than blanking.
+    // If the game did not provide an FFX present callback, the AMD swapchain
+    // runtime keeps its own internal blit/UI composition path. Installing CE's
+    // callback in that configuration forces us to own the runtime's scene copy,
+    // which has wedged real AMD presenter threads. Let the internal no-callback
+    // path finish the frame and draw the overlay through the normal DX12 route
+    // on the runtime-owned swapchain queue.
     if (nativeFSRInternalNoCallbackComposition) {
         return false;
     }
@@ -1316,22 +1314,14 @@ inline bool ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
                                                               bool frameGenerationEnabled,
                                                               bool presentCallbackAvailable = true) {
-    // Install CE's FFX present-callback bridge for any ENABLED frame-generation configure, WHETHER OR NOT
-    // the app provided its own present callback.
-    //  - App-callback case: CE wraps the app's callback (composite overlay, then delegate).
-    //  - NO-app-callback case (e.g. GTA Enhanced native FSR FG, `internalNoCallback`): CE self-composes
-    //    currentBackBuffer -> outputSwapChainBuffer (ShouldComposeFFXPresentSourceToOutput) and records the
-    //    overlay into AMD's OWN command list at present time. This REPLACES the deadlock-prone fallback of
-    //    submitting a separate overlay command list on AMD's FFX runtime queue, which wedged `ffxQuery`
-    //    after a few seconds of 3D (session fsrgtafreeze). Recording into AMD's command list (no separate
-    //    CE submit) is structurally safer than that queue submit.
-    // Disabled / startup-arming setup packets are excluded by `frameGenerationEnabled` — never hand a
-    // synthetic callback pointer to a disabled setup configure (the documented GTA fail-fast before native
-    // FSR accepts the real enabled configure).
-    // `presentCallbackAvailable` is retained for callers/tests but is no longer required. Independently
-    // revertible: re-add `&& presentCallbackAvailable` to restore the old app-callback-only behavior.
-    (void)presentCallbackAvailable;
-    return recognizedFrameGenerationConfigure && frameGenerationEnabled;
+    // Disabled configure traffic can repeat rapidly during native-FSR teardown.
+    // Installing a new CE present-callback bridge on those OFF packets keeps CE
+    // entangled in the old runtime-owned Present path and adds log churn even
+    // though FFX is explicitly disabling frame generation.
+    // Fresh startup-arming disabled packets are also forwarded unmodified. GTA
+    // can fail-fast if a disabled setup configure receives a synthetic callback
+    // pointer before native FSR has accepted the real enabled configure.
+    return recognizedFrameGenerationConfigure && frameGenerationEnabled && presentCallbackAvailable;
 }
 
 inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,
