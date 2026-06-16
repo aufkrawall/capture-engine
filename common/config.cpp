@@ -294,12 +294,13 @@ wgc_window_detection=(
 wgc_same_device_capture=true
 ;wgc_skip_split_device_flush=false
 
-; audio_capture_latency_ms - Signed A/V sync correction (milliseconds) for loopback audio.
-; Windows often reports 0 stream latency for render/process loopback, so the real audio
-; capture latency is not subtracted and audio can play slightly late vs video. A positive
-; value advances system + app loopback audio earlier; negative delays it (microphone is not
-; affected). The exact value is hardware/source dependent; measure it with
-; tools/run_av_sync_matrix.py --raw-offset-gate (use the reported offset_mean). Default 0.
+; audio_capture_latency_ms - Global-default A/V sync offset (ms). A/V sync is auto-corrected
+; from the OS-reported WASAPI stream latency (GetStreamLatency) for any device that reports it
+; (most devices) - no value needed. This is the manual override (OBS "Audio Sync Offset"
+; equivalent) for endpoints Windows under-reports (HDMI/AVR/Bluetooth report 0). Set it
+; per-device via capture_latency_ms in that device's audio section; this [General] value is
+; just the fallback default. CE delays video content by it (audio/PTS untouched). Default 0.
+; Measure under-reporting devices with tools/run_av_sync_matrix.py --raw-offset-gate (120 fps).
 ;audio_capture_latency_ms=0
 
 [Injection]
