@@ -51,6 +51,33 @@ TEST(AvSyncCalibrationTest, RequiresDarkBeforeNextEdge) {
     EXPECT_EQ(edges[0], 200u);
 }
 
+TEST(AvSyncCalibrationTest, DetectHighRunCentersFindsRunMidpoints) {
+    // Two high runs: frames 2..4 (qpc 300..500, center 400) and 7..8 (qpc 800..900, center ~850).
+    std::vector<double> v = {0.05, 0.10, 0.90, 0.95, 0.92, 0.08, 0.06, 0.93, 0.91, 0.04};
+    std::vector<uint64_t> q = {100, 200, 300, 400, 500, 600, 700, 800, 900, 1000};
+    std::vector<uint64_t> centers = DetectHighRunCenters(v, q);
+    ASSERT_EQ(centers.size(), 2u);
+    EXPECT_EQ(centers[0], 400u);  // midpoint of frames 2..4
+    EXPECT_EQ(centers[1], 800u);  // midpoint of frames 7..8 -> index (7+8)/2=7 -> qpc 800
+}
+
+TEST(AvSyncCalibrationTest, DetectHighRunCentersClosesTrailingRun) {
+    std::vector<double> v = {0.05, 0.9, 0.95};  // ends while still high
+    std::vector<uint64_t> q = {100, 200, 300};
+    std::vector<uint64_t> centers = DetectHighRunCenters(v, q);
+    ASSERT_EQ(centers.size(), 1u);
+    EXPECT_EQ(centers[0], 200u);  // midpoint of frames 1..2 -> index 1 -> qpc 200
+}
+
+TEST(AvSyncCalibrationTest, NormalizeByMaxScalesAndDetectsNoSignal) {
+    std::vector<double> v = {0.0, 0.5, 1.5, 0.25};
+    ASSERT_TRUE(NormalizeByMax(v));
+    EXPECT_NEAR(v[2], 1.0, 1e-9);
+    EXPECT_NEAR(v[1], 1.0 / 3.0, 1e-9);
+    std::vector<double> zero = {0.0, 0.0};
+    EXPECT_FALSE(NormalizeByMax(zero));
+}
+
 TEST(AvSyncCalibrationTest, PairOffsetsComputeAudioMinusVideoAndRejectOutliers) {
     // audio bursts land ~46 ms after their flash (460000 ticks). One pair is a mis-detection.
     std::vector<uint64_t> video = {1'000'000, 2'000'000, 3'000'000};

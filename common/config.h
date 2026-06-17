@@ -391,6 +391,13 @@ struct AppConfig {
     // auto-detects audioCaptureLatencyMs for the default render endpoint, cached per device. A
     // manual audioCaptureLatencyMs > 0 disables measurement for the render domain. Default true.
     bool audioLatencyAutodetect = true;
+
+    // Opt-in (WIP): use the full WGC+loopback A/V self-calibration (av_sync_calibrator) as the
+    // PRIMARY auto-detect, falling back to the audio-only render->loopback probe. The calibration
+    // measures the true audio-vs-video offset through the real pipeline but is still being
+    // hardware-iterated (window-capture luma + audio burst feed), so it is OFF by default and the
+    // probe (Start-anchor) is the active path. Default false.
+    bool audioAvCalibration = false;
 };
 
 inline bool IsOverlayObserverOnly(const OverlayConfig& cfg) {

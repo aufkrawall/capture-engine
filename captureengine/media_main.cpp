@@ -27,6 +27,7 @@
 #include "../common/rate_window_utils.h"
 #include "../common/shared_defs.h"
 #include "../common/thread_power_throttling_compat.h"
+#include "av_sync_calibrator.h"
 #include "mediaengine_loader.h"
 #include "wgc_capture.h"
 
@@ -135,9 +136,14 @@ static void ApplyAutoDetectedRenderLatencyToConfig(AppConfig& config) {
     LogInfo("[Media] Applied auto-detected render-endpoint latency %.3f ms to %d render-domain source(s)", ms, applied);
 }
 
-// Perform the one-time render->loopback latency measurement. Call only when NOT recording: on a
-// cache miss it briefly opens render+loopback and plays a faint near-inaudible marker. Safe to call
+// Perform the one-time audio-vs-video offset measurement. Call only when NOT recording and only
+// after MediaEngine_Init (the A/V self-calibration needs the shared D3D11 device): on a cache miss
+// it briefly shows a small flashing window + plays a faint near-inaudible marker. Safe to call
 // repeatedly; it runs at most once per process and is a cheap disk cache hit otherwise.
+//
+// Primary: the WGC+loopback A/V self-calibration measures the TRUE offset through CE's real
+// pipeline. Fallback (WGC/device unavailable or inconclusive): the audio-only render->loopback
+// probe (Start-anchor), which only approximates it.
 static void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheDir) {
     if (g_RenderLatencyMeasureAttempted) {
         return;
@@ -146,19 +152,35 @@ static void MeasureRenderLatencyOnce(const AppConfig& config, const std::string&
         g_RenderLatencyMeasureAttempted = true;  // disabled or manual override: never measure
         return;
     }
-    if (!MediaEngine_MeasureRenderEndpointLatency) {
-        return;  // export not resolved yet; retry on a later call once the DLL is loaded
-    }
     g_RenderLatencyMeasureAttempted = true;
+
+    // Primary (opt-in, WIP): full A/V self-calibration through the real WGC + loopback pipeline.
+    // Off by default while it is hardware-iterated; the audio-only probe below is the active path.
+    if (config.audioAvCalibration) {
+        ID3D11Device* d3dDevice = MediaEngine_GetD3D11Device ? MediaEngine_GetD3D11Device() : nullptr;
+        if (d3dDevice) {
+            const ce::avcal::AvCalibrationResult av = ce::avcal::MeasureAvOffset(d3dDevice, cacheDir, false);
+            if (av.ok && av.offsetMs > 0.0) {
+                g_AutoDetectedRenderLatencyMs = av.offsetMs;
+                LogInfo("[Media] Auto-detected A/V content offset: %.3f ms (WGC+loopback self-calibration, %s)",
+                        av.offsetMs, av.fromCache ? "cached" : "measured");
+                return;
+            }
+            LogWarn("[Media] A/V self-calibration inconclusive; falling back to audio render->loopback probe");
+        } else {
+            LogWarn("[Media] no D3D11 device for A/V self-calibration; falling back to audio render->loopback probe");
+        }
+    }
+
+    // Audio-only render->loopback probe (Start-anchor) - the default active auto-detect.
     double ms = 0.0;
-    if (MediaEngine_MeasureRenderEndpointLatency(cacheDir.c_str(), false, &ms) && ms > 0.0) {
+    if (MediaEngine_MeasureRenderEndpointLatency &&
+        MediaEngine_MeasureRenderEndpointLatency(cacheDir.c_str(), false, &ms) && ms > 0.0) {
         g_AutoDetectedRenderLatencyMs = ms;
-        LogInfo("[Media] Auto-detected render-endpoint audio latency: %.3f ms (render->loopback probe)", ms);
+        LogInfo("[Media] Auto-detected render-endpoint audio latency: %.3f ms (render->loopback probe fallback)", ms);
     } else {
-        LogWarn(
-            "[Media] Render-endpoint latency auto-detect unavailable; using configured "
-            "audio_capture_latency_ms=%.3f",
-            static_cast<double>(config.audioCaptureLatencyMs));
+        LogWarn("[Media] Audio latency auto-detect unavailable; using configured audio_capture_latency_ms=%.3f",
+                static_cast<double>(config.audioCaptureLatencyMs));
     }
 }
 
@@ -6175,13 +6197,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
-        // Auto-detect the render-endpoint audio latency before Init so both the encoder thread
-        // (video content delay) and the media engine (per-source equalization) read the resolved
-        // value from the same config. Only runs when not recording (DLL just loaded, no capture yet).
-        if (!g_Recording.load(std::memory_order_acquire)) {
-            MeasureRenderLatencyOnce(config, mediaCacheDir);
-        }
-        ApplyAutoDetectedRenderLatencyToConfig(config);
         // Propagate audio-only flag to MediaEngine before Init
         if (g_AudioOnly && MediaEngine_SetAudioOnly) {
             MediaEngine_SetAudioOnly(true);
@@ -6201,6 +6216,18 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         mediaEngineReady = true;
         LogInfo("[Media] MediaEngine initialized");
+
+        // Auto-detect the audio-vs-video content offset AFTER Init (the A/V self-calibration needs
+        // the shared D3D11 device for WGC frame readback) and only when not recording. Then apply
+        // the resolved value to this config AND push it to the media engine, so both the encoder
+        // thread (video content delay) and the media engine (per-source equalization) use it.
+        if (!g_Recording.load(std::memory_order_acquire)) {
+            MeasureRenderLatencyOnce(config, mediaCacheDir);
+        }
+        if (g_AutoDetectedRenderLatencyMs > 0.0) {
+            ApplyAutoDetectedRenderLatencyToConfig(config);
+            MediaEngine_ReloadConfig(&config);
+        }
         return true;
     };
 

@@ -52,6 +52,50 @@ inline std::vector<uint64_t> DetectFlashRisingEdges(const std::vector<Calibratio
     return edges;
 }
 
+// Given a scalar time series `values` (normalized ~0..1) with matching per-sample `qpc`, find each
+// contiguous run that crosses above onThreshold (until it drops below offThreshold) and return the
+// QPC at the CENTER of each run. Used for BOTH video luma (white flash) and audio marker-band power
+// (tone burst): when the flash and the burst have the SAME duration and are triggered together,
+// detecting the CENTER of each cancels the envelope/ramp bias on both sides, so the difference of
+// the two centers is the pure A/V pipeline offset. Hysteresis (on/off thresholds) rejects noise.
+inline std::vector<uint64_t> DetectHighRunCenters(const std::vector<double>& values, const std::vector<uint64_t>& qpc,
+                                                  double onThreshold = 0.6, double offThreshold = 0.3) {
+    std::vector<uint64_t> centers;
+    const size_t n = std::min(values.size(), qpc.size());
+    bool inRun = false;
+    size_t runStart = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (!inRun && values[i] >= onThreshold) {
+            inRun = true;
+            runStart = i;
+        } else if (inRun && values[i] <= offThreshold) {
+            centers.push_back(qpc[(runStart + (i - 1)) / 2]);
+            inRun = false;
+        }
+    }
+    if (inRun && n > 0) {
+        centers.push_back(qpc[(runStart + (n - 1)) / 2]);
+    }
+    return centers;
+}
+
+// Normalize a non-negative scalar series to 0..1 by its maximum (for feeding audio marker-band
+// power into DetectHighRunCenters with the same thresholds as video luma). Returns false if there
+// is no positive maximum (no signal).
+inline bool NormalizeByMax(std::vector<double>& values) {
+    double mx = 0.0;
+    for (double v : values) {
+        mx = std::max(mx, v);
+    }
+    if (mx <= 0.0) {
+        return false;
+    }
+    for (double& v : values) {
+        v /= mx;
+    }
+    return true;
+}
+
 // Pair each audio-burst QPC with the nearest-later video-flash QPC (they were triggered together,
 // so each audio burst has a matching flash within roughly one A/V offset). Returns per-pair
 // offset = audioQpc - videoFlashQpc in milliseconds, for pairs where a flash was found within
