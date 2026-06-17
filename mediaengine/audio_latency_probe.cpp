@@ -125,9 +125,12 @@ void AppendMonoFromFloat(const float* interleaved, UINT32 frames, int channels, 
 
 // One independent render->loopback latency measurement on `device`. Activates fresh render +
 // loopback clients (an IAudioClient can only be Initialized once), plays the marker, captures the
-// loopback, detects the marker center, and computes latency = loopback center QPC - render
-// presentation-center QPC. Returns false (no value) on any error/inconclusive condition. Releases
-// all interfaces it creates.
+// loopback, detects the marker center, and computes latency from the render Start() QPC to the
+// loopback marker center = the full render pipeline latency (startup/priming + engine + endpoint ->
+// loopback). NOTE: this is an audio-only proxy measured at idle startup; it under-measures the true
+// A/V content offset (which also includes the WGC video-clock side and shifts under recording
+// load). The reliable, gate-grade measurement is a WGC+loopback self-calibration (planned). Returns
+// false (no value) on any error/inconclusive condition. Releases all interfaces it creates.
 bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const ProbeMarkerSpec& spec, int sampleRate,
                    int channels, double* outMs) {
     IAudioClient* renderClient = nullptr;
@@ -188,6 +191,10 @@ bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const Probe
         shotCleanup();
         return false;
     }
+    // Diagnostic: the render stream's own reported latency (often 0 on HDMI/AVR, the whole reason
+    // for this probe). Logged only for triage; not used in the measurement.
+    REFERENCE_TIME renderStreamLatency100ns = 0;
+    renderClient->GetStreamLatency(&renderStreamLatency100ns);
 
     hr = device->Activate(kIID_IAudioClient, CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&loopbackClient));
     if (FAILED(hr) || !loopbackClient) {
@@ -239,6 +246,17 @@ bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const Probe
         return false;
     }
     loopbackStarted = true;
+    // Capture the QPC at render Start (in 100-ns units, same basis as WASAPI qpcPosition). Anchoring
+    // the measurement here captures the FULL render pipeline latency (startup/priming + engine +
+    // endpoint -> loopback), which is what the audio actually experiences vs the video clock. The
+    // IAudioClock-present anchor below only captures the engine-present -> loopback hop and
+    // under-measures the true A/V offset.
+    LARGE_INTEGER qpcFreqLI = {};
+    LARGE_INTEGER startLI = {};
+    QueryPerformanceFrequency(&qpcFreqLI);
+    QueryPerformanceCounter(&startLI);
+    const uint64_t renderStartQpc100ns =
+        RawQpcToHundredNanoseconds(static_cast<uint64_t>(startLI.QuadPart), static_cast<uint64_t>(qpcFreqLI.QuadPart));
     if (FAILED(renderClient->Start())) {
         shotCleanup();
         return false;
@@ -334,28 +352,38 @@ bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const Probe
         AudioFramesToHundredNanoseconds(static_cast<uint64_t>(centerFrame) - pktBaseFrame, sampleRate);
     const uint64_t loopbackCenterQpc100ns = pktBaseQpc + centerOffset100ns;
 
-    // Render presentation QPC of the marker CENTER (leadInFrames + markerFrames/2 into the stream).
-    // Aligning centers cancels the Hann-window envelope on both sides.
+    // The marker CENTER is at stream frame leadInFrames + markerFrames/2 (aligning centers cancels
+    // the Hann-window envelope on both sides).
     const uint64_t renderCenterFrame =
         static_cast<uint64_t>(spec.leadInFrames) + static_cast<uint64_t>(spec.markerFrames / 2);
+    const uint64_t nominalCenterOffset100ns = AudioFramesToHundredNanoseconds(renderCenterFrame, sampleRate);
+
+    // Start-anchored latency (APPLIED): render Start + nominal stream position of the marker center
+    // to its actual loopback output = the full render pipeline latency the audio experiences vs the
+    // video content clock (startup/priming + engine + endpoint -> loopback tap).
+    const uint64_t startCenterQpc100ns = renderStartQpc100ns + nominalCenterOffset100ns;
+    const double latencyStartMs = ComputeRenderLatencyMs(loopbackCenterQpc100ns, startCenterQpc100ns);
+
+    // IAudioClock-present-anchored latency (DIAGNOSTIC ONLY): engine-present -> loopback hop only.
+    // An earlier revision applied this; it under-measures the true A/V offset by the priming term.
     const uint64_t renderCenterQpc100ns =
         renderFrame0Qpc100ns + AudioFramesToHundredNanoseconds(renderCenterFrame, sampleRate);
+    const double latencyPresentMs = ComputeRenderLatencyMs(loopbackCenterQpc100ns, renderCenterQpc100ns);
 
-    const double latencyMs = ComputeRenderLatencyMs(loopbackCenterQpc100ns, renderCenterQpc100ns);
     DLL_Log(
-        "[AudioLatencyProbe] shot: centerFrame=%d (capFrames=%zu) loopbackCenterQpc=%llu renderCenterQpc=%llu "
-        "renderFrame0Qpc=%llu latency=%.3f ms",
-        centerFrame, capturedMono.size(), static_cast<unsigned long long>(loopbackCenterQpc100ns),
-        static_cast<unsigned long long>(renderCenterQpc100ns), static_cast<unsigned long long>(renderFrame0Qpc100ns),
-        latencyMs);
+        "[AudioLatencyProbe] shot: centerFrame=%d (capFrames=%zu) loopbackCenterQpc=%llu startAnchor=%.3f ms "
+        "presentAnchor=%.3f ms renderStartQpc=%llu renderFrame0Qpc=%llu renderStreamLatency=%lldus",
+        centerFrame, capturedMono.size(), static_cast<unsigned long long>(loopbackCenterQpc100ns), latencyStartMs,
+        latencyPresentMs, static_cast<unsigned long long>(renderStartQpc100ns),
+        static_cast<unsigned long long>(renderFrame0Qpc100ns), static_cast<long long>(renderStreamLatency100ns / 10));
 
-    if (!IsPlausibleLatencyMs(latencyMs)) {
+    if (!IsPlausibleLatencyMs(latencyStartMs)) {
         shotCleanup();
         return false;  // outlier shot discarded; the median gate handles the rest
     }
 
     if (outMs) {
-        *outMs = latencyMs;
+        *outMs = latencyStartMs;
     }
     shotCleanup();
     return true;
