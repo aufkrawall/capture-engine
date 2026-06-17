@@ -239,6 +239,7 @@ track=2
 log_level=trace
 capture_method={scenario.capture_method}
 audio_capture_latency_ms={audio_capture_latency_ms}
+audio_latency_autodetect=false
 wgc_window_detection=(
 {PROCESS_NAME}
 )

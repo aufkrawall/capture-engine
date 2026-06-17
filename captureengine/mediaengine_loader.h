@@ -44,6 +44,8 @@ typedef void (*MediaEngine_LockD3D11_t)();
 typedef void (*MediaEngine_UnlockD3D11_t)();
 typedef void (*MediaEngine_SetAudioOnly_t)(bool audioOnly);
 typedef void (*MediaEngine_SetSourcePrefers10Bit_t)(bool prefer10Bit);
+typedef bool (*MediaEngine_MeasureRenderEndpointLatency_t)(const char* cacheDir, bool forceRemeasure,
+                                                           double* outLatencyMs);
 
 // Function pointers (set by MediaEngine_Load)
 extern MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback;
@@ -71,6 +73,7 @@ extern MediaEngine_LockD3D11_t MediaEngine_LockD3D11;
 extern MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11;
 extern MediaEngine_SetAudioOnly_t MediaEngine_SetAudioOnly;
 extern MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit;
+extern MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency;
 
 // Load mediaengine.dll from exe_dir/ffmpeg/ folder
 // Returns true on success, false on failure

@@ -1,11 +1,10 @@
 #include "audio_capture.h"
-#include <iostream>
 #include <algorithm>
+#include <iostream>
 // PKEY_Device_FriendlyName defined locally to avoid cross-compile link errors
 // (MinGW on Linux needs INITGUID for the header definition, this is portable)
 static const PROPERTYKEY PKEY_Device_FriendlyName = {
-    {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14
-};
+    {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
 #include "audio_time_utils.h"
 #include "mediaengine.h"  // For DLL_Log
 
@@ -278,11 +277,14 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
                         IPropertyStore* pProps = nullptr;
                         if (SUCCEEDED(pCandidate->OpenPropertyStore(STGM_READ, &pProps)) && pProps) {
                             PROPVARIANT var = {};
-                            if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &var)) && var.vt == VT_LPWSTR && var.pwszVal) {
-                                int nameLen = WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, nullptr, 0, nullptr, nullptr);
+                            if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &var)) && var.vt == VT_LPWSTR &&
+                                var.pwszVal) {
+                                int nameLen =
+                                    WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, nullptr, 0, nullptr, nullptr);
                                 if (nameLen > 0) {
                                     std::string friendlyName(static_cast<size_t>(nameLen), L'\0');
-                                    WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, friendlyName.data(), nameLen, nullptr, nullptr);
+                                    WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, friendlyName.data(), nameLen,
+                                                        nullptr, nullptr);
                                     if (!friendlyName.empty() && friendlyName.back() == '\0')
                                         friendlyName.pop_back();
                                     if (friendlyName == deviceId) {
@@ -425,8 +427,9 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
             ? (static_cast<uint64_t>(bufferFrameCount_) * 1000000ull) / static_cast<uint64_t>(pwfx->nSamplesPerSec)
             : 0;
     DLL_Log(
-        "[AudioCapture] Started: channels=%d rate=%d bits=%d streamLatency=%lluus compensate=%d "
-        "devicePeriod=%lluus minPeriod=%lluus bufferFrames=%u bufferDur=%lluus",
+        "[AudioCapture] Started: channels=%d rate=%d bits=%d streamLatency=%lluus loopback=%d "
+        "devicePeriod=%lluus minPeriod=%lluus bufferFrames=%u bufferDur=%lluus "
+        "(latency routed via video content delay, not audio advance)",
         pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
         static_cast<unsigned long long>(streamLatency100ns_ / 10), isLoopback_ ? 1 : 0,
         static_cast<unsigned long long>(defaultDevicePeriod100ns_ / 10),
@@ -563,11 +566,16 @@ void AudioCapture::CaptureLoop() {
                 firstDevicePos = devicePosition;
                 firstQpcPos = qpcPosition;
                 firstSet = true;
-                const uint64_t adjustedFirstQpc =
+                // streamLatency is telemetry only; placement uses the raw QPC (the A/V offset is
+                // corrected by delaying video content, not by advancing audio). wouldAdvanceQpc
+                // shows what the retired GetStreamLatency audio-advance would have produced.
+                const uint64_t wouldAdvanceQpc =
                     ce::audio::ApplyCaptureLatencyCompensation(firstQpcPos, streamLatency100ns_, isLoopback_);
-                DLL_Log("[AudioCapture] Source Sync Start: DevPos=%llu QPC=%llu AdjustedQPC=%llu Latency=%lluus",
-                        firstDevicePos, firstQpcPos, adjustedFirstQpc,
-                        static_cast<unsigned long long>(streamLatency100ns_ / 10));
+                DLL_Log(
+                    "[AudioCapture] Source Sync Start: DevPos=%llu QPC=%llu (placed raw; "
+                    "wouldAdvanceQpc=%llu streamLatency=%lluus, not applied)",
+                    firstDevicePos, firstQpcPos, wouldAdvanceQpc,
+                    static_cast<unsigned long long>(streamLatency100ns_ / 10));
             } else if (firstSet && logCounter++ % 500 == 0) {  // Log every ~5 seconds
                 double samplesDuration = (double)(devicePosition - firstDevicePos) / pwfx->nSamplesPerSec;
                 double qpcDuration = ce::audio::HundredNanosecondsToSeconds(qpcPosition - firstQpcPos);
@@ -585,13 +593,20 @@ void AudioCapture::CaptureLoop() {
             packet.sampleRate = pwfx->nSamplesPerSec;
             packet.bitsPerSample = pwfx->wBitsPerSample;
             packet.blockAlign = pwfx->nBlockAlign;
-            packet.validBitsPerSample = 0;           // Default: same as bitsPerSample
+            packet.validBitsPerSample = 0;  // Default: same as bitsPerSample
             packet.channelMask = ExtractChannelMask(pwfx);
-            packet.devicePosition = devicePosition;  // Store for debugging if needed
-            packet.rawQpcPosition = qpcPosition;     // Store raw WASAPI timestamp for debugging
-            packet.streamLatency = streamLatency100ns_;
-            packet.qpcPosition =
-                ce::audio::ApplyCaptureLatencyCompensation(qpcPosition, streamLatency100ns_, isLoopback_);
+            packet.devicePosition = devicePosition;      // Store for debugging if needed
+            packet.rawQpcPosition = qpcPosition;         // Store raw WASAPI timestamp for debugging
+            packet.streamLatency = streamLatency100ns_;  // telemetry only (see below)
+            // A/V capture latency is corrected by DELAYING video content (and equalizing faster
+            // audio sources up to it), never by advancing live audio: the earlier samples do not
+            // exist, so advancing only manufactures a live-edge deficit the CFR pipeline pads and
+            // the encoded cursor re-pins (the shift is absorbed, not corrected). The render->loopback
+            // offset is auto-measured/configured (audio_capture_latency_ms) and routed entirely
+            // through the video content delay. So place the packet at the raw WASAPI QPC; do NOT
+            // subtract streamLatency here (it double-counts with the video delay on devices that
+            // report a nonzero GetStreamLatency, and on HDMI/AVR it is 0 anyway).
+            packet.qpcPosition = qpcPosition;
 
             // Check if float format and extract validBitsPerSample from
             // WAVEFORMATEXTENSIBLE
@@ -655,8 +670,7 @@ void AudioCapture::CaptureLoop() {
     DLL_Log("[AudioCapture] CaptureLoop exited");
     if (finalDrainPackets > 0 || finalDrainFrames > 0) {
         DLL_Log("[AudioCapture] Final stop drain queued %llu packet(s) / %llu frame(s)",
-                static_cast<unsigned long long>(finalDrainPackets),
-                static_cast<unsigned long long>(finalDrainFrames));
+                static_cast<unsigned long long>(finalDrainPackets), static_cast<unsigned long long>(finalDrainFrames));
     }
     if (queueDropPackets > 0 || queueDropFrames > 0) {
         DLL_Log("[AudioCapture] Final queue overrun summary: dropped %llu packet(s) / %llu frame(s)",

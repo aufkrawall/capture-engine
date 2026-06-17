@@ -294,14 +294,24 @@ wgc_window_detection=(
 wgc_same_device_capture=true
 ;wgc_skip_split_device_flush=false
 
-; audio_capture_latency_ms - Global-default A/V sync offset (ms). A/V sync is auto-corrected
-; from the OS-reported WASAPI stream latency (GetStreamLatency) for any device that reports it
-; (most devices) - no value needed. This is the manual override (OBS "Audio Sync Offset"
-; equivalent) for endpoints Windows under-reports (HDMI/AVR/Bluetooth report 0). Set it
-; per-device via capture_latency_ms in that device's audio section; this [General] value is
-; just the fallback default. CE delays video content by it (audio/PTS untouched). Default 0.
-; Measure under-reporting devices with tools/run_av_sync_matrix.py --raw-offset-gate (120 fps).
+; audio_capture_latency_ms - Render-endpoint (Domain 1) A/V sync offset (ms): how late the
+; system loopback AND every app process-loopback source land vs the video. CE corrects this by
+; DELAYING video content (audio/PTS untouched), never by advancing live audio. By default this is
+; auto-measured once per render endpoint via a brief near-inaudible render->loopback probe
+; (audio_latency_autodetect=true) and cached, so no value is needed. WASAPI GetStreamLatency()
+; reports 0 for HDMI/AVR/Bluetooth, which is why the probe (not GetStreamLatency) is the source.
+; A manual value > 0 here is an override (OBS "Audio Sync Offset" equivalent) and disables the
+; probe for the render domain. Per-device override via capture_latency_ms in an [Audio]/[AppAudio.N]
+; section. Default 0 = auto. Measure with tools/run_av_sync_matrix.py --raw-offset-gate (120 fps).
 ;audio_capture_latency_ms=0
+; mic_capture_latency_ms - Microphone/input (Domain 2) latency default (ms). Mics have their own
+; latency and do NOT inherit the render-endpoint value above. Per-mic override via
+; capture_latency_ms in a [Microphone]/[Microphone.N] section. Default 0.
+;mic_capture_latency_ms=0
+; audio_latency_autodetect - Enable the one-time render->loopback latency self-measurement that
+; auto-detects audio_capture_latency_ms (cached per device). A manual audio_capture_latency_ms > 0
+; disables it for the render domain. Default true.
+;audio_latency_autodetect=true
 
 [Injection]
 ; Entry format: process:window:mode
@@ -798,6 +808,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.wgcSameDeviceCapture = GetBool("General", "wgc_same_device_capture", false);
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
     config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);
+    config.micCaptureLatencyMs = GetFloat("General", "mic_capture_latency_ms", 0.0f);
+    config.audioLatencyAutodetect = GetBool("General", "audio_latency_autodetect", true);
 
     // Performance (Priority Settings)
     config.processPriority = GetStr("Performance", "process_priority", "above_normal");
@@ -957,8 +969,6 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 inPseudoProcessList = false;
                 continue;
             }
-
-
 
             // wgc_window_detection is in [General], not [Injection] - parse outside section check
             if (trimmed.find("wgc-window-detection=") == 0 || trimmed.find("wgc_window_detection=") == 0) {
@@ -1319,7 +1329,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         char section[32];
         snprintf(section, sizeof(section), "Audio.%d", idx);
         std::string enabledStr = GetStr(section, "enabled", "");
-        if (enabledStr.empty()) continue;
+        if (enabledStr.empty())
+            continue;
 
         AudioConfig cfg;
         cfg.enabled = ParseBool(enabledStr);
@@ -1332,7 +1343,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         cfg.downmix = sysAudio.downmix;
         cfg.captureLatencyMs = GetFloat(section, "capture_latency_ms", sysAudio.captureLatencyMs);
         cfg.sourceType = AudioConfig::SystemAudio;
-        if (cfg.enabled) config.audioSources.push_back(cfg);
+        if (cfg.enabled)
+            config.audioSources.push_back(cfg);
     }
 
     // --- Parse legacy [Microphone] section (backward compat) ---
@@ -1345,16 +1357,19 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     micAudio.sampleRate = sysAudio.sampleRate;
     micAudio.bitDepth = sysAudio.bitDepth;
     micAudio.downmix = sysAudio.downmix;
-    micAudio.captureLatencyMs = GetFloat("Microphone", "capture_latency_ms", config.audioCaptureLatencyMs);
+    // Domain 2 (input device): mics do NOT inherit the render-endpoint loopback latency.
+    micAudio.captureLatencyMs = GetFloat("Microphone", "capture_latency_ms", config.micCaptureLatencyMs);
     micAudio.sourceType = AudioConfig::Microphone;
-    if (micAudio.enabled) config.audioSources.push_back(micAudio);
+    if (micAudio.enabled)
+        config.audioSources.push_back(micAudio);
 
     // --- Parse [Microphone.1] .. [Microphone.8] sections ---
     for (int idx = 1; idx <= kMaxAudioSections; idx++) {
         char section[32];
         snprintf(section, sizeof(section), "Microphone.%d", idx);
         std::string enabledStr = GetStr(section, "enabled", "");
-        if (enabledStr.empty()) continue;
+        if (enabledStr.empty())
+            continue;
 
         AudioConfig cfg;
         cfg.enabled = ParseBool(enabledStr);
@@ -1365,9 +1380,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         cfg.sampleRate = sysAudio.sampleRate;
         cfg.bitDepth = sysAudio.bitDepth;
         cfg.downmix = sysAudio.downmix;
-        cfg.captureLatencyMs = GetFloat(section, "capture_latency_ms", config.audioCaptureLatencyMs);
+        // Domain 2 (input device): mics do NOT inherit the render-endpoint loopback latency.
+        cfg.captureLatencyMs = GetFloat(section, "capture_latency_ms", config.micCaptureLatencyMs);
         cfg.sourceType = AudioConfig::Microphone;
-        if (cfg.enabled) config.audioSources.push_back(cfg);
+        if (cfg.enabled)
+            config.audioSources.push_back(cfg);
     }
 
     // --- Parse [AppAudio.1] .. [AppAudio.8] sections (unchanged) ---
@@ -1376,7 +1393,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         snprintf(section, sizeof(section), "AppAudio.%d", appIdx);
 
         std::string enabledStr = GetStr(section, "enabled", "");
-        if (enabledStr.empty()) continue;
+        if (enabledStr.empty())
+            continue;
 
         AudioConfig appAudio;
         appAudio.enabled = ParseBool(enabledStr);

@@ -542,9 +542,11 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
         return false;
     }
 
-    DLL_Log("[AppAudioCapture] Started: PID=%lu channels=%d rate=%d bits=%d streamLatency=%lluus compensate=1", pid,
-            pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
-            static_cast<unsigned long long>(streamLatency100ns / 10));
+    DLL_Log(
+        "[AppAudioCapture] Started: PID=%lu channels=%d rate=%d bits=%d streamLatency=%lluus "
+        "(latency routed via video content delay, not audio advance)",
+        pid, pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
+        static_cast<unsigned long long>(streamLatency100ns / 10));
 
     DLL_Log("[AppAudioCapture] Capture mode: %s",
             (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
@@ -665,15 +667,17 @@ void AppAudioCapture::CaptureLoop() {
                 firstSet = true;
                 const uint64_t packetDuration100ns =
                     ce::audio::AudioFramesToHundredNanoseconds(numFramesAvailable, pwfx->nSamplesPerSec);
-                const uint64_t packetStartQpc =
-                    ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(firstQpcPos, numFramesAvailable,
-                                                                                pwfx->nSamplesPerSec);
-                const uint64_t adjustedFirstQpc =
+                const uint64_t packetStartQpc = ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(
+                    firstQpcPos, numFramesAvailable, pwfx->nSamplesPerSec);
+                // streamLatency telemetry only; placement uses packetStartQpc (period-center). The
+                // wouldAdvanceQpc shows the retired GetStreamLatency audio-advance, not applied.
+                const uint64_t wouldAdvanceQpc =
                     ce::audio::ApplyCaptureLatencyCompensation(packetStartQpc, streamLatency100ns, true);
                 DLL_Log(
-                    "[AppAudioCapture] Source Sync Start (%lu): Frames=%llu QPC=%llu AdjustedQPC=%llu "
-                    "Latency=%lluus packetFrames=%u packetDuration=%lluus processLoopbackPacketBias=half_period",
-                    targetPID.load(), firstLogicalFramePos, firstQpcPos, adjustedFirstQpc,
+                    "[AppAudioCapture] Source Sync Start (%lu): Frames=%llu QPC=%llu placedQPC=%llu "
+                    "wouldAdvanceQpc=%llu streamLatency=%lluus packetFrames=%u packetDuration=%lluus "
+                    "processLoopbackPacketBias=half_period (latency via video delay, not applied)",
+                    targetPID.load(), firstLogicalFramePos, firstQpcPos, packetStartQpc, wouldAdvanceQpc,
                     static_cast<unsigned long long>(streamLatency100ns / 10), numFramesAvailable,
                     static_cast<unsigned long long>(packetDuration100ns / 10));
             } else if (firstSet && qpcPosition > firstQpcPos && logCounter++ % 500 == 0) {  // ~5 seconds
@@ -696,12 +700,16 @@ void AppAudioCapture::CaptureLoop() {
             packet.blockAlign = pwfx->nBlockAlign;
             packet.validBitsPerSample = 0;
             packet.channelMask = 0;
-            packet.devicePosition = devicePosition;  // Store for debug drift analysis
-            packet.rawQpcPosition = qpcPosition;     // Store raw WASAPI timestamp for debug drift analysis
-            packet.streamLatency = streamLatency100ns;
-            const uint64_t packetStartQpc = ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(
+            packet.devicePosition = devicePosition;     // Store for debug drift analysis
+            packet.rawQpcPosition = qpcPosition;        // Store raw WASAPI timestamp for debug drift analysis
+            packet.streamLatency = streamLatency100ns;  // telemetry only (see below)
+            // Period-center bias only (process loopback reports end-of-period QPCs). Do NOT advance
+            // by streamLatency: the render->loopback A/V offset is corrected by delaying video
+            // content (audio/PTS untouched), never by advancing live audio (the earlier samples do
+            // not exist; the CFR pipeline absorbs the shift). Process loopback shares the render
+            // endpoint, so it inherits audio_capture_latency_ms and is handled by the video delay.
+            packet.qpcPosition = ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(
                 qpcPosition, numFramesAvailable, pwfx->nSamplesPerSec);
-            packet.qpcPosition = ce::audio::ApplyCaptureLatencyCompensation(packetStartQpc, streamLatency100ns, true);
 
             // Check for float format
             packet.isFloat = false;
@@ -776,8 +784,8 @@ void AppAudioCapture::CaptureLoop() {
     DLL_Log("[AppAudioCapture] Capture loop exited");
     if (finalDrainPackets > 0 || finalDrainFrames > 0) {
         DLL_Log("[AppAudioCapture] Final stop drain queued %llu packet(s) / %llu frame(s) for PID %lu",
-                static_cast<unsigned long long>(finalDrainPackets),
-                static_cast<unsigned long long>(finalDrainFrames), targetPID.load());
+                static_cast<unsigned long long>(finalDrainPackets), static_cast<unsigned long long>(finalDrainFrames),
+                targetPID.load());
     }
     if (queueDropPackets > 0 || queueDropFrames > 0) {
         DLL_Log("[AppAudioCapture] Final queue overrun summary for PID %lu: dropped %llu packet(s) / %llu frame(s)",

@@ -4,11 +4,12 @@
 #include "app_audio_capture.h"
 #include "audio_capture.h"
 #include "audio_encoder.h"
+#include "audio_latency_probe.h"
 
 #include <dxgi1_5.h>
 #include <chrono>
-#include <condition_variable>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <deque>
 #include <limits>
@@ -85,22 +86,22 @@ public:
         uint64_t startupRebasedGapSamples = 0;      // Persistent startup packet-QPC offset suppressed after sync reset
         uint64_t lateAppJoinSuppressedGapSamples = 0;  // First app packet gap suppressed to join live timeline
         uint64_t lateAppJoinPreservedGapSamples = 0;   // Small live-join cushion retained for click-free fade-in
-        int64_t alignedStartMs = -1;                // First source packet offset relative to recording start
-        int64_t observedLateStartMs = 0;            // Latest observed startup delay used for startup pull slack
-        bool hasAlignedStart = false;               // True after first packet aligned to recording start
-        bool timelineValid = false;                 // True once the source can contribute silence/real audio on timeline
-        bool isPrimed = false;                      // True after source has buffered a startup safety cushion
-        bool bootstrapComplete = false;             // True after startup backlog is settled and live sync may engage
-        bool pendingUnderrunRecoveryFade = false;   // Arm fade-in when real audio resumes after padded silence
-        bool sawSyncPendingPackets = false;         // Audio arrived while sync gate was closed before first video frame
-        bool startupRealAudioSeen = false;          // Real audio has been emitted for this source since sync reset
-        bool pendingStartupJoinFade = false;        // Fade in real audio when a late source joins after startup silence
-        uint64_t pendingRetainedTrimSamples = 0;    // Aggregated ring-headroom trims since the last periodic log
-        uint32_t pendingRetainedTrimEvents = 0;     // Aggregated ring-headroom trim events since the last periodic log
-        uint64_t pendingLatencyTrimSamples = 0;     // Aggregated trim samples since the last periodic log
-        uint32_t pendingLatencyTrimEvents = 0;      // Aggregated trim events since the last periodic log
-        uint64_t pendingTier2TrimSamples = 0;       // Aggregated tier2 drift trims since the last periodic log
-        uint32_t pendingTier2TrimEvents = 0;        // Aggregated tier2 drift trim events since the last periodic log
+        int64_t alignedStartMs = -1;                   // First source packet offset relative to recording start
+        int64_t observedLateStartMs = 0;               // Latest observed startup delay used for startup pull slack
+        bool hasAlignedStart = false;                  // True after first packet aligned to recording start
+        bool timelineValid = false;                // True once the source can contribute silence/real audio on timeline
+        bool isPrimed = false;                     // True after source has buffered a startup safety cushion
+        bool bootstrapComplete = false;            // True after startup backlog is settled and live sync may engage
+        bool pendingUnderrunRecoveryFade = false;  // Arm fade-in when real audio resumes after padded silence
+        bool sawSyncPendingPackets = false;        // Audio arrived while sync gate was closed before first video frame
+        bool startupRealAudioSeen = false;         // Real audio has been emitted for this source since sync reset
+        bool pendingStartupJoinFade = false;       // Fade in real audio when a late source joins after startup silence
+        uint64_t pendingRetainedTrimSamples = 0;   // Aggregated ring-headroom trims since the last periodic log
+        uint32_t pendingRetainedTrimEvents = 0;    // Aggregated ring-headroom trim events since the last periodic log
+        uint64_t pendingLatencyTrimSamples = 0;    // Aggregated trim samples since the last periodic log
+        uint32_t pendingLatencyTrimEvents = 0;     // Aggregated trim events since the last periodic log
+        uint64_t pendingTier2TrimSamples = 0;      // Aggregated tier2 drift trims since the last periodic log
+        uint32_t pendingTier2TrimEvents = 0;       // Aggregated tier2 drift trim events since the last periodic log
         uint64_t pendingCoverageLossTrimSamples = 0;  // Aggregated coverage-loss trims since the last periodic log
         uint32_t pendingCoverageLossTrimEvents = 0;   // Aggregated coverage-loss trim events since the last log
         uint64_t lastRetainedTrimWarnTick = 0;        // Rate-limit explicit retained-audio warnings
@@ -243,9 +244,8 @@ public:
                 auto it = resolved.find(track);
                 if (it == resolved.end() || candidate.priority < it->second.priority) {
                     resolved[track] = candidate;
-                    DLL_Log("[AudioFormat] Track %d resolved format: %dch mask=0x%x rate=%d priority=%d",
-                            track, candidate.channels, candidate.channelMask, candidate.sampleRate,
-                            candidate.priority);
+                    DLL_Log("[AudioFormat] Track %d resolved format: %dch mask=0x%x rate=%d priority=%d", track,
+                            candidate.channels, candidate.channelMask, candidate.sampleRate, candidate.priority);
                 }
             }
         }
@@ -295,7 +295,7 @@ public:
     bool audioOnly = false;
     AVFormatContext* audioOnlyFmtCtx = nullptr;
     std::string audioOnlyFilename;
-    std::vector<AudioEncoder*> trackEncoders;  // All unique encoders for audio-only padding
+    std::vector<AudioEncoder*> trackEncoders;              // All unique encoders for audio-only padding
     std::unordered_map<int, int64_t> trackEncodedSamples;  // per-track sample count for audio-only padding
 
     AppConfig config;
@@ -308,7 +308,7 @@ public:
     // Audio thread
     std::thread audioThread;
     std::atomic<bool> audioRunning;
-    std::atomic<bool> audioSyncPending{false};                 // Pause AudioLoop writes during buffer clear
+    std::atomic<bool> audioSyncPending{false};  // Pause AudioLoop writes during buffer clear
     std::mutex audioDrainMutex;
     std::condition_variable audioDrainCv;
     std::atomic<bool> audioStopDrainRequested{false};
@@ -467,25 +467,24 @@ public:
                 }
 
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
-                const bool optionalUnstarted =
-                    ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.timelineValid,
-                                                                 src.sawSyncPendingPackets);
+                const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
+                    isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
                 const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
                     true, isAppAudioSource, src.bootstrapComplete, optionalUnstarted);
                 const bool strictSource = src.sourceType != AudioConfig::Microphone;
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
-                if (ce::audio::ShouldWaitForFinalCfrSourceCatchup(
-                        true, strictSource, optionalUnstarted, sparseStartedSourceMaySilence, requestedSamples,
-                        bufferedTimelineSamples)) {
+                if (ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, strictSource, optionalUnstarted,
+                                                                  sparseStartedSourceMaySilence, requestedSamples,
+                                                                  bufferedTimelineSamples)) {
                     status.ready = false;
                     status.sourceIndex = srcIdx;
                     status.track = track;
                     status.requestedSamples = requestedSamples;
                     status.bufferedSamples = bufferedTimelineSamples;
                     status.missingSamples =
-                        requestedSamples - static_cast<int64_t>(std::min<size_t>(
-                                               bufferedTimelineSamples,
-                                               static_cast<size_t>(std::max<int64_t>(requestedSamples, 0))));
+                        requestedSamples -
+                        static_cast<int64_t>(std::min<size_t>(
+                            bufferedTimelineSamples, static_cast<size_t>(std::max<int64_t>(requestedSamples, 0))));
                     return status;
                 }
             }
@@ -525,9 +524,8 @@ public:
         lock.unlock();
 
         status = GetFinalCfrSourceCatchupStatus(targetUs);
-        const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  std::chrono::steady_clock::now() - waitStart)
-                                  .count();
+        const auto waitedMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - waitStart).count();
         if (!status.ready) {
             DLL_Log(
                 "[StopAudio] WARNING: Final source catch-up timed out after %lldms: targetUs=%lld track=%d src=%zu "
@@ -642,10 +640,11 @@ public:
             src.targetRateDelta = 0;
             src.rateCompActive = false;
             src.targetRateSaturated = false;
-            DLL_Log("[A/V START] Audio source reset to shared anchor: src=%zu track=%d type=%d startMs=%lld "
-                    "timelineValid=%d captureLatencyMs=%.3f",
-                    static_cast<size_t>(&src - audioSources.data()), src.track, static_cast<int>(src.sourceType),
-                    startQpcMs, src.timelineValid ? 1 : 0, static_cast<double>(src.config.captureLatencyMs));
+            DLL_Log(
+                "[A/V START] Audio source reset to shared anchor: src=%zu track=%d type=%d startMs=%lld "
+                "timelineValid=%d captureLatencyMs=%.3f",
+                static_cast<size_t>(&src - audioSources.data()), src.track, static_cast<int>(src.sourceType),
+                startQpcMs, src.timelineValid ? 1 : 0, static_cast<double>(src.config.captureLatencyMs));
         }
         audioSyncPending.store(false);
     }
@@ -789,8 +788,7 @@ public:
             DLL_Log("MediaEngine::Init creating VideoEncoder");
             videoEnc = std::make_unique<VideoEncoder>();
             DLL_Log("MediaEngine::Init calling VideoEncoder::Init");
-            bool vRes = videoEnc->Init(config->video, 0, 0,
-                                       config->video.fps,
+            bool vRes = videoEnc->Init(config->video, 0, 0, config->video.fps,
                                        [this](AVPacket* pkt) { this->WritePacket(pkt); });
             if (!vRes) {
                 DLL_Log("MediaEngine::Init VideoEncoder init failed");
@@ -864,7 +862,8 @@ public:
                     source.config = resolvedAudioConfig;
                     source.track = track;
                     source.sourceType = audioConfig.sourceType;
-                    source.mixChannels = resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannels =
+                        resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
                     source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
                                                 ? resolvedAudioConfig.outputChannelMask
                                                 : DefaultChannelMaskForChannels(source.mixChannels);
@@ -900,7 +899,8 @@ public:
                     source.config = resolvedAudioConfig;
                     source.track = track;
                     source.sourceType = audioConfig.sourceType;
-                    source.mixChannels = resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannels =
+                        resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
                     source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
                                                 ? resolvedAudioConfig.outputChannelMask
                                                 : DefaultChannelMaskForChannels(source.mixChannels);
@@ -986,13 +986,15 @@ public:
                     for (auto& src : audioSources) {
                         if (src.encoder && src.track == targetTrack) {
                             src.encoder->SetStreamIndex((int)si);
-                            DLL_Log("[AudioSetup] Stream %d -> track %d encoder %p", si, targetTrack, (void*)src.encoder.get());
+                            DLL_Log("[AudioSetup] Stream %d -> track %d encoder %p", si, targetTrack,
+                                    (void*)src.encoder.get());
                             ownerCount++;
                             break;
                         }
                     }
                 }
-                DLL_Log("[AudioSetup] %d owner encoders assigned, %d streams", ownerCount, (int)audioOnlyFmtCtx->nb_streams);
+                DLL_Log("[AudioSetup] %d owner encoders assigned, %d streams", ownerCount,
+                        (int)audioOnlyFmtCtx->nb_streams);
             }
 
             audioSyncPending.store(false);
@@ -1000,8 +1002,10 @@ public:
 
             // Reset audio encoder state (normally done by SyncAudioToFirstVideoFrame)
             for (auto& src : audioSources) {
-                if (src.ringBuffer) src.ringBuffer->Clear();
-                if (src.syncResampler) src.syncResampler->Reset();
+                if (src.ringBuffer)
+                    src.ringBuffer->Clear();
+                if (src.syncResampler)
+                    src.syncResampler->Reset();
                 src.syncSamplesOutput = 0;
                 if (src.sharedEncoderPtr) {
                     src.sharedEncoderPtr->SetRecordingStart(0);
@@ -1021,7 +1025,8 @@ public:
                     bool isLoopback = (src.sourceType == AudioConfig::SystemAudio);
                     started = src.capture->Start(src.config.device, isLoopback);
                 }
-                if (started) startedCount++;
+                if (started)
+                    startedCount++;
             }
             // Collect unique encoder pointers for track padding
             trackEncoders.clear();
@@ -1030,10 +1035,17 @@ public:
                 if (src.encoder) {
                     encCount++;
                     bool dup = false;
-                    for (auto* e : trackEncoders) { if (e == src.encoder.get()) { dup = true; break; } }
-                    if (!dup) trackEncoders.push_back(src.encoder.get());
+                    for (auto* e : trackEncoders) {
+                        if (e == src.encoder.get()) {
+                            dup = true;
+                            break;
+                        }
+                    }
+                    if (!dup)
+                        trackEncoders.push_back(src.encoder.get());
                 }
-                if (src.sharedEncoderPtr) shmCount++;
+                if (src.sharedEncoderPtr)
+                    shmCount++;
             }
             DLL_Log("[StartAudio] trackEncoders: %zu unique from %d owners (%d shared), %zu sources",
                     trackEncoders.size(), encCount, shmCount, audioSources.size());
@@ -1270,15 +1282,19 @@ public:
         if (audioOnly) {
             {
                 std::lock_guard<std::recursive_mutex> lock(muxMutex);
-                if (!recording) return;
+                if (!recording)
+                    return;
                 recording = false;
             }
             audioRunning = false;
-            if (audioThread.joinable()) audioThread.join();
+            if (audioThread.joinable())
+                audioThread.join();
             // Stop all capture sources first, then pad tracks to equal length
             for (auto& src : audioSources) {
-                if (src.capture) src.capture->Stop();
-                if (src.appCapture) src.appCapture->Stop();
+                if (src.capture)
+                    src.capture->Stop();
+                if (src.appCapture)
+                    src.appCapture->Stop();
             }
 
             // Pad unique stream encoders to equal length
@@ -1286,7 +1302,8 @@ public:
             for (auto& src2 : audioSources) {
                 if (src2.encoder) {
                     int si = src2.encoder->GetStreamIndex();
-                    if (si >= 0) streamEnc2[si] = src2.encoder.get();
+                    if (si >= 0)
+                        streamEnc2[si] = src2.encoder.get();
                 }
             }
             if (streamEnc2.size() > 1) {
@@ -1294,13 +1311,14 @@ public:
                 int64_t target = 0;
                 for (auto& [si, enc] : streamEnc2) {
                     int64_t s = enc->GetSamplesCount();
-                    if (s > target) target = s;
+                    if (s > target)
+                        target = s;
                 }
                 target = ((target + kChunkSamples - 1) / kChunkSamples) * kChunkSamples;
                 for (auto& [si, enc] : streamEnc2) {
                     AVCodecContext* ctx = enc->GetCodecContext();
-                    const int channels = std::clamp(ctx && ctx->ch_layout.nb_channels > 0 ? ctx->ch_layout.nb_channels : 2,
-                                                    1, 8);
+                    const int channels =
+                        std::clamp(ctx && ctx->ch_layout.nb_channels > 0 ? ctx->ch_layout.nb_channels : 2, 1, 8);
                     std::vector<float> silence(kChunkSamples * channels, 0.0f);
                     int64_t cur = enc->GetSamplesCount();
                     int64_t pad = target - cur;
@@ -1308,9 +1326,8 @@ public:
                         int64_t remaining = pad;
                         while (remaining > 0) {
                             int chunk = (int)(std::min)(remaining, (int64_t)kChunkSamples);
-                            enc->EncodeSamples((const uint8_t*)silence.data(),
-                                chunk * channels * (int)sizeof(float),
-                                channels, 48000, 32, 32, channels * 4, true, GetTickCount64());
+                            enc->EncodeSamples((const uint8_t*)silence.data(), chunk * channels * (int)sizeof(float),
+                                               channels, 48000, 32, 32, channels * 4, true, GetTickCount64());
                             remaining -= chunk;
                         }
                     }
@@ -1320,7 +1337,8 @@ public:
                     target = 0;
                     for (auto& [si, enc] : streamEnc2) {
                         int64_t s = enc->GetSamplesCount();
-                        if (s > target) target = s;
+                        if (s > target)
+                            target = s;
                     }
                     bool allMatch = true;
                     for (auto& [si, enc] : streamEnc2) {
@@ -1329,23 +1347,23 @@ public:
                         if (pad > 0) {
                             allMatch = false;
                             AVCodecContext* ctx = enc->GetCodecContext();
-                            const int channels =
-                                std::clamp(ctx && ctx->ch_layout.nb_channels > 0 ? ctx->ch_layout.nb_channels : 2, 1,
-                                           8);
+                            const int channels = std::clamp(
+                                ctx && ctx->ch_layout.nb_channels > 0 ? ctx->ch_layout.nb_channels : 2, 1, 8);
                             std::vector<float> silence(kChunkSamples * channels, 0.0f);
                             int64_t remaining = pad;
                             while (remaining > 0) {
                                 int chunk = (int)(std::min)(remaining, (int64_t)kChunkSamples);
                                 enc->EncodeSamples((const uint8_t*)silence.data(),
-                                    chunk * channels * (int)sizeof(float),
-                                    channels, 48000, 32, 32, channels * 4, true, GetTickCount64());
+                                                   chunk * channels * (int)sizeof(float), channels, 48000, 32, 32,
+                                                   channels * 4, true, GetTickCount64());
                                 remaining -= chunk;
                             }
-                            DLL_Log("[StopAudio] Convergence iter %d: stream %d +%lld to %lld",
-                                    iter, si, (long long)pad, (long long)target);
+                            DLL_Log("[StopAudio] Convergence iter %d: stream %d +%lld to %lld", iter, si,
+                                    (long long)pad, (long long)target);
                         }
                     }
-                    if (allMatch) break;
+                    if (allMatch)
+                        break;
                 }
                 for (auto& [si, enc] : streamEnc2) {
                     DLL_Log("[StopAudio] Final stream %d: %lld samples", si, (long long)enc->GetSamplesCount());
@@ -1356,8 +1374,10 @@ public:
                 enc->Stop();
             }
             for (auto& src : audioSources) {
-                if (src.ringBuffer) src.ringBuffer->Clear();
-                if (src.syncResampler) src.syncResampler->Reset();
+                if (src.ringBuffer)
+                    src.ringBuffer->Clear();
+                if (src.syncResampler)
+                    src.syncResampler->Reset();
             }
             if (audioOnlyFmtCtx) {
                 av_write_trailer(audioOnlyFmtCtx);
@@ -1393,10 +1413,9 @@ public:
                 int64_t encodedDurationUs = videoEnc->GetEncodedDurationUs();
                 int64_t durationUs = expectedDurationUs > 0 ? expectedDurationUs : encodedDurationUs;
                 if (IsCfrRecording()) {
-                    const int64_t wallDurationUs =
-                        std::max<int64_t>(
-                            IsWgcCfrRecording() ? d3d11TimelineState.lastElapsedUs : injectTimelineState.lastElapsedUs,
-                            videoElapsedMs.load() * 1000);
+                    const int64_t wallDurationUs = std::max<int64_t>(
+                        IsWgcCfrRecording() ? d3d11TimelineState.lastElapsedUs : injectTimelineState.lastElapsedUs,
+                        videoElapsedMs.load() * 1000);
 
                     DLL_Log(
                         "MediaEngine: CFR stop durations. Expected: %lld us, Encoded: %lld us, Wall: %lld us, "
@@ -1423,8 +1442,7 @@ public:
                     // PullAndEncodeAudio intentionally limits very large gaps to bounded
                     // chunks, so force-drain loops until every exported track reaches the
                     // selected video endpoint or forward progress genuinely stops.
-                    const int64_t cfrAudioTargetUs =
-                        IsCfrRecording() ? videoEnc->GetExpectedFinalDurationUs() : endUs;
+                    const int64_t cfrAudioTargetUs = IsCfrRecording() ? videoEnc->GetExpectedFinalDurationUs() : endUs;
                     const int64_t cfrAudioTargetSamples =
                         ce::audio::ComputeDurationUsToSamples(cfrAudioTargetUs, kStopSampleRate);
                     auto minTrackCursorSamples = [this]() -> int64_t {
@@ -1434,8 +1452,7 @@ public:
                         int64_t minSamples = std::numeric_limits<int64_t>::max();
                         for (const auto& kv : cachedTrackToSources) {
                             const auto trackIt = trackTimelineSamples.find(kv.first);
-                            const int64_t trackSamples =
-                                trackIt != trackTimelineSamples.end() ? trackIt->second : 0;
+                            const int64_t trackSamples = trackIt != trackTimelineSamples.end() ? trackIt->second : 0;
                             minSamples = std::min(minSamples, trackSamples);
                         }
                         return minSamples == std::numeric_limits<int64_t>::max() ? 0 : minSamples;
@@ -1581,8 +1598,7 @@ public:
                     (unsigned long long)src.packetTimelineGapSamples,
                     (unsigned long long)src.lateAppJoinSuppressedGapSamples,
                     (unsigned long long)src.lateAppJoinPreservedGapSamples, src.ringBufferPeakSamples,
-                    src.ringBufferUnderrunCount,
-                    src.config.processName.empty() ? "-" : src.config.processName.c_str());
+                    src.ringBufferUnderrunCount, src.config.processName.empty() ? "-" : src.config.processName.c_str());
                 DLL_Log(
                     "[STOP AUDIO DETAIL] Source %zu: ratePpm=%+.2f compDelta=%d sat=%d trimRate(latTotal=%.1f/min "
                     "boot=%.1f/min cov=%.1f/min tier2=%.1f/min retain=%.1f/min) totals(boot=%llu tier2=%llu "
@@ -1744,8 +1760,8 @@ public:
         }
 
         const bool cfrRecording = IsCfrRecording();
-        const int64_t committedElapsedUs =
-            cfrRecording && videoEnc ? videoEnc->GetExpectedFinalDurationUs() : GetCommittedVideoElapsedUs(realElapsedUs);
+        const int64_t committedElapsedUs = cfrRecording && videoEnc ? videoEnc->GetExpectedFinalDurationUs()
+                                                                    : GetCommittedVideoElapsedUs(realElapsedUs);
         CommitVideoElapsedUs(injectTimelineState, committedElapsedUs);
 
         // Update audio stream index for all sources
@@ -2147,9 +2163,9 @@ public:
                         (unsigned long long)src.startupSyntheticPostSamples, src.observedLateStartMs);
                 }
 
-                trackAllPrimed = trackAllPrimed &&
-                                 ce::audio::IsSourceStartupPrimed(src.isPrimed, src.timelineValid, isAppAudioSource,
-                                                                  src.sawSyncPendingPackets);
+                trackAllPrimed =
+                    trackAllPrimed && ce::audio::IsSourceStartupPrimed(src.isPrimed, src.timelineValid,
+                                                                       isAppAudioSource, src.sawSyncPendingPackets);
                 trackMaxObservedLateStartMs = std::max(trackMaxObservedLateStartMs, src.observedLateStartMs);
             }
 
@@ -2187,10 +2203,9 @@ public:
                     bufferedRealSamples += ce::audio::ComputeBufferedRealAudioSamples(
                         src.ringBuffer->GetAvailable() / CHANNELS, src.startupSyntheticRingSamples);
                 }
-                const bool srcReady =
-                    ce::audio::IsSourceBootstrapReady(src.bootstrapComplete, src.timelineValid, src.isPrimed,
-                                                      isAppAudioSource, bufferedRealSamples, requiredBootstrapSamples,
-                                                      src.sawSyncPendingPackets);
+                const bool srcReady = ce::audio::IsSourceBootstrapReady(
+                    src.bootstrapComplete, src.timelineValid, src.isPrimed, isAppAudioSource, bufferedRealSamples,
+                    requiredBootstrapSamples, src.sawSyncPendingPackets);
                 trackReadyForBootstrap = trackReadyForBootstrap && srcReady;
             }
 
@@ -2233,9 +2248,8 @@ public:
 
             const bool initialTrackCatchup =
                 trackFirstPullAfterBootstrap.count(track) && trackFirstPullAfterBootstrap[track];
-            const bool overloadPullQuantum =
-                (isWgcCfrRecording && (wgcOverloadFlags & 0x1u) != 0) ||
-                (isCfrRecording && !isWgcCfrRecording && timelineShortfallMs > 100);
+            const bool overloadPullQuantum = (isWgcCfrRecording && (wgcOverloadFlags & 0x1u) != 0) ||
+                                             (isCfrRecording && !isWgcCfrRecording && timelineShortfallMs > 100);
             int64_t samplesToEncode = ce::audio::ComputeAudioSamplesToEncode(
                 pendingSamples, isCfrRecording, trackStartupSettled, forceDrain, initialTrackCatchup,
                 overloadPullQuantum, ce::audio::kDefaultAudioPullQuantumSamples, kOverloadAudioPullQuantumSamples);
@@ -2274,7 +2288,8 @@ public:
                     DLL_Log(
                         "[PullAudio] Large CFR audio backlog (%.2f sec) on track %d - draining in bounded chunks "
                         "without dropping buffered audio (chunk=%lld samples, target=%lld, encoded=%lld)",
-                        (double)pendingSamples / SAMPLE_RATE, track, samplesToEncode, targetSamples, trackCursorSamples);
+                        (double)pendingSamples / SAMPLE_RATE, track, samplesToEncode, targetSamples,
+                        trackCursorSamples);
                 }
             }
 
@@ -2282,15 +2297,14 @@ public:
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
-                const bool optionalUnstarted =
-                    ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.timelineValid,
-                                                                 src.sawSyncPendingPackets);
+                const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
+                    isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
                 const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
                     isCfrRecording, isAppAudioSource, src.bootstrapComplete, optionalUnstarted);
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
-                if (ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
-                        isCfrRecording, forceDrain, optionalUnstarted, sparseStartedSourceMaySilence, samplesToEncode,
-                        bufferedTimelineSamples)) {
+                if (ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(isCfrRecording, forceDrain, optionalUnstarted,
+                                                                      sparseStartedSourceMaySilence, samplesToEncode,
+                                                                      bufferedTimelineSamples)) {
                     deferForSourceBuffer = true;
                     if (dropLogCounter++ % 500 == 0) {
                         DLL_Log(
@@ -2589,9 +2603,9 @@ public:
                                                 kTier1MaxPitchPercent, SAMPLE_RATE / 12);
                                             const int32_t maxCompensationDelta =
                                                 src.syncResampler->GetMaxCompensationDelta();
-                                            src.targetRateSaturated =
-                                                tier1Delta != 0 && std::abs(tier1Delta) >= maxCompensationDelta &&
-                                                std::abs(trueDrift) > maxCompensationDelta;
+                                            src.targetRateSaturated = tier1Delta != 0 &&
+                                                                      std::abs(tier1Delta) >= maxCompensationDelta &&
+                                                                      std::abs(trueDrift) > maxCompensationDelta;
                                             if (isWgcCfrRecording && tier1Delta > 0) {
                                                 const int64_t positiveCompensationHysteresisSamples =
                                                     ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
@@ -2643,9 +2657,8 @@ public:
                                     // Normally suppressed in WGC CFR mode (prefer video repeats over
                                     // audio cuts), and enabled for non-CFR modes when the wall-clock
                                     // audio anchor is active (encoder severely stalled).
-                                    const bool wallClockAnchorActive =
-                                        ce::audio::ShouldAllowWallClockAudioAnchor(isCfrRecording, forceDrain,
-                                                                                   wallVideoLagMs);
+                                    const bool wallClockAnchorActive = ce::audio::ShouldAllowWallClockAudioAnchor(
+                                        isCfrRecording, forceDrain, wallVideoLagMs);
                                     if (isWgcCfrRecording && !wgcEncoderOnlyOverload && !startupTimelineProtected &&
                                         (!kWgcPreferVideoRepeatsOverAudioCuts || wallClockAnchorActive) &&
                                         ce::audio::ShouldActivateTier2Trim(trueDrift, SAMPLE_RATE,
@@ -3148,8 +3161,7 @@ public:
                 encoder->EncodeSamples(encodeData.data(), (int)encodeData.size(), CHANNELS, SAMPLE_RATE, 32, 32,
                                        CHANNELS * 4,
                                        true,  // float32
-                                       CHANNEL_MASK,
-                                       audioChunkTimestampMs);
+                                       CHANNEL_MASK, audioChunkTimestampMs);
 
                 if (srcIndices.size() > 1 && mixLogCounter++ % 5000 == 0) {
                     DLL_Log("[PullAudio] Mixed %d sources for track %d (%lld samples)", activeSources, track,
@@ -3289,12 +3301,11 @@ public:
                         srcIdx, rbLevel, syncOutput, alignedStartMs, (int)srcTimelineValid, (int)srcPrimed,
                         (int)srcBootstrapped, (unsigned long long)srcSyntheticRing,
                         (unsigned long long)srcSyntheticInflight, (unsigned long long)srcSyntheticPost,
-                        (unsigned long long)srcOverflowDropped,
-                        (unsigned long long)srcRetainedTrimmed, (unsigned long long)srcLatencyTrimmed,
-                        (unsigned long long)srcTier2Trimmed, (unsigned long long)srcCoverageLossTrimmed,
-                        (unsigned long long)srcBootstrapTrimmed, (unsigned long long)srcPostTrimmed,
-                        (unsigned long long)srcUnderrunPadded, (unsigned long long)srcPacketGapAdjusted,
-                        (unsigned long long)srcPacketOverlapTrimmed);
+                        (unsigned long long)srcOverflowDropped, (unsigned long long)srcRetainedTrimmed,
+                        (unsigned long long)srcLatencyTrimmed, (unsigned long long)srcTier2Trimmed,
+                        (unsigned long long)srcCoverageLossTrimmed, (unsigned long long)srcBootstrapTrimmed,
+                        (unsigned long long)srcPostTrimmed, (unsigned long long)srcUnderrunPadded,
+                        (unsigned long long)srcPacketGapAdjusted, (unsigned long long)srcPacketOverlapTrimmed);
                     if (!sourceSummary.empty()) {
                         sourceSummary += "; ";
                     }
@@ -3384,16 +3395,15 @@ public:
                     encodedVideoMs, audioVsEncodedUs, audioVsTargetUs, audioVsScheduledUs, residualSamples, residualUs,
                     targetSamples, audioSamples, trackAudioTargetUs, audioUs, encodedVideoUsForSummary,
                     scheduledVideoUsForSummary, pipelineLagMs,
-                    isWgcCfrRecording ? wgcBufferedVideoContentLagMs : pipelineLagMs,
-                    wgcCoverageLossActive ? 1 : 0, wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps,
-                    wgcOverloadFlags, (targetBufferedSamples * 1000) / SAMPLE_RATE, wgcSelectedContentLeadMs,
-                    wgcVisualContentLagMs, wgcSelectionBiasUs, (unsigned long long)overflowDropped,
-                    (unsigned long long)retainedTrimmed, (unsigned long long)coverageLossTrimmed,
-                    (unsigned long long)tier2Trimmed, (unsigned long long)bootstrapTrimmed,
-                    (unsigned long long)latencyTrimmed, (unsigned long long)uncategorizedLatencyTrim,
-                    (unsigned long long)postTrimmed, (unsigned long long)underrunPadded,
-                    (unsigned long long)packetGapAdjusted, (unsigned long long)packetOverlapTrimmed,
-                    sourceSummary.c_str());
+                    isWgcCfrRecording ? wgcBufferedVideoContentLagMs : pipelineLagMs, wgcCoverageLossActive ? 1 : 0,
+                    wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps, wgcOverloadFlags,
+                    (targetBufferedSamples * 1000) / SAMPLE_RATE, wgcSelectedContentLeadMs, wgcVisualContentLagMs,
+                    wgcSelectionBiasUs, (unsigned long long)overflowDropped, (unsigned long long)retainedTrimmed,
+                    (unsigned long long)coverageLossTrimmed, (unsigned long long)tier2Trimmed,
+                    (unsigned long long)bootstrapTrimmed, (unsigned long long)latencyTrimmed,
+                    (unsigned long long)uncategorizedLatencyTrim, (unsigned long long)postTrimmed,
+                    (unsigned long long)underrunPadded, (unsigned long long)packetGapAdjusted,
+                    (unsigned long long)packetOverlapTrimmed, sourceSummary.c_str());
 
                 DLL_Log(
                     "[A/V SYNC SUMMARY] Track %d: Wall=%lldms EncV=%lldms Audio=%lldms Drift=%+lldms "
@@ -3403,9 +3413,8 @@ public:
                     "Delivered=%u/%u",
                     track, wallVideoMs, encodedVideoMs, audioMs, avDrift, audioVsEncodedUs, audioVsTargetUs,
                     audioVsScheduledUs, residualSamples, residualUs, targetSamples, audioSamples, pipelineLagMs,
-                    trackAudioPullLatencyMs,
-                    wgcSelectedContentLeadMs, wgcVisualContentLagMs, wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps,
-                    wgcTargetFps);
+                    trackAudioPullLatencyMs, wgcSelectedContentLeadMs, wgcVisualContentLagMs,
+                    wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps);
 
                 if (isCfrRecording && trackStartupSettled && residualSamples != 0) {
                     DLL_Log(
@@ -3564,7 +3573,8 @@ public:
                     source.config = resolvedAudioConfig;
                     source.track = track;
                     source.sourceType = audioConfig.sourceType;
-                    source.mixChannels = resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannels =
+                        resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
                     source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
                                                 ? resolvedAudioConfig.outputChannelMask
                                                 : DefaultChannelMaskForChannels(source.mixChannels);
@@ -3594,7 +3604,8 @@ public:
                     source.config = resolvedAudioConfig;
                     source.track = track;
                     source.sourceType = audioConfig.sourceType;
-                    source.mixChannels = resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannels =
+                        resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
                     source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
                                                 ? resolvedAudioConfig.outputChannelMask
                                                 : DefaultChannelMaskForChannels(source.mixChannels);
@@ -3644,8 +3655,9 @@ private:
         const int channels = std::clamp(source.mixChannels, 1, 8);
         size_t capacity = static_cast<size_t>(kMixerSampleRate) * ringBufferSeconds * channels;
         source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
-        DLL_Log("MediaEngine::Init RingBuffer created for source %zu. Cap=%zu floats (%zus), rate=%d channels=%d mask=0x%x",
-                sourceIdx, capacity, ringBufferSeconds, kMixerSampleRate, channels, source.mixChannelMask);
+        DLL_Log(
+            "MediaEngine::Init RingBuffer created for source %zu. Cap=%zu floats (%zus), rate=%d channels=%d mask=0x%x",
+            sourceIdx, capacity, ringBufferSeconds, kMixerSampleRate, channels, source.mixChannelMask);
 
         source.syncResampler = std::make_unique<AudioResampler>();
         AudioResampler::InputFormat syncInFmt;
@@ -3722,12 +3734,13 @@ private:
             audioEqualizationDelaySamples[i] =
                 deltaMs > 0.0 ? static_cast<int64_t>(std::llround(deltaMs / 1000.0 * 48000.0)) : 0;
             if (audioEqualizationDelaySamples[i] > 0) {
-                DLL_Log("[AudioLoop] A/V equalization: src=%zu captureLatencyMs=%.3f delaySamples=%lld (%.1f ms) to "
-                        "match maxLatencyMs=%.3f",
-                        i, static_cast<double>(audioSources[i].config.captureLatencyMs),
-                        (long long)audioEqualizationDelaySamples[i],
-                        static_cast<double>(audioEqualizationDelaySamples[i]) * 1000.0 / 48000.0,
-                        static_cast<double>(maxAudioCaptureLatencyMs));
+                DLL_Log(
+                    "[AudioLoop] A/V equalization: src=%zu captureLatencyMs=%.3f delaySamples=%lld (%.1f ms) to "
+                    "match maxLatencyMs=%.3f",
+                    i, static_cast<double>(audioSources[i].config.captureLatencyMs),
+                    (long long)audioEqualizationDelaySamples[i],
+                    static_cast<double>(audioEqualizationDelaySamples[i]) * 1000.0 / 48000.0,
+                    static_cast<double>(maxAudioCaptureLatencyMs));
             }
         }
 
@@ -3991,14 +4004,15 @@ private:
                                     packetStartSamples = ce::audio::ApplyStartupPacketTimelineRebaseOffset(
                                         packetStartSamples, static_cast<int64_t>(src.startupRebasedGapSamples));
                                     if (srcIdx < encodedSamplesPerSource.size() &&
-                                        ce::audio::ShouldAdvancePacketTimelineToEncodedCursor(
-                                            src.sourceType == AudioConfig::AppAudio)) {
+                                        ce::audio::ShouldAdvancePacketTimelineToEncodedCursor(src.sourceType ==
+                                                                                              AudioConfig::AppAudio)) {
                                         const int64_t encodedCursorSamples =
-                                            ce::audio::ResolveSourceTimelineWriteCursor(src.qpcAlignedWrittenSamples,
-                                                                                       encodedSamplesPerSource[srcIdx]);
+                                            ce::audio::ResolveSourceTimelineWriteCursor(
+                                                src.qpcAlignedWrittenSamples, encodedSamplesPerSource[srcIdx]);
                                         if (encodedCursorSamples > static_cast<int64_t>(src.qpcAlignedWrittenSamples)) {
                                             const int64_t cursorAdvance =
-                                                encodedCursorSamples - static_cast<int64_t>(src.qpcAlignedWrittenSamples);
+                                                encodedCursorSamples -
+                                                static_cast<int64_t>(src.qpcAlignedWrittenSamples);
                                             src.qpcAlignedWrittenSamples = static_cast<uint64_t>(encodedCursorSamples);
                                             if (cursorAdvance >= targetFmt.sampleRate / 200) {
                                                 const uint64_t nowTick = GetTickCount64();
@@ -4021,13 +4035,12 @@ private:
                                             sourceParticipatesInSharedStartupRebase(srcIdx) &&
                                             sharedStartupRebaseOffsetSamples >= 0;
                                         const int64_t requestedRebaseOffset =
-                                            usesSharedStartupRebase
-                                                ? sharedStartupRebaseOffsetSamples
-                                                : ce::audio::ComputeStartupFirstPacketRebaseOffset(
-                                                      packetStartSamples, firstPacketSawSyncPending,
-                                                      kStartupFirstPacketGapCapSamples +
-                                                          audioEqualizationDelaySamples[srcIdx],
-                                                      kStartupFirstPacketRebaseThresholdSamples);
+                                            usesSharedStartupRebase ? sharedStartupRebaseOffsetSamples
+                                                                    : ce::audio::ComputeStartupFirstPacketRebaseOffset(
+                                                                          packetStartSamples, firstPacketSawSyncPending,
+                                                                          kStartupFirstPacketGapCapSamples +
+                                                                              audioEqualizationDelaySamples[srcIdx],
+                                                                          kStartupFirstPacketRebaseThresholdSamples);
                                         const int64_t rebaseOffset =
                                             std::clamp<int64_t>(requestedRebaseOffset, 0, packetStartSamples);
                                         if (rebaseOffset > 0) {
@@ -4066,8 +4079,7 @@ private:
                                             "suppressedGap=%lld preservedGap=%lld qpcStart=%llu",
                                             (int)srcIdx, src.track,
                                             src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
-                                            (long long)packetStartSamples,
-                                            (long long)trackTimelineSamples[src.track],
+                                            (long long)packetStartSamples, (long long)trackTimelineSamples[src.track],
                                             (long long)lateJoin.joinCursorSamples,
                                             (long long)lateJoin.suppressedGapSamples,
                                             (long long)lateJoin.preservedGapSamples,
@@ -4145,14 +4157,13 @@ private:
                                     if (audioOnly && writeSamples > 0 && src.encoder && src.encoder->IsReady()) {
                                         int sizeBytes = (int)(writeSamples * targetFmt.channels * sizeof(float));
                                         src.encoder->EncodeSamples(
-                                            (const uint8_t*)writeFloats, sizeBytes,
-                                            targetFmt.channels, targetFmt.sampleRate,
-                                            sizeof(float) * 8,  // bitsPerSample = 32
-                                            sizeof(float) * 8,  // validBitsPerSample
+                                            (const uint8_t*)writeFloats, sizeBytes, targetFmt.channels,
+                                            targetFmt.sampleRate,
+                                            sizeof(float) * 8,                        // bitsPerSample = 32
+                                            sizeof(float) * 8,                        // validBitsPerSample
                                             targetFmt.channels * (int)sizeof(float),  // blockAlign
-                                            true,   // isFloat
-                                            targetFmt.channelMask,
-                                            GetTickCount64());
+                                            true,                                     // isFloat
+                                            targetFmt.channelMask, GetTickCount64());
                                         // Track samples encoded per track for length alignment
                                         trackEncodedSamples[src.track] += writeSamples;
                                     }
@@ -4282,6 +4293,21 @@ MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         g_Engine->ReleaseEncoderTextures();
+}
+
+MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheDir, bool forceRemeasure,
+                                                              double* outLatencyMs) {
+    // Standalone WASAPI probe; intentionally NOT guarded by the engine instance (it can run before
+    // MediaEngine_Init). The probe itself is fail-safe and logs all components.
+    const std::string dir = cacheDir ? cacheDir : "";
+    const ce::audio::RenderLatencyProbeResult r = ce::audio::MeasureRenderEndpointLatency(dir, forceRemeasure);
+    if (!r.ok) {
+        return false;
+    }
+    if (outLatencyMs) {
+        *outLatencyMs = r.latencyMs;
+    }
+    return true;
 }
 
 MEDIAENGINE_API void MediaEngine_Shutdown() {

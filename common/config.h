@@ -30,9 +30,15 @@ struct AudioConfig {
     int outputChannels = 0;          // resolved internal track layout; 0 = stereo fallback
     uint32_t outputChannelMask = 0;  // WAVEFORMATEXTENSIBLE/FFmpeg-compatible channel mask
     // Per-source capture latency in ms (this source's audio lands this late vs the video
-    // content clock). Defaults to the global [General] audio_capture_latency_ms; override per
-    // section with capture_latency_ms. Used to equalize sources and delay video to match.
-    // Loopback/app-loopback only in practice; measure with run_av_sync_matrix.py --raw-offset-gate.
+    // content clock). Latency is a per-DEVICE-DOMAIN property, not really per-source:
+    //   Domain 1 = default render endpoint: the system loopback ([Audio]/[Audio.N]) AND every
+    //              [AppAudio.N] process-loopback source capture the same endpoint, so they all
+    //              share ONE latency = the render-endpoint value ([General] audio_capture_latency_ms,
+    //              optionally auto-measured; see audio_latency_probe).
+    //   Domain 2 = each microphone/input device: its own latency ([General] mic_capture_latency_ms
+    //              or a per-mic capture_latency_ms override); it must NOT inherit the loopback value.
+    // Override per section with capture_latency_ms. Used to equalize sources and delay video to
+    // match. Measure with run_av_sync_matrix.py --raw-offset-gate (120 fps).
     float captureLatencyMs = 0.0f;
 };
 
@@ -281,17 +287,17 @@ struct WhitelistEntry {
 // churn and improve monitor anchoring.
 struct PseudoOverlayConfig {
     bool enabled = false;
-    int size = 30;               // Indicator circle diameter (10-200)
-    int pad = 20;                // Padding from screen edge (0-100)
-    int pos = 0;                 // 0=BR, 1=BL, 2=TR, 3=TL
-    int mode = 0;                // 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
-    bool alwaysRender = false;   // Keep indicator window alive with a 1x1 alpha=1 ghost pixel when idle
+    int size = 30;              // Indicator circle diameter (10-200)
+    int pad = 20;               // Padding from screen edge (0-100)
+    int pos = 0;                // 0=BR, 1=BL, 2=TR, 3=TL
+    int mode = 0;               // 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
+    bool alwaysRender = false;  // Keep indicator window alive with a 1x1 alpha=1 ghost pixel when idle
     bool alwaysRenderOnlyWhenGame = false;
     bool showEncoderOverloadWarn = true;
     int foregroundAcquireGraceMs = 2000;  // Suppress visible overlay for N ms after the whitelisted
                                           // game (re)acquires foreground focus. Avoids racing Windows
                                           // MPO / fullscreen buffer rebinds on Alt+Tab-in. 0 = off.
-    std::string processList;  // Pipe-delimited process names for foreground detection
+    std::string processList;              // Pipe-delimited process names for foreground detection
 };
 
 struct AppConfig {
@@ -364,15 +370,27 @@ struct AppConfig {
     // Audio
     std::vector<AudioConfig> audioSources;  // System, Mic, etc.
 
-    // Signed A/V sync correction for loopback audio capture latency, in milliseconds.
-    // WASAPI GetStreamLatency() commonly returns 0 for render-loopback and process-loopback
-    // streams, so the real render->loopback path latency is never subtracted and audio lands
-    // late relative to the video content clock (constant "audio slightly delayed" offset).
-    // This is hardware/source dependent and not reliably derivable at runtime, so it is a
-    // user setting: positive advances loopback audio earlier (compensating audio-late);
-    // negative delays it. Applies to system + app loopback sources, not the microphone.
-    // Measure the value with tools/run_av_sync_matrix.py --raw-offset-gate. Default 0 = off.
+    // Render-endpoint (Domain 1) audio capture latency, in milliseconds: the system loopback
+    // AND every app process-loopback source land this late vs the video content clock. WASAPI
+    // GetStreamLatency() commonly returns 0 for render/process loopback (HDMI/AVR/Bluetooth),
+    // so this is auto-measured at startup (render->loopback marker probe; see audio_latency_probe)
+    // and/or set here as a manual override/fallback. CE corrects the offset by DELAYING video
+    // content (audio/PTS untouched) and equalizing faster sources up to it; it never advances
+    // live audio. A manual value > 0 takes precedence over auto-measurement. Applies to system +
+    // app loopback sources only, NOT the microphone (see micCaptureLatencyMs). Default 0.
+    // Measure with tools/run_av_sync_matrix.py --raw-offset-gate (120 fps).
     float audioCaptureLatencyMs = 0.0f;
+
+    // Microphone/input (Domain 2) capture latency default, in milliseconds. Input devices
+    // usually report a real GetStreamLatency and have their own latency distinct from the render
+    // endpoint, so mics do NOT inherit audioCaptureLatencyMs. This is the fallback default for
+    // [Microphone]/[Microphone.N] sources that do not set their own capture_latency_ms. Default 0.
+    float micCaptureLatencyMs = 0.0f;
+
+    // Enable the one-time render->loopback latency self-measurement (audio_latency_probe) that
+    // auto-detects audioCaptureLatencyMs for the default render endpoint, cached per device. A
+    // manual audioCaptureLatencyMs > 0 disables measurement for the render domain. Default true.
+    bool audioLatencyAutodetect = true;
 };
 
 inline bool IsOverlayObserverOnly(const OverlayConfig& cfg) {

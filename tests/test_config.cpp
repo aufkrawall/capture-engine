@@ -625,8 +625,10 @@ TEST_F(ConfigTest, ParseNumberedAudioSections) {
     size_t sysCount = 0;
     size_t micCount = 0;
     for (const auto& src : config.audioSources) {
-        if (src.sourceType == AudioConfig::SystemAudio) sysCount++;
-        if (src.sourceType == AudioConfig::Microphone) micCount++;
+        if (src.sourceType == AudioConfig::SystemAudio)
+            sysCount++;
+        if (src.sourceType == AudioConfig::Microphone)
+            micCount++;
     }
     EXPECT_EQ(sysCount, 3);
     EXPECT_EQ(micCount, 0);
@@ -694,7 +696,8 @@ TEST_F(ConfigTest, ParseSuppressLegacyWhenNumbered) {
     // Should have: [Audio.1] only (no legacy [Audio], no mic)
     size_t sysCount = 0;
     for (const auto& src : config.audioSources) {
-        if (src.sourceType == AudioConfig::SystemAudio) sysCount++;
+        if (src.sourceType == AudioConfig::SystemAudio)
+            sysCount++;
     }
     EXPECT_EQ(sysCount, 1);
 
@@ -725,7 +728,8 @@ TEST_F(ConfigTest, ParseLegacyWhenNumberedWithExplicitEnabled) {
     // Should have: [Audio] (default) + [Audio.1], no mic
     size_t sysCount = 0;
     for (const auto& src : config.audioSources) {
-        if (src.sourceType == AudioConfig::SystemAudio) sysCount++;
+        if (src.sourceType == AudioConfig::SystemAudio)
+            sysCount++;
     }
     EXPECT_EQ(sysCount, 2);
 }
@@ -775,7 +779,8 @@ TEST_F(ConfigTest, ParseNumberedEmptySection) {
     // Should have: [Audio] + [Audio.2] (Audio.1 has no keys, skipped)
     size_t sysCount = 0;
     for (const auto& src : config.audioSources) {
-        if (src.sourceType == AudioConfig::SystemAudio) sysCount++;
+        if (src.sourceType == AudioConfig::SystemAudio)
+            sysCount++;
     }
 
     // [Audio] (default device="") + [Audio.2] (device=Headphones)
@@ -858,10 +863,14 @@ TEST_F(ConfigTest, AudioDerivedSourcesInheritQualityAndDownmix) {
         if (src.tracks.empty()) {
             continue;
         }
-        if (src.tracks[0] == 11) foundAudio = true;
-        if (src.tracks[0] == 12) foundMic = true;
-        if (src.tracks[0] == 13) foundMicNumbered = true;
-        if (src.tracks[0] == 14) foundApp = true;
+        if (src.tracks[0] == 11)
+            foundAudio = true;
+        if (src.tracks[0] == 12)
+            foundMic = true;
+        if (src.tracks[0] == 13)
+            foundMicNumbered = true;
+        if (src.tracks[0] == 14)
+            foundApp = true;
 
         EXPECT_EQ(src.codec, "flac");
         EXPECT_EQ(src.bitrate, 384);
@@ -915,6 +924,120 @@ TEST_F(ConfigTest, AppAudioCanOverrideInheritedDownmixAndQuality) {
     EXPECT_TRUE(foundApp);
 }
 
+// Regression: capture latency is per device-domain. The render endpoint ([General]
+// audio_capture_latency_ms) covers the system loopback AND every app process-loopback source,
+// but the microphone is a separate input device and must NOT inherit the render-endpoint value
+// (it falls back to mic_capture_latency_ms, default 0). Before the device-domain fix the mic
+// inherited the loopback value and got wrongly equalized, delaying it ~46 ms.
+TEST_F(ConfigTest, CaptureLatencyIsPerDeviceDomain) {
+    std::string iniContent =
+        "[General]\n"
+        "audio_capture_latency_ms=46\n"
+        "\n"
+        "[Audio]\n"
+        "enabled=true\n"
+        "device=Speakers\n"
+        "track=1\n"
+        "\n"
+        "[Audio.1]\n"
+        "enabled=true\n"
+        "device=Speakers2\n"
+        "track=11\n"
+        "\n"
+        "[Microphone]\n"
+        "enabled=true\n"
+        "device=Mic\n"
+        "track=2\n"
+        "\n"
+        "[Microphone.1]\n"
+        "enabled=true\n"
+        "device=Mic2\n"
+        "track=13\n"
+        "\n"
+        "[AppAudio.1]\n"
+        "enabled=true\n"
+        "process=Game.exe\n"
+        "track=3\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_FLOAT_EQ(config.audioCaptureLatencyMs, 46.0f);
+    EXPECT_FLOAT_EQ(config.micCaptureLatencyMs, 0.0f);
+    EXPECT_TRUE(config.audioLatencyAutodetect);
+
+    bool sawSystem = false, sawSystemNumbered = false, sawApp = false, sawMic = false, sawMicNumbered = false;
+    for (const auto& src : config.audioSources) {
+        if (src.tracks.empty())
+            continue;
+        switch (src.sourceType) {
+            case AudioConfig::SystemAudio:
+                // Render-endpoint domain: inherits the [General] value.
+                EXPECT_FLOAT_EQ(src.captureLatencyMs, 46.0f)
+                    << "system loopback should inherit render-endpoint latency";
+                if (src.tracks[0] == 1)
+                    sawSystem = true;
+                if (src.tracks[0] == 11)
+                    sawSystemNumbered = true;
+                break;
+            case AudioConfig::AppAudio:
+                // Same render endpoint: inherits the [General] value.
+                EXPECT_FLOAT_EQ(src.captureLatencyMs, 46.0f) << "app process-loopback shares the render endpoint";
+                sawApp = true;
+                break;
+            case AudioConfig::Microphone:
+                // Separate input domain: must NOT inherit the render-endpoint value.
+                EXPECT_FLOAT_EQ(src.captureLatencyMs, 0.0f) << "microphone must not inherit render-endpoint latency";
+                if (src.tracks[0] == 2)
+                    sawMic = true;
+                if (src.tracks[0] == 13)
+                    sawMicNumbered = true;
+                break;
+        }
+    }
+    EXPECT_TRUE(sawSystem);
+    EXPECT_TRUE(sawSystemNumbered);
+    EXPECT_TRUE(sawApp);
+    EXPECT_TRUE(sawMic);
+    EXPECT_TRUE(sawMicNumbered);
+}
+
+// A per-mic capture_latency_ms override and the [General] mic_capture_latency_ms fallback both
+// apply to the mic domain independently of the render-endpoint value.
+TEST_F(ConfigTest, MicLatencyOverrideAndFallback) {
+    std::string iniContent =
+        "[General]\n"
+        "audio_capture_latency_ms=46\n"
+        "mic_capture_latency_ms=5\n"
+        "\n"
+        "[Microphone]\n"
+        "enabled=true\n"
+        "device=Mic\n"
+        "track=2\n"
+        "\n"
+        "[Microphone.1]\n"
+        "enabled=true\n"
+        "device=Mic2\n"
+        "track=13\n"
+        "capture_latency_ms=8\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_FLOAT_EQ(config.micCaptureLatencyMs, 5.0f);
+    for (const auto& src : config.audioSources) {
+        if (src.sourceType != AudioConfig::Microphone || src.tracks.empty())
+            continue;
+        if (src.tracks[0] == 2)
+            EXPECT_FLOAT_EQ(src.captureLatencyMs, 5.0f);  // [General] mic fallback
+        if (src.tracks[0] == 13)
+            EXPECT_FLOAT_EQ(src.captureLatencyMs, 8.0f);  // per-mic override
+    }
+}
 
 TEST_F(WhitelistEntryTest, OverlayWhitelistEntries) {
     std::string iniContent =
