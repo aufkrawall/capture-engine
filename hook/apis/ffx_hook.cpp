@@ -464,17 +464,18 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
 
     // No-app-callback native FSR FG: the game registers its HUD as a UI resource EVERY frame
     // (type=0x00030002 on the swapchain context). AMD composites that UI resource onto BOTH real and
-    // generated frames POST-interpolation on its own queue. Draw CE's overlay ONTO that same UI texture
-    // (submitted on the GAME queue, never AMD's runtime present queue) so the inject overlay reaches FG
-    // frames with zero AMD-pacing perturbation (no ffxQuery wedge) and no ghosting. Forwarded unchanged.
+    // generated frames POST-interpolation on its own queue. Step 3: cache the UI texture for the next
+    // frame's ECL bundle (RecordBundleOverlayForGameECL appends CE's overlay CL to the game's existing ECL,
+    // adding zero extra ECL calls and zero extra Signals). The composite function (separate ECL submit)
+    // is NOT called — all separate-ECL routes wedge AMD's pacing. Forwarded unchanged.
     if (parsedDesc &&
         parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12 &&
         DX12_ShouldCompositeOverlayOntoFFXUiResource()) {
         const auto* uiDesc =
             reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource*>(desc);
         if (uiDesc->uiResource.resource) {
-            DX12_CompositeOverlayOntoFFXUiResource(uiDesc->uiResource.resource, uiDesc->uiResource.state,
-                                                   uiDesc->flags);
+            DX12_CacheFFXUiResourceForBundle(uiDesc->uiResource.resource, uiDesc->uiResource.state,
+                                              uiDesc->flags);
         } else {
             static std::atomic<int> s_emptyUiResLogCount{0};
             if (s_emptyUiResLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {

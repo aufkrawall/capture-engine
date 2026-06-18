@@ -49,6 +49,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char*, bool, bool) { re
 void DX12_DumpDredIfDeviceRemoved(const char*) {}
 void DX12_LogOverlayGpuBreadcrumbs(const char*) {}
 void DX12_NoteFfxConfigureForward(uint64_t) {}
+void DX12_CacheFFXUiResourceForBundle(void*, uint32_t, uint32_t) {}
 
 // DX12_SetCommandQueue is extern "C" in the header
 extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}

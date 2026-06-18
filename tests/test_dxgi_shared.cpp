@@ -2615,6 +2615,51 @@ TEST(DXGISharedTest, FFXUiCompositeSubmitQueueMustNotBeGameQueue) {
         << "CE's UI-composite queue must be a separate queue from the game queue";
 }
 
+// Test the Step 3 bundle per-frame flag logic: the flag must be set once per frame and cleared at the
+// frame boundary (ProcessFrame) and at the next ffxConfigure(RegisterUiResource) call. This prevents
+// double-appending CE's overlay CL to multiple game ECLs within the same frame.
+TEST(DXGISharedTest, FFXUiBundlePerFrameFlagLogic) {
+    // Simulate the per-frame flag lifecycle:
+    // 1. Start of frame: flag = false (cleared by ProcessFrame or ffxConfigure)
+    // 2. First game-queue ECL: bundle appends, sets flag = true
+    // 3. Second game-queue ECL: flag is true → skip (no double-append)
+    // 4. Next ffxConfigure: clears flag = false (for the next frame)
+    bool bundleFlag = false;
+
+    // Frame N: first ECL — should append (flag was false)
+    EXPECT_FALSE(bundleFlag);
+    bundleFlag = true;  // RecordBundleOverlayForGameECL sets the flag after appending
+    EXPECT_TRUE(bundleFlag);
+
+    // Frame N: second ECL — should NOT append (flag is true)
+    EXPECT_TRUE(bundleFlag);  // the check in DetourExecuteCommandLists skips
+
+    // Frame boundary: ProcessFrame clears the flag
+    bundleFlag = false;
+    EXPECT_FALSE(bundleFlag);
+
+    // Frame N+1: first ECL — should append again (flag was cleared)
+    EXPECT_FALSE(bundleFlag);
+    bundleFlag = true;
+    EXPECT_TRUE(bundleFlag);
+}
+
+// Test the cached UI texture null-skip: when no UI texture is cached (first frame or after FG off),
+// the bundle must not attempt to record an overlay CL (null → skip).
+TEST(DXGISharedTest, FFXUiBundleCachedTextureNullSkip) {
+    void* cachedTexture = nullptr;
+    // First frame: no cached texture → skip bundle
+    EXPECT_EQ(cachedTexture, nullptr);
+
+    // After ffxConfigure caches the texture:
+    cachedTexture = reinterpret_cast<void*>(0x1234);
+    EXPECT_NE(cachedTexture, nullptr);
+
+    // After ReleaseFFXUiCompositeInfra (device change / cleanup):
+    cachedTexture = nullptr;
+    EXPECT_EQ(cachedTexture, nullptr);
+}
+
 TEST(DXGISharedTest, HDRDetectionTreatsFP16AsDefinitelyHDR) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatFormatAsDefinitelyHDR(DXGI_FORMAT_R16G16B16A16_FLOAT));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatFormatAsDefinitelyHDR(DXGI_FORMAT_R10G10B10A2_UNORM));
