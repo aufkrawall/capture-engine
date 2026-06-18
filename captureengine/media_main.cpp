@@ -1941,6 +1941,9 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcStartupBarrierDroppedFrames = 0;
     bool wgcStartupPreLiveDelayComplete = false;
     uint32_t wgcStartupPreLiveDelayDroppedFrames = 0;
+    int64_t wgcAvSyncScheduleOffsetQpc = 0;
+    int64_t wgcAvSyncStartupAudioAnchorQpc = 0;
+    int64_t wgcAvSyncStartupVideoQpc = 0;
     uint32_t wgcFreshWarmupFrameCount = 0;
     uint32_t wgcOldestBufferedFrameAgeUs = 0;
     double wgcCoverageRepeatAccumulator = 0.0;
@@ -2188,6 +2191,9 @@ void EncoderThreadFunc(const AppConfig& config) {
         wgcStartupBarrierDroppedFrames = 0;
         wgcStartupPreLiveDelayComplete = false;
         wgcStartupPreLiveDelayDroppedFrames = 0;
+        wgcAvSyncScheduleOffsetQpc = 0;
+        wgcAvSyncStartupAudioAnchorQpc = 0;
+        wgcAvSyncStartupVideoQpc = 0;
         wgcFreshWarmupFrameCount = 0;
     };
     auto TrackWarmupWgcFreshFrame = [&](const QueuedFrame& queuedFrame) {
@@ -5410,6 +5416,38 @@ void EncoderThreadFunc(const AppConfig& config) {
                         LARGE_INTEGER afterInit;
                         QueryPerformanceCounter(&afterInit);
                         liveStartQpc = afterInit;
+                        if (useScreenGrab && avContentDelayActive && frameToProcess && !frameToProcess->isInjectMode) {
+                            int64_t startupVideoQpc = GetFrameSelectionTimestamp(*frameToProcess);
+                            if (startupVideoQpc <= 0) {
+                                startupVideoQpc = frameToProcess->timestamp;
+                            }
+                            const int64_t startupAudioAnchorQpc =
+                                ce::capture_policy::GetWgcStartupAudioAnchorQpc(startupVideoQpc, avContentDelayQpc);
+                            if (startupVideoQpc > 0 && startupAudioAnchorQpc > 0) {
+                                wgcAvSyncStartupVideoQpc = startupVideoQpc;
+                                wgcAvSyncStartupAudioAnchorQpc = startupAudioAnchorQpc;
+                                wgcAvSyncScheduleOffsetQpc = liveStartQpc.QuadPart - startupAudioAnchorQpc;
+                                const int64_t requestedDelayUs =
+                                    qpcFreq.QuadPart > 0 ? (avContentDelayQpc * 1000000) / qpcFreq.QuadPart : 0;
+                                const int64_t startupDelayUs =
+                                    qpcFreq.QuadPart > 0
+                                        ? ((startupAudioAnchorQpc - startupVideoQpc) * 1000000) / qpcFreq.QuadPart
+                                        : 0;
+                                const int64_t scheduleOffsetUs =
+                                    qpcFreq.QuadPart > 0
+                                        ? (wgcAvSyncScheduleOffsetQpc * 1000000) / qpcFreq.QuadPart
+                                        : 0;
+                                LogInfo(
+                                    "[AVSyncApply] wgc_schedule_anchor: videoQpc=%lld audioAnchorQpc=%lld "
+                                    "liveStartQpc=%lld requestedDelayUs=%lld startupDelayUs=%lld "
+                                    "scheduleOffsetUs=%lld selectionOffsetUs=0 confidence=%s reason=%s",
+                                    static_cast<long long>(startupVideoQpc),
+                                    static_cast<long long>(startupAudioAnchorQpc),
+                                    static_cast<long long>(liveStartQpc.QuadPart), static_cast<long long>(requestedDelayUs),
+                                    static_cast<long long>(startupDelayUs), static_cast<long long>(scheduleOffsetUs),
+                                    config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
+                            }
+                        }
                         // For the selection grid, we treat the first frame as tick 1.
                         // To align future idealQpc calculations perfectly with scheduledSampleQpc,
                         // we must offset the anchor back by one target interval.
@@ -5961,11 +5999,18 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcLiveSchedulerRebaseTotal), wgcLiveSchedulerRebaseMaxTicks,
                 static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcEncoderLimitedSourceDropMaxTicks,
                 static_cast<unsigned long long>(wgcPostStopFrameDropTotal), wgcPostStopFrameDropMaxUs);
+            const int64_t wgcAvSyncStartupDelayUs =
+                qpcFreq.QuadPart > 0 && wgcAvSyncStartupAudioAnchorQpc > wgcAvSyncStartupVideoQpc
+                    ? ((wgcAvSyncStartupAudioAnchorQpc - wgcAvSyncStartupVideoQpc) * 1000000) / qpcFreq.QuadPart
+                    : 0;
+            const int64_t wgcAvSyncScheduleOffsetUs =
+                qpcFreq.QuadPart > 0 ? (wgcAvSyncScheduleOffsetQpc * 1000000) / qpcFreq.QuadPart : 0;
             LogInfo(
                 "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=%llu maxDropTicks=%u cadenceEvents=%llu "
                 "phaseErrorMax=%uus shortfallMax=%.1fms staleDebtDrops=%llu liveRebase=%llu/%u "
-                "tooNewRepeats=%u syncDelayHolds=%llu tooNewLeadMax=%uus avDelay=%.1fms lowSourceBypass=%llu "
-                "modeMismatch=%llu sourceBacktrack=%llu",
+                "tooNewRepeats=%u syncDelayHolds=%llu tooNewLeadMax=%uus avDelay=%.1fms startupDelay=%.1fms "
+                "scheduleOffset=%lldus effectiveDelay=%.1fms lowSourceBypass=%llu modeMismatch=%llu "
+                "sourceBacktrack=%llu",
                 static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcEncoderLimitedSourceDropMaxTicks,
                 static_cast<unsigned long long>(wgcEncoderLimitedCadenceEventCount),
                 captureSessionSummary.maxWgcContentPhaseErrorUs, captureSessionSummary.maxShortfallDurationMs,
@@ -5973,6 +6018,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcLiveSchedulerRebaseTotal), wgcLiveSchedulerRebaseMaxTicks,
                 SaturatingToUint32(wgcRepeatPolicyHoldTotal), static_cast<unsigned long long>(wgcSyncDelayHoldTotal),
                 wgcTooNewLeadSessionMaxUs, avContentDelayActive ? maxAudioCaptureLatencyMs : 0.0f,
+                static_cast<double>(wgcAvSyncStartupDelayUs) / 1000.0,
+                static_cast<long long>(wgcAvSyncScheduleOffsetUs),
+                static_cast<double>(wgcAvSyncStartupDelayUs) / 1000.0,
                 static_cast<unsigned long long>(wgcEncoderLimitedSuppressedByLowSourceTotal),
                 static_cast<unsigned long long>(wgcCapacityPressureModeMismatchTotal),
                 static_cast<unsigned long long>(wgcSelectedSourceBacktrackTotal));

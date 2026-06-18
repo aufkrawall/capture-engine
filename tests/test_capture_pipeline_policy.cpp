@@ -415,6 +415,9 @@ TEST(CapturePipelinePolicyTest, WgcStartupBarrierDelaysUntilFutureFreshFrame) {
     EXPECT_EQ(policy::GetWgcCfrStartupPreLiveDelayTicks(-100), 0);
     EXPECT_EQ(policy::GetWgcStartupBarrierQpc(1000, 100), 1100);
     EXPECT_EQ(policy::GetWgcStartupBarrierQpc(1000, 0), 1000);
+    EXPECT_EQ(policy::GetWgcStartupAudioAnchorQpc(1000, 35), 1035);
+    EXPECT_EQ(policy::GetWgcStartupAudioAnchorQpc(1000, 0), 1000);
+    EXPECT_EQ(policy::GetWgcStartupAudioAnchorQpc(0, 35), 0);
     EXPECT_FALSE(policy::IsWgcFramePastStartupBarrier(1099, 1100));
     EXPECT_TRUE(policy::IsWgcFramePastStartupBarrier(1100, 1100));
     EXPECT_TRUE(policy::IsWgcFramePastStartupBarrier(1200, 1100));

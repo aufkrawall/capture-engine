@@ -1,6 +1,6 @@
 # WGC Capture
 
-Last cross-checked: 2026-06-13 (WGC overload classification split and adaptive high-entropy stress gate)
+Last cross-checked: 2026-06-18 (WGC A/V startup anchor and smoothness guard)
 Stale-risk: medium
 
 Primary sources:
@@ -32,7 +32,7 @@ WGC CFR now aims for smooth output with lower steady-state pressure on the game:
 
 When a 10-bpc SDR WGC source cannot create an `R10G10B10A2` frame pool, it may fall back to `R16G16B16A16_FLOAT`. That FP16 source must still convert to `bit_depth=8` output entirely on the GPU: prefer native D3D11 VideoProcessor FP16 input when the driver accepts it, otherwise blit through the fullscreen shader to `R10G10B10A2_UNORM` using a typed `R16G16B16A16_FLOAT` SRV and SDR linear-to-sRGB encoding before VP conversion to NV12. Shader SRVs must not use typeless DXGI formats. For explicit 10-bit output, the final VP/encoder surface remains P010 and compatibility fallbacks must not introduce BGRA8/NV12 intermediates.
 
-WGC CFR startup A/V sync now uses one shared start anchor by construction. Capture performs the existing pre-live cadence/encoder settling delay first, flushes pre-anchor warmup material, arms a one-frame startup barrier, then waits for usable post-delay WGC material at or after that barrier. Before live handoff, it drains the pending WGC queue and buffered WGC frames and selects the freshest valid post-barrier frame rather than accepting the first stale candidate. Mediaengine selects that accepted video timestamp as the shared audio/video anchor. First stream packets should start at PTS zero, with startup anchor delta logged as `0us`; the accepted frame should also be fresh instead of carrying the old pre-live delay as startup frame age. The startup barrier log includes freshness diagnostics such as `freshened`, `bufferedExamined`, `queueExamined`, `discardedOlder`, and `discardedBeforeBarrier`.
+WGC CFR startup A/V sync now uses one shared start anchor by construction. Capture performs the existing pre-live cadence/encoder settling delay first, flushes pre-anchor warmup material, arms a one-frame startup barrier, then waits for usable post-delay WGC material at or after that barrier. Before live handoff, it drains the pending WGC queue and buffered WGC frames and selects the freshest valid post-barrier frame rather than accepting the first stale candidate. Mediaengine selects that accepted video timestamp as the shared audio/video anchor; when automatic render-domain delay is active, the first audio anchor is the accepted video QPC plus the resolved render-loopback delay. First stream packets should start at PTS zero, and the accepted frame should also be fresh instead of carrying the old pre-live delay as startup frame age. The startup barrier log includes freshness diagnostics such as `freshened`, `bufferedExamined`, `queueExamined`, `discardedOlder`, and `discardedBeforeBarrier`. `[AVSyncApply] wgc_schedule_anchor` may report a nonzero startup `scheduleOffsetUs`, but that value is diagnostic only (`selectionOffsetUs=0`); steady WGC source selection must not subtract it on top of the requested content delay.
 
 WGC CFR audio continuity policy separates visual overload recovery from audio integrity. The live scheduler owns the video PTS and the audio sample target. WGC source-frame selection normally targets the scheduled tick, but if visual shortfall exceeds the bounded live window (`250 ms` or `32` frames, whichever is tighter), the live scheduler rebases old owed ticks as covered visual hold/drop debt and source-selection clamps toward the live-window floor. Live scheduler rebase is deliberately incremental: `kWgcMaxLiveSchedulerRebaseTicksPerLoop` caps each loop to one CFR tick so recovery cannot create multi-frame PTS holes that look like stutter.
 
@@ -72,7 +72,7 @@ Diagnostics now keep timing concepts separate. CFR frame spacing (`8.33 ms` at 1
 - `WGC CFR selected source backtrack blocked`: a stale source timestamp would have moved selected visual content backward under pressure. This is strict regression evidence; normal encoder-limited recovery should hold/repeat monotonically or drop stale source history.
 - `[WGC CFR] encoder-limited mode mismatch`: recovery state says encoder-limited but smoothness mode was not active while the source was not genuinely starved. Treat as an overload policy fault.
 - `[WGC CFR CADENCE EVENT]`: compact per-window cadence attribution with mode, source/target/live timing, content phase error, repeat/drop/rebase reason counts, buffer state, encoder EMA, and overload flags.
-- `[WGC CFR SMOOTHNESS SUMMARY]`: end-of-session smoothness rollup with phase error, shortfall, stale drops, too-new repeats, live rebases, and encoder-limited drop counts.
+- `[WGC CFR SMOOTHNESS SUMMARY]`: end-of-session smoothness rollup with phase error, shortfall, stale drops, too-new repeats, live rebases, encoder-limited drop counts, and requested/effective A/V delay evidence (`avDelay`, `startupDelay`, `scheduleOffset`, `effectiveDelay`).
 - `WGC CFR stop drain using held pre-stop frame`: stale-build/failure signature. Current WGC exact-stop policy should not use generic stop drain.
 - `WGC CFR stop drain discarded frozen-tail debt`: superseded older policy. Treat this as a stale-build warning if it appears in new validation.
 - `WGC CFR post-stop frame drop`: a WGC frame timestamped after the stop QPC was discarded. This is endpoint protection when discarded; it must not extend the file.
@@ -90,6 +90,8 @@ Startup sync logs to preserve in future changes:
 - `WGC startup pre-live delay complete...`
 - `WGC startup sync post-delay barrier satisfied... frameAge=...`
 - `MediaEngine: WGC CFR startup anchor selected exactly... startupDelta=0us`
+- `MediaEngine: WGC CFR startup anchor selected from first accepted video frame plus content delay...`
+- `[AVSyncApply] wgc_schedule_anchor... selectionOffsetUs=0`
 - `[A/V START] Shared startup anchor selected... delta=0us`
 
 ## Locking Model

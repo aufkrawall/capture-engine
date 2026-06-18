@@ -1,4 +1,5 @@
 #include "mediaengine.h"
+#include "../common/capture_pipeline_policy.h"
 #include "../common/logging.h"
 #include "../common/shared_defs.h"
 #include "app_audio_capture.h"
@@ -1863,6 +1864,22 @@ public:
         return ce::audio::ShouldUseCfrAudioContinuityPolicy(SessionUsesVfr());
     }
 
+    double GetMaxAudioCaptureLatencyMs() const {
+        double maxLatencyMs = 0.0;
+        for (const auto& src : audioSources) {
+            maxLatencyMs = std::max(maxLatencyMs, static_cast<double>(src.config.captureLatencyMs));
+        }
+        return maxLatencyMs;
+    }
+
+    int64_t GetMaxAudioCaptureLatencyQpc() const {
+        const double maxLatencyMs = GetMaxAudioCaptureLatencyMs();
+        if (qpcFreq <= 0 || maxLatencyMs <= 0.0) {
+            return 0;
+        }
+        return static_cast<int64_t>(std::llround((maxLatencyMs / 1000.0) * static_cast<double>(qpcFreq)));
+    }
+
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     bool ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
@@ -1879,15 +1896,27 @@ public:
 
             int64_t anchorQPC = timestampQPC;
             if (IsWgcCfrRecording()) {
+                const double startupDelayMs = GetMaxAudioCaptureLatencyMs();
+                const int64_t startupDelayQpc = GetMaxAudioCaptureLatencyQpc();
+                anchorQPC = ce::capture_policy::GetWgcStartupAudioAnchorQpc(timestampQPC, startupDelayQpc);
                 LARGE_INTEGER qpcNow;
                 QueryPerformanceCounter(&qpcNow);
                 const int64_t nowQPC = qpcNow.QuadPart;
                 const int64_t frameAgeUs =
                     (qpcFreq > 0 && nowQPC > timestampQPC) ? ((nowQPC - timestampQPC) * 1000000) / qpcFreq : 0;
+                const int64_t startupDeltaUs =
+                    (qpcFreq > 0 && anchorQPC > timestampQPC) ? ((anchorQPC - timestampQPC) * 1000000) / qpcFreq : 0;
                 DLL_Log(
-                    "MediaEngine: WGC CFR startup anchor selected exactly from first accepted video frame "
-                    "(anchorQPC=%lld nowQPC=%lld frameAge=%lldus startupDelta=0us)",
-                    anchorQPC, nowQPC, frameAgeUs);
+                    "MediaEngine: WGC CFR startup anchor selected from first accepted video frame plus content delay "
+                    "(videoQPC=%lld anchorQPC=%lld nowQPC=%lld frameAge=%lldus startupDelta=%lldus delayMs=%.3f "
+                    "confidence=%s reason=%s)",
+                    timestampQPC, anchorQPC, nowQPC, frameAgeUs, startupDeltaUs, startupDelayMs,
+                    config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
+                DLL_Log(
+                    "[AVSyncApply] wgc_start_anchor: videoQpc=%lld audioAnchorQpc=%lld delayUs=%lld delayMs=%.3f "
+                    "confidence=%s reason=%s",
+                    timestampQPC, anchorQPC, startupDeltaUs, startupDelayMs, config.avSyncConfidence.c_str(),
+                    config.avSyncReason.c_str());
             }
 
             const int64_t anchorMs = (qpcFreq > 0 && anchorQPC > 0) ? (anchorQPC * 1000) / qpcFreq : debugTimestamp;

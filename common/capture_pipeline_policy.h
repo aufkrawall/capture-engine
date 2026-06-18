@@ -567,6 +567,16 @@ inline int64_t GetWgcStartupBarrierQpc(int64_t nowQpc, int64_t targetIntervalTic
     return nowQpc + targetIntervalTicks;
 }
 
+inline int64_t GetWgcStartupAudioAnchorQpc(int64_t videoFrameQpc, int64_t contentDelayQpc) {
+    if (videoFrameQpc <= 0 || contentDelayQpc <= 0) {
+        return videoFrameQpc;
+    }
+    if (videoFrameQpc > INT64_MAX - contentDelayQpc) {
+        return videoFrameQpc;
+    }
+    return videoFrameQpc + contentDelayQpc;
+}
+
 inline bool IsWgcFramePastStartupBarrier(int64_t frameQpc, int64_t startupBarrierQpc) {
     return startupBarrierQpc <= 0 || (frameQpc > 0 && frameQpc >= startupBarrierQpc);
 }
