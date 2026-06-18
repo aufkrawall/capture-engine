@@ -4300,7 +4300,8 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
 
     const bool skip = ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, authoritativeFSRActive,
-        runtimeOwnedNativeFGPresentPath, ffxStallAllowsNormalOverlay, nativeFSRInternalNoCallbackComposition);
+        runtimeOwnedNativeFGPresentPath, ffxStallAllowsNormalOverlay, nativeFSRInternalNoCallbackComposition,
+        DX12_IsFFXUiResourceCompositionActive());
     if (!skip) {
         // Normal (non-override) path says don't skip — reset the suppression
         // timer so the next suppression episode gets a fresh 2-second window.
@@ -5248,6 +5249,227 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         }
     }
     return result;
+}
+
+// ---- FFX UI-resource overlay composition (no-app-callback FSR FG; rides the game's UI composition) ----
+// AMD's FfxFrameInterpolationSwapchain composites a registered "UI resource" onto BOTH real and generated
+// frames POST-interpolation on AMD's OWN queue. GTA Enhanced registers its HUD this way EVERY frame
+// (ffxConfigure type=0x00030002 on the swapchain context). CE intercepts that configure and draws the
+// inject overlay ONTO the registered UI texture, submitting on the GAME's original queue — NOT AMD's
+// runtime present queue. This is the ONLY route that puts the overlay on FG frames with zero perturbation
+// of AMD's pacing-critical present queue (so no ffxQuery wedge) and no ghosting (composited after
+// interpolation). It replaces the old separate-ECL-on-AMD's-runtime-queue route, which wedged AMD's
+// presenter in ~200-300 frames (session 20260618_201038), and the synthesized-callback route (~8 frames).
+static std::recursive_mutex g_FFXUiCompositeMutex;
+static ID3D12Device* g_FFXUiCompositeDevice = nullptr;
+static ID3D12DescriptorHeap* g_FFXUiCompositeRtvHeap = nullptr;
+static ID3D12CommandAllocator* g_FFXUiCompositeAlloc[2] = {nullptr, nullptr};
+static ID3D12GraphicsCommandList* g_FFXUiCompositeList = nullptr;
+static ID3D12Fence* g_FFXUiCompositeFence = nullptr;
+static HANDLE g_FFXUiCompositeFenceEvent = nullptr;
+static UINT64 g_FFXUiCompositeFenceVal = 0;
+static UINT64 g_FFXUiCompositeAllocFenceVal[2] = {0, 0};
+static int g_FFXUiCompositeFrame = 0;
+static DXGI_FORMAT g_FFXUiCompositeAdapterFormat = DXGI_FORMAT_UNKNOWN;
+static std::atomic<bool> g_FFXUiResourceCompositionActive{false};
+static std::atomic<uint64_t> g_FFXUiCompositeLastTickMs{0};
+
+bool DX12_IsFFXUiResourceCompositionActive() {
+    if (!g_FFXUiResourceCompositionActive.load(std::memory_order_acquire)) {
+        return false;
+    }
+    // Recency-gated so it auto-disables once FG turns off and the per-frame UI-resource configures stop.
+    const uint64_t last = g_FFXUiCompositeLastTickMs.load(std::memory_order_acquire);
+    return last != 0 && (GetTickCount64() - last) < 500;
+}
+
+// True only for the no-app-callback native FSR case, where AMD keeps its internal composition and CE must
+// route the overlay through the game's UI resource instead of submitting on AMD's runtime present queue.
+// (App-callback FSR games keep using the present-callback overlay route, so we must not double-draw.)
+bool DX12_ShouldCompositeOverlayOntoFFXUiResource() {
+    return g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
+}
+
+static void ReleaseFFXUiCompositeInfra() {
+    if (g_FFXUiCompositeList) { g_FFXUiCompositeList->Release(); g_FFXUiCompositeList = nullptr; }
+    for (auto& a : g_FFXUiCompositeAlloc) { if (a) { a->Release(); a = nullptr; } }
+    if (g_FFXUiCompositeRtvHeap) { g_FFXUiCompositeRtvHeap->Release(); g_FFXUiCompositeRtvHeap = nullptr; }
+    if (g_FFXUiCompositeFence) { g_FFXUiCompositeFence->Release(); g_FFXUiCompositeFence = nullptr; }
+    g_FFXUiCompositeFenceVal = 0;
+    g_FFXUiCompositeAllocFenceVal[0] = g_FFXUiCompositeAllocFenceVal[1] = 0;
+    g_FFXUiCompositeFrame = 0;
+}
+
+// Pick an RTV-compatible (non-TYPELESS) format for the UI texture so CreateRenderTargetView succeeds.
+// Keep sRGB views as-is (the overlay then writes through the game's own gamma expectation).
+static DXGI_FORMAT FFXUiCompositeRtvFormat(DXGI_FORMAT texFormat) {
+    switch (texFormat) {
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+            return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+            return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+            return DXGI_FORMAT_R10G10B10A2_UNORM;
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+            return DXGI_FORMAT_R16G16B16A16_FLOAT;
+        default:
+            return texFormat;
+    }
+}
+
+// Draw the inject overlay onto the game's registered FFX UI texture. Submits on the GAME's original queue
+// (never AMD's runtime present queue), so it cannot wedge AMD's presenter pacing. Returns true if recorded.
+bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxState, uint32_t flags) {
+    if (!uiResourcePtr) {
+        return false;
+    }
+    auto* uiTexture = static_cast<ID3D12Resource*>(uiResourcePtr);
+
+    ID3D12CommandQueue* gameQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> qlock(g_CommandQueueMutex);
+        gameQueue = g_OriginalGameQueue;  // the game's own queue, NOT AMD's runtime present queue
+    }
+    ID3D12Device* device = g_Device.load(std::memory_order_acquire);
+    if (!gameQueue || !device) {
+        return false;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
+
+    const D3D12_RESOURCE_DESC td = uiTexture->GetDesc();
+    if (td.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || td.Width == 0 || td.Height == 0) {
+        return false;
+    }
+    const int width = static_cast<int>(td.Width);
+    const int height = static_cast<int>(td.Height);
+    const DXGI_FORMAT rtvFormat = FFXUiCompositeRtvFormat(td.Format);
+
+    if (g_FFXUiCompositeDevice != device) {
+        ReleaseFFXUiCompositeInfra();
+        if (g_FFXPresentOverlayAdapter.IsInitialized()) {
+            g_FFXPresentOverlayAdapter.Shutdown();
+        }
+        g_FFXPresentOverlayDevice = nullptr;
+        g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
+        g_FFXUiCompositeAdapterFormat = DXGI_FORMAT_UNKNOWN;
+        g_FFXUiCompositeDevice = device;
+    }
+
+    // Lazily build the dedicated, GAME-queue submission infra (separate from the present-thread overlay).
+    if (!g_FFXUiCompositeFence) {
+        if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_FFXUiCompositeFence)))) {
+            return false;
+        }
+        if (!g_FFXUiCompositeFenceEvent) {
+            g_FFXUiCompositeFenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        }
+    }
+    for (auto& a : g_FFXUiCompositeAlloc) {
+        if (!a && FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a)))) {
+            return false;
+        }
+    }
+    if (!g_FFXUiCompositeList) {
+        if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_FFXUiCompositeAlloc[0], nullptr,
+                                             IID_PPV_ARGS(&g_FFXUiCompositeList)))) {
+            return false;
+        }
+        g_FFXUiCompositeList->Close();
+    }
+    if (!g_FFXUiCompositeRtvHeap) {
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+        if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_FFXUiCompositeRtvHeap)))) {
+            return false;
+        }
+    }
+
+    // Reuse the dedicated FFX overlay adapter (the callback path is mutually exclusive with no-callback FSR).
+    {
+        std::lock_guard<std::recursive_mutex> olock(g_OverlayMutex);
+        if (!g_FFXPresentOverlayAdapter.IsInitialized() || g_FFXUiCompositeAdapterFormat != rtvFormat) {
+            if (g_FFXPresentOverlayAdapter.IsInitialized()) {
+                g_FFXPresentOverlayAdapter.Shutdown();
+            }
+            g_FFXPresentOverlayAdapter.SetHwnd(nullptr);
+            if (!g_FFXPresentOverlayAdapter.InitDX12(device, gameQueue, static_cast<int>(rtvFormat))) {
+                HookLogImportant("DX12: FFX UI-composite failed to init overlay adapter (fmt=%d)",
+                                 static_cast<int>(rtvFormat));
+                return false;
+            }
+            g_FFXPresentOverlayAdapter.SetHDR(false, static_cast<int>(rtvFormat));
+            g_FFXPresentOverlayDevice = device;
+            g_FFXPresentOverlayFormat = rtvFormat;
+            g_FFXUiCompositeAdapterFormat = rtvFormat;
+            HookLogImportant("DX12: FFX UI-composite initialized overlay adapter (fmt=%d %dx%d)",
+                             static_cast<int>(rtvFormat), width, height);
+        }
+    }
+
+    const int slot = g_FFXUiCompositeFrame & 1;
+    if (g_FFXUiCompositeFence->GetCompletedValue() < g_FFXUiCompositeAllocFenceVal[slot] &&
+        g_FFXUiCompositeFenceEvent) {
+        g_FFXUiCompositeFence->SetEventOnCompletion(g_FFXUiCompositeAllocFenceVal[slot], g_FFXUiCompositeFenceEvent);
+        WaitForSingleObject(g_FFXUiCompositeFenceEvent, 1000);
+    }
+    if (FAILED(g_FFXUiCompositeAlloc[slot]->Reset()) ||
+        FAILED(g_FFXUiCompositeList->Reset(g_FFXUiCompositeAlloc[slot], nullptr))) {
+        return false;
+    }
+
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_FFXUiCompositeRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+    rtvDesc.Format = rtvFormat;
+    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    device->CreateRenderTargetView(uiTexture, &rtvDesc, rtv);
+
+    const D3D12_RESOURCE_STATES regState = GetDX12StateFromFFXResourceState(ffxState);
+    // NOTE: no clear — the overlay alpha-blends ON TOP of the game's HUD already in the UI texture.
+    TransitionResourceIfNeeded(g_FFXUiCompositeList, uiTexture, regState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    {
+        std::lock_guard<std::recursive_mutex> olock(g_OverlayMutex);
+        g_FFXPresentOverlayAdapter.SetIPCClient(g_IPC);
+        g_FFXPresentOverlayAdapter.SetReserveInactiveFGSpace(false);
+        if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+            g_FFXPresentOverlayAdapter.SetMetrics(perf);
+        }
+        g_FFXPresentOverlayAdapter.SetGraphicsAPI("DX12");
+        g_FFXPresentOverlayAdapter.SetDX12RenderTarget(g_FFXUiCompositeList, reinterpret_cast<void*>(rtv.ptr));
+        g_FFXPresentOverlayAdapter.RenderOverlay(width, height);
+    }
+    TransitionResourceIfNeeded(g_FFXUiCompositeList, uiTexture, D3D12_RESOURCE_STATE_RENDER_TARGET, regState);
+    if (FAILED(g_FFXUiCompositeList->Close())) {
+        return false;
+    }
+
+    ID3D12CommandList* lists[] = {g_FFXUiCompositeList};
+    ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
+    {
+        ScopedCEOverlayECLSubmission ceOverlayECLGuard("ffx-ui-composite");
+        if (realECL) {
+            realECL(gameQueue, 1, lists);
+        } else {
+            gameQueue->ExecuteCommandLists(1, lists);
+        }
+    }
+    ++g_FFXUiCompositeFenceVal;
+    gameQueue->Signal(g_FFXUiCompositeFence, g_FFXUiCompositeFenceVal);
+    g_FFXUiCompositeAllocFenceVal[slot] = g_FFXUiCompositeFenceVal;
+    ++g_FFXUiCompositeFrame;
+    g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
+    g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
+    NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
+
+    static std::atomic<int> s_uiCompositeLogCount{0};
+    const int logCount = s_uiCompositeLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 300) == 0) {
+        HookLogImportant(
+            "DX12: FFX UI-composite overlay drawn onto game UI resource %p on GAME queue %p (regState=0x%X "
+            "ffxState=0x%X flags=0x%X %dx%d fmt=%d log=%d) — no AMD-runtime-queue submit",
+            uiTexture, gameQueue, static_cast<unsigned>(regState), ffxState, flags, width, height,
+            static_cast<int>(rtvFormat), logCount + 1);
+    }
+    return true;
 }
 
 static bool UpdateHeuristicFSRFGState(bool active, const char* source) {

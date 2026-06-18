@@ -1083,7 +1083,8 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
 inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     bool runtimeOwnsSwapchain, bool streamlineFGRunning, fg_runtime::RuntimeMode runtimeMode,
     bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath,
-    bool ffxPresentCallbackFallbackAllowed = false, bool nativeFSRInternalNoCallbackComposition = false) {
+    bool ffxPresentCallbackFallbackAllowed = false, bool nativeFSRInternalNoCallbackComposition = false,
+    bool ffxUiResourceCompositionActive = false) {
     if (streamlineFGRunning) {
         return false;
     }
@@ -1094,14 +1095,15 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         return false;
     }
 
-    // If the game did not provide an FFX present callback, the AMD swapchain
-    // runtime keeps its own internal blit/UI composition path. Installing CE's
-    // callback in that configuration forces us to own the runtime's scene copy,
-    // which has wedged real AMD presenter threads. Let the internal no-callback
-    // path finish the frame and draw the overlay through the normal DX12 route
-    // on the runtime-owned swapchain queue.
+    // No-app-callback native FSR: AMD keeps its internal composition. The overlay reaches FG frames by CE
+    // drawing onto the game's REGISTERED UI resource (AMD blends it post-interpolation on its own queue) —
+    // see DX12_CompositeOverlayOntoFFXUiResource. While that route is live we MUST skip the separate overlay
+    // submit on AMD's runtime present queue: that foreign ECL on AMD's pacing-critical queue is exactly what
+    // wedges AMD's presenter (ffxQuery, sessions 20260618_155443 / 20260618_201038). If the game does NOT
+    // register a UI resource (composition not active), fall back to the legacy runtime-queue route so the
+    // overlay is at least visible.
     if (nativeFSRInternalNoCallbackComposition) {
-        return false;
+        return ffxUiResourceCompositionActive;
     }
 
     // Native/runtime-owned FSR is stricter than the generic runtime-owned

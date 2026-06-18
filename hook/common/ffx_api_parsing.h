@@ -108,6 +108,28 @@ struct ConfigureDescFrameGeneration {
     uint64_t frameID;
 };
 
+// FrameGenerationSwapChain effect (0x00030000), DX12 backend id (0x0), sub-id 0x02.
+// FFX_API_MAKE_BACKEND_EFFECT_SUB_ID(DX12=0, FRAMEGENERATIONSWAPCHAIN=0x00030000, 0x02) == 0x00030002.
+// AMD's FfxFrameInterpolationSwapchain composites this UI resource onto BOTH real and generated frames
+// POST-interpolation, on AMD's own queue. Games like GTA Enhanced register their HUD here every frame,
+// which is exactly why their HUD has no FG ghosting and never wedges AMD's presenter. CE rides this same
+// path: it draws the inject overlay onto the registered UI texture (on the GAME queue, not AMD's runtime
+// present queue), so the overlay reaches FG frames with zero AMD-pacing perturbation and no ghosting.
+constexpr StructType kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12 = 0x00030002ull;
+
+// Matches ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 (ABI: header + FfxApiResource + flags).
+struct ConfigureDescFrameGenerationSwapChainRegisterUiResource {
+    ApiHeader header;
+    Resource uiResource;
+    uint32_t flags;
+};
+
+// Matches FfxApiUiCompositionFlags (ffx_framegeneration.h).
+enum UiCompositionFlags : uint32_t {
+    kUiCompositionUsePremulAlpha = (1u << 0),
+    kUiCompositionEnableInternalDoubleBuffering = (1u << 1),
+};
+
 struct ParsedFrameGenerationConfigureState {
     bool recognized = false;
     bool enabled = false;

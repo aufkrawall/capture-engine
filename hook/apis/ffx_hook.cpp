@@ -462,6 +462,28 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         }
     }
 
+    // No-app-callback native FSR FG: the game registers its HUD as a UI resource EVERY frame
+    // (type=0x00030002 on the swapchain context). AMD composites that UI resource onto BOTH real and
+    // generated frames POST-interpolation on its own queue. Draw CE's overlay ONTO that same UI texture
+    // (submitted on the GAME queue, never AMD's runtime present queue) so the inject overlay reaches FG
+    // frames with zero AMD-pacing perturbation (no ffxQuery wedge) and no ghosting. Forwarded unchanged.
+    if (parsedDesc &&
+        parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12 &&
+        DX12_ShouldCompositeOverlayOntoFFXUiResource()) {
+        const auto* uiDesc =
+            reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource*>(desc);
+        if (uiDesc->uiResource.resource) {
+            DX12_CompositeOverlayOntoFFXUiResource(uiDesc->uiResource.resource, uiDesc->uiResource.state,
+                                                   uiDesc->flags);
+        } else {
+            static std::atomic<int> s_emptyUiResLogCount{0};
+            if (s_emptyUiResLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                HookLogImportant(
+                    "FFX Hook: native-FSR no-callback UI-resource register had empty uiResource (frame skipped)");
+            }
+        }
+    }
+
     const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded(originalConfigure, context, descToCall);
     if (result != FFX_API_RETURN_OK || !desc) {
         return result;

@@ -106,6 +106,11 @@ void DX12_ClearNativeFSRStartupConfigureArming(const char* reason);
 void DX12_ClearOfficialFFXRuntimeOwnedPresentPathAssumption(const char* reason);
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* callbackDesc,
                                                  void* userCtx);
+// Draw the inject overlay onto a game-registered FFX UI resource (no-app-callback FSR FG). Submits on the
+// GAME's queue, never AMD's runtime present queue, so AMD composites it post-interpolation without wedging.
+bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResource, uint32_t ffxState, uint32_t flags);
+bool DX12_IsFFXUiResourceCompositionActive();
+bool DX12_ShouldCompositeOverlayOntoFFXUiResource();
 void RemoveGlobalVTableHooks();
 
 extern "C" {

@@ -7,6 +7,7 @@
 
 #include "../hook/common/dx12_overlay_policy.h"
 #include "../hook/common/dxgi_factory_policy.h"
+#include "../hook/common/ffx_api_parsing.h"
 #include "../hook/common/dxgi_shared.h"
 #include "../hook/wrappers/inline_hook_policy.h"
 #include "../hook/wrappers/iat_hook.h"
@@ -2489,11 +2490,37 @@ TEST(DXGISharedTest, FFXPresentCallbackBridgeRequiresRealAppCallback) {
 }
 
 TEST(DXGISharedTest, NativeFSRInternalNoCallbackCompositionUsesNormalOverlayRoute) {
+    // App-callback FSR (nativeFSRInternalNoCallbackComposition=false): keep the present-callback route,
+    // so the separate runtime-queue submit stays suppressed (skip=true) unless a stall fallback is allowed.
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, false, false));
+}
 
+TEST(DXGISharedTest, NativeFSRNoCallbackSkipsRuntimeQueueWhenUiResourceCompositionActive) {
+    // No-app-callback native FSR + UI-resource composition ACTIVE: the overlay is drawn onto the game's
+    // registered UI resource on the GAME queue, so CE must SKIP the separate submit on AMD's runtime present
+    // queue (that foreign ECL is what wedges AMD's presenter / ffxQuery).
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
+        /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true));
+
+    // No UI-resource composition (game never registers a UI resource): fall back to the legacy runtime-queue
+    // route so the overlay is at least visible (do NOT skip).
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
-        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, false, true));
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
+        /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/false));
+}
+
+TEST(DXGISharedTest, FFXRegisterUiResourceDescTypeMatchesAMDEncoding) {
+    // FFX_API_MAKE_BACKEND_EFFECT_SUB_ID(DX12=0, FRAMEGENERATIONSWAPCHAIN=0x00030000, 0x02) == 0x00030002.
+    EXPECT_EQ(ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12, 0x00030002ull);
+    // ABI must match the SDK struct so the reinterpret_cast over the game's desc reads uiResource.resource /
+    // uiResource.state / flags at the right offsets (header is 16 bytes: uint64 type + pointer).
+    using UiDesc = ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource;
+    EXPECT_EQ(offsetof(UiDesc, uiResource), sizeof(ce::ffx_api::ApiHeader));
+    EXPECT_EQ(offsetof(UiDesc, flags), sizeof(ce::ffx_api::ApiHeader) + sizeof(ce::ffx_api::Resource));
+    EXPECT_EQ(offsetof(ce::ffx_api::Resource, resource), 0u);
+    EXPECT_EQ(offsetof(ce::ffx_api::Resource, state), sizeof(void*) + sizeof(ce::ffx_api::ResourceDescription));
 }
 
 TEST(DXGISharedTest, HDRDetectionTreatsFP16AsDefinitelyHDR) {
