@@ -484,6 +484,9 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         }
     }
 
+    // Stamp QPC + frame counter for freeze-diagnosis timeline correlation (composite vs configure-forward).
+    DX12_NoteFfxConfigureForward(parsedDesc ? parsedDesc->type : 0);
+
     const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded(originalConfigure, context, descToCall);
     if (result != FFX_API_RETURN_OK || !desc) {
         return result;

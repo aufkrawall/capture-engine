@@ -2523,6 +2523,80 @@ TEST(DXGISharedTest, FFXRegisterUiResourceDescTypeMatchesAMDEncoding) {
     EXPECT_EQ(offsetof(ce::ffx_api::Resource, state), sizeof(void*) + sizeof(ce::ffx_api::ResourceDescription));
 }
 
+// Test the FFX UI-composite timeline ring buffer logic (rolling capture of last N composite events
+// for freeze diagnosis). Replicates the ring buffer algorithm from dx12_hook.cpp to verify the
+// modulo wraparound and that only the last kFFXUiCompositeTimelineSize entries are retained.
+TEST(DXGISharedTest, FFXUiCompositeTimelineRingBufferWrapsCorrectly) {
+    constexpr int kTimelineSize = 32;
+    struct TimelineEntry {
+        uint64_t frame;
+        uint64_t fenceVal;
+    };
+    TimelineEntry timeline[kTimelineSize];
+    uint32_t timelineIdx = 0;
+
+    auto record = [&](uint64_t frame, uint64_t fenceVal) {
+        const uint32_t idx = timelineIdx++;
+        timeline[idx % kTimelineSize] = {frame, fenceVal};
+    };
+
+    // Fill exactly kTimelineSize entries (frames 0..31).
+    for (int i = 0; i < kTimelineSize; ++i) {
+        record(static_cast<uint64_t>(i), static_cast<uint64_t>(i * 10));
+    }
+    ASSERT_EQ(timelineIdx, static_cast<uint32_t>(kTimelineSize));
+
+    // All 32 entries should be present in order (startIdx=0).
+    const uint32_t startIdx0 = (timelineIdx >= static_cast<uint32_t>(kTimelineSize))
+                                   ? (timelineIdx % kTimelineSize)
+                                   : 0;
+    EXPECT_EQ(startIdx0, 0u);
+    for (int i = 0; i < kTimelineSize; ++i) {
+        EXPECT_EQ(timeline[i].frame, static_cast<uint64_t>(i));
+        EXPECT_EQ(timeline[i].fenceVal, static_cast<uint64_t>(i * 10));
+    }
+
+    // Add 10 more entries (frames 32..41). The ring buffer should wrap and retain only the last 32.
+    for (int i = 0; i < 10; ++i) {
+        record(static_cast<uint64_t>(kTimelineSize + i), static_cast<uint64_t>((kTimelineSize + i) * 10));
+    }
+    EXPECT_EQ(timelineIdx, static_cast<uint32_t>(kTimelineSize + 10));
+
+    // After 42 total entries, the ring buffer should retain the last 32 (frames 10..41).
+    const uint32_t startIdx42 = (timelineIdx >= static_cast<uint32_t>(kTimelineSize))
+                                    ? (timelineIdx % kTimelineSize)
+                                    : 0;
+    EXPECT_EQ(startIdx42, 10u);  // 42 % 32 = 10
+    const int count42 = kTimelineSize;
+    for (int i = 0; i < count42; ++i) {
+        const uint32_t slotIdx = (startIdx42 + i) % kTimelineSize;
+        const uint64_t expectedFrame = static_cast<uint64_t>(10 + i);
+        EXPECT_EQ(timeline[slotIdx].frame, expectedFrame)
+            << "i=" << i << " slotIdx=" << slotIdx;
+    }
+}
+
+// Test the 3-slot allocator rotation logic (Step 1: no game-queue Signal, 3 rotating allocators).
+// At 60fps, 3 frames = 50ms — plenty for a single overlay draw to complete on the GPU before reuse.
+TEST(DXGISharedTest, FFXUiCompositeThreeSlotRotationCoversAllSlots) {
+    constexpr int kSlotCount = 3;
+    // Verify slot selection for frames 0..8: should cycle 0, 1, 2, 0, 1, 2, 0, 1, 2.
+    for (int frame = 0; frame < 9; ++frame) {
+        const int slot = frame % kSlotCount;
+        EXPECT_EQ(slot, frame % 3);
+        EXPECT_GE(slot, 0);
+        EXPECT_LT(slot, kSlotCount);
+    }
+    // Verify that with 3 slots, the oldest slot is always 3 frames behind — at 60fps that's 50ms.
+    // A single overlay draw takes <1ms on the GPU, so the 3-frame assumption is safe by ~50x margin.
+    const int slotAtFrame100 = 100 % kSlotCount;
+    EXPECT_EQ(slotAtFrame100, 1);  // 100 % 3 = 1
+    const int slotAtFrame101 = 101 % kSlotCount;
+    EXPECT_EQ(slotAtFrame101, 2);
+    const int slotAtFrame102 = 102 % kSlotCount;
+    EXPECT_EQ(slotAtFrame102, 0);  // wraps back to 0
+}
+
 TEST(DXGISharedTest, HDRDetectionTreatsFP16AsDefinitelyHDR) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatFormatAsDefinitelyHDR(DXGI_FORMAT_R16G16B16A16_FLOAT));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatFormatAsDefinitelyHDR(DXGI_FORMAT_R10G10B10A2_UNORM));

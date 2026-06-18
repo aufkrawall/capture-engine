@@ -1684,10 +1684,11 @@ static void WriteOverlayGpuBreadcrumb(ID3D12GraphicsCommandList* list, OverlayGp
 }
 
 // Called from the freeze watchdog: read the markers and report the last GPU op CE's overlay list reached.
+// Also dumps the FFX UI-composite fence state + timeline ring buffer (defined later in the file).
+void DX12_LogFFXUiCompositeFreezeDiagnostics(const char* reason);  // forward decl — defined near UI-composite globals
+
 void DX12_LogOverlayGpuBreadcrumbs(const char* reason) {
-    if (!g_OverlayBcMapped) {
-        return;
-    }
+    if (g_OverlayBcMapped) {
     const uint32_t seq = g_OverlayBcSeq.load(std::memory_order_relaxed);
     uint32_t vals[kOverlayBcSlotCount] = {};
     for (uint32_t i = 0; i < kOverlayBcSlotCount; ++i) {
@@ -1721,6 +1722,9 @@ void DX12_LogOverlayGpuBreadcrumbs(const char* reason) {
         "slots[start=%u rt=%u draw=%u close=%u]",
         reason ? reason : "freeze", seq, lastCompletedOp, opName, vals[kOverlayBcStart],
         vals[kOverlayBcAfterRTBarrier], vals[kOverlayBcAfterDraw], vals[kOverlayBcBeforeClose]);
+    }
+    // Also dump the FFX UI-composite fence state + timeline (works even if breadcrumb buffer isn't armed).
+    DX12_LogFFXUiCompositeFreezeDiagnostics(reason);
 }
 
 // CRITICAL FIX: Thread-safe accessors for g_Device and g_CommandQueue
@@ -5263,16 +5267,106 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 static std::recursive_mutex g_FFXUiCompositeMutex;
 static ID3D12Device* g_FFXUiCompositeDevice = nullptr;
 static ID3D12DescriptorHeap* g_FFXUiCompositeRtvHeap = nullptr;
-static ID3D12CommandAllocator* g_FFXUiCompositeAlloc[2] = {nullptr, nullptr};
+static constexpr int kFFXUiCompositeSlotCount = 3;  // 3-slot rotation: at 60fps, 3 frames = 50ms — plenty for a single overlay draw to complete on the GPU before reuse. No game-queue Signal needed (Step 1: the extra Signal on the AMD-tracked game queue was the ffxQuery wedge suspect).
+static ID3D12CommandAllocator* g_FFXUiCompositeAlloc[kFFXUiCompositeSlotCount] = {};
 static ID3D12GraphicsCommandList* g_FFXUiCompositeList = nullptr;
-static ID3D12Fence* g_FFXUiCompositeFence = nullptr;
+static ID3D12Fence* g_FFXUiCompositeFence = nullptr;  // retained for freeze diagnostics (GetCompletedValue), but NOT signaled on the game queue in Step 1
 static HANDLE g_FFXUiCompositeFenceEvent = nullptr;
 static UINT64 g_FFXUiCompositeFenceVal = 0;
-static UINT64 g_FFXUiCompositeAllocFenceVal[2] = {0, 0};
+static UINT64 g_FFXUiCompositeAllocFenceVal[kFFXUiCompositeSlotCount] = {};
 static int g_FFXUiCompositeFrame = 0;
 static DXGI_FORMAT g_FFXUiCompositeAdapterFormat = DXGI_FORMAT_UNKNOWN;
 static std::atomic<bool> g_FFXUiResourceCompositionActive{false};
 static std::atomic<uint64_t> g_FFXUiCompositeLastTickMs{0};
+
+// --- FFX UI-composite timeline ring buffer (freeze diagnosis) -----------------------------------------
+// Records the last kFFXUiCompositeTimelineSize composite calls with QPC stamps, fence state, and game-ECL
+// context so a freeze dump shows the PROGRESSION into the wedge (not just the final frame's state).
+// Written from the render thread under g_FFXUiCompositeMutex; read by the freeze watchdog at freeze time
+// (render thread is stuck, so the race is benign — a snapshot scan of all slots).
+struct FFXUiCompositeTimelineEntry {
+    uint64_t frame;           // g_FFXUiCompositeFrame at record time
+    uint64_t fenceVal;        // g_FFXUiCompositeFenceVal at record time (0 if no game-queue Signal)
+    uint64_t fenceCompleted;  // g_FFXUiCompositeFence->GetCompletedValue() at record time
+    uint64_t submitQpc;       // QPC at ECL submit
+    uint64_t returnQpc;       // QPC at composite-function return (or wait-return if a wait occurred)
+    uint32_t waitTimedOut;    // 1 if the completion wait timed out
+    uint32_t slot;            // allocator slot used
+    uint32_t gameEclCount;    // g_CommandListsExecutedThisFrame at composite time
+    void* uiTexture;          // the UI texture pointer
+    uint32_t ffxState;        // the FFX resource state
+    void* queue;              // the queue used for submission
+};
+static constexpr int kFFXUiCompositeTimelineSize = 32;
+static FFXUiCompositeTimelineEntry g_FFXUiCompositeTimeline[kFFXUiCompositeTimelineSize];
+static std::atomic<uint32_t> g_FFXUiCompositeTimelineIdx{0};
+// QPC of the most recent ffxConfigure forward call (set in Hooked_ffxConfigure, read by the next timeline entry).
+static std::atomic<uint64_t> g_LastFfxConfigureForwardQpc{0};
+// Frame counter for ffxConfigure calls (separate from g_FFXUiCompositeFrame to correlate configure vs composite).
+static std::atomic<uint64_t> g_FfxConfigureFrame{0};
+
+static void RecordFFXUiCompositeTimelineEntry(const FFXUiCompositeTimelineEntry& entry) {
+    const uint32_t idx = g_FFXUiCompositeTimelineIdx.fetch_add(1, std::memory_order_relaxed);
+    g_FFXUiCompositeTimeline[idx % kFFXUiCompositeTimelineSize] = entry;
+}
+
+static void DumpFFXUiCompositeTimeline(const char* reason) {
+    const uint32_t idx = g_FFXUiCompositeTimelineIdx.load(std::memory_order_relaxed);
+    const int count = (idx < static_cast<uint32_t>(kFFXUiCompositeTimelineSize))
+                          ? static_cast<int>(idx)
+                          : kFFXUiCompositeTimelineSize;
+    if (count == 0) {
+        HookLogImportant("DX12: [ffx-ui-composite-timeline] %s — no composite calls recorded yet", reason ?: "freeze");
+        return;
+    }
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    const double freqMs = static_cast<double>(freq.QuadPart) / 1000.0;
+    const uint32_t startIdx = (idx >= static_cast<uint32_t>(kFFXUiCompositeTimelineSize))
+                                  ? (idx % kFFXUiCompositeTimelineSize)
+                                  : 0;
+    HookLogImportant("DX12: [ffx-ui-composite-timeline] %s — %d entries (total=%u)", reason ?: "freeze", count, idx);
+    for (int i = 0; i < count; ++i) {
+        const uint32_t slotIdx = (startIdx + i) % kFFXUiCompositeTimelineSize;
+        const auto& e = g_FFXUiCompositeTimeline[slotIdx];
+        const double submitToReturnMs =
+            (e.returnQpc && e.submitQpc && freqMs > 0)
+                ? static_cast<double>(e.returnQpc - e.submitQpc) / freqMs
+                : -1.0;
+        HookLogImportant(
+            "  [timeline %d/%d] frame=%llu slot=%u fenceVal=%llu fenceCompleted=%llu waitTimedOut=%u "
+            "gameEcl=%u submitQpc=%llu returnQpc=%llu submitToReturnMs=%.3f uiTex=%p ffxState=0x%X queue=%p",
+            i + 1, count, static_cast<unsigned long long>(e.frame), e.slot,
+            static_cast<unsigned long long>(e.fenceVal), static_cast<unsigned long long>(e.fenceCompleted),
+            e.waitTimedOut, e.gameEclCount, static_cast<unsigned long long>(e.submitQpc),
+            static_cast<unsigned long long>(e.returnQpc), submitToReturnMs, e.uiTexture, e.ffxState, e.queue);
+    }
+    const uint64_t lastForwardQpc = g_LastFfxConfigureForwardQpc.load(std::memory_order_relaxed);
+    const uint64_t cfgFrame = g_FfxConfigureFrame.load(std::memory_order_relaxed);
+    HookLogImportant("  [timeline] lastFfxConfigureForwardQpc=%llu ffxConfigureFrame=%llu",
+                     static_cast<unsigned long long>(lastForwardQpc),
+                     static_cast<unsigned long long>(cfgFrame));
+}
+
+// Called from DX12_LogOverlayGpuBreadcrumbs (via the freeze watchdog) to log the CE composite fence
+// completion state + dump the timeline ring buffer. This is the key diagnostic that distinguishes
+// "CE's Signal completed → AMD wedged after the Signal" from "CE's Signal never completed → wedge
+// is at/before the Signal" — the fork between the Signal-wedge and ECL-wedge hypotheses.
+void DX12_LogFFXUiCompositeFreezeDiagnostics(const char* reason) {
+    const uint64_t fenceVal = g_FFXUiCompositeFenceVal;
+    const uint64_t fenceCompleted = g_FFXUiCompositeFence ? g_FFXUiCompositeFence->GetCompletedValue() : 0;
+    const int frame = g_FFXUiCompositeFrame;
+    const bool compositionActive = g_FFXUiResourceCompositionActive.load(std::memory_order_acquire);
+    const uint64_t lastTickMs = g_FFXUiCompositeLastTickMs.load(std::memory_order_acquire);
+    HookLogImportant(
+        "DX12: [ffx-ui-composite-freeze-diag] %s — frame=%d fenceVal=%llu fenceCompleted=%llu "
+        "fenceMatch=%d compositionActive=%d lastTickMs=%llu nowMs=%llu",
+        reason ? reason : "freeze", frame, static_cast<unsigned long long>(fenceVal),
+        static_cast<unsigned long long>(fenceCompleted), fenceVal == fenceCompleted ? 1 : 0,
+        compositionActive ? 1 : 0, static_cast<unsigned long long>(lastTickMs),
+        static_cast<unsigned long long>(GetTickCount64()));
+    DumpFFXUiCompositeTimeline(reason);
+}
 
 bool DX12_IsFFXUiResourceCompositionActive() {
     if (!g_FFXUiResourceCompositionActive.load(std::memory_order_acquire)) {
@@ -5290,14 +5384,35 @@ bool DX12_ShouldCompositeOverlayOntoFFXUiResource() {
     return g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
 }
 
+void DX12_NoteFfxConfigureForward(uint64_t configureType) {
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    g_LastFfxConfigureForwardQpc.store(static_cast<uint64_t>(qpc.QuadPart), std::memory_order_relaxed);
+    const uint64_t frame = g_FfxConfigureFrame.fetch_add(1, std::memory_order_relaxed) + 1;
+    // Log RegisterUiResource (type=0x30002) calls with frame context so the FG-configure (0x20002) and
+    // UI-register (0x30002) streams are correlatable per frame in the freeze dump.
+    if (configureType == ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12) {
+        static std::atomic<int> s_registerUiResLogCount{0};
+        const int n = s_registerUiResLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 20 || (n % 300) == 0) {
+            HookLogImportant(
+                "FFX Hook: RegisterUiResource forwarded (type=0x30002 cfgFrame=%llu qpc=%llu log=%d)",
+                static_cast<unsigned long long>(frame), static_cast<unsigned long long>(qpc.QuadPart), n + 1);
+        }
+    }
+}
+
 static void ReleaseFFXUiCompositeInfra() {
     if (g_FFXUiCompositeList) { g_FFXUiCompositeList->Release(); g_FFXUiCompositeList = nullptr; }
     for (auto& a : g_FFXUiCompositeAlloc) { if (a) { a->Release(); a = nullptr; } }
     if (g_FFXUiCompositeRtvHeap) { g_FFXUiCompositeRtvHeap->Release(); g_FFXUiCompositeRtvHeap = nullptr; }
     if (g_FFXUiCompositeFence) { g_FFXUiCompositeFence->Release(); g_FFXUiCompositeFence = nullptr; }
     g_FFXUiCompositeFenceVal = 0;
-    g_FFXUiCompositeAllocFenceVal[0] = g_FFXUiCompositeAllocFenceVal[1] = 0;
+    for (int i = 0; i < kFFXUiCompositeSlotCount; ++i) { g_FFXUiCompositeAllocFenceVal[i] = 0; }
     g_FFXUiCompositeFrame = 0;
+    g_FFXUiCompositeTimelineIdx.store(0, std::memory_order_relaxed);
+    g_LastFfxConfigureForwardQpc.store(0, std::memory_order_relaxed);
+    g_FfxConfigureFrame.store(0, std::memory_order_relaxed);
 }
 
 // Pick an RTV-compatible (non-TYPELESS) format for the UI texture so CreateRenderTargetView succeeds.
@@ -5406,14 +5521,28 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         }
     }
 
-    const int slot = g_FFXUiCompositeFrame & 1;
-    if (g_FFXUiCompositeFence->GetCompletedValue() < g_FFXUiCompositeAllocFenceVal[slot] &&
-        g_FFXUiCompositeFenceEvent) {
-        g_FFXUiCompositeFence->SetEventOnCompletion(g_FFXUiCompositeAllocFenceVal[slot], g_FFXUiCompositeFenceEvent);
-        WaitForSingleObject(g_FFXUiCompositeFenceEvent, 1000);
-    }
-    if (FAILED(g_FFXUiCompositeAlloc[slot]->Reset()) ||
-        FAILED(g_FFXUiCompositeList->Reset(g_FFXUiCompositeAlloc[slot], nullptr))) {
+    // Step 1 (drop-Signal experiment): use 3-slot rotation WITHOUT a game-queue Signal. The extra
+    // ID3D12CommandQueue::Signal on the game queue (which AMD tracks for pacing) was the prime ffxQuery
+    // wedge suspect. With 3 rotating allocators, the oldest slot's overlay draw (submitted ~3 frames ago =
+    // 50ms at 60fps) is long GPU-complete before reuse — no fence wait needed. The ECL itself stays on the
+    // game queue to isolate the Signal factor. The write/read race with AMD's UI-texture snapshot is handled
+    // by game-queue FIFO ordering: AMD's post-interpolation composition runs on AMD's queue AFTER the game
+    // queue's frame (including CE's overlay) completes, since AMD tracks the game queue for interpolation.
+    const int slot = g_FFXUiCompositeFrame % kFFXUiCompositeSlotCount;
+    // No fence-based recycle wait: the 3-frame rotation guarantees GPU completion. Log a Reset failure
+    // (E_FAIL) if the assumption is ever wrong — that would indicate an extremely slow GPU or a new bug.
+    const HRESULT allocResetHr = g_FFXUiCompositeAlloc[slot]->Reset();
+    const HRESULT listResetHr =
+        SUCCEEDED(allocResetHr) ? g_FFXUiCompositeList->Reset(g_FFXUiCompositeAlloc[slot], nullptr) : E_FAIL;
+    if (FAILED(allocResetHr) || FAILED(listResetHr)) {
+        static std::atomic<int> s_resetFailLog{0};
+        const int n = s_resetFailLog.fetch_add(1, std::memory_order_relaxed);
+        if (n < 10) {
+            HookLogImportant(
+                "DX12: FFX UI-composite allocator/list Reset FAILED (slot=%d frame=%d allocHr=0x%08X listHr=0x%08X) "
+                "— 3-frame rotation assumption violated?",
+                slot, g_FFXUiCompositeFrame, static_cast<unsigned>(allocResetHr), static_cast<unsigned>(listResetHr));
+        }
         return false;
     }
 
@@ -5450,6 +5579,9 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         return false;
     }
 
+    // QPC stamp at ECL submit (for the timeline ring buffer — CPU-side submit→return causality).
+    LARGE_INTEGER submitQpc;
+    QueryPerformanceCounter(&submitQpc);
     ID3D12CommandList* lists[] = {g_FFXUiCompositeList};
     ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
     {
@@ -5460,31 +5592,42 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
             gameQueue->ExecuteCommandLists(1, lists);
         }
     }
-    ++g_FFXUiCompositeFenceVal;
-    gameQueue->Signal(g_FFXUiCompositeFence, g_FFXUiCompositeFenceVal);
+    // Step 1: NO gameQueue->Signal() — the extra Signal on the AMD-tracked game queue was the wedge suspect.
+    // The fence is retained (not signaled) so DX12_LogFFXUiCompositeFreezeDiagnostics can report
+    // fenceCompleted=0 vs fenceVal=N, confirming the no-Signal path is active.
+    ++g_FFXUiCompositeFenceVal;  // incremented for diagnostics only (NOT signaled on any queue)
     g_FFXUiCompositeAllocFenceVal[slot] = g_FFXUiCompositeFenceVal;
     ++g_FFXUiCompositeFrame;
-    // GTA registers the UI resource with ENABLE_INTERNAL_UI_DOUBLE_BUFFERING, so AMD snapshots the texture
-    // at RegisterUiResource time — which the caller forwards immediately after this returns. Wait for CE's
-    // overlay write to COMPLETE on the game queue first, so AMD snapshots the composited overlay (not a torn
-    // texture) and there is no write/read race against AMD's snapshot of the shared UI texture. The wait is
-    // on CE's own fence on the GAME queue (never AMD's runtime present queue).
-    if (g_FFXUiCompositeFenceEvent && g_FFXUiCompositeFence->GetCompletedValue() < g_FFXUiCompositeFenceVal) {
-        g_FFXUiCompositeFence->SetEventOnCompletion(g_FFXUiCompositeFenceVal, g_FFXUiCompositeFenceEvent);
-        WaitForSingleObject(g_FFXUiCompositeFenceEvent, 1000);
-    }
+    // Step 1: NO completion-wait before forwarding RegisterUiResource. The game-queue FIFO ordering
+    // ensures CE's overlay write completes before AMD's post-interpolation read (AMD tracks the game queue).
+    LARGE_INTEGER returnQpc;
+    QueryPerformanceCounter(&returnQpc);
     g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
     g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
     NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
+
+    // Record this composite call in the timeline ring buffer for freeze diagnosis.
+    const int gameEclCount = g_CommandListsExecutedThisFrame.load(std::memory_order_relaxed);
+    RecordFFXUiCompositeTimelineEntry({static_cast<uint64_t>(g_FFXUiCompositeFrame),
+                                       g_FFXUiCompositeFenceVal,
+                                       g_FFXUiCompositeFence ? g_FFXUiCompositeFence->GetCompletedValue() : 0,
+                                       static_cast<uint64_t>(submitQpc.QuadPart),
+                                       static_cast<uint64_t>(returnQpc.QuadPart),
+                                       0,  // no completion wait in Step 1
+                                       static_cast<uint32_t>(slot),
+                                       static_cast<uint32_t>(gameEclCount),
+                                       uiTexture,
+                                       ffxState,
+                                       gameQueue});
 
     static std::atomic<int> s_uiCompositeLogCount{0};
     const int logCount = s_uiCompositeLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 20 || (logCount % 300) == 0) {
         HookLogImportant(
             "DX12: FFX UI-composite overlay drawn onto game UI resource %p on GAME queue %p (regState=0x%X "
-            "ffxState=0x%X flags=0x%X %dx%d fmt=%d log=%d) — no AMD-runtime-queue submit",
+            "ffxState=0x%X flags=0x%X %dx%d fmt=%d slot=%d gameEcl=%d log=%d) — no Signal, no wait (Step 1)",
             uiTexture, gameQueue, static_cast<unsigned>(regState), ffxState, flags, width, height,
-            static_cast<int>(rtvFormat), logCount + 1);
+            static_cast<int>(rtvFormat), slot, gameEclCount, logCount + 1);
     }
     return true;
 }

@@ -111,6 +111,9 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResource, uint32_t ffxState, uint32_t flags);
 bool DX12_IsFFXUiResourceCompositionActive();
 bool DX12_ShouldCompositeOverlayOntoFFXUiResource();
+// Called from Hooked_ffxConfigure right before forwarding the configure to AMD. Stamps a QPC + frame
+// counter so the freeze-watchdog timeline can correlate composite calls with ffxConfigure forwards.
+void DX12_NoteFfxConfigureForward(uint64_t configureType);
 void RemoveGlobalVTableHooks();
 
 extern "C" {
