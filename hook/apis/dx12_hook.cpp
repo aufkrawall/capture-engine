@@ -1599,6 +1599,130 @@ void DX12_DumpDredIfDeviceRemoved(const char* reason) {
     }
 }
 
+// --- Overlay GPU breadcrumbs (native-FSR ffxQuery-wedge diagnosis) -------------------------------------
+// A GPU-writable / CPU-readable marker buffer. CE records WriteBufferImmediate(MARKER_OUT) markers INTO the
+// overlay command list around each op (start / after RT barrier / after draw / before close). When the
+// FSR-FG overlay submit on AMD's runtime queue wedges AMD's ffxQuery, the freeze watchdog reads these
+// markers: the highest op that reached the latest sequence value is the last GPU op CE's command list
+// completed before the GPU stalled. This distinguishes "CE's GPU op stalled the queue" (markers stop
+// mid-list) from "CE's list finished — the deadlock is a fence/CPU issue or AMD's own subsequent work"
+// (all markers reached). Works without any device removal (the freeze is a pure hang).
+enum OverlayGpuBreadcrumbOp : uint32_t {
+    kOverlayBcStart = 1,       // command list reset, recording started
+    kOverlayBcAfterRTBarrier,  // backbuffer transitioned to RENDER_TARGET
+    kOverlayBcAfterDraw,       // overlay draw recorded
+    kOverlayBcBeforeClose,     // all overlay commands recorded (about to Close)
+    kOverlayBcSlotCount,
+};
+static ID3D12Resource* g_OverlayBcBuffer = nullptr;
+static volatile uint32_t* g_OverlayBcMapped = nullptr;
+static D3D12_GPU_VIRTUAL_ADDRESS g_OverlayBcGpuVA = 0;
+static std::atomic<uint32_t> g_OverlayBcSeq{0};
+
+static void EnsureOverlayBreadcrumbBuffer(ID3D12Device* device) {
+    if (g_OverlayBcBuffer || !device) {
+        return;
+    }
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_CUSTOM;
+    hp.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;  // system memory, CPU-cached, GPU-writable
+    hp.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = static_cast<UINT64>(kOverlayBcSlotCount) * sizeof(uint32_t);
+    rd.Height = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* buf = nullptr;
+    HRESULT hr = device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON,
+                                                 nullptr, IID_PPV_ARGS(&buf));
+    if (FAILED(hr) || !buf) {
+        static std::atomic<int> s_bcCreateFailLog{0};
+        if (s_bcCreateFailLog.fetch_add(1, std::memory_order_relaxed) < 3) {
+            HookLogImportant("DX12: Overlay GPU breadcrumb buffer create failed hr=0x%08X", (unsigned)hr);
+        }
+        return;
+    }
+    void* mapped = nullptr;
+    if (FAILED(buf->Map(0, nullptr, &mapped)) || !mapped) {
+        buf->Release();
+        return;
+    }
+    memset(mapped, 0, static_cast<size_t>(rd.Width));
+    g_OverlayBcMapped = static_cast<volatile uint32_t*>(mapped);
+    g_OverlayBcGpuVA = buf->GetGPUVirtualAddress();
+    g_OverlayBcBuffer = buf;
+    HookLogImportant("DX12: Overlay GPU breadcrumb buffer armed (slots=%d gpuVA=0x%llX)",
+                     static_cast<int>(kOverlayBcSlotCount), static_cast<unsigned long long>(g_OverlayBcGpuVA));
+}
+
+// Call once per overlay submit (before recording) to bump the sequence the GPU will stamp into each slot.
+static void BeginOverlayGpuBreadcrumbFrame(ID3D12Device* device) {
+    EnsureOverlayBreadcrumbBuffer(device);
+    if (g_OverlayBcMapped) {
+        g_OverlayBcSeq.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+static void WriteOverlayGpuBreadcrumb(ID3D12GraphicsCommandList* list, OverlayGpuBreadcrumbOp op) {
+    if (!list || !g_OverlayBcMapped || g_OverlayBcGpuVA == 0 || op == 0 || op >= kOverlayBcSlotCount) {
+        return;
+    }
+    ID3D12GraphicsCommandList2* list2 = nullptr;
+    if (FAILED(list->QueryInterface(IID_PPV_ARGS(&list2))) || !list2) {
+        return;
+    }
+    D3D12_WRITEBUFFERIMMEDIATE_PARAMETER param = {};
+    param.Dest = g_OverlayBcGpuVA + static_cast<UINT64>(op) * sizeof(uint32_t);
+    param.Value = g_OverlayBcSeq.load(std::memory_order_relaxed);
+    D3D12_WRITEBUFFERIMMEDIATE_MODE mode = D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT;
+    list2->WriteBufferImmediate(1, &param, &mode);
+    list2->Release();
+}
+
+// Called from the freeze watchdog: read the markers and report the last GPU op CE's overlay list reached.
+void DX12_LogOverlayGpuBreadcrumbs(const char* reason) {
+    if (!g_OverlayBcMapped) {
+        return;
+    }
+    const uint32_t seq = g_OverlayBcSeq.load(std::memory_order_relaxed);
+    uint32_t vals[kOverlayBcSlotCount] = {};
+    for (uint32_t i = 0; i < kOverlayBcSlotCount; ++i) {
+        vals[i] = g_OverlayBcMapped[i];
+    }
+    uint32_t lastCompletedOp = 0;
+    for (uint32_t op = kOverlayBcStart; op < kOverlayBcSlotCount; ++op) {
+        if (vals[op] == seq && seq != 0) {
+            lastCompletedOp = op;
+        }
+    }
+    const char* opName = "none (GPU never reached the overlay list this frame — CE's list is NOT the stall)";
+    switch (lastCompletedOp) {
+        case kOverlayBcStart:
+            opName = "start(list reset) — GPU stalled BEFORE the RT barrier";
+            break;
+        case kOverlayBcAfterRTBarrier:
+            opName = "after RT barrier — GPU stalled in the overlay DRAW";
+            break;
+        case kOverlayBcAfterDraw:
+            opName = "after overlay draw — GPU stalled in the PRESENT-back barrier";
+            break;
+        case kOverlayBcBeforeClose:
+            opName = "before Close — CE's WHOLE overlay list completed; wedge is a fence/CPU deadlock or AMD's work";
+            break;
+        default:
+            break;
+    }
+    HookLogImportant(
+        "DX12: [overlay-gpu-breadcrumb] %s — latestSeq=%u lastCompletedOp=%u (%s) "
+        "slots[start=%u rt=%u draw=%u close=%u]",
+        reason ? reason : "freeze", seq, lastCompletedOp, opName, vals[kOverlayBcStart],
+        vals[kOverlayBcAfterRTBarrier], vals[kOverlayBcAfterDraw], vals[kOverlayBcBeforeClose]);
+}
+
 // CRITICAL FIX: Thread-safe accessors for g_Device and g_CommandQueue
 // These functions acquire the mutex and return a reference-counted pointer
 // to prevent use-after-free when the queue/device is destroyed on another
@@ -17400,6 +17524,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             }
                         }
                         if (SUCCEEDED(listResetHr)) {
+                            // GPU-breadcrumb: stamp the start of CE's overlay command list so a native-FSR
+                            // ffxQuery wedge can be attributed to CE's GPU ops vs a fence/CPU deadlock.
+                            BeginOverlayGpuBreadcrumbFrame(g_Device.load(std::memory_order_acquire));
+                            WriteOverlayGpuBreadcrumb(list, kOverlayBcStart);
                             const bool preserveLiveStartupOverlayDuringInactiveSL =
                                 ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
                             const bool hasPendingStartupOverlayResources =
@@ -17968,6 +18096,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
                                                 list->ResourceBarrier(1, &barrier);
                                             }
+                                            WriteOverlayGpuBreadcrumb(list, kOverlayBcAfterRTBarrier);
 
                                             D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
                                                 g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
@@ -17978,6 +18107,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
 
                                             bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
                                             DrawOverlay(list, isRealFrame, bufferIdx);
+                                            WriteOverlayGpuBreadcrumb(list, kOverlayBcAfterDraw);
 
                                             if (!startupOverlayPresent) {
                                                 D3D12_RESOURCE_BARRIER barrier = {};
@@ -17994,6 +18124,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
 
                                     const bool overlayDrawRecorded = usedPrimaryOverlayBackend || !offscreenCompositeRequired;
                                     QueryPerformanceCounter(&perfRecord);
+
+                                    // GPU-breadcrumb: stamp the END of CE's overlay command list. If the GPU reaches
+                                    // this marker but ffxQuery still wedges, CE's GPU work is NOT the stall (look to a
+                                    // fence/CPU deadlock or AMD's own work); if it stops earlier, CE's list is the stall.
+                                    WriteOverlayGpuBreadcrumb(list, kOverlayBcBeforeClose);
 
                                     HRESULT closeHr = list->Close();
                                     // Log Close result during FG

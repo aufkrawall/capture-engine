@@ -47,6 +47,7 @@ void DX12_ServiceDeferredECLProbe() {}
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain*, const char*) {}
 bool DX12_TryInvokePostSLStartupActivationCallback(const char*, bool, bool) { return false; }
 void DX12_DumpDredIfDeviceRemoved(const char*) {}
+void DX12_LogOverlayGpuBreadcrumbs(const char*) {}
 
 // DX12_SetCommandQueue is extern "C" in the header
 extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}

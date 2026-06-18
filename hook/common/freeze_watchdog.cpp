@@ -21,6 +21,11 @@ FreezeWatchdog g_RenderWatchdog;
 // faulting GPU op. No-op for non-DX12 or healthy-device freezes.
 extern void DX12_DumpDredIfDeviceRemoved(const char* reason);
 
+// Defined in dx12_hook.cpp. Reads CE's overlay GPU breadcrumb markers and reports the last GPU op CE's
+// overlay command list reached — works even for a pure hang (no device removal). Pinpoints whether a
+// native-FSR ffxQuery wedge is CE's GPU work stalling the queue or a fence/CPU deadlock after CE's list.
+extern void DX12_LogOverlayGpuBreadcrumbs(const char* reason);
+
 static std::string GetLogsDirectory() {
     char pathBuffer[MAX_PATH] = {};
     if (BuildLogFilePathForModuleAddress((const void*)&GetLogsDirectory, "freeze_watchdog.tmp", pathBuffer,
@@ -631,6 +636,9 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
     // If this freeze is a removed/hung D3D12 device, record DRED breadcrumbs +
     // page-fault info into the hook log alongside the dump.
     DX12_DumpDredIfDeviceRemoved("freeze watchdog dump");
+    // Also read CE's overlay GPU breadcrumbs (works for a pure hang too) so a native-FSR ffxQuery wedge is
+    // attributable to CE's overlay GPU op vs a fence/CPU deadlock after CE's list completed.
+    DX12_LogOverlayGpuBreadcrumbs("freeze watchdog dump");
 
     DeleteFileA(tempDumpPath.c_str());
     HANDLE hFile = CreateFileA(tempDumpPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
