@@ -5424,8 +5424,14 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     device->CreateRenderTargetView(uiTexture, &rtvDesc, rtv);
 
     const D3D12_RESOURCE_STATES regState = GetDX12StateFromFFXResourceState(ffxState);
+    // GPU-breadcrumb CE's UI-texture write so a freeze dump distinguishes "CE's game-queue write completed
+    // (wedge is AMD's pacing/read of the shared UI texture)" from "CE's write hung on the GPU (cross-queue
+    // resource-state hazard against AMD's own use of the texture)".
+    BeginOverlayGpuBreadcrumbFrame(device);
+    WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcStart);
     // NOTE: no clear — the overlay alpha-blends ON TOP of the game's HUD already in the UI texture.
     TransitionResourceIfNeeded(g_FFXUiCompositeList, uiTexture, regState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcAfterRTBarrier);
     {
         std::lock_guard<std::recursive_mutex> olock(g_OverlayMutex);
         g_FFXPresentOverlayAdapter.SetIPCClient(g_IPC);
@@ -5437,7 +5443,9 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         g_FFXPresentOverlayAdapter.SetDX12RenderTarget(g_FFXUiCompositeList, reinterpret_cast<void*>(rtv.ptr));
         g_FFXPresentOverlayAdapter.RenderOverlay(width, height);
     }
+    WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcAfterDraw);
     TransitionResourceIfNeeded(g_FFXUiCompositeList, uiTexture, D3D12_RESOURCE_STATE_RENDER_TARGET, regState);
+    WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcBeforeClose);
     if (FAILED(g_FFXUiCompositeList->Close())) {
         return false;
     }
@@ -5456,6 +5464,15 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     gameQueue->Signal(g_FFXUiCompositeFence, g_FFXUiCompositeFenceVal);
     g_FFXUiCompositeAllocFenceVal[slot] = g_FFXUiCompositeFenceVal;
     ++g_FFXUiCompositeFrame;
+    // GTA registers the UI resource with ENABLE_INTERNAL_UI_DOUBLE_BUFFERING, so AMD snapshots the texture
+    // at RegisterUiResource time — which the caller forwards immediately after this returns. Wait for CE's
+    // overlay write to COMPLETE on the game queue first, so AMD snapshots the composited overlay (not a torn
+    // texture) and there is no write/read race against AMD's snapshot of the shared UI texture. The wait is
+    // on CE's own fence on the GAME queue (never AMD's runtime present queue).
+    if (g_FFXUiCompositeFenceEvent && g_FFXUiCompositeFence->GetCompletedValue() < g_FFXUiCompositeFenceVal) {
+        g_FFXUiCompositeFence->SetEventOnCompletion(g_FFXUiCompositeFenceVal, g_FFXUiCompositeFenceEvent);
+        WaitForSingleObject(g_FFXUiCompositeFenceEvent, 1000);
+    }
     g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
     g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
     NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
