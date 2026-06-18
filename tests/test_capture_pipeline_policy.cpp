@@ -866,6 +866,31 @@ TEST(CapturePipelinePolicyTest, WgcCfrRejectsFramesTooNewForSlot) {
     EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1200, 1000, 0));
 }
 
+TEST(CapturePipelinePolicyTest, WgcActiveDelayUsesStrictResidualTolerance) {
+    EXPECT_EQ(policy::GetWgcActiveDelayResidualToleranceQpc(100), 60);
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForActiveDelaySlot(1060, 1000, 100));
+    EXPECT_TRUE(policy::IsWgcFrameTooNewForActiveDelaySlot(1061, 1000, 100));
+
+    EXPECT_EQ(policy::GetWgcActiveDelayResidualHardLimitQpc(8333, 1000000), 10000);
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForActiveDelayHardLimit(110000, 100000, 8333, 1000000));
+    EXPECT_TRUE(policy::IsWgcFrameTooNewForActiveDelayHardLimit(110001, 100000, 8333, 1000000));
+
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1250, 1000, 100));
+    EXPECT_TRUE(policy::IsWgcFrameTooNewForActiveDelaySlot(1250, 1000, 100));
+}
+
+TEST(CapturePipelinePolicyTest, WgcDelayReservoirFramesFollowMeasuredDelay) {
+    EXPECT_EQ(policy::GetWgcDelayReservoirDelayFrames(0, 100), 0u);
+    EXPECT_EQ(policy::GetWgcDelayReservoirDelayFrames(301, 100), 4u);
+    EXPECT_EQ(policy::GetWgcDelayReservoirLowWaterFrames(301, 100), 4u);
+    EXPECT_EQ(policy::GetWgcDelayReservoirTargetFrames(301, 100), 5u);
+
+    EXPECT_TRUE(policy::IsWgcDelayReservoirBelowLowWater(3, 301, 100));
+    EXPECT_FALSE(policy::IsWgcDelayReservoirBelowLowWater(4, 301, 100));
+    EXPECT_FALSE(policy::IsWgcDelayReservoirRecovered(4, 301, 100));
+    EXPECT_TRUE(policy::IsWgcDelayReservoirRecovered(5, 301, 100));
+}
+
 TEST(CapturePipelinePolicyTest, WgcFreshCatchupRejectsFramesOutsideLiveVisualDebtWindow) {
     EXPECT_FALSE(policy::ShouldUseFreshWgcCatchupFrame(1360, 1600, 100, 1000, 20));
     EXPECT_TRUE(policy::ShouldUseFreshWgcCatchupFrame(1000, 1600, 100, 1000, 0));

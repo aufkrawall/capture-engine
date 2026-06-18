@@ -39,6 +39,9 @@ constexpr uint32_t kWgcSteadyReserveBuildInputPermille = 995;
 constexpr uint32_t kWgcSelectionDelayTicks = 1;
 constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kWgcCfrSelectionMaxLeadTicks = 3;
+constexpr uint32_t kWgcActiveDelayResidualTolerancePermille = 600;
+constexpr uint32_t kWgcActiveDelayResidualHardLimitUs = 10000;
+constexpr uint32_t kWgcDelayReservoirTargetExtraFrames = 1;
 constexpr uint32_t kWgcMaxLiveVisualDebtMs = 250;
 constexpr uint32_t kWgcMaxLiveVisualDebtFrames = 32;
 constexpr uint32_t kWgcMaxLiveSchedulerRebaseTicksPerLoop = 1;
@@ -1399,6 +1402,78 @@ inline bool IsWgcFrameTooNewForCfrSlot(int64_t frameSelectionQpc, int64_t select
 
     const int64_t maxLeadQpc = targetIntervalTicks * static_cast<int64_t>(std::max<uint32_t>(1u, maxLeadTicks));
     return frameSelectionQpc > selectionTargetQpc + maxLeadQpc;
+}
+
+inline uint32_t GetWgcDelayReservoirDelayFrames(int64_t contentDelayQpc, int64_t targetIntervalTicks) {
+    if (contentDelayQpc <= 0 || targetIntervalTicks <= 0) {
+        return 0;
+    }
+
+    return static_cast<uint32_t>((contentDelayQpc + targetIntervalTicks - 1) / targetIntervalTicks);
+}
+
+inline uint32_t GetWgcDelayReservoirLowWaterFrames(int64_t contentDelayQpc, int64_t targetIntervalTicks) {
+    return GetWgcDelayReservoirDelayFrames(contentDelayQpc, targetIntervalTicks);
+}
+
+inline uint32_t GetWgcDelayReservoirTargetFrames(int64_t contentDelayQpc, int64_t targetIntervalTicks,
+                                                 uint32_t extraFrames = kWgcDelayReservoirTargetExtraFrames) {
+    const uint32_t delayFrames = GetWgcDelayReservoirDelayFrames(contentDelayQpc, targetIntervalTicks);
+    if (delayFrames == 0) {
+        return 0;
+    }
+
+    return delayFrames + extraFrames;
+}
+
+inline int64_t GetWgcActiveDelayResidualToleranceQpc(int64_t targetIntervalTicks) {
+    if (targetIntervalTicks <= 0) {
+        return 0;
+    }
+
+    return std::max<int64_t>(
+        1, (targetIntervalTicks * static_cast<int64_t>(kWgcActiveDelayResidualTolerancePermille)) / 1000);
+}
+
+inline int64_t GetWgcActiveDelayResidualHardLimitQpc(int64_t targetIntervalTicks, int64_t qpcTicksPerSecond) {
+    const int64_t strictToleranceQpc = GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
+    if (qpcTicksPerSecond <= 0) {
+        return strictToleranceQpc;
+    }
+
+    const int64_t hardLimitQpc =
+        (qpcTicksPerSecond * static_cast<int64_t>(kWgcActiveDelayResidualHardLimitUs)) / 1000000;
+    return std::max<int64_t>(strictToleranceQpc, hardLimitQpc);
+}
+
+inline bool IsWgcFrameTooNewForActiveDelaySlot(int64_t frameSelectionQpc, int64_t selectionTargetQpc,
+                                               int64_t targetIntervalTicks) {
+    if (frameSelectionQpc <= 0 || selectionTargetQpc <= 0 || targetIntervalTicks <= 0) {
+        return false;
+    }
+
+    return frameSelectionQpc > selectionTargetQpc + GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
+}
+
+inline bool IsWgcFrameTooNewForActiveDelayHardLimit(int64_t frameSelectionQpc, int64_t selectionTargetQpc,
+                                                    int64_t targetIntervalTicks, int64_t qpcTicksPerSecond) {
+    if (frameSelectionQpc <= 0 || selectionTargetQpc <= 0 || targetIntervalTicks <= 0) {
+        return false;
+    }
+
+    return frameSelectionQpc >
+           selectionTargetQpc + GetWgcActiveDelayResidualHardLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
+}
+
+inline bool IsWgcDelayReservoirBelowLowWater(size_t bufferedFrames, int64_t contentDelayQpc,
+                                             int64_t targetIntervalTicks) {
+    const uint32_t lowWaterFrames = GetWgcDelayReservoirLowWaterFrames(contentDelayQpc, targetIntervalTicks);
+    return lowWaterFrames > 0 && bufferedFrames < lowWaterFrames;
+}
+
+inline bool IsWgcDelayReservoirRecovered(size_t bufferedFrames, int64_t contentDelayQpc, int64_t targetIntervalTicks) {
+    const uint32_t targetFrames = GetWgcDelayReservoirTargetFrames(contentDelayQpc, targetIntervalTicks);
+    return targetFrames == 0 || bufferedFrames >= targetFrames;
 }
 
 inline bool IsWgcFrameWithinLiveVisualDebtWindow(int64_t frameSelectionQpc, int64_t liveNowQpc,

@@ -1883,6 +1883,20 @@ void EncoderThreadFunc(const AppConfig& config) {
     int64_t wgcStartupDelayTargetUs = 0;
     bool wgcStartupSelectedByDelayReserve = false;
     std::string wgcStartupReserveReason = "not-run";
+    uint32_t wgcDelayReservoirLowWaterTickCount = 0;
+    uint64_t wgcDelayReservoirLowWaterTickTotal = 0;
+    uint64_t wgcDelayResidualSamples = 0;
+    uint64_t wgcDelayResidualAbsAccumUs = 0;
+    int64_t wgcDelayResidualSignedAccumUs = 0;
+    uint32_t wgcDelayResidualAbsMaxUs = 0;
+    uint32_t wgcDelayResidualLateMaxUs = 0;
+    uint32_t wgcDelayResidualEarlyMaxUs = 0;
+    uint64_t wgcDelayRealizedAccumUs = 0;
+    uint32_t wgcDelayRealizedMinUs = UINT32_MAX;
+    uint32_t wgcDelayRealizedMaxUs = 0;
+    std::array<uint32_t, 256> wgcDelayResidualAbsHistogram{};
+    uint64_t wgcDelayRelaxedSelectionCount = 0;
+    uint32_t wgcDelayRelaxedSelectionMaxUs = 0;
     uint32_t wgcAdaptiveThrottleAdjustments = 0;
     WgcAdaptiveThrottleMode wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
     uint32_t wgcAdaptiveThrottlePendingTargetFps = 0;
@@ -1953,6 +1967,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     int64_t wgcAvSyncScheduleOffsetQpc = 0;
     int64_t wgcAvSyncStartupAudioAnchorQpc = 0;
     int64_t wgcAvSyncStartupVideoQpc = 0;
+    int64_t wgcStartupReserveWaitStartQpc = 0;
+    uint32_t wgcStartupReserveWaitCount = 0;
     uint32_t wgcFreshWarmupFrameCount = 0;
     uint32_t wgcOldestBufferedFrameAgeUs = 0;
     double wgcCoverageRepeatAccumulator = 0.0;
@@ -2203,6 +2219,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         wgcAvSyncScheduleOffsetQpc = 0;
         wgcAvSyncStartupAudioAnchorQpc = 0;
         wgcAvSyncStartupVideoQpc = 0;
+        wgcStartupReserveWaitStartQpc = 0;
+        wgcStartupReserveWaitCount = 0;
         wgcFreshWarmupFrameCount = 0;
     };
     auto TrackWarmupWgcFreshFrame = [&](const QueuedFrame& queuedFrame) {
@@ -2282,6 +2300,58 @@ void EncoderThreadFunc(const AppConfig& config) {
             IsActiveScreenGrab() ? "wgc-selection-bias" : "inject-buffer-reserve", config.avSyncConfidence.c_str(),
             config.avSyncReason.c_str());
     }
+
+    const auto qpcToUs = [&](int64_t qpcDelta) -> int64_t {
+        return qpcFreq.QuadPart > 0 ? (qpcDelta * 1000000) / qpcFreq.QuadPart : 0;
+    };
+    const auto getWgcDelayReservoirLowWaterFrames = [&]() -> uint32_t {
+        return ce::capture_policy::GetWgcDelayReservoirLowWaterFrames(avContentDelayQpc, targetIntervalTicks);
+    };
+    const auto getWgcDelayReservoirTargetFrames = [&]() -> uint32_t {
+        return ce::capture_policy::GetWgcDelayReservoirTargetFrames(avContentDelayQpc, targetIntervalTicks);
+    };
+    const auto recordWgcDelayRealization = [&](int64_t signedResidualUs) {
+        if (!avContentDelayActive || qpcFreq.QuadPart <= 0) {
+            return;
+        }
+        const int64_t requestedDelayUs = qpcToUs(avContentDelayQpc);
+        const int64_t realizedDelaySignedUs = requestedDelayUs - signedResidualUs;
+        const uint32_t realizedDelayUs =
+            SaturatingToUint32(static_cast<uint64_t>(realizedDelaySignedUs > 0 ? realizedDelaySignedUs : 0));
+        const uint32_t absResidualUs =
+            SaturatingToUint32(static_cast<uint64_t>(signedResidualUs >= 0 ? signedResidualUs : -signedResidualUs));
+
+        ++wgcDelayResidualSamples;
+        wgcDelayResidualAbsAccumUs += absResidualUs;
+        wgcDelayResidualSignedAccumUs += signedResidualUs;
+        wgcDelayResidualAbsMaxUs = std::max(wgcDelayResidualAbsMaxUs, absResidualUs);
+        if (signedResidualUs >= 0) {
+            wgcDelayResidualLateMaxUs =
+                std::max(wgcDelayResidualLateMaxUs, SaturatingToUint32(static_cast<uint64_t>(signedResidualUs)));
+        } else {
+            wgcDelayResidualEarlyMaxUs =
+                std::max(wgcDelayResidualEarlyMaxUs, SaturatingToUint32(static_cast<uint64_t>(-signedResidualUs)));
+        }
+        wgcDelayRealizedAccumUs += realizedDelayUs;
+        wgcDelayRealizedMinUs = std::min(wgcDelayRealizedMinUs, realizedDelayUs);
+        wgcDelayRealizedMaxUs = std::max(wgcDelayRealizedMaxUs, realizedDelayUs);
+        const size_t histogramBin = std::min<size_t>(wgcDelayResidualAbsHistogram.size() - 1, absResidualUs / 1000u);
+        ++wgcDelayResidualAbsHistogram[histogramBin];
+    };
+    const auto wgcDelayResidualP95Us = [&]() -> uint32_t {
+        if (wgcDelayResidualSamples == 0) {
+            return 0;
+        }
+        const uint64_t targetRank = (wgcDelayResidualSamples * 95ull + 99ull) / 100ull;
+        uint64_t cumulative = 0;
+        for (size_t i = 0; i < wgcDelayResidualAbsHistogram.size(); ++i) {
+            cumulative += wgcDelayResidualAbsHistogram[i];
+            if (cumulative >= targetRank) {
+                return SaturatingToUint32(static_cast<uint64_t>(i) * 1000ull);
+            }
+        }
+        return SaturatingToUint32(static_cast<uint64_t>(wgcDelayResidualAbsHistogram.size() - 1) * 1000ull);
+    };
 
     while (g_EncoderRunning || g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) || g_FrameQueue.Size() > 0 ||
            !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
@@ -2920,7 +2990,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             bool skippedTooNewForSlot = false;
-            auto buildCandidateList = [&](std::vector<size_t>* outIndices, bool requireFresh) {
+            auto buildCandidateList = [&](std::vector<size_t>* outIndices, bool requireFresh,
+                                          bool allowRelaxedActiveDelayResidual) {
                 if (!outIndices) {
                     return;
                 }
@@ -2938,11 +3009,30 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const int64_t candidateSelectionTimestamp = GetFrameSelectionTimestamp(candidate);
                     const bool tooNewForSlot =
                         g_HasLastFrame && !g_LastFrame.isInjectMode &&
-                        ce::capture_policy::IsWgcFrameTooNewForCfrSlot(
-                            candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks);
+                        (selectionDelayApplied
+                             ? ce::capture_policy::IsWgcFrameTooNewForActiveDelaySlot(
+                                   candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks)
+                             : ce::capture_policy::IsWgcFrameTooNewForCfrSlot(
+                                   candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks));
                     if (tooNewForSlot) {
-                        skippedTooNewForSlot = true;
-                        continue;
+                        bool useRelaxedActiveDelayCandidate = false;
+                        if (selectionDelayApplied && allowRelaxedActiveDelayResidual &&
+                            !ce::capture_policy::IsWgcFrameTooNewForActiveDelayHardLimit(
+                                candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks,
+                                qpcFreq.QuadPart) &&
+                            g_HasLastFrame && !g_LastFrame.isInjectMode) {
+                            const int64_t repeatSelectionTimestamp = GetFrameSelectionTimestamp(g_LastFrame);
+                            const int64_t repeatDamage =
+                                AbsoluteTimestampDistance(repeatSelectionTimestamp, effectiveSelectionTargetQpc);
+                            const int64_t candidateDamage =
+                                AbsoluteTimestampDistance(candidateSelectionTimestamp, effectiveSelectionTargetQpc);
+                            useRelaxedActiveDelayCandidate =
+                                repeatSelectionTimestamp > 0 && candidateDamage < repeatDamage;
+                        }
+                        if (!useRelaxedActiveDelayCandidate) {
+                            skippedTooNewForSlot = true;
+                            continue;
+                        }
                     }
                     if (requireFresh) {
                         if (!(sourceTimestampAdvanced && freshEnough)) {
@@ -2957,9 +3047,20 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
             };
 
-            buildCandidateList(&wgcFreshCandidateIndices, true);
+            buildCandidateList(&wgcFreshCandidateIndices, true, false);
             if (wgcFreshCandidateIndices.empty()) {
-                buildCandidateList(&wgcFallbackCandidateIndices, false);
+                buildCandidateList(&wgcFallbackCandidateIndices, false, false);
+            }
+
+            bool usingRelaxedActiveDelayCandidateSet = false;
+            if (selectionDelayApplied && skippedTooNewForSlot && wgcFreshCandidateIndices.empty() &&
+                wgcFallbackCandidateIndices.empty()) {
+                buildCandidateList(&wgcFreshCandidateIndices, true, true);
+                if (wgcFreshCandidateIndices.empty()) {
+                    buildCandidateList(&wgcFallbackCandidateIndices, false, true);
+                }
+                usingRelaxedActiveDelayCandidateSet =
+                    !wgcFreshCandidateIndices.empty() || !wgcFallbackCandidateIndices.empty();
             }
 
             std::vector<size_t>* candidateIndices =
@@ -2999,8 +3100,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                     if (nowTick - s_lastTooNewWgcSelectionLogTick >= 1000) {
                         const int64_t allowedLeadUs =
                             (qpcFreq.QuadPart > 0 && targetIntervalTicks > 0)
-                                ? (targetIntervalTicks *
-                                   static_cast<int64_t>(ce::capture_policy::kWgcCfrSelectionMaxLeadTicks) * 1000000) /
+                                ? ((selectionDelayApplied
+                                        ? ce::capture_policy::GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks)
+                                        : (targetIntervalTicks *
+                                           static_cast<int64_t>(ce::capture_policy::kWgcCfrSelectionMaxLeadTicks))) *
+                                   1000000) /
                                       qpcFreq.QuadPart
                                 : 0;
                         const int64_t avDelayUs = (qpcFreq.QuadPart > 0 && avContentDelayQpc > 0)
@@ -3098,6 +3202,13 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
             const int64_t candidateSelectionTimestamp =
                 candidate.selectionTimestamp > 0 ? candidate.selectionTimestamp : candidate.timestamp;
+            if (usingRelaxedActiveDelayCandidateSet && selectionDelayApplied && effectiveSelectionTargetQpc > 0 &&
+                candidateSelectionTimestamp > effectiveSelectionTargetQpc && qpcFreq.QuadPart > 0) {
+                const uint32_t residualUs = SaturatingToUint32(static_cast<uint64_t>(
+                    (candidateSelectionTimestamp - effectiveSelectionTargetQpc) * 1000000 / qpcFreq.QuadPart));
+                ++wgcDelayRelaxedSelectionCount;
+                wgcDelayRelaxedSelectionMaxUs = std::max(wgcDelayRelaxedSelectionMaxUs, residualUs);
+            }
             const bool canHoldFreshFrame =
                 selectionDelayApplied && selectedIndex == 0 && bufferedWgcFrames.size() == 1 &&
                 ce::capture_policy::ShouldHoldSingleFreshWgcFrame(
@@ -3169,7 +3280,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             return true;
         };
 
-        auto inspectBufferedWgcCoverageForTarget = [&](int64_t selectionTargetQpc, bool* hasFrameForTick,
+        auto inspectBufferedWgcCoverageForTarget = [&](int64_t selectionTargetQpc, bool activeDelaySelection,
+                                                       uint32_t requiredReserveFrames, bool* hasFrameForTick,
                                                        bool* hasReserveFrame) {
             if (hasFrameForTick) {
                 *hasFrameForTick = false;
@@ -3201,15 +3313,20 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             const QueuedFrame& candidate = bufferedWgcFrames[idx];
             const int64_t candidateSelectionTimestamp = GetFrameSelectionTimestamp(candidate);
-            const bool canUseCandidateNow = selectionTargetQpc <= 0 || candidateSelectionTimestamp <= 0 ||
-                                            !ce::capture_policy::IsWgcFrameTooNewForCfrSlot(
-                                                candidateSelectionTimestamp, selectionTargetQpc, targetIntervalTicks) ||
-                                            !g_HasLastFrame || g_LastFrame.isInjectMode;
+            const bool canUseCandidateNow =
+                selectionTargetQpc <= 0 || candidateSelectionTimestamp <= 0 ||
+                !(activeDelaySelection ? ce::capture_policy::IsWgcFrameTooNewForActiveDelaySlot(
+                                             candidateSelectionTimestamp, selectionTargetQpc, targetIntervalTicks)
+                                       : ce::capture_policy::IsWgcFrameTooNewForCfrSlot(
+                                             candidateSelectionTimestamp, selectionTargetQpc, targetIntervalTicks)) ||
+                !g_HasLastFrame || g_LastFrame.isInjectMode;
             if (hasFrameForTick) {
                 *hasFrameForTick = canUseCandidateNow;
             }
             if (hasReserveFrame) {
-                *hasReserveFrame = canUseCandidateNow && ((idx + 1) < bufferedWgcFrames.size());
+                const uint32_t reserveFrames = static_cast<uint32_t>(
+                    std::min<size_t>(bufferedWgcFrames.size() - idx, static_cast<size_t>(UINT32_MAX)));
+                *hasReserveFrame = canUseCandidateNow && reserveFrames >= std::max<uint32_t>(1u, requiredReserveFrames);
             }
         };
 
@@ -3395,7 +3512,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                   : ce::capture_policy::WgcLowSourceState::kHealthy;
                 const bool shouldEnterWgcLowSourceMode =
                     wgcLowSourceStateCurrent != ce::capture_policy::WgcLowSourceState::kHealthy;
-                const bool bufferedReserveRecovered = bufferedWgcFrames.size() >= 3;
+                const bool bufferedReserveRecovered =
+                    avContentDelayActive ? ce::capture_policy::IsWgcDelayReservoirRecovered(
+                                               bufferedWgcFrames.size(), avContentDelayQpc, targetIntervalTicks)
+                                         : bufferedWgcFrames.size() >= 3;
                 const bool shouldExitWgcLowSourceMode = ce::capture_policy::ShouldExitWgcLowSourceMode(
                     wgcAdaptiveTelemetry, encoderTooSlowForTargetCurrent, bufferedReserveRecovered);
                 const auto wgcLowSourceModeUpdate = ce::capture_policy::UpdateHeldMode(
@@ -3560,8 +3680,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                     adaptiveTelemetry.emptyTickPermille = wgcNoFreshTickPermille;
                     adaptiveTelemetry.bufferedWgcFrames = queueDepth;
                     adaptiveTelemetry.duplicateRatio = duplicateRatio;
-                    const bool maxRateRecovery = ce::capture_policy::ShouldUseWgcMaxRateForRecovery(
-                        adaptiveTelemetry, wgcNoFreshTickPermille, wgcLowSourceModeActive, wgcLiveRecoveryModeActive);
+                    const bool delayReservoirBelowLowWater =
+                        avContentDelayActive && ce::capture_policy::IsWgcDelayReservoirBelowLowWater(
+                                                    queueDepth, avContentDelayQpc, targetIntervalTicks);
+                    const bool maxRateRecovery =
+                        delayReservoirBelowLowWater || ce::capture_policy::ShouldUseWgcMaxRateForRecovery(
+                                                           adaptiveTelemetry, wgcNoFreshTickPermille,
+                                                           wgcLowSourceModeActive, wgcLiveRecoveryModeActive);
                     if (maxRateRecovery) {
                         desiredTargetFps = 0;
                         desiredThrottleMode = WgcAdaptiveThrottleMode::kOff;
@@ -3611,10 +3736,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                             ++wgcAdaptiveThrottleAdjustments;
                             LogInfo(
                                 "[WGC CFR] Adaptive capture rate %s: target=%u output=%u src=%u/%u noFresh=%upm "
-                                "lowSrc=%d recover=%d queue=%u jitter=%uus copy=%lldus poolDrop=%u",
+                                "lowSrc=%d recover=%d delayReservoirLow=%d reservoir=%u/%u queue=%u jitter=%uus "
+                                "copy=%lldus poolDrop=%u",
                                 desiredTargetFps == 0 ? "max-rate recovery" : "overcapture cap", desiredTargetFps,
                                 outputFps, wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                                wgcLowSourceModeActive ? 1 : 0, wgcLiveRecoveryModeActive ? 1 : 0, queueDepth,
+                                wgcLowSourceModeActive ? 1 : 0, wgcLiveRecoveryModeActive ? 1 : 0,
+                                delayReservoirBelowLowWater ? 1 : 0, queueDepth, getWgcDelayReservoirTargetFrames(),
                                 averageJitterUs, g_WgcCap->GetLastCopyTimeUs(), poolDropCount);
                         }
                     }
@@ -3628,9 +3755,18 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcTelemetryTickArmed = true;
                     wgcBufferedAtTickStart = static_cast<uint32_t>(bufferedWgcFrames.size());
                     wgcReserveAvailableAtTickStart = false;
-                    inspectBufferedWgcCoverageForTarget(
-                        clampWgcSelectionTargetQpc(computeWgcSelectionTargetQpc(false), selectionNowQpc.QuadPart),
-                        &wgcFreshAvailableAtTickStart, &wgcReserveAvailableAtTickStart);
+                    const bool activeDelayInspection =
+                        avContentDelayActive && !wgcLiveRecoveryModeActive && recordingOutputLive;
+                    const uint32_t requiredReservoirFrames =
+                        activeDelayInspection ? std::max<uint32_t>(1u, getWgcDelayReservoirLowWaterFrames()) : 1u;
+                    const int64_t reservoirInspectionTargetQpc =
+                        activeDelayInspection
+                            ? clampWgcSelectionTargetQpc(computeDelayedWgcSelectionTargetQpc(),
+                                                         selectionNowQpc.QuadPart)
+                            : clampWgcSelectionTargetQpc(computeWgcSelectionTargetQpc(false), selectionNowQpc.QuadPart);
+                    inspectBufferedWgcCoverageForTarget(reservoirInspectionTargetQpc, activeDelayInspection,
+                                                        requiredReservoirFrames, &wgcFreshAvailableAtTickStart,
+                                                        &wgcReserveAvailableAtTickStart);
                     wgcSelectionDelayAppliedThisTick =
                         !wgcLiveRecoveryModeActive && ce::capture_policy::ShouldApplyWgcSelectionDelay(
                                                           recordingOutputLive, outputShortfallTicks,
@@ -4267,6 +4403,49 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcStartupReserveReason = "insufficient_span";
                     }
 
+                    const size_t newerStartupReserveFrames = selectedStartupIndex < startupCandidates.size()
+                                                                 ? (startupCandidates.size() - selectedStartupIndex - 1)
+                                                                 : 0;
+                    const bool startupReserveBelowLowWater =
+                        avContentDelayActive && startupReserveSelection.usedDelayReserve &&
+                        newerStartupReserveFrames < getWgcDelayReservoirLowWaterFrames();
+                    const bool startupReserveMissing =
+                        avContentDelayActive &&
+                        (!startupReserveSelection.usedDelayReserve || startupReserveBelowLowWater);
+                    if (startupReserveMissing && targetIntervalTicks > 0 && qpcFreq.QuadPart > 0) {
+                        LARGE_INTEGER waitNow;
+                        QueryPerformanceCounter(&waitNow);
+                        if (wgcStartupReserveWaitStartQpc <= 0) {
+                            wgcStartupReserveWaitStartQpc = waitNow.QuadPart;
+                        }
+                        const int64_t waitBudgetQpc = avContentDelayQpc + targetIntervalTicks * 2;
+                        const bool waitBudgetRemaining =
+                            waitNow.QuadPart - wgcStartupReserveWaitStartQpc < waitBudgetQpc;
+                        if (waitBudgetRemaining) {
+                            ++wgcStartupReserveWaitCount;
+                            for (auto& candidate : startupCandidates) {
+                                if (candidate.frame.texture || candidate.frame.sharedHandle ||
+                                    candidate.frame.timestamp > 0) {
+                                    bufferedWgcFrames.push_back(std::move(candidate.frame));
+                                }
+                            }
+                            wgcStartupReserveReason =
+                                startupReserveBelowLowWater ? "waiting_low_water" : "waiting_span";
+                            if (wgcStartupReserveWaitCount <= 3 || (wgcStartupReserveWaitCount % 30u) == 0u) {
+                                LogInfo(
+                                    "[EncoderThread] WGC startup delay-reserve wait: reason=%s candidates=%zu "
+                                    "newer=%zu lowWater=%u target=%u span=%lldus waited=%lldus budget=%lldus",
+                                    wgcStartupReserveReason.c_str(), startupCandidates.size(),
+                                    newerStartupReserveFrames, getWgcDelayReservoirLowWaterFrames(),
+                                    getWgcDelayReservoirTargetFrames(), static_cast<long long>(wgcStartupReserveSpanUs),
+                                    static_cast<long long>(qpcToUs(waitNow.QuadPart - wgcStartupReserveWaitStartQpc)),
+                                    static_cast<long long>(qpcToUs(waitBudgetQpc)));
+                            }
+                            continue;
+                        }
+                        wgcStartupReserveReason = startupReserveBelowLowWater ? "low_water_timeout" : "reserve_timeout";
+                    }
+
                     for (size_t i = 0; i < startupCandidates.size(); ++i) {
                         if (i < selectedStartupIndex) {
                             ReleaseQueuedFrameTexture(startupCandidates[i].frame);
@@ -4593,6 +4772,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
                 if (wgcTelemetryTickArmed && !wgcReserveAvailableAtTickStart) {
                     ++wgcNoReserveTickCount;
+                    if (avContentDelayActive) {
+                        ++wgcDelayReservoirLowWaterTickCount;
+                        ++wgcDelayReservoirLowWaterTickTotal;
+                    }
                 }
             }
             wgcNoFreshTickPermille = wgcQueueTickSampleCount > 0
@@ -5461,6 +5644,11 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             if (encodeSucceeded) {
+                if (selectionMetricTargetQpc > 0 && frameToProcess && !frameToProcess->isInjectMode &&
+                    wgcSelectionDelayAppliedThisTick && scheduledLiveCfrTick) {
+                    recordWgcDelayRealization(signedSelectionErrorUs);
+                }
+
                 if (selectionMetricTargetQpc > 0 && frameToProcess && !frameToProcess->isInjectMode && !isDuplicate) {
                     cadenceCounters.selectionErrorAccumUs += static_cast<uint64_t>(absoluteSelectionErrorUs);
                     cadenceCounters.selectionErrorSignedAccumUs += signedSelectionErrorUs;
@@ -5703,6 +5891,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                                          static_cast<uint64_t>(wgcQueueTickSampleCount))
                     : 0u;
             const uint32_t bufferedAtTickMinValue = (wgcBufferedAtTickMin == UINT32_MAX) ? 0u : wgcBufferedAtTickMin;
+            const uint32_t delayReservoirLowWaterFrames = getWgcDelayReservoirLowWaterFrames();
+            const uint32_t delayReservoirTargetFrames = getWgcDelayReservoirTargetFrames();
+            const uint32_t delayResidualAvgUs =
+                wgcDelayResidualSamples > 0 ? SaturatingToUint32(wgcDelayResidualAbsAccumUs / wgcDelayResidualSamples)
+                                            : 0u;
+            const int32_t delayResidualSignedAvgUs =
+                wgcDelayResidualSamples > 0 ? static_cast<int32_t>(wgcDelayResidualSignedAccumUs /
+                                                                   static_cast<int64_t>(wgcDelayResidualSamples))
+                                            : 0;
             state.wgcQueueEmptyTickPermille.store(wgcNoFreshTickPermille, std::memory_order_relaxed);
             state.wgcBufferedAtTickAvgPermille.store(bufferedAtTickAvgPermille, std::memory_order_relaxed);
             state.wgcBufferedAtTickMin.store(bufferedAtTickMinValue, std::memory_order_relaxed);
@@ -5755,7 +5952,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "DupTimer=%u DupDrain=%u InjectDefReQ=%u InjectDefDrop=%u | TickEmit=%u TickUnique=%u TickDup=%u "
                 "TickMiss=%u | "
                 "HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u/%.1fms FreshMiss=%upm "
-                "BufAvg=%upm BufMin=%u BufNow=%zu NoFresh=%u NoReserve=%u Oldest=%.1fms LeadExcess=%.1fms | "
+                "BufAvg=%upm BufMin=%u BufNow=%zu NoFresh=%u NoReserve=%u DelayRes=%u/%u LowTicks=%u "
+                "DelayResidualAvg=%d/%uus DelayResidualMax=%uus Oldest=%.1fms LeadExcess=%.1fms | "
                 "WgcAct Fresh=%u "
                 "DupSrc=%u DropObs=%u "
                 "DropDebt=%u/%llu DebtMax=%uus SelMiss=%u StaleUni=%u "
@@ -5790,9 +5988,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(liveWallElapsedUs), static_cast<unsigned long long>(liveTicksOutput),
                 outputShortfallTicks, shortfallDurationMs, wgcNoFreshTickPermille, bufferedAtTickAvgPermille,
                 bufferedAtTickMinValue, bufferedWgcFrames.size(), wgcNoFreshTickCount, wgcNoReserveTickCount,
-                oldestBufferedFrameAgeMs, wgcAudioLeadExcessMsCurrent, wgcSelectFreshCount,
-                wgcSelectDuplicateSourceCount, wgcDropObsoleteCount, wgcDropStaleDebtCount,
-                static_cast<unsigned long long>(wgcDropStaleDebtTotal), wgcDropStaleDebtMaxUs,
+                delayReservoirLowWaterFrames, delayReservoirTargetFrames, wgcDelayReservoirLowWaterTickCount,
+                delayResidualSignedAvgUs, delayResidualAvgUs, wgcDelayResidualAbsMaxUs, oldestBufferedFrameAgeMs,
+                wgcAudioLeadExcessMsCurrent, wgcSelectFreshCount, wgcSelectDuplicateSourceCount, wgcDropObsoleteCount,
+                wgcDropStaleDebtCount, static_cast<unsigned long long>(wgcDropStaleDebtTotal), wgcDropStaleDebtMaxUs,
                 wgcFreshSelectionMissCount, wgcStaleUniqueFallbackCount, wgcAncientSelectionCount,
                 wgcRepeatNoFreshCount, wgcRepeatPolicyHoldCount, wgcSyncDelayHoldCount,
                 wgcSyncDelaySourceLimitedHoldCount, wgcSyncDelayPolicyHoldCount, wgcTooNewLeadMaxUs,
@@ -5831,7 +6030,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     "tooNewRepeat=%u syncDelayHold=%u syncDelaySourceHold=%u syncDelayPolicyHold=%u "
                     "tooNewLeadMax=%uus staleDrop=%u freshMiss=%upm bufNow=%zu oldest=%.1fms enc=%.2fms "
                     "sustain=%.1ffps overload=0x%X lowSourceBypass=%u modeMismatch=%u sourceBacktrack=%u "
-                    "avDelay=%.1fms cause=S%d/D%d/E%d",
+                    "avDelay=%.1fms delayResidualAvg=%d/%uus delayResidualMax=%uus reservoir=%u/%u lowTicks=%u "
+                    "cause=S%d/D%d/E%d",
                     cadenceMode, outputShortfallTicks, shortfallDurationMs, avgSignedWgcSelectionErrorUs,
                     wgcSelectionErrorMaxUs, wgcLiveSchedulerRebaseThisWindow, wgcEncoderLimitedSourceDropThisWindow,
                     static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcRepeatPolicyHoldCount,
@@ -5840,6 +6040,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     oldestBufferedFrameAgeMs, smoothedEncodeMs, sustainableOutputFps, overloadFlags,
                     wgcEncoderLimitedSuppressedByLowSourceThisWindow, wgcCapacityPressureModeMismatchThisWindow,
                     wgcSelectedSourceBacktrackThisWindow, avContentDelayActive ? maxAudioCaptureLatencyMs : 0.0f,
+                    delayResidualSignedAvgUs, delayResidualAvgUs, wgcDelayResidualAbsMaxUs,
+                    delayReservoirLowWaterFrames, delayReservoirTargetFrames, wgcDelayReservoirLowWaterTickCount,
                     wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                     wgcEncoderRecoveryLimitedCurrent ? 1 : 0);
             }
@@ -5966,6 +6168,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcReserveSpendTickCount = 0;
             wgcAdaptiveThrottleAdjustments = 0;
             wgcNoFreshTickCount = 0;
+            wgcDelayReservoirLowWaterTickCount = 0;
             wgcQueueTickSampleCount = 0;
             wgcNoFreshTickPermille = 0;
             wgcBufferedAtTickSum = 0;
@@ -6107,6 +6310,18 @@ void EncoderThreadFunc(const AppConfig& config) {
                     : 0;
             const int64_t wgcAvSyncScheduleOffsetUs =
                 qpcFreq.QuadPart > 0 ? (wgcAvSyncScheduleOffsetQpc * 1000000) / qpcFreq.QuadPart : 0;
+            const uint32_t wgcDelayResidualAvgAbsUs =
+                wgcDelayResidualSamples > 0 ? SaturatingToUint32(wgcDelayResidualAbsAccumUs / wgcDelayResidualSamples)
+                                            : 0u;
+            const int32_t wgcDelayResidualAvgSignedUs =
+                wgcDelayResidualSamples > 0 ? static_cast<int32_t>(wgcDelayResidualSignedAccumUs /
+                                                                   static_cast<int64_t>(wgcDelayResidualSamples))
+                                            : 0;
+            const uint32_t wgcDelayRealizedAvgUs =
+                wgcDelayResidualSamples > 0 ? SaturatingToUint32(wgcDelayRealizedAccumUs / wgcDelayResidualSamples)
+                                            : 0u;
+            const uint32_t wgcDelayRealizedMinFinalUs =
+                wgcDelayResidualSamples > 0 && wgcDelayRealizedMinUs != UINT32_MAX ? wgcDelayRealizedMinUs : 0u;
             LogInfo(
                 "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=%llu maxDropTicks=%u cadenceEvents=%llu "
                 "phaseErrorMax=%uus shortfallMax=%.1fms staleDebtDrops=%llu liveRebase=%llu/%u "
@@ -6114,7 +6329,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "scheduleOffset=%lldus effectiveDelay=%.1fms lowSourceBypass=%llu modeMismatch=%llu "
                 "sourceBacktrack=%llu syncDelaySourceLimitedHolds=%llu syncDelayPolicyHolds=%llu "
                 "startupReserveFrames=%u startupReserveSpan=%lldus startupDelayTarget=%lldus "
-                "startupReserveSelected=%d startupReserveReason=%s",
+                "startupReserveSelected=%d startupReserveReason=%s delayReservoirLowWaterFrames=%u "
+                "delayReservoirTargetFrames=%u delayReservoirLowWaterTicks=%llu realizedDelayAvg=%uus "
+                "realizedDelayMin=%uus realizedDelayMax=%uus delayResidualAvg=%d/%uus delayResidualMax=%uus "
+                "delayResidualP95=%uus delayResidualLateMax=%uus delayResidualEarlyMax=%uus "
+                "delayResidualRelaxedSelections=%llu delayResidualRelaxedMax=%uus",
                 static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcEncoderLimitedSourceDropMaxTicks,
                 static_cast<unsigned long long>(wgcEncoderLimitedCadenceEventCount),
                 captureSessionSummary.maxWgcContentPhaseErrorUs, captureSessionSummary.maxShortfallDurationMs,
@@ -6131,7 +6350,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcSyncDelaySourceLimitedHoldTotal),
                 static_cast<unsigned long long>(wgcSyncDelayPolicyHoldTotal), wgcStartupReserveFrames,
                 static_cast<long long>(wgcStartupReserveSpanUs), static_cast<long long>(wgcStartupDelayTargetUs),
-                wgcStartupSelectedByDelayReserve ? 1 : 0, wgcStartupReserveReason.c_str());
+                wgcStartupSelectedByDelayReserve ? 1 : 0, wgcStartupReserveReason.c_str(),
+                getWgcDelayReservoirLowWaterFrames(), getWgcDelayReservoirTargetFrames(),
+                static_cast<unsigned long long>(wgcDelayReservoirLowWaterTickTotal), wgcDelayRealizedAvgUs,
+                wgcDelayRealizedMinFinalUs, wgcDelayRealizedMaxUs, wgcDelayResidualAvgSignedUs,
+                wgcDelayResidualAvgAbsUs, wgcDelayResidualAbsMaxUs, wgcDelayResidualP95Us(), wgcDelayResidualLateMaxUs,
+                wgcDelayResidualEarlyMaxUs, static_cast<unsigned long long>(wgcDelayRelaxedSelectionCount),
+                wgcDelayRelaxedSelectionMaxUs);
         } else {
             LogInfo(
                 "[Inject CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% DupReason(src=%llu def=%llu timer=%llu "

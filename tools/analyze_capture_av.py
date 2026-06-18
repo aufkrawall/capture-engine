@@ -152,6 +152,14 @@ WGC_SMOOTHNESS_EXTRA_RE = re.compile(
     r"startupReserveSelected=(\d+) startupReserveReason=([A-Za-z0-9_-]+)",
     re.IGNORECASE,
 )
+WGC_DELAY_REALIZATION_RE = re.compile(
+    r"delayReservoirLowWaterFrames=(\d+) delayReservoirTargetFrames=(\d+) "
+    r"delayReservoirLowWaterTicks=(\d+) realizedDelayAvg=(\d+)us realizedDelayMin=(\d+)us "
+    r"realizedDelayMax=(\d+)us delayResidualAvg=([+-]?\d+)/(\d+)us "
+    r"delayResidualMax=(\d+)us delayResidualP95=(\d+)us delayResidualLateMax=(\d+)us "
+    r"delayResidualEarlyMax=(\d+)us",
+    re.IGNORECASE,
+)
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
 INJECT_PERF_RE = re.compile(r"\[Inject Perf\].*", re.IGNORECASE)
 INJECT_CFR_SUMMARY_RE = re.compile(
@@ -862,6 +870,10 @@ def analyze_log(log_path):
         "wgc_low_source_bypass": [],
         "wgc_mode_mismatch": [],
         "wgc_source_backtrack": [],
+        "wgc_delay_reservoir_low_ticks": [],
+        "wgc_delay_residual_avg_abs_us": [],
+        "wgc_delay_residual_max_us": [],
+        "wgc_delay_residual_p95_us": [],
     }
     for line in lines:
         smoothness_match = WGC_SMOOTHNESS_SUMMARY_RE.search(line)
@@ -875,6 +887,12 @@ def analyze_log(log_path):
             if smoothness_extra:
                 cadence_metrics["wgc_sync_delay_source_limited_holds"].append(parse_int(smoothness_extra.group(1)))
                 cadence_metrics["wgc_sync_delay_policy_holds"].append(parse_int(smoothness_extra.group(2)))
+            delay_realization = WGC_DELAY_REALIZATION_RE.search(line)
+            if delay_realization:
+                cadence_metrics["wgc_delay_reservoir_low_ticks"].append(parse_int(delay_realization.group(3)))
+                cadence_metrics["wgc_delay_residual_avg_abs_us"].append(parse_int(delay_realization.group(8)))
+                cadence_metrics["wgc_delay_residual_max_us"].append(parse_int(delay_realization.group(9)))
+                cadence_metrics["wgc_delay_residual_p95_us"].append(parse_int(delay_realization.group(10)))
             cadence_metrics["wgc_low_source_bypass"].append(parse_int(smoothness_match.group(16)))
             cadence_metrics["wgc_mode_mismatch"].append(parse_int(smoothness_match.group(17)))
             cadence_metrics["wgc_source_backtrack"].append(parse_int(smoothness_match.group(18)))
@@ -980,6 +998,18 @@ def analyze_log(log_path):
         else 0,
         "max_wgc_sync_delay_policy_holds": max(cadence_metrics["wgc_sync_delay_policy_holds"])
         if cadence_metrics["wgc_sync_delay_policy_holds"]
+        else 0,
+        "max_wgc_delay_reservoir_low_ticks": max(cadence_metrics["wgc_delay_reservoir_low_ticks"])
+        if cadence_metrics["wgc_delay_reservoir_low_ticks"]
+        else 0,
+        "max_wgc_delay_residual_avg_abs_us": max(cadence_metrics["wgc_delay_residual_avg_abs_us"])
+        if cadence_metrics["wgc_delay_residual_avg_abs_us"]
+        else 0,
+        "max_wgc_delay_residual_us": max(cadence_metrics["wgc_delay_residual_max_us"])
+        if cadence_metrics["wgc_delay_residual_max_us"]
+        else 0,
+        "max_wgc_delay_residual_p95_us": max(cadence_metrics["wgc_delay_residual_p95_us"])
+        if cadence_metrics["wgc_delay_residual_p95_us"]
         else 0,
         "saw_encoder_overload": any(flags & 0x1 for flags in cadence_metrics["overload_flags"]),
         "saw_mux_overload": any(flags & 0x2 for flags in cadence_metrics["overload_flags"]),
@@ -1140,6 +1170,7 @@ def parse_media_triage(media_text):
         smoothness_match = WGC_SMOOTHNESS_SUMMARY_RE.search(line)
         if smoothness_match:
             smoothness_extra = WGC_SMOOTHNESS_EXTRA_RE.search(line)
+            delay_realization = WGC_DELAY_REALIZATION_RE.search(line)
             wgc_smoothness_summary.append(
                 {
                     "encoder_limited_drops": parse_int(smoothness_match.group(1)),
@@ -1167,6 +1198,18 @@ def parse_media_triage(media_text):
                     "startup_delay_target_us": parse_int(smoothness_extra.group(5)) if smoothness_extra else 0,
                     "startup_reserve_selected": parse_int(smoothness_extra.group(6)) if smoothness_extra else 0,
                     "startup_reserve_reason": smoothness_extra.group(7) if smoothness_extra else "",
+                    "delay_reservoir_low_water_frames": parse_int(delay_realization.group(1)) if delay_realization else 0,
+                    "delay_reservoir_target_frames": parse_int(delay_realization.group(2)) if delay_realization else 0,
+                    "delay_reservoir_low_water_ticks": parse_int(delay_realization.group(3)) if delay_realization else 0,
+                    "realized_delay_avg_us": parse_int(delay_realization.group(4)) if delay_realization else 0,
+                    "realized_delay_min_us": parse_int(delay_realization.group(5)) if delay_realization else 0,
+                    "realized_delay_max_us": parse_int(delay_realization.group(6)) if delay_realization else 0,
+                    "delay_residual_avg_signed_us": parse_int(delay_realization.group(7)) if delay_realization else 0,
+                    "delay_residual_avg_abs_us": parse_int(delay_realization.group(8)) if delay_realization else 0,
+                    "delay_residual_max_us": parse_int(delay_realization.group(9)) if delay_realization else 0,
+                    "delay_residual_p95_us": parse_int(delay_realization.group(10)) if delay_realization else 0,
+                    "delay_residual_late_max_us": parse_int(delay_realization.group(11)) if delay_realization else 0,
+                    "delay_residual_early_max_us": parse_int(delay_realization.group(12)) if delay_realization else 0,
                     "line": line,
                 }
             )
@@ -1619,6 +1662,47 @@ def has_wgc_av_sync_delay_realization_risk(media_evidence):
     return False
 
 
+def has_wgc_av_sync_delay_residual_fault(media_evidence):
+    for item in media_evidence["wgc_smoothness_summary"]:
+        if item.get("av_delay_ms", 0.0) <= 0.0:
+            continue
+
+        # Newer WGC summaries log actual selected-frame delay realization. Treat
+        # this as stronger evidence than startup/effective configuration parity.
+        residual_logged = (
+            item.get("realized_delay_avg_us", 0) > 0
+            or item.get("delay_residual_avg_abs_us", 0) > 0
+            or item.get("delay_residual_max_us", 0) > 0
+            or item.get("delay_residual_p95_us", 0) > 0
+        )
+        startup_delay_ms = item.get("startup_delay_ms", 0.0)
+        effective_delay_ms = item.get("effective_delay_ms", 0.0)
+        requested_delay_ms = item.get("av_delay_ms", 0.0)
+        realized_delay_matches = (
+            startup_delay_ms > 0.0
+            and effective_delay_ms > 0.0
+            and abs(startup_delay_ms - requested_delay_ms) <= 5.0
+            and abs(effective_delay_ms - requested_delay_ms) <= 5.0
+        )
+        if (
+            realized_delay_matches
+            and item.get("sync_delay_policy_holds", 0) >= 10
+            and item.get("too_new_lead_max_us", 0) > 10000
+        ):
+            return True
+        if not residual_logged:
+            continue
+
+        if item.get("delay_residual_avg_abs_us", 0) > 5000:
+            return True
+        if item.get("delay_residual_p95_us", 0) > 10000:
+            return True
+        if item.get("delay_residual_max_us", 0) > 10000:
+            return True
+
+    return False
+
+
 def has_wgc_sync_delay_policy_fault(media_evidence):
     for item in media_evidence["wgc_smoothness_summary"]:
         requested_delay_ms = item.get("av_delay_ms", 0.0)
@@ -1773,11 +1857,19 @@ def classify_session_triage(session_dir, capture_path=None):
     wgc_av_sync_delay_risk = has_wgc_av_sync_delay_realization_risk(media_evidence)
     if wgc_av_sync_delay_risk:
         verdicts.append("wgc_av_sync_delay_unrealized")
+    wgc_av_sync_delay_residual_fault = has_wgc_av_sync_delay_residual_fault(media_evidence)
+    if wgc_av_sync_delay_residual_fault:
+        verdicts.append("wgc_av_sync_delay_residual")
     wgc_sync_delay_policy_fault = has_wgc_sync_delay_policy_fault(media_evidence)
     if wgc_sync_delay_policy_fault:
         verdicts.append("wgc_sync_delay_policy_fault")
     wgc_sync_delay_reserve_pressure = has_wgc_sync_delay_reserve_pressure(media_evidence)
-    if wgc_sync_delay_reserve_pressure and not wgc_sync_delay_policy_fault and not wgc_av_sync_delay_risk:
+    if (
+        wgc_sync_delay_reserve_pressure
+        and not wgc_sync_delay_policy_fault
+        and not wgc_av_sync_delay_risk
+        and not wgc_av_sync_delay_residual_fault
+    ):
         verdicts.append("wgc_sync_delay_reserve_pressure")
     if started_app_source_health["late_source_backlog_count"] > 0 or started_app_source_health["backlog_sources"]:
         verdicts.append("late_app_source_backlog")
@@ -1812,6 +1904,7 @@ def classify_session_triage(session_dir, capture_path=None):
         or wgc_encoder_limited_judder
         or wgc_encoder_overload_policy_fault
         or wgc_av_sync_delay_risk
+        or wgc_av_sync_delay_residual_fault
         or wgc_sync_delay_policy_fault
     ):
         verdicts.append("ce_visual_timeline_fault")
@@ -1846,6 +1939,7 @@ def classify_session_triage(session_dir, capture_path=None):
             "visual_timeline": "ce_visual_timeline_fault" in verdicts,
             "wgc_encoder_overload_policy": wgc_encoder_overload_policy_fault,
             "wgc_av_sync_delay_unrealized": wgc_av_sync_delay_risk,
+            "wgc_av_sync_delay_residual": wgc_av_sync_delay_residual_fault,
             "wgc_sync_delay_policy_fault": wgc_sync_delay_policy_fault,
             "wgc_sync_delay_reserve_pressure": wgc_sync_delay_reserve_pressure,
             "late_app_source_backlog": "late_app_source_backlog" in verdicts,
@@ -1969,7 +2063,10 @@ def print_triage_report(report):
                 "  wgc_av_delay requested={requested:.3f}ms startup={startup:.3f}ms effective={effective:.3f}ms "
                 "sync_holds={holds} source_holds={source_holds} policy_holds={policy_holds} "
                 "too_new_lead_us={lead} schedule_offset_us={offset} reserve={reserve_frames}/{reserve_span}us "
-                "selected={reserve_selected} reason={reserve_reason}".format(
+                "selected={reserve_selected} reason={reserve_reason} realized_avg={realized_avg:.3f}ms "
+                "residual_avg={residual_avg_signed:+.3f}/{residual_avg_abs:.3f}ms "
+                "residual_p95={residual_p95:.3f}ms residual_max={residual_max:.3f}ms "
+                "reservoir={low_water}/{target} low_ticks={low_ticks}".format(
                     requested=worst_sync_delay.get("av_delay_ms", 0.0),
                     startup=worst_sync_delay.get("startup_delay_ms", 0.0),
                     effective=worst_sync_delay.get("effective_delay_ms", 0.0),
@@ -1982,6 +2079,14 @@ def print_triage_report(report):
                     reserve_span=worst_sync_delay.get("startup_reserve_span_us", 0),
                     reserve_selected=worst_sync_delay.get("startup_reserve_selected", 0),
                     reserve_reason=worst_sync_delay.get("startup_reserve_reason", ""),
+                    realized_avg=worst_sync_delay.get("realized_delay_avg_us", 0) / 1000.0,
+                    residual_avg_signed=worst_sync_delay.get("delay_residual_avg_signed_us", 0) / 1000.0,
+                    residual_avg_abs=worst_sync_delay.get("delay_residual_avg_abs_us", 0) / 1000.0,
+                    residual_p95=worst_sync_delay.get("delay_residual_p95_us", 0) / 1000.0,
+                    residual_max=worst_sync_delay.get("delay_residual_max_us", 0) / 1000.0,
+                    low_water=worst_sync_delay.get("delay_reservoir_low_water_frames", 0),
+                    target=worst_sync_delay.get("delay_reservoir_target_frames", 0),
+                    low_ticks=worst_sync_delay.get("delay_reservoir_low_water_ticks", 0),
                 )
             )
     rounding = evidence["rounding_evidence"]
@@ -2349,6 +2454,52 @@ def self_test():
         assert realized_summary["schedule_offset_us"] == 12000
         assert "wgc_av_sync_delay_unrealized" not in realized_report["verdicts"]
         assert "ce_visual_timeline_fault" not in realized_report["verdicts"]
+
+        wgc_sync_delay_residual_fault = make_session(
+            "wgc_sync_delay_residual_fault",
+            media=(
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=18 "
+                "phaseErrorMax=12047us shortfallMax=8.3ms staleDebtDrops=2 liveRebase=0/0 "
+                "tooNewRepeats=105 syncDelayHolds=105 tooNewLeadMax=35632us avDelay=32.0ms "
+                "startupDelay=32.0ms scheduleOffset=313291us effectiveDelay=32.0ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=20 syncDelayPolicyHolds=105 startupReserveFrames=26 "
+                "startupReserveSpan=191938us startupDelayTarget=32000us startupReserveSelected=1 "
+                "startupReserveReason=selected delayReservoirLowWaterFrames=4 delayReservoirTargetFrames=5 "
+                "delayReservoirLowWaterTicks=27 realizedDelayAvg=23000us realizedDelayMin=16000us "
+                "realizedDelayMax=32000us delayResidualAvg=9000/9000us delayResidualMax=16000us "
+                "delayResidualP95=12000us delayResidualLateMax=16000us delayResidualEarlyMax=1000us\n"
+            ),
+        )
+        residual_fault_report = classify_session_triage(wgc_sync_delay_residual_fault)
+        residual_fault_summary = residual_fault_report["evidence"]["wgc_smoothness_summary"][0]
+        assert residual_fault_summary["delay_residual_avg_abs_us"] == 9000
+        assert residual_fault_summary["delay_residual_max_us"] == 16000
+        assert "wgc_av_sync_delay_unrealized" not in residual_fault_report["verdicts"]
+        assert "wgc_av_sync_delay_residual" in residual_fault_report["verdicts"]
+        assert "wgc_sync_delay_policy_fault" in residual_fault_report["verdicts"]
+        assert "ce_visual_timeline_fault" in residual_fault_report["verdicts"]
+
+        wgc_sync_delay_residual_bounded = make_session(
+            "wgc_sync_delay_residual_bounded",
+            media=(
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=2 "
+                "phaseErrorMax=5000us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 "
+                "tooNewRepeats=3 syncDelayHolds=3 tooNewLeadMax=7000us avDelay=32.0ms "
+                "startupDelay=32.0ms scheduleOffset=24000us effectiveDelay=32.0ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=3 syncDelayPolicyHolds=0 startupReserveFrames=8 "
+                "startupReserveSpan=64000us startupDelayTarget=32000us startupReserveSelected=1 "
+                "startupReserveReason=selected delayReservoirLowWaterFrames=4 delayReservoirTargetFrames=5 "
+                "delayReservoirLowWaterTicks=0 realizedDelayAvg=30000us realizedDelayMin=26000us "
+                "realizedDelayMax=34000us delayResidualAvg=2000/2000us delayResidualMax=6000us "
+                "delayResidualP95=4000us delayResidualLateMax=6000us delayResidualEarlyMax=2000us\n"
+            ),
+        )
+        residual_bounded_report = classify_session_triage(wgc_sync_delay_residual_bounded)
+        assert "wgc_av_sync_delay_residual" not in residual_bounded_report["verdicts"]
+        assert "wgc_av_sync_delay_unrealized" not in residual_bounded_report["verdicts"]
+        assert "ce_visual_timeline_fault" not in residual_bounded_report["verdicts"]
 
         wgc_sync_delay_realized_source_pressure = make_session(
             "wgc_sync_delay_realized_source_pressure",
