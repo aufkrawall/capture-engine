@@ -5267,10 +5267,16 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 static std::recursive_mutex g_FFXUiCompositeMutex;
 static ID3D12Device* g_FFXUiCompositeDevice = nullptr;
 static ID3D12DescriptorHeap* g_FFXUiCompositeRtvHeap = nullptr;
-static constexpr int kFFXUiCompositeSlotCount = 3;  // 3-slot rotation: at 60fps, 3 frames = 50ms — plenty for a single overlay draw to complete on the GPU before reuse. No game-queue Signal needed (Step 1: the extra Signal on the AMD-tracked game queue was the ffxQuery wedge suspect).
+static constexpr int kFFXUiCompositeSlotCount = 3;  // 3-slot rotation recycled by fence value (signaled on CE's own queue).
 static ID3D12CommandAllocator* g_FFXUiCompositeAlloc[kFFXUiCompositeSlotCount] = {};
 static ID3D12GraphicsCommandList* g_FFXUiCompositeList = nullptr;
-static ID3D12Fence* g_FFXUiCompositeFence = nullptr;  // retained for freeze diagnostics (GetCompletedValue), but NOT signaled on the game queue in Step 1
+// Step 2 revised: CE's OWN dedicated queue for the UI-composite submit. AMD does NOT track this queue
+// (it tracks the game queue and its own runtime present queue). Submitting here + signaling the fence here
+// + CPU-waiting for completion before forwarding RegisterUiResource means zero extra ECL and zero extra
+// Signal on any AMD-tracked queue → no ffxQuery pacing wedge. The UI texture is a game-owned committed
+// resource (not a swapchain backbuffer), so cross-queue writes from a DIRECT queue are legal with barriers.
+static ID3D12CommandQueue* g_FFXUiCompositeQueue = nullptr;
+static ID3D12Fence* g_FFXUiCompositeFence = nullptr;  // signaled on g_FFXUiCompositeQueue (CE's own queue, not the game queue)
 static HANDLE g_FFXUiCompositeFenceEvent = nullptr;
 static UINT64 g_FFXUiCompositeFenceVal = 0;
 static UINT64 g_FFXUiCompositeAllocFenceVal[kFFXUiCompositeSlotCount] = {};
@@ -5406,6 +5412,7 @@ static void ReleaseFFXUiCompositeInfra() {
     if (g_FFXUiCompositeList) { g_FFXUiCompositeList->Release(); g_FFXUiCompositeList = nullptr; }
     for (auto& a : g_FFXUiCompositeAlloc) { if (a) { a->Release(); a = nullptr; } }
     if (g_FFXUiCompositeRtvHeap) { g_FFXUiCompositeRtvHeap->Release(); g_FFXUiCompositeRtvHeap = nullptr; }
+    if (g_FFXUiCompositeQueue) { g_FFXUiCompositeQueue->Release(); g_FFXUiCompositeQueue = nullptr; }
     if (g_FFXUiCompositeFence) { g_FFXUiCompositeFence->Release(); g_FFXUiCompositeFence = nullptr; }
     g_FFXUiCompositeFenceVal = 0;
     for (int i = 0; i < kFFXUiCompositeSlotCount; ++i) { g_FFXUiCompositeAllocFenceVal[i] = 0; }
@@ -5432,8 +5439,11 @@ static DXGI_FORMAT FFXUiCompositeRtvFormat(DXGI_FORMAT texFormat) {
     }
 }
 
-// Draw the inject overlay onto the game's registered FFX UI texture. Submits on the GAME's original queue
-// (never AMD's runtime present queue), so it cannot wedge AMD's presenter pacing. Returns true if recorded.
+// Draw the inject overlay onto the game's registered FFX UI texture. Submits on CE's OWN dedicated queue
+// (g_FFXUiCompositeQueue, NOT the game queue or AMD's runtime present queue) so AMD's presenter pacing is
+// never perturbed. Signals the fence on CE's own queue and CPU-waits for completion before returning, so
+// the caller (Hooked_ffxConfigure) forwards RegisterUiResource only after CE's overlay write is GPU-complete.
+// Returns true if recorded.
 bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxState, uint32_t flags) {
     if (!uiResourcePtr) {
         return false;
@@ -5443,7 +5453,7 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     ID3D12CommandQueue* gameQueue = nullptr;
     {
         std::lock_guard<std::recursive_mutex> qlock(g_CommandQueueMutex);
-        gameQueue = g_OriginalGameQueue;  // the game's own queue, NOT AMD's runtime present queue
+        gameQueue = g_OriginalGameQueue;  // used for node-mask + overlay-adapter init, NOT for submit
     }
     ID3D12Device* device = g_Device.load(std::memory_order_acquire);
     if (!gameQueue || !device) {
@@ -5471,13 +5481,34 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         g_FFXUiCompositeDevice = device;
     }
 
-    // Lazily build the dedicated, GAME-queue submission infra (separate from the present-thread overlay).
+    // Lazily build the dedicated CE-queue submission infra (separate from the present-thread overlay and
+    // separate from g_State.overlayQueue whose lifecycle is tied to FG state transitions).
     if (!g_FFXUiCompositeFence) {
         if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_FFXUiCompositeFence)))) {
             return false;
         }
         if (!g_FFXUiCompositeFenceEvent) {
             g_FFXUiCompositeFenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        }
+    }
+    // Step 2 revised: create CE's own dedicated DIRECT queue for the UI-composite submit. AMD does NOT track
+    // this queue, so submitting here + signaling the fence here does not perturb AMD's pacing. The UI texture
+    // is a game-owned committed resource (not a swapchain backbuffer), so cross-queue writes are legal.
+    if (!g_FFXUiCompositeQueue) {
+        D3D12_COMMAND_QUEUE_DESC qDesc = {};
+        qDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        qDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        qDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+        if (gameQueue) {
+            qDesc.NodeMask = gameQueue->GetDesc().NodeMask;
+        }
+        if (FAILED(device->CreateCommandQueue(&qDesc, IID_PPV_ARGS(&g_FFXUiCompositeQueue)))) {
+            HookLogImportant("DX12: FFX UI-composite FAILED to create dedicated CE queue (falling back to game queue)");
+            g_FFXUiCompositeQueue = nullptr;  // explicit; submit path checks null below
+        } else {
+            g_FFXUiCompositeQueue->SetName(L"CE_FFXUiCompositeQueue");
+            HookLogImportant("DX12: FFX UI-composite dedicated CE queue created (ptr=%p gameQueue=%p)",
+                             g_FFXUiCompositeQueue, gameQueue);
         }
     }
     for (auto& a : g_FFXUiCompositeAlloc) {
@@ -5521,16 +5552,25 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         }
     }
 
-    // Step 1 (drop-Signal experiment): use 3-slot rotation WITHOUT a game-queue Signal. The extra
-    // ID3D12CommandQueue::Signal on the game queue (which AMD tracks for pacing) was the prime ffxQuery
-    // wedge suspect. With 3 rotating allocators, the oldest slot's overlay draw (submitted ~3 frames ago =
-    // 50ms at 60fps) is long GPU-complete before reuse — no fence wait needed. The ECL itself stays on the
-    // game queue to isolate the Signal factor. The write/read race with AMD's UI-texture snapshot is handled
-    // by game-queue FIFO ordering: AMD's post-interpolation composition runs on AMD's queue AFTER the game
-    // queue's frame (including CE's overlay) completes, since AMD tracks the game queue for interpolation.
+    // Step 2 revised: submit on CE's OWN dedicated queue (g_FFXUiCompositeQueue), NOT the game queue.
+    // AMD does not track CE's queue, so the ECL + fence Signal here do not perturb AMD's pacing.
+    // The fence IS signaled (on CE's own queue) and we CPU-wait for completion before returning, so the
+    // caller forwards RegisterUiResource only after CE's overlay write is GPU-complete — no write/read race
+    // with AMD's UI-texture snapshot. The 3-slot rotation is recycled by fence value as before.
+    ID3D12CommandQueue* submitQueue = g_FFXUiCompositeQueue;
+    if (!submitQueue) {
+        // Fallback if dedicated queue creation failed (logged above). This path wedges AMD but is better
+        // than crashing; the freeze diagnostics will show the game queue was used.
+        submitQueue = gameQueue;
+    }
     const int slot = g_FFXUiCompositeFrame % kFFXUiCompositeSlotCount;
-    // No fence-based recycle wait: the 3-frame rotation guarantees GPU completion. Log a Reset failure
-    // (E_FAIL) if the assumption is ever wrong — that would indicate an extremely slow GPU or a new bug.
+    // Recycle the allocator slot by fence value (signaled on CE's own queue). Fast path: already complete.
+    if (submitQueue == g_FFXUiCompositeQueue && g_FFXUiCompositeFence &&
+        g_FFXUiCompositeFence->GetCompletedValue() < g_FFXUiCompositeAllocFenceVal[slot] &&
+        g_FFXUiCompositeFenceEvent) {
+        g_FFXUiCompositeFence->SetEventOnCompletion(g_FFXUiCompositeAllocFenceVal[slot], g_FFXUiCompositeFenceEvent);
+        WaitForSingleObject(g_FFXUiCompositeFenceEvent, 1000);
+    }
     const HRESULT allocResetHr = g_FFXUiCompositeAlloc[slot]->Reset();
     const HRESULT listResetHr =
         SUCCEEDED(allocResetHr) ? g_FFXUiCompositeList->Reset(g_FFXUiCompositeAlloc[slot], nullptr) : E_FAIL;
@@ -5539,8 +5579,7 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         const int n = s_resetFailLog.fetch_add(1, std::memory_order_relaxed);
         if (n < 10) {
             HookLogImportant(
-                "DX12: FFX UI-composite allocator/list Reset FAILED (slot=%d frame=%d allocHr=0x%08X listHr=0x%08X) "
-                "— 3-frame rotation assumption violated?",
+                "DX12: FFX UI-composite allocator/list Reset FAILED (slot=%d frame=%d allocHr=0x%08X listHr=0x%08X)",
                 slot, g_FFXUiCompositeFrame, static_cast<unsigned>(allocResetHr), static_cast<unsigned>(listResetHr));
         }
         return false;
@@ -5587,19 +5626,39 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     {
         ScopedCEOverlayECLSubmission ceOverlayECLGuard("ffx-ui-composite");
         if (realECL) {
-            realECL(gameQueue, 1, lists);
+            realECL(submitQueue, 1, lists);
         } else {
-            gameQueue->ExecuteCommandLists(1, lists);
+            submitQueue->ExecuteCommandLists(1, lists);
         }
     }
-    // Step 1: NO gameQueue->Signal() — the extra Signal on the AMD-tracked game queue was the wedge suspect.
-    // The fence is retained (not signaled) so DX12_LogFFXUiCompositeFreezeDiagnostics can report
-    // fenceCompleted=0 vs fenceVal=N, confirming the no-Signal path is active.
-    ++g_FFXUiCompositeFenceVal;  // incremented for diagnostics only (NOT signaled on any queue)
+    // Step 2 revised: signal the fence on CE's OWN queue (not the game queue). AMD does not track this
+    // queue, so this Signal does not perturb AMD's pacing.
+    ++g_FFXUiCompositeFenceVal;
+    submitQueue->Signal(g_FFXUiCompositeFence, g_FFXUiCompositeFenceVal);
     g_FFXUiCompositeAllocFenceVal[slot] = g_FFXUiCompositeFenceVal;
     ++g_FFXUiCompositeFrame;
-    // Step 1: NO completion-wait before forwarding RegisterUiResource. The game-queue FIFO ordering
-    // ensures CE's overlay write completes before AMD's post-interpolation read (AMD tracks the game queue).
+    // Step 2 revised: CPU-wait for CE's overlay write to complete on CE's own queue before returning, so
+    // the caller (Hooked_ffxConfigure) forwards RegisterUiResource only after the overlay is GPU-complete.
+    // This is a deterministic fence completion wait (not a sleep/poll), on the ffxConfigure thread (which is
+    // already blocked calling ffxConfigure), not the game's ECL thread. Wait duration = overlay draw time (<1ms).
+    uint32_t waitTimedOut = 0;
+    if (g_FFXUiCompositeFenceEvent && g_FFXUiCompositeFence &&
+        g_FFXUiCompositeFence->GetCompletedValue() < g_FFXUiCompositeFenceVal) {
+        g_FFXUiCompositeFence->SetEventOnCompletion(g_FFXUiCompositeFenceVal, g_FFXUiCompositeFenceEvent);
+        const DWORD waitResult = WaitForSingleObject(g_FFXUiCompositeFenceEvent, 1000);
+        if (waitResult == WAIT_TIMEOUT) {
+            waitTimedOut = 1;
+            static std::atomic<int> s_waitTimeoutLog{0};
+            const int n = s_waitTimeoutLog.fetch_add(1, std::memory_order_relaxed);
+            if (n < 10) {
+                HookLogImportant(
+                    "DX12: FFX UI-composite completion wait TIMED OUT (frame=%d fenceVal=%llu completed=%llu) "
+                    "— CE's overlay draw did not complete on CE's queue within 1000ms",
+                    g_FFXUiCompositeFrame, static_cast<unsigned long long>(g_FFXUiCompositeFenceVal),
+                    static_cast<unsigned long long>(g_FFXUiCompositeFence->GetCompletedValue()));
+            }
+        }
+    }
     LARGE_INTEGER returnQpc;
     QueryPerformanceCounter(&returnQpc);
     g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
@@ -5613,20 +5672,20 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
                                        g_FFXUiCompositeFence ? g_FFXUiCompositeFence->GetCompletedValue() : 0,
                                        static_cast<uint64_t>(submitQpc.QuadPart),
                                        static_cast<uint64_t>(returnQpc.QuadPart),
-                                       0,  // no completion wait in Step 1
+                                       waitTimedOut,
                                        static_cast<uint32_t>(slot),
                                        static_cast<uint32_t>(gameEclCount),
                                        uiTexture,
                                        ffxState,
-                                       gameQueue});
+                                       submitQueue});
 
     static std::atomic<int> s_uiCompositeLogCount{0};
     const int logCount = s_uiCompositeLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 20 || (logCount % 300) == 0) {
         HookLogImportant(
-            "DX12: FFX UI-composite overlay drawn onto game UI resource %p on GAME queue %p (regState=0x%X "
-            "ffxState=0x%X flags=0x%X %dx%d fmt=%d slot=%d gameEcl=%d log=%d) — no Signal, no wait (Step 1)",
-            uiTexture, gameQueue, static_cast<unsigned>(regState), ffxState, flags, width, height,
+            "DX12: FFX UI-composite overlay drawn onto game UI resource %p on CE queue %p (regState=0x%X "
+            "ffxState=0x%X flags=0x%X %dx%d fmt=%d slot=%d gameEcl=%d log=%d) — self-signaled, CPU-waited (Step 2 revised)",
+            uiTexture, submitQueue, static_cast<unsigned>(regState), ffxState, flags, width, height,
             static_cast<int>(rtvFormat), slot, gameEclCount, logCount + 1);
     }
     return true;
