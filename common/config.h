@@ -392,12 +392,13 @@ struct AppConfig {
     // manual audioCaptureLatencyMs > 0 disables measurement for the render domain. Default true.
     bool audioLatencyAutodetect = true;
 
-    // Opt-in (WIP): use the full WGC+loopback A/V self-calibration (av_sync_calibrator) as the
-    // PRIMARY auto-detect, falling back to the audio-only render->loopback probe. The calibration
-    // measures the true audio-vs-video offset through the real pipeline but is still being
-    // hardware-iterated (window-capture luma + audio burst feed), so it is OFF by default and the
-    // probe (Start-anchor) is the active path. Default false.
-    bool audioAvCalibration = false;
+    // Runtime-only A/V sync diagnosis populated by captureengine after config load. These are not
+    // parsed from config.ini: the product must auto-detect, apply a manual override only when the
+    // user explicitly configured one, or report low confidence instead of guessing.
+    float avSyncResolvedRenderLatencyMs = 0.0f;
+    std::string avSyncConfidence = "low";  // high, medium, or low
+    std::string avSyncReason = "unresolved";
+    bool avSyncUsedAudioProbe = false;
 };
 
 inline bool IsOverlayObserverOnly(const OverlayConfig& cfg) {

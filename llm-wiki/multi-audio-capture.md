@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-14 (late app-source live join and process-loopback teardown hardening)
+Last cross-checked: 2026-06-18 (hybrid automatic render-domain A/V sync probe and diagnostics)
 Stale-risk: medium
 
 Primary sources:
@@ -45,7 +45,7 @@ For CFR capture, audio is not a recovery mechanism for WGC/inject video pressure
 
 `tools/run_av_sync_matrix.py` now provides deterministic multi-track runtime coverage for the common regression shape: Track 1 is system loopback, Track 2 is process/app loopback for `dx12_av_sync_test.exe`, Track 3 mixes system+app overlap, and Track 4 is microphone when available. Tracks 1 and 2 are strict stimulus-aware checks. Track 3 is diagnostic/opportunistic because system loopback may already include the same app audio that process loopback captures, so its mixed marker phase can legitimately differ from either pure source. Track 4 is opportunistic because physical mic capture is not deterministic, but it is still recorded and reported if it hears usable marker evidence.
 
-WASAPI capture records device-reported stream latency, but as of 2026-06-17 it is TELEMETRY ONLY — packets are placed at the raw (system loopback) / period-center (process loopback) QPC and audio is never advanced by `GetStreamLatency`. The render→loopback A/V offset is corrected by DELAYING video content (and equalizing faster sources up to it), never by advancing live audio, and the offset itself is modeled per device-domain and auto-measured (see `cfr-capture-sync.md` UPDATE 2026-06-17 and `audio_latency_probe`). Process loopback still applies a half-packet timestamp bias so the packet is aligned near its temporal center rather than the WASAPI QPC edge; logs identify this as `processLoopbackPacketBias=half_period`. On the tested machine system loopback reported `streamLatency=0us` and process loopback returned `GetStreamLatency` failure, which is exactly why the audio-side advance was useless and the offset is now handled entirely on the video side.
+WASAPI capture records device-reported stream latency, device period, packet duration, buffer depth, QPC, and device position as passive telemetry, but as of 2026-06-17 it is TELEMETRY ONLY — packets are placed at the raw (system loopback) / period-center (process loopback) QPC and audio is never advanced by `GetStreamLatency`. The render→loopback A/V offset is corrected by DELAYING video content (and equalizing faster sources up to it), never by advancing live audio, and the offset itself is modeled per device-domain and auto-measured by the product-safe audio-only probe (see `cfr-capture-sync.md` UPDATE 2026-06-17/18 and `audio_latency_probe`). Process loopback still applies a half-packet timestamp bias so the packet is aligned near its temporal center rather than the WASAPI QPC edge; logs identify this as `processLoopbackPacketBias=half_period`. If the probe is blocked, scattered, or likely audible, CE logs low sync confidence and does not invent a delay.
 
 ## Config Semantics
 
@@ -81,8 +81,10 @@ The bundled Windows FFmpeg build must include `libopus` plus the concrete PCM en
 Useful logs for this area:
 
 - `[AudioCapture] ProbeMixFormat ...`: endpoint sample rate, channels, and channel mask.
-- `[AudioCapture] Started ... streamLatency=... loopback=... (latency routed via video content delay, not audio advance)` and `[AppAudioCapture] Started ... streamLatency=... (latency routed via video content delay, not audio advance)`: WASAPI latency telemetry. As of 2026-06-17 `streamLatency` is no longer subtracted from packet QPC (delay-only model); the Source Sync Start lines show `wouldAdvanceQpc=` purely as the retired-behavior reference. App-audio packet logs should show `processLoopbackPacketBias=half_period`. The auto-detected render-endpoint latency appears as `[AudioLatencyProbe] ...` and `[Media] Auto-detected render-endpoint audio latency: ... ms`.
-- `[AudioLatencyProbe] ...`: render→loopback latency self-measurement (cache hit/probe/measured/implausible). The faint marker plays at most once per render endpoint (cached in `audio_latency_cache.ini`).
+- `[AudioCapture] Started ... streamLatency=... loopback=... devicePeriod=... minPeriod=... bufferFrames=... bufferDur=...` and `[AppAudioCapture] Started ... streamLatency=... devicePeriod=... minPeriod=... bufferFrames=... bufferDur=...`: WASAPI latency/passive telemetry. `streamLatency` is no longer subtracted from packet QPC (delay-only model); the Source Sync Start lines show `wouldAdvanceQpc=` purely as the retired-behavior reference. App-audio packet logs should show `processLoopbackPacketBias=half_period`.
+- `[AVSyncProbe] ...`: render→loopback latency self-measurement (endpoint format, marker frequency/amplitude, cache hit/miss, measured shots/spread, audibility/fallback reason). The near-inaudible marker plays at most once per render endpoint cache key and is skipped for likely audible sample rates.
+- `[AVSyncAuto] ...`: passive inputs, probe result, chosen delay, confidence (`high`/`medium`/`low`), reason, engine reload status, audio equalization, and stop summary including codec/sample state. Low confidence means no guessed automatic delay was applied.
+- `[AVSyncApply] ...`: video-only correction path. WGC uses `wgc-selection-bias`; inject uses `inject-buffer-reserve` with reserve frame count and residual estimate. Audio samples and PTS remain sample-exact.
 - `[AudioResampler] Initialized ...`: input/output sample rate, channels, and masks.
 - `[AudioEncoder] Using codec: requested=... resolved=... channels=... mask=...`: final codec/layout policy.
 - `[AudioEncoder] Opus requires 48000 Hz ...`: explicit Opus sample-rate adjustment.
@@ -98,6 +100,7 @@ Useful logs for this area:
 - `[PullAudio] WARNING: CFR audio ring near capacity ...`: pressure diagnostic. The code preserves audio; an actual overflow/drop is a validation failure.
 - `[PullAudio] WARNING: CFR post-resample backlog exceeded guard ...`: pressure diagnostic. The code preserves audio; post-resample trimming is a validation failure.
 - `[STOP AUDIO TRACK] Track ... encoded=... expected=... realMixed=... fullSilence=... partialSilence=... sources=[...]`: exported-track cursor summary, including real/silence accounting.
+- `[AVSyncAuto] stop_audio_source ... codec=... encodedSamples=... captureLatencyMs=... encoderReady=... streamIndex=...`: per-source final sync/codec state before encoder shutdown.
 - `[StopAudio] forceDrain ... iterations=...`: stop-time drain may require multiple bounded pulls. `forceDrain incomplete` and `forceDrain made no progress` are strict investigation breadcrumbs.
 - `[StopAudio] Source ... diff=+0 (+0.0 ms)`: final sample-count equality to the selected video duration.
 - `[VideoEncoder] Final packet timeline` and `[VideoEncoder] Final metadata durations`: mux-level final duration evidence.

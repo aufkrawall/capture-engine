@@ -778,6 +778,10 @@ public:
 
         this->config = *config;
         trackAudioFormats = ResolveTrackAudioFormats(*config);
+        DLL_Log("[AVSyncAuto] engine_config: resolvedRenderLatencyMs=%.3f confidence=%s reason=%s usedAudioProbe=%d",
+                static_cast<double>(this->config.avSyncResolvedRenderLatencyMs),
+                this->config.avSyncConfidence.c_str(), this->config.avSyncReason.c_str(),
+                this->config.avSyncUsedAudioProbe ? 1 : 0);
 
         // Setup Video (Alloc Only) - skip for audio-only
         if (audioOnly) {
@@ -1391,6 +1395,10 @@ public:
             injectTimelineState.Reset();
             d3d11TimelineState.Reset();
             audioOnly = false;
+            DLL_Log("[AVSyncAuto] stop_summary: audioOnly=1 resolvedRenderLatencyMs=%.3f confidence=%s reason=%s "
+                    "usedAudioProbe=%d",
+                    static_cast<double>(config.avSyncResolvedRenderLatencyMs), config.avSyncConfidence.c_str(),
+                    config.avSyncReason.c_str(), config.avSyncUsedAudioProbe ? 1 : 0);
             DLL_Log("[STOP SUMMARY] Audio-only recording finalized");
             return;
         }
@@ -1535,6 +1543,9 @@ public:
         }
 
         DLL_Log("[STOP SUMMARY] Recording finalized");
+        DLL_Log("[AVSyncAuto] stop_summary: resolvedRenderLatencyMs=%.3f confidence=%s reason=%s usedAudioProbe=%d",
+                static_cast<double>(config.avSyncResolvedRenderLatencyMs), config.avSyncConfidence.c_str(),
+                config.avSyncReason.c_str(), config.avSyncUsedAudioProbe ? 1 : 0);
         if (videoEnc) {
             const int64_t finalVideoMs = videoEnc->GetExpectedFinalDurationUs() / 1000;
             const int64_t wallMs = videoElapsedMs.load();
@@ -1609,6 +1620,14 @@ public:
                     (unsigned long long)src.retainedNewestTrimSamples, (unsigned long long)uncategorizedLatencyTrim,
                     (unsigned long long)src.postResampleTrimSamples,
                     (unsigned long long)src.packetTimelineOverlapSamples, (unsigned long long)src.overflowDropSamples);
+                DLL_Log(
+                    "[AVSyncAuto] stop_audio_source: src=%zu track=%d codec=%s encodedSamples=%llu "
+                    "captureLatencyMs=%.3f encoderReady=%d streamIndex=%d confidence=%s reason=%s",
+                    i, src.track, src.config.codec.c_str(), (unsigned long long)encodedSamplesPerSource[i],
+                    static_cast<double>(src.config.captureLatencyMs),
+                    (src.encoder && src.encoder->IsReady()) ? 1 : 0,
+                    src.encoder ? src.encoder->GetStreamIndex() : -1, config.avSyncConfidence.c_str(),
+                    config.avSyncReason.c_str());
             }
         }
 
@@ -3489,6 +3508,10 @@ public:
         // Update config
         this->config = *newConfig;
         trackAudioFormats = ResolveTrackAudioFormats(*newConfig);
+        DLL_Log("[AVSyncAuto] engine_reload: resolvedRenderLatencyMs=%.3f confidence=%s reason=%s usedAudioProbe=%d",
+                static_cast<double>(this->config.avSyncResolvedRenderLatencyMs),
+                this->config.avSyncConfidence.c_str(), this->config.avSyncReason.c_str(),
+                this->config.avSyncUsedAudioProbe ? 1 : 0);
 
         // If recording, we can't fully re-init, but we can log a warning.
         if (recording) {
@@ -3727,6 +3750,9 @@ private:
                 maxAudioCaptureLatencyMs = eqSrc.config.captureLatencyMs;
             }
         }
+        DLL_Log("[AVSyncAuto] audio_equalization: sources=%zu maxCaptureLatencyMs=%.3f confidence=%s reason=%s",
+                audioSources.size(), static_cast<double>(maxAudioCaptureLatencyMs), config.avSyncConfidence.c_str(),
+                config.avSyncReason.c_str());
         std::vector<int64_t> audioEqualizationDelaySamples(audioSources.size(), 0);
         for (size_t i = 0; i < audioSources.size(); ++i) {
             const double deltaMs = static_cast<double>(maxAudioCaptureLatencyMs) -

@@ -143,6 +143,9 @@ private:
     WAVEFORMATEX* pwfx = nullptr;
     DWORD activeStreamFlags = 0;
     uint64_t streamLatency100ns = 0;
+    uint64_t defaultDevicePeriod100ns = 0;
+    uint64_t minDevicePeriod100ns = 0;
+    uint32_t bufferFrameCount = 0;
     int requestedSampleRate = 48000;
     int requestedChannels = 2;
     uint32_t requestedChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;

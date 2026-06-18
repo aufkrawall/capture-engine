@@ -27,7 +27,7 @@ namespace ce::audio {
 
 // Cache schema marker. Bump when the marker design or measurement semantics change so stale
 // cached values are ignored rather than silently reused.
-inline constexpr const char* kLatencyCacheHeader = "# CE audio render-endpoint latency cache v1";
+inline constexpr const char* kLatencyCacheHeader = "# CE audio render-endpoint latency cache v2";
 
 // Implausible measurements are rejected (fail-safe to config). A real render->loopback path is
 // bounded by a few hundred ms even for deep AVR/Bluetooth buffers.
@@ -53,11 +53,12 @@ struct ProbeMarkerSpec {
 
 // Resolve a marker for the given endpoint rate. The marker frequency is placed high enough to be
 // inaudible to humans (>= ~19 kHz) yet below Nyquist, scaling up on high-rate (96/192 kHz)
-// endpoints to fully ultrasonic. Returns valid=false for unusable sample rates.
+// endpoints to fully ultrasonic. Returns valid=false for rates where the marker would be plausibly
+// audible; those systems fall back to passive metadata instead of playing a risky probe tone.
 inline ProbeMarkerSpec ResolveProbeMarkerSpec(int sampleRate) {
     ProbeMarkerSpec spec;
-    if (sampleRate < 16000) {
-        return spec;  // too low to host an inaudible marker below Nyquist
+    if (sampleRate < 44100) {
+        return spec;  // too low to host a near-inaudible marker below Nyquist
     }
     spec.sampleRate = static_cast<double>(sampleRate);
     const double nyquist = spec.sampleRate * 0.5;
@@ -69,7 +70,7 @@ inline ProbeMarkerSpec ResolveProbeMarkerSpec(int sampleRate) {
         freq = nyquist * 0.92;
     }
     spec.markerFreqHz = freq;
-    spec.amplitude = 0.06;  // ~ -24 dBFS: clearly detectable digitally, inaudible acoustically
+    spec.amplitude = 0.015;  // ~ -36.5 dBFS: detectable digitally, near-inaudible acoustically
     // Durations in milliseconds, converted to frames. Lead-in lets the loopback stream settle;
     // the marker is long enough for several Goertzel windows; the tail guarantees we capture past
     // the onset even with a deep endpoint buffer.
@@ -256,14 +257,20 @@ inline std::string SanitizeCacheToken(const std::string& s) {
     return out;
 }
 
-inline std::string MakeRenderEndpointCacheKey(const std::string& deviceId, int sampleRate, int channels) {
-    return SanitizeCacheToken(deviceId) + "|" + std::to_string(sampleRate) + "|" + std::to_string(channels);
+inline std::string MakeRenderEndpointCacheKey(const std::string& deviceId, int sampleRate, int channels,
+                                              int bitsPerSample, int blockAlign, uint32_t channelMask,
+                                              uint64_t defaultPeriod100ns, uint64_t minPeriod100ns) {
+    return SanitizeCacheToken(deviceId) + "|sr" + std::to_string(sampleRate) + "|ch" + std::to_string(channels) +
+           "|bits" + std::to_string(bitsPerSample) + "|align" + std::to_string(blockAlign) +
+           "|mask" + std::to_string(channelMask) + "|period" + std::to_string(defaultPeriod100ns) +
+           "|min" + std::to_string(minPeriod100ns);
 }
 
 // Parse the cache text. Lines are "key=latencyMs"; the header line and blank/comment lines are
-// ignored. Tolerant of missing/extra whitespace and a missing header (returns whatever parses).
+// ignored. A missing/stale header returns an empty cache so old marker semantics are not reused.
 inline bool ParseLatencyCache(const std::string& text, std::vector<LatencyCacheEntry>& out) {
     out.clear();
+    bool sawCurrentHeader = false;
     size_t pos = 0;
     while (pos <= text.size()) {
         size_t end = text.find('\n', pos);
@@ -279,8 +286,18 @@ inline bool ParseLatencyCache(const std::string& text, std::vector<LatencyCacheE
             ++lead;
         }
         line = line.substr(lead);
-        if (line.empty() || line[0] == '#') {
+        if (line.empty()) {
             continue;
+        }
+        if (line[0] == '#') {
+            if (line == kLatencyCacheHeader) {
+                sawCurrentHeader = true;
+            }
+            continue;
+        }
+        if (!sawCurrentHeader) {
+            out.clear();
+            return true;
         }
         const size_t eq = line.find('=');
         if (eq == std::string::npos || eq == 0) {

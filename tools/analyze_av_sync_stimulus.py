@@ -2061,6 +2061,49 @@ def self_test():
     assert transition_signed_offset({"time": 2.060}, interval_reference[0]) == 0.0
     assert round(transition_signed_offset({"time": 2.077}, interval_reference[0]), 3) == 0.010
     assert round(transition_signed_offset({"time": 2.050}, interval_reference[0]), 3) == -0.005
+
+    class Args:
+        max_timing_anchor_error_ms = 50.0
+        max_corrupt_frames = 0
+        max_longest_repeat = 1
+        max_motion_stall = 5
+        max_motion_error_frames = 5
+        min_video_transitions = 2
+        min_audio_transitions = 2
+        transition_match_window_ms = 100.0
+        max_missing_transition_matches = 0
+        max_av_offset_ms = 10.0
+        max_mean_av_offset_ms = 5.0
+        max_offset_slope_ms_per_min = 5000.0
+        min_offset_slope_excursion_ms = 5.0
+        max_track_spread_ms = 5.0
+        non_strict_audio_ordinals_set = {2}
+
+    strict_spread_video = {
+        "timing": {"anchor_error_seconds": 0.0},
+        "corrupt_frames": 0,
+        "longest_unplanned_marker_repeat": 0,
+        "missing_planned_source_stalls": [],
+        "longest_motion_stall": 0,
+        "motion_error_frames": 0,
+        "out_of_order_markers": 0,
+        "transitions": [{"to": 1, "time": 1.0}, {"to": 2, "time": 2.0}, {"to": 3, "time": 3.0}],
+    }
+    strict_spread_audio = [
+        {"ordinal": 0, "codec": "aac", "sample_rate": 48000, "transitions": strict_spread_video["transitions"]},
+        {
+            "ordinal": 1,
+            "codec": "aac",
+            "sample_rate": 48000,
+            "transitions": [{"to": 1, "time": 1.003}, {"to": 2, "time": 2.003}, {"to": 3, "time": 3.003}],
+        },
+        {"ordinal": 2, "codec": "aac", "sample_rate": 48000, "transitions": []},
+    ]
+    strict_spread_checks = evaluate(Args(), strict_spread_video, strict_spread_audio, {}, {})
+    spread_checks = [check for check in strict_spread_checks if check["name"] == "audio.inter_track_spread_ms"]
+    assert spread_checks and spread_checks[0]["passed"]
+    assert all("opportunistic" not in check["name"] or check["passed"] for check in strict_spread_checks)
+
     frames = [
         {"pts": 0.00, "palette": 1},
         {"pts": 0.20, "palette": 1},

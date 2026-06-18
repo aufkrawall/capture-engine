@@ -27,7 +27,6 @@
 #include "../common/rate_window_utils.h"
 #include "../common/shared_defs.h"
 #include "../common/thread_power_throttling_compat.h"
-#include "av_sync_calibrator.h"
 #include "mediaengine_loader.h"
 #include "wgc_capture.h"
 
@@ -109,18 +108,60 @@ void StartRecording(const AppConfig& config);
 // per render endpoint, so a fresh process is a cache hit (no calibration sound replay).
 static double g_AutoDetectedRenderLatencyMs = -1.0;  // <0 = not measured / unavailable
 static bool g_RenderLatencyMeasureAttempted = false;
+static std::string g_AvSyncConfidence = "low";
+static std::string g_AvSyncReason = "not_measured";
+static bool g_AvSyncUsedAudioProbe = false;
+
+static void StampAvSyncStatus(AppConfig& config, const char* confidence, const char* reason, float resolvedMs,
+                              bool usedAudioProbe) {
+    config.avSyncConfidence = confidence ? confidence : "low";
+    config.avSyncReason = reason ? reason : "unknown";
+    config.avSyncResolvedRenderLatencyMs = resolvedMs;
+    config.avSyncUsedAudioProbe = usedAudioProbe;
+}
 
 // Apply the auto-detected render-endpoint latency to render-domain sources (system loopback + app
 // process loopback only). No-op when autodetect is off, a manual override is configured, or no
 // value has been measured. Microphones (Domain 2) are never touched here. Cheap and idempotent.
 static void ApplyAutoDetectedRenderLatencyToConfig(AppConfig& config) {
-    if (!config.audioLatencyAutodetect) {
+    int renderDomainSources = 0;
+    int micDomainSources = 0;
+    for (const auto& s : config.audioSources) {
+        const bool renderDomain = s.sourceType == AudioConfig::SystemAudio || s.sourceType == AudioConfig::AppAudio;
+        if (renderDomain) {
+            ++renderDomainSources;
+        } else if (s.sourceType == AudioConfig::Microphone) {
+            ++micDomainSources;
+        }
+    }
+
+    if (config.audioCaptureLatencyMs > 0.0f) {
+        StampAvSyncStatus(config, "medium", "manual_config_override", config.audioCaptureLatencyMs, false);
+        LogInfo(
+            "[AVSyncAuto] passiveInputs renderSources=%d micSources=%d generalRenderLatencyMs=%.3f "
+            "autodetect=%d probe=skipped chosenDelayMs=%.3f confidence=medium reason=manual_config_override",
+            renderDomainSources, micDomainSources, static_cast<double>(config.audioCaptureLatencyMs),
+            config.audioLatencyAutodetect ? 1 : 0, static_cast<double>(config.audioCaptureLatencyMs));
         return;
     }
-    if (config.audioCaptureLatencyMs > 0.0f) {
-        return;  // manual override; sources already carry it from config parsing
+
+    if (!config.audioLatencyAutodetect) {
+        StampAvSyncStatus(config, "low", "autodetect_disabled", 0.0f, false);
+        LogWarn(
+            "[AVSyncAuto] passiveInputs renderSources=%d micSources=%d generalRenderLatencyMs=0.000 "
+            "autodetect=0 probe=disabled chosenDelayMs=0.000 confidence=low reason=autodetect_disabled",
+            renderDomainSources, micDomainSources);
+        return;
     }
+
     if (g_AutoDetectedRenderLatencyMs <= 0.0) {
+        StampAvSyncStatus(config, g_AvSyncConfidence.c_str(), g_AvSyncReason.c_str(), 0.0f, g_AvSyncUsedAudioProbe);
+        LogWarn(
+            "[AVSyncAuto] passiveInputs renderSources=%d micSources=%d generalRenderLatencyMs=0.000 "
+            "autodetect=1 probe=%s chosenDelayMs=0.000 confidence=%s reason=%s",
+            renderDomainSources, micDomainSources,
+            g_RenderLatencyMeasureAttempted ? "unavailable" : "not_attempted", config.avSyncConfidence.c_str(),
+            config.avSyncReason.c_str());
         return;
     }
     const float ms = static_cast<float>(g_AutoDetectedRenderLatencyMs);
@@ -133,54 +174,61 @@ static void ApplyAutoDetectedRenderLatencyToConfig(AppConfig& config) {
             ++applied;
         }
     }
-    LogInfo("[Media] Applied auto-detected render-endpoint latency %.3f ms to %d render-domain source(s)", ms, applied);
+    StampAvSyncStatus(config, g_AvSyncConfidence.c_str(), g_AvSyncReason.c_str(), ms, g_AvSyncUsedAudioProbe);
+    LogInfo(
+        "[AVSyncAuto] passiveInputs renderSources=%d micSources=%d generalRenderLatencyMs=0.000 autodetect=1 "
+        "probe=%s chosenDelayMs=%.3f appliedSources=%d confidence=%s reason=%s domain=render_endpoint",
+        renderDomainSources, micDomainSources, config.avSyncUsedAudioProbe ? "audio_render_loopback" : "cache_or_manual",
+        static_cast<double>(ms), applied, config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
 }
 
-// Perform the one-time audio-vs-video offset measurement. Call only when NOT recording and only
-// after MediaEngine_Init (the A/V self-calibration needs the shared D3D11 device): on a cache miss
-// it briefly shows a small flashing window + plays a faint near-inaudible marker. Safe to call
-// repeatedly; it runs at most once per process and is a cheap disk cache hit otherwise.
-//
-// Primary: the WGC+loopback A/V self-calibration measures the TRUE offset through CE's real
-// pipeline. Fallback (WGC/device unavailable or inconclusive): the audio-only render->loopback
-// probe (Start-anchor), which only approximates it.
+// Perform the one-time product-safe audio-only render->loopback measurement. Call only when NOT
+// recording. On a cache miss it may render a near-inaudible marker; it never opens a calibration
+// window or emits a video stimulus. Safe to call repeatedly; it runs at most once per process and
+// is a cheap disk cache hit otherwise.
 static void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheDir) {
     if (g_RenderLatencyMeasureAttempted) {
         return;
     }
-    if (!config.audioLatencyAutodetect || config.audioCaptureLatencyMs > 0.0f) {
+    if (config.audioCaptureLatencyMs > 0.0f) {
         g_RenderLatencyMeasureAttempted = true;  // disabled or manual override: never measure
+        g_AutoDetectedRenderLatencyMs = -1.0;
+        g_AvSyncConfidence = "medium";
+        g_AvSyncReason = "manual_config_override";
+        g_AvSyncUsedAudioProbe = false;
+        LogInfo("[AVSyncAuto] probe=skipped confidence=medium reason=manual_config_override configuredDelayMs=%.3f",
+                static_cast<double>(config.audioCaptureLatencyMs));
+        return;
+    }
+    if (!config.audioLatencyAutodetect) {
+        g_RenderLatencyMeasureAttempted = true;
+        g_AutoDetectedRenderLatencyMs = -1.0;
+        g_AvSyncConfidence = "low";
+        g_AvSyncReason = "autodetect_disabled";
+        g_AvSyncUsedAudioProbe = false;
+        LogWarn("[AVSyncAuto] probe=disabled confidence=low reason=autodetect_disabled chosenDelayMs=0.000");
         return;
     }
     g_RenderLatencyMeasureAttempted = true;
-
-    // Primary (opt-in, WIP): full A/V self-calibration through the real WGC + loopback pipeline.
-    // Off by default while it is hardware-iterated; the audio-only probe below is the active path.
-    if (config.audioAvCalibration) {
-        ID3D11Device* d3dDevice = MediaEngine_GetD3D11Device ? MediaEngine_GetD3D11Device() : nullptr;
-        if (d3dDevice) {
-            const ce::avcal::AvCalibrationResult av = ce::avcal::MeasureAvOffset(d3dDevice, cacheDir, false);
-            if (av.ok && av.offsetMs > 0.0) {
-                g_AutoDetectedRenderLatencyMs = av.offsetMs;
-                LogInfo("[Media] Auto-detected A/V content offset: %.3f ms (WGC+loopback self-calibration, %s)",
-                        av.offsetMs, av.fromCache ? "cached" : "measured");
-                return;
-            }
-            LogWarn("[Media] A/V self-calibration inconclusive; falling back to audio render->loopback probe");
-        } else {
-            LogWarn("[Media] no D3D11 device for A/V self-calibration; falling back to audio render->loopback probe");
-        }
-    }
 
     // Audio-only render->loopback probe (Start-anchor) - the default active auto-detect.
     double ms = 0.0;
     if (MediaEngine_MeasureRenderEndpointLatency &&
         MediaEngine_MeasureRenderEndpointLatency(cacheDir.c_str(), false, &ms) && ms > 0.0) {
         g_AutoDetectedRenderLatencyMs = ms;
-        LogInfo("[Media] Auto-detected render-endpoint audio latency: %.3f ms (render->loopback probe fallback)", ms);
+        g_AvSyncConfidence = "high";
+        g_AvSyncReason = "audio_probe_render_loopback";
+        g_AvSyncUsedAudioProbe = true;
+        LogInfo("[AVSyncAuto] probe=audio_render_loopback chosenDelayMs=%.3f confidence=high domain=render_endpoint",
+                ms);
     } else {
-        LogWarn("[Media] Audio latency auto-detect unavailable; using configured audio_capture_latency_ms=%.3f",
-                static_cast<double>(config.audioCaptureLatencyMs));
+        g_AutoDetectedRenderLatencyMs = -1.0;
+        g_AvSyncConfidence = "low";
+        g_AvSyncReason = "probe_unavailable_passive_insufficient";
+        g_AvSyncUsedAudioProbe = false;
+        LogWarn(
+            "[AVSyncAuto] probe=unavailable chosenDelayMs=0.000 confidence=low "
+            "reason=probe_unavailable_passive_insufficient");
     }
 }
 
@@ -227,7 +275,7 @@ bool MediaAudioConfigEquals(const AudioConfig& lhs, const AudioConfig& rhs) {
     return lhs.enabled == rhs.enabled && lhs.device == rhs.device && lhs.processName == rhs.processName &&
            lhs.processId == rhs.processId && lhs.sourceType == rhs.sourceType && lhs.tracks == rhs.tracks &&
            lhs.codec == rhs.codec && lhs.bitrate == rhs.bitrate && lhs.sampleRate == rhs.sampleRate &&
-           lhs.bitDepth == rhs.bitDepth && lhs.downmix == rhs.downmix;
+           lhs.bitDepth == rhs.bitDepth && lhs.downmix == rhs.downmix && lhs.captureLatencyMs == rhs.captureLatencyMs;
 }
 
 bool MediaScalingConfigEquals(const ScalingConfig& lhs, const ScalingConfig& rhs) {
@@ -2191,13 +2239,28 @@ void EncoderThreadFunc(const AppConfig& config) {
         (avContentDelayActive && frameIntervalMs > 0.0)
             ? static_cast<size_t>(std::ceil(static_cast<double>(maxAudioCaptureLatencyMs) / frameIntervalMs))
             : 0;
+    const double injectResidualEstimateMs =
+        (injectContentDelayFrames > 0 && frameIntervalMs > 0.0)
+            ? static_cast<double>(injectContentDelayFrames) * frameIntervalMs -
+                  static_cast<double>(maxAudioCaptureLatencyMs)
+            : 0.0;
     if (avContentDelayActive) {
         LogInfo(
-            "[EncoderThread] A/V content delay armed: maxAudioCaptureLatencyMs=%.3f delayUs=%lld method=%s "
-            "injectDelayFrames=%zu (delays video content to match late loopback audio; audio/PTS unchanged)",
+            "[AVSyncApply] armed: maxAudioCaptureLatencyMs=%.3f delayUs=%lld method=%s injectDelayFrames=%zu "
+            "residualEstimateMs=%.3f confidence=%s reason=%s "
+            "(delays video content to match late loopback audio; audio/PTS unchanged)",
             static_cast<double>(maxAudioCaptureLatencyMs),
             (long long)((avContentDelayQpc * 1000000) / qpcFreq.QuadPart),
-            IsActiveScreenGrab() ? "wgc-selection-bias" : "inject-buffer-reserve", injectContentDelayFrames);
+            IsActiveScreenGrab() ? "wgc-selection-bias" : "inject-buffer-reserve", injectContentDelayFrames,
+            IsActiveScreenGrab() ? 0.0 : injectResidualEstimateMs, config.avSyncConfidence.c_str(),
+            config.avSyncReason.c_str());
+    } else {
+        LogWarn(
+            "[AVSyncApply] inactive: maxAudioCaptureLatencyMs=%.3f delayUs=0 method=%s injectDelayFrames=0 "
+            "residualEstimateMs=0.000 confidence=%s reason=%s",
+            static_cast<double>(maxAudioCaptureLatencyMs),
+            IsActiveScreenGrab() ? "wgc-selection-bias" : "inject-buffer-reserve", config.avSyncConfidence.c_str(),
+            config.avSyncReason.c_str());
     }
 
     while (g_EncoderRunning || g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) || g_FrameQueue.Size() > 0 ||
@@ -6201,6 +6264,14 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         if (g_AudioOnly && MediaEngine_SetAudioOnly) {
             MediaEngine_SetAudioOnly(true);
         }
+        // Auto-detect the render-domain delay before Init. The product-safe path is audio-only:
+        // no calibration window, no WGC/DX stimulus, and no config.ini delay writeback. Apply the
+        // result (or explicit low-confidence reason) before the media engine snapshots config.
+        if (!g_Recording.load(std::memory_order_acquire)) {
+            MeasureRenderLatencyOnce(config, mediaCacheDir);
+        }
+        ApplyAutoDetectedRenderLatencyToConfig(config);
+
         if (!MediaEngine_Init(&config)) {
             LogError("[Media] Failed to initialize MediaEngine");
             if (MediaEngine_Shutdown) {
@@ -6216,18 +6287,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         mediaEngineReady = true;
         LogInfo("[Media] MediaEngine initialized");
-
-        // Auto-detect the audio-vs-video content offset AFTER Init (the A/V self-calibration needs
-        // the shared D3D11 device for WGC frame readback) and only when not recording. Then apply
-        // the resolved value to this config AND push it to the media engine, so both the encoder
-        // thread (video content delay) and the media engine (per-source equalization) use it.
-        if (!g_Recording.load(std::memory_order_acquire)) {
-            MeasureRenderLatencyOnce(config, mediaCacheDir);
-        }
-        if (g_AutoDetectedRenderLatencyMs > 0.0) {
-            ApplyAutoDetectedRenderLatencyToConfig(config);
-            MediaEngine_ReloadConfig(&config);
-        }
         return true;
     };
 
@@ -6510,14 +6569,14 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         if (!processName.empty()) {
             LoadConfig(configPath, resolvedConfig, processName);
         }
+        // Normalize runtime-only sync state before comparing with the active config. Otherwise a
+        // config.ini reload with no real media changes would compare file defaults (usually 0 ms)
+        // against the active auto-detected render latency and reload unnecessarily.
+        ApplyAutoDetectedRenderLatencyToConfig(resolvedConfig);
 
         const bool mediaConfigChanged = !MediaEngineConfigEquals(config, resolvedConfig);
 
         config = std::move(resolvedConfig);
-        // Re-apply the auto-detected render-endpoint latency: LoadConfig reset captureLatencyMs to
-        // the config defaults, so the resolved value must be re-stamped before ReloadConfig. This
-        // only applies a cached process-local value (no WASAPI / no sound).
-        ApplyAutoDetectedRenderLatencyToConfig(config);
         Log_SetLevel(config.logLevel);
         activeConfigSourcePid = sourcePid;
         activeConfigProcessName = processName;

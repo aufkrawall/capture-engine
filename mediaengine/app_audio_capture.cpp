@@ -516,6 +516,17 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
         DLL_Log("[AppAudioCapture] GetStreamLatency failed: 0x%x", hr);
         streamLatency100ns = 0;
     }
+    REFERENCE_TIME defaultPeriod = 0;
+    REFERENCE_TIME minPeriod = 0;
+    if (SUCCEEDED(pAudioClient->GetDevicePeriod(&defaultPeriod, &minPeriod))) {
+        defaultDevicePeriod100ns = static_cast<uint64_t>(std::max<REFERENCE_TIME>(0, defaultPeriod));
+        minDevicePeriod100ns = static_cast<uint64_t>(std::max<REFERENCE_TIME>(0, minPeriod));
+    } else {
+        defaultDevicePeriod100ns = 0;
+        minDevicePeriod100ns = 0;
+    }
+    UINT32 bufferFrames = 0;
+    bufferFrameCount = SUCCEEDED(pAudioClient->GetBufferSize(&bufferFrames)) ? bufferFrames : 0;
 
     if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
         ResetEvent(captureEvent_);
@@ -542,11 +553,19 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
         return false;
     }
 
+    const uint64_t bufferDurationUs =
+        (pwfx->nSamplesPerSec > 0)
+            ? (static_cast<uint64_t>(bufferFrameCount) * 1000000ull) / static_cast<uint64_t>(pwfx->nSamplesPerSec)
+            : 0;
     DLL_Log(
         "[AppAudioCapture] Started: PID=%lu channels=%d rate=%d bits=%d streamLatency=%lluus "
+        "devicePeriod=%lluus minPeriod=%lluus bufferFrames=%u bufferDur=%lluus "
         "(latency routed via video content delay, not audio advance)",
         pid, pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
-        static_cast<unsigned long long>(streamLatency100ns / 10));
+        static_cast<unsigned long long>(streamLatency100ns / 10),
+        static_cast<unsigned long long>(defaultDevicePeriod100ns / 10),
+        static_cast<unsigned long long>(minDevicePeriod100ns / 10), bufferFrameCount,
+        static_cast<unsigned long long>(bufferDurationUs));
 
     DLL_Log("[AppAudioCapture] Capture mode: %s",
             (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
@@ -581,6 +600,9 @@ void AppAudioCapture::CleanupCapture() {
 
     activeStreamFlags = 0;
     streamLatency100ns = 0;
+    defaultDevicePeriod100ns = 0;
+    minDevicePeriod100ns = 0;
+    bufferFrameCount = 0;
 }
 
 void AppAudioCapture::CaptureLoop() {

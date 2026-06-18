@@ -810,7 +810,6 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);
     config.micCaptureLatencyMs = GetFloat("General", "mic_capture_latency_ms", 0.0f);
     config.audioLatencyAutodetect = GetBool("General", "audio_latency_autodetect", true);
-    config.audioAvCalibration = GetBool("General", "audio_av_calibration", false);
 
     // Performance (Priority Settings)
     config.processPriority = GetStr("Performance", "process_priority", "above_normal");

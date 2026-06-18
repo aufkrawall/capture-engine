@@ -36,6 +36,7 @@ TEST(AudioLatencyProbeTest, ResolveMarkerSpecIsInaudibleAndBelowNyquist) {
         ASSERT_TRUE(spec.valid) << "rate=" << rate;
         EXPECT_GE(spec.markerFreqHz, 19000.0) << "marker should be inaudible, rate=" << rate;
         EXPECT_LT(spec.markerFreqHz, rate * 0.5) << "marker must be below Nyquist, rate=" << rate;
+        EXPECT_LE(spec.amplitude, 0.02);
         EXPECT_GT(spec.markerFrames, 0);
         EXPECT_GT(spec.leadInFrames, 0);
     }
@@ -43,6 +44,7 @@ TEST(AudioLatencyProbeTest, ResolveMarkerSpecIsInaudibleAndBelowNyquist) {
 
 TEST(AudioLatencyProbeTest, ResolveMarkerSpecRejectsTooLowRate) {
     EXPECT_FALSE(ResolveProbeMarkerSpec(8000).valid);
+    EXPECT_FALSE(ResolveProbeMarkerSpec(32000).valid);
 }
 
 TEST(AudioLatencyProbeTest, GenerateMarkerHasSilentLeadInAndConcentratedEnergy) {
@@ -166,8 +168,10 @@ TEST(AudioLatencyProbeTest, ComputeRenderLatencyAndPlausibility) {
 
 TEST(AudioLatencyProbeTest, CacheRoundTripAndUpsert) {
     std::vector<LatencyCacheEntry> entries;
-    const std::string keyA = MakeRenderEndpointCacheKey("{0.0.0.00000000}.{guid-a}", 192000, 2);
-    const std::string keyB = MakeRenderEndpointCacheKey("{0.0.0.00000000}.{guid-b}", 48000, 8);
+    const std::string keyA =
+        MakeRenderEndpointCacheKey("{0.0.0.00000000}.{guid-a}", 192000, 2, 32, 8, 3, 100000, 30000);
+    const std::string keyB =
+        MakeRenderEndpointCacheKey("{0.0.0.00000000}.{guid-b}", 48000, 8, 32, 32, 0x63f, 100000, 30000);
     UpsertLatencyCache(entries, keyA, 46.0);
     UpsertLatencyCache(entries, keyB, 12.5);
     UpsertLatencyCache(entries, keyA, 47.0);  // overwrite
@@ -188,7 +192,7 @@ TEST(AudioLatencyProbeTest, CacheRoundTripAndUpsert) {
 
 TEST(AudioLatencyProbeTest, CacheParseToleratesGarbageAndComments) {
     const std::string text =
-        "# CE audio render-endpoint latency cache v1\n"
+        "# CE audio render-endpoint latency cache v2\n"
         "\n"
         "  # a comment\n"
         "  good|48000|2=33.5\n"  // leading whitespace trimmed
@@ -202,11 +206,20 @@ TEST(AudioLatencyProbeTest, CacheParseToleratesGarbageAndComments) {
     EXPECT_NEAR(parsed[0].latencyMs, 33.5, 1e-6);
 }
 
+TEST(AudioLatencyProbeTest, CacheParseIgnoresStaleHeader) {
+    const std::string text =
+        "# CE audio render-endpoint latency cache v1\n"
+        "stale|48000|2=33.5\n";
+    std::vector<LatencyCacheEntry> parsed;
+    ASSERT_TRUE(ParseLatencyCache(text, parsed));
+    EXPECT_TRUE(parsed.empty());
+}
+
 TEST(AudioLatencyProbeTest, CacheKeySanitizesDelimiters) {
-    const std::string key = MakeRenderEndpointCacheKey("dev=with\nbad\rchars", 48000, 2);
+    const std::string key = MakeRenderEndpointCacheKey("dev=with\nbad\rchars", 48000, 2, 32, 8, 3, 100000, 30000);
     // The line format is key=value, so '=' / CR / LF must not survive in the key.
     EXPECT_EQ(key.find('='), std::string::npos);
     EXPECT_EQ(key.find('\n'), std::string::npos);
     EXPECT_EQ(key.find('\r'), std::string::npos);
-    EXPECT_EQ(key, "dev_with_bad_chars|48000|2");
+    EXPECT_EQ(key, "dev_with_bad_chars|sr48000|ch2|bits32|align8|mask3|period100000|min30000");
 }
